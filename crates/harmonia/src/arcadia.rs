@@ -6,6 +6,15 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
+fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
+    CmdResult {
+        ok: result.ok,
+        code: result.code,
+        stdout: result.stdout.clone(),
+        stderr: result.stderr.clone(),
+    }
+}
+
 pub(crate) fn homeconsole_arcadia_check(
     profile: &Profile,
     receipt_dir: &Path,
@@ -247,4 +256,192 @@ pub(crate) fn homeconsole_arcadia_update(
     } else {
         Err(first_missing_signal)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn homeconsole_arcadia_gui_update(
+    profile: &Profile,
+    receipt_dir: &Path,
+    repo: &str,
+    branch: &str,
+    source_dir: &Path,
+    install_bin: &Path,
+    service: &str,
+    apply: bool,
+    source_sha_file: &Path,
+) -> Result<(), String> {
+    if profile.id != "homeconsole" || profile.family != "arch-console" {
+        return Err(format!(
+            "homeconsole-arcadia-gui-update requires homeconsole/arch-console profile, got {}/{}",
+            profile.id, profile.family
+        ));
+    }
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+
+    let git_request = tools::git_artifact::Request::new(
+        Some(repo.to_string()),
+        source_dir.to_path_buf(),
+        branch.to_string(),
+        "origin".to_string(),
+    );
+    let git_outcome = if apply {
+        tools::git_artifact::apply(&git_request)
+    } else {
+        tools::git_artifact::plan(&git_request)
+    };
+    let git_cmd = git_artifact_cmd(&git_outcome.command);
+    write_command_receipt(receipt_dir, "arcadia-source-git-artifact", &git_cmd)?;
+    if !git_outcome.ok {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            false,
+            git_outcome.changed,
+            "arcadia-source-git-artifact-failed",
+            repo,
+            branch,
+            source_dir,
+            None,
+        )?;
+        return Err("arcadia-source-git-artifact-failed".to_string());
+    }
+
+    let source_sha =
+        command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], source_dir.to_str());
+    write_command_receipt(receipt_dir, "arcadia-source-sha", &source_sha)?;
+    let source_sha_value = source_sha.stdout.trim().to_string();
+    if !source_sha.ok || !is_hex_sha(&source_sha_value) {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            false,
+            git_outcome.changed,
+            "arcadia-source-sha-missing",
+            repo,
+            branch,
+            source_dir,
+            None,
+        )?;
+        return Err("arcadia-source-sha-missing".to_string());
+    }
+
+    if !apply {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            true,
+            git_outcome.changed,
+            "none",
+            repo,
+            branch,
+            source_dir,
+            Some(&source_sha_value),
+        )?;
+        println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
+        println!("ok=true");
+        println!("changed={}", git_outcome.changed);
+        println!("first_missing_signal=none");
+        println!("source_sha={}", source_sha_value);
+        println!("receipt_dir={}", receipt_dir.display());
+        return Ok(());
+    }
+
+    let build = command_capture_with_cwd(
+        "/usr/bin/cargo",
+        &["build", "--release"],
+        source_dir.to_str(),
+    );
+    write_command_receipt(receipt_dir, "arcadia-cargo-build", &build)?;
+    if !build.ok {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            false,
+            git_outcome.changed,
+            "arcadia-cargo-build-failed",
+            repo,
+            branch,
+            source_dir,
+            Some(&source_sha_value),
+        )?;
+        return Err("arcadia-cargo-build-failed".to_string());
+    }
+
+    let artifact = source_dir.join("target/release/arcadia");
+    homeconsole_arcadia_update(
+        profile,
+        receipt_dir,
+        &artifact,
+        install_bin,
+        service,
+        true,
+        Some(&source_sha_value),
+        source_sha_file,
+    )?;
+
+    let health = command_capture(
+        "/usr/bin/curl",
+        &["-fsS", "--max-time", "3", "http://127.0.0.1:8080/health"],
+    );
+    write_command_receipt(receipt_dir, "arcadia-health", &health)?;
+    let ok = health.ok;
+    let first_missing_signal = if ok { "none" } else { "arcadia-health-failed" };
+    write_arcadia_gui_run_receipt(
+        receipt_dir,
+        profile,
+        apply,
+        ok,
+        true,
+        first_missing_signal,
+        repo,
+        branch,
+        source_dir,
+        Some(&source_sha_value),
+    )?;
+    println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
+    println!("ok={}", ok);
+    println!("changed=true");
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("source_sha={}", source_sha_value);
+    println!("receipt_dir={}", receipt_dir.display());
+    if ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal.to_string())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_arcadia_gui_run_receipt(
+    receipt_dir: &Path,
+    profile: &Profile,
+    apply: bool,
+    ok: bool,
+    changed: bool,
+    first_missing_signal: &str,
+    repo: &str,
+    branch: &str,
+    source_dir: &Path,
+    source_sha: Option<&str>,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join("run.json"),
+        &json!({
+            "schema": "harmonia.homeconsole_arcadia_gui_update.v1",
+            "ok": ok,
+            "changed": changed,
+            "mutation": apply,
+            "profile_id": profile.id,
+            "profile_family": profile.family,
+            "repo": repo,
+            "branch": branch,
+            "source_dir": source_dir,
+            "source_sha": source_sha,
+            "first_missing_signal": first_missing_signal,
+        }),
+    )
 }
