@@ -10,11 +10,6 @@
   "modules": [
     "identity",
     "system-packages",
-    "game-library",
-    "sync",
-    "desktop-appliance",
-    "keyman-runtime",
-    "pinned-artifacts",
-    "receipts"
+    "keyman-runtime"
   ]
 }
