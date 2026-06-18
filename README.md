@@ -18,6 +18,19 @@ It is not a Python updater and not a shell orchestration lane. Shell is allowed 
 - Installer-bundled technology: binary, config, state dirs, systemd service, systemd timer, and receipt roots.
 - HomeConsole and Arch Console are one profile family.
 
+## Repo-local command face
+
+```text
+./cli.py
+./cli.py build
+./cli.py install
+sudo ./cli.py install --apply
+./cli.py status
+sudo ./cli.py uninstall --apply
+```
+
+`./cli.py` is the forward-facing Pythonic installer doorway. It exists so the Harmonia repo can teach and perform its own build/install/uninstall path without a private external helper. External orchestration may call this CLI, but the install contract lives here.
+
 ## Scaffold command
 
 ```text
