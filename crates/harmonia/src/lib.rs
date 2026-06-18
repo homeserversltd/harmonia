@@ -378,4 +378,32 @@ mod tests {
         assert!(err.contains("harmonia-runtime"));
         assert!(err.contains("pinned-artifacts-runtime"));
     }
+
+    #[test]
+    fn tv_profile_is_intentionally_os_only() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
+        assert_eq!(profile.id, "tv");
+        assert_eq!(profile.family, "arch-tv");
+        assert_eq!(profile.modules, vec!["identity", "system-packages"]);
+        assert!(
+            !profile.modules.contains(&"arcadia-gui-runtime".to_string()),
+            "TV profile must not inherit HomeConsole product runtimes"
+        );
+        assert!(
+            !profile
+                .modules
+                .contains(&"homeconsole-sync-runtime".to_string()),
+            "TV profile must not inherit HomeConsole sync runtime"
+        );
+        assert!(
+            !profile.modules.contains(&"keyman-runtime".to_string()),
+            "TV profile must stay OS-only until an operator declares another owned component"
+        );
+        for module in &profile.modules {
+            let manifest =
+                load_module(&root.join("modules/tv").join(module).join("index.json")).unwrap();
+            validate_registered_module(&manifest).unwrap();
+        }
+    }
 }

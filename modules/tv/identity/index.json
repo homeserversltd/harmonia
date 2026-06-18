@@ -1,0 +1,14 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "identity",
+  "description": "Read TV body identity through the generic command primitive.",
+  "steps": [
+    {
+      "id": "uname",
+      "tool": "command",
+      "action": "run",
+      "command": "/usr/bin/uname",
+      "args": ["-a"]
+    }
+  ]
+}
