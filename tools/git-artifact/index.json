@@ -1,7 +1,7 @@
 {
   "description": "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.",
   "id": "git-artifact",
-  "quarry_sources": [
+  "source_references": [
     "website",
     "mkdocs",
     "permissions",

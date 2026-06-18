@@ -1,7 +1,7 @@
 {
   "description": "Service readiness and health-readback primitive, including HTTP and command checks.",
   "id": "health",
-  "quarry_sources": [
+  "source_references": [
     "filebrowser",
     "gogs",
     "navidrome",

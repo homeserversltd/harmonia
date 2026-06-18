@@ -1,7 +1,7 @@
 {
-  "description": "Python virtualenv preservation/update primitive for quarry compatibility surfaces; not a Harmonia authority lane.",
+  "description": "Python virtualenv preservation/update primitive for compatibility surfaces; not a Harmonia authority lane.",
   "id": "venv",
-  "quarry_sources": [
+  "source_references": [
     "venvs",
     "mkdocs",
     "linker"

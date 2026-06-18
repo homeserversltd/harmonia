@@ -1,7 +1,7 @@
 {
   "description": "Systemd unit install/enable/disable/start/stop/restart/status primitive.",
   "id": "systemd",
-  "quarry_sources": [
+  "source_references": [
     "forgejo",
     "gogs",
     "mkdocs",

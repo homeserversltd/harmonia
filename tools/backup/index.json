@@ -1,7 +1,7 @@
 {
   "description": "Backup/snapshot/preserve/restore primitive for mutable runtime state.",
   "id": "backup",
-  "quarry_sources": [
+  "source_references": [
     "*.backup modules",
     "gogs",
     "atuin",

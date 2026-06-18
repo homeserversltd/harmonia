@@ -1,7 +1,7 @@
 {
   "description": "Emergency one-shot hotfix primitive with explicit receipt and retirement path.",
   "id": "hotfix",
-  "quarry_sources": [
+  "source_references": [
     "hotfix"
   ],
   "schema": "harmonia.tool.v1",
