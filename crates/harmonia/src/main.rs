@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
+use std::time::Instant;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -154,6 +155,31 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             homeconsole_update(&profile, &receipt_dir, apply)
         }
+        Some("homeconsole-arcadia-check") => {
+            let path = args
+                .get(1)
+                .ok_or("homeconsole-arcadia-check requires <profile-index-json>")?;
+            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
+                PathBuf::from("/var/lib/harmonia/receipts/arcadia-check-latest")
+            });
+            let repo = value_arg_string(&args, "--repo")
+                .unwrap_or_else(|| "https://git.home.arpa/HOMESERVERSLTD/arcadia.git".to_string());
+            let branch = value_arg_string(&args, "--branch").unwrap_or_else(|| "main".to_string());
+            let current_sha_file = value_arg(&args, "--current-sha-file")
+                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/state/arcadia.sha"));
+            let upstream_sha_file = value_arg(&args, "--upstream-sha-file");
+            let insecure_tls = args.iter().any(|arg| arg == "--insecure-tls");
+            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            homeconsole_arcadia_check(
+                &profile,
+                &receipt_dir,
+                &repo,
+                &branch,
+                &current_sha_file,
+                upstream_sha_file.as_deref(),
+                insecure_tls,
+            )
+        }
         Some("homeconsole-arcadia-update") => {
             let path = args
                 .get(1)
@@ -167,6 +193,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let service = value_arg(&args, "--service")
                 .and_then(|p| p.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "arcadia.service".to_string());
+            let source_sha = value_arg_string(&args, "--source-sha");
+            let source_sha_file = value_arg(&args, "--source-sha-file")
+                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/state/arcadia.sha"));
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             homeconsole_arcadia_update(
@@ -176,6 +205,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 &install_bin,
                 &service,
                 apply,
+                source_sha.as_deref(),
+                &source_sha_file,
             )
         }
         _ => usage(),
@@ -214,7 +245,8 @@ fn usage() -> Result<(), String> {
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--module-root <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
-    println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha <sha>] [--source-sha-file <path>] [--receipt-dir <path>]");
     Ok(())
 }
 
@@ -226,6 +258,12 @@ fn value_arg(args: &[String], name: &str) -> Option<PathBuf> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| PathBuf::from(&pair[1]))
+}
+
+fn value_arg_string(args: &[String], name: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
 }
 
 fn default_module_root(profile_path: &Path) -> PathBuf {
@@ -612,6 +650,133 @@ fn exec_node_step(step: &Step) -> Result<StepOutcome, String> {
     })
 }
 
+fn homeconsole_arcadia_check(
+    profile: &Profile,
+    receipt_dir: &Path,
+    repo: &str,
+    branch: &str,
+    current_sha_file: &Path,
+    upstream_sha_file: Option<&Path>,
+    insecure_tls: bool,
+) -> Result<(), String> {
+    if profile.id != "homeconsole" || profile.family != "arch-console" {
+        return Err(format!(
+            "homeconsole-arcadia-check requires homeconsole/arch-console profile, got {}/{}",
+            profile.id, profile.family
+        ));
+    }
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let current_sha = fs::read_to_string(current_sha_file)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let refspec = format!("refs/heads/{branch}");
+    let file_upstream = upstream_sha_file
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| is_hex_sha(s));
+    let remote = if file_upstream.is_some() {
+        CmdResult {
+            ok: true,
+            code: 0,
+            stdout: file_upstream.clone().unwrap_or_default(),
+            stderr: String::new(),
+        }
+    } else {
+        git_ls_remote(repo, &refspec, insecure_tls)
+    };
+    let upstream_sha = if let Some(sha) = file_upstream {
+        Some(sha)
+    } else {
+        remote
+            .stdout
+            .split_whitespace()
+            .next()
+            .map(|s| s.to_string())
+            .filter(|s| is_hex_sha(s))
+    };
+    let ok = remote.ok && upstream_sha.is_some() && current_sha.is_some();
+    let first_missing_signal = if !remote.ok {
+        "upstream-sha-unreadable"
+    } else if upstream_sha.is_none() {
+        "upstream-sha-missing"
+    } else if current_sha.is_none() {
+        "current-sha-missing"
+    } else {
+        "none"
+    };
+    let update_available = match (&current_sha, &upstream_sha) {
+        (Some(current), Some(upstream)) => current != upstream,
+        _ => false,
+    };
+    let elapsed_ms = started.elapsed().as_millis();
+    write_command_receipt(receipt_dir, "arcadia-upstream-sha", &remote)?;
+    write_json(
+        &receipt_dir.join("run.json"),
+        &json!({
+            "schema": "harmonia.arcadia_fast_check.v1",
+            "ok": ok,
+            "mutation": false,
+            "profile_id": profile.id,
+            "profile_family": profile.family,
+            "repo": repo,
+            "branch": branch,
+            "current_sha_file": current_sha_file,
+            "current_sha": current_sha,
+            "upstream_sha": upstream_sha,
+            "update_available": update_available,
+            "first_missing_signal": first_missing_signal,
+            "elapsed_ms": elapsed_ms,
+        }),
+    )?;
+    println!("schema=harmonia.arcadia_fast_check.v1");
+    println!("ok={}", ok);
+    println!("update_available={}", update_available);
+    println!(
+        "current_sha={}",
+        current_sha.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "upstream_sha={}",
+        upstream_sha.as_deref().unwrap_or("unknown")
+    );
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("elapsed_ms={}", elapsed_ms);
+    println!("receipt_dir={}", receipt_dir.display());
+    if ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal.to_string())
+    }
+}
+
+fn git_ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> CmdResult {
+    let mut cmd = Command::new("/usr/bin/git");
+    if insecure_tls {
+        cmd.arg("-c").arg("http.sslVerify=false");
+    }
+    cmd.arg("ls-remote").arg(repo).arg(refspec);
+    match cmd.output() {
+        Ok(output) => CmdResult {
+            ok: output.status.success(),
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        },
+        Err(err) => CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: err.to_string(),
+        },
+    }
+}
+
+fn is_hex_sha(s: &str) -> bool {
+    s.len() >= 7 && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn homeconsole_arcadia_update(
     profile: &Profile,
     receipt_dir: &Path,
@@ -619,6 +784,8 @@ fn homeconsole_arcadia_update(
     install_bin: &Path,
     service: &str,
     apply: bool,
+    source_sha: Option<&str>,
+    source_sha_file: &Path,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.family != "arch-console" {
         return Err(format!(
@@ -674,6 +841,19 @@ fn homeconsole_arcadia_update(
             true,
             "Arcadia artifact installed",
         )?;
+        if let Some(source_sha) = source_sha {
+            if let Some(parent) = source_sha_file.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(source_sha_file, format!("{}\n", source_sha.trim()))
+                .map_err(|e| format!("source-sha-write-failed: {e}"))?;
+            event(
+                &mut events,
+                "source-sha-recorded",
+                true,
+                "Arcadia source SHA recorded",
+            )?;
+        }
         let daemon_reload = command_capture("/usr/bin/systemctl", &["daemon-reload"]);
         write_command_receipt(receipt_dir, "arcadia-daemon-reload", &daemon_reload)?;
         if !daemon_reload.ok {
