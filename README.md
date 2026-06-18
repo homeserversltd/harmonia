@@ -1,6 +1,6 @@
 # Harmonia
 
-Harmonia is the Rust-only Chrysalis update suite/toolchain for HOMESERVER bodies.
+Harmonia is a Rust update manager and appliance-profile execution engine for HOMESERVER bodies.
 
 It is not a Python updater and not a shell orchestration lane. Shell is allowed only as a bootstrap doorway. Harmonia owns the update covenant in Rust: identity selection, profile graph resolution, staged execution, reusable tools, promotion, receipts, and installer integration.
 
@@ -9,7 +9,7 @@ It is not a Python updater and not a shell orchestration lane. Shell is allowed 
 - One public update organism.
 - One possessed identity/profile per installed body.
 - Ordered profile spines instead of ambient discovery.
-- Reusable Rust tools packed/called by profiles the same way Chrysalis deployables call Chrysalis tools.
+- Reusable Rust tools packed/called by profiles through Harmonia's module engine.
 - No false green: every failed stage becomes a nonzero process exit and a receipt with `ok=false`.
 - Atomic staging and promotion before mutation of live paths.
 - Central run receipts: `events.jsonl`, `run.json`, and module/tool matrix.

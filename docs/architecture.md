@@ -1,14 +1,14 @@
 # Harmonia architecture
 
-Harmonia is a Rust Chrysalis dedicated to updates.
+Harmonia is a Rust update manager and appliance-profile execution engine.
 
 ## Concept mapping
 
-- Chrysalis tool -> Harmonia Rust tool.
-- Deployable module need -> profile module declares the tool it needs.
-- Chrysalis phase spine -> Harmonia profile spine.
-- Central Chrysalis logger -> Harmonia run ledger.
-- Module pulsation -> Harmonia `pulse-tool` / `plan-run` tranche.
+- Harmonia tool: reusable Rust capability invoked by profiles.
+- Profile module need: profile module declares the tool it needs.
+- Harmonia profile spine: ordered modules for one installed body identity.
+- Harmonia run ledger: `run.json`, `events.jsonl`, and per-step receipts.
+- Harmonia tranche: a named command that checks, stages, promotes, or proves a profile transition.
 
 ## Runtime ladder
 
@@ -23,7 +23,7 @@ Harmonia is a Rust Chrysalis dedicated to updates.
 
 ## First profiles
 
-- `homeserver`: mines current homeserver updater quarry and replaces it with receipt-backed Rust tools.
+- `homeserver`: replaces legacy updater behavior with receipt-backed Rust tools.
 - `homeconsole`: HomeConsole and Arch Console as one profile family.
 - `tv`: appliance update profile for TV bodies.
 

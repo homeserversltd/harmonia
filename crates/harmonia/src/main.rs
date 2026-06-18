@@ -278,7 +278,7 @@ fn explain() -> Result<(), String> {
     println!("ok=true");
     println!("name=harmonia");
     println!("version={}", VERSION);
-    println!("covenant=Rust-only Chrysalis update suite/toolchain");
+    println!("covenant=Rust update manager and appliance-profile execution engine");
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");
     println!("profiles=homeserver,homeconsole,tv");
