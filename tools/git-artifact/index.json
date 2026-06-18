@@ -1,1 +1,14 @@
-{"schema":"harmonia.tool.v1","id":"git-artifact","description":"Git branch/tag/artifact fetch primitive."}
+{
+  "description": "Git branch/tag/artifact fetch primitive for source and release payloads.",
+  "id": "git-artifact",
+  "quarry_sources": [
+    "website",
+    "mkdocs",
+    "permissions",
+    "keyman",
+    "sbin",
+    "vault"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

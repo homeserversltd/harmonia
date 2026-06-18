@@ -1,13 +1,15 @@
 {
-  "description": "Systemd unit install/enable/disable/start/stop/restart/status primitive.",
-  "id": "systemd",
+  "description": "Version detection/compare/channel selection primitive.",
+  "id": "version",
   "quarry_sources": [
+    "filebrowser",
     "forgejo",
     "gogs",
     "mkdocs",
     "navidrome",
     "vaultwarden",
-    "adblock"
+    "ohmyposh",
+    "zoxide"
   ],
   "schema": "harmonia.tool.v1",
   "status": "contract"

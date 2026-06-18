@@ -1,0 +1,12 @@
+{
+  "description": "Archive unpack/pack primitive for tar/zip release payloads.",
+  "id": "archive",
+  "quarry_sources": [
+    "gogs",
+    "filebrowser",
+    "navidrome",
+    "vaultwarden"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Service readiness and health-readback primitive, including HTTP and command checks.",
+  "id": "health",
+  "quarry_sources": [
+    "filebrowser",
+    "gogs",
+    "navidrome",
+    "vaultwarden",
+    "arcadia"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

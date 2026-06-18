@@ -1,0 +1,15 @@
+{
+  "description": "HTTP download/version discovery primitive with bounded network calls and receipt evidence.",
+  "id": "download",
+  "quarry_sources": [
+    "adblock",
+    "filebrowser",
+    "forgejo",
+    "gogs",
+    "navidrome",
+    "vaultwarden",
+    "zoxide"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

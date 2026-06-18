@@ -1,1 +1,13 @@
-{"schema":"harmonia.tool.v1","id":"package","description":"OS package update/check/install primitive."}
+{
+  "description": "OS package check/update/install primitive; supports pacman first and later apt/dnf adapters.",
+  "id": "package",
+  "quarry_sources": [
+    "os",
+    "hotfix",
+    "migrations",
+    "adblock",
+    "all subprocess modules"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

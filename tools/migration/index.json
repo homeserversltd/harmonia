@@ -1,0 +1,9 @@
+{
+  "description": "Ordered idempotent migration primitive with applied-state receipts.",
+  "id": "migration",
+  "quarry_sources": [
+    "migrations"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

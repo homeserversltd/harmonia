@@ -7,6 +7,30 @@ use std::process::{self, Command};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const TOOLBELT: &[(&str, &str)] = &[
+    ("archive", "Archive unpack/pack primitive for tar/zip release payloads."),
+    ("artifact", "Artifact install/promote/rollback primitive for binaries and release payloads."),
+    ("backup", "Backup/snapshot/preserve/restore primitive for mutable runtime state."),
+    ("command", "Host command execution primitive with cwd/env/timeout/exit capture; every subprocess produces a command receipt."),
+    ("config", "Typed config/JSON/TOML/YAML read/write/validate primitive."),
+    ("cron-timer", "Cron/systemd timer install/enable/status primitive."),
+    ("download", "HTTP download/version discovery primitive with bounded network calls and receipt evidence."),
+    ("files", "Staged file/template/directory/symlink primitive with atomic promotion."),
+    ("git-artifact", "Git branch/tag/artifact fetch primitive for source and release payloads."),
+    ("health", "Service readiness and health-readback primitive, including HTTP and command checks."),
+    ("hotfix", "Emergency one-shot hotfix primitive with explicit receipt and retirement path."),
+    ("interactable", "Operator-triggered action primitive for manual buttons that still need receipts."),
+    ("migration", "Ordered idempotent migration primitive with applied-state receipts."),
+    ("node-build", "Node/npm/pnpm build primitive for web bodies."),
+    ("package", "OS package check/update/install primitive; supports pacman first and later apt/dnf adapters."),
+    ("permissions", "Owner/group/mode/ACL/sudoers policy primitive with validation before promotion."),
+    ("receipt", "Central receipt writer and run ledger primitive."),
+    ("rust-build", "Cargo build/test/install primitive for Rust bodies such as Arcadia and Harmonia."),
+    ("systemd", "Systemd unit install/enable/disable/start/stop/restart/status primitive."),
+    ("venv", "Python virtualenv preservation/update primitive for quarry compatibility surfaces; not a Harmonia authority lane."),
+    ("version", "Version detection/compare/channel selection primitive."),
+];
+
 #[derive(Debug, Clone)]
 struct Profile {
     id: String,
@@ -32,6 +56,7 @@ fn main() {
 fn run(args: Vec<String>) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("explain") => explain(),
+        Some("toolbelt") | Some("list-tools") => toolbelt(),
         Some("inspect-profile") => {
             let path = args
                 .get(1)
@@ -98,6 +123,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
+fn toolbelt() -> Result<(), String> {
+    println!("schema=harmonia.toolbelt.v1");
+    println!("ok=true");
+    println!("tool_count={}", TOOLBELT.len());
+    for (name, description) in TOOLBELT {
+        println!("tool={} description={}", name, description);
+    }
+    Ok(())
+}
+
 fn explain() -> Result<(), String> {
     println!("schema=harmonia.explain.v1");
     println!("ok=true");
@@ -116,6 +151,7 @@ fn usage() -> Result<(), String> {
     println!("usage:");
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
+    println!("  harmonia toolbelt");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--receipt-dir <path>]");

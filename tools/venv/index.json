@@ -1,0 +1,11 @@
+{
+  "description": "Python virtualenv preservation/update primitive for quarry compatibility surfaces; not a Harmonia authority lane.",
+  "id": "venv",
+  "quarry_sources": [
+    "venvs",
+    "mkdocs",
+    "linker"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

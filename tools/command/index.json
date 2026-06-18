@@ -1,0 +1,9 @@
+{
+  "description": "Host command execution primitive with cwd/env/timeout/exit capture; every subprocess produces a command receipt.",
+  "id": "command",
+  "quarry_sources": [
+    "all subprocess modules"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

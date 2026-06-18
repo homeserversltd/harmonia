@@ -1,0 +1,12 @@
+{
+  "description": "Backup/snapshot/preserve/restore primitive for mutable runtime state.",
+  "id": "backup",
+  "quarry_sources": [
+    "*.backup modules",
+    "gogs",
+    "atuin",
+    "filebrowser"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

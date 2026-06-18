@@ -1,0 +1,10 @@
+{
+  "description": "Typed config/JSON/TOML/YAML read/write/validate primitive.",
+  "id": "config",
+  "quarry_sources": [
+    "all module index.json files",
+    "index.py schema loader"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Cargo build/test/install primitive for Rust bodies such as Arcadia and Harmonia.",
+  "id": "rust-build",
+  "quarry_sources": [
+    "arcadia",
+    "harmonia future self-update"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

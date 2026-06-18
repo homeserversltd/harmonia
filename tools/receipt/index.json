@@ -1,1 +1,10 @@
-{"schema":"harmonia.tool.v1","id":"receipt","description":"Central receipt writer and run ledger primitive."}
+{
+  "description": "Central receipt writer and run ledger primitive.",
+  "id": "receipt",
+  "quarry_sources": [
+    "all modules",
+    "Harmonia run ledger"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}

@@ -1,0 +1,15 @@
+{
+  "description": "Artifact install/promote/rollback primitive for binaries and release payloads.",
+  "id": "artifact",
+  "quarry_sources": [
+    "filebrowser",
+    "forgejo",
+    "gogs",
+    "navidrome",
+    "vaultwarden",
+    "ohmyposh",
+    "arcadia"
+  ],
+  "schema": "harmonia.tool.v1",
+  "status": "contract"
+}
