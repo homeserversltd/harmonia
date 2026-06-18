@@ -1,0 +1,13 @@
+{
+  "schema": "harmonia.profile.v1",
+  "id": "tv",
+  "family": "tv-appliance",
+  "description": "TV appliance update profile.",
+  "modules": [
+    "identity",
+    "system-packages",
+    "desktop-appliance",
+    "media-controls",
+    "receipts"
+  ]
+}

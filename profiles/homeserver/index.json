@@ -1,0 +1,13 @@
+{
+  "schema": "harmonia.profile.v1",
+  "id": "homeserver",
+  "family": "homeserver",
+  "description": "HOMESERVER update profile mined from the current updater quarry and replaced by Rust tools.",
+  "modules": [
+    "identity",
+    "system-packages",
+    "service-components",
+    "web-body",
+    "receipts"
+  ]
+}
