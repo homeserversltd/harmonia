@@ -328,6 +328,7 @@ mod tests {
                 "system-packages",
                 "keyman-runtime",
                 "homeconsole-sync-runtime",
+                "arcadia-gui-runtime",
             ]
         );
         for module in &profile.modules {

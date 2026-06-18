@@ -11,6 +11,7 @@
     "identity",
     "system-packages",
     "keyman-runtime",
-    "homeconsole-sync-runtime"
+    "homeconsole-sync-runtime",
+    "arcadia-gui-runtime"
   ]
 }

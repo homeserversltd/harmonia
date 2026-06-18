@@ -1,10 +1,11 @@
 use crate::*;
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 pub(crate) fn homeconsole_update(
     profile: &Profile,
+    module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<(), String> {
@@ -15,67 +16,7 @@ pub(crate) fn homeconsole_update(
         ));
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
-    event(&mut events, "run-start", true, "homeconsole update started")?;
-    let identity = command_capture("/usr/bin/uname", &["-a"]);
-    write_command_receipt(receipt_dir, "identity", &identity)?;
-    event(&mut events, "identity", identity.ok, "uname identity read")?;
-    let pacman_present = Path::new("/usr/bin/pacman").exists();
-    if !pacman_present {
-        write_run_receipt(receipt_dir, profile, apply, false, "pacman-missing")?;
-        return Err("pacman-missing".to_string());
-    }
-    let games_active = command_capture(
-        "/usr/bin/pgrep",
-        &["-x", "retroarch|dolphin-emu|pcsx2|PPSSPPQt|dosbox"],
-    );
-    let game_running = games_active.ok;
-    write_command_receipt(receipt_dir, "game-activity", &games_active)?;
-    if apply && game_running {
-        event(&mut events, "mutation-skipped", true, "game process active")?;
-        write_run_receipt(receipt_dir, profile, apply, true, "skipped-game-active")?;
-        println!("schema=harmonia.homeconsole_update.v1");
-        println!("ok=true");
-        println!("changed=false");
-        println!("skipped=game-active");
-        println!("receipt_dir={}", receipt_dir.display());
-        return Ok(());
-    }
-    let pacman_check = command_capture("/usr/bin/pacman", &["-Qu"]);
-    write_command_receipt(receipt_dir, "pacman-check", &pacman_check)?;
-    event(&mut events, "pacman-check", true, "pacman -Qu completed")?;
-    let mut ok = true;
-    let mut changed = false;
-    let mut first_missing_signal = "none".to_string();
-    if apply {
-        let pacman_update = command_capture("/usr/bin/pacman", &["-Syu", "--noconfirm"]);
-        changed = pacman_update.ok && pacman_stdout_indicates_change(&pacman_update.stdout);
-        ok = pacman_update.ok;
-        if !ok {
-            first_missing_signal = "pacman-update-failed".to_string();
-        }
-        write_command_receipt(receipt_dir, "pacman-update", &pacman_update)?;
-        event(
-            &mut events,
-            "pacman-update",
-            pacman_update.ok,
-            "pacman -Syu --noconfirm",
-        )?;
-    }
-    let appliance = command_capture("/usr/bin/systemctl", &["is-system-running"]);
-    write_command_receipt(receipt_dir, "systemd-state", &appliance)?;
-    event(&mut events, "systemd-state", true, "systemd state read")?;
-    write_run_receipt(receipt_dir, profile, apply, ok, &first_missing_signal)?;
-    println!("schema=harmonia.homeconsole_update.v1");
-    println!("ok={}", ok);
-    println!("changed={}", changed);
-    println!("first_missing_signal={}", first_missing_signal);
-    println!("receipt_dir={}", receipt_dir.display());
-    if ok {
-        Ok(())
-    } else {
-        Err(first_missing_signal)
-    }
+    run_profile_engine(profile, module_root, receipt_dir, apply)
 }
 
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {

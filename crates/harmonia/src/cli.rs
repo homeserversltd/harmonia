@@ -92,7 +92,9 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/latest"));
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            homeconsole_update(&profile, &receipt_dir, apply)
+            let module_root = value_arg(&args, "--module-root")
+                .unwrap_or_else(|| default_module_root(Path::new(path)));
+            homeconsole_update(&profile, &module_root, &receipt_dir, apply)
         }
         Some("homeconsole-keyman-update") => {
             let path = args
@@ -250,7 +252,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia pinned-artifacts check <profiles/<id>/index.json> [--lock <path>] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts nudge <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts bless <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--install-path <path>] [--apply] [--receipt-dir <path>]");
-    println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--module-root <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> [--module <modules/homeconsole/sync/index.json>] [--provider-env <path>] [--adapter-command <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");

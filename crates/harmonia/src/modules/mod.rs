@@ -2,6 +2,7 @@ use crate::*;
 use std::fs;
 use std::path::Path;
 
+mod arcadia_gui_runtime;
 mod homeconsole_sync_runtime;
 mod identity;
 mod keyman_runtime;
@@ -56,6 +57,7 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         system_packages::ID => system_packages::validate(module),
         keyman_runtime::ID => keyman_runtime::validate(module),
         homeconsole_sync_runtime::ID => homeconsole_sync_runtime::validate(module),
+        arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
         other => Err(format!("module-unregistered-{other}")),
     }
 }
