@@ -291,7 +291,12 @@ mod tests {
         let profile = load_profile(&root.join("profiles/homeconsole/index.json")).unwrap();
         assert_eq!(
             profile.modules,
-            vec!["identity", "system-packages", "keyman-runtime"]
+            vec![
+                "identity",
+                "system-packages",
+                "keyman-runtime",
+                "homeconsole-sync-runtime",
+            ]
         );
         for module in &profile.modules {
             let manifest = load_module(

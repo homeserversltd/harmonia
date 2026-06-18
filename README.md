@@ -159,3 +159,7 @@ Harmonia is intentionally small at the boundary:
 6. exit clearly.
 
 That is the product: reliable appliance updates with visible proof.
+
+## HomeConsole Sync Runtime
+
+Harmonia keeps `git@git.home.arpa:HOMESERVERSLTD/homeconsole-sync.git` current at `/opt/homeconsole-sync/source` and installs `/usr/local/bin/homeconsole-sync`; the `homeconsole-sync` transition invokes that runtime and records redacted receipts.

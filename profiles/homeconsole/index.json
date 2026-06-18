@@ -10,6 +10,7 @@
   "modules": [
     "identity",
     "system-packages",
-    "keyman-runtime"
+    "keyman-runtime",
+    "homeconsole-sync-runtime"
   ]
 }
