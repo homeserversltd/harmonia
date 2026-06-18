@@ -4,6 +4,8 @@ use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
@@ -383,10 +385,7 @@ pub(crate) fn homeconsole_arcadia_gui_update(
         source_sha_file,
     )?;
 
-    let health = command_capture(
-        "/usr/bin/curl",
-        &["-fsS", "--max-time", "3", "http://127.0.0.1:8080/health"],
-    );
+    let health = arcadia_health_with_retry();
     write_command_receipt(receipt_dir, "arcadia-health", &health)?;
     let ok = health.ok;
     let first_missing_signal = if ok { "none" } else { "arcadia-health-failed" };
@@ -413,6 +412,24 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     } else {
         Err(first_missing_signal.to_string())
     }
+}
+
+fn arcadia_health_with_retry() -> CmdResult {
+    let mut last = command_capture(
+        "/usr/bin/curl",
+        &["-fsS", "--max-time", "3", "http://127.0.0.1:8080/health"],
+    );
+    for _ in 0..5 {
+        if last.ok {
+            return last;
+        }
+        thread::sleep(Duration::from_secs(1));
+        last = command_capture(
+            "/usr/bin/curl",
+            &["-fsS", "--max-time", "3", "http://127.0.0.1:8080/health"],
+        );
+    }
+    last
 }
 
 #[allow(clippy::too_many_arguments)]
