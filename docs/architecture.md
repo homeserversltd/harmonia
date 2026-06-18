@@ -31,6 +31,7 @@ This structure keeps public behavior easy to explain and easy to test. Configura
 3. Configuration JSON wires existing tools and modules; it does not create tools by itself.
 4. Each tool keeps singular purpose: one primitive, one receipt family, one unit-test seam.
 5. Profile modules compose tools; modules do not hide bespoke mutation logic behind manifest data.
+6. Placeholder acknowledgement modules are not valid Harmonia modules: no empty modules, no `ack` steps that only manufacture green, and no profile references to missing module trees.
 
 ## Runtime ladder
 

@@ -256,4 +256,70 @@ mod tests {
         assert_eq!(receipts[0].env_keys, vec!["STEAMGRIDDB_API_KEY"]);
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn generic_ack_pseudo_tools_do_not_turn_green() {
+        let step = Step {
+            id: "fake-contract".into(),
+            tool: "config".into(),
+            action: "ack".into(),
+            command: None,
+            args: vec![],
+            cwd: None,
+            service: None,
+            artifact: None,
+            install_bin: None,
+            url: None,
+            expected_contains: None,
+            repo: None,
+            path: None,
+            branch: None,
+            remote: None,
+            apply_only: false,
+        };
+        let receipt_dir =
+            std::env::temp_dir().join(format!("harmonia-no-pseudo-tool-{}", process::id()));
+        let outcome = execute_step(&step, &receipt_dir, false).unwrap();
+        assert!(!outcome.ok);
+        assert!(outcome.message.contains("unknown tool config"));
+        let _ = fs::remove_dir_all(receipt_dir);
+    }
+
+    #[test]
+    fn homeconsole_profile_contains_only_executable_run_profile_modules() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile = load_profile(&root.join("profiles/homeconsole/index.json")).unwrap();
+        assert_eq!(
+            profile.modules,
+            vec!["identity", "system-packages", "keyman-runtime"]
+        );
+        for module in &profile.modules {
+            let manifest = load_module(
+                &root
+                    .join("modules/homeconsole")
+                    .join(module)
+                    .join("index.json"),
+            )
+            .unwrap();
+            assert!(
+                !manifest.steps.is_empty(),
+                "profile module {module} must have executable steps"
+            );
+        }
+        for removed in [
+            "desktop-appliance",
+            "game-library",
+            "pinned-artifacts",
+            "receipts",
+        ] {
+            assert!(
+                !root
+                    .join("modules/homeconsole")
+                    .join(removed)
+                    .join("index.json")
+                    .exists(),
+                "{removed} placeholder module must stay obliterated"
+            );
+        }
+    }
 }

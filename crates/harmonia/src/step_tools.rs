@@ -35,16 +35,6 @@ pub(crate) fn execute_step(
         "health" => exec_health_step(step),
         "rust-build" => exec_cargo_step(step),
         "node-build" => exec_node_step(step),
-        "receipt" | "config" | "version" | "backup" | "files" | "permissions" | "download"
-        | "archive" | "cron-timer" | "migration" | "hotfix" | "interactable" | "venv" => {
-            Ok(StepOutcome {
-                ok: true,
-                changed: false,
-                skipped: true,
-                message: format!("{} contract acknowledged", step.tool),
-                command: None,
-            })
-        }
         other => Ok(StepOutcome {
             ok: false,
             changed: false,

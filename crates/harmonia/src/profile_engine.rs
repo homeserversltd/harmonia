@@ -61,6 +61,19 @@ pub(crate) fn run_profile_engine(
         };
         module_count += 1;
         event(&mut events, "module-start", true, &module.id)?;
+        if module.steps.is_empty() {
+            ok = false;
+            if first_missing_signal == "none" {
+                first_missing_signal = format!("module-empty-{module_id}");
+            }
+            event(
+                &mut events,
+                "module-empty",
+                false,
+                &format!("module {module_id} has no executable steps"),
+            )?;
+            continue;
+        }
         for step in &module.steps {
             step_count += 1;
             let step_dir = receipt_dir.join("steps").join(&module.id);
