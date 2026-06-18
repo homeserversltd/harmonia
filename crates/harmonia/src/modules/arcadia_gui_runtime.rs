@@ -16,6 +16,8 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
                 "homeconsole-arcadia-gui-update",
                 "/etc/harmonia/profiles/homeconsole/index.json",
                 "--apply",
+                "--repo",
+                "git@git.home.arpa:HOMESERVERSLTD/arcadia.git",
                 "--source-dir",
                 "/opt/arcadia/source",
                 "--receipt-dir",
