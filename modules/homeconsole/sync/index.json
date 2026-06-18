@@ -1,0 +1,46 @@
+{
+  "schema": "harmonia.homeconsole.sync.module.v1",
+  "id": "sync",
+  "description": "HomeConsole game-library sync capability governed by Harmonia. Arcadia may invoke the homeconsole-sync transition as its Sync button target.",
+  "adapter_command": "/usr/local/bin/arch-game-sync",
+  "adapter_args": [],
+  "provider_env": "/etc/arch-game-sync/providers.env",
+  "providers": [
+    {
+      "name": "steamgriddb",
+      "env_keys": [
+        "STEAMGRIDDB_API_KEY"
+      ],
+      "required": false
+    },
+    {
+      "name": "thegamesdb",
+      "env_keys": [
+        "THEGAMESDB_API_KEY",
+        "TGDB_API_KEY"
+      ],
+      "required": false
+    },
+    {
+      "name": "screenscraper",
+      "env_keys": [
+        "SCREENSCRAPER_USER",
+        "SCREENSCRAPER_PASSWORD"
+      ],
+      "required": false
+    }
+  ],
+  "shortcut_lanes": [
+    "steam-rom-manager",
+    "direct-vdf",
+    "boilr"
+  ],
+  "artwork_lanes": [
+    "cache-first",
+    "steamgriddb",
+    "thegamesdb",
+    "screenscraper",
+    "generated-fallback"
+  ],
+  "restart_policy": "adapter-owned"
+}

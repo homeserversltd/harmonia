@@ -25,3 +25,14 @@ cargo run -p harmonia -- plan-run profiles/homeconsole/index.json --receipt-dir 
 ```
 
 `plan-run` is intentionally non-mutating in this first scaffold. It proves the spine/read/receipt shape before any machine receives a live update action.
+
+## HomeConsole sync
+
+`homeconsole-sync` bottles game-library sync as a Harmonia transition. Arcadia owns the Sync button/API surface; Harmonia owns the appliance-local command, provider configuration readback, adapter invocation, and redacted receipts.
+
+```text
+cargo run -p harmonia -- homeconsole-sync profiles/homeconsole/index.json --receipt-dir target/homeconsole-sync-check
+cargo run -p harmonia -- homeconsole-sync profiles/homeconsole/index.json --apply --receipt-dir /var/lib/harmonia/receipts/homeconsole-sync-latest
+```
+
+The first module lives at `modules/homeconsole/sync/index.json`. It keeps sync inside Harmonia rather than a separate repo, wraps the proven `/usr/local/bin/arch-game-sync` singleton as the initial adapter, and reads optional provider credentials from `/etc/arch-game-sync/providers.env`. Receipts record provider names and missing env-key names only; secret values are never written.
