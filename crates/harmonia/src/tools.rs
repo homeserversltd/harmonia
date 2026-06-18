@@ -19,7 +19,7 @@ pub const TOOLBELT: &[ToolContract] = &[
     ToolContract::new("cron-timer", "Cron/systemd timer install/enable/status primitive."),
     ToolContract::new("download", "HTTP download/version discovery primitive with bounded network calls and receipt evidence."),
     ToolContract::new("files", "Staged file/template/directory/symlink primitive with atomic promotion."),
-    ToolContract::new("git-artifact", "Git branch/tag/artifact fetch primitive for source and release payloads."),
+    ToolContract::new("git-artifact", "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules."),
     ToolContract::new("health", "Service readiness and health-readback primitive, including HTTP and command checks."),
     ToolContract::new("hotfix", "Emergency one-shot hotfix primitive with explicit receipt and retirement path."),
     ToolContract::new("interactable", "Operator-triggered action primitive for manual buttons that still need receipts."),
@@ -131,3 +131,5 @@ mod tests {
         }
     }
 }
+
+pub mod git_artifact;
