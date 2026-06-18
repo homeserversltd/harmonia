@@ -21,10 +21,8 @@ Example shape:
   "modules": [
     "identity",
     "system-packages",
-    "game-library",
-    "desktop-appliance",
-    "pinned-artifacts",
-    "receipts"
+    "keyman-runtime",
+    "homeconsole-sync-runtime"
   ]
 }
 ```
@@ -32,16 +30,15 @@ Example shape:
 ## How profiles run
 
 ```text
-selected profile -> ordered module list -> module manifests -> toolbelt execution -> receipts
+selected profile -> ordered module list -> Rust module registry/validation -> module manifests -> toolbelt execution -> receipts
 ```
 
-Profiles provide order and scope. Modules provide step intent. Tools perform the work.
+Profiles provide order and scope. Modules are code-owned capability boundaries registered and validated in Rust. Module manifests declare ordered tool calls and inputs for registered modules. Tools perform the work.
 
 ## Current profile families
 
-- `homeconsole` / `arch-console`: appliance console updates, package state, pinned artifacts, game-library sync, and local UI/runtime health.
-- `homeserver`: server update profile implemented through reusable tools.
-- `tv`: appliance update profile for TV-style systems.
+- `homeconsole` / `arch-console`: appliance console updates through code-owned modules for identity, system packages, Keyman runtime possession, and HomeConsole Sync runtime installation.
+- Future families such as `homeserver` and `tv` must enter with Rust-registered module boundaries before profile manifests name them.
 
 ## Safety model
 
@@ -50,5 +47,6 @@ Profiles should be explicit and boring:
 - one machine identity;
 - one ordered module spine;
 - no hidden runtime discovery;
+- no JSON-only module authority;
 - non-mutating checks available before `--apply`;
 - receipts written for every run.
