@@ -1,0 +1,12 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "receipts",
+  "description": "Receipt ledger contract.",
+  "steps": [
+    {
+      "id": "receipt-ledger",
+      "tool": "receipt",
+      "action": "ack"
+    }
+  ]
+}

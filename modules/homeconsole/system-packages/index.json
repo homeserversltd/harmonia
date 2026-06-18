@@ -1,0 +1,18 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "system-packages",
+  "description": "HomeConsole package manager check/update through package primitive.",
+  "steps": [
+    {
+      "id": "pacman-check",
+      "tool": "package",
+      "action": "check"
+    },
+    {
+      "id": "pacman-update",
+      "tool": "package",
+      "action": "update",
+      "apply_only": true
+    }
+  ]
+}

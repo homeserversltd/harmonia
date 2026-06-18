@@ -1,0 +1,12 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "desktop-appliance",
+  "description": "Desktop appliance service/status contract.",
+  "steps": [
+    {
+      "id": "appliance-contract",
+      "tool": "config",
+      "action": "ack"
+    }
+  ]
+}

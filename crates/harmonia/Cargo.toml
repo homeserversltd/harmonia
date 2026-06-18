@@ -5,3 +5,5 @@ edition = "2021"
 description = "Rust-only Chrysalis update suite/toolchain"
 license = "AGPL-3.0-or-later"
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

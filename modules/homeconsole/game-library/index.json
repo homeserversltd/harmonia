@@ -1,0 +1,13 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "game-library",
+  "description": "Game runtime guard surface.",
+  "steps": [
+    {
+      "id": "game-process-check",
+      "tool": "command",
+      "action": "run",
+      "command": "/usr/bin/true"
+    }
+  ]
+}
