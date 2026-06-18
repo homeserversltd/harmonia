@@ -109,12 +109,14 @@ cargo run -p harmonia -- run-profile profiles/homeconsole/index.json \
 The HomeConsole profile demonstrates the appliance pattern:
 
 ```text
-identity          prove the machine context
-system-packages   check/update Arch packages
-game-library      protect active play sessions and sync game metadata
-desktop-appliance manage the local console UI/runtime posture
-pinned-artifacts  preserve known-good critical binaries
-receipts          summarize run evidence
+identity                  prove the machine context
+system-packages           check/update Arch packages
+harmonia-runtime          prove the installed Harmonia binary and profile are possessed
+keyman-runtime            keep the Keyman source/runtime body possessed
+homeconsole-sync-runtime  keep the standalone sync runtime current and installed
+rust-build-toolchain      maintain the Rust toolchain needed for source-built runtimes
+arcadia-gui-runtime       sync, build, promote, restart, and health-prove Arcadia GUI
+pinned-artifacts-runtime  check blessed known-good artifacts against the lock
 ```
 
 A full update command on an installed machine looks like this:

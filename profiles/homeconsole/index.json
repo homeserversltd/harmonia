@@ -10,9 +10,11 @@
   "modules": [
     "identity",
     "system-packages",
+    "harmonia-runtime",
     "keyman-runtime",
     "homeconsole-sync-runtime",
     "rust-build-toolchain",
-    "arcadia-gui-runtime"
+    "arcadia-gui-runtime",
+    "pinned-artifacts-runtime"
   ]
 }

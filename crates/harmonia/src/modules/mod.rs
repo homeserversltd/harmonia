@@ -3,9 +3,11 @@ use std::fs;
 use std::path::Path;
 
 mod arcadia_gui_runtime;
+mod harmonia_runtime;
 mod homeconsole_sync_runtime;
 mod identity;
 mod keyman_runtime;
+mod pinned_artifacts_runtime;
 mod rust_build_toolchain;
 mod system_packages;
 
@@ -56,10 +58,12 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
     match module.id.as_str() {
         identity::ID => identity::validate(module),
         system_packages::ID => system_packages::validate(module),
+        harmonia_runtime::ID => harmonia_runtime::validate(module),
         keyman_runtime::ID => keyman_runtime::validate(module),
         homeconsole_sync_runtime::ID => homeconsole_sync_runtime::validate(module),
         rust_build_toolchain::ID => rust_build_toolchain::validate(module),
         arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
+        pinned_artifacts_runtime::ID => pinned_artifacts_runtime::validate(module),
         other => Err(format!("module-unregistered-{other}")),
     }
 }
