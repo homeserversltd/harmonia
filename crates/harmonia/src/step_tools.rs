@@ -225,170 +225,29 @@ pub(crate) fn exec_git_artifact_step(step: &Step, apply: bool) -> Result<StepOut
             .as_deref()
             .ok_or_else(|| format!("step {} missing path", step.id))?,
     );
-    let branch = step.branch.as_deref().unwrap_or("main");
-    let remote = step.remote.as_deref().unwrap_or("origin");
-    let repo = step.repo.as_deref();
-
-    if !apply {
-        let present = path.join(".git").exists();
-        let result = if present {
-            command_capture_with_cwd("/usr/bin/git", &["status", "--short"], path.to_str())
-        } else {
-            CmdResult {
-                ok: true,
-                code: 0,
-                stdout: format!("planned clone/update path={}", path.display()),
-                stderr: String::new(),
-            }
-        };
-        return Ok(StepOutcome {
-            ok: result.ok,
-            changed: false,
-            skipped: false,
-            message: format!("git-artifact planned {}", path.display()),
-            command: Some(result),
-        });
-    }
-
-    let result = sync_git_repo(repo, &path, remote, branch);
-    let changed = result.ok && git_sync_stdout_changed(&result.stdout);
+    let request = tools::git_artifact::Request::new(
+        step.repo.clone(),
+        path,
+        step.branch.clone().unwrap_or_else(|| "main".to_string()),
+        step.remote.clone().unwrap_or_else(|| "origin".to_string()),
+    );
+    let outcome = if apply {
+        tools::git_artifact::apply(&request)
+    } else {
+        tools::git_artifact::plan(&request)
+    };
     Ok(StepOutcome {
-        ok: result.ok,
-        changed,
+        ok: outcome.ok,
+        changed: outcome.changed,
         skipped: false,
-        message: format!("git-artifact sync {}", path.display()),
-        command: Some(result),
+        message: outcome.message,
+        command: Some(CmdResult {
+            ok: outcome.command.ok,
+            code: outcome.command.code,
+            stdout: outcome.command.stdout,
+            stderr: outcome.command.stderr,
+        }),
     })
-}
-
-pub(crate) fn sync_git_repo(
-    repo: Option<&str>,
-    path: &Path,
-    remote: &str,
-    branch: &str,
-) -> CmdResult {
-    let mut transcript = Vec::new();
-    if !path.join(".git").exists() {
-        let Some(repo) = repo else {
-            return CmdResult {
-                ok: false,
-                code: 2,
-                stdout: String::new(),
-                stderr: format!(
-                    "repo missing and no clone URL supplied for {}",
-                    path.display()
-                ),
-            };
-        };
-        if let Some(parent) = path.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                return CmdResult {
-                    ok: false,
-                    code: 2,
-                    stdout: String::new(),
-                    stderr: format!("create parent failed {}: {err}", parent.display()),
-                };
-            }
-        }
-        let clone = command_capture(
-            "/usr/bin/git",
-            &[
-                "clone",
-                "--branch",
-                branch,
-                repo,
-                path.to_string_lossy().as_ref(),
-            ],
-        );
-        transcript.push(format!("clone exit={} ok={}", clone.code, clone.ok));
-        if !clone.stdout.is_empty() {
-            transcript.push(clone.stdout.clone());
-        }
-        if !clone.stderr.is_empty() {
-            transcript.push(clone.stderr.clone());
-        }
-        if !clone.ok {
-            return CmdResult {
-                ok: false,
-                code: clone.code,
-                stdout: transcript.join("\n"),
-                stderr: clone.stderr,
-            };
-        }
-        return CmdResult {
-            ok: true,
-            code: 0,
-            stdout: format!("changed=true\n{}", transcript.join("\n")),
-            stderr: String::new(),
-        };
-    }
-
-    let cwd = path.to_str();
-    let before = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
-    let dirty = command_capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], cwd);
-    if !dirty.ok {
-        return dirty;
-    }
-    if !dirty.stdout.trim().is_empty() {
-        return CmdResult {
-            ok: false,
-            code: 3,
-            stdout: dirty.stdout,
-            stderr: "working tree has local modifications; refusing repo sync".to_string(),
-        };
-    }
-    let fetch = command_capture_with_cwd("/usr/bin/git", &["fetch", remote, branch], cwd);
-    transcript.push(format!("fetch exit={} ok={}", fetch.code, fetch.ok));
-    if !fetch.ok {
-        return CmdResult {
-            ok: false,
-            code: fetch.code,
-            stdout: transcript.join("\n"),
-            stderr: fetch.stderr,
-        };
-    }
-    let checkout = command_capture_with_cwd("/usr/bin/git", &["checkout", branch], cwd);
-    transcript.push(format!(
-        "checkout exit={} ok={}",
-        checkout.code, checkout.ok
-    ));
-    if !checkout.ok {
-        return CmdResult {
-            ok: false,
-            code: checkout.code,
-            stdout: transcript.join("\n"),
-            stderr: checkout.stderr,
-        };
-    }
-    let pull_ref = format!("{remote}/{branch}");
-    let merge = command_capture_with_cwd("/usr/bin/git", &["merge", "--ff-only", &pull_ref], cwd);
-    transcript.push(format!("merge_ff exit={} ok={}", merge.code, merge.ok));
-    if !merge.stdout.is_empty() {
-        transcript.push(merge.stdout.clone());
-    }
-    if !merge.ok {
-        return CmdResult {
-            ok: false,
-            code: merge.code,
-            stdout: transcript.join("\n"),
-            stderr: merge.stderr,
-        };
-    }
-    let after = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
-    let changed = before.stdout.trim() != after.stdout.trim();
-    transcript.push(format!("before={}", before.stdout.trim()));
-    transcript.push(format!("after={}", after.stdout.trim()));
-    transcript.push(format!("changed={changed}"));
-    CmdResult {
-        ok: true,
-        code: 0,
-        stdout: transcript.join("\n"),
-        stderr: String::new(),
-    }
-}
-
-pub(crate) fn git_sync_stdout_changed(stdout: &str) -> bool {
-    stdout.lines().any(|line| line.trim() == "changed=true")
 }
 
 pub(crate) fn exec_health_step(step: &Step) -> Result<StepOutcome, String> {

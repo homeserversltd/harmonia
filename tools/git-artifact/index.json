@@ -1,5 +1,5 @@
 {
-  "description": "Git branch/tag/artifact fetch primitive for source and release payloads.",
+  "description": "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.",
   "id": "git-artifact",
   "quarry_sources": [
     "website",

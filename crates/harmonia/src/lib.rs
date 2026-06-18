@@ -256,37 +256,4 @@ mod tests {
         assert_eq!(receipts[0].env_keys, vec!["STEAMGRIDDB_API_KEY"]);
         let _ = fs::remove_file(path);
     }
-
-    #[test]
-    fn git_sync_change_detector_reads_receipt_line() {
-        assert!(git_sync_stdout_changed("fetch ok\nchanged=true"));
-        assert!(!git_sync_stdout_changed(
-            "Already up to date.\nchanged=false"
-        ));
-    }
-
-    #[test]
-    fn git_artifact_step_can_plan_unlimited_repo_entries() {
-        let step = Step {
-            id: "keyman-source".into(),
-            tool: "git-artifact".into(),
-            action: "sync".into(),
-            command: None,
-            args: vec![],
-            cwd: None,
-            service: None,
-            artifact: None,
-            install_bin: None,
-            url: None,
-            expected_contains: None,
-            repo: Some("git@git.home.arpa:HOMESERVERSLTD/keyman.git".into()),
-            path: Some("/opt/keyman/source".into()),
-            branch: Some("main".into()),
-            remote: None,
-            apply_only: false,
-        };
-        let outcome = exec_git_artifact_step(&step, false).unwrap();
-        assert!(outcome.ok);
-        assert!(!outcome.changed);
-    }
 }
