@@ -4,11 +4,20 @@ Harmonia is a Rust update manager and appliance-profile execution engine.
 
 ## Concept mapping
 
-- Harmonia tool: reusable Rust capability invoked by profiles.
-- Profile module need: profile module declares the tool it needs.
+- Harmonia tool: one reusable Rust capability with one beautiful job, executable code, a manifest contract, and focused unit tests.
+- Toolbelt: the code-owned set of Harmonia tools under `crates/harmonia/src/tools.rs`, reflected by `tools/<tool>/index.json` manifests for documentation and module wiring.
+- Profile module need: profile module declares the tool it needs, then calls that toolbelt part to make the change.
 - Harmonia profile spine: ordered modules for one installed body identity.
 - Harmonia run ledger: `run.json`, `events.jsonl`, and per-step receipts.
 - Harmonia tranche: a named command that checks, stages, promotes, or proves a profile transition.
+
+## Toolbelt law
+
+1. Adding a tool means adding Rust-owned tool code first.
+2. Adding a tool also adds or updates `tools/<tool>/index.json` so modules can name the contract.
+3. Configuration JSON wires existing tools and modules; it does not create tools by itself.
+4. Each tool keeps singular purpose: one primitive, one receipt family, one unit-test seam.
+5. Profile modules compose tools; modules do not hide bespoke mutation logic behind manifest data.
 
 ## Runtime ladder
 

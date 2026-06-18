@@ -9,7 +9,9 @@ It is not a Python updater and not a shell orchestration lane. Shell is allowed 
 - One public update organism.
 - One possessed identity/profile per installed body.
 - Ordered profile spines instead of ambient discovery.
-- Reusable Rust tools packed/called by profiles through Harmonia's module engine.
+- A beautiful Rust toolbelt of specific tools, each singular in function and purpose.
+- Profile modules call toolbelt parts to make changes; modules do not become hidden tool implementations.
+- Adding a tool means adding executable Rust tool code, its manifest contract, and focused unit tests; configuration JSON alone is not a tool.
 - No false green: every failed stage becomes a nonzero process exit and a receipt with `ok=false`.
 - Atomic staging and promotion before mutation of live paths.
 - Central run receipts: `events.jsonl`, `run.json`, and module/tool matrix.
