@@ -1,0 +1,23 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "arcadia-gui-runtime",
+  "description": "HomeConsole Arcadia GUI runtime update. Harmonia syncs Arcadia source, builds the release binary, promotes /usr/local/bin/arcadia, restarts arcadia.service, probes health, and records deployed source SHA through the dedicated Arcadia GUI update transition.",
+  "steps": [
+    {
+      "id": "arcadia-gui-update",
+      "tool": "command",
+      "action": "run",
+      "command": "/usr/local/bin/harmonia",
+      "args": [
+        "homeconsole-arcadia-gui-update",
+        "/etc/harmonia/profiles/homeconsole/index.json",
+        "--apply",
+        "--source-dir",
+        "/opt/arcadia/source",
+        "--receipt-dir",
+        "/var/lib/harmonia/receipts/arcadia-gui-latest"
+      ],
+      "apply_only": true
+    }
+  ]
+}
