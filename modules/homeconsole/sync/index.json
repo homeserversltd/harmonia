@@ -1,8 +1,8 @@
 {
   "schema": "harmonia.homeconsole.sync.module.v1",
   "id": "sync",
-  "description": "HomeConsole game-library sync capability governed by Harmonia. Arcadia may invoke the homeconsole-sync transition as its Sync button target.",
-  "adapter_command": "/usr/local/bin/arch-game-sync",
+  "description": "HomeConsole game-library sync transition governed by Harmonia and implemented by the standalone homeconsole-sync runtime repository.",
+  "adapter_command": "/usr/local/bin/homeconsole-sync",
   "adapter_args": [],
   "provider_env": "/etc/arch-game-sync/providers.env",
   "providers": [
