@@ -42,7 +42,8 @@ Profiles provide order and scope. Modules are code-owned capability boundaries r
 ## Current profile families
 
 - `homeconsole` / `arch-console`: appliance console updates through the full code-owned suite spine for identity, system packages, Harmonia runtime possession, Keyman runtime possession, HomeConsole Sync runtime installation, Rust build toolchain possession, Arcadia GUI source/build/promote/service health, and pinned known-good artifact checks.
-- Future families such as `homeserver` and `tv` must enter with Rust-registered module boundaries before profile manifests name them.
+- `tv` / `arch-tv`: intentionally OS-only updates through identity and system packages. The TV profile must not inherit HomeConsole product runtimes or HomeServer service modules unless a future operator declaration adds a real owned component.
+- Future families such as `homeserver` must enter with Rust-registered module boundaries before profile manifests name them.
 
 ## Safety model
 

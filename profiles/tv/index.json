@@ -1,0 +1,13 @@
+{
+  "schema": "harmonia.profile.v1",
+  "id": "tv",
+  "family": "arch-tv",
+  "aliases": [
+    "arch-tv"
+  ],
+  "description": "TV appliance profile: intentionally OS-only.",
+  "modules": [
+    "identity",
+    "system-packages"
+  ]
+}
