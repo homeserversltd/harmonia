@@ -164,6 +164,7 @@ mod arcadia;
 mod cli;
 mod homeconsole;
 mod keyman;
+mod modules;
 mod pinned_artifacts;
 mod profile_engine;
 mod receipts;
@@ -174,6 +175,7 @@ pub(crate) use arcadia::*;
 pub(crate) use cli::*;
 pub(crate) use homeconsole::*;
 pub(crate) use keyman::*;
+pub(crate) use modules::*;
 pub(crate) use pinned_artifacts::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
@@ -286,6 +288,36 @@ mod tests {
     }
 
     #[test]
+    fn unregistered_modules_are_rejected_before_json_can_define_work() {
+        let module = ModuleManifest {
+            id: "json-invented-module".into(),
+            description: "manifest-only module".into(),
+            steps: vec![Step {
+                id: "fake-step".into(),
+                tool: "command".into(),
+                action: "run".into(),
+                command: Some("/usr/bin/true".into()),
+                args: vec![],
+                cwd: None,
+                service: None,
+                artifact: None,
+                install_bin: None,
+                url: None,
+                expected_contains: None,
+                repo: None,
+                path: None,
+                branch: None,
+                remote: None,
+                apply_only: false,
+            }],
+        };
+        assert_eq!(
+            validate_registered_module(&module).unwrap_err(),
+            "module-unregistered-json-invented-module"
+        );
+    }
+
+    #[test]
     fn homeconsole_profile_contains_only_executable_run_profile_modules() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile = load_profile(&root.join("profiles/homeconsole/index.json")).unwrap();
@@ -310,6 +342,7 @@ mod tests {
                 !manifest.steps.is_empty(),
                 "profile module {module} must have executable steps"
             );
+            validate_registered_module(&manifest).unwrap();
         }
         for removed in [
             "desktop-appliance",

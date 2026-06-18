@@ -61,45 +61,35 @@ pub(crate) fn run_profile_engine(
         };
         module_count += 1;
         event(&mut events, "module-start", true, &module.id)?;
-        if module.steps.is_empty() {
-            ok = false;
-            if first_missing_signal == "none" {
-                first_missing_signal = format!("module-empty-{module_id}");
-            }
-            event(
-                &mut events,
-                "module-empty",
-                false,
-                &format!("module {module_id} has no executable steps"),
-            )?;
-            continue;
-        }
-        for step in &module.steps {
-            step_count += 1;
-            let step_dir = receipt_dir.join("steps").join(&module.id);
-            fs::create_dir_all(&step_dir).map_err(|e| e.to_string())?;
-            let outcome = execute_step(step, &step_dir, apply)?;
-            if outcome.changed {
-                changed = true;
-            }
-            if !outcome.ok {
+        let execution = match execute_profile_module(&module, receipt_dir, apply) {
+            Ok(execution) => execution,
+            Err(err) => {
                 ok = false;
                 if first_missing_signal == "none" {
-                    first_missing_signal = format!("{}-{}-failed", module.id, step.id);
+                    first_missing_signal = err.clone();
                 }
+                event(&mut events, "module-rejected", false, &err)?;
+                continue;
             }
-            let ev = if outcome.skipped {
-                "step-skipped"
-            } else {
-                "step-complete"
-            };
-            event(
-                &mut events,
-                ev,
-                outcome.ok,
-                &format!("{}:{} {}", module.id, step.id, outcome.message),
-            )?;
+        };
+        step_count += execution.step_count;
+        if execution.changed {
+            changed = true;
         }
+        if !execution.ok {
+            ok = false;
+            if first_missing_signal == "none" {
+                first_missing_signal = execution
+                    .first_missing_signal
+                    .unwrap_or_else(|| format!("module-failed-{module_id}"));
+            }
+        }
+        event(
+            &mut events,
+            "module-complete",
+            execution.ok,
+            &format!("{} steps={}", module.id, execution.step_count),
+        )?;
     }
 
     write_engine_run_receipt(
