@@ -1,0 +1,16 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "rust-build-toolchain",
+  "description": "HomeConsole Rust build toolchain required for source-built runtimes such as Arcadia GUI. Harmonia maintains cargo/rustc through the package primitive before source build modules run.",
+  "steps": [
+    {
+      "id": "rust-package-install",
+      "tool": "package",
+      "action": "install",
+      "args": [
+        "rust"
+      ],
+      "apply_only": true
+    }
+  ]
+}
