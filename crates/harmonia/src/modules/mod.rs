@@ -6,6 +6,7 @@ mod arcadia_gui_runtime;
 mod homeconsole_sync_runtime;
 mod identity;
 mod keyman_runtime;
+mod rust_build_toolchain;
 mod system_packages;
 
 pub(crate) struct ModuleExecution {
@@ -57,6 +58,7 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         system_packages::ID => system_packages::validate(module),
         keyman_runtime::ID => keyman_runtime::validate(module),
         homeconsole_sync_runtime::ID => homeconsole_sync_runtime::validate(module),
+        rust_build_toolchain::ID => rust_build_toolchain::validate(module),
         arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
         other => Err(format!("module-unregistered-{other}")),
     }

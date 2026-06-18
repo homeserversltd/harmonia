@@ -328,6 +328,7 @@ mod tests {
                 "system-packages",
                 "keyman-runtime",
                 "homeconsole-sync-runtime",
+                "rust-build-toolchain",
                 "arcadia-gui-runtime",
             ]
         );
