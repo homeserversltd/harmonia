@@ -2,6 +2,10 @@
 
 Canonical tool contracts mined from the homeserver updater quarry and the live HomeConsole/Arcadia tranche. Tools are Rust-owned contracts; Python remains quarry compatibility only, not an authority lane.
 
+A Harmonia tool is not born by configuration. A Harmonia tool is born when executable Rust code adds one focused primitive, unit tests prove that primitive's seam, and `tools/<tool>/index.json` records the manifest modules may call. JSON manifests wire and describe the toolbelt; they do not replace the toolbelt.
+
+Current code authority: `crates/harmonia/src/tools.rs`.
+
 - `archive` — Archive unpack/pack primitive for tar/zip release payloads.
 - `artifact` — Artifact install/promote/rollback primitive for binaries and release payloads.
 - `backup` — Backup/snapshot/preserve/restore primitive for mutable runtime state.
