@@ -3,6 +3,17 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+pub(crate) const HOMECONSOLE_UPDATE_SUITE_MODULES: &[&str] = &[
+    "identity",
+    "system-packages",
+    "harmonia-runtime",
+    "keyman-runtime",
+    "homeconsole-sync-runtime",
+    "rust-build-toolchain",
+    "arcadia-gui-runtime",
+    "pinned-artifacts-runtime",
+];
+
 pub(crate) fn homeconsole_update(
     profile: &Profile,
     module_root: &Path,
@@ -15,8 +26,25 @@ pub(crate) fn homeconsole_update(
             profile.id, profile.family
         ));
     }
+    enforce_homeconsole_update_suite(profile)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     run_profile_engine(profile, module_root, receipt_dir, apply)
+}
+
+pub(crate) fn enforce_homeconsole_update_suite(profile: &Profile) -> Result<(), String> {
+    let expected: Vec<String> = HOMECONSOLE_UPDATE_SUITE_MODULES
+        .iter()
+        .map(|module| module.to_string())
+        .collect();
+    if profile.modules == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "homeconsole-update-suite-spine-mismatch expected={} got={}",
+            expected.join(","),
+            profile.modules.join(",")
+        ))
+    }
 }
 
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {

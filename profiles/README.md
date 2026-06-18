@@ -21,8 +21,12 @@ Example shape:
   "modules": [
     "identity",
     "system-packages",
+    "harmonia-runtime",
     "keyman-runtime",
-    "homeconsole-sync-runtime"
+    "homeconsole-sync-runtime",
+    "rust-build-toolchain",
+    "arcadia-gui-runtime",
+    "pinned-artifacts-runtime"
   ]
 }
 ```
@@ -37,7 +41,7 @@ Profiles provide order and scope. Modules are code-owned capability boundaries r
 
 ## Current profile families
 
-- `homeconsole` / `arch-console`: appliance console updates through code-owned modules for identity, system packages, Keyman runtime possession, and HomeConsole Sync runtime installation.
+- `homeconsole` / `arch-console`: appliance console updates through the full code-owned suite spine for identity, system packages, Harmonia runtime possession, Keyman runtime possession, HomeConsole Sync runtime installation, Rust build toolchain possession, Arcadia GUI source/build/promote/service health, and pinned known-good artifact checks.
 - Future families such as `homeserver` and `tv` must enter with Rust-registered module boundaries before profile manifests name them.
 
 ## Safety model

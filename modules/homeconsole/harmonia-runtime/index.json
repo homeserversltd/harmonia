@@ -1,0 +1,28 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "harmonia-runtime",
+  "description": "HomeConsole Harmonia runtime possession. The update suite proves the installed Harmonia binary can explain itself and can read the installed HomeConsole profile before downstream appliance modules claim suite green.",
+  "steps": [
+    {
+      "id": "harmonia-binary-explain",
+      "tool": "command",
+      "action": "run",
+      "command": "/usr/local/bin/harmonia",
+      "args": [
+        "explain"
+      ],
+      "apply_only": true
+    },
+    {
+      "id": "harmonia-profile-inspect",
+      "tool": "command",
+      "action": "run",
+      "command": "/usr/local/bin/harmonia",
+      "args": [
+        "inspect-profile",
+        "/etc/harmonia/profiles/homeconsole/index.json"
+      ],
+      "apply_only": true
+    }
+  ]
+}

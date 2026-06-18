@@ -326,12 +326,15 @@ mod tests {
             vec![
                 "identity",
                 "system-packages",
+                "harmonia-runtime",
                 "keyman-runtime",
                 "homeconsole-sync-runtime",
                 "rust-build-toolchain",
                 "arcadia-gui-runtime",
+                "pinned-artifacts-runtime",
             ]
         );
+        enforce_homeconsole_update_suite(&profile).unwrap();
         for module in &profile.modules {
             let manifest = load_module(
                 &root
@@ -361,5 +364,18 @@ mod tests {
                 "{removed} placeholder module must stay obliterated"
             );
         }
+    }
+
+    #[test]
+    fn homeconsole_update_refuses_partial_suite_spine() {
+        let profile = Profile {
+            id: "homeconsole".into(),
+            family: "arch-console".into(),
+            modules: vec!["identity".into(), "system-packages".into()],
+        };
+        let err = enforce_homeconsole_update_suite(&profile).unwrap_err();
+        assert!(err.contains("homeconsole-update-suite-spine-mismatch"));
+        assert!(err.contains("harmonia-runtime"));
+        assert!(err.contains("pinned-artifacts-runtime"));
     }
 }
