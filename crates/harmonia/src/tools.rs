@@ -30,7 +30,7 @@ pub const TOOLBELT: &[ToolContract] = &[
     ToolContract::new("receipt", "Central receipt writer and run ledger primitive."),
     ToolContract::new("rust-build", "Cargo build/test/install primitive for Rust bodies such as Arcadia and Harmonia."),
     ToolContract::new("systemd", "Systemd unit install/enable/disable/start/stop/restart/status primitive."),
-    ToolContract::new("venv", "Python virtualenv preservation/update primitive for quarry compatibility surfaces; not a Harmonia authority lane."),
+    ToolContract::new("venv", "Python virtualenv preservation/update primitive for compatibility surfaces; not a Harmonia authority lane."),
     ToolContract::new("version", "Version detection/compare/channel selection primitive."),
 ];
 

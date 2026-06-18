@@ -1,7 +1,7 @@
 {
   "description": "Owner/group/mode/ACL/sudoers policy primitive with validation before promotion.",
   "id": "permissions",
-  "quarry_sources": [
+  "source_references": [
     "permissions",
     "sbin",
     "vault",

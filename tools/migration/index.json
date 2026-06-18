@@ -1,7 +1,7 @@
 {
   "description": "Ordered idempotent migration primitive with applied-state receipts.",
   "id": "migration",
-  "quarry_sources": [
+  "source_references": [
     "migrations"
   ],
   "schema": "harmonia.tool.v1",

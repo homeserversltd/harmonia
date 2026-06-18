@@ -1,7 +1,7 @@
 {
   "description": "Cron/systemd timer install/enable/status primitive.",
   "id": "cron-timer",
-  "quarry_sources": [
+  "source_references": [
     "adblock cron",
     "future Harmonia timers"
   ],

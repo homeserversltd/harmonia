@@ -1,10 +1,34 @@
 # Harmonia toolbelt
 
-Canonical tool contracts mined from the homeserver updater quarry and the live HomeConsole/Arcadia tranche. Tools are Rust-owned contracts; Python remains quarry compatibility only, not an authority lane.
+The Harmonia toolbelt is the public set of focused Rust primitives that profile modules call to update a machine.
 
-A Harmonia tool is not born by configuration. A Harmonia tool is born when executable Rust code adds one focused primitive, unit tests prove that primitive's seam, and `tools/<tool>/index.json` records the manifest modules may call. JSON manifests wire and describe the toolbelt; they do not replace the toolbelt.
+A tool is executable behavior, not a configuration entry. Configuration can name a tool and pass inputs to it, but a new tool exists only when Rust code implements the behavior, a manifest records the contract, and tests prove the tool's seam.
 
-Current code authority: `crates/harmonia/src/tools.rs`.
+## How modules use tools
+
+```text
+profile module -> tool name + inputs -> Rust tool execution -> receipt
+```
+
+For example, a module can declare that it needs the `systemd` tool to restart a service, or the `artifact` tool to promote a release binary. The module decides where the step sits in the profile order; the tool owns the action.
+
+## Tool contract files
+
+Each tool has a manifest at:
+
+```text
+tools/<tool>/index.json
+```
+
+The manifest is documentation and wiring metadata. The executable registry lives in:
+
+```text
+crates/harmonia/src/tools.rs
+```
+
+The code registry and manifest directory are tested together so public documentation and executable behavior stay aligned.
+
+## Current tools
 
 - `archive` — Archive unpack/pack primitive for tar/zip release payloads.
 - `artifact` — Artifact install/promote/rollback primitive for binaries and release payloads.
@@ -25,5 +49,15 @@ Current code authority: `crates/harmonia/src/tools.rs`.
 - `receipt` — Central receipt writer and run ledger primitive.
 - `rust-build` — Cargo build/test/install primitive for Rust bodies such as Arcadia and Harmonia.
 - `systemd` — Systemd unit install/enable/disable/start/stop/restart/status primitive.
-- `venv` — Python virtualenv preservation/update primitive for quarry compatibility surfaces; not a Harmonia authority lane.
+- `venv` — Python virtualenv preservation/update primitive for compatibility surfaces; not a Harmonia authority lane.
 - `version` — Version detection/compare/channel selection primitive.
+
+## Adding a tool
+
+1. Add or extend the Rust implementation.
+2. Add the tool to the code registry.
+3. Add `tools/<tool>/index.json`.
+4. Add focused tests for the tool seam.
+5. Run `cargo test -p harmonia`.
+
+If a change only adds JSON, it is module wiring or profile configuration, not a new tool.

@@ -1,7 +1,7 @@
 {
   "description": "OS package check/update/install primitive; supports pacman first and later apt/dnf adapters.",
   "id": "package",
-  "quarry_sources": [
+  "source_references": [
     "os",
     "hotfix",
     "migrations",

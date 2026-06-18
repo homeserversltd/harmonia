@@ -1,15 +1,28 @@
 # Harmonia architecture
 
-Harmonia is a Rust update manager and appliance-profile execution engine.
+Harmonia is a Rust update manager for machines that should behave like appliances: predictable identity, ordered updates, explicit safety checks, and readable proof after every run.
+
+## Runtime model
+
+```text
+profile -> modules -> tools -> receipts
+```
+
+- A **profile** declares what kind of machine is being updated.
+- A **module** declares one ordered part of that profile's update plan.
+- A **tool** performs one focused action in Rust.
+- A **receipt** records the result.
+
+This structure keeps public behavior easy to explain and easy to test. Configuration describes the plan; Rust tools perform the actions.
 
 ## Concept mapping
 
-- Harmonia tool: one reusable Rust capability with one beautiful job, executable code, a manifest contract, and focused unit tests.
+- Harmonia tool: one reusable Rust capability with one focused job, executable code, a manifest contract, and focused unit tests.
 - Toolbelt: the code-owned set of Harmonia tools under `crates/harmonia/src/tools.rs`, reflected by `tools/<tool>/index.json` manifests for documentation and module wiring.
-- Profile module need: profile module declares the tool it needs, then calls that toolbelt part to make the change.
-- Harmonia profile spine: ordered modules for one installed body identity.
-- Harmonia run ledger: `run.json`, `events.jsonl`, and per-step receipts.
-- Harmonia tranche: a named command that checks, stages, promotes, or proves a profile transition.
+- Profile module: an ordered module that declares the tool it needs, then calls that toolbelt part to make the change.
+- Profile spine: the ordered module list for one installed machine identity.
+- Run ledger: `run.json`, `events.jsonl`, and per-step receipts.
+- Transition command: a named command that checks, stages, promotes, or proves a profile transition.
 
 ## Toolbelt law
 
@@ -22,19 +35,19 @@ Harmonia is a Rust update manager and appliance-profile execution engine.
 ## Runtime ladder
 
 1. Read local identity from installed config.
-2. Fetch/update Harmonia source or release artifact.
-3. Resolve exactly one profile.
-4. Stage update payloads into an insulated work root.
-5. Validate schema/profile/tool availability.
-6. Execute ordered profile modules.
-7. Promote only after proof.
-8. Emit `run.json`, `events.jsonl`, and tool/module matrix.
+2. Resolve exactly one profile.
+3. Validate schema, module availability, and tool availability.
+4. Stage payloads into an insulated work root when mutation is needed.
+5. Execute ordered profile modules.
+6. Promote staged changes only after proof.
+7. Emit `run.json`, `events.jsonl`, and tool/module evidence.
+8. Exit with a clear success or failure state.
 
-## First profiles
+## First profile families
 
-- `homeserver`: replaces legacy updater behavior with receipt-backed Rust tools.
-- `homeconsole`: HomeConsole and Arch Console as one profile family.
-- `tv`: appliance update profile for TV bodies.
+- `homeconsole`: HomeConsole and Arch Console appliance profile family.
+- `homeserver`: server update profile implemented through reusable tools.
+- `tv`: appliance update profile for TV-style systems.
 
 ## First tool families
 
@@ -45,6 +58,6 @@ Harmonia is a Rust update manager and appliance-profile execution engine.
 - `node-build`: npm/pnpm build primitive for web bodies.
 - `receipt`: shared central receipt writer.
 
-## Network testing posture
+## Test posture
 
-Harmonia should run first as insulated tests on LAN machines: copy binary + profile + fake root, run `plan-run`/dry-run, collect receipts, and only then promote profile-specific live mutation.
+Harmonia work should prove the safe path first: run a dry profile check, collect receipts under `target/`, then run an applying command only when the receipt shape is understood.

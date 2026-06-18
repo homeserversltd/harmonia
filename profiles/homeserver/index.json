@@ -2,7 +2,7 @@
   "schema": "harmonia.profile.v1",
   "id": "homeserver",
   "family": "homeserver",
-  "description": "HOMESERVER update profile mined from the current updater quarry and replaced by Rust tools.",
+  "description": "Home server update profile implemented through Rust tools.",
   "modules": [
     "identity",
     "system-packages",
