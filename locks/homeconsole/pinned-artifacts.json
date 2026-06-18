@@ -1,0 +1,20 @@
+{
+  "schema": "harmonia.pinned_artifacts.lock.v1",
+  "profile": "homeconsole",
+  "artifacts": {
+    "steam-rom-manager": {
+      "version": "2.5.34",
+      "path": "/opt/steam-rom-manager/Steam-ROM-Manager-2.5.34.AppImage",
+      "sha256": "41b5f07d3f75050d79fc32f72180b7a9971a865b10be450a4f0314529658f94f",
+      "policy": "known-good",
+      "source": "https://github.com/SteamGridDB/steam-rom-manager/releases/download/v2.5.34/Steam-ROM-Manager-2.5.34.AppImage"
+    },
+    "boilr": {
+      "version": "v.1.9.6",
+      "path": "/usr/local/bin/boilr",
+      "sha256": "e5bf62f5e0dc03a7991836cc5d113b781ee9a712a644af00870105d1bc6408b3",
+      "policy": "known-good",
+      "source": "https://github.com/PhilipK/BoilR/releases/download/v.1.9.6/linux_BoilR"
+    }
+  }
+}

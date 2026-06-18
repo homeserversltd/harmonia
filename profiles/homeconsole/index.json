@@ -2,13 +2,17 @@
   "schema": "harmonia.profile.v1",
   "id": "homeconsole",
   "family": "arch-console",
-  "aliases": ["arch-console", "console"],
+  "aliases": [
+    "arch-console",
+    "console"
+  ],
   "description": "HomeConsole and Arch Console are one appliance profile family.",
   "modules": [
     "identity",
     "system-packages",
     "game-library",
     "desktop-appliance",
+    "pinned-artifacts",
     "receipts"
   ]
 }

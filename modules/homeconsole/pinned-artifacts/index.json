@@ -1,0 +1,12 @@
+{
+  "schema": "harmonia.module.v1",
+  "id": "pinned-artifacts",
+  "description": "Known-good ratchet lane for pinned HomeConsole artifacts. Daily harmony checks preserve locks; explicit nudge/bless commands advance them.",
+  "steps": [
+    {
+      "id": "pinned-lock-contract",
+      "tool": "version",
+      "action": "ack"
+    }
+  ]
+}
