@@ -180,6 +180,38 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 &source_sha_file,
             )
         }
+        Some("homeconsole-arcadia-gui-update") => {
+            let path = args
+                .get(1)
+                .ok_or("homeconsole-arcadia-gui-update requires <profile-index-json>")?;
+            let receipt_dir = receipt_dir_arg(&args)
+                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/arcadia-gui-latest"));
+            let repo = value_arg_string(&args, "--repo")
+                .unwrap_or_else(|| "https://git.home.arpa/HOMESERVERSLTD/arcadia.git".to_string());
+            let branch = value_arg_string(&args, "--branch").unwrap_or_else(|| "main".to_string());
+            let source_dir = value_arg(&args, "--source-dir")
+                .unwrap_or_else(|| PathBuf::from("/opt/arcadia/source"));
+            let install_bin = value_arg(&args, "--install-bin")
+                .unwrap_or_else(|| PathBuf::from("/usr/local/bin/arcadia"));
+            let service = value_arg(&args, "--service")
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "arcadia.service".to_string());
+            let source_sha_file = value_arg(&args, "--source-sha-file")
+                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/state/arcadia.sha"));
+            let apply = args.iter().any(|arg| arg == "--apply");
+            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            homeconsole_arcadia_gui_update(
+                &profile,
+                &receipt_dir,
+                &repo,
+                &branch,
+                &source_dir,
+                &install_bin,
+                &service,
+                apply,
+                &source_sha_file,
+            )
+        }
         _ => usage(),
     }
 }
@@ -223,6 +255,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha <sha>] [--source-sha-file <path>] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-arcadia-gui-update <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--source-dir /opt/arcadia/source] [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha-file <path>] [--receipt-dir <path>]");
     Ok(())
 }
 
