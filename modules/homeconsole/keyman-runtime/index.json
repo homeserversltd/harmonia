@@ -1,12 +1,16 @@
 {
   "schema": "harmonia.module.v1",
   "id": "keyman-runtime",
-  "description": "HomeConsole Keyman source/runtime possession. The dedicated homeconsole-keyman-update transition stores the Keyman source locally, installs the vault-only runtime, initializes only missing vault hierarchy, and emits redacted receipts.",
+  "description": "HomeConsole Keyman is a normal local repository/runtime body. Harmonia keeps its source current through the generic git-artifact tool, then the Keyman runtime install/update transition can consume that local source.",
   "steps": [
     {
-      "id": "keyman-runtime-contract",
-      "tool": "files",
-      "action": "ack"
+      "id": "keyman-source-repository",
+      "tool": "git-artifact",
+      "action": "sync",
+      "repo": "git@git.home.arpa:HOMESERVERSLTD/keyman.git",
+      "path": "/opt/keyman/source",
+      "branch": "main",
+      "remote": "origin"
     }
   ]
 }

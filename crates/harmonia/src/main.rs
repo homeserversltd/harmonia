@@ -76,6 +76,14 @@ struct Step {
     #[serde(default)]
     expected_contains: Option<String>,
     #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    remote: Option<String>,
+    #[serde(default)]
     apply_only: bool,
 }
 
@@ -579,18 +587,20 @@ fn execute_step(step: &Step, receipt_dir: &Path, apply: bool) -> Result<StepOutc
         "package" => exec_package_step(step, apply),
         "systemd" => exec_systemd_step(step, apply),
         "artifact" => exec_artifact_step(step, apply),
+        "git-artifact" | "repo" => exec_git_artifact_step(step, apply),
         "health" => exec_health_step(step),
         "rust-build" => exec_cargo_step(step),
         "node-build" => exec_node_step(step),
         "receipt" | "config" | "version" | "backup" | "files" | "permissions" | "download"
-        | "archive" | "git-artifact" | "cron-timer" | "migration" | "hotfix" | "interactable"
-        | "venv" => Ok(StepOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: format!("{} contract acknowledged", step.tool),
-            command: None,
-        }),
+        | "archive" | "cron-timer" | "migration" | "hotfix" | "interactable" | "venv" => {
+            Ok(StepOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: format!("{} contract acknowledged", step.tool),
+                command: None,
+            })
+        }
         other => Ok(StepOutcome {
             ok: false,
             changed: false,
@@ -763,6 +773,173 @@ fn exec_artifact_step(step: &Step, apply: bool) -> Result<StepOutcome, String> {
         message: format!("artifact promoted to {}", install_bin.display()),
         command: None,
     })
+}
+
+fn exec_git_artifact_step(step: &Step, apply: bool) -> Result<StepOutcome, String> {
+    let path = PathBuf::from(
+        step.path
+            .as_deref()
+            .ok_or_else(|| format!("step {} missing path", step.id))?,
+    );
+    let branch = step.branch.as_deref().unwrap_or("main");
+    let remote = step.remote.as_deref().unwrap_or("origin");
+    let repo = step.repo.as_deref();
+
+    if !apply {
+        let present = path.join(".git").exists();
+        let result = if present {
+            command_capture_with_cwd("/usr/bin/git", &["status", "--short"], path.to_str())
+        } else {
+            CmdResult {
+                ok: true,
+                code: 0,
+                stdout: format!("planned clone/update path={}", path.display()),
+                stderr: String::new(),
+            }
+        };
+        return Ok(StepOutcome {
+            ok: result.ok,
+            changed: false,
+            skipped: false,
+            message: format!("git-artifact planned {}", path.display()),
+            command: Some(result),
+        });
+    }
+
+    let result = sync_git_repo(repo, &path, remote, branch);
+    let changed = result.ok && git_sync_stdout_changed(&result.stdout);
+    Ok(StepOutcome {
+        ok: result.ok,
+        changed,
+        skipped: false,
+        message: format!("git-artifact sync {}", path.display()),
+        command: Some(result),
+    })
+}
+
+fn sync_git_repo(repo: Option<&str>, path: &Path, remote: &str, branch: &str) -> CmdResult {
+    let mut transcript = Vec::new();
+    if !path.join(".git").exists() {
+        let Some(repo) = repo else {
+            return CmdResult {
+                ok: false,
+                code: 2,
+                stdout: String::new(),
+                stderr: format!(
+                    "repo missing and no clone URL supplied for {}",
+                    path.display()
+                ),
+            };
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                return CmdResult {
+                    ok: false,
+                    code: 2,
+                    stdout: String::new(),
+                    stderr: format!("create parent failed {}: {err}", parent.display()),
+                };
+            }
+        }
+        let clone = command_capture(
+            "/usr/bin/git",
+            &[
+                "clone",
+                "--branch",
+                branch,
+                repo,
+                path.to_string_lossy().as_ref(),
+            ],
+        );
+        transcript.push(format!("clone exit={} ok={}", clone.code, clone.ok));
+        if !clone.stdout.is_empty() {
+            transcript.push(clone.stdout.clone());
+        }
+        if !clone.stderr.is_empty() {
+            transcript.push(clone.stderr.clone());
+        }
+        if !clone.ok {
+            return CmdResult {
+                ok: false,
+                code: clone.code,
+                stdout: transcript.join("\n"),
+                stderr: clone.stderr,
+            };
+        }
+        return CmdResult {
+            ok: true,
+            code: 0,
+            stdout: format!("changed=true\n{}", transcript.join("\n")),
+            stderr: String::new(),
+        };
+    }
+
+    let cwd = path.to_str();
+    let before = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    let dirty = command_capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], cwd);
+    if !dirty.ok {
+        return dirty;
+    }
+    if !dirty.stdout.trim().is_empty() {
+        return CmdResult {
+            ok: false,
+            code: 3,
+            stdout: dirty.stdout,
+            stderr: "working tree has local modifications; refusing repo sync".to_string(),
+        };
+    }
+    let fetch = command_capture_with_cwd("/usr/bin/git", &["fetch", remote, branch], cwd);
+    transcript.push(format!("fetch exit={} ok={}", fetch.code, fetch.ok));
+    if !fetch.ok {
+        return CmdResult {
+            ok: false,
+            code: fetch.code,
+            stdout: transcript.join("\n"),
+            stderr: fetch.stderr,
+        };
+    }
+    let checkout = command_capture_with_cwd("/usr/bin/git", &["checkout", branch], cwd);
+    transcript.push(format!(
+        "checkout exit={} ok={}",
+        checkout.code, checkout.ok
+    ));
+    if !checkout.ok {
+        return CmdResult {
+            ok: false,
+            code: checkout.code,
+            stdout: transcript.join("\n"),
+            stderr: checkout.stderr,
+        };
+    }
+    let pull_ref = format!("{remote}/{branch}");
+    let merge = command_capture_with_cwd("/usr/bin/git", &["merge", "--ff-only", &pull_ref], cwd);
+    transcript.push(format!("merge_ff exit={} ok={}", merge.code, merge.ok));
+    if !merge.stdout.is_empty() {
+        transcript.push(merge.stdout.clone());
+    }
+    if !merge.ok {
+        return CmdResult {
+            ok: false,
+            code: merge.code,
+            stdout: transcript.join("\n"),
+            stderr: merge.stderr,
+        };
+    }
+    let after = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    let changed = before.stdout.trim() != after.stdout.trim();
+    transcript.push(format!("before={}", before.stdout.trim()));
+    transcript.push(format!("after={}", after.stdout.trim()));
+    transcript.push(format!("changed={changed}"));
+    CmdResult {
+        ok: true,
+        code: 0,
+        stdout: transcript.join("\n"),
+        stderr: String::new(),
+    }
+}
+
+fn git_sync_stdout_changed(stdout: &str) -> bool {
+    stdout.lines().any(|line| line.trim() == "changed=true")
 }
 
 fn exec_health_step(step: &Step) -> Result<StepOutcome, String> {
@@ -2274,5 +2451,38 @@ mod tests {
         assert!(receipts[0].configured);
         assert_eq!(receipts[0].env_keys, vec!["STEAMGRIDDB_API_KEY"]);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn git_sync_change_detector_reads_receipt_line() {
+        assert!(git_sync_stdout_changed("fetch ok\nchanged=true"));
+        assert!(!git_sync_stdout_changed(
+            "Already up to date.\nchanged=false"
+        ));
+    }
+
+    #[test]
+    fn git_artifact_step_can_plan_unlimited_repo_entries() {
+        let step = Step {
+            id: "keyman-source".into(),
+            tool: "git-artifact".into(),
+            action: "sync".into(),
+            command: None,
+            args: vec![],
+            cwd: None,
+            service: None,
+            artifact: None,
+            install_bin: None,
+            url: None,
+            expected_contains: None,
+            repo: Some("git@git.home.arpa:HOMESERVERSLTD/keyman.git".into()),
+            path: Some("/opt/keyman/source".into()),
+            branch: Some("main".into()),
+            remote: None,
+            apply_only: false,
+        };
+        let outcome = exec_git_artifact_step(&step, false).unwrap();
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
     }
 }
