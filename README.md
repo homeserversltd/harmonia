@@ -20,15 +20,15 @@ Harmonia replaces that pattern with a small public contract:
 profile -> ordered modules -> focused tools -> receipts
 ```
 
-A profile says what this machine is. Modules say what work belongs to that profile. Tools do the actual work. Receipts prove the result.
+A profile says what this machine is. Modules are code-owned capability boundaries that say what work belongs to that profile. Their manifests declare ordered tool calls and inputs. Tools do the actual work. Receipts prove the result.
 
 ## Design goals
 
 - One public update engine.
 - One selected profile per installed machine.
-- Ordered profile modules instead of ambient discovery.
+- Ordered profile modules with Rust-owned registration/validation instead of ambient discovery or JSON-only placeholders.
 - A focused Rust toolbelt of specific tools, each with one purpose.
-- Configuration manifests wire profiles and modules; they do not create tools by themselves.
+- Configuration manifests wire registered modules and tools; they do not create modules or tools by themselves.
 - Failed work exits nonzero and records `ok=false`.
 - Live paths are changed only after staging and proof.
 - Every run leaves `events.jsonl`, `run.json`, and module/tool evidence.
@@ -48,7 +48,7 @@ profiles/homeconsole/index.json
 
 ### Module
 
-A module is one ordered unit of profile work. It declares which tool it needs and the inputs for that tool.
+A module is one ordered unit of profile work. The module boundary is registered and validated in Rust; its JSON manifest declares the ordered tool sequence, defaults, and inputs for that module.
 
 Example module work:
 
