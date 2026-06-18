@@ -12,6 +12,7 @@
     "system-packages",
     "game-library",
     "desktop-appliance",
+    "keyman-runtime",
     "pinned-artifacts",
     "receipts"
   ]
