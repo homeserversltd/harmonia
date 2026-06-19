@@ -157,13 +157,13 @@ struct OperationOutcome {
 
 mod cli;
 mod homeconsole;
-mod modules;
+mod module_dispatch;
 mod profile_engine;
 mod receipts;
 
 pub(crate) use cli::*;
 pub(crate) use homeconsole::*;
-pub(crate) use modules::*;
+pub(crate) use module_dispatch::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
 
