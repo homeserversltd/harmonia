@@ -320,7 +320,11 @@ mod tests {
     #[test]
     fn homeconsole_runtime_modules_require_git_checkout_authority() {
         let root = repo_root();
-        for module in ["keyman-runtime", "homeconsole-sync-runtime"] {
+        for module in [
+            "harmonia-runtime",
+            "keyman-runtime",
+            "homeconsole-sync-runtime",
+        ] {
             let manifest = load_module(
                 &root
                     .join("profiles/homeconsole/modules")
@@ -329,11 +333,19 @@ mod tests {
             )
             .unwrap();
             assert_eq!(manifest.id, module);
-            assert!(manifest.path.is_some());
             assert!(
                 manifest.repo.is_some(),
                 "{module} must carry git checkout source authority"
             );
+            if module == "harmonia-runtime" {
+                assert_eq!(manifest.source_dir.as_deref(), Some("/opt/harmonia/source"));
+                assert_eq!(
+                    manifest.install_bin.as_deref(),
+                    Some("/usr/local/bin/harmonia")
+                );
+            } else {
+                assert!(manifest.path.is_some());
+            }
             validate_registered_module(&manifest).unwrap();
         }
     }
