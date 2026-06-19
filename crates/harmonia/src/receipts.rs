@@ -14,27 +14,25 @@ pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), S
     Ok(())
 }
 
-pub(crate) fn write_step_receipt(
+pub(crate) fn write_tool_receipt(
     receipt_dir: &Path,
-    step: &Step,
-    ok: bool,
-    changed: bool,
-    skipped: bool,
-    message: &str,
-    command: Option<&CmdResult>,
+    name: &str,
+    tool: &str,
+    action: &str,
+    outcome: &OperationOutcome,
 ) -> Result<(), String> {
     write_json(
-        &receipt_dir.join(format!("{}.json", step.id)),
+        &receipt_dir.join(format!("{}.json", name)),
         &json!({
-            "schema": "harmonia.step_receipt.v1",
-            "step_id": step.id,
-            "tool": step.tool,
-            "action": step.action,
-            "ok": ok,
-            "changed": changed,
-            "skipped": skipped,
-            "message": message,
-            "command": command,
+            "schema": "harmonia.tool_receipt.v1",
+            "operation_id": name,
+            "tool": tool,
+            "action": action,
+            "ok": outcome.ok,
+            "changed": outcome.changed,
+            "skipped": outcome.skipped,
+            "message": outcome.message,
+            "command": outcome.command,
         }),
     )
 }
@@ -46,7 +44,7 @@ pub(crate) fn write_engine_run_receipt(
     ok: bool,
     changed: bool,
     module_count: usize,
-    step_count: usize,
+    operation_count: usize,
     first_missing_signal: &str,
     module_root: &Path,
 ) -> Result<(), String> {
@@ -60,7 +58,7 @@ pub(crate) fn write_engine_run_receipt(
             "profile_id": profile.id,
             "profile_family": profile.family,
             "module_count": module_count,
-            "step_count": step_count,
+            "operation_count": operation_count,
             "first_missing_signal": first_missing_signal,
             "module_root": module_root,
         }),

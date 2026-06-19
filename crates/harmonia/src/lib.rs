@@ -21,16 +21,6 @@ struct ModuleManifest {
     #[serde(default)]
     description: String,
     #[serde(default)]
-    steps: Vec<Step>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct Step {
-    id: String,
-    tool: String,
-    #[serde(default)]
-    action: String,
-    #[serde(default)]
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
@@ -38,8 +28,6 @@ struct Step {
     cwd: Option<String>,
     #[serde(default)]
     service: Option<String>,
-    #[serde(default)]
-    artifact: Option<String>,
     #[serde(default)]
     install_bin: Option<String>,
     #[serde(default)]
@@ -55,7 +43,13 @@ struct Step {
     #[serde(default)]
     remote: Option<String>,
     #[serde(default)]
-    apply_only: bool,
+    lock: Option<String>,
+    #[serde(default)]
+    source_dir: Option<String>,
+    #[serde(default)]
+    source_sha_file: Option<String>,
+    #[serde(default)]
+    packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,7 +146,7 @@ fn default_sync_restart_policy() -> String {
 }
 
 #[derive(Debug, Clone)]
-struct StepOutcome {
+struct OperationOutcome {
     ok: bool,
     changed: bool,
     skipped: bool,
@@ -260,16 +254,31 @@ mod tests {
     }
 
     #[test]
-    fn generic_ack_pseudo_tools_do_not_turn_green() {
-        let step = Step {
-            id: "fake-contract".into(),
-            tool: "config".into(),
-            action: "ack".into(),
-            command: None,
+    fn module_sidecar_rejects_legacy_steps_ladder() {
+        let receipt_dir =
+            std::env::temp_dir().join(format!("harmonia-legacy-steps-{}", process::id()));
+        let module_dir = receipt_dir.join("module");
+        fs::create_dir_all(&module_dir).unwrap();
+        let module_path = module_dir.join("index.json");
+        fs::write(
+            &module_path,
+            r#"{"schema":"harmonia.module.v1","id":"identity","steps":[{"id":"uname","tool":"command","action":"run"}]}"#,
+        )
+        .unwrap();
+        let err = load_module(&module_path).unwrap_err();
+        assert!(err.contains("module-json-steps-rejected"));
+        let _ = fs::remove_dir_all(receipt_dir);
+    }
+
+    #[test]
+    fn unregistered_modules_are_rejected_before_sidecar_can_define_work() {
+        let module = ModuleManifest {
+            id: "json-invented-module".into(),
+            description: "sidecar-only module".into(),
+            command: Some("/usr/bin/true".into()),
             args: vec![],
             cwd: None,
             service: None,
-            artifact: None,
             install_bin: None,
             url: None,
             expected_contains: None,
@@ -277,39 +286,10 @@ mod tests {
             path: None,
             branch: None,
             remote: None,
-            apply_only: false,
-        };
-        let receipt_dir =
-            std::env::temp_dir().join(format!("harmonia-no-pseudo-tool-{}", process::id()));
-        let outcome = execute_step(&step, &receipt_dir, false).unwrap();
-        assert!(!outcome.ok);
-        assert!(outcome.message.contains("unknown tool config"));
-        let _ = fs::remove_dir_all(receipt_dir);
-    }
-
-    #[test]
-    fn unregistered_modules_are_rejected_before_json_can_define_work() {
-        let module = ModuleManifest {
-            id: "json-invented-module".into(),
-            description: "manifest-only module".into(),
-            steps: vec![Step {
-                id: "fake-step".into(),
-                tool: "command".into(),
-                action: "run".into(),
-                command: Some("/usr/bin/true".into()),
-                args: vec![],
-                cwd: None,
-                service: None,
-                artifact: None,
-                install_bin: None,
-                url: None,
-                expected_contains: None,
-                repo: None,
-                path: None,
-                branch: None,
-                remote: None,
-                apply_only: false,
-            }],
+            lock: None,
+            source_dir: None,
+            source_sha_file: None,
+            packages: vec![],
         };
         assert_eq!(
             validate_registered_module(&module).unwrap_err(),
@@ -318,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn homeconsole_profile_contains_only_executable_run_profile_modules() {
+    fn homeconsole_profile_contains_only_registered_rust_modules() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile = load_profile(&root.join("profiles/homeconsole/index.json")).unwrap();
         assert_eq!(
@@ -343,10 +323,6 @@ mod tests {
                     .join("index.json"),
             )
             .unwrap();
-            assert!(
-                !manifest.steps.is_empty(),
-                "profile module {module} must have executable steps"
-            );
             validate_registered_module(&manifest).unwrap();
         }
         for removed in [
@@ -364,19 +340,6 @@ mod tests {
                 "{removed} placeholder module must stay obliterated"
             );
         }
-    }
-
-    #[test]
-    fn homeconsole_update_refuses_partial_suite_spine() {
-        let profile = Profile {
-            id: "homeconsole".into(),
-            family: "arch-console".into(),
-            modules: vec!["identity".into(), "system-packages".into()],
-        };
-        let err = enforce_homeconsole_update_suite(&profile).unwrap_err();
-        assert!(err.contains("homeconsole-update-suite-spine-mismatch"));
-        assert!(err.contains("harmonia-runtime"));
-        assert!(err.contains("pinned-artifacts-runtime"));
     }
 
     #[test]

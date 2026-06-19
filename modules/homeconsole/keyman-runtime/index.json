@@ -1,16 +1,9 @@
 {
-  "schema": "harmonia.module.v1",
+  "schema": "harmonia.module.sidecar.v1",
   "id": "keyman-runtime",
-  "description": "HomeConsole Keyman is a normal local repository/runtime body. Harmonia keeps its source current through the generic git-artifact tool, then the Keyman runtime install/update transition can consume that local source.",
-  "steps": [
-    {
-      "id": "keyman-source-repository",
-      "tool": "git-artifact",
-      "action": "sync",
-      "repo": "git@git.home.arpa:HOMESERVERSLTD/keyman.git",
-      "path": "/opt/keyman/source",
-      "branch": "main",
-      "remote": "origin"
-    }
-  ]
+  "description": "HomeConsole Keyman source possession. Rust module calls git-artifact directly using these constants.",
+  "repo": "git@git.home.arpa:HOMESERVERSLTD/keyman.git",
+  "path": "/opt/keyman/source",
+  "branch": "main",
+  "remote": "origin"
 }

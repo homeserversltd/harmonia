@@ -1,18 +1,5 @@
 {
-  "schema": "harmonia.module.v1",
+  "schema": "harmonia.module.sidecar.v1",
   "id": "system-packages",
-  "description": "TV operating-system package check/update through the package primitive.",
-  "steps": [
-    {
-      "id": "pacman-check",
-      "tool": "package",
-      "action": "check"
-    },
-    {
-      "id": "pacman-update",
-      "tool": "package",
-      "action": "update",
-      "apply_only": true
-    }
-  ]
+  "description": "TV package module. Rust owns package check/update sequencing."
 }
