@@ -343,6 +343,44 @@ mod tests {
     }
 
     #[test]
+    fn homeconsole_runtime_payload_modules_do_not_require_git_checkouts() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for module in ["keyman-runtime", "homeconsole-sync-runtime"] {
+            let manifest = load_module(
+                &root
+                    .join("modules/homeconsole")
+                    .join(module)
+                    .join("index.json"),
+            )
+            .unwrap();
+            assert_eq!(manifest.id, module);
+            assert!(manifest.path.is_some());
+            assert!(
+                manifest.repo.is_none(),
+                "{module} is a copied/exported runtime payload module, not a git checkout requirement"
+            );
+            validate_registered_module(&manifest).unwrap();
+        }
+    }
+
+    #[test]
+    fn keyman_payload_sync_noops_when_source_and_store_are_same_path() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-keyman-same-path-{}", process::id()));
+        fs::create_dir_all(root.join("lib/keyman_installer")).unwrap();
+        fs::write(root.join("index.py"), "print('ok')\n").unwrap();
+        fs::write(root.join("lib/keyman_installer/index.py"), "print('ok')\n").unwrap();
+        fs::write(root.join("keystartup.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(root.join("exportkey.sh"), "#!/bin/sh\n").unwrap();
+
+        let changed = sync_directory(&root, &root).unwrap();
+        assert!(!changed);
+        assert!(root.join("index.py").is_file());
+        assert!(root.join("lib/keyman_installer/index.py").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn tv_profile_base_and_payload_authority_are_declared() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();

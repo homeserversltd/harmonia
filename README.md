@@ -112,8 +112,8 @@ The HomeConsole profile demonstrates the appliance pattern:
 identity                  prove the machine context
 system-packages           check/update Arch packages
 harmonia-runtime          prove the installed Harmonia binary and profile are possessed
-keyman-runtime            keep the Keyman source/runtime body possessed
-homeconsole-sync-runtime  keep the standalone sync runtime current and installed
+keyman-runtime            keep the copied/exported Keyman runtime payload possessed and installed
+homeconsole-sync-runtime  keep the copied/exported standalone sync runtime payload installed
 rust-build-toolchain      maintain the Rust toolchain needed for source-built runtimes
 arcadia-gui-runtime       sync, build, promote, restart, and health-prove Arcadia GUI
 pinned-artifacts-runtime  check blessed known-good artifacts against the lock
