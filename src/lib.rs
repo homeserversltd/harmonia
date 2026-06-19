@@ -209,10 +209,7 @@ mod tests {
         let old = Profile {
             id: "homeconsole".into(),
             identity: format!("{}-{}", "arch", "console"),
-            modules: HOMECONSOLE_UPDATE_SUITE_MODULES
-                .iter()
-                .map(|m| m.to_string())
-                .collect(),
+            modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap(),
         };
         assert!(
             homeconsole_update(&old, &PathBuf::from("target/unused"), false)
@@ -301,10 +298,7 @@ mod tests {
         assert_eq!(profile.identity, "homeconsole");
         assert_eq!(
             profile.modules,
-            HOMECONSOLE_UPDATE_SUITE_MODULES
-                .iter()
-                .map(|m| m.to_string())
-                .collect::<Vec<_>>()
+            module_ids_from_profile_modules(&root.join("profiles/homeconsole/modules")).unwrap()
         );
         enforce_homeconsole_update_suite(&profile).unwrap();
         assert!(
