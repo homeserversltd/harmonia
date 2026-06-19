@@ -1,5 +1,9 @@
 {
   "schema": "harmonia.module.sidecar.v1",
   "id": "harmonia-runtime",
-  "description": "HomeConsole Harmonia runtime possession. Rust proves current process identity/profile contract without shelling back into Harmonia."
+  "description": "HomeConsole Harmonia runtime possession. Rust owns source checkout, binary/profile/module install, and receipt proof; this sidecar provides constants only.",
+  "repo": "git@git.home.arpa:HOMESERVERSLTD/harmonia.git",
+  "branch": "main",
+  "source_dir": "/opt/harmonia/source",
+  "install_bin": "/usr/local/bin/harmonia"
 }
