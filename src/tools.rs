@@ -10,47 +10,26 @@ impl ToolContract {
     }
 }
 
-#[path = "../../../src/tools/archive.rs"]
 pub mod archive;
-#[path = "../../../src/tools/artifact.rs"]
 pub mod artifact;
-#[path = "../../../src/tools/backup.rs"]
 pub mod backup;
-#[path = "../../../src/tools/command.rs"]
 pub mod command;
-#[path = "../../../src/tools/config.rs"]
 pub mod config;
-#[path = "../../../src/tools/cron_timer.rs"]
 pub mod cron_timer;
-#[path = "../../../src/tools/download.rs"]
 pub mod download;
-#[path = "../../../src/tools/files.rs"]
 pub mod files;
-#[path = "../../../src/tools/git_artifact.rs"]
 pub mod git_artifact;
-#[path = "../../../src/tools/health.rs"]
 pub mod health;
-#[path = "../../../src/tools/hotfix.rs"]
 pub mod hotfix;
-#[path = "../../../src/tools/interactable.rs"]
 pub mod interactable;
-#[path = "../../../src/tools/migration.rs"]
 pub mod migration;
-#[path = "../../../src/tools/node_build.rs"]
 pub mod node_build;
-#[path = "../../../src/tools/package.rs"]
 pub mod package;
-#[path = "../../../src/tools/permissions.rs"]
 pub mod permissions;
-#[path = "../../../src/tools/receipt.rs"]
 pub mod receipt;
-#[path = "../../../src/tools/rust_build.rs"]
 pub mod rust_build;
-#[path = "../../../src/tools/systemd.rs"]
 pub mod systemd;
-#[path = "../../../src/tools/venv.rs"]
 pub mod venv;
-#[path = "../../../src/tools/version.rs"]
 pub mod version;
 
 pub const TOOLBELT: &[ToolContract] = &[
@@ -93,11 +72,7 @@ mod tests {
     use std::fs;
 
     fn repo_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .expect("crate lives under crates/harmonia")
-            .to_path_buf()
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
     }
 
     #[test]

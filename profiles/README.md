@@ -14,4 +14,4 @@ HomeConsole is the sole console identity:
 }
 ```
 
-Module sidecars live beside the selected profile at `profiles/<id>/modules/<module>/sidecar.json` and carry constants only. Rust module logic lives in `crates/harmonia/src/modules/` and shared tools live in `src/tools*.rs`.
+Module sidecars live beside the selected profile at `profiles/<id>/modules/<module>/sidecar.json` and carry constants only. Rust module logic lives in `src/modules/` and shared tools live in `src/tools*.rs`.

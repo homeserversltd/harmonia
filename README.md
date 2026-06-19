@@ -137,14 +137,12 @@ first_missing_signal=none
 
 ```text
 cli.py                Repository-local build/install/status helper
-crates/harmonia/      Rust engine and CLI
-profiles/            Profile declarations
-modules/             Profile module declarations
-tools/               Tool manifest contracts
-docs/                Architecture notes
-installer/           Installation support
-locks/               Known-good artifact locks
-tests/               Test guidance
+src/                  Rust engine, CLI, modules, and one src/tools toolbelt
+profiles/             Profile declarations with adjacent constants-only module sidecars
+docs/                 Architecture notes
+installer/            Installation support
+locks/                Known-good artifact locks
+tests/                Test guidance
 ```
 
 ## Public contract
