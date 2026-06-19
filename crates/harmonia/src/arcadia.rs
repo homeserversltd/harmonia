@@ -8,6 +8,11 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+const ARCADIA_CONTROL_DROPIN_DIR: &str = "/etc/systemd/system/arcadia.service.d";
+const ARCADIA_CONTROL_DROPIN_PATH: &str =
+    "/etc/systemd/system/arcadia.service.d/10-control-surface-authority.conf";
+const ARCADIA_CONTROL_DROPIN_CONTENT: &str = "[Service]\nUser=\nGroup=\nNoNewPrivileges=false\n";
+
 fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
     CmdResult {
         ok: result.ok,
@@ -144,6 +149,63 @@ pub(crate) fn is_hex_sha(s: &str) -> bool {
     s.len() >= 7 && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn ensure_arcadia_control_surface_authority(
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<bool, String> {
+    let existing = fs::read_to_string(ARCADIA_CONTROL_DROPIN_PATH).unwrap_or_default();
+    let changed = existing != ARCADIA_CONTROL_DROPIN_CONTENT;
+    if apply && changed {
+        fs::create_dir_all(ARCADIA_CONTROL_DROPIN_DIR)
+            .map_err(|e| format!("arcadia-control-dropin-dir-failed: {e}"))?;
+        let tmp = Path::new(ARCADIA_CONTROL_DROPIN_PATH).with_extension("harmonia-new");
+        fs::write(&tmp, ARCADIA_CONTROL_DROPIN_CONTENT)
+            .map_err(|e| format!("arcadia-control-dropin-write-failed: {e}"))?;
+        let mut perms = fs::metadata(&tmp).map_err(|e| e.to_string())?.permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&tmp, perms).map_err(|e| e.to_string())?;
+        fs::rename(&tmp, ARCADIA_CONTROL_DROPIN_PATH)
+            .map_err(|e| format!("arcadia-control-dropin-promote-failed: {e}"))?;
+    }
+    write_json(
+        &receipt_dir.join("arcadia-control-surface-authority.json"),
+        &json!({
+            "schema": "harmonia.arcadia_control_surface_authority.v1",
+            "ok": !changed || apply,
+            "mutation": apply && changed,
+            "changed": changed,
+            "dropin_path": ARCADIA_CONTROL_DROPIN_PATH,
+            "desired": {
+                "user": "root",
+                "group": "root",
+                "no_new_privileges": false,
+                "reason": "Arcadia is the HomeConsole front panel and must execute declared local appliance controls through Harmonia/systemd."
+            }
+        }),
+    )?;
+    if changed && !apply {
+        return Err("arcadia-control-surface-authority-drift".to_string());
+    }
+    Ok(changed)
+}
+
+fn read_arcadia_control_surface_authority(service: &str) -> CmdResult {
+    command_capture(
+        "/usr/bin/systemctl",
+        &[
+            "show",
+            service,
+            "-p",
+            "User",
+            "-p",
+            "Group",
+            "-p",
+            "NoNewPrivileges",
+            "--no-pager",
+        ],
+    )
+}
+
 pub(crate) fn homeconsole_arcadia_update(
     profile: &Profile,
     receipt_dir: &Path,
@@ -221,6 +283,14 @@ pub(crate) fn homeconsole_arcadia_update(
                 "Arcadia source SHA recorded",
             )?;
         }
+        let authority_changed = ensure_arcadia_control_surface_authority(receipt_dir, true)?;
+        changed = changed || authority_changed;
+        event(
+            &mut events,
+            "control-surface-authority",
+            true,
+            "Arcadia control-surface authority installed",
+        )?;
         let daemon_reload = command_capture("/usr/bin/systemctl", &["daemon-reload"]);
         write_command_receipt(receipt_dir, "arcadia-daemon-reload", &daemon_reload)?;
         if !daemon_reload.ok {
@@ -236,12 +306,34 @@ pub(crate) fn homeconsole_arcadia_update(
             }
         }
     }
+    if !apply {
+        if let Err(signal) = ensure_arcadia_control_surface_authority(receipt_dir, false) {
+            ok = false;
+            if first_missing_signal == "none" {
+                first_missing_signal = signal;
+            }
+        }
+    }
     let status = command_capture("/usr/bin/systemctl", &["is-active", service]);
     write_command_receipt(receipt_dir, "arcadia-service-active", &status)?;
     if apply && !status.ok {
         ok = false;
         if first_missing_signal == "none" {
             first_missing_signal = "arcadia-service-not-active".to_string();
+        }
+    }
+    let authority_readback = read_arcadia_control_surface_authority(service);
+    write_command_receipt(
+        receipt_dir,
+        "arcadia-control-surface-authority-readback",
+        &authority_readback,
+    )?;
+    if apply
+        && (!authority_readback.ok || !authority_readback.stdout.contains("NoNewPrivileges=no"))
+    {
+        ok = false;
+        if first_missing_signal == "none" {
+            first_missing_signal = "arcadia-control-surface-authority-unproven".to_string();
         }
     }
     write_run_receipt(receipt_dir, profile, apply, ok, &first_missing_signal)?;
