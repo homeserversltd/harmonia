@@ -42,7 +42,7 @@ Profiles provide order and scope. Modules are code-owned capability boundaries r
 ## Current profile families
 
 - `homeconsole` / `arch-console`: appliance console updates through the full code-owned suite spine for identity, system packages, Harmonia runtime possession, Keyman runtime possession, HomeConsole Sync runtime installation, Rust build toolchain possession, Arcadia GUI source/build/promote/service health, and pinned known-good artifact checks.
-- `tv` / `arch-tv`: intentionally OS-only updates through identity and system packages. The TV profile must not inherit HomeConsole product runtimes or HomeServer service modules unless a future operator declaration adds a real owned component.
+- `tv` / `arch-tv`: deployable-owned TV maintenance through Harmonia payload authority. Make Modern owns only the substrate convergence surface; Harmonia owns canonical maintenance payload/config authority for the TV appliance surfaces installed by deployables, including Hyprland, Waybar, Dunst, Kitty, Wofi, Chromium policy/MIME/KDE, owner rc, user services, SDDM, optional Steam/Gamescope, recovery, and appliance proof. Deployables consume the Harmonia-owned TV payload during birth by safe repository symlink or declared export/vendor receipt; do not maintain two payload trees.
 - Future families such as `homeserver` must enter with Rust-registered module boundaries before profile manifests name them.
 
 ## Safety model
