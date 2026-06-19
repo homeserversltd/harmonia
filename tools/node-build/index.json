@@ -1,9 +1,0 @@
-{
-  "description": "Node/npm/pnpm build primitive for web bodies.",
-  "id": "node-build",
-  "source_references": [
-    "website"
-  ],
-  "schema": "harmonia.tool.v1",
-  "status": "contract"
-}

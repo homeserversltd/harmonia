@@ -1,3 +1,9 @@
+use super::ToolContract;
+
+pub const NAME: &str = "git-artifact";
+pub const DESCRIPTION: &str = "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.";
+pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION);
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

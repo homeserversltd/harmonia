@@ -10,28 +10,50 @@ impl ToolContract {
     }
 }
 
+pub mod archive;
+pub mod artifact;
+pub mod backup;
+pub mod command;
+pub mod config;
+pub mod cron_timer;
+pub mod download;
+pub mod files;
+pub mod git_artifact;
+pub mod health;
+pub mod hotfix;
+pub mod interactable;
+pub mod migration;
+pub mod node_build;
+pub mod package;
+pub mod permissions;
+pub mod receipt;
+pub mod rust_build;
+pub mod systemd;
+pub mod venv;
+pub mod version;
+
 pub const TOOLBELT: &[ToolContract] = &[
-    ToolContract::new("archive", "Archive unpack/pack primitive for tar/zip release payloads."),
-    ToolContract::new("artifact", "Artifact install/promote/rollback primitive for binaries and release payloads."),
-    ToolContract::new("backup", "Backup/snapshot/preserve/restore primitive for mutable runtime state."),
-    ToolContract::new("command", "Host command execution primitive with cwd/env/timeout/exit capture; every subprocess produces a command receipt."),
-    ToolContract::new("config", "Typed config/JSON/TOML/YAML read/write/validate primitive."),
-    ToolContract::new("cron-timer", "Cron/systemd timer install/enable/status primitive."),
-    ToolContract::new("download", "HTTP download/version discovery primitive with bounded network calls and receipt evidence."),
-    ToolContract::new("files", "Staged file/template/directory/symlink primitive with atomic promotion."),
-    ToolContract::new("git-artifact", "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules."),
-    ToolContract::new("health", "Service readiness and health-readback primitive, including HTTP and command checks."),
-    ToolContract::new("hotfix", "Emergency one-shot hotfix primitive with explicit receipt and retirement path."),
-    ToolContract::new("interactable", "Operator-triggered action primitive for manual buttons that still need receipts."),
-    ToolContract::new("migration", "Ordered idempotent migration primitive with applied-state receipts."),
-    ToolContract::new("node-build", "Node/npm/pnpm build primitive for web bodies."),
-    ToolContract::new("package", "OS package check/update/install primitive; supports pacman first and later apt/dnf adapters."),
-    ToolContract::new("permissions", "Owner/group/mode/ACL/sudoers policy primitive with validation before promotion."),
-    ToolContract::new("receipt", "Central receipt writer and run ledger primitive."),
-    ToolContract::new("rust-build", "Cargo build/test/install primitive for Rust bodies such as Arcadia and Harmonia."),
-    ToolContract::new("systemd", "Systemd unit install/enable/disable/start/stop/restart/status primitive."),
-    ToolContract::new("venv", "Python virtualenv preservation/update primitive for compatibility surfaces; not a Harmonia authority lane."),
-    ToolContract::new("version", "Version detection/compare/channel selection primitive."),
+    archive::CONTRACT,
+    artifact::CONTRACT,
+    backup::CONTRACT,
+    command::CONTRACT,
+    config::CONTRACT,
+    cron_timer::CONTRACT,
+    download::CONTRACT,
+    files::CONTRACT,
+    git_artifact::CONTRACT,
+    health::CONTRACT,
+    hotfix::CONTRACT,
+    interactable::CONTRACT,
+    migration::CONTRACT,
+    node_build::CONTRACT,
+    package::CONTRACT,
+    permissions::CONTRACT,
+    receipt::CONTRACT,
+    rust_build::CONTRACT,
+    systemd::CONTRACT,
+    venv::CONTRACT,
+    version::CONTRACT,
 ];
 
 pub fn all() -> &'static [ToolContract] {
@@ -46,7 +68,6 @@ pub fn get(name: &str) -> Option<&'static ToolContract> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
     use std::collections::BTreeSet;
     use std::fs;
 
@@ -56,6 +77,31 @@ mod tests {
             .nth(2)
             .expect("crate lives under crates/harmonia")
             .to_path_buf()
+    }
+
+    #[test]
+    fn repo_has_exactly_one_tools_folder_and_it_is_rust_code() {
+        let root = repo_root();
+        let mut tools_dirs = Vec::new();
+        fn walk(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in fs::read_dir(path).expect("walkable repo") {
+                let entry = entry.expect("entry readable");
+                let file_type = entry.file_type().expect("entry type readable");
+                let p = entry.path();
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if [".git", "target"].contains(&name.as_str()) {
+                        continue;
+                    }
+                    if name == "tools" {
+                        out.push(p.clone());
+                    }
+                    walk(&p, out);
+                }
+            }
+        }
+        walk(&root, &mut tools_dirs);
+        assert_eq!(tools_dirs, vec![root.join("crates/harmonia/src/tools")]);
     }
 
     #[test]
@@ -86,50 +132,39 @@ mod tests {
     }
 
     #[test]
-    fn code_toolbelt_and_manifest_toolbelt_match() {
+    fn toolbelt_contracts_have_rust_files_not_json_peer_manifests() {
         let root = repo_root();
-        let mut manifest_names = BTreeSet::new();
-        for entry in fs::read_dir(root.join("tools")).expect("tools directory exists") {
-            let entry = entry.expect("tool dir entry is readable");
-            if !entry
-                .file_type()
-                .expect("tool entry type is readable")
-                .is_dir()
-            {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name == "README.md" {
-                continue;
-            }
-            let manifest_path = entry.path().join("index.json");
-            assert!(manifest_path.exists(), "tool {} must have index.json", name);
-            let raw = fs::read_to_string(&manifest_path)
-                .unwrap_or_else(|err| panic!("read {}: {}", manifest_path.display(), err));
-            let manifest: Value = serde_json::from_str(&raw)
-                .unwrap_or_else(|err| panic!("parse {}: {}", manifest_path.display(), err));
-            assert_eq!(
-                manifest.get("id").and_then(Value::as_str),
-                Some(name.as_str()),
-                "tool {} manifest id must match directory",
-                name
-            );
-            manifest_names.insert(name);
-        }
-
-        let code_names: BTreeSet<_> = all().iter().map(|tool| tool.name.to_string()).collect();
-        assert_eq!(
-            code_names, manifest_names,
-            "adding a tool requires code and manifest together"
+        assert!(
+            !root.join("tools").exists(),
+            "top-level JSON tool tree must not exist"
         );
+        for tool in all() {
+            let module_file = root
+                .join("crates/harmonia/src/tools")
+                .join(format!("{}.rs", tool.name.replace('-', "_")));
+            assert!(
+                module_file.exists(),
+                "tool {} must have Rust implementation file at {}",
+                tool.name,
+                module_file.display()
+            );
+        }
     }
 
     #[test]
-    fn every_manifest_tool_is_addressable_by_code() {
+    fn every_tool_is_addressable_by_code() {
         for tool in all() {
             assert_eq!(get(tool.name), Some(tool));
         }
     }
-}
 
-pub mod git_artifact;
+    #[test]
+    fn primitive_tool_files_are_callable() {
+        let outcome = command::plan(&command::Request::new("check"));
+        assert!(outcome.ok);
+        assert!(outcome.message.contains("command check planned"));
+        let outcome = files::plan(&files::Request::new("atomic-promote"));
+        assert!(outcome.ok);
+        assert!(outcome.message.contains("files atomic-promote planned"));
+    }
+}
