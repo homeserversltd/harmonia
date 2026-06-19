@@ -2,7 +2,7 @@
 
 Harmonia is a Rust update manager for appliance-style systems: home servers, game consoles, TV boxes, kiosks, and other machines that should update predictably without turning into a pile of one-off shell scripts.
 
-It gives each machine one selected profile, runs that profile's ordered modules, calls focused Rust tools to make changes, and writes receipts that show exactly what happened. The result is an update path that can be tested, explained, repeated, installed, and audited.
+It gives each machine one selected profile, runs that profile's ordered Rust module spine, calls focused Rust tools to make changes, writes per-run receipts, and appends each module result to one profile ledger. The result is an update path that can be tested, explained, repeated, installed, and historically audited.
 
 ## Why Harmonia exists
 
@@ -17,21 +17,22 @@ Most small appliance deployments start simple and then drift:
 Harmonia replaces that pattern with a small public contract:
 
 ```text
-profile -> ordered modules -> focused tools -> receipts
+profile -> ordered modules -> focused tools -> one profile ledger + receipts
 ```
 
-A profile says what this machine is. Modules are code-owned capability boundaries that say what work belongs to that profile. Their manifests declare ordered tool calls and inputs. Tools do the actual work. Receipts prove the result.
+A profile says what this machine is. Profile-adjacent Rust modules own the ladder logic for that profile. Sidecars carry constants only. Tools do the actual primitive work. One append-only profile ledger records historical continuity, while per-run receipts prove the local run.
 
 ## Design goals
 
 - One public update engine.
 - One selected profile per installed machine.
-- Ordered profile modules with Rust-owned registration/validation instead of ambient discovery or JSON-only placeholders.
+- Ordered profile modules with Rust-owned validation/execution instead of ambient discovery or JSON-only placeholders.
 - A focused Rust toolbelt of specific tools, each with one purpose.
-- Configuration manifests wire registered modules and tools; they do not create modules or tools by themselves.
+- Sidecars provide constants only; they do not create modules, tools, ladders, or commands by themselves.
 - Failed work exits nonzero and records `ok=false`.
 - Live paths are changed only after staging and proof.
 - Every run leaves `events.jsonl`, `run.json`, and module/tool evidence.
+- Every module result appends to exactly one JSONL profile ledger under the receipts root, such as `homeconsole-ledger.jsonl`.
 - Installer-ready layout: binary, config, state directory, service, timer, and receipt root.
 
 ## Core concepts
@@ -48,7 +49,7 @@ profiles/homeconsole/index.json
 
 ### Module
 
-A module is one ordered unit of profile work. The module boundary is registered and validated in Rust; its JSON manifest declares the ordered tool sequence, defaults, and inputs for that module.
+A module is one ordered unit of profile work. The module boundary is validated and executed in Rust; its adjacent sidecar supplies constants only.
 
 Example module work:
 
@@ -72,7 +73,7 @@ Examples:
 
 ### Receipt
 
-A receipt is the audit trail for a run. Harmonia records what was checked, what changed, what was skipped, and why a run failed if it failed.
+A receipt is the audit trail for a run. The profile ledger is the historical continuity trail across runs. Harmonia records one JSONL ledger entry per module with `sequence`, `stamped_at_unix_ms`, `run_id`, profile identity, module id, pass/fail, changed state, operation count, and first missing signal.
 
 ## Quick start
 
@@ -137,7 +138,7 @@ first_missing_signal=none
 
 ```text
 cli.py                Repository-local build/install/status helper
-src/                  Rust engine, CLI, modules, and one src/tools toolbelt
+src/                  Rust engine, thin dispatch/profile/receipt surfaces, and one src/tools toolbelt
 profiles/             Profile declarations with adjacent constants-only module sidecars
 docs/                 Architecture notes
 installer/            Installation support
