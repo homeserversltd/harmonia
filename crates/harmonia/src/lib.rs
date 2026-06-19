@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn tv_profile_is_intentionally_os_only() {
+    fn tv_profile_base_and_payload_authority_are_declared() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
         assert_eq!(profile.id, "tv");
@@ -396,14 +396,40 @@ mod tests {
                 .contains(&"homeconsole-sync-runtime".to_string()),
             "TV profile must not inherit HomeConsole sync runtime"
         );
-        assert!(
-            !profile.modules.contains(&"keyman-runtime".to_string()),
-            "TV profile must stay OS-only until an operator declares another owned component"
-        );
         for module in &profile.modules {
             let manifest =
                 load_module(&root.join("modules/tv").join(module).join("index.json")).unwrap();
             validate_registered_module(&manifest).unwrap();
         }
+
+        let authority: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("payloads/tv/index.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(authority["schema"], "harmonia.tv.payload-authority.v1");
+        assert_eq!(authority["authority"], "harmonia");
+        assert!(authority["make_modern_boundary"]
+            .as_str()
+            .unwrap()
+            .contains("Make Modern owns only"));
+        assert!(authority["deployable_consumption"]["allowed_modes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mode| mode == "declared-export-vendor-with-receipt"));
+        assert!(authority["owned_surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|surface| surface == "desktop-config-payload"));
+        assert!(authority["desktop_payload_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path == ".config/waybar/waybar.conf"));
+        assert_eq!(
+            authority["deployable_consumption"]["forbidden"],
+            "two-hand-maintained-payload-trees"
+        );
     }
 }

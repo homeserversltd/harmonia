@@ -1,0 +1,56 @@
+{
+  "schema": "harmonia.tv.payload-authority.v1",
+  "profile_id": "tv",
+  "profile_family": "arch-tv",
+  "authority": "harmonia",
+  "make_modern_boundary": "Make Modern owns only the convergence substrate itself; deployable-managed TV appliance config and runtime payloads are Harmonia maintenance surfaces.",
+  "deployable_consumption": {
+    "birth_repo": "forgejo:HOMESERVERSLTD/deployables",
+    "birth_path": "arch/rolling/arch-tv",
+    "allowed_modes": [
+      "safe-repository-symlink",
+      "declared-export-vendor-with-receipt"
+    ],
+    "forbidden": "two-hand-maintained-payload-trees"
+  },
+  "owned_surfaces": [
+    "owner-profile",
+    "gpu-display-stack",
+    "hyprland-desktop",
+    "operator-rc-profile",
+    "desktop-config-payload",
+    "user-session-services",
+    "sddm-autologin-hyprland",
+    "steam-game-lane",
+    "power-controller-maintenance",
+    "console-recovery",
+    "appliance-proof"
+  ],
+  "desktop_payload_paths": [
+    ".config/hypr/autostart.conf",
+    ".config/hypr/bindings.conf",
+    ".config/hypr/envs.conf",
+    ".config/hypr/hyprland.conf",
+    ".config/hypr/input.conf",
+    ".config/hypr/looknfeel.conf",
+    ".config/hypr/monitors.conf",
+    ".config/hypr/windows.conf",
+    ".config/waybar/waybar.conf",
+    ".config/waybar/style.css",
+    ".config/dunst/dunstrc",
+    ".config/kitty/kitty.conf",
+    ".config/kitty/theme.conf",
+    ".config/wofi/config",
+    ".config/wofi/style.css",
+    ".config/systemd/user/hs-dunst.service",
+    ".config/systemd/user/hs-waybar.service",
+    "bin/tv-launcher.sh",
+    "bin/waybar-toggle.sh",
+    "bin/volume.sh",
+    "omp.json",
+    ".zshrc",
+    ".profile",
+    ".aliases",
+    ".functions"
+  ]
+}
