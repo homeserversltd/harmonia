@@ -1,14 +1,5 @@
 {
-  "schema": "harmonia.module.v1",
+  "schema": "harmonia.module.sidecar.v1",
   "id": "identity",
-  "description": "Read HomeConsole identity through the generic command primitive.",
-  "steps": [
-    {
-      "id": "uname",
-      "tool": "command",
-      "action": "run",
-      "command": "/usr/bin/uname",
-      "args": ["-a"]
-    }
-  ]
+  "description": "HomeConsole identity module. Rust owns the uname proof ladder; this sidecar carries no executable logic."
 }

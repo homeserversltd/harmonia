@@ -1,23 +1,6 @@
 {
-  "schema": "harmonia.module.v1",
+  "schema": "harmonia.module.sidecar.v1",
   "id": "pinned-artifacts-runtime",
-  "description": "HomeConsole known-good artifact preservation. The update suite checks the installed pinned artifacts against the blessed lock so OS/package and GUI success cannot falsely claim appliance-currentness while protected runtime artifacts drift.",
-  "steps": [
-    {
-      "id": "pinned-artifacts-check",
-      "tool": "command",
-      "action": "run",
-      "command": "/usr/local/bin/harmonia",
-      "args": [
-        "pinned-artifacts",
-        "check",
-        "/etc/harmonia/profiles/homeconsole/index.json",
-        "--lock",
-        "/etc/harmonia/locks/homeconsole/pinned-artifacts.json",
-        "--receipt-dir",
-        "/var/lib/harmonia/receipts/pinned-artifacts-check-latest"
-      ],
-      "apply_only": true
-    }
-  ]
+  "description": "HomeConsole known-good artifact preservation. Rust module calls pinned artifact check directly; this sidecar provides the lock path.",
+  "lock": "/etc/harmonia/locks/homeconsole/pinned-artifacts.json"
 }

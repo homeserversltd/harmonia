@@ -1,27 +1,9 @@
 {
-  "schema": "harmonia.module.v1",
+  "schema": "harmonia.module.sidecar.v1",
   "id": "homeconsole-sync-runtime",
-  "description": "HomeConsole Sync is a standalone local repository/runtime body. Harmonia keeps its source current through git-artifact, then runs the repository installer to expose /usr/local/bin/homeconsole-sync and a temporary legacy compatibility link.",
-  "steps": [
-    {
-      "id": "homeconsole-sync-source-repository",
-      "tool": "git-artifact",
-      "action": "sync",
-      "repo": "git@git.home.arpa:HOMESERVERSLTD/homeconsole-sync.git",
-      "path": "/opt/homeconsole-sync/source",
-      "branch": "main",
-      "remote": "origin"
-    },
-    {
-      "id": "homeconsole-sync-install",
-      "tool": "command",
-      "action": "run",
-      "command": "/opt/homeconsole-sync/source/cli.py",
-      "args": [
-        "install",
-        "--apply"
-      ],
-      "apply_only": true
-    }
-  ]
+  "description": "HomeConsole Sync runtime possession. Rust module syncs source and invokes the repository installer directly using these constants.",
+  "repo": "git@git.home.arpa:HOMESERVERSLTD/homeconsole-sync.git",
+  "path": "/opt/homeconsole-sync/source",
+  "branch": "main",
+  "remote": "origin"
 }

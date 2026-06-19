@@ -1,17 +1,29 @@
-use super::{require_schema, require_step};
+use super::{reject_executable_sidecar, require_packages, ModuleExecution};
 use crate::*;
+use std::path::Path;
 
 pub(crate) const ID: &str = "rust-build-toolchain";
 
 pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
-    require_schema(module)?;
-    if module.steps.len() != 1 {
-        return Err("rust-build-toolchain-module-step-count".to_string());
-    }
-    let step = &module.steps[0];
-    require_step(step, "rust-package-install", "package", "install")?;
-    if step.args != ["rust"] || !step.apply_only {
-        return Err("rust-build-toolchain-package-contract".to_string());
-    }
-    Ok(())
+    reject_executable_sidecar(module)?;
+    require_packages(module)
+}
+
+pub(crate) fn execute(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<ModuleExecution, String> {
+    validate(module)?;
+    let outcome = package_tool(
+        receipt_dir,
+        "rust-package-install",
+        "install",
+        &module.packages,
+        apply,
+    )?;
+    Ok(ModuleExecution::from_operations(
+        vec![("rust-package-install", outcome)],
+        &module.id,
+    ))
 }

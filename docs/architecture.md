@@ -33,7 +33,7 @@ This structure keeps public behavior easy to explain and easy to test. Configura
 4. Each tool keeps singular purpose: one primitive, one receipt family, one unit-test seam.
 5. Profile modules are Rust-registered capability boundaries; manifests declare the ordered tool sequence for the registered module.
 6. Modules compose tools; modules do not hide bespoke mutation logic behind manifest data.
-7. Placeholder acknowledgement modules are not valid Harmonia modules: no empty modules, no `ack` steps that only manufacture green, no literal no-op command guards, and no profile references to missing module trees.
+7. Placeholder acknowledgement modules are not valid Harmonia modules: no empty modules, no `ack` placeholders that only manufacture green, no JSON `steps[]` ladder, no literal no-op command guards, and no profile references to missing module trees.
 
 ## Runtime ladder
 

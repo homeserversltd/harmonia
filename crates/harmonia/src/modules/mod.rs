@@ -14,8 +14,33 @@ mod system_packages;
 pub(crate) struct ModuleExecution {
     pub(crate) ok: bool,
     pub(crate) changed: bool,
-    pub(crate) step_count: usize,
+    pub(crate) operation_count: usize,
     pub(crate) first_missing_signal: Option<String>,
+}
+
+impl ModuleExecution {
+    fn from_operations(outcomes: Vec<(&'static str, OperationOutcome)>, module_id: &str) -> Self {
+        let mut ok = true;
+        let mut changed = false;
+        let mut first_missing_signal = None;
+        for (operation_id, outcome) in &outcomes {
+            if outcome.changed {
+                changed = true;
+            }
+            if !outcome.ok {
+                ok = false;
+                if first_missing_signal.is_none() {
+                    first_missing_signal = Some(format!("{}-{}-failed", module_id, operation_id));
+                }
+            }
+        }
+        Self {
+            ok,
+            changed,
+            operation_count: outcomes.len(),
+            first_missing_signal,
+        }
+    }
 }
 
 pub(crate) fn execute_profile_module(
@@ -24,34 +49,23 @@ pub(crate) fn execute_profile_module(
     apply: bool,
 ) -> Result<ModuleExecution, String> {
     validate_registered_module(module)?;
-    let step_dir = receipt_dir.join("steps").join(&module.id);
-    fs::create_dir_all(&step_dir).map_err(|e| e.to_string())?;
-
-    let mut ok = true;
-    let mut changed = false;
-    let mut first_missing_signal = None;
-    let mut step_count = 0usize;
-
-    for step in &module.steps {
-        step_count += 1;
-        let outcome = execute_step(step, &step_dir, apply)?;
-        if outcome.changed {
-            changed = true;
+    let module_dir = receipt_dir.join("modules").join(&module.id);
+    fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
+    match module.id.as_str() {
+        identity::ID => identity::execute(module, &module_dir, apply),
+        system_packages::ID => system_packages::execute(module, &module_dir, apply),
+        harmonia_runtime::ID => harmonia_runtime::execute(module, &module_dir, apply),
+        keyman_runtime::ID => keyman_runtime::execute(module, &module_dir, apply),
+        homeconsole_sync_runtime::ID => {
+            homeconsole_sync_runtime::execute(module, &module_dir, apply)
         }
-        if !outcome.ok {
-            ok = false;
-            if first_missing_signal.is_none() {
-                first_missing_signal = Some(format!("{}-{}-failed", module.id, step.id));
-            }
+        rust_build_toolchain::ID => rust_build_toolchain::execute(module, &module_dir, apply),
+        arcadia_gui_runtime::ID => arcadia_gui_runtime::execute(module, &module_dir, apply),
+        pinned_artifacts_runtime::ID => {
+            pinned_artifacts_runtime::execute(module, &module_dir, apply)
         }
+        other => Err(format!("module-unregistered-{other}")),
     }
-
-    Ok(ModuleExecution {
-        ok,
-        changed,
-        step_count,
-        first_missing_signal,
-    })
 }
 
 pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), String> {
@@ -68,19 +82,27 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
     }
 }
 
-fn require_schema(module: &ModuleManifest) -> Result<(), String> {
-    if module.steps.is_empty() {
-        return Err(format!("module-empty-{}", module.id));
+fn reject_executable_sidecar(module: &ModuleManifest) -> Result<(), String> {
+    if module.command.is_some() || !module.args.is_empty() || module.cwd.is_some() {
+        return Err(format!("module-executable-sidecar-rejected-{}", module.id));
     }
     Ok(())
 }
 
-fn require_step(step: &Step, id: &str, tool: &str, action: &str) -> Result<(), String> {
-    if step.id != id || step.tool != tool || step.action != action {
-        return Err(format!(
-            "module-step-contract-mismatch-{}-expected-{}-{}-{}",
-            step.id, id, tool, action
-        ));
+fn require_path<'a>(
+    module: &'a ModuleManifest,
+    value: &'a Option<String>,
+    name: &str,
+) -> Result<&'a str, String> {
+    value
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| format!("module-sidecar-missing-{}-{}", module.id, name))
+}
+
+fn require_packages(module: &ModuleManifest) -> Result<(), String> {
+    if module.packages.is_empty() {
+        return Err(format!("module-sidecar-missing-{}-packages", module.id));
     }
     Ok(())
 }

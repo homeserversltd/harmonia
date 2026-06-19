@@ -1,32 +1,64 @@
-use super::{require_schema, require_step};
+use super::{reject_executable_sidecar, require_path, ModuleExecution};
 use crate::*;
+use std::path::{Path, PathBuf};
 
 pub(crate) const ID: &str = "homeconsole-sync-runtime";
 
 pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
-    require_schema(module)?;
-    if module.steps.len() != 2 {
-        return Err("homeconsole-sync-runtime-module-step-count".to_string());
-    }
-    let repo = &module.steps[0];
-    require_step(
-        repo,
-        "homeconsole-sync-source-repository",
-        "git-artifact",
-        "sync",
-    )?;
-    if repo.path.as_deref() != Some("/opt/homeconsole-sync/source")
-        || repo.branch.as_deref() != Some("main")
-    {
-        return Err("homeconsole-sync-runtime-repository-contract".to_string());
-    }
-    let install = &module.steps[1];
-    require_step(install, "homeconsole-sync-install", "command", "run")?;
-    if install.command.as_deref() != Some("/opt/homeconsole-sync/source/cli.py")
-        || install.args != ["install", "--apply"]
-        || !install.apply_only
-    {
-        return Err("homeconsole-sync-runtime-install-contract".to_string());
-    }
+    reject_executable_sidecar(module)?;
+    require_path(module, &module.repo, "repo")?;
+    require_path(module, &module.path, "path")?;
     Ok(())
+}
+
+pub(crate) fn execute(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<ModuleExecution, String> {
+    validate(module)?;
+    let repo = git_artifact_tool(
+        receipt_dir,
+        "homeconsole-sync-source-repository",
+        module.repo.clone(),
+        PathBuf::from(require_path(module, &module.path, "path")?),
+        module.branch.clone().unwrap_or_else(|| "main".to_string()),
+        module
+            .remote
+            .clone()
+            .unwrap_or_else(|| "origin".to_string()),
+        apply,
+    )?;
+    let install = if apply {
+        command_tool(
+            receipt_dir,
+            "homeconsole-sync-install",
+            "/opt/homeconsole-sync/source/cli.py",
+            &["install".to_string(), "--apply".to_string()],
+            None,
+        )?
+    } else {
+        let outcome = OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "homeconsole-sync install planned".to_string(),
+            command: None,
+        };
+        write_tool_receipt(
+            receipt_dir,
+            "homeconsole-sync-install",
+            "command",
+            "run",
+            &outcome,
+        )?;
+        outcome
+    };
+    Ok(ModuleExecution::from_operations(
+        vec![
+            ("homeconsole-sync-source-repository", repo),
+            ("homeconsole-sync-install", install),
+        ],
+        &module.id,
+    ))
 }
