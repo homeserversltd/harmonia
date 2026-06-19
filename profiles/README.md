@@ -1,57 +1,17 @@
 # Harmonia profiles
 
-A Harmonia profile is the update plan for one class of machine.
+Profiles select one appliance identity and one ordered Rust module spine.
 
-Each installed machine selects exactly one profile. Harmonia uses that profile to decide which modules run, in what order, and which tools each module may call. This keeps updates predictable: the machine does not scan every possible module and guess what it should become at runtime.
-
-## What a profile contains
-
-A profile defines:
-
-- an `id`, such as `homeconsole`;
-- a `family`, such as `arch-console`;
-- an ordered list of module names.
-
-Example shape:
+HomeConsole is the sole console identity:
 
 ```json
 {
+  "schema": "harmonia.profile.v1",
   "id": "homeconsole",
-  "family": "arch-console",
-  "modules": [
-    "identity",
-    "system-packages",
-    "harmonia-runtime",
-    "keyman-runtime",
-    "homeconsole-sync-runtime",
-    "rust-build-toolchain",
-    "arcadia-gui-runtime",
-    "pinned-artifacts-runtime"
-  ]
+  "identity": "homeconsole",
+  "module_spine_entered": "profiles/homeconsole/modules",
+  "modules": ["identity", "system-packages"]
 }
 ```
 
-## How profiles run
-
-```text
-selected profile -> ordered module list -> Rust module registry/validation -> module manifests -> toolbelt execution -> receipts
-```
-
-Profiles provide order and scope. Modules are code-owned capability boundaries registered and validated in Rust. Module manifests declare ordered tool calls and inputs for registered modules. Tools perform the work.
-
-## Current profile families
-
-- `homeconsole` / `arch-console`: appliance console updates through the full code-owned suite spine for identity, system packages, Harmonia runtime possession, Keyman runtime possession, HomeConsole Sync runtime installation, Rust build toolchain possession, Arcadia GUI source/build/promote/service health, and pinned known-good artifact checks.
-- `tv` / `arch-tv`: deployable-owned TV maintenance through Harmonia payload authority. Make Modern owns only the substrate convergence surface; Harmonia owns canonical maintenance payload/config authority for the TV appliance surfaces installed by deployables, including Hyprland, Waybar, Dunst, Kitty, Wofi, Chromium policy/MIME/KDE, owner rc, user services, SDDM, optional Steam/Gamescope, recovery, and appliance proof. Deployables consume the Harmonia-owned TV payload during birth by safe repository symlink or declared export/vendor receipt; do not maintain two payload trees.
-- Future families such as `homeserver` must enter with Rust-registered module boundaries before profile manifests name them.
-
-## Safety model
-
-Profiles should be explicit and boring:
-
-- one machine identity;
-- one ordered module spine;
-- no hidden runtime discovery;
-- no JSON-only module authority;
-- non-mutating checks available before `--apply`;
-- receipts written for every run.
+Module sidecars live beside the selected profile at `profiles/<id>/modules/<module>/sidecar.json` and carry constants only. Rust module logic lives in `crates/harmonia/src/modules/` and shared tools live in `crates/harmonia/src/tools*.rs`.

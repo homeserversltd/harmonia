@@ -98,10 +98,10 @@ pub(crate) fn homeconsole_sync(
     adapter_override: Option<&str>,
     apply: bool,
 ) -> Result<(), String> {
-    if profile.id != "homeconsole" || profile.family != "arch-console" {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
-            "homeconsole-sync requires homeconsole/arch-console profile, got {}/{}",
-            profile.id, profile.family
+            "homeconsole-sync requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
         ));
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -170,7 +170,7 @@ pub(crate) fn homeconsole_sync(
             "changed": changed,
             "mutation": apply,
             "profile_id": profile.id,
-            "profile_family": profile.family,
+            "profile_family": profile.identity,
             "module_path": module_path,
             "module_id": module.id,
             "adapter_command": module.adapter_command,

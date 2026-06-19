@@ -14,7 +14,7 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     serde_json::from_str(&text).or_else(|_| {
         Ok(Profile {
             id: extract_string(&text, "id").unwrap_or_else(|| "unknown".to_string()),
-            family: extract_string(&text, "family").unwrap_or_else(|| "unknown".to_string()),
+            identity: extract_string(&text, "identity").unwrap_or_else(|| "unknown".to_string()),
             modules: extract_string_array(&text, "modules"),
         })
     })
@@ -25,8 +25,23 @@ pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {
         .map_err(|e| format!("module-read-failed {}: {e}", path.display()))?;
     let raw: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("module-parse-failed {}: {e}", path.display()))?;
-    if raw.get("steps").is_some() {
-        return Err(format!("module-json-steps-rejected {}", path.display()));
+    for field in [
+        "steps",
+        "tool",
+        "command",
+        "action",
+        "actions",
+        "args",
+        "cwd",
+        "apply_only",
+    ] {
+        if raw.get(field).is_some() {
+            return Err(format!(
+                "module-sidecar-behavior-field-rejected {} field={}",
+                path.display(),
+                field
+            ));
+        }
     }
     serde_json::from_value(raw).map_err(|e| format!("module-parse-failed {}: {e}", path.display()))
 }
@@ -52,7 +67,7 @@ pub(crate) fn run_profile_engine(
     let mut operation_count = 0usize;
 
     for module_id in &profile.modules {
-        let module_path = module_root.join(module_id).join("index.json");
+        let module_path = module_root.join(module_id).join("sidecar.json");
         let module = match load_module(&module_path) {
             Ok(m) => m,
             Err(err) => {

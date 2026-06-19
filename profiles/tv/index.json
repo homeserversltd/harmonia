@@ -1,7 +1,6 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "tv",
-  "family": "arch-tv",
   "aliases": [
     "arch-tv"
   ],
@@ -9,5 +8,7 @@
   "modules": [
     "identity",
     "system-packages"
-  ]
+  ],
+  "identity": "tv",
+  "module_spine_entered": "profiles/tv/modules"
 }

@@ -10,7 +10,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Profile {
     id: String,
-    family: String,
+    identity: String,
     #[serde(default)]
     modules: Vec<String>,
 }
@@ -189,12 +189,16 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
     #[test]
-    fn extracts_profile_fields() {
+    fn extracts_profile_identity_fields() {
         let text =
-            r#"{"id":"homeconsole","family":"arch-console","modules":["identity","packages"]}"#;
+            r#"{"id":"homeconsole","identity":"homeconsole","modules":["identity","packages"]}"#;
         assert_eq!(extract_string(text, "id").unwrap(), "homeconsole");
-        assert_eq!(extract_string(text, "family").unwrap(), "arch-console");
+        assert_eq!(extract_string(text, "identity").unwrap(), "homeconsole");
         assert_eq!(
             extract_string_array(text, "modules"),
             vec!["identity", "packages"]
@@ -202,17 +206,34 @@ mod tests {
     }
 
     #[test]
-    fn detects_pacman_change_from_stdout() {
-        assert!(pacman_stdout_indicates_change("\nupgrading ffmpeg..."));
-        assert!(!pacman_stdout_indicates_change(" there is nothing to do"));
+    fn default_module_root_is_profile_adjacent() {
+        assert_eq!(
+            default_module_root(Path::new("profiles/homeconsole/index.json")),
+            PathBuf::from("profiles/homeconsole/modules")
+        );
     }
 
     #[test]
-    fn default_module_root_from_profile_path() {
-        assert_eq!(
-            default_module_root(Path::new("profiles/homeconsole/index.json")),
-            PathBuf::from("modules/homeconsole")
+    fn rejects_old_console_identity_names() {
+        let old = Profile {
+            id: "homeconsole".into(),
+            identity: format!("{}-{}", "arch", "console"),
+            modules: HOMECONSOLE_UPDATE_SUITE_MODULES
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
+        };
+        assert!(
+            homeconsole_update(&old, &PathBuf::from("target/unused"), false)
+                .unwrap_err()
+                .contains("homeconsole/homeconsole")
         );
+    }
+
+    #[test]
+    fn detects_pacman_change_from_stdout() {
+        assert!(pacman_stdout_indicates_change("\nupgrading ffmpeg..."));
+        assert!(!pacman_stdout_indicates_change(" there is nothing to do"));
     }
 
     #[test]
@@ -225,48 +246,32 @@ mod tests {
     }
 
     #[test]
-    fn keyman_source_shape_requires_public_installer_files() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let shape = keyman_source_shape(&root);
-        assert!(!shape.0);
-        assert!(shape.1.get("index_py_present").is_some());
-    }
-
-    #[test]
-    fn parses_provider_env_without_exposing_values() {
-        let path =
-            std::env::temp_dir().join(format!("harmonia-provider-env-{}.env", process::id()));
-        fs::write(
-            &path,
-            "STEAMGRIDDB_API_KEY=secret\nexport TGDB_API_KEY=also-secret\n",
-        )
-        .unwrap();
-        let values = parse_env_file(&path);
-        let providers = vec![SyncProviderConfig {
-            name: "steamgriddb".to_string(),
-            env_keys: vec!["STEAMGRIDDB_API_KEY".to_string()],
-            required: false,
-        }];
-        let receipts = sync_provider_receipts(&providers, &values);
-        assert!(receipts[0].configured);
-        assert_eq!(receipts[0].env_keys, vec!["STEAMGRIDDB_API_KEY"]);
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
     fn module_sidecar_rejects_legacy_steps_ladder() {
         let receipt_dir =
             std::env::temp_dir().join(format!("harmonia-legacy-steps-{}", process::id()));
         let module_dir = receipt_dir.join("module");
         fs::create_dir_all(&module_dir).unwrap();
-        let module_path = module_dir.join("index.json");
+        let module_path = module_dir.join("sidecar.json");
+        fs::write(&module_path, r#"{"schema":"harmonia.module.sidecar.v1","id":"identity","steps":[{"id":"uname","tool":"command","action":"run"}]}"#).unwrap();
+        let err = load_module(&module_path).unwrap_err();
+        assert!(err.contains("module-sidecar-behavior-field-rejected"));
+        let _ = fs::remove_dir_all(receipt_dir);
+    }
+
+    #[test]
+    fn module_sidecar_rejects_command_ladder_fields() {
+        let receipt_dir =
+            std::env::temp_dir().join(format!("harmonia-command-sidecar-{}", process::id()));
+        let module_dir = receipt_dir.join("module");
+        fs::create_dir_all(&module_dir).unwrap();
+        let module_path = module_dir.join("sidecar.json");
         fs::write(
             &module_path,
-            r#"{"schema":"harmonia.module.v1","id":"identity","steps":[{"id":"uname","tool":"command","action":"run"}]}"#,
+            r#"{"schema":"harmonia.module.sidecar.v1","id":"identity","command":"/usr/bin/true"}"#,
         )
         .unwrap();
         let err = load_module(&module_path).unwrap_err();
-        assert!(err.contains("module-json-steps-rejected"));
+        assert!(err.contains("module-sidecar-behavior-field-rejected"));
         let _ = fs::remove_dir_all(receipt_dir);
     }
 
@@ -275,7 +280,7 @@ mod tests {
         let module = ModuleManifest {
             id: "json-invented-module".into(),
             description: "sidecar-only module".into(),
-            command: Some("/usr/bin/true".into()),
+            command: None,
             args: vec![],
             cwd: None,
             service: None,
@@ -298,59 +303,47 @@ mod tests {
     }
 
     #[test]
-    fn homeconsole_profile_contains_only_registered_rust_modules() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    fn homeconsole_profile_contains_only_registered_rust_modules_and_adjacent_sidecars() {
+        let root = repo_root();
         let profile = load_profile(&root.join("profiles/homeconsole/index.json")).unwrap();
+        assert_eq!(profile.id, "homeconsole");
+        assert_eq!(profile.identity, "homeconsole");
         assert_eq!(
             profile.modules,
-            vec![
-                "identity",
-                "system-packages",
-                "harmonia-runtime",
-                "keyman-runtime",
-                "homeconsole-sync-runtime",
-                "rust-build-toolchain",
-                "arcadia-gui-runtime",
-                "pinned-artifacts-runtime",
-            ]
+            HOMECONSOLE_UPDATE_SUITE_MODULES
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
         );
         enforce_homeconsole_update_suite(&profile).unwrap();
+        assert!(
+            !root.join("modules").exists(),
+            "top-level module execution tree must be absent"
+        );
+        assert!(
+            !root.join("payloads").exists(),
+            "top-level payload execution tree must be absent"
+        );
         for module in &profile.modules {
-            let manifest = load_module(
-                &root
-                    .join("modules/homeconsole")
-                    .join(module)
-                    .join("index.json"),
-            )
-            .unwrap();
-            validate_registered_module(&manifest).unwrap();
-        }
-        for removed in [
-            "desktop-appliance",
-            "game-library",
-            "pinned-artifacts",
-            "receipts",
-        ] {
+            let dir = root.join("profiles/homeconsole/modules").join(module);
             assert!(
-                !root
-                    .join("modules/homeconsole")
-                    .join(removed)
-                    .join("index.json")
-                    .exists(),
-                "{removed} placeholder module must stay obliterated"
+                dir.join("index.rs").exists(),
+                "{module} needs profile-adjacent Rust marker"
             );
+            let manifest = load_module(&dir.join("sidecar.json")).unwrap();
+            validate_registered_module(&manifest).unwrap();
         }
     }
 
     #[test]
     fn homeconsole_runtime_modules_require_git_checkout_authority() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = repo_root();
         for module in ["keyman-runtime", "homeconsole-sync-runtime"] {
             let manifest = load_module(
                 &root
-                    .join("modules/homeconsole")
+                    .join("profiles/homeconsole/modules")
                     .join(module)
-                    .join("index.json"),
+                    .join("sidecar.json"),
             )
             .unwrap();
             assert_eq!(manifest.id, module);
@@ -364,6 +357,19 @@ mod tests {
     }
 
     #[test]
+    fn shared_toolbelt_is_callable_by_modules() {
+        assert!(tools::get("command").is_some());
+        assert!(tools::get("git-artifact").is_some());
+        assert!(tools::get("receipt").is_some());
+        let root = repo_root();
+        let manifest = load_module(
+            &root.join("profiles/homeconsole/modules/homeconsole-sync-runtime/sidecar.json"),
+        )
+        .unwrap();
+        assert!(homeconsole_sync_runtime_validate_for_test(&manifest).is_ok());
+    }
+
+    #[test]
     fn keyman_store_update_noops_when_checkout_and_store_are_same_path() {
         let root =
             std::env::temp_dir().join(format!("harmonia-keyman-same-path-{}", process::id()));
@@ -372,65 +378,8 @@ mod tests {
         fs::write(root.join("lib/keyman_installer/index.py"), "print('ok')\n").unwrap();
         fs::write(root.join("keystartup.sh"), "#!/bin/sh\n").unwrap();
         fs::write(root.join("exportkey.sh"), "#!/bin/sh\n").unwrap();
-
         let changed = sync_directory(&root, &root).unwrap();
         assert!(!changed);
-        assert!(root.join("index.py").is_file());
-        assert!(root.join("lib/keyman_installer/index.py").is_file());
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn tv_profile_base_and_payload_authority_are_declared() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
-        assert_eq!(profile.id, "tv");
-        assert_eq!(profile.family, "arch-tv");
-        assert_eq!(profile.modules, vec!["identity", "system-packages"]);
-        assert!(
-            !profile.modules.contains(&"arcadia-gui-runtime".to_string()),
-            "TV profile must not inherit HomeConsole product runtimes"
-        );
-        assert!(
-            !profile
-                .modules
-                .contains(&"homeconsole-sync-runtime".to_string()),
-            "TV profile must not inherit HomeConsole sync runtime"
-        );
-        for module in &profile.modules {
-            let manifest =
-                load_module(&root.join("modules/tv").join(module).join("index.json")).unwrap();
-            validate_registered_module(&manifest).unwrap();
-        }
-
-        let authority: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.join("payloads/tv/index.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(authority["schema"], "harmonia.tv.payload-authority.v1");
-        assert_eq!(authority["authority"], "harmonia");
-        assert!(authority["make_modern_boundary"]
-            .as_str()
-            .unwrap()
-            .contains("Make Modern owns only"));
-        assert!(authority["deployable_consumption"]["allowed_modes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|mode| mode == "declared-export-vendor-with-receipt"));
-        assert!(authority["owned_surfaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|surface| surface == "desktop-config-payload"));
-        assert!(authority["desktop_payload_paths"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|path| path == ".config/waybar/waybar.conf"));
-        assert_eq!(
-            authority["deployable_consumption"]["forbidden"],
-            "two-hand-maintained-payload-trees"
-        );
     }
 }

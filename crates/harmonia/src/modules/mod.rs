@@ -106,3 +106,10 @@ fn require_packages(module: &ModuleManifest) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+pub(crate) fn homeconsole_sync_runtime_validate_for_test(
+    module: &ModuleManifest,
+) -> Result<(), String> {
+    homeconsole_sync_runtime::validate(module)
+}

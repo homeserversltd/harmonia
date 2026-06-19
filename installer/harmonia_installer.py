@@ -282,7 +282,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={paths.bin_path} run-profile {paths.config_dir}/profiles/{profile}/index.json --module-root {paths.config_dir}/modules/{profile} --apply --receipt-dir {paths.receipt_dir}/{profile}-latest
+ExecStart={paths.bin_path} run-profile {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {paths.receipt_dir}/{profile}-latest
 """
     timer = """[Unit]
 Description=Run Harmonia profile update periodically

@@ -1,5 +1,5 @@
 {
-  "schema": "harmonia.homeconsole.sync.module.v1",
+  "schema": "harmonia.module.sidecar.v1",
   "id": "sync",
   "description": "HomeConsole game-library sync transition governed by Harmonia and implemented by the standalone homeconsole-sync runtime repository.",
   "adapter_command": "/usr/local/bin/homeconsole-sync",
