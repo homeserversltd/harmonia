@@ -10,26 +10,47 @@ impl ToolContract {
     }
 }
 
+#[path = "../../../src/tools/archive.rs"]
 pub mod archive;
+#[path = "../../../src/tools/artifact.rs"]
 pub mod artifact;
+#[path = "../../../src/tools/backup.rs"]
 pub mod backup;
+#[path = "../../../src/tools/command.rs"]
 pub mod command;
+#[path = "../../../src/tools/config.rs"]
 pub mod config;
+#[path = "../../../src/tools/cron_timer.rs"]
 pub mod cron_timer;
+#[path = "../../../src/tools/download.rs"]
 pub mod download;
+#[path = "../../../src/tools/files.rs"]
 pub mod files;
+#[path = "../../../src/tools/git_artifact.rs"]
 pub mod git_artifact;
+#[path = "../../../src/tools/health.rs"]
 pub mod health;
+#[path = "../../../src/tools/hotfix.rs"]
 pub mod hotfix;
+#[path = "../../../src/tools/interactable.rs"]
 pub mod interactable;
+#[path = "../../../src/tools/migration.rs"]
 pub mod migration;
+#[path = "../../../src/tools/node_build.rs"]
 pub mod node_build;
+#[path = "../../../src/tools/package.rs"]
 pub mod package;
+#[path = "../../../src/tools/permissions.rs"]
 pub mod permissions;
+#[path = "../../../src/tools/receipt.rs"]
 pub mod receipt;
+#[path = "../../../src/tools/rust_build.rs"]
 pub mod rust_build;
+#[path = "../../../src/tools/systemd.rs"]
 pub mod systemd;
+#[path = "../../../src/tools/venv.rs"]
 pub mod venv;
+#[path = "../../../src/tools/version.rs"]
 pub mod version;
 
 pub const TOOLBELT: &[ToolContract] = &[
@@ -101,7 +122,7 @@ mod tests {
             }
         }
         walk(&root, &mut tools_dirs);
-        assert_eq!(tools_dirs, vec![root.join("crates/harmonia/src/tools")]);
+        assert_eq!(tools_dirs, vec![root.join("src/tools")]);
     }
 
     #[test]
@@ -140,7 +161,7 @@ mod tests {
         );
         for tool in all() {
             let module_file = root
-                .join("crates/harmonia/src/tools")
+                .join("src/tools")
                 .join(format!("{}.rs", tool.name.replace('-', "_")));
             assert!(
                 module_file.exists(),
