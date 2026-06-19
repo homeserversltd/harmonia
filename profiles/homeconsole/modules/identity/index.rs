@@ -1,6 +1,28 @@
-// Harmonia profile-adjacent Rust module marker for identity.
-// The compiled implementation is src/modules/identity.rs.
-// This file records that the profile lane maps this module to literal Rust logic;
-// executable behavior is not supplied by sidecar.json.
-pub const MODULE_ID: &str = "identity";
-pub const COMPILED_RUST_MODULE: &str = "src/modules/identity.rs";
+use crate::modules::{reject_executable_sidecar, ModuleExecution};
+use crate::*;
+use std::path::Path;
+
+pub(crate) const ID: &str = "identity";
+
+pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
+    reject_executable_sidecar(module)
+}
+
+pub(crate) fn execute(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    _apply: bool,
+) -> Result<ModuleExecution, String> {
+    validate(module)?;
+    let outcome = command_tool(
+        receipt_dir,
+        "uname",
+        "/usr/bin/uname",
+        &["-a".to_string()],
+        None,
+    )?;
+    Ok(ModuleExecution::from_operations(
+        vec![("uname", outcome)],
+        &module.id,
+    ))
+}

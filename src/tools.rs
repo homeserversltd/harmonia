@@ -23,6 +23,7 @@ pub mod health;
 pub mod hotfix;
 pub mod interactable;
 pub mod migration;
+pub(crate) mod module_steps;
 pub mod node_build;
 pub mod package;
 pub mod permissions;

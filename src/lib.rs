@@ -1,4 +1,5 @@
 pub mod tools;
+pub(crate) use tools::module_steps::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -154,27 +155,17 @@ struct OperationOutcome {
     command: Option<CmdResult>,
 }
 
-mod arcadia;
 mod cli;
 mod homeconsole;
-mod keyman;
 mod modules;
-mod pinned_artifacts;
 mod profile_engine;
 mod receipts;
-mod step_tools;
-mod sync;
 
-pub(crate) use arcadia::*;
 pub(crate) use cli::*;
 pub(crate) use homeconsole::*;
-pub(crate) use keyman::*;
 pub(crate) use modules::*;
-pub(crate) use pinned_artifacts::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
-pub(crate) use step_tools::*;
-pub(crate) use sync::*;
 
 pub fn main_entry() {
     if let Err(err) = run(env::args().skip(1).collect()) {
