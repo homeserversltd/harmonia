@@ -24,8 +24,7 @@
     {
       "name": "screenscraper",
       "env_keys": [
-        "SCREENSCRAPER_USER",
-        "SCREENSCRAPER_PASSWORD"
+        "SCREENSCRAPER_API_KEY"
       ],
       "required": false
     }
