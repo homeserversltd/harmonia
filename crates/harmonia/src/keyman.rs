@@ -452,6 +452,13 @@ pub(crate) fn sync_directory(source: &Path, dest: &Path) -> Result<bool, String>
     if !source.is_dir() {
         return Err(format!("source-not-directory {}", source.display()));
     }
+    if source == dest
+        || (source.exists()
+            && dest.exists()
+            && fs::canonicalize(source).ok() == fs::canonicalize(dest).ok())
+    {
+        return Ok(false);
+    }
     let before = directory_fingerprint(dest)?;
     if dest.exists() {
         fs::remove_dir_all(dest)

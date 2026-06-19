@@ -1,9 +1,6 @@
 {
   "schema": "harmonia.module.sidecar.v1",
   "id": "homeconsole-sync-runtime",
-  "description": "HomeConsole Sync runtime possession. Rust module syncs source and invokes the repository installer directly using these constants.",
-  "repo": "git@git.home.arpa:HOMESERVERSLTD/homeconsole-sync.git",
-  "path": "/opt/homeconsole-sync/source",
-  "branch": "main",
-  "remote": "origin"
+  "description": "HomeConsole Sync runtime possession. Rust module validates the copied/exported HomeConsole Sync payload and invokes its installer; this path is not required to be a git checkout.",
+  "path": "/opt/homeconsole-sync/source"
 }

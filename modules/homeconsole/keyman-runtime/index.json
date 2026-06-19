@@ -1,9 +1,6 @@
 {
   "schema": "harmonia.module.sidecar.v1",
   "id": "keyman-runtime",
-  "description": "HomeConsole Keyman source possession. Rust module calls git-artifact directly using these constants.",
-  "repo": "git@git.home.arpa:HOMESERVERSLTD/keyman.git",
-  "path": "/opt/keyman/source",
-  "branch": "main",
-  "remote": "origin"
+  "description": "HomeConsole Keyman runtime possession. Rust module validates the copied/exported Keyman payload and runs the Keyman runtime installer; this path is not required to be a git checkout.",
+  "path": "/opt/keyman/source"
 }
