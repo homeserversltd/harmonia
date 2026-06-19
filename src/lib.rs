@@ -364,6 +364,65 @@ mod tests {
         assert!(!changed);
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn profile_ledger_is_one_append_only_jsonl_per_profile() {
+        let root = std::env::temp_dir().join(format!("harmonia-ledger-{}", process::id()));
+        let first_receipt = root.join("runs/first");
+        let second_receipt = root.join("runs/second");
+        let profile = Profile {
+            id: "homeconsole".into(),
+            identity: "homeconsole".into(),
+            modules: vec!["identity".into()],
+        };
+        append_profile_ledger_entry(
+            &first_receipt,
+            &profile,
+            ProfileLedgerEntry {
+                run_id: "run-one",
+                module_id: "identity",
+                ok: true,
+                changed: false,
+                operation_count: 1,
+                first_missing_signal: "none",
+                receipt_dir: &first_receipt,
+            },
+        )
+        .unwrap();
+        append_profile_ledger_entry(
+            &second_receipt,
+            &profile,
+            ProfileLedgerEntry {
+                run_id: "run-two",
+                module_id: "identity",
+                ok: false,
+                changed: false,
+                operation_count: 0,
+                first_missing_signal: "identity-failed",
+                receipt_dir: &second_receipt,
+            },
+        )
+        .unwrap();
+        let ledger = root.join("runs/homeconsole-ledger.jsonl");
+        assert!(ledger.exists());
+        let lines = fs::read_to_string(&ledger).unwrap();
+        let entries: Vec<serde_json::Value> = lines
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["sequence"], 1);
+        assert_eq!(entries[1]["sequence"], 2);
+        assert_eq!(entries[0]["run_id"], "run-one");
+        assert_eq!(entries[1]["first_missing_signal"], "identity-failed");
+        let ledgers: Vec<_> = fs::read_dir(root.join("runs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
+            .collect();
+        assert_eq!(ledgers.len(), 1, "only one profile ledger should exist");
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {

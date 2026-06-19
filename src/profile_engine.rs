@@ -61,6 +61,7 @@ pub(crate) fn run_profile_engine(
         true,
         &format!("profile {}", profile.id),
     )?;
+    let run_id = run_id_from_stamp();
     let mut ok = true;
     let mut changed = false;
     let mut first_missing_signal = "none".to_string();
@@ -77,6 +78,19 @@ pub(crate) fn run_profile_engine(
                     first_missing_signal = format!("module-missing-{module_id}");
                 }
                 event(&mut events, "module-load", false, &err)?;
+                append_profile_ledger_entry(
+                    receipt_dir,
+                    profile,
+                    ProfileLedgerEntry {
+                        run_id: &run_id,
+                        module_id,
+                        ok: false,
+                        changed: false,
+                        operation_count: 0,
+                        first_missing_signal: &format!("module-missing-{module_id}"),
+                        receipt_dir,
+                    },
+                )?;
                 continue;
             }
         };
@@ -90,6 +104,19 @@ pub(crate) fn run_profile_engine(
                     first_missing_signal = err.clone();
                 }
                 event(&mut events, "module-rejected", false, &err)?;
+                append_profile_ledger_entry(
+                    receipt_dir,
+                    profile,
+                    ProfileLedgerEntry {
+                        run_id: &run_id,
+                        module_id: &module.id,
+                        ok: false,
+                        changed: false,
+                        operation_count: 0,
+                        first_missing_signal: &err,
+                        receipt_dir,
+                    },
+                )?;
                 continue;
             }
         };
@@ -97,14 +124,29 @@ pub(crate) fn run_profile_engine(
         if execution.changed {
             changed = true;
         }
+        let module_signal = execution.first_missing_signal.as_deref().unwrap_or("none");
         if !execution.ok {
             ok = false;
             if first_missing_signal == "none" {
                 first_missing_signal = execution
                     .first_missing_signal
+                    .clone()
                     .unwrap_or_else(|| format!("module-failed-{module_id}"));
             }
         }
+        append_profile_ledger_entry(
+            receipt_dir,
+            profile,
+            ProfileLedgerEntry {
+                run_id: &run_id,
+                module_id: &module.id,
+                ok: execution.ok,
+                changed: execution.changed,
+                operation_count: execution.operation_count,
+                first_missing_signal: module_signal,
+                receipt_dir,
+            },
+        )?;
         event(
             &mut events,
             "module-complete",
