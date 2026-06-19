@@ -1,6 +1,7 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandReceipt {
@@ -92,6 +93,26 @@ fn sync_repo(request: &Request) -> CommandReceipt {
                     stdout: String::new(),
                     stderr: format!("create parent failed {}: {err}", parent.display()),
                 };
+            }
+        }
+        if request.path.exists() {
+            let preserved = preserved_non_git_path(&request.path);
+            match fs::rename(&request.path, &preserved) {
+                Ok(()) => transcript.push(format!(
+                    "non_git_existing_path_preserved={}",
+                    preserved.display()
+                )),
+                Err(err) => {
+                    return CommandReceipt {
+                        ok: false,
+                        code: 2,
+                        stdout: transcript.join("\n"),
+                        stderr: format!(
+                            "existing non-git path could not be preserved {}: {err}",
+                            request.path.display()
+                        ),
+                    }
+                }
             }
         }
         let clone = command_capture(
@@ -200,6 +221,18 @@ pub fn stdout_changed(stdout: &str) -> bool {
     stdout.lines().any(|line| line.trim() == "changed=true")
 }
 
+fn preserved_non_git_path(path: &Path) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("source");
+    path.with_file_name(format!("{name}.non-git-preserved-{stamp}"))
+}
+
 fn command_capture(program: &str, args: &[&str]) -> CommandReceipt {
     command_capture_with_cwd(program, args, None)
 }
@@ -248,5 +281,54 @@ mod tests {
         assert!(outcome.ok);
         assert!(!outcome.changed);
         assert!(outcome.command.stdout.contains("planned clone/update"));
+    }
+
+    #[test]
+    fn sync_preserves_existing_non_git_path_before_clone() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-git-artifact-non-git-{}",
+            std::process::id()
+        ));
+        let repo = root.join("repo");
+        let target = root.join("source");
+        fs::create_dir_all(&repo).unwrap();
+        command_capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], repo.to_str());
+        command_capture_with_cwd(
+            "/usr/bin/git",
+            &["config", "user.email", "harmonia@example.invalid"],
+            repo.to_str(),
+        );
+        command_capture_with_cwd(
+            "/usr/bin/git",
+            &["config", "user.name", "Harmonia Test"],
+            repo.to_str(),
+        );
+        fs::write(repo.join("README.md"), "repo source\n").unwrap();
+        command_capture_with_cwd("/usr/bin/git", &["add", "README.md"], repo.to_str());
+        command_capture_with_cwd("/usr/bin/git", &["commit", "-m", "seed"], repo.to_str());
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("old-payload"), "preserve me\n").unwrap();
+
+        let request = Request::new(
+            Some(repo.display().to_string()),
+            target.clone(),
+            "main".into(),
+            "origin".into(),
+        );
+        let receipt = sync_repo(&request);
+        assert!(receipt.ok, "{}", receipt.stderr);
+        assert!(target.join(".git").exists());
+        assert!(receipt.stdout.contains("non_git_existing_path_preserved="));
+        let preserved_exists = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("non-git-preserved")
+            });
+        assert!(preserved_exists);
+        let _ = fs::remove_dir_all(root);
     }
 }

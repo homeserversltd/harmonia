@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn homeconsole_runtime_payload_modules_do_not_require_git_checkouts() {
+    fn homeconsole_runtime_modules_require_git_checkout_authority() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         for module in ["keyman-runtime", "homeconsole-sync-runtime"] {
             let manifest = load_module(
@@ -356,15 +356,15 @@ mod tests {
             assert_eq!(manifest.id, module);
             assert!(manifest.path.is_some());
             assert!(
-                manifest.repo.is_none(),
-                "{module} is a copied/exported runtime payload module, not a git checkout requirement"
+                manifest.repo.is_some(),
+                "{module} must carry git checkout source authority"
             );
             validate_registered_module(&manifest).unwrap();
         }
     }
 
     #[test]
-    fn keyman_payload_sync_noops_when_source_and_store_are_same_path() {
+    fn keyman_store_update_noops_when_checkout_and_store_are_same_path() {
         let root =
             std::env::temp_dir().join(format!("harmonia-keyman-same-path-{}", process::id()));
         fs::create_dir_all(root.join("lib/keyman_installer")).unwrap();
