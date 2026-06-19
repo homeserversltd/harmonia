@@ -183,6 +183,7 @@ pub(crate) fn run_profile_engine(
 
 pub(crate) fn homeconsole_update(
     profile: &Profile,
+    module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<(), String> {
@@ -192,9 +193,9 @@ pub(crate) fn homeconsole_update(
             profile.id, profile.identity
         ));
     }
-    enforce_homeconsole_update_suite(profile)?;
+    enforce_homeconsole_update_suite(profile, module_root)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    run_profile_engine(profile, &homeconsole_module_root(), receipt_dir, apply)
+    run_profile_engine(profile, module_root, receipt_dir, apply)
 }
 
 pub(crate) fn homeconsole_module_root() -> std::path::PathBuf {
@@ -221,14 +222,17 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
     Ok(found)
 }
 
-pub(crate) fn enforce_homeconsole_update_suite(profile: &Profile) -> Result<(), String> {
-    let module_root = homeconsole_module_root();
-    let expected = module_ids_from_profile_modules(&module_root)?;
+pub(crate) fn enforce_homeconsole_update_suite(
+    profile: &Profile,
+    module_root: &Path,
+) -> Result<(), String> {
+    let expected = module_ids_from_profile_modules(module_root)?;
     if profile.modules == expected {
         Ok(())
     } else {
         Err(format!(
-            "homeconsole-update-suite-spine-mismatch expected={} got={}",
+            "homeconsole-update-suite-spine-mismatch module_root={} expected={} got={}",
+            module_root.display(),
             expected.join(","),
             profile.modules.join(",")
         ))

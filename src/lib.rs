@@ -199,6 +199,10 @@ mod tests {
             default_module_root(Path::new("profiles/homeconsole/index.json")),
             PathBuf::from("profiles/homeconsole/modules")
         );
+        assert_eq!(
+            default_module_root(Path::new("/etc/harmonia/profiles/homeconsole/index.json")),
+            PathBuf::from("/etc/harmonia/profiles/homeconsole/modules")
+        );
     }
 
     #[test]
@@ -208,11 +212,14 @@ mod tests {
             identity: format!("{}-{}", "arch", "console"),
             modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap(),
         };
-        assert!(
-            homeconsole_update(&old, &PathBuf::from("target/unused"), false)
-                .unwrap_err()
-                .contains("homeconsole/homeconsole")
-        );
+        assert!(homeconsole_update(
+            &old,
+            &homeconsole_module_root(),
+            &PathBuf::from("target/unused"),
+            false,
+        )
+        .unwrap_err()
+        .contains("homeconsole/homeconsole"));
     }
 
     #[test]
@@ -297,7 +304,8 @@ mod tests {
             profile.modules,
             module_ids_from_profile_modules(&root.join("profiles/homeconsole/modules")).unwrap()
         );
-        enforce_homeconsole_update_suite(&profile).unwrap();
+        enforce_homeconsole_update_suite(&profile, &root.join("profiles/homeconsole/modules"))
+            .unwrap();
         assert!(
             !root.join("modules").exists(),
             "top-level module execution tree must be absent"
@@ -527,7 +535,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/latest"));
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            homeconsole_update(&profile, &receipt_dir, apply)
+            let module_root = default_module_root(Path::new(path));
+            homeconsole_update(&profile, &module_root, &receipt_dir, apply)
         }
         Some("homeconsole-keyman-update") => {
             let path = args
