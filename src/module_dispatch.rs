@@ -2,21 +2,21 @@ use crate::*;
 use std::fs;
 use std::path::Path;
 
-#[path = "../../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
+#[path = "../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
 mod arcadia_gui_runtime;
-#[path = "../../profiles/homeconsole/modules/harmonia-runtime/index.rs"]
+#[path = "../profiles/homeconsole/modules/harmonia-runtime/index.rs"]
 mod harmonia_runtime;
-#[path = "../../profiles/homeconsole/modules/homeconsole-sync-runtime/index.rs"]
+#[path = "../profiles/homeconsole/modules/homeconsole-sync-runtime/index.rs"]
 mod homeconsole_sync_runtime;
-#[path = "../../profiles/homeconsole/modules/identity/index.rs"]
+#[path = "../profiles/homeconsole/modules/identity/index.rs"]
 mod identity;
-#[path = "../../profiles/homeconsole/modules/keyman-runtime/index.rs"]
+#[path = "../profiles/homeconsole/modules/keyman-runtime/index.rs"]
 mod keyman_runtime;
-#[path = "../../profiles/homeconsole/modules/pinned-artifacts-runtime/index.rs"]
+#[path = "../profiles/homeconsole/modules/pinned-artifacts-runtime/index.rs"]
 mod pinned_artifacts_runtime;
-#[path = "../../profiles/homeconsole/modules/rust-build-toolchain/index.rs"]
+#[path = "../profiles/homeconsole/modules/rust-build-toolchain/index.rs"]
 mod rust_build_toolchain;
-#[path = "../../profiles/homeconsole/modules/system-packages/index.rs"]
+#[path = "../profiles/homeconsole/modules/system-packages/index.rs"]
 mod system_packages;
 pub(crate) use arcadia_gui_runtime::{
     homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,

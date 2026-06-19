@@ -1,4 +1,4 @@
-use crate::modules::{reject_executable_sidecar, ModuleExecution};
+use crate::module_dispatch::{reject_executable_sidecar, ModuleExecution};
 use crate::*;
 use std::path::Path;
 
