@@ -1,7 +1,9 @@
 use crate::*;
 use serde_json::json;
 use std::fs::{self, File};
-use std::path::Path;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 pub(crate) fn homeconsole_keyman_update(
     profile: &Profile,
@@ -135,8 +137,17 @@ pub(crate) fn homeconsole_keyman_update(
         "keyman installer completed with redacted output",
     )?;
 
+    if installer.ok {
+        reconcile_keyman_vault_layout(vault_dir)?;
+        install_gui_pin_helpers()?;
+    }
+
     let installed_shape = keyman_install_shape(runtime_dir, vault_dir, key_dir, exchange_dir);
-    let ok = installer.ok && installed_shape.0;
+    let ok = installer.ok
+        && installed_shape.0
+        && installed_shape.1["gui_pin_helpers_present"]
+            .as_bool()
+            .unwrap_or(false);
     let first_missing_signal = if ok {
         "none"
     } else if !installer.ok {
@@ -203,6 +214,15 @@ pub(crate) fn keyman_install_shape(
     let keys = vault_dir.join(".keys");
     let skeleton = key_dir.join("skeleton.key");
     let service_suite = keys.join("service_suite.key");
+    let gui_pin_helpers_present = [
+        "/usr/local/sbin/homeconsole-gui-pin-lib",
+        "/usr/local/sbin/homeconsole-gui-pin-verify",
+        "/usr/local/sbin/homeconsole-gui-pin-access",
+        "/usr/local/sbin/homeconsole-gui-pin-change",
+        "/usr/local/sbin/homeconsole-gui-pin-reset-default",
+    ]
+    .iter()
+    .all(|path| Path::new(path).is_file());
     let shape = json!({
         "runtime_dir_present": runtime_dir.is_dir(),
         "exportkey_present": export.is_file(),
@@ -210,15 +230,179 @@ pub(crate) fn keyman_install_shape(
         "skeleton_key_present": skeleton.is_file(),
         "service_suite_key_present": service_suite.is_file(),
         "exchange_dir_present": exchange_dir.exists(),
+        "gui_pin_helpers_present": gui_pin_helpers_present,
         "secret_material": "[REDACTED]",
     });
     let ok = runtime_dir.is_dir()
         && export.is_file()
         && keys.is_dir()
         && skeleton.is_file()
-        && service_suite.is_file();
+        && service_suite.is_file()
+        && gui_pin_helpers_present;
     (ok, shape)
 }
+
+pub(crate) fn reconcile_keyman_vault_layout(vault_dir: &Path) -> Result<(), String> {
+    let keys_dir = vault_dir.join(".keys");
+    fs::create_dir_all(&keys_dir).map_err(|e| format!("create-vault-keys-dir-failed: {e}"))?;
+    for name in ["service_suite.key", "nas.key"] {
+        let legacy = vault_dir.join(name);
+        let canonical = keys_dir.join(name);
+        if legacy.is_file() && !canonical.exists() {
+            fs::rename(&legacy, &canonical).map_err(|e| {
+                format!(
+                    "keyman-vault-layout-reconcile-failed {} -> {}: {e}",
+                    legacy.display(),
+                    canonical.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn install_gui_pin_helpers() -> Result<(), String> {
+    fs::create_dir_all("/usr/local/sbin").map_err(|e| e.to_string())?;
+    fs::create_dir_all("/var/lib/homeconsole").map_err(|e| e.to_string())?;
+    write_executable("/usr/local/sbin/homeconsole-gui-pin-lib", GUI_PIN_LIB)?;
+    write_executable("/usr/local/sbin/homeconsole-gui-pin-verify", GUI_PIN_VERIFY)?;
+    write_executable("/usr/local/sbin/homeconsole-gui-pin-access", GUI_PIN_ACCESS)?;
+    write_executable("/usr/local/sbin/homeconsole-gui-pin-change", GUI_PIN_CHANGE)?;
+    write_executable(
+        "/usr/local/sbin/homeconsole-gui-pin-reset-default",
+        GUI_PIN_RESET_DEFAULT,
+    )?;
+    let state = PathBuf::from("/var/lib/homeconsole/gui-pin-access.json");
+    if !state.exists() {
+        fs::write(&state, "{\"pin_required\":false}\n").map_err(|e| e.to_string())?;
+        set_private_file_permissions(&state)?;
+    }
+    Ok(())
+}
+
+fn write_executable(path: &str, content: &str) -> Result<(), String> {
+    let path = Path::new(path);
+    fs::write(path, content).map_err(|e| format!("write-helper-failed {}: {e}", path.display()))?;
+    set_executable_permissions(path)
+}
+
+#[cfg(unix)]
+fn set_executable_permissions(path: &Path) -> Result<(), String> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn set_executable_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> Result<(), String> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+const GUI_PIN_LIB: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+SERVICE="homeconsole_gui_pin"
+STATE="/var/lib/homeconsole/gui-pin-access.json"
+KEY_FILE="/vault/.keys/${SERVICE}.key"
+KEYMAN_NEW="/vault/keyman/newkey.sh"
+KEYMAN_EXPORT="/vault/keyman/exportkey.sh"
+EXCHANGE="/mnt/keyexchange/${SERVICE}"
+DEFAULT_PIN_FILE="/etc/homeconsole/default-gui-pin"
+
+ensure_keyman() {
+  test -x "$KEYMAN_NEW"
+  test -x "$KEYMAN_EXPORT"
+  test -d /vault/.keys
+  test -f /vault/.keys/service_suite.key
+  test -f /root/key/skeleton.key
+}
+
+cleanup() {
+  if test -f /vault/keyman/utils.sh; then
+    bash -lc "source /vault/keyman/utils.sh; secure_cleanup" >/dev/null 2>&1 || true
+  else
+    rm -f "$EXCHANGE" 2>/dev/null || true
+  fi
+}
+
+read_pin() {
+  ensure_keyman
+  test -f "$KEY_FILE"
+  "$KEYMAN_EXPORT" "$SERVICE" >/dev/null 2>&1
+  trap cleanup EXIT
+  test -f "$EXCHANGE"
+  local value
+  value=$(grep -E '^password=' "$EXCHANGE" | head -n1)
+  value="${value#password=}"
+  value="${value%\"}"
+  value="${value#\"}"
+  test -n "$value"
+  printf '%s' "$value"
+}
+
+store_pin() {
+  ensure_keyman
+  local pin="$1"
+  test -n "$pin"
+  "$KEYMAN_NEW" "$SERVICE" gui_pin "$pin" >/dev/null 2>&1
+  cleanup
+}
+
+set_required() {
+  local required="$1"
+  install -d -m 700 "$(dirname "$STATE")"
+  if [[ "$required" == "required" || "$required" == "true" ]]; then
+    test -f "$KEY_FILE"
+    printf '{"pin_required":true}\n' > "$STATE"
+  else
+    printf '{"pin_required":false}\n' > "$STATE"
+  fi
+  chmod 600 "$STATE"
+}
+"#;
+
+const GUI_PIN_VERIFY: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+source /usr/local/sbin/homeconsole-gui-pin-lib
+IFS= read -r submitted
+stored=$(read_pin)
+[[ "$submitted" == "$stored" ]]
+"#;
+
+const GUI_PIN_ACCESS: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+source /usr/local/sbin/homeconsole-gui-pin-lib
+IFS= read -r mode
+set_required "$mode"
+"#;
+
+const GUI_PIN_CHANGE: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+source /usr/local/sbin/homeconsole-gui-pin-lib
+IFS= read -r current
+IFS= read -r next
+if test -f "$KEY_FILE"; then
+  stored=$(read_pin)
+  [[ "$current" == "$stored" ]]
+fi
+store_pin "$next"
+"#;
+
+const GUI_PIN_RESET_DEFAULT: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+source /usr/local/sbin/homeconsole-gui-pin-lib
+test -f "$DEFAULT_PIN_FILE"
+default_pin=$(head -n1 "$DEFAULT_PIN_FILE")
+test -n "$default_pin"
+store_pin "$default_pin"
+"#;
 
 pub(crate) fn write_keyman_update_receipt(
     receipt_dir: &Path,
