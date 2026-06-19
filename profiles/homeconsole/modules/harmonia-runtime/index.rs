@@ -84,7 +84,14 @@ pub(crate) fn execute(
     let install = if apply && git_outcome.ok {
         command_capture_with_cwd(
             "/usr/bin/python3",
-            &["./cli.py", "install", "--apply", "--profile", "homeconsole"],
+            &[
+                "-B",
+                "./cli.py",
+                "install",
+                "--apply",
+                "--profile",
+                "homeconsole",
+            ],
             source_dir.to_str(),
         )
     } else if git_outcome.ok {
