@@ -16,19 +16,23 @@ pub(crate) const HOMECONSOLE_UPDATE_SUITE_MODULES: &[&str] = &[
 
 pub(crate) fn homeconsole_update(
     profile: &Profile,
-    module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<(), String> {
-    if profile.id != "homeconsole" || profile.family != "arch-console" {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
-            "homeconsole-update requires homeconsole/arch-console profile, got {}/{}",
-            profile.id, profile.family
+            "homeconsole-update requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
         ));
     }
     enforce_homeconsole_update_suite(profile)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    run_profile_engine(profile, module_root, receipt_dir, apply)
+    run_profile_engine(
+        profile,
+        Path::new("profiles/homeconsole/modules"),
+        receipt_dir,
+        apply,
+    )
 }
 
 pub(crate) fn enforce_homeconsole_update_suite(profile: &Profile) -> Result<(), String> {

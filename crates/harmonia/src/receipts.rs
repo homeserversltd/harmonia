@@ -56,11 +56,13 @@ pub(crate) fn write_engine_run_receipt(
             "changed": changed,
             "mutation": apply,
             "profile_id": profile.id,
-            "profile_family": profile.family,
+            "identity": profile.identity,
             "module_count": module_count,
             "operation_count": operation_count,
             "first_missing_signal": first_missing_signal,
-            "module_root": module_root,
+            "module_spine_entered": module_root,
+            "selected_profile": profile.id,
+            "suite_ok": ok,
         }),
     )
 }
@@ -139,7 +141,7 @@ pub(crate) fn write_run_receipt(
             "ok": ok,
             "mutation": apply,
             "profile_id": profile.id,
-            "profile_family": profile.family,
+            "identity": profile.identity,
             "module_count": profile.modules.len(),
             "first_missing_signal": first_missing_signal,
         }),
@@ -215,7 +217,7 @@ pub(crate) fn write_plan_receipts(profile: &Profile, receipt_dir: &Path) -> io::
             "ok": true,
             "mutation": false,
             "profile_id": profile.id,
-            "profile_family": profile.family,
+            "identity": profile.identity,
             "module_count": profile.modules.len(),
         }),
     )?;

@@ -99,9 +99,7 @@ cargo test -p harmonia
 Run a non-mutating profile check and write receipts:
 
 ```bash
-cargo run -p harmonia -- run-profile profiles/homeconsole/index.json \
-  --module-root modules/homeconsole \
-  --receipt-dir target/homeconsole-check
+cargo run -p harmonia -- homeconsole-update profiles/homeconsole/index.json --receipt-dir target/homeconsole-check
 ```
 
 ## Example: HomeConsole

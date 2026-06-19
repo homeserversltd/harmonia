@@ -13,7 +13,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             println!("schema=harmonia.profile.inspect.v1");
             println!("ok=true");
             println!("profile_id={}", profile.id);
-            println!("profile_family={}", profile.family);
+            println!("identity={}", profile.identity);
             println!("module_count={}", profile.modules.len());
             println!("modules={}", profile.modules.join(","));
             Ok(())
@@ -40,8 +40,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let receipt_dir = receipt_dir_arg(&args)
                 .unwrap_or_else(|| PathBuf::from("target/harmonia-run-profile"));
             let apply = args.iter().any(|arg| arg == "--apply");
-            let module_root = value_arg(&args, "--module-root")
-                .unwrap_or_else(|| default_module_root(Path::new(path)));
+            let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             run_profile_engine(&profile, &module_root, &receipt_dir, apply)
         }
@@ -92,9 +91,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/latest"));
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            let module_root = value_arg(&args, "--module-root")
-                .unwrap_or_else(|| default_module_root(Path::new(path)));
-            homeconsole_update(&profile, &module_root, &receipt_dir, apply)
+            homeconsole_update(&profile, &receipt_dir, apply)
         }
         Some("homeconsole-keyman-update") => {
             let path = args
@@ -237,7 +234,7 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");
     println!("profiles=homeserver,homeconsole,tv");
-    println!("homeconsole_equals_arch_console=true");
+    println!("homeconsole_identity=homeconsole");
     Ok(())
 }
 
@@ -248,12 +245,12 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
-    println!("  harmonia run-profile <profiles/<id>/index.json> [--module-root <path>] [--apply] [--receipt-dir <path>]");
+    println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts check <profiles/<id>/index.json> [--lock <path>] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts nudge <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts bless <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--install-path <path>] [--apply] [--receipt-dir <path>]");
-    println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--module-root <path>] [--apply] [--receipt-dir <path>]");
-    println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> [--module <modules/homeconsole/sync/index.json>] [--provider-env <path>] [--adapter-command <path>] [--apply] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> [--module <profiles/homeconsole/modules/sync/sidecar.json>] [--provider-env <path>] [--adapter-command <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha <sha>] [--source-sha-file <path>] [--receipt-dir <path>]");
@@ -279,14 +276,5 @@ pub(crate) fn value_arg_string(args: &[String], name: &str) -> Option<String> {
 
 pub(crate) fn default_module_root(profile_path: &Path) -> PathBuf {
     let profile_dir = profile_path.parent().unwrap_or_else(|| Path::new("."));
-    let profile_id = profile_dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
-    profile_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .unwrap_or_else(|| Path::new("."))
-        .join("modules")
-        .join(profile_id)
+    profile_dir.join("modules")
 }

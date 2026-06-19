@@ -41,7 +41,7 @@ pub(crate) fn execute(
             "ok": true,
             "profile_path": "/etc/harmonia/profiles/homeconsole/index.json",
             "profile_id": "homeconsole",
-            "profile_family": "arch-console",
+            "identity": "homeconsole",
         }),
     )?;
     let inspect = OperationOutcome {

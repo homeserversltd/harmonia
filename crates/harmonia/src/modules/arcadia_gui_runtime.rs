@@ -22,7 +22,7 @@ pub(crate) fn execute(
     validate(module)?;
     let profile = Profile {
         id: "homeconsole".to_string(),
-        family: "arch-console".to_string(),
+        identity: "homeconsole".to_string(),
         modules: HOMECONSOLE_UPDATE_SUITE_MODULES
             .iter()
             .map(|module| module.to_string())

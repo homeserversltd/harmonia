@@ -31,10 +31,10 @@ pub(crate) fn homeconsole_arcadia_check(
     upstream_sha_file: Option<&Path>,
     insecure_tls: bool,
 ) -> Result<(), String> {
-    if profile.id != "homeconsole" || profile.family != "arch-console" {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
-            "homeconsole-arcadia-check requires homeconsole/arch-console profile, got {}/{}",
-            profile.id, profile.family
+            "homeconsole-arcadia-check requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
         ));
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -91,7 +91,7 @@ pub(crate) fn homeconsole_arcadia_check(
             "ok": ok,
             "mutation": false,
             "profile_id": profile.id,
-            "profile_family": profile.family,
+            "profile_family": profile.identity,
             "repo": repo,
             "branch": branch,
             "current_sha_file": current_sha_file,
@@ -216,10 +216,10 @@ pub(crate) fn homeconsole_arcadia_update(
     source_sha: Option<&str>,
     source_sha_file: &Path,
 ) -> Result<(), String> {
-    if profile.id != "homeconsole" || profile.family != "arch-console" {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
-            "homeconsole-arcadia-update requires homeconsole/arch-console profile, got {}/{}",
-            profile.id, profile.family
+            "homeconsole-arcadia-update requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
         ));
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -364,10 +364,10 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     apply: bool,
     source_sha_file: &Path,
 ) -> Result<(), String> {
-    if profile.id != "homeconsole" || profile.family != "arch-console" {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
-            "homeconsole-arcadia-gui-update requires homeconsole/arch-console profile, got {}/{}",
-            profile.id, profile.family
+            "homeconsole-arcadia-gui-update requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
         ));
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -545,7 +545,7 @@ fn write_arcadia_gui_run_receipt(
             "changed": changed,
             "mutation": apply,
             "profile_id": profile.id,
-            "profile_family": profile.family,
+            "profile_family": profile.identity,
             "repo": repo,
             "branch": branch,
             "source_dir": source_dir,
