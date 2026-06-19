@@ -39,10 +39,7 @@ pub(crate) fn execute(
     let profile = Profile {
         id: "homeconsole".to_string(),
         identity: "homeconsole".to_string(),
-        modules: HOMECONSOLE_UPDATE_SUITE_MODULES
-            .iter()
-            .map(|module| module.to_string())
-            .collect(),
+        modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap_or_default(),
     };
     let lock = PathBuf::from(require_path(module, &module.lock, "lock")?);
     let args = vec![

@@ -3,17 +3,6 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-pub(crate) const HOMECONSOLE_UPDATE_SUITE_MODULES: &[&str] = &[
-    "identity",
-    "system-packages",
-    "harmonia-runtime",
-    "keyman-runtime",
-    "homeconsole-sync-runtime",
-    "rust-build-toolchain",
-    "arcadia-gui-runtime",
-    "pinned-artifacts-runtime",
-];
-
 pub(crate) fn homeconsole_update(
     profile: &Profile,
     receipt_dir: &Path,
@@ -27,19 +16,36 @@ pub(crate) fn homeconsole_update(
     }
     enforce_homeconsole_update_suite(profile)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    run_profile_engine(
-        profile,
-        Path::new("profiles/homeconsole/modules"),
-        receipt_dir,
-        apply,
-    )
+    run_profile_engine(profile, &homeconsole_module_root(), receipt_dir, apply)
+}
+
+pub(crate) fn homeconsole_module_root() -> std::path::PathBuf {
+    Path::new("profiles/homeconsole/modules").to_path_buf()
+}
+
+pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    for module_id in [
+        "identity",
+        "system-packages",
+        "harmonia-runtime",
+        "keyman-runtime",
+        "homeconsole-sync-runtime",
+        "rust-build-toolchain",
+        "arcadia-gui-runtime",
+        "pinned-artifacts-runtime",
+    ] {
+        let module_dir = module_root.join(module_id);
+        if module_dir.join("index.rs").exists() && module_dir.join("sidecar.json").exists() {
+            found.push(module_id.to_string());
+        }
+    }
+    Ok(found)
 }
 
 pub(crate) fn enforce_homeconsole_update_suite(profile: &Profile) -> Result<(), String> {
-    let expected: Vec<String> = HOMECONSOLE_UPDATE_SUITE_MODULES
-        .iter()
-        .map(|module| module.to_string())
-        .collect();
+    let module_root = homeconsole_module_root();
+    let expected = module_ids_from_profile_modules(&module_root)?;
     if profile.modules == expected {
         Ok(())
     } else {
