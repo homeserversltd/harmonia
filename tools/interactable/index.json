@@ -1,9 +1,0 @@
-{
-  "description": "Operator-triggered action primitive for manual buttons that still need receipts.",
-  "id": "interactable",
-  "source_references": [
-    "interactables"
-  ],
-  "schema": "harmonia.tool.v1",
-  "status": "contract"
-}
