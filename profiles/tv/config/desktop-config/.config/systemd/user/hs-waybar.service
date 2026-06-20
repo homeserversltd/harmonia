@@ -1,0 +1,14 @@
+[Unit]
+Description=HOMESERVER Waybar
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/waybar -c /home/owner/.config/waybar/waybar.conf -s /home/owner/.config/waybar/style.css
+ExecReload=/usr/bin/pkill -SIGUSR2 waybar
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=graphical-session.target

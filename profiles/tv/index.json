@@ -1,0 +1,15 @@
+{
+  "schema": "harmonia.profile.v1",
+  "id": "tv",
+  "aliases": [
+    "arch-tv"
+  ],
+  "description": "TV appliance profile: Harmonia-owned TV configuration and maintenance spine.",
+  "modules": [
+    "identity",
+    "system-packages",
+    "desktop-config-payload"
+  ],
+  "identity": "arch-tv",
+  "module_spine_entered": "profiles/tv/modules"
+}

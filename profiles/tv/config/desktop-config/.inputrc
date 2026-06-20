@@ -1,0 +1,33 @@
+# Enable application keypad mode (VERY IMPORTANT for many programs)
+set enable-keypad on
+
+# Handle 8-bit characters correctly (for international characters and UTF-8)
+set convert-meta off
+set output-meta on
+set input-meta on
+
+# Case-insensitive tab completion
+set completion-ignore-case on
+
+# Show all completion possibilities immediately
+set show-all-if-ambiguous on
+
+# Show file type indicators during completion
+set visible-stats on
+
+# Show common prefix for menu completion
+set menu-complete-display-prefix on
+
+bindkey "^[[1;5C" forward-word
+bindkey "^[[1;5D" backward-word
+bindkey "^[[3~" delete-char
+bindkey "^H" backward-delete-char
+bindkey "^?" backward-delete-char
+bindkey "^[[H" beginning-of-line
+bindkey "^[[1~" beginning-of-line
+bindkey "^[[F" end-of-line
+bindkey "^[[4~" end-of-line
+bindkey "^[[5~" up-line-or-history
+bindkey "^[[6~" down-line-or-history
+# Insert key
+bindkey "^[[2~" overwrite-mode

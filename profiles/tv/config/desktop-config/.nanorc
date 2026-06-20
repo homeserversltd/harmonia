@@ -1,0 +1,24 @@
+# Basic UI Settings
+set linenumbers      # Show line numbers
+set constantshow     # Show cursor position at bottom
+set mouse           # Enable mouse support
+
+# Indentation and Tabs
+set tabsize 4       # Set tab width to 4 spaces
+set tabstospaces    # Convert tabs to spaces
+set autoindent      # Auto-indent new lines
+
+# Editor Behavior
+set historylog      # Remember search/replace strings
+set nowrap          # Don't wrap text at edge of screen
+
+# Visual Improvements
+set titlecolor brightwhite,blue
+set statuscolor brightwhite,green
+set numbercolor cyan
+set keycolor cyan
+set functioncolor green
+
+
+# Syntax Highlighting
+include "/usr/share/nano/*.nanorc"  # Include all syntax highlighting definitions

@@ -1,0 +1,5 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "identity",
+  "description": "TV identity module. Rust owns the identity proof ladder; this sidecar carries no executable logic."
+}
