@@ -1,0 +1,28 @@
+[General]
+Days Meta Infos=30
+PinnedDocuments=
+Restore Window Configuration=false
+Save Meta Infos=true
+Show Full Path in Title=false
+Show Menu Bar=false
+Show Status Bar=false
+Show Tab Bar=true
+Show Url Nav Bar=false
+Show welcome page for new window=false
+Show welcome view for new window=false
+Show welcome view for new windows=false
+Startup Session=new
+
+[MainWindow]
+1920x1080 screen: Window-Maximized=true
+
+[filetree]
+editShade=30,78,103
+listMode=false
+middleClickToClose=false
+shadingEnabled=true
+showCloseButton=false
+showFullPathOnRoots=false
+showToolbar=false
+sortRole=0
+viewShade=77,46,91
