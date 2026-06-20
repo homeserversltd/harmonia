@@ -181,6 +181,8 @@ pub fn main_entry() {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     fn repo_root() -> PathBuf {
@@ -241,6 +243,176 @@ mod tests {
         assert!(redacted.contains("public=yes"));
         assert!(!redacted.contains("abc"));
         assert!(!redacted.contains("owner"));
+    }
+
+    #[test]
+    fn files_convergence_plan_reports_byte_and_mode_drift_without_mutation() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-files-plan-{}", process::id()));
+        let source = scratch.join("source");
+        let target = scratch.join("target");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("a.conf"), "new\n").unwrap();
+        fs::write(target.join("a.conf"), "old\n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(target.join("a.conf"), fs::Permissions::from_mode(0o600)).unwrap();
+        let request = tools::files::FileConvergenceRequest {
+            source_root: source.clone(),
+            target_root: target.clone(),
+            files: vec![tools::files::FileSpec {
+                relative_path: PathBuf::from("a.conf"),
+                mode: Some(0o644),
+            }],
+            backup_existing: true,
+            receipt_name: "plan".to_string(),
+        };
+        let outcome = tools::files::converge_files(&request, &receipts, false).unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(outcome.written, 0);
+        assert_eq!(fs::read_to_string(target.join("a.conf")).unwrap(), "old\n");
+        let receipt = fs::read_to_string(receipts.join("plan.json")).unwrap();
+        assert!(receipt.contains("harmonia.files.converge.v1"));
+        assert!(receipt.contains("content_equal_before"));
+        assert!(!receipt.contains("sha256"));
+        assert!(!receipt.contains("digest"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn files_convergence_apply_backs_up_existing_file_and_sets_mode() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-files-apply-{}", process::id()));
+        let source = scratch.join("source");
+        let target = scratch.join("target");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("a.conf"), "new\n").unwrap();
+        fs::write(target.join("a.conf"), "old\n").unwrap();
+        let request = tools::files::FileConvergenceRequest {
+            source_root: source.clone(),
+            target_root: target.clone(),
+            files: vec![tools::files::FileSpec {
+                relative_path: PathBuf::from("a.conf"),
+                mode: Some(0o640),
+            }],
+            backup_existing: true,
+            receipt_name: "apply".to_string(),
+        };
+        let outcome = tools::files::converge_files(&request, &receipts, true).unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(outcome.written, 1);
+        assert_eq!(outcome.backed_up, 1);
+        assert_eq!(fs::read_to_string(target.join("a.conf")).unwrap(), "new\n");
+        assert_eq!(
+            fs::read_to_string(receipts.join("backups/a.conf")).unwrap(),
+            "old\n"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(target.join("a.conf"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn files_convergence_apply_is_idempotent_after_byte_equal_mode_equal() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-files-idem-{}", process::id()));
+        let source = scratch.join("source");
+        let target = scratch.join("target");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("a.conf"), "same\n").unwrap();
+        let request = tools::files::FileConvergenceRequest {
+            source_root: source.clone(),
+            target_root: target.clone(),
+            files: vec![tools::files::FileSpec {
+                relative_path: PathBuf::from("a.conf"),
+                mode: Some(0o644),
+            }],
+            backup_existing: true,
+            receipt_name: "idem".to_string(),
+        };
+        tools::files::converge_files(&request, &receipts, true).unwrap();
+        let second = tools::files::converge_files(&request, &receipts, true).unwrap();
+        assert!(second.ok);
+        assert!(!second.changed);
+        assert_eq!(second.written, 0);
+        assert_eq!(second.backed_up, 0);
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn files_convergence_rejects_absolute_or_parent_relative_paths() {
+        for rel in ["/tmp/evil", "../evil", "nested/../../evil"] {
+            let request = tools::files::FileConvergenceRequest {
+                source_root: PathBuf::from("source"),
+                target_root: PathBuf::from("target"),
+                files: vec![tools::files::FileSpec {
+                    relative_path: PathBuf::from(rel),
+                    mode: None,
+                }],
+                backup_existing: true,
+                receipt_name: "reject".to_string(),
+            };
+            let err = tools::files::converge_files(&request, &PathBuf::from("receipts"), false)
+                .unwrap_err();
+            assert!(err.contains("files-relative-path-rejected"));
+        }
+    }
+
+    #[test]
+    fn files_convergence_rejects_unsafe_receipt_duplicate_paths_and_modes() {
+        let base = tools::files::FileConvergenceRequest {
+            source_root: PathBuf::from("source"),
+            target_root: PathBuf::from("target"),
+            files: vec![tools::files::FileSpec {
+                relative_path: PathBuf::from("a.conf"),
+                mode: Some(0o644),
+            }],
+            backup_existing: true,
+            receipt_name: "../escape".to_string(),
+        };
+        let err =
+            tools::files::converge_files(&base, &PathBuf::from("receipts"), false).unwrap_err();
+        assert!(err.contains("files-receipt-name-rejected"));
+
+        let duplicate = tools::files::FileConvergenceRequest {
+            receipt_name: "safe".to_string(),
+            files: vec![
+                tools::files::FileSpec {
+                    relative_path: PathBuf::from("a.conf"),
+                    mode: Some(0o644),
+                },
+                tools::files::FileSpec {
+                    relative_path: PathBuf::from("a.conf"),
+                    mode: Some(0o644),
+                },
+            ],
+            ..base.clone()
+        };
+        let err = tools::files::converge_files(&duplicate, &PathBuf::from("receipts"), false)
+            .unwrap_err();
+        assert!(err.contains("files-duplicate-relative-path-rejected"));
+
+        let invalid_mode = tools::files::FileConvergenceRequest {
+            receipt_name: "safe".to_string(),
+            files: vec![tools::files::FileSpec {
+                relative_path: PathBuf::from("a.conf"),
+                mode: Some(0o1000),
+            }],
+            ..base
+        };
+        let err = tools::files::converge_files(&invalid_mode, &PathBuf::from("receipts"), false)
+            .unwrap_err();
+        assert!(err.contains("files-mode-rejected"));
     }
 
     #[test]
@@ -388,6 +560,33 @@ mod tests {
         assert!(manifest.command.is_none());
         assert!(manifest.args.is_empty());
         validate_registered_module(&manifest).unwrap();
+    }
+
+    #[test]
+    fn tv_desktop_config_uses_generic_files_convergence_receipt() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
+        let receipts =
+            std::env::temp_dir().join(format!("harmonia-tv-files-receipt-{}", process::id()));
+        run_profile_engine(
+            &profile,
+            &root.join("profiles/tv/modules"),
+            &receipts,
+            false,
+        )
+        .unwrap();
+        let generic = receipts.join("modules/desktop-config-payload/tv-desktop-config-files.json");
+        let wrapper =
+            receipts.join("modules/desktop-config-payload/tv-desktop-config-install.json");
+        assert!(generic.exists());
+        assert!(wrapper.exists());
+        let generic_text = fs::read_to_string(generic).unwrap();
+        assert!(generic_text.contains("harmonia.files.converge.v1"));
+        assert!(!generic_text.contains("sha256"));
+        assert!(!generic_text.contains("digest"));
+        let wrapper_text = fs::read_to_string(wrapper).unwrap();
+        assert!(wrapper_text.contains("generic_convergence_receipt"));
+        let _ = fs::remove_dir_all(receipts);
     }
 
     #[test]
