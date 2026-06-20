@@ -212,6 +212,7 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
         "homeconsole-sync-runtime",
         "rust-build-toolchain",
         "arcadia-gui-runtime",
+        "local-ai-runtime",
         "pinned-artifacts-runtime",
     ] {
         let module_dir = module_root.join(module_id);

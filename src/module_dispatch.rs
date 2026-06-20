@@ -12,6 +12,8 @@ mod homeconsole_sync_runtime;
 mod identity;
 #[path = "../profiles/homeconsole/modules/keyman-runtime/index.rs"]
 mod keyman_runtime;
+#[path = "../profiles/homeconsole/modules/local-ai-runtime/index.rs"]
+mod local_ai_runtime;
 #[path = "../profiles/homeconsole/modules/pinned-artifacts-runtime/index.rs"]
 mod pinned_artifacts_runtime;
 #[path = "../profiles/homeconsole/modules/rust-build-toolchain/index.rs"]
@@ -77,6 +79,7 @@ pub(crate) fn execute_profile_module(
         }
         rust_build_toolchain::ID => rust_build_toolchain::execute(module, &module_dir, apply),
         arcadia_gui_runtime::ID => arcadia_gui_runtime::execute(module, &module_dir, apply),
+        local_ai_runtime::ID => local_ai_runtime::execute(module, &module_dir, apply),
         pinned_artifacts_runtime::ID => {
             pinned_artifacts_runtime::execute(module, &module_dir, apply)
         }
@@ -93,6 +96,7 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         homeconsole_sync_runtime::ID => homeconsole_sync_runtime::validate(module),
         rust_build_toolchain::ID => rust_build_toolchain::validate(module),
         arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
+        local_ai_runtime::ID => local_ai_runtime::validate(module),
         pinned_artifacts_runtime::ID => pinned_artifacts_runtime::validate(module),
         other => Err(format!("module-unregistered-{other}")),
     }

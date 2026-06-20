@@ -1,0 +1,12 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "local-ai-runtime",
+  "description": "HomeConsole Local AI runtime possession. Rust owns llama.cpp package install, compatibility binary links, model storage, runtime readback, and receipts; this sidecar provides constants only.",
+  "packages": [
+    "llama-cpp-vulkan"
+  ],
+  "install_bin": "/usr/local/bin/llama-server",
+  "path": "/var/lib/arcadia/models",
+  "service": "arcadia-llama-server.service",
+  "url": "http://127.0.0.1:7777/health"
+}
