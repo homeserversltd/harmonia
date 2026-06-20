@@ -191,3 +191,12 @@ pub(crate) fn homeconsole_sync_runtime_validate_for_test(
 ) -> Result<(), String> {
     homeconsole_sync_runtime::validate(module)
 }
+
+#[cfg(test)]
+pub(crate) fn tv_steam_game_lane_execute_for_test(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<ModuleExecution, String> {
+    tv_steam_game_lane::execute(module, receipt_dir, apply)
+}
