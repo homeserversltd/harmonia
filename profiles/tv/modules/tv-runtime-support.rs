@@ -24,6 +24,7 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
         && module.services.is_empty()
         && module.user_services.is_empty()
         && module.groups.is_empty()
+        && module.managed_files.is_empty()
     {
         return Err(format!("tv-module-empty-proof-surface-{}", module.id));
     }
@@ -39,6 +40,9 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     for path in &module.expected_files {
         validate_expected_path(path)?;
     }
+    for file in &module.managed_files {
+        validate_managed_file(file)?;
+    }
     Ok(())
 }
 
@@ -52,6 +56,9 @@ pub(crate) fn execute(
     let mut operations: Vec<(&'static str, OperationOutcome)> = Vec::new();
     if !module.groups.is_empty() {
         operations.push(("owner-groups", owner_groups(module, receipt_dir, apply)?));
+    }
+    if !module.managed_files.is_empty() {
+        operations.push(("managed-files", managed_files(module, receipt_dir, apply)?));
     }
     if !module.packages.is_empty() {
         operations.push(("packages", packages(module, receipt_dir, apply)?));
@@ -87,6 +94,58 @@ fn planned_outcome(message: impl Into<String>, ok: bool) -> OperationOutcome {
         message: message.into(),
         command: None,
     }
+}
+
+fn managed_files(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let mut missing = Vec::new();
+    let mut written = Vec::new();
+    let mut changed = false;
+    for file in &module.managed_files {
+        let path = PathBuf::from(&file.path);
+        let existing = fs::read_to_string(&path).ok();
+        let content_equal = existing.as_deref() == Some(file.content.as_str());
+        if !content_equal {
+            if apply {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| {
+                        format!("tv-managed-file-parent-failed {}: {e}", parent.display())
+                    })?;
+                }
+                fs::write(&path, file.content.as_bytes())
+                    .map_err(|e| format!("tv-managed-file-write-failed {}: {e}", path.display()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(
+                        &path,
+                        fs::Permissions::from_mode(file.mode.unwrap_or(0o644)),
+                    )
+                    .map_err(|e| format!("tv-managed-file-mode-failed {}: {e}", path.display()))?;
+                }
+                written.push(file.path.clone());
+                changed = true;
+            } else {
+                missing.push(file.path.clone());
+            }
+        }
+    }
+    let ok = missing.is_empty() || !apply;
+    let outcome = OperationOutcome {
+        ok,
+        changed,
+        skipped: !apply && !missing.is_empty(),
+        message: format!("{} managed files checked", module.managed_files.len()),
+        command: None,
+    };
+    write_json(
+        &receipt_dir.join("tv-managed-files.json"),
+        &json!({"schema":"harmonia.tv.managed_files.v1","ok":ok,"module":module.id,"checked":module.managed_files.len(),"missing":missing,"written":written,"apply":apply,"changed":changed,"first_missing_signal": if ok {"none"} else {"tv-managed-file-missing"}}),
+    )?;
+    Ok(outcome)
 }
 
 fn packages(
@@ -447,6 +506,25 @@ fn valid_group_name(value: &str) -> bool {
 fn validate_expected_path(value: &str) -> Result<(), String> {
     if value.is_empty() || value.contains('\0') || value.contains("..") {
         return Err(format!("tv-module-expected-path-rejected {value}"));
+    }
+    Ok(())
+}
+
+fn validate_managed_file(file: &ManagedFileManifest) -> Result<(), String> {
+    let path = Path::new(&file.path);
+    if !path.is_absolute() || file.path.contains('\0') || file.path.contains("..") {
+        return Err(format!(
+            "tv-module-managed-file-path-rejected {}",
+            file.path
+        ));
+    }
+    if let Some(mode) = file.mode {
+        if !(0o400..=0o777).contains(&mode) {
+            return Err(format!(
+                "tv-module-managed-file-mode-rejected {}",
+                file.path
+            ));
+        }
     }
     Ok(())
 }
