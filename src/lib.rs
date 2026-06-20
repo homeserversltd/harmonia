@@ -570,6 +570,53 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 apply,
             )
         }
+        Some("homeconsole-local-ai-update") => {
+            let path = args
+                .get(1)
+                .ok_or("homeconsole-local-ai-update requires <profile-index-json>")?;
+            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
+                PathBuf::from("/var/lib/harmonia/receipts/local-ai-runtime-latest")
+            });
+            let apply = args.iter().any(|arg| arg == "--apply");
+            let module_root = default_module_root(Path::new(path));
+            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            if profile.id != "homeconsole" || profile.identity != "homeconsole" {
+                return Err(format!(
+                    "homeconsole-local-ai-update requires homeconsole/homeconsole profile, got {}/{}",
+                    profile.id, profile.identity
+                ));
+            }
+            let module = load_module(&module_root.join("local-ai-runtime").join("sidecar.json"))?;
+            let execution = execute_profile_module(&module, &receipt_dir, apply)?;
+            write_engine_run_receipt(
+                &receipt_dir,
+                &profile,
+                apply,
+                execution.ok,
+                execution.changed,
+                1,
+                execution.operation_count,
+                execution.first_missing_signal.as_deref().unwrap_or("none"),
+                &module_root,
+            )?;
+            println!("schema=harmonia.local_ai_runtime.v1");
+            println!("ok={}", execution.ok);
+            println!("changed={}", execution.changed);
+            println!("profile_id={}", profile.id);
+            println!("operation_count={}", execution.operation_count);
+            println!(
+                "first_missing_signal={}",
+                execution.first_missing_signal.as_deref().unwrap_or("none")
+            );
+            println!("receipt_dir={}", receipt_dir.display());
+            if execution.ok {
+                Ok(())
+            } else {
+                Err(execution
+                    .first_missing_signal
+                    .unwrap_or_else(|| "local-ai-runtime-failed".to_string()))
+            }
+        }
         Some("homeconsole-arcadia-check") => {
             let path = args
                 .get(1)
@@ -697,6 +744,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> [--module <profiles/homeconsole/modules/sync/sidecar.json>] [--provider-env <path>] [--adapter-command <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-local-ai-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha <sha>] [--source-sha-file <path>] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-gui-update <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--source-dir /opt/arcadia/source] [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha-file <path>] [--receipt-dir <path>]");
