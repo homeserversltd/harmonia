@@ -37,5 +37,7 @@
       "mode": 420,
       "content": "# Arch TV Steam Game Lane\n\nSteam owns Proton and compatibility runtime downloads. Gamescope is an optional game/app lane and is not the SDDM autologin session.\n"
     }
-  ]
+  ],
+  "optional": true,
+  "optional_warning": "Steam/Gamescope are optional customer-owned game-lane surfaces; customer may have uninstalled Steam, so Harmonia warns and preserves the TV update instead of reinstalling or failing."
 }

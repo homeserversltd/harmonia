@@ -74,6 +74,10 @@ struct ModuleManifest {
     groups: Vec<String>,
     #[serde(default)]
     managed_files: Vec<ManagedFileManifest>,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    optional_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -490,6 +494,8 @@ mod tests {
             user_services: vec![],
             groups: vec![],
             managed_files: vec![],
+            optional: false,
+            optional_warning: None,
         };
         assert_eq!(
             validate_registered_module(&module).unwrap_err(),
@@ -602,6 +608,15 @@ mod tests {
             3,
             "steam_game_lane_managed_files"
         );
+        assert!(
+            steam.optional,
+            "steam_game_lane_is_optional_customer_surface"
+        );
+        assert!(steam
+            .optional_warning
+            .as_deref()
+            .unwrap_or("")
+            .contains("customer may have uninstalled Steam"));
 
         for module in [
             "owner-profile",
@@ -650,6 +665,34 @@ mod tests {
         assert!(validate_registered_module(&manifest)
             .unwrap_err()
             .contains("tv-module-managed-file-path-rejected"));
+    }
+
+    #[test]
+    fn tv_optional_steam_lane_warns_without_blocking_profile() {
+        let root = repo_root();
+        let receipts =
+            std::env::temp_dir().join(format!("harmonia-tv-optional-steam-{}", process::id()));
+        let mut manifest =
+            load_module(&root.join("profiles/tv/modules/steam-game-lane/sidecar.json")).unwrap();
+        manifest.packages = vec!["definitely-missing-customer-steam-package".to_string()];
+        manifest.binaries = vec!["definitely-missing-customer-steam-binary".to_string()];
+        manifest.services = vec![];
+        manifest.expected_files =
+            vec!["/definitely/missing/customer/optional/steam-lane".to_string()];
+        manifest.managed_files = vec![];
+        let execution = tv_steam_game_lane_execute_for_test(&manifest, &receipts, true).unwrap();
+        assert!(execution.ok);
+        assert_eq!(execution.first_missing_signal, None);
+        let module_receipt = fs::read_to_string(receipts.join("steam-game-lane.json")).unwrap();
+        assert!(module_receipt.contains("optional_missing_warning"));
+        assert!(module_receipt.contains("customer may have uninstalled Steam"));
+        let binary_receipt = fs::read_to_string(receipts.join("tv-binaries.json")).unwrap();
+        assert!(binary_receipt.contains("definitely-missing-customer-steam-binary"));
+        assert!(binary_receipt.contains("customer may have uninstalled Steam"));
+        let package_receipt = fs::read_to_string(receipts.join("tv-packages.json")).unwrap();
+        assert!(package_receipt.contains("optional"));
+        assert!(!package_receipt.contains("--needed"));
+        let _ = fs::remove_dir_all(receipts);
     }
 
     #[test]

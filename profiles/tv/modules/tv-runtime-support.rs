@@ -61,21 +61,33 @@ pub(crate) fn execute(
         operations.push(("managed-files", managed_files(module, receipt_dir, apply)?));
     }
     if !module.packages.is_empty() {
-        operations.push(("packages", packages(module, receipt_dir, apply)?));
+        operations.push((
+            "packages",
+            packages(module, receipt_dir, apply, module.optional)?,
+        ));
     }
     if !module.binaries.is_empty() {
-        operations.push(("binaries", binaries(module, receipt_dir, apply)?));
+        operations.push((
+            "binaries",
+            binaries(module, receipt_dir, apply, module.optional)?,
+        ));
     }
     if !module.services.is_empty() {
-        operations.push(("services", services(module, receipt_dir, apply)?));
+        operations.push((
+            "services",
+            services(module, receipt_dir, apply, module.optional)?,
+        ));
     }
     if !module.user_services.is_empty() {
-        operations.push(("user-services", user_services(module, receipt_dir, apply)?));
+        operations.push((
+            "user-services",
+            user_services(module, receipt_dir, apply, module.optional)?,
+        ));
     }
     if !module.expected_files.is_empty() {
         operations.push((
             "expected-files",
-            expected_files(module, receipt_dir, apply)?,
+            expected_files(module, receipt_dir, apply, module.optional)?,
         ));
     }
     let outcomes: Vec<OperationOutcome> = operations
@@ -83,6 +95,15 @@ pub(crate) fn execute(
         .map(|(_, outcome)| outcome.clone())
         .collect();
     write_tv_receipt(module, receipt_dir, apply, spec, &outcomes)?;
+    if module.optional {
+        let changed = outcomes.iter().any(|outcome| outcome.changed);
+        return Ok(ModuleExecution {
+            ok: true,
+            changed,
+            operation_count: operations.len(),
+            first_missing_signal: None,
+        });
+    }
     Ok(ModuleExecution::from_operations(operations, &module.id))
 }
 
@@ -152,15 +173,18 @@ fn packages(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
+    optional: bool,
 ) -> Result<OperationOutcome, String> {
     if !Path::new("/usr/bin/pacman").exists() {
         let outcome = planned_outcome(
-            if apply {
+            if apply && !optional {
                 "pacman missing for TV package mutation"
+            } else if optional {
+                "optional TV package set cannot be checked here; warning only"
             } else {
                 "pacman absent on scout host; TV packages planned only"
             },
-            !apply,
+            !apply || optional,
         );
         write_tool_receipt(
             receipt_dir,
@@ -171,13 +195,27 @@ fn packages(
         )?;
         return Ok(outcome);
     }
-    let mut args: Vec<String> = if apply {
-        vec!["-S".into(), "--needed".into(), "--noconfirm".into()]
-    } else {
+    let checking_only = !apply || optional;
+    let mut args: Vec<String> = if checking_only {
         vec!["-Q".into()]
+    } else {
+        vec!["-S".into(), "--needed".into(), "--noconfirm".into()]
     };
     args.extend(module.packages.iter().cloned());
     let result = command_tool(receipt_dir, "tv-packages", "/usr/bin/pacman", &args, None)?;
+    if optional {
+        write_json(
+            &receipt_dir.join("tv-packages-warning.json"),
+            &json!({"schema":"harmonia.tv.optional_warning.v1","ok":true,"module":module.id,"operation":"packages","warning":"optional package set is customer-owned; Harmonia checked only and did not reinstall","packages":module.packages,"apply":apply,"command_ok":result.ok,"first_missing_signal":"none"}),
+        )?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: !result.ok,
+            message: "optional TV package set checked; missing packages are warnings".to_string(),
+            command: result.command,
+        });
+    }
     Ok(OperationOutcome {
         changed: apply && result.ok,
         ..result
@@ -188,6 +226,7 @@ fn binaries(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
+    optional: bool,
 ) -> Result<OperationOutcome, String> {
     let missing: Vec<String> = module
         .binaries
@@ -196,7 +235,7 @@ fn binaries(
         .cloned()
         .collect();
     let ok = missing.is_empty();
-    let outcome_ok = ok || !apply;
+    let outcome_ok = ok || !apply || optional;
     let outcome = OperationOutcome {
         ok: outcome_ok,
         changed: false,
@@ -206,7 +245,7 @@ fn binaries(
     };
     write_json(
         &receipt_dir.join("tv-binaries.json"),
-        &json!({"schema":"harmonia.tv.binaries.v1","ok":outcome_ok,"module":module.id,"checked":module.binaries,"missing":missing,"apply":apply,"first_missing_signal": if outcome_ok {"none"} else {"tv-binary-missing"}}),
+        &json!({"schema":"harmonia.tv.binaries.v1","ok":outcome_ok,"module":module.id,"checked":module.binaries,"missing":missing,"apply":apply,"optional":optional,"warning": if optional && !missing.is_empty() { module.optional_warning.as_deref().unwrap_or("optional customer-owned binaries missing") } else { "" },"first_missing_signal": if outcome_ok {"none"} else {"tv-binary-missing"}}),
     )?;
     Ok(outcome)
 }
@@ -215,6 +254,7 @@ fn services(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
+    optional: bool,
 ) -> Result<OperationOutcome, String> {
     if !Path::new("/usr/bin/systemctl").exists() {
         let outcome = planned_outcome(
@@ -233,7 +273,7 @@ fn services(
     let mut ok = true;
     let mut changed = false;
     for service in &module.services {
-        let args: Vec<String> = if apply {
+        let args: Vec<String> = if apply && !optional {
             vec!["enable".into(), "--now".into(), service.clone()]
         } else {
             vec!["is-enabled".into(), service.clone()]
@@ -248,7 +288,7 @@ fn services(
         ok &= outcome.ok;
         changed |= apply && outcome.ok;
     }
-    let outcome_ok = ok || !apply;
+    let outcome_ok = ok || !apply || optional;
     let outcome = OperationOutcome {
         ok: outcome_ok,
         changed,
@@ -258,7 +298,7 @@ fn services(
     };
     write_json(
         &receipt_dir.join("tv-services.json"),
-        &json!({"schema":"harmonia.tv.services.v1","ok":outcome_ok,"module":module.id,"services":module.services,"apply":apply,"first_missing_signal": if outcome_ok {"none"} else {"tv-service-proof-missing"}}),
+        &json!({"schema":"harmonia.tv.services.v1","ok":outcome_ok,"module":module.id,"services":module.services,"apply":apply,"optional":optional,"warning": if optional && !ok { module.optional_warning.as_deref().unwrap_or("optional customer-owned service missing") } else { "" },"first_missing_signal": if outcome_ok {"none"} else {"tv-service-proof-missing"}}),
     )?;
     Ok(outcome)
 }
@@ -267,6 +307,7 @@ fn user_services(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
+    optional: bool,
 ) -> Result<OperationOutcome, String> {
     let target_root = module.target_dir.as_deref().unwrap_or("/home/owner");
     let mut missing = Vec::new();
@@ -295,7 +336,7 @@ fn user_services(
             linked.push(wants.display().to_string());
         }
     }
-    let ok = missing.is_empty() || !apply;
+    let ok = missing.is_empty() || !apply || optional;
     let outcome = OperationOutcome {
         ok,
         changed: !linked.is_empty(),
@@ -305,7 +346,7 @@ fn user_services(
     };
     write_json(
         &receipt_dir.join("tv-user-services.json"),
-        &json!({"schema":"harmonia.tv.user_services.v1","ok":ok,"module":module.id,"user_services":module.user_services,"missing":missing,"linked":linked,"apply":apply,"first_missing_signal": if ok {"none"} else {"tv-user-service-proof-missing"}}),
+        &json!({"schema":"harmonia.tv.user_services.v1","ok":ok,"module":module.id,"user_services":module.user_services,"missing":missing,"linked":linked,"apply":apply,"optional":optional,"warning": if optional && !missing.is_empty() { module.optional_warning.as_deref().unwrap_or("optional customer-owned user service missing") } else { "" },"first_missing_signal": if ok {"none"} else {"tv-user-service-proof-missing"}}),
     )?;
     Ok(outcome)
 }
@@ -398,6 +439,7 @@ fn expected_files(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
+    optional: bool,
 ) -> Result<OperationOutcome, String> {
     let target_root = module.target_dir.as_deref().unwrap_or("/");
     let root = PathBuf::from(target_root);
@@ -412,17 +454,17 @@ fn expected_files(
             missing.push(path.display().to_string());
         }
     }
-    let ok = missing.is_empty() || !apply;
+    let ok = missing.is_empty() || !apply || optional;
     let outcome = OperationOutcome {
         ok,
         changed: false,
-        skipped: !apply && !missing.is_empty(),
+        skipped: (!apply || optional) && !missing.is_empty(),
         message: format!("{} expected files checked", module.expected_files.len()),
         command: None,
     };
     write_json(
         &receipt_dir.join("tv-expected-files.json"),
-        &json!({"schema":"harmonia.tv.expected_files.v1","ok":ok,"module":module.id,"target_root":target_root,"checked":module.expected_files.len(),"missing":missing,"apply":apply,"first_missing_signal": if ok {"none"} else {"tv-expected-file-missing"}}),
+        &json!({"schema":"harmonia.tv.expected_files.v1","ok":ok,"module":module.id,"target_root":target_root,"checked":module.expected_files.len(),"missing":missing,"apply":apply,"optional":optional,"warning": if optional && !missing.is_empty() { module.optional_warning.as_deref().unwrap_or("optional customer-owned files missing") } else { "" },"first_missing_signal": if ok {"none"} else {"tv-expected-file-missing"}}),
     )?;
     Ok(outcome)
 }
@@ -434,8 +476,15 @@ fn write_tv_receipt(
     spec: TvModuleSpec,
     outcomes: &[OperationOutcome],
 ) -> Result<(), String> {
-    let ok = outcomes.iter().all(|outcome| outcome.ok);
+    let raw_ok = outcomes.iter().all(|outcome| outcome.ok);
+    let ok = raw_ok || module.optional;
     let changed = outcomes.iter().any(|outcome| outcome.changed);
+    let warning_signals: Vec<String> = outcomes
+        .iter()
+        .enumerate()
+        .filter(|(_, outcome)| !outcome.ok || outcome.skipped)
+        .map(|(index, outcome)| format!("optional-warning-{}-{}", index + 1, outcome.message))
+        .collect();
     let first_missing_signal = if ok {
         "none".to_string()
     } else {
@@ -446,6 +495,8 @@ fn write_tv_receipt(
         &json!({
             "schema": spec.schema,
             "ok": ok,
+            "raw_ok": raw_ok,
+            "optional": module.optional,
             "module": module.id,
             "phase": spec.phase,
             "apply": apply,
@@ -456,6 +507,10 @@ fn write_tv_receipt(
             "service_count": module.services.len(),
             "user_service_count": module.user_services.len(),
             "expected_file_count": module.expected_files.len(),
+            "managed_file_count": module.managed_files.len(),
+            "warning_count": if module.optional { warning_signals.len() } else { 0 },
+            "warning_signals": if module.optional { warning_signals } else { Vec::<String>::new() },
+            "optional_missing_warning": if module.optional { module.optional_warning.as_deref().unwrap_or("optional customer-owned surface missing") } else { "" },
             "first_missing_signal": first_missing_signal,
             "meaning": spec.meaning,
         }),
