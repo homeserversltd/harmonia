@@ -1,0 +1,99 @@
+Deployable TV desktop config bundle
+Created: 2026-06-15T16:44:14-05:00
+Source home: /home/owner
+
+COPIED home:.config/hypr -> .config/hypr
+COPIED home:.config/waybar/waybar.conf -> .config/waybar/waybar.conf
+COPIED home:.config/waybar/style.css -> .config/waybar/style.css
+COPIED home:.config/dunst/dunstrc -> .config/dunst/dunstrc
+COPIED home:.config/systemd/user/hs-dunst.service -> .config/systemd/user/hs-dunst.service
+COPIED home:.config/systemd/user/hs-waybar.service -> .config/systemd/user/hs-waybar.service
+COPIED home:.config/xdg-desktop-portal/hyprland-portals.conf -> .config/xdg-desktop-portal/hyprland-portals.conf
+COPIED home:.config/chromium-flags.conf -> .config/chromium-flags.conf
+COPIED home:.config/kdeglobals -> .config/kdeglobals
+COPIED home:.config/gtk-3.0/settings.ini -> .config/gtk-3.0/settings.ini
+COPIED home:.config/gtk-4.0/settings.ini -> .config/gtk-4.0/settings.ini
+COPIED home:.zshrc -> .zshrc
+COPIED home:.zshrc.arch-install -> .zshrc.arch-install
+COPIED home:.aliases -> .aliases
+COPIED home:.functions -> .functions
+COPIED home:.inputrc -> .inputrc
+COPIED home:.nanorc -> .nanorc
+COPIED home:.profile -> .profile
+COPIED home:omp.json -> omp.json
+COPIED home:bin/oh-my-posh -> bin/oh-my-posh
+COPIED home:bin/waybar-meter.sh -> bin/waybar-meter.sh
+COPIED home:bin/volume.sh -> bin/volume.sh
+COPIED home:bin/waybar-toggle.sh -> bin/waybar-toggle.sh
+COPIED home:bin/waybar-app-toggle.sh -> bin/waybar-app-toggle.sh
+COPIED home:bin/dynamic-waybar.sh -> bin/dynamic-waybar.sh
+COPIED home:bin/fetch.sh -> bin/fetch.sh
+COPIED home:bin/tooltips.sh -> bin/tooltips.sh
+COPIED home:.config/mimeapps.list -> .config/mimeapps.list
+COPIED home:.config/kde-mimeapps.list -> .config/kde-mimeapps.list
+COPIED home:.local/share/applications/mimeapps.list -> .local/share/applications/mimeapps.list
+COPIED home:.local/share/applications/org.kde.kate.desktop -> .local/share/applications/org.kde.kate.desktop
+COPIED /usr/lib/firefox/distribution/policies.json -> firefox/distribution/policies.json
+
+File listing:
+drwxr-xr-x 10 .local
+drwxr-xr-x 14 .config/dunst
+drwxr-xr-x 196 .config/hypr
+drwxr-xr-x 212 bin
+drwxr-xr-x 226 .config
+drwxr-xr-x 24 .config/gtk-3.0
+drwxr-xr-x 24 .config/gtk-4.0
+drwxr-xr-x 24 firefox
+drwxr-xr-x 24 .local/share
+drwxr-xr-x 26 firefox/distribution
+drwxr-xr-x 40 .config/waybar
+drwxr-xr-x 42 .config/xdg-desktop-portal
+drwxr-xr-x 66 .config/systemd/user
+drwxr-xr-x 66 .local/share/applications
+drwxr-xr-x 8 .config/systemd
+-rw------- 3940 .config/kdeglobals
+-rw-r--r-- 0 MISSING.txt
+-rw-r--r-- 0 .profile
+-rw-r--r-- 108 .config/chromium-flags.conf
+-rw-r--r-- 1148 .config/hypr/looknfeel.conf
+-rw-r--r-- 1185 .config/mimeapps.list
+-rw-r--r-- 1255 .config/dunst/dunstrc
+-rw-r--r-- 13954 .functions
+-rw-r--r-- 1948 .config/hypr/bindings.conf
+-rw-r--r-- 194 .config/gtk-3.0/settings.ini
+-rw-r--r-- 194 .config/gtk-4.0/settings.ini
+-rw-r--r-- 2037 .config/waybar/style.css
+-rw-r--r-- 2028 MANIFEST.txt
+-rw-r--r-- 215 .zshrc
+-rw-r--r-- 2247 .config/kde-mimeapps.list
+-rw-r--r-- 2247 .local/share/applications/mimeapps.list
+-rw-r--r-- 247 .config/hypr/windows.conf
+-rw-r--r-- 2880 omp.json
+-rw-r--r-- 331 .config/systemd/user/hs-dunst.service
+-rw-r--r-- 369 .config/systemd/user/hs-waybar.service
+-rw-r--r-- 380 .config/xdg-desktop-portal/hyprland-portals.conf
+-rw-r--r-- 406 .config/hypr/envs.conf
+-rw-r--r-- 437 .config/hypr/autostart.conf
+-rw-r--r-- 482 .config/hypr/input.conf
+-rw-r--r-- 538 firefox/distribution/policies.json
+-rw-r--r-- 5507 .aliases
+-rw-r--r-- 4086 .config/waybar/waybar.conf
+-rw-r--r-- 70 .config/hypr/monitors.conf
+-rw-r--r-- 706 .nanorc
+-rw-r--r-- 7893 .zshrc.arch-install
+-rw-r--r-- 891 .config/hypr/hyprland.conf
+-rw-r--r-- 913 .inputrc
+-rwxr-xr-x 1177 bin/dynamic-waybar.sh
+-rwxr-xr-x 13284 .local/share/applications/org.kde.kate.desktop
+-rwxr-xr-x 19407010 bin/oh-my-posh
+-rwxr-xr-x 226 bin/waybar-toggle.sh
+-rwxr-xr-x 3375 bin/waybar-meter.sh
+-rwxr-xr-x 368 bin/tooltips.sh
+-rwxr-xr-x 387 bin/waybar-app-toggle.sh
+-rwxr-xr-x 667 bin/volume.sh
+-rwxr-xr-x 852 bin/fetch.sh
+ADDED home:.config/wofi/config -> .config/wofi/config
+ADDED home:.config/wofi/style.css -> .config/wofi/style.css
+ADDED home:bin/tv-launcher.sh -> bin/tv-launcher.sh
+ADDED home:.config/kitty/kitty.conf -> .config/kitty/kitty.conf
+ADDED home:.config/kitty/theme.conf -> .config/kitty/theme.conf

@@ -49,9 +49,13 @@ struct ModuleManifest {
     #[serde(default)]
     source_dir: Option<String>,
     #[serde(default)]
+    target_dir: Option<String>,
+    #[serde(default)]
     source_sha_file: Option<String>,
     #[serde(default)]
     packages: Vec<String>,
+    #[serde(default)]
+    expected_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -285,8 +289,10 @@ mod tests {
             remote: None,
             lock: None,
             source_dir: None,
+            target_dir: None,
             source_sha_file: None,
             packages: vec![],
+            expected_files: vec![],
         };
         assert_eq!(
             validate_registered_module(&module).unwrap_err(),
@@ -323,6 +329,63 @@ mod tests {
             let manifest = load_module(&dir.join("sidecar.json")).unwrap();
             validate_registered_module(&manifest).unwrap();
         }
+    }
+
+    #[test]
+    fn tv_profile_owns_deployable_configuration_inside_harmonia_profile() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
+        assert_eq!(profile.id, "tv");
+        assert_eq!(profile.identity, "arch-tv");
+        assert_eq!(
+            profile.modules,
+            vec![
+                "identity".to_string(),
+                "system-packages".to_string(),
+                "desktop-config-payload".to_string()
+            ]
+        );
+        assert!(
+            !root.join("payloads").exists(),
+            "TV config must be profile-adjacent, not a top-level payload execution tree"
+        );
+        let config_root = root.join("profiles/tv/config/desktop-config");
+        assert!(config_root.join(".config/hypr/hyprland.conf").is_file());
+        assert!(config_root.join(".config/waybar/waybar.conf").is_file());
+        assert!(config_root.join("bin/tv-launcher.sh").is_file());
+
+        for module in &profile.modules {
+            let dir = root.join("profiles/tv/modules").join(module);
+            assert!(
+                dir.join("index.rs").exists(),
+                "{module} needs profile-adjacent Rust module logic"
+            );
+            let manifest = load_module(&dir.join("sidecar.json")).unwrap();
+            validate_registered_module(&manifest).unwrap();
+        }
+    }
+
+    #[test]
+    fn tv_desktop_config_sidecar_is_constants_only_manifest() {
+        let root = repo_root();
+        let manifest =
+            load_module(&root.join("profiles/tv/modules/desktop-config-payload/sidecar.json"))
+                .unwrap();
+        assert_eq!(manifest.id, "desktop-config-payload");
+        assert_eq!(
+            manifest.source_dir.as_deref(),
+            Some("profiles/tv/config/desktop-config")
+        );
+        assert_eq!(manifest.target_dir.as_deref(), Some("/home/owner"));
+        assert!(manifest
+            .expected_files
+            .contains(&".config/hypr/monitors.conf".to_string()));
+        assert!(manifest
+            .expected_files
+            .contains(&"firefox/distribution/policies.json".to_string()));
+        assert!(manifest.command.is_none());
+        assert!(manifest.args.is_empty());
+        validate_registered_module(&manifest).unwrap();
     }
 
     #[test]

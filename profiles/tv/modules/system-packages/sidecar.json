@@ -1,0 +1,5 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "system-packages",
+  "description": "TV package module. Rust owns package check/update sequencing; this sidecar carries no executable logic."
+}

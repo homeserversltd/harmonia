@@ -20,6 +20,8 @@ mod pinned_artifacts_runtime;
 mod rust_build_toolchain;
 #[path = "../profiles/homeconsole/modules/system-packages/index.rs"]
 mod system_packages;
+#[path = "../profiles/tv/modules/desktop-config-payload/index.rs"]
+mod tv_desktop_config_payload;
 pub(crate) use arcadia_gui_runtime::{
     homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
 };
@@ -83,6 +85,9 @@ pub(crate) fn execute_profile_module(
         pinned_artifacts_runtime::ID => {
             pinned_artifacts_runtime::execute(module, &module_dir, apply)
         }
+        tv_desktop_config_payload::ID => {
+            tv_desktop_config_payload::execute(module, &module_dir, apply)
+        }
         other => Err(format!("module-unregistered-{other}")),
     }
 }
@@ -98,6 +103,7 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
         local_ai_runtime::ID => local_ai_runtime::validate(module),
         pinned_artifacts_runtime::ID => pinned_artifacts_runtime::validate(module),
+        tv_desktop_config_payload::ID => tv_desktop_config_payload::validate(module),
         other => Err(format!("module-unregistered-{other}")),
     }
 }

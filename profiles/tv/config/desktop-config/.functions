@@ -1,0 +1,451 @@
+#!/usr/bin/env zsh
+_update_atuin(){
+    bash <(curl --proto '=https' --tlsv1.2 -sSf https://setup.atuin.sh) -- --non-interactive
+}
+
+# Function to rebuild yay when it breaks due to library updates
+_rebuild_yay() {
+    echo "=== Rebuilding yay ==="
+
+    # Check if yay is installed
+    if ! command -v yay &> /dev/null; then
+        echo "yay is not installed. Cannot rebuild."
+        return 1
+    fi
+
+    # Ensure git and base-devel are installed
+    echo "Ensuring git and base-devel are installed..."
+    sudo pacman -S --needed --noconfirm git base-devel
+
+    # Clone yay-bin (binary version, faster than compiling)
+    echo "Cloning yay-bin repository..."
+    rm -rf /tmp/yay-bin
+    if ! git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin; then
+        echo "Failed to clone yay-bin repository."
+        return 1
+    fi
+
+    # Build and install
+    echo "Building and installing yay..."
+    cd /tmp/yay-bin
+    if makepkg -si --noconfirm; then
+        echo "✅ yay rebuilt successfully!"
+        cd - > /dev/null
+        rm -rf /tmp/yay-bin
+        return 0
+    else
+        echo "❌ Failed to rebuild yay."
+        cd - > /dev/null
+        return 1
+    fi
+}
+
+# Wrapper function that auto-rebuilds yay on library errors
+_safe_yay() {
+    # Try running yay with the provided arguments
+    local yay_output
+    local yay_error
+    local yay_exit_code
+
+    # Capture both stdout and stderr
+    yay_output=$(yay "$@" 2>&1)
+    yay_exit_code=$?
+
+    # Check if the error is related to library issues
+    if [[ $yay_exit_code -ne 0 ]] && echo "$yay_output" | grep -q "libalpm.so"; then
+        echo "🔧 Detected yay library compatibility issue (libalpm.so error)"
+        echo "This typically happens after pacman updates. Rebuilding yay..."
+        echo ""
+
+        # Attempt to rebuild yay
+        if _rebuild_yay; then
+            echo ""
+            echo "Retrying original yay command..."
+            # Retry the original command
+            yay "$@"
+            return $?
+        else
+            echo "Failed to rebuild yay. Please rebuild manually with: rebuild.yay"
+            return 1
+        fi
+    else
+        # No library error, just return the output and exit code
+        echo "$yay_output"
+        return $yay_exit_code
+    fi
+}
+
+# User-facing function to manually rebuild yay
+rebuild.yay() {
+    _rebuild_yay
+}
+
+# Function to update oh-my-posh if there's a version change
+_update_oh_my_posh() {
+    # Define the installation directory
+    INSTALL_DIR="$HOME/bin"
+    OH_MY_POSH_BIN="$INSTALL_DIR/oh-my-posh"
+
+    # Check if oh-my-posh is installed
+    if [[ ! -f "$OH_MY_POSH_BIN" ]]; then
+        echo "oh-my-posh is not installed in $INSTALL_DIR."
+        return 1
+    fi
+
+    # Get the current installed version
+    CURRENT_VERSION=$($OH_MY_POSH_BIN version | grep -oE '[0-9.]+')
+
+    if [[ -z "$CURRENT_VERSION" ]]; then
+        echo "Failed to get the current version of oh-my-posh."
+        return 1
+    fi
+
+    # Get the latest version from the official source
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/JanDeDobbeleer/oh-my-posh/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+
+    if [[ -z "$LATEST_VERSION" ]]; then
+        echo "Failed to get the latest version of oh-my-posh."
+        return 1
+    fi
+
+    # Remove the 'v' prefix from the latest version if it exists
+    LATEST_VERSION=${LATEST_VERSION#v}
+
+    echo "Current version: $CURRENT_VERSION"
+    echo "Latest version: $LATEST_VERSION"
+
+    # Compare versions
+    if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+        echo "A new version of oh-my-posh is available. Updating..."
+
+        # Perform the update
+        curl -s https://ohmyposh.dev/install.sh | bash -s -- -d $INSTALL_DIR
+
+        if [[ $? -eq 0 ]]; then
+            echo "oh-my-posh has been updated to version $LATEST_VERSION."
+        else
+            echo "Failed to update oh-my-posh."
+            return 1
+        fi
+    else
+        echo "oh-my-posh is already up-to-date."
+    fi
+}
+
+
+_listcommands() {
+    # Use Zsh's print with ANSI colors for consistency
+    local RED="%F{red}"
+    local YELLOW="%F{yellow}"
+    local BLUE="%F{blue}"
+    local NOCOLOR="%f"
+
+print -P "${RED}Aliases:${NOCOLOR}"
+for alias in ${(ok)aliases}; do
+    alias_name=$alias
+    alias_command=${aliases[$alias]}
+    print -P "${YELLOW}${alias_name}${NOCOLOR}='${BLUE}${alias_command}${NOCOLOR}'"
+done
+
+print -P "\n${RED}Functions:${NOCOLOR}"
+# Correctly sort function names alphabetically, excluding those starting with an underscore
+func_names=(${(ok)functions})
+for func in "${func_names[@]}"; do
+    [[ $func == _* ]] && continue  # Skip functions starting with an underscore
+    print -P "${YELLOW}$func${NOCOLOR}"
+done
+
+}
+
+#nnn file manager
+nn(){
+# Block nesting of nnn in subshells
+    [ "${NNNLVL:-0}" -eq 0 ] || {
+        echo "nnn is already running"
+        return
+    }
+    if [ -z "$EDITOR" ]; then
+        EDITOR=nano
+    fi
+    #trap cleanup_panes EXIT
+    #cleanup_panes
+
+    NNN_FIFO="$(mktemp --suffix=-nnn -u)"
+    export NNN_FIFO
+    export NNN_TMPFILE="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.lastd"
+    (umask 077; mkfifo "$NNN_FIFO")
+    command nnn -dHEPp "$@"
+    [ ! -f "$NNN_TMPFILE" ] || {
+        . "$NNN_TMPFILE"
+        rm -f -- "$NNN_TMPFILE" > /dev/null
+    }
+}
+
+n(){
+# Block nesting of nnn in subshells
+    [ "${NNNLVL:-0}" -eq 0 ] || {
+        echo "nnn is already running"
+        return
+    }
+    if [ -z "$EDITOR" ]; then
+        EDITOR=nano
+    fi
+    NNN_FIFO="$(mktemp --suffix=-nnn -u)"
+    export NNN_FIFO
+    export NNN_TMPFILE="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.lastd"
+    (umask 077; mkfifo "$NNN_FIFO")
+    command nnn -E "$@"
+    [ ! -f "$NNN_TMPFILE" ] || {
+        . "$NNN_TMPFILE"
+        rm -f -- "$NNN_TMPFILE" > /dev/null
+    }
+}
+
+find.program() {
+    if [ -z "$1" ]; then
+        echo "Usage: find_program <program_name>"
+        return 1
+    fi
+    local query="$1"
+    echo "Searching in pacman repository..."
+    pacman_results=$(pacman -Ss "$query" | grep -E '^[a-z]*/[a-z0-9.+-]+' | awk '{print $1}')
+    echo "Searching in AUR..."
+    aur_results=$(yay -Ss "$query" | grep -E '^[a-z]*/[a-z0-9.+-]+' | awk '{print $1}')
+    echo -e "$pacman_results\n$aur_results" | fzf --ansi --multi --preview 'echo {}'
+}
+
+
+# Searches for text in all files in the current folder
+find.text() {
+	# If The Silver Searcher is installed, use that
+	# Link: https://github.com/ggreer/the_silver_searcher
+	# Hint: You can use --ignore "dir/or/file"
+	if [[ -x "$(command -v ag)" ]]; then
+		ag --color --ignore-case --hidden --literal "${@}" 2> /dev/null
+
+	# If ripgrep is installed, use that
+	# Link: https://github.com/BurntSushi/ripgrep
+	elif [[ -x "$(command -v rg)" ]]; then
+		rg --pretty "${@}" | more
+
+	else # Use grep
+		# Link: https://www.howtogeek.com/496056/how-to-use-the-grep-command-on-linux/
+		# Hint: You can use --exclude='/dir/or/file'
+		# -i case-insensitive
+		# -I ignore binary files
+		# -H causes filename to be printed
+		# -r recursive search
+		# -n causes line number to be printed
+		# optional: -F treat search term as a literal, not a regular expression
+		# optional: -l only print filenames and not the matching lines ex. grep -irl "$@" *
+		grep -iIHrn --color=always "${@}" . | $PAGER -r
+	fi
+}
+find.process() {
+    if [ -z "$1" ]; then
+    echo "Usage: proc.find <process_name>"
+    return 1
+fi
+ps aux | grep -i "$1" | grep -v grep
+}
+
+net.ports() {
+    echo "=== Open Ports ==="
+    sudo ss -tulpn | grep LISTEN
+    }
+net.connections() {
+    echo "=== Active Connections ==="
+    ss -s
+    }
+net.ips() {
+    echo "=== IP Addresses ==="
+    ip -br a
+    }
+
+
+
+# Extracts any archive(s)
+extract() {
+	for archive; do
+		if [ -f "$archive" ] ; then
+			case "$archive" in
+				*.tar.bz2)   tar xvjf "$archive"   ;;
+				*.tar.gz)    tar xvzf "$archive"   ;;
+				*.bz2)       bunzip2 "$archive"    ;;
+				*.rar)       rar x "$archive"      ;;
+				*.gz)        gunzip "$archive"     ;;
+				*.tar)       tar xvf "$archive"    ;;
+				*.tbz2)      tar xvjf "$archive"   ;;
+				*.tgz)       tar xvzf "$archive"   ;;
+				*.zip)       unzip "$archive"      ;;
+				*.Z)         uncompress "$archive" ;;
+				*.7z)        7z x "$archive"       ;;
+				*)           echo "don't know how to extract '$archive'..." ;;
+			esac
+		else
+			echo "'$archive' is not a valid file!"
+		fi
+	done
+}
+
+
+
+# Function to install programs
+_install_programs() {
+    local programs=("$@")
+
+    # Filter out already installed programs
+    local filtered_programs=()
+    for program_name in "${programs[@]}"; do
+        if ! command -v $program_name &> /dev/null; then
+            filtered_programs+=("$program_name")
+        else
+            echo "'$program_name' is already installed."
+        fi
+    done
+
+    # If all programs are already installed, exit the function
+    if [ ${#filtered_programs[@]} -eq 0 ]; then
+        echo "All programs are already installed."
+        return
+    fi
+
+    # Convert array to space-separated string
+    local program_list="${filtered_programs[@]}"
+
+    # Try installing with apt
+    if command -v apt &> /dev/null; then
+        echo "Attempting to install ${program_list} using apt..."
+        if sudo apt install -y ${filtered_programs[@]}; then
+            echo "${program_list} installed successfully using apt."
+            return
+        else
+            echo "Failed to install ${program_list} using apt."
+        fi
+    fi
+
+    # Try installing with pacman
+    if command -v pacman &> /dev/null; then
+        echo "Attempting to install ${program_list} using pacman..."
+        if sudo pacman -Sy --noconfirm ${filtered_programs[@]}; then
+            echo "${program_list} installed successfully using pacman."
+            return
+        else
+            echo "Failed to install ${program_list} using pacman."
+        fi
+    fi
+
+    # Try installing with yay
+    if command -v yay &> /dev/null; then
+        echo "Attempting to install ${program_list} using yay..."
+        if yay -S --noconfirm ${filtered_programs[@]}; then
+            echo "${program_list} installed successfully using yay."
+            return
+        else
+            echo "Failed to install ${program_list} using yay."
+        fi
+    fi
+
+    echo "Could not install ${program_list} with any available package manager."
+}
+
+# Function to parse input and call install_programs for the entire list
+procure() {
+    local programs=("$@")
+    _install_programs "${programs[@]}"
+}
+
+
+# Function to uninstall programs
+uninstall_programs() {
+    local programs=("$@")
+
+    # Filter out programs that are not installed
+    local filtered_programs=()
+    for program_name in "${programs[@]}"; do
+        if command -v $program_name &> /dev/null; then
+            filtered_programs+=("$program_name")
+        else
+            echo "'$program_name' is not installed."
+        fi
+    done
+
+    # If no programs are installed, exit the function
+    if [ ${#filtered_programs[@]} -eq 0 ]; then
+        echo "None of the specified programs are installed."
+        return
+    fi
+
+    # Convert array to space-separated string
+    local program_list="${filtered_programs[@]}"
+
+    # Try uninstalling with apt
+    if command -v apt &> /dev/null; then
+        echo "Attempting to remove ${program_list} using apt..."
+        if sudo apt remove -y ${filtered_programs[@]}; then
+            echo "${program_list} removed successfully using apt."
+            sudo apt autoremove -y
+            return
+        else
+            echo "Failed to remove ${program_list} using apt."
+        fi
+    fi
+
+    # Try uninstalling with pacman
+    if command -v pacman &> /dev/null; then
+        echo "Attempting to remove ${program_list} using pacman..."
+        if sudo pacman -Rns --noconfirm ${filtered_programs[@]}; then
+            echo "${program_list} removed successfully using pacman."
+            return
+        else
+            echo "Failed to remove ${program_list} using pacman."
+        fi
+    fi
+
+    # Try uninstalling with yay
+    if command -v yay &> /dev/null; then
+        echo "Attempting to remove ${program_list} using yay..."
+        if yay -Rns --noconfirm ${filtered_programs[@]}; then
+            echo "${program_list} removed successfully using yay."
+            return
+        else
+            echo "Failed to remove ${program_list} using yay."
+        fi
+    fi
+
+    echo "Could not remove ${program_list} with any available package manager."
+}
+
+# Function to parse input and call uninstall_programs for the entire list
+purge() {
+    local programs=("$@")
+    uninstall_programs "${programs[@]}"
+}
+
+check_authorship() {
+    echo "=== AUTHORSHIP VERIFICATION ==="
+    echo "Current directory: $(pwd)"
+    echo "Repository: $(basename $(git rev-parse --show-toplevel))"
+    echo "Git Name: $(git config user.name)"
+    echo "Git Email: $(git config user.email)"
+    echo "Remote URL: $(git remote get-url origin 2>/dev/null || echo 'No remote')"
+    echo "==============================="
+
+    # Verify correct identity based on repository
+    local repo_path=$(git rev-parse --show-toplevel)
+    if [[ "$repo_path" == *"serverGenesis"* ]] || [[ "$repo_path" == *"homeserversltd"* ]]; then
+        if [[ "$(git config user.name)" != "homeserversltd" ]] || [[ "$(git config user.email)" != "owner@arpaservers.com" ]]; then
+            echo "❌ WRONG IDENTITY! Expected: homeserversltd <owner@arpaservers.com>"
+            echo "Current: $(git config user.name) <$(git config user.email)>"
+            return 1
+        fi
+    elif [[ "$repo_path" == *"singletons"* ]] || [[ "$repo_path" == *"koltanl"* ]]; then
+        if [[ "$(git config user.name)" != "koltanl" ]] || [[ "$(git config user.email)" != "koltanl@users.noreply.github.com" ]]; then
+            echo "❌ WRONG IDENTITY! Expected: koltanl <koltanl@users.noreply.github.com>"
+            echo "Current: $(git config user.name) <$(git config user.email)>"
+            return 1
+        fi
+    fi
+    echo "✅ Identity verified!"
+    return 0
+}
