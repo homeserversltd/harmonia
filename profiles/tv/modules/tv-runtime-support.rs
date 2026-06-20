@@ -217,7 +217,15 @@ fn packages(
         });
     }
     Ok(OperationOutcome {
-        changed: apply && result.ok,
+        changed: apply
+            && result.ok
+            && pacman_stdout_indicates_change(
+                result
+                    .command
+                    .as_ref()
+                    .map(|c| c.stdout.as_str())
+                    .unwrap_or(""),
+            ),
         ..result
     })
 }
@@ -273,6 +281,22 @@ fn services(
     let mut ok = true;
     let mut changed = false;
     for service in &module.services {
+        let before_enabled = if apply && !optional {
+            Some(command_capture(
+                "/usr/bin/systemctl",
+                &["is-enabled", service],
+            ))
+        } else {
+            None
+        };
+        let before_active = if apply && !optional {
+            Some(command_capture(
+                "/usr/bin/systemctl",
+                &["is-active", service],
+            ))
+        } else {
+            None
+        };
         let args: Vec<String> = if apply && !optional {
             vec!["enable".into(), "--now".into(), service.clone()]
         } else {
@@ -285,8 +309,15 @@ fn services(
             &args,
             None,
         )?;
+        if apply && !optional && outcome.ok {
+            let was_enabled = before_enabled.as_ref().map(|r| r.ok).unwrap_or(false);
+            let was_active = before_active
+                .as_ref()
+                .map(|r| r.stdout.trim() == "active")
+                .unwrap_or(false);
+            changed |= !was_enabled || !was_active;
+        }
         ok &= outcome.ok;
-        changed |= apply && outcome.ok;
     }
     let outcome_ok = ok || !apply || optional;
     let outcome = OperationOutcome {
