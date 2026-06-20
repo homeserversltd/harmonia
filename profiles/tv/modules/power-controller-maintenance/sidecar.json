@@ -1,0 +1,13 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "power-controller-maintenance",
+  "description": "TV power-controller-maintenance module. Rust owns fstrim and optional Bluetooth/controller support are maintained; this sidecar carries constants only.",
+  "packages": [
+    "bluez",
+    "bluez-utils"
+  ],
+  "services": [
+    "fstrim.timer",
+    "bluetooth.service"
+  ]
+}

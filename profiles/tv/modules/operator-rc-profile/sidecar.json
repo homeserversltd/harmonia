@@ -1,0 +1,23 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "operator-rc-profile",
+  "description": "TV operator-rc-profile module. Rust owns operator rc files, zsh login shell helpers, Oh My Posh config path, and bin helpers are maintained; this sidecar carries constants only.",
+  "packages": [
+    "zsh",
+    "zsh-autosuggestions",
+    "zsh-syntax-highlighting",
+    "fzf",
+    "atuin"
+  ],
+  "target_dir": "/home/owner",
+  "expected_files": [
+    ".zshrc",
+    ".zshrc.arch-install",
+    ".aliases",
+    ".functions",
+    "omp.json",
+    ".config/omp.json",
+    "bin/waybar-meter.sh",
+    "bin/volume.sh"
+  ]
+}

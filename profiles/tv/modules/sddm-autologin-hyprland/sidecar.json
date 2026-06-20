@@ -1,0 +1,15 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "sddm-autologin-hyprland",
+  "description": "TV sddm-autologin-hyprland module. Rust owns SDDM autologin enters owner Arch TV Hyprland session; Gamescope is not the main session; this sidecar carries constants only.",
+  "packages": [
+    "sddm"
+  ],
+  "services": [
+    "sddm.service"
+  ],
+  "expected_files": [
+    "/usr/share/wayland-sessions/arch-tv-hyprland.desktop",
+    "/etc/sddm.conf.d/10-arch-tv-autologin.conf"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "appliance-proof",
+  "description": "TV appliance-proof module. Rust owns terminal proof that Arch TV behaves as a Hyprland living-room appliance with optional game lane and recovery paths; this sidecar carries constants only.",
+  "expected_files": [
+    "/usr/share/wayland-sessions/arch-tv-hyprland.desktop",
+    "/etc/sddm.conf.d/10-arch-tv-autologin.conf",
+    "/home/owner/.config/hypr/hyprland.conf",
+    "/home/owner/.config/waybar/waybar.conf",
+    "/home/owner/.config/dunst/dunstrc",
+    "/home/owner/.config/chromium-flags.conf",
+    "/usr/local/bin/arch-tv-steam-game-lane"
+  ],
+  "binaries": [
+    "Hyprland",
+    "waybar",
+    "dunst",
+    "chromium"
+  ]
+}
