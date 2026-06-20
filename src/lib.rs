@@ -18,6 +18,14 @@ struct Profile {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+struct ManagedFileManifest {
+    path: String,
+    content: String,
+    #[serde(default)]
+    mode: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct ModuleManifest {
     id: String,
     #[serde(default)]
@@ -64,6 +72,8 @@ struct ModuleManifest {
     user_services: Vec<String>,
     #[serde(default)]
     groups: Vec<String>,
+    #[serde(default)]
+    managed_files: Vec<ManagedFileManifest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -479,6 +489,7 @@ mod tests {
             services: vec![],
             user_services: vec![],
             groups: vec![],
+            managed_files: vec![],
         };
         assert_eq!(
             validate_registered_module(&module).unwrap_err(),
@@ -584,6 +595,14 @@ mod tests {
             );
             validate_registered_module(&manifest).unwrap();
         }
+        let steam =
+            load_module(&root.join("profiles/tv/modules/steam-game-lane/sidecar.json")).unwrap();
+        assert_eq!(
+            steam.managed_files.len(),
+            3,
+            "steam_game_lane_managed_files"
+        );
+
         for module in [
             "owner-profile",
             "gpu-display-stack",
@@ -622,6 +641,15 @@ mod tests {
         assert!(validate_registered_module(&manifest)
             .unwrap_err()
             .contains("tv-module-expected-path-rejected"));
+        manifest.expected_files = vec![];
+        manifest.managed_files = vec![ManagedFileManifest {
+            path: "../escape".to_string(),
+            content: "bad".to_string(),
+            mode: Some(0o644),
+        }];
+        assert!(validate_registered_module(&manifest)
+            .unwrap_err()
+            .contains("tv-module-managed-file-path-rejected"));
     }
 
     #[test]

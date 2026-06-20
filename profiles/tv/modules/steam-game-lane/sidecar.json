@@ -20,5 +20,22 @@
     "/usr/local/bin/arch-tv-steam-game-lane",
     "/usr/share/applications/arch-tv-steam-game-lane.desktop",
     "/etc/arch-tv/steam-game-lane-policy.md"
+  ],
+  "managed_files": [
+    {
+      "path": "/usr/local/bin/arch-tv-steam-game-lane",
+      "mode": 493,
+      "content": "#!/bin/sh\nexport MANGOHUD=1\nexec gamescope -e -W 1920 -H 1080 -w 1920 -h 1080 -r 60 -- steam -gamepadui\n"
+    },
+    {
+      "path": "/usr/share/applications/arch-tv-steam-game-lane.desktop",
+      "mode": 420,
+      "content": "[Desktop Entry]\nName=Steam Game Lane (Gamescope)\nComment=Optional Arch TV Steam/Gamescope lane; not the main session\nExec=/usr/local/bin/arch-tv-steam-game-lane\nType=Application\nCategories=Game;\n"
+    },
+    {
+      "path": "/etc/arch-tv/steam-game-lane-policy.md",
+      "mode": 420,
+      "content": "# Arch TV Steam Game Lane\n\nSteam owns Proton and compatibility runtime downloads. Gamescope is an optional game/app lane and is not the SDDM autologin session.\n"
+    }
   ]
 }
