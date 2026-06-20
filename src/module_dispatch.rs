@@ -4,6 +4,8 @@ use std::path::Path;
 
 #[path = "../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
 mod arcadia_gui_runtime;
+#[path = "../profiles/homeconsole/modules/arch-keyring-maintenance/index.rs"]
+mod arch_keyring_maintenance;
 #[path = "../profiles/homeconsole/modules/harmonia-runtime/index.rs"]
 mod harmonia_runtime;
 #[path = "../profiles/homeconsole/modules/homeconsole-sync-runtime/index.rs"]
@@ -73,6 +75,9 @@ pub(crate) fn execute_profile_module(
     fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
     match module.id.as_str() {
         identity::ID => identity::execute(module, &module_dir, apply),
+        arch_keyring_maintenance::ID => {
+            arch_keyring_maintenance::execute(module, &module_dir, apply)
+        }
         system_packages::ID => system_packages::execute(module, &module_dir, apply),
         harmonia_runtime::ID => harmonia_runtime::execute(module, &module_dir, apply),
         keyman_runtime::ID => keyman_runtime::execute(module, &module_dir, apply),
@@ -95,6 +100,7 @@ pub(crate) fn execute_profile_module(
 pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), String> {
     match module.id.as_str() {
         identity::ID => identity::validate(module),
+        arch_keyring_maintenance::ID => arch_keyring_maintenance::validate(module),
         system_packages::ID => system_packages::validate(module),
         harmonia_runtime::ID => harmonia_runtime::validate(module),
         keyman_runtime::ID => keyman_runtime::validate(module),

@@ -515,6 +515,7 @@ mod tests {
             profile.modules,
             vec![
                 "identity".to_string(),
+                "arch-keyring-maintenance".to_string(),
                 "system-packages".to_string(),
                 "desktop-config-payload".to_string()
             ]
@@ -560,6 +561,36 @@ mod tests {
         assert!(manifest.command.is_none());
         assert!(manifest.args.is_empty());
         validate_registered_module(&manifest).unwrap();
+    }
+
+    #[test]
+    fn arch_keyring_maintenance_precedes_package_updates_on_arch_profiles() {
+        let root = repo_root();
+        for profile_path in ["profiles/homeconsole/index.json", "profiles/tv/index.json"] {
+            let profile = load_profile(&root.join(profile_path)).unwrap();
+            let keyring_pos = profile
+                .modules
+                .iter()
+                .position(|module| module == "arch-keyring-maintenance")
+                .expect("profile must include arch-keyring-maintenance");
+            let packages_pos = profile
+                .modules
+                .iter()
+                .position(|module| module == "system-packages")
+                .expect("profile must include system-packages");
+            assert!(keyring_pos < packages_pos);
+            let manifest = load_module(
+                &root
+                    .join(profile_path.replace("index.json", "modules"))
+                    .join("arch-keyring-maintenance/sidecar.json"),
+            )
+            .unwrap();
+            assert_eq!(manifest.id, "arch-keyring-maintenance");
+            assert!(manifest.packages.contains(&"archlinux-keyring".to_string()));
+            assert!(manifest.command.is_none());
+            assert!(manifest.args.is_empty());
+            validate_registered_module(&manifest).unwrap();
+        }
     }
 
     #[test]

@@ -6,6 +6,7 @@
   "module_spine_entered": "profiles/homeconsole/modules",
   "modules": [
     "identity",
+    "arch-keyring-maintenance",
     "system-packages",
     "harmonia-runtime",
     "keyman-runtime",
