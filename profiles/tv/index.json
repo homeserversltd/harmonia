@@ -9,7 +9,17 @@
     "identity",
     "arch-keyring-maintenance",
     "system-packages",
-    "desktop-config-payload"
+    "owner-profile",
+    "gpu-display-stack",
+    "hyprland-desktop",
+    "operator-rc-profile",
+    "desktop-config-payload",
+    "user-session-services",
+    "sddm-autologin-hyprland",
+    "steam-game-lane",
+    "power-controller-maintenance",
+    "console-recovery",
+    "appliance-proof"
   ],
   "identity": "arch-tv",
   "module_spine_entered": "profiles/tv/modules"

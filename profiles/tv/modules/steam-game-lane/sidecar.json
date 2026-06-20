@@ -1,0 +1,24 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "steam-game-lane",
+  "description": "TV steam-game-lane module. Rust owns Steam and Gamescope exist as optional game lane, not the main Arch TV session; this sidecar carries constants only.",
+  "packages": [
+    "steam",
+    "gamescope",
+    "mangohud",
+    "gamemode",
+    "power-profiles-daemon"
+  ],
+  "services": [
+    "power-profiles-daemon.service"
+  ],
+  "binaries": [
+    "gamescope",
+    "steam"
+  ],
+  "expected_files": [
+    "/usr/local/bin/arch-tv-steam-game-lane",
+    "/usr/share/applications/arch-tv-steam-game-lane.desktop",
+    "/etc/arch-tv/steam-game-lane-policy.md"
+  ]
+}

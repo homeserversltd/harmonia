@@ -1,0 +1,39 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "hyprland-desktop",
+  "description": "TV hyprland-desktop module. Rust owns Hyprland, portals, desktop shell, browser, audio, and KDE integration packages are maintained; this sidecar carries constants only.",
+  "packages": [
+    "hyprland",
+    "uwsm",
+    "waybar",
+    "dunst",
+    "swayidle",
+    "wl-clipboard",
+    "chromium",
+    "xdg-desktop-portal",
+    "xdg-desktop-portal-hyprland",
+    "xdg-desktop-portal-gtk",
+    "polkit-kde-agent",
+    "dolphin",
+    "kate",
+    "zsh",
+    "fzf",
+    "wofi",
+    "pavucontrol",
+    "pipewire",
+    "wireplumber",
+    "pipewire-pulse",
+    "pipewire-alsa",
+    "alsa-utils",
+    "kitty",
+    "jq"
+  ],
+  "binaries": [
+    "Hyprland",
+    "waybar",
+    "dunst",
+    "chromium",
+    "pipewire",
+    "wireplumber"
+  ]
+}

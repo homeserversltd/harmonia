@@ -22,8 +22,28 @@ mod pinned_artifacts_runtime;
 mod rust_build_toolchain;
 #[path = "../profiles/homeconsole/modules/system-packages/index.rs"]
 mod system_packages;
+#[path = "../profiles/tv/modules/appliance-proof/index.rs"]
+mod tv_appliance_proof;
+#[path = "../profiles/tv/modules/console-recovery/index.rs"]
+mod tv_console_recovery;
 #[path = "../profiles/tv/modules/desktop-config-payload/index.rs"]
 mod tv_desktop_config_payload;
+#[path = "../profiles/tv/modules/gpu-display-stack/index.rs"]
+mod tv_gpu_display_stack;
+#[path = "../profiles/tv/modules/hyprland-desktop/index.rs"]
+mod tv_hyprland_desktop;
+#[path = "../profiles/tv/modules/operator-rc-profile/index.rs"]
+mod tv_operator_rc_profile;
+#[path = "../profiles/tv/modules/owner-profile/index.rs"]
+mod tv_owner_profile;
+#[path = "../profiles/tv/modules/power-controller-maintenance/index.rs"]
+mod tv_power_controller_maintenance;
+#[path = "../profiles/tv/modules/sddm-autologin-hyprland/index.rs"]
+mod tv_sddm_autologin_hyprland;
+#[path = "../profiles/tv/modules/steam-game-lane/index.rs"]
+mod tv_steam_game_lane;
+#[path = "../profiles/tv/modules/user-session-services/index.rs"]
+mod tv_user_session_services;
 pub(crate) use arcadia_gui_runtime::{
     homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
 };
@@ -93,6 +113,22 @@ pub(crate) fn execute_profile_module(
         tv_desktop_config_payload::ID => {
             tv_desktop_config_payload::execute(module, &module_dir, apply)
         }
+        tv_owner_profile::ID => tv_owner_profile::execute(module, &module_dir, apply),
+        tv_gpu_display_stack::ID => tv_gpu_display_stack::execute(module, &module_dir, apply),
+        tv_hyprland_desktop::ID => tv_hyprland_desktop::execute(module, &module_dir, apply),
+        tv_operator_rc_profile::ID => tv_operator_rc_profile::execute(module, &module_dir, apply),
+        tv_user_session_services::ID => {
+            tv_user_session_services::execute(module, &module_dir, apply)
+        }
+        tv_sddm_autologin_hyprland::ID => {
+            tv_sddm_autologin_hyprland::execute(module, &module_dir, apply)
+        }
+        tv_steam_game_lane::ID => tv_steam_game_lane::execute(module, &module_dir, apply),
+        tv_power_controller_maintenance::ID => {
+            tv_power_controller_maintenance::execute(module, &module_dir, apply)
+        }
+        tv_console_recovery::ID => tv_console_recovery::execute(module, &module_dir, apply),
+        tv_appliance_proof::ID => tv_appliance_proof::execute(module, &module_dir, apply),
         other => Err(format!("module-unregistered-{other}")),
     }
 }
@@ -110,6 +146,16 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         local_ai_runtime::ID => local_ai_runtime::validate(module),
         pinned_artifacts_runtime::ID => pinned_artifacts_runtime::validate(module),
         tv_desktop_config_payload::ID => tv_desktop_config_payload::validate(module),
+        tv_owner_profile::ID => tv_owner_profile::validate(module),
+        tv_gpu_display_stack::ID => tv_gpu_display_stack::validate(module),
+        tv_hyprland_desktop::ID => tv_hyprland_desktop::validate(module),
+        tv_operator_rc_profile::ID => tv_operator_rc_profile::validate(module),
+        tv_user_session_services::ID => tv_user_session_services::validate(module),
+        tv_sddm_autologin_hyprland::ID => tv_sddm_autologin_hyprland::validate(module),
+        tv_steam_game_lane::ID => tv_steam_game_lane::validate(module),
+        tv_power_controller_maintenance::ID => tv_power_controller_maintenance::validate(module),
+        tv_console_recovery::ID => tv_console_recovery::validate(module),
+        tv_appliance_proof::ID => tv_appliance_proof::validate(module),
         other => Err(format!("module-unregistered-{other}")),
     }
 }

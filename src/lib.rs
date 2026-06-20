@@ -56,6 +56,14 @@ struct ModuleManifest {
     packages: Vec<String>,
     #[serde(default)]
     expected_files: Vec<String>,
+    #[serde(default)]
+    binaries: Vec<String>,
+    #[serde(default)]
+    services: Vec<String>,
+    #[serde(default)]
+    user_services: Vec<String>,
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -467,6 +475,10 @@ mod tests {
             source_sha_file: None,
             packages: vec![],
             expected_files: vec![],
+            binaries: vec![],
+            services: vec![],
+            user_services: vec![],
+            groups: vec![],
         };
         assert_eq!(
             validate_registered_module(&module).unwrap_err(),
@@ -517,7 +529,17 @@ mod tests {
                 "identity".to_string(),
                 "arch-keyring-maintenance".to_string(),
                 "system-packages".to_string(),
-                "desktop-config-payload".to_string()
+                "owner-profile".to_string(),
+                "gpu-display-stack".to_string(),
+                "hyprland-desktop".to_string(),
+                "operator-rc-profile".to_string(),
+                "desktop-config-payload".to_string(),
+                "user-session-services".to_string(),
+                "sddm-autologin-hyprland".to_string(),
+                "steam-game-lane".to_string(),
+                "power-controller-maintenance".to_string(),
+                "console-recovery".to_string(),
+                "appliance-proof".to_string()
             ]
         );
         assert!(
@@ -538,6 +560,68 @@ mod tests {
             let manifest = load_module(&dir.join("sidecar.json")).unwrap();
             validate_registered_module(&manifest).unwrap();
         }
+    }
+
+    #[test]
+    fn tv_profile_runtime_modules_are_constants_only_and_registered() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
+        for module in &profile.modules {
+            let manifest = load_module(
+                &root
+                    .join("profiles/tv/modules")
+                    .join(module)
+                    .join("sidecar.json"),
+            )
+            .unwrap();
+            assert!(
+                manifest.command.is_none(),
+                "{module} sidecar must not own a command"
+            );
+            assert!(
+                manifest.args.is_empty(),
+                "{module} sidecar must not own args"
+            );
+            validate_registered_module(&manifest).unwrap();
+        }
+        for module in [
+            "owner-profile",
+            "gpu-display-stack",
+            "hyprland-desktop",
+            "operator-rc-profile",
+            "user-session-services",
+            "sddm-autologin-hyprland",
+            "steam-game-lane",
+            "power-controller-maintenance",
+            "console-recovery",
+            "appliance-proof",
+        ] {
+            assert!(
+                profile.modules.contains(&module.to_string()),
+                "missing {module}"
+            );
+        }
+    }
+
+    #[test]
+    fn tv_runtime_modules_reject_unsafe_sidecar_values() {
+        let root = repo_root();
+        let mut manifest =
+            load_module(&root.join("profiles/tv/modules/steam-game-lane/sidecar.json")).unwrap();
+        manifest.binaries = vec!["steam;touch-/tmp/pwn".to_string()];
+        assert!(validate_registered_module(&manifest)
+            .unwrap_err()
+            .contains("tv-module-binary-value-rejected"));
+        manifest.binaries = vec!["steam".to_string()];
+        manifest.services = vec!["../../escape.service".to_string()];
+        assert!(validate_registered_module(&manifest)
+            .unwrap_err()
+            .contains("tv-module-service-value-rejected"));
+        manifest.services = vec!["power-profiles-daemon.service".to_string()];
+        manifest.expected_files = vec!["../escape".to_string()];
+        assert!(validate_registered_module(&manifest)
+            .unwrap_err()
+            .contains("tv-module-expected-path-rejected"));
     }
 
     #[test]
