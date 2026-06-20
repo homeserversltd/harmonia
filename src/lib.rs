@@ -160,10 +160,12 @@ struct OperationOutcome {
     command: Option<CmdResult>,
 }
 
+mod deployable_config;
 mod module_dispatch;
 mod profile_engine;
 mod receipts;
 
+pub(crate) use deployable_config::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
@@ -389,6 +391,72 @@ mod tests {
     }
 
     #[test]
+    fn deployable_config_export_comes_from_harmonia_profile_tree() {
+        let root = repo_root();
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-deployable-config-export-{}",
+            process::id()
+        ));
+        let output = scratch.join("payload");
+        let receipts = scratch.join("receipts");
+        export_deployable_config(
+            &root,
+            "homeconsole",
+            &output,
+            &receipts,
+            DeployableConfigMode::Copy,
+        )
+        .unwrap();
+        assert!(output.join("profiles/homeconsole/index.json").exists());
+        assert!(output
+            .join("profiles/homeconsole/modules/arcadia-gui-runtime/sidecar.json")
+            .exists());
+        assert!(output
+            .join("profiles/homeconsole/modules/pinned-artifacts-runtime/sidecar.json")
+            .exists());
+        assert!(output
+            .join("locks/homeconsole/pinned-artifacts.json")
+            .exists());
+        assert!(receipts.join("deployable-config-export.json").exists());
+        let receipt = fs::read_to_string(receipts.join("deployable-config-export.json")).unwrap();
+        assert!(receipt.contains("harmonia.deployable_config_export.v1"));
+        assert!(receipt.contains("profile-index"));
+        assert!(receipt.contains("module-sidecar"));
+        assert!(receipt.contains("profile-lock"));
+        assert!(
+            !output
+                .join("profiles/homeconsole/modules/arcadia-gui-runtime/index.rs")
+                .exists(),
+            "deployable config export carries constants, not module code"
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn deployable_config_export_rejects_non_harmonia_authority_root() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-deployable-config-reject-{}",
+            process::id()
+        ));
+        fs::create_dir_all(scratch.join("profiles/homeconsole")).unwrap();
+        fs::write(
+            scratch.join("profiles/homeconsole/index.json"),
+            r#"{"schema":"harmonia.profile.v1","id":"homeconsole","identity":"homeconsole","modules":[]}"#,
+        )
+        .unwrap();
+        let err = export_deployable_config(
+            &scratch,
+            "homeconsole",
+            &scratch.join("payload"),
+            &scratch.join("receipts"),
+            DeployableConfigMode::Copy,
+        )
+        .unwrap_err();
+        assert!(err.contains("deployable-config-harmonia-root-rejected"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
     fn homeconsole_runtime_modules_require_git_checkout_authority() {
         let root = repo_root();
         for module in [
@@ -550,6 +618,24 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             run_profile_engine(&profile, &module_root, &receipt_dir, apply)
+        }
+        Some("deployable-config") => {
+            let action = args
+                .get(1)
+                .ok_or("deployable-config requires export <profile-id>")?;
+            if action != "export" {
+                return Err(format!("deployable-config-action-unsupported-{action}"));
+            }
+            let profile_id = args
+                .get(2)
+                .ok_or("deployable-config export requires <profile-id>")?;
+            let output_dir = value_arg(&args, "--out")
+                .ok_or("deployable-config export requires --out <path>")?;
+            let harmonia_root =
+                value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from("."));
+            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| output_dir.join("receipts"));
+            let mode = DeployableConfigMode::parse(value_arg_string(&args, "--mode"))?;
+            export_deployable_config(&harmonia_root, profile_id, &output_dir, &receipt_dir, mode)
         }
         Some("pinned-artifacts") => {
             let action = args
@@ -801,6 +887,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia toolbelt");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia deployable-config export <profile-id> --out <path> [--harmonia-root <path>] [--mode copy|symlink] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts check <profiles/<id>/index.json> [--lock <path>] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts nudge <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts bless <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--install-path <path>] [--apply] [--receipt-dir <path>]");
