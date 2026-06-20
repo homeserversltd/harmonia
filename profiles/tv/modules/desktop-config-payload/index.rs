@@ -1,8 +1,7 @@
 use crate::module_dispatch::{reject_executable_sidecar, require_path, ModuleExecution};
+use crate::tools::files::{converge_files, FileConvergenceRequest, FileSpec};
 use crate::*;
 use serde_json::json;
-use std::fs::{self};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) const ID: &str = "desktop-config-payload";
@@ -16,6 +15,9 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
             "module-sidecar-missing-{}-expected-files",
             module.id
         ));
+    }
+    for rel in &module.expected_files {
+        crate::tools::files::validate_relative_path(Path::new(rel))?;
     }
     Ok(())
 }
@@ -85,82 +87,46 @@ fn install_payload_tree(
     target_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    if !apply {
-        let outcome = OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: format!(
-                "TV desktop config payload planned from {} to {}",
-                source_dir.display(),
-                target_dir.display()
-            ),
-            command: None,
-        };
-        let receipt = json!({
-            "schema": "harmonia.tv.desktop_config_install.v1",
-            "ok": true,
-            "module": module.id,
-            "apply": false,
-            "source_dir": source_dir,
-            "target_dir": target_dir,
-            "planned_file_count": module.expected_files.len(),
-            "first_missing_signal": "none",
-        });
-        write_json(
-            &receipt_dir.join("tv-desktop-config-install.json"),
-            &receipt,
-        )?;
-        return Ok(outcome);
-    }
-
-    let mut copied = Vec::new();
-    let mut changed = false;
-    for rel in &module.expected_files {
-        let source = source_dir.join(rel);
-        let target = target_dir.join(rel);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("tv-config-dir-create-failed: {e}"))?;
-        }
-        let data = fs::read(&source)
-            .map_err(|e| format!("tv-config-read-failed {}: {e}", source.display()))?;
-        let file_changed = fs::read(&target).map(|old| old != data).unwrap_or(true);
-        if file_changed {
-            fs::write(&target, &data)
-                .map_err(|e| format!("tv-config-write-failed {}: {e}", target.display()))?;
-            changed = true;
-        }
-        let mode = fs::metadata(&source)
-            .map_err(|e| format!("tv-config-metadata-failed {}: {e}", source.display()))?
-            .permissions()
-            .mode()
-            & 0o777;
-        let mut permissions = fs::metadata(&target)
-            .map_err(|e| format!("tv-config-target-metadata-failed {}: {e}", target.display()))?
-            .permissions();
-        permissions.set_mode(mode);
-        fs::set_permissions(&target, permissions)
-            .map_err(|e| format!("tv-config-permissions-failed {}: {e}", target.display()))?;
-        copied.push(rel.clone());
-    }
+    let request = FileConvergenceRequest {
+        source_root: source_dir.to_path_buf(),
+        target_root: target_dir.to_path_buf(),
+        files: module
+            .expected_files
+            .iter()
+            .map(|rel| FileSpec {
+                relative_path: PathBuf::from(rel),
+                mode: None,
+            })
+            .collect(),
+        backup_existing: true,
+        receipt_name: "tv-desktop-config-files".to_string(),
+    };
+    let files = converge_files(&request, receipt_dir, apply)?;
     let outcome = OperationOutcome {
-        ok: true,
-        changed,
-        skipped: false,
-        message: format!("installed {} TV config files", copied.len()),
+        ok: files.ok,
+        changed: files.changed,
+        skipped: !apply,
+        message: if apply {
+            format!("converged {} TV config files", files.checked)
+        } else {
+            format!("planned {} TV config files", files.checked)
+        },
         command: None,
     };
     let receipt = json!({
         "schema": "harmonia.tv.desktop_config_install.v1",
-        "ok": true,
+        "ok": files.ok,
         "module": module.id,
-        "apply": true,
+        "apply": apply,
         "source_dir": source_dir,
         "target_dir": target_dir,
-        "file_count": copied.len(),
-        "changed": changed,
-        "files": copied,
-        "first_missing_signal": "none",
+        "planned_file_count": files.checked,
+        "written_file_count": files.written,
+        "backed_up_file_count": files.backed_up,
+        "changed": files.changed,
+        "missing": files.missing,
+        "generic_convergence_receipt": receipt_dir.join("tv-desktop-config-files.json"),
+        "first_missing_signal": if files.ok { "none" } else { "tv-desktop-config-files-incomplete" },
     });
     write_json(
         &receipt_dir.join("tv-desktop-config-install.json"),
