@@ -21,7 +21,7 @@ COPIED home:.inputrc -> .inputrc
 COPIED home:.nanorc -> .nanorc
 COPIED home:.profile -> .profile
 COPIED home:omp.json -> omp.json
-COPIED home:bin/oh-my-posh -> bin/oh-my-posh
+NOTE oh-my-posh executable is installed by Harmonia at deployment time; the binary is not vendored in git.
 COPIED home:bin/waybar-meter.sh -> bin/waybar-meter.sh
 COPIED home:bin/volume.sh -> bin/volume.sh
 COPIED home:bin/waybar-toggle.sh -> bin/waybar-toggle.sh
@@ -85,7 +85,6 @@ drwxr-xr-x 8 .config/systemd
 -rw-r--r-- 913 .inputrc
 -rwxr-xr-x 1177 bin/dynamic-waybar.sh
 -rwxr-xr-x 13284 .local/share/applications/org.kde.kate.desktop
--rwxr-xr-x 19407010 bin/oh-my-posh
 -rwxr-xr-x 226 bin/waybar-toggle.sh
 -rwxr-xr-x 3375 bin/waybar-meter.sh
 -rwxr-xr-x 368 bin/tooltips.sh
