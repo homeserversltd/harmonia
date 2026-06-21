@@ -760,6 +760,57 @@ mod tests {
     }
 
     #[test]
+    fn tv_profile_absolute_path_manifests_config_from_profile_authority() {
+        let root = repo_root();
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-tv-absolute-profile-{}", process::id()));
+        let installed_root = scratch.join("etc/harmonia");
+        let profile_root = installed_root.join("profiles/tv");
+        fs::create_dir_all(profile_root.parent().unwrap()).unwrap();
+        copy_dir_all(&root.join("profiles/tv"), &profile_root).unwrap();
+        let previous = std::env::current_dir().unwrap();
+        let receipt_dir = scratch.join("receipts");
+        std::env::set_current_dir(std::env::temp_dir()).unwrap();
+        let profile_path = profile_root.join("index.json");
+        let profile = load_profile(&profile_path).unwrap();
+        let result = run_profile_engine(
+            &profile,
+            &default_module_root(&profile_path),
+            &receipt_dir,
+            false,
+        );
+        std::env::set_current_dir(previous).unwrap();
+        assert!(
+            result.is_ok(),
+            "absolute profile run should not depend on cwd: {result:?}"
+        );
+        let manifest = fs::read_to_string(
+            receipt_dir.join("modules/desktop-config-payload/tv-desktop-config-manifest.json"),
+        )
+        .unwrap();
+        assert!(
+            manifest.contains("/etc/harmonia/profiles/tv/config/desktop-config")
+                || manifest.contains("etc/harmonia/profiles/tv/config/desktop-config")
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    fn copy_dir_all(source: &Path, target: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(target)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let dest = target.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_dir_all(&entry.path(), &dest)?;
+            } else {
+                fs::copy(entry.path(), dest)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn tv_desktop_config_uses_generic_files_convergence_receipt() {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
@@ -1132,7 +1183,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 ));
             }
             let module = load_module(&module_root.join("local-ai-runtime").join("sidecar.json"))?;
-            let execution = execute_profile_module(&module, &receipt_dir, apply)?;
+            let harmonia_root = harmonia_root_from_module_root(&module_root);
+            let execution = execute_profile_module(&module, &receipt_dir, apply, &harmonia_root)?;
             write_engine_run_receipt(
                 &receipt_dir,
                 &profile,

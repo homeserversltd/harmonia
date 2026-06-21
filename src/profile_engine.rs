@@ -68,6 +68,8 @@ pub(crate) fn run_profile_engine(
     let mut module_count = 0usize;
     let mut operation_count = 0usize;
 
+    let harmonia_root = harmonia_root_from_module_root(module_root);
+
     for module_id in &profile.modules {
         let module_path = module_root.join(module_id).join("sidecar.json");
         let module = match load_module(&module_path) {
@@ -96,7 +98,7 @@ pub(crate) fn run_profile_engine(
         };
         module_count += 1;
         event(&mut events, "module-start", true, &module.id)?;
-        let execution = match execute_profile_module(&module, receipt_dir, apply) {
+        let execution = match execute_profile_module(&module, receipt_dir, apply, &harmonia_root) {
             Ok(execution) => execution,
             Err(err) => {
                 ok = false;
@@ -276,4 +278,34 @@ pub(crate) fn pacman_stdout_indicates_change(stdout: &str) -> bool {
         || stdout.contains("\ninstalling ")
         || stdout.contains("\nreinstalling ")
         || stdout.contains("\nremoving ")
+}
+
+pub(crate) fn harmonia_root_from_module_root(module_root: &Path) -> PathBuf {
+    module_root
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod profile_authority_tests {
+    use super::*;
+
+    #[test]
+    fn module_root_yields_absolute_installed_harmonia_root() {
+        assert_eq!(
+            harmonia_root_from_module_root(Path::new("/etc/harmonia/profiles/tv/modules")),
+            PathBuf::from("/etc/harmonia")
+        );
+    }
+
+    #[test]
+    fn module_root_yields_relative_repo_harmonia_root() {
+        assert_eq!(
+            harmonia_root_from_module_root(Path::new("profiles/tv/modules")),
+            PathBuf::from("")
+        );
+    }
 }
