@@ -9,6 +9,9 @@
     "fzf",
     "atuin"
   ],
+  "binaries": [
+    "oh-my-posh"
+  ],
   "target_dir": "/home/owner",
   "expected_files": [
     ".zshrc",
