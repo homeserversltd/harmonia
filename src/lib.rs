@@ -556,6 +556,7 @@ mod tests {
                 "steam-game-lane".to_string(),
                 "power-controller-maintenance".to_string(),
                 "console-recovery".to_string(),
+                "caduceus-public-lever".to_string(),
                 "appliance-proof".to_string()
             ]
         );
@@ -618,6 +619,15 @@ mod tests {
             .unwrap_or("")
             .contains("customer may have uninstalled Steam"));
 
+        let caduceus =
+            load_module(&root.join("profiles/tv/modules/caduceus-public-lever/sidecar.json"))
+                .unwrap();
+        assert_eq!(caduceus.managed_files.len(), 4, "caduceus_managed_files");
+        assert!(caduceus.binaries.contains(&"caduceus".to_string()));
+        assert!(caduceus
+            .expected_files
+            .contains(&"/etc/caduceus/identity.json".to_string()));
+
         for module in [
             "owner-profile",
             "gpu-display-stack",
@@ -628,6 +638,7 @@ mod tests {
             "steam-game-lane",
             "power-controller-maintenance",
             "console-recovery",
+            "caduceus-public-lever",
             "appliance-proof",
         ] {
             assert!(

@@ -24,6 +24,8 @@ mod rust_build_toolchain;
 mod system_packages;
 #[path = "../profiles/tv/modules/appliance-proof/index.rs"]
 mod tv_appliance_proof;
+#[path = "../profiles/tv/modules/caduceus-public-lever/index.rs"]
+mod tv_caduceus_public_lever;
 #[path = "../profiles/tv/modules/console-recovery/index.rs"]
 mod tv_console_recovery;
 #[path = "../profiles/tv/modules/desktop-config-payload/index.rs"]
@@ -128,6 +130,9 @@ pub(crate) fn execute_profile_module(
             tv_power_controller_maintenance::execute(module, &module_dir, apply)
         }
         tv_console_recovery::ID => tv_console_recovery::execute(module, &module_dir, apply),
+        tv_caduceus_public_lever::ID => {
+            tv_caduceus_public_lever::execute(module, &module_dir, apply)
+        }
         tv_appliance_proof::ID => tv_appliance_proof::execute(module, &module_dir, apply),
         other => Err(format!("module-unregistered-{other}")),
     }
@@ -155,6 +160,7 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         tv_steam_game_lane::ID => tv_steam_game_lane::validate(module),
         tv_power_controller_maintenance::ID => tv_power_controller_maintenance::validate(module),
         tv_console_recovery::ID => tv_console_recovery::validate(module),
+        tv_caduceus_public_lever::ID => tv_caduceus_public_lever::validate(module),
         tv_appliance_proof::ID => tv_appliance_proof::validate(module),
         other => Err(format!("module-unregistered-{other}")),
     }
