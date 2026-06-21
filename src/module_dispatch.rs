@@ -91,6 +91,7 @@ pub(crate) fn execute_profile_module(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
+    harmonia_root: &Path,
 ) -> Result<ModuleExecution, String> {
     validate_registered_module(module)?;
     let module_dir = receipt_dir.join("modules").join(&module.id);
@@ -113,7 +114,7 @@ pub(crate) fn execute_profile_module(
             pinned_artifacts_runtime::execute(module, &module_dir, apply)
         }
         tv_desktop_config_payload::ID => {
-            tv_desktop_config_payload::execute(module, &module_dir, apply)
+            tv_desktop_config_payload::execute(module, &module_dir, apply, harmonia_root)
         }
         tv_owner_profile::ID => tv_owner_profile::execute(module, &module_dir, apply),
         tv_gpu_display_stack::ID => tv_gpu_display_stack::execute(module, &module_dir, apply),

@@ -26,9 +26,11 @@ pub(crate) fn execute(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
+    harmonia_root: &Path,
 ) -> Result<ModuleExecution, String> {
     validate(module)?;
-    let source_dir = PathBuf::from(module.source_dir.as_deref().unwrap());
+    let source_dir =
+        resolve_profile_source_dir(module.source_dir.as_deref().unwrap(), harmonia_root);
     let target_dir = PathBuf::from(module.target_dir.as_deref().unwrap());
     let verify = verify_payload_manifest(module, receipt_dir, &source_dir)?;
     let install = install_payload_tree(module, receipt_dir, &source_dir, &target_dir, apply)?;
@@ -133,4 +135,37 @@ fn install_payload_tree(
         &receipt,
     )?;
     Ok(outcome)
+}
+
+fn resolve_profile_source_dir(source_dir: &str, harmonia_root: &Path) -> PathBuf {
+    let candidate = PathBuf::from(source_dir);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        harmonia_root.join(candidate)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_source_dir_resolves_from_harmonia_root() {
+        assert_eq!(
+            resolve_profile_source_dir(
+                "profiles/tv/config/desktop-config",
+                Path::new("/etc/harmonia")
+            ),
+            PathBuf::from("/etc/harmonia/profiles/tv/config/desktop-config")
+        );
+    }
+
+    #[test]
+    fn absolute_source_dir_remains_absolute() {
+        assert_eq!(
+            resolve_profile_source_dir("/var/lib/harmonia/config", Path::new("/etc/harmonia")),
+            PathBuf::from("/var/lib/harmonia/config")
+        );
+    }
 }
