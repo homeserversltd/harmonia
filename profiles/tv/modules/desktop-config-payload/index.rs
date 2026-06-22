@@ -34,8 +34,9 @@ pub(crate) fn execute(
     let target_dir = PathBuf::from(module.target_dir.as_deref().unwrap());
     let verify = verify_payload_manifest(module, receipt_dir, &source_dir)?;
     let install = install_payload_tree(module, receipt_dir, &source_dir, &target_dir, apply)?;
+    let refresh = refresh_launcher_cache(receipt_dir, apply)?;
     Ok(ModuleExecution::from_operations(
-        vec![("manifest", verify), ("install", install)],
+        vec![("manifest", verify), ("install", install), ("launcher-cache", refresh)],
         &module.id,
     ))
 }
@@ -135,6 +136,69 @@ fn install_payload_tree(
         &receipt,
     )?;
     Ok(outcome)
+}
+
+fn refresh_launcher_cache(receipt_dir: &Path, apply: bool) -> Result<OperationOutcome, String> {
+    if !apply {
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "launcher cache refresh planned for apply".to_string(),
+            command: None,
+        });
+    }
+    if !Path::new("/usr/bin/su").exists() {
+        let outcome = OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "su absent on scout host; launcher cache refresh planned only".to_string(),
+            command: None,
+        };
+        write_json(
+            &receipt_dir.join("tv-launcher-cache-refresh.json"),
+            &json!({
+                "schema": "harmonia.tv.launcher_cache_refresh.v1",
+                "ok": outcome.ok,
+                "apply": apply,
+                "skipped": outcome.skipped,
+                "message": outcome.message,
+                "first_missing_signal": "none",
+            }),
+        )?;
+        return Ok(outcome);
+    }
+    let result = command_tool(
+        receipt_dir,
+        "tv-launcher-cache-refresh",
+        "/usr/bin/su",
+        &[
+            "-".to_string(),
+            "owner".to_string(),
+            "-c".to_string(),
+            "sh /home/owner/bin/refresh-launcher-cache.sh".to_string(),
+        ],
+        None,
+    )?;
+    write_json(
+        &receipt_dir.join("tv-launcher-cache-refresh.json"),
+        &json!({
+            "schema": "harmonia.tv.launcher_cache_refresh.v1",
+            "ok": result.ok,
+            "apply": apply,
+            "changed": result.ok,
+            "message": "refreshed desktop database, ksycoca, and wofi drun cache",
+            "first_missing_signal": if result.ok { "none" } else { "tv-launcher-cache-refresh-failed" },
+        }),
+    )?;
+    Ok(OperationOutcome {
+        ok: result.ok,
+        changed: result.ok,
+        skipped: false,
+        message: "refreshed desktop database, ksycoca, and wofi drun cache".to_string(),
+        command: result.command,
+    })
 }
 
 fn resolve_profile_source_dir(source_dir: &str, harmonia_root: &Path) -> PathBuf {

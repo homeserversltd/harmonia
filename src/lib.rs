@@ -730,6 +730,38 @@ mod tests {
     }
 
     #[test]
+    fn tv_hyprland_desktop_includes_kcalc_and_launcher_refresh_surface() {
+        let root = repo_root();
+        let hyprland =
+            load_module(&root.join("profiles/tv/modules/hyprland-desktop/sidecar.json")).unwrap();
+        assert!(
+            hyprland.packages.contains(&"kcalc".to_string()),
+            "TV hyprland-desktop must install kcalc"
+        );
+
+        let config_root = root.join("profiles/tv/config/desktop-config");
+        let windows = fs::read_to_string(config_root.join(".config/hypr/windows.conf")).unwrap();
+        assert!(windows.contains("org.kde.kcalc"));
+        assert!(windows.contains("float = true"));
+
+        let bindings = fs::read_to_string(config_root.join(".config/hypr/bindings.conf")).unwrap();
+        assert!(bindings.contains("bind = SUPER, K, exec, kcalc"));
+
+        let refresh = fs::read_to_string(config_root.join("bin/refresh-launcher-cache.sh")).unwrap();
+        assert!(refresh.contains("update-desktop-database"));
+        assert!(refresh.contains("kbuildsycoca6"));
+        assert!(refresh.contains("wofi-drun-cache"));
+
+        let desktop = load_module(
+            &root.join("profiles/tv/modules/desktop-config-payload/sidecar.json"),
+        )
+        .unwrap();
+        assert!(desktop
+            .expected_files
+            .contains(&"bin/refresh-launcher-cache.sh".to_string()));
+    }
+
+    #[test]
     fn arch_keyring_maintenance_precedes_package_updates_on_arch_profiles() {
         let root = repo_root();
         for profile_path in ["profiles/homeconsole/index.json", "profiles/tv/index.json"] {
