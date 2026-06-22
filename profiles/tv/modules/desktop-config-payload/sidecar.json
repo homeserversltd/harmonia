@@ -67,6 +67,7 @@
     "bin/dynamic-waybar.sh",
     "bin/fetch.sh",
     "bin/tooltips.sh",
+    "bin/refresh-launcher-cache.sh",
     "bin/tv-launcher.sh",
     "bin/volume.sh",
     "bin/waybar-app-toggle.sh",
