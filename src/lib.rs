@@ -747,15 +747,15 @@ mod tests {
         let bindings = fs::read_to_string(config_root.join(".config/hypr/bindings.conf")).unwrap();
         assert!(bindings.contains("bind = SUPER, K, exec, kcalc"));
 
-        let refresh = fs::read_to_string(config_root.join("bin/refresh-launcher-cache.sh")).unwrap();
+        let refresh =
+            fs::read_to_string(config_root.join("bin/refresh-launcher-cache.sh")).unwrap();
         assert!(refresh.contains("update-desktop-database"));
         assert!(refresh.contains("kbuildsycoca6"));
         assert!(refresh.contains("wofi-drun-cache"));
 
-        let desktop = load_module(
-            &root.join("profiles/tv/modules/desktop-config-payload/sidecar.json"),
-        )
-        .unwrap();
+        let desktop =
+            load_module(&root.join("profiles/tv/modules/desktop-config-payload/sidecar.json"))
+                .unwrap();
         assert!(desktop
             .expected_files
             .contains(&"bin/refresh-launcher-cache.sh".to_string()));

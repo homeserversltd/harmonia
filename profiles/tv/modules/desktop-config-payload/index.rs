@@ -36,7 +36,11 @@ pub(crate) fn execute(
     let install = install_payload_tree(module, receipt_dir, &source_dir, &target_dir, apply)?;
     let refresh = refresh_launcher_cache(receipt_dir, apply)?;
     Ok(ModuleExecution::from_operations(
-        vec![("manifest", verify), ("install", install), ("launcher-cache", refresh)],
+        vec![
+            ("manifest", verify),
+            ("install", install),
+            ("launcher-cache", refresh),
+        ],
         &module.id,
     ))
 }
