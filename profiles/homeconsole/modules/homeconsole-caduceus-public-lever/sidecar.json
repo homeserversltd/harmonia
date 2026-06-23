@@ -1,10 +1,8 @@
 {
-  "schema": "harmonia.module.sidecar.v1",
-  "id": "homeconsole-caduceus-public-lever",
-  "description": "HomeConsole Caduceus public-lever module. Rust owns identity/profile/policy/state file convergence, Harmonia route declarations, and public binary possession checks; this sidecar carries constants only.",
   "binaries": [
     "caduceus"
   ],
+  "description": "HomeConsole Caduceus public-lever module. Rust owns identity/profile/policy/state file convergence, Harmonia route declarations, and public binary possession checks; this sidecar carries constants only.",
   "expected_files": [
     "/usr/local/bin/caduceus",
     "/etc/caduceus/identity.json",
@@ -13,31 +11,33 @@
     "/etc/caduceus/policies/sync.json",
     "/var/lib/caduceus/state.json"
   ],
+  "id": "homeconsole-caduceus-public-lever",
   "managed_files": [
     {
-      "path": "/etc/caduceus/identity.json",
+      "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"arch-gaming-console\",\n  \"profile\": \"console\",\n  \"mode\": \"console\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\"\n}\n",
       "mode": 420,
-      "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"arch-gaming-console\",\n  \"profile\": \"console\",\n  \"mode\": \"console\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\"\n}\n"
+      "path": "/etc/caduceus/identity.json"
     },
     {
-      "path": "/etc/caduceus/profile.json",
+      "content": "{\n  \"commands\": [\n    \"help\",\n    \"identity show\",\n    \"profile show\",\n    \"health\",\n    \"receipts latest\",\n    \"sync status\",\n    \"sync now\",\n    \"update status\",\n    \"update now\",\n    \"update service status\",\n    \"update service toggle\"\n  ],\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\",\n  \"harmonia_routes\": {\n    \"sync_now\": {\n      \"args\": [\n        \"homeconsole-sync\",\n        \"/etc/harmonia/profiles/homeconsole/index.json\",\n        \"--module\",\n        \"/etc/harmonia/profiles/homeconsole/modules/homeconsole-sync-runtime/sidecar.json\",\n        \"--apply\",\n        \"--receipt-dir\",\n        \"/var/lib/harmonia/receipts/homeconsole-sync-latest\"\n      ],\n      \"bin\": \"/usr/local/bin/harmonia\",\n      \"flags\": {\n        \"--no-restart\": [\n          \"--adapter-args\",\n          \"--no-restart\"\n        ]\n      }\n    },\n    \"update_now\": {\n      \"args\": [\n        \"homeconsole-update\",\n        \"/etc/harmonia/profiles/homeconsole/index.json\",\n        \"--apply\",\n        \"--receipt-dir\",\n        \"/var/lib/harmonia/receipts/homeconsole-update-latest\"\n      ],\n      \"bin\": \"/usr/local/bin/harmonia\"\n    }\n  },\n  \"mode\": \"console\",\n  \"operator_aliases\": {\n    \"h\": \"caduceus help\",\n    \"health\": \"caduceus health\",\n    \"sync\": \"caduceus sync now\",\n    \"sync-no-restart\": \"caduceus sync now --no-restart\",\n    \"update\": \"caduceus update now\",\n    \"update-check\": \"caduceus update status\",\n    \"update-status\": \"caduceus receipts latest\"\n  },\n  \"profile\": \"console\",\n  \"schema\": \"caduceus.profile.v1\",\n  \"services\": {\n    \"sync\": {\n      \"latest_receipt\": \"/var/lib/harmonia/receipts/homeconsole-sync-latest/run.json\"\n    },\n    \"update\": {\n      \"latest_receipt\": \"/var/lib/harmonia/receipts/homeconsole-update-latest/run.json\",\n      \"timer\": \"arch-console-maintenance.timer\"\n    }\n  }\n}\n",
       "mode": 420,
-      "content": "{\n  \"schema\": \"caduceus.profile.v1\",\n  \"profile\": \"console\",\n  \"mode\": \"console\",\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\",\n  \"commands\": [\n    \"help\",\n    \"identity show\",\n    \"profile show\",\n    \"health\",\n    \"receipts latest\",\n    \"sync status\",\n    \"sync now\",\n    \"update status\",\n    \"update now\",\n    \"update service status\",\n    \"update service toggle\"\n  ],\n  \"services\": {\n    \"update\": {\n      \"timer\": \"arch-console-maintenance.timer\",\n      \"latest_receipt\": \"/var/lib/harmonia/receipts/homeconsole-update-latest/run.json\"\n    },\n    \"sync\": {\n      \"latest_receipt\": \"/var/lib/harmonia/receipts/homeconsole-sync-latest/run.json\"\n    }\n  },\n  \"harmonia_routes\": {\n    \"sync_now\": {\n      \"bin\": \"/usr/local/bin/harmonia\",\n      \"args\": [\n        \"homeconsole-sync\",\n        \"/etc/harmonia/profiles/homeconsole/index.json\",\n        \"--apply\",\n        \"--receipt-dir\",\n        \"/var/lib/harmonia/receipts/homeconsole-sync-latest\"\n      ],\n      \"flags\": {\n        \"--no-restart\": [\"--adapter-args\", \"--no-restart\"]\n      }\n    },\n    \"update_now\": {\n      \"bin\": \"/usr/local/bin/harmonia\",\n      \"args\": [\n        \"homeconsole-update\",\n        \"/etc/harmonia/profiles/homeconsole/index.json\",\n        \"--apply\",\n        \"--receipt-dir\",\n        \"/var/lib/harmonia/receipts/homeconsole-update-latest\"\n      ]\n    }\n  },\n  \"operator_aliases\": {\n    \"sync\": \"caduceus sync now\",\n    \"sync-no-restart\": \"caduceus sync now --no-restart\",\n    \"update\": \"caduceus update now\",\n    \"update-check\": \"caduceus update status\",\n    \"update-status\": \"caduceus receipts latest\",\n    \"health\": \"caduceus health\",\n    \"h\": \"caduceus help\"\n  }\n}\n"
+      "path": "/etc/caduceus/profile.json"
     },
     {
-      "path": "/etc/caduceus/policies/update.json",
+      "content": "{\n  \"schema\": \"caduceus.policy.v1\",\n  \"profile\": \"console\",\n  \"allowed_public_actions\": [\n    \"identity show\",\n    \"profile show\",\n    \"health\",\n    \"receipts latest\",\n    \"update status\",\n    \"update now\",\n    \"update service status\",\n    \"update service toggle on\",\n    \"update service toggle off\"\n  ],\n  \"private_land_organs_exposed\": false\n}\n",
       "mode": 420,
-      "content": "{\n  \"schema\": \"caduceus.policy.v1\",\n  \"profile\": \"console\",\n  \"allowed_public_actions\": [\n    \"identity show\",\n    \"profile show\",\n    \"health\",\n    \"receipts latest\",\n    \"update status\",\n    \"update now\",\n    \"update service status\",\n    \"update service toggle on\",\n    \"update service toggle off\"\n  ],\n  \"private_land_organs_exposed\": false\n}\n"
+      "path": "/etc/caduceus/policies/update.json"
     },
     {
-      "path": "/etc/caduceus/policies/sync.json",
+      "content": "{\n  \"schema\": \"caduceus.policy.v1\",\n  \"profile\": \"console\",\n  \"allowed_public_actions\": [\n    \"sync status\",\n    \"sync now\",\n    \"sync now --no-restart\"\n  ],\n  \"private_land_organs_exposed\": false\n}\n",
       "mode": 420,
-      "content": "{\n  \"schema\": \"caduceus.policy.v1\",\n  \"profile\": \"console\",\n  \"allowed_public_actions\": [\n    \"sync status\",\n    \"sync now\",\n    \"sync now --no-restart\"\n  ],\n  \"private_land_organs_exposed\": false\n}\n"
+      "path": "/etc/caduceus/policies/sync.json"
     },
     {
-      "path": "/var/lib/caduceus/state.json",
+      "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"arch-console-maintenance.timer\"\n    }\n  }\n}\n",
       "mode": 420,
-      "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"arch-console-maintenance.timer\"\n    }\n  }\n}\n"
+      "path": "/var/lib/caduceus/state.json"
     }
-  ]
+  ],
+  "schema": "harmonia.module.sidecar.v1"
 }
