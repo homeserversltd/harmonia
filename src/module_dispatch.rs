@@ -8,6 +8,8 @@ mod arcadia_gui_runtime;
 mod arch_keyring_maintenance;
 #[path = "../profiles/homeconsole/modules/harmonia-runtime/index.rs"]
 mod harmonia_runtime;
+#[path = "../profiles/homeconsole/modules/homeconsole-caduceus-public-lever/index.rs"]
+mod homeconsole_caduceus_public_lever;
 #[path = "../profiles/homeconsole/modules/homeconsole-sync-runtime/index.rs"]
 mod homeconsole_sync_runtime;
 #[path = "../profiles/homeconsole/modules/identity/index.rs"]
@@ -113,6 +115,9 @@ pub(crate) fn execute_profile_module(
         pinned_artifacts_runtime::ID => {
             pinned_artifacts_runtime::execute(module, &module_dir, apply)
         }
+        homeconsole_caduceus_public_lever::ID => {
+            homeconsole_caduceus_public_lever::execute(module, &module_dir, apply)
+        }
         tv_desktop_config_payload::ID => {
             tv_desktop_config_payload::execute(module, &module_dir, apply, harmonia_root)
         }
@@ -151,6 +156,9 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
         local_ai_runtime::ID => local_ai_runtime::validate(module),
         pinned_artifacts_runtime::ID => pinned_artifacts_runtime::validate(module),
+        homeconsole_caduceus_public_lever::ID => {
+            homeconsole_caduceus_public_lever::validate(module)
+        }
         tv_desktop_config_payload::ID => tv_desktop_config_payload::validate(module),
         tv_owner_profile::ID => tv_owner_profile::validate(module),
         tv_gpu_display_stack::ID => tv_gpu_display_stack::validate(module),

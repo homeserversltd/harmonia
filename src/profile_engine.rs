@@ -217,6 +217,7 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
         "arcadia-gui-runtime",
         "local-ai-runtime",
         "pinned-artifacts-runtime",
+        "homeconsole-caduceus-public-lever",
     ] {
         let module_dir = module_root.join(module_id);
         if module_dir.join("index.rs").exists() && module_dir.join("sidecar.json").exists() {
