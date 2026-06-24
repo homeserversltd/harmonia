@@ -196,8 +196,36 @@ pub(crate) fn homeconsole_update(
         ));
     }
     enforce_homeconsole_update_suite(profile, module_root)?;
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    run_profile_engine(profile, module_root, receipt_dir, apply)
+    let run_id = run_id_from_stamp();
+    let effective_receipt_dir =
+        materialize_homeconsole_receipt_dir(receipt_dir, &run_id)?;
+    fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
+    if apply {
+        let lock_path = homeconsole_update_lock_path();
+        match try_acquire_homeconsole_update_lock(&lock_path) {
+            Ok(_guard) => {
+                run_profile_engine(profile, module_root, &effective_receipt_dir, apply)
+            }
+            Err(ConvergenceLockBusy) => {
+                write_convergence_skipped_receipt(
+                    &effective_receipt_dir,
+                    profile,
+                    apply,
+                    "lock-held",
+                    &lock_path,
+                    receipt_dir,
+                )?;
+                emit_convergence_skipped_stdout(
+                    &effective_receipt_dir,
+                    "lock-held",
+                    &profile.id,
+                );
+                Ok(())
+            }
+        }
+    } else {
+        run_profile_engine(profile, module_root, &effective_receipt_dir, apply)
+    }
 }
 
 pub(crate) fn homeconsole_module_root() -> std::path::PathBuf {
