@@ -3,6 +3,34 @@ use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+pub(crate) fn pacman_needs_overwrite_retry(result: &CmdResult) -> bool {
+    if result.ok {
+        return false;
+    }
+    let combined = format!("{}\n{}", result.stdout, result.stderr);
+    combined.contains("conflicting files") || combined.contains("exists in filesystem")
+}
+
+pub(crate) fn pacman_mutate_packages(sync: bool, packages: &[String]) -> CmdResult {
+    let mut args: Vec<&str> = if sync {
+        vec!["-Sy", "--noconfirm"]
+    } else {
+        vec!["-S", "--noconfirm"]
+    };
+    args.extend(packages.iter().map(String::as_str));
+    let result = command_capture("/usr/bin/pacman", &args);
+    if result.ok || !pacman_needs_overwrite_retry(&result) {
+        return result;
+    }
+    let mut overwrite_args: Vec<&str> = if sync {
+        vec!["-Sy", "--noconfirm", "--overwrite", "*"]
+    } else {
+        vec!["-S", "--noconfirm", "--overwrite", "*"]
+    };
+    overwrite_args.extend(packages.iter().map(String::as_str));
+    command_capture("/usr/bin/pacman", &overwrite_args)
+}
+
 pub(crate) fn command_tool(
     receipt_dir: &Path,
     name: &str,
@@ -45,13 +73,19 @@ pub(crate) fn package_tool(
         return Ok(outcome);
     }
     let result = match action {
-        "update" if apply => command_capture("/usr/bin/pacman", &["-Syu", "--noconfirm"]),
-        "update" | "check" => command_capture("/usr/bin/pacman", &["-Qu"]),
-        "install" if apply => {
-            let mut args = vec!["-S", "--noconfirm"];
-            args.extend(packages.iter().map(String::as_str));
-            command_capture("/usr/bin/pacman", &args)
+        "update" if apply => {
+            let first = command_capture("/usr/bin/pacman", &["-Syu", "--noconfirm"]);
+            if first.ok || !pacman_needs_overwrite_retry(&first) {
+                first
+            } else {
+                command_capture(
+                    "/usr/bin/pacman",
+                    &["-Syu", "--noconfirm", "--overwrite", "*"],
+                )
+            }
         }
+        "update" | "check" => command_capture("/usr/bin/pacman", &["-Qu"]),
+        "install" if apply => pacman_mutate_packages(false, packages),
         "install" => command_capture("/usr/bin/pacman", &["-Q"]),
         other => {
             let outcome = OperationOutcome {
@@ -67,8 +101,12 @@ pub(crate) fn package_tool(
     };
     let changed =
         action == "update" && apply && result.ok && pacman_stdout_indicates_change(&result.stdout);
+    let ok = match action {
+        "check" => result.ok || result.code == 1,
+        _ => result.ok,
+    };
     let outcome = OperationOutcome {
-        ok: action != "check" || result.ok || result.code == 1,
+        ok,
         changed,
         skipped: false,
         message: format!("package {action}"),

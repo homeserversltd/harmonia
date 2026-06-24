@@ -195,7 +195,13 @@ fn local_ai_binary_readback(receipt_dir: &Path, apply: bool) -> Result<Operation
         )?;
         return Ok(outcome);
     }
-    let result = command_capture(LOCAL_LLAMA_SERVER, &["--version"]);
+    let mut result = command_capture(LOCAL_LLAMA_SERVER, &["--version"]);
+    if !result.ok
+        && result.stderr.contains("Exec format error")
+        && Path::new(SYSTEM_LLAMA_SERVER).exists()
+    {
+        result = command_capture(SYSTEM_LLAMA_SERVER, &["--version"]);
+    }
     write_command_receipt(receipt_dir, "local-ai-binary-readback", &result)?;
     Ok(OperationOutcome {
         ok: result.ok,
