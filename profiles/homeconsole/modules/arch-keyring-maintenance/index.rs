@@ -18,6 +18,50 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn pacman_keyring_refresh_needs_overwrite_retry(outcome: &OperationOutcome) -> bool {
+    let Some(result) = outcome.command.as_ref() else {
+        return false;
+    };
+    if result.ok {
+        return false;
+    }
+    let combined = format!("{}\n{}", result.stdout, result.stderr);
+    combined.contains("conflicting files") || combined.contains("exists in filesystem")
+}
+
+pub(crate) fn refresh_archlinux_keyring(
+    receipt_dir: &Path,
+    package_name: &str,
+) -> Result<OperationOutcome, String> {
+    let standard = command_tool(
+        receipt_dir,
+        "archlinux-keyring-refresh",
+        "/usr/bin/pacman",
+        &[
+            "-Sy".to_string(),
+            "--noconfirm".to_string(),
+            package_name.to_string(),
+        ],
+        None,
+    )?;
+    if standard.ok || !pacman_keyring_refresh_needs_overwrite_retry(&standard) {
+        return Ok(standard);
+    }
+    command_tool(
+        receipt_dir,
+        "archlinux-keyring-refresh-overwrite",
+        "/usr/bin/pacman",
+        &[
+            "-Sy".to_string(),
+            "--noconfirm".to_string(),
+            "--overwrite".to_string(),
+            "*".to_string(),
+            package_name.to_string(),
+        ],
+        None,
+    )
+}
+
 pub(crate) fn execute(
     module: &ModuleManifest,
     receipt_dir: &Path,
@@ -102,17 +146,7 @@ pub(crate) fn execute(
         )?;
         operations.push(("pacman-key-populate", populate));
 
-        let install_keyring = command_tool(
-            receipt_dir,
-            "archlinux-keyring-refresh",
-            "/usr/bin/pacman",
-            &[
-                "-Sy".to_string(),
-                "--noconfirm".to_string(),
-                package_name.clone(),
-            ],
-            None,
-        )?;
+        let install_keyring = refresh_archlinux_keyring(receipt_dir, &package_name)?;
         operations.push(("archlinux-keyring-refresh", install_keyring));
 
         let updatedb = command_tool(
@@ -178,4 +212,43 @@ fn write_arch_keyring_receipt(
             "first_missing_signal": first_missing_signal,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overwrite_retry_triggers_on_conflicting_files() {
+        let outcome = OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: false,
+            message: String::new(),
+            command: Some(CmdResult {
+                ok: false,
+                code: 1,
+                stdout: String::new(),
+                stderr: "error: failed to commit transaction (conflicting files)\narchlinux-keyring: /usr/share/pacman/keyrings/archlinux.gpg exists in filesystem".to_string(),
+            }),
+        };
+        assert!(pacman_keyring_refresh_needs_overwrite_retry(&outcome));
+    }
+
+    #[test]
+    fn overwrite_retry_skips_successful_refresh() {
+        let outcome = OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: String::new(),
+            command: Some(CmdResult {
+                ok: true,
+                code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+        };
+        assert!(!pacman_keyring_refresh_needs_overwrite_retry(&outcome));
+    }
 }
