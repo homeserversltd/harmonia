@@ -182,11 +182,13 @@ struct OperationOutcome {
     command: Option<CmdResult>,
 }
 
+mod convergence_lock;
 mod deployable_config;
 mod module_dispatch;
 mod profile_engine;
 mod receipts;
 
+pub(crate) use convergence_lock::*;
 pub(crate) use deployable_config::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use profile_engine::*;
@@ -250,6 +252,65 @@ mod tests {
         )
         .unwrap_err()
         .contains("homeconsole/homeconsole"));
+    }
+
+    #[test]
+    fn materializes_per_run_receipt_dir_for_latest_alias() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-receipt-alias-{}", process::id()));
+        let latest = scratch.join("homeconsole-update-latest");
+        let per_run =
+            materialize_homeconsole_receipt_dir(&latest, "run-test-1").expect("materialize");
+        assert_eq!(per_run, scratch.join("homeconsole-update-run-test-1"));
+        assert!(per_run.is_dir());
+        #[cfg(unix)]
+        {
+            let link_target = std::fs::read_link(&latest).expect("latest symlink");
+            assert_eq!(link_target, per_run);
+        }
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn homeconsole_update_apply_skips_cleanly_when_convergence_lock_held() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-flock-skip-{}", process::id()));
+        let lock_path = scratch.join("homeconsole-update.lock");
+        let receipt_root = scratch.join("receipts");
+        let latest = receipt_root.join("homeconsole-update-latest");
+        let profile = Profile {
+            id: "homeconsole".into(),
+            identity: "homeconsole".into(),
+            modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap(),
+        };
+        let _guard = try_acquire_homeconsole_update_lock(&lock_path).expect("hold lock");
+        let previous_lock = std::env::var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK").ok();
+        std::env::set_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK", &lock_path);
+        let result = homeconsole_update(&profile, &homeconsole_module_root(), &latest, true);
+        if let Some(value) = previous_lock {
+            std::env::set_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK", value);
+        } else {
+            std::env::remove_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK");
+        }
+        assert!(result.is_ok(), "lock-held skip should not fail suite: {result:?}");
+        let per_run_dirs: Vec<_> = fs::read_dir(&receipt_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("homeconsole-update-run-"))
+            })
+            .collect();
+        assert_eq!(per_run_dirs.len(), 1, "expected one per-run receipt dir");
+        let skipped = per_run_dirs[0].join("convergence-skipped.json");
+        assert!(skipped.exists(), "missing skipped receipt at {}", skipped.display());
+        let text = fs::read_to_string(skipped).unwrap();
+        assert!(text.contains("harmonia.convergence.skipped.v1"));
+        assert!(text.contains("lock-held"));
+        let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]
