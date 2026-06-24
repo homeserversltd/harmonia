@@ -84,6 +84,9 @@ pub(crate) fn execute(
     operations.push(("homeconsole-update-receipt-aliases", alias));
 
     if apply {
+        let dropin_removed = remove_legacy_timer_dropin(receipt_dir)?;
+        operations.push(("homeconsole-update-timer-dropin-cleanup", dropin_removed));
+
         let daemon_reload = command_capture("/usr/bin/systemctl", &["daemon-reload"]);
         write_command_receipt(receipt_dir, "homeconsole-update-daemon-reload", &daemon_reload)?;
         let reload_outcome = OperationOutcome {
@@ -124,7 +127,34 @@ pub(crate) fn execute(
             },
             command: Some(enable),
         };
+        let timer_enabled = enable_outcome.ok;
         operations.push(("homeconsole-update-timer-enable", enable_outcome));
+
+        let restart = if timer_enabled {
+            command_capture("/usr/bin/systemctl", &["restart", "harmonia-homeconsole.timer"])
+        } else {
+            CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: "skipped because timer enable failed".to_string(),
+            }
+        };
+        write_command_receipt(receipt_dir, "homeconsole-update-timer-restart", &restart)?;
+        operations.push((
+            "homeconsole-update-timer-restart",
+            OperationOutcome {
+                ok: restart.ok,
+                changed: restart.ok,
+                skipped: false,
+                message: if restart.ok {
+                    "harmonia-homeconsole.timer restarted".to_string()
+                } else {
+                    "harmonia-homeconsole.timer restart failed".to_string()
+                },
+                command: Some(restart),
+            },
+        ));
     } else {
         let planned = OperationOutcome {
             ok: true,
@@ -154,6 +184,40 @@ pub(crate) fn execute(
         }),
     )?;
     Ok(execution)
+}
+
+fn remove_legacy_timer_dropin(receipt_dir: &Path) -> Result<OperationOutcome, String> {
+    let dropin = PathBuf::from(
+        "/etc/systemd/system/harmonia-homeconsole.timer.d/always-modern.conf",
+    );
+    let mut changed = false;
+    if dropin.exists() {
+        fs::remove_file(&dropin).map_err(|e| e.to_string())?;
+        changed = true;
+        if let Some(parent) = dropin.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+    write_json(
+        &receipt_dir.join("homeconsole-update-timer-dropin-cleanup.json"),
+        &json!({
+            "schema": "harmonia.homeconsole.timer_dropin_cleanup.v1",
+            "ok": true,
+            "dropin": dropin,
+            "removed": changed,
+        }),
+    )?;
+    Ok(OperationOutcome {
+        ok: true,
+        changed,
+        skipped: false,
+        message: if changed {
+            "removed legacy always-modern timer drop-in".to_string()
+        } else {
+            "legacy timer drop-in already absent".to_string()
+        },
+        command: None,
+    })
 }
 
 fn migrate_homeconsole_receipt_aliases(
