@@ -18,48 +18,19 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn pacman_keyring_refresh_needs_overwrite_retry(outcome: &OperationOutcome) -> bool {
-    let Some(result) = outcome.command.as_ref() else {
-        return false;
-    };
-    if result.ok {
-        return false;
-    }
-    let combined = format!("{}\n{}", result.stdout, result.stderr);
-    combined.contains("conflicting files") || combined.contains("exists in filesystem")
-}
-
 pub(crate) fn refresh_archlinux_keyring(
     receipt_dir: &Path,
     package_name: &str,
 ) -> Result<OperationOutcome, String> {
-    let standard = command_tool(
-        receipt_dir,
-        "archlinux-keyring-refresh",
-        "/usr/bin/pacman",
-        &[
-            "-Sy".to_string(),
-            "--noconfirm".to_string(),
-            package_name.to_string(),
-        ],
-        None,
-    )?;
-    if standard.ok || !pacman_keyring_refresh_needs_overwrite_retry(&standard) {
-        return Ok(standard);
-    }
-    command_tool(
-        receipt_dir,
-        "archlinux-keyring-refresh-overwrite",
-        "/usr/bin/pacman",
-        &[
-            "-Sy".to_string(),
-            "--noconfirm".to_string(),
-            "--overwrite".to_string(),
-            "*".to_string(),
-            package_name.to_string(),
-        ],
-        None,
-    )
+    let result = pacman_mutate_packages(true, &[package_name.to_string()]);
+    write_command_receipt(receipt_dir, "archlinux-keyring-refresh", &result)?;
+    Ok(OperationOutcome {
+        ok: result.ok,
+        changed: result.ok,
+        skipped: false,
+        message: "archlinux-keyring refresh".to_string(),
+        command: Some(result),
+    })
 }
 
 pub(crate) fn execute(
@@ -220,35 +191,23 @@ mod tests {
 
     #[test]
     fn overwrite_retry_triggers_on_conflicting_files() {
-        let outcome = OperationOutcome {
+        let result = CmdResult {
             ok: false,
-            changed: false,
-            skipped: false,
-            message: String::new(),
-            command: Some(CmdResult {
-                ok: false,
-                code: 1,
-                stdout: String::new(),
-                stderr: "error: failed to commit transaction (conflicting files)\narchlinux-keyring: /usr/share/pacman/keyrings/archlinux.gpg exists in filesystem".to_string(),
-            }),
+            code: 1,
+            stdout: String::new(),
+            stderr: "error: failed to commit transaction (conflicting files)\narchlinux-keyring: /usr/share/pacman/keyrings/archlinux.gpg exists in filesystem".to_string(),
         };
-        assert!(pacman_keyring_refresh_needs_overwrite_retry(&outcome));
+        assert!(pacman_needs_overwrite_retry(&result));
     }
 
     #[test]
     fn overwrite_retry_skips_successful_refresh() {
-        let outcome = OperationOutcome {
+        let result = CmdResult {
             ok: true,
-            changed: false,
-            skipped: false,
-            message: String::new(),
-            command: Some(CmdResult {
-                ok: true,
-                code: 0,
-                stdout: String::new(),
-                stderr: String::new(),
-            }),
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
         };
-        assert!(!pacman_keyring_refresh_needs_overwrite_retry(&outcome));
+        assert!(!pacman_needs_overwrite_retry(&result));
     }
 }
