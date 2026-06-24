@@ -255,6 +255,23 @@ mod tests {
     }
 
     #[test]
+    fn homeconsole_update_runtime_sidecar_registers_convergence_timer() {
+        let root = repo_root();
+        let manifest = load_module(
+            &root.join("profiles/homeconsole/modules/homeconsole-update-runtime/sidecar.json"),
+        )
+        .unwrap();
+        assert_eq!(manifest.id, "homeconsole-update-runtime");
+        let text = fs::read_to_string(
+            root.join("profiles/homeconsole/modules/homeconsole-update-runtime/sidecar.json"),
+        )
+        .unwrap();
+        assert!(text.contains("harmonia-homeconsole.timer"));
+        assert!(text.contains("homeconsole-update-latest"));
+        validate_registered_module(&manifest).unwrap();
+    }
+
+    #[test]
     fn materializes_per_run_receipt_dir_for_latest_alias() {
         let scratch =
             std::env::temp_dir().join(format!("harmonia-receipt-alias-{}", process::id()));
@@ -1252,7 +1269,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .get(1)
                 .ok_or("homeconsole-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args)
-                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/latest"));
+                .unwrap_or_else(homeconsole_update_receipt_latest);
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));

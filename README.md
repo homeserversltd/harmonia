@@ -124,7 +124,7 @@ A full update command on an installed machine looks like this:
 /usr/local/bin/harmonia homeconsole-update \
   /etc/harmonia/profiles/homeconsole/index.json \
   --apply \
-  --receipt-dir /var/lib/harmonia/receipts/homeconsole-latest
+  --receipt-dir /var/lib/harmonia/receipts/homeconsole-update-latest
 ```
 
 A good run reports:

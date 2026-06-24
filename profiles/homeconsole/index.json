@@ -15,6 +15,7 @@
     "arcadia-gui-runtime",
     "local-ai-runtime",
     "pinned-artifacts-runtime",
+    "homeconsole-update-runtime",
     "homeconsole-caduceus-public-lever"
   ]
 }

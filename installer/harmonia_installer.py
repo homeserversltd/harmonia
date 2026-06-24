@@ -102,8 +102,8 @@ Install contract:
     install_p.add_argument("--profile", default="homeconsole", help="Profile to install under /etc/harmonia/profiles/<profile>.")
     install_p.add_argument("--cargo", default="cargo", help="Cargo executable to use.")
     install_p.add_argument("--package", default="harmonia", help="Cargo package name.")
-    install_p.add_argument("--with-systemd", action="store_true", help="Install harmonia service/timer units.")
-    install_p.add_argument("--enable-timer", action="store_true", help="Enable harmonia.timer after installing units; implies --with-systemd.")
+    install_p.add_argument("--with-systemd", action="store_true", help="Install harmonia-homeconsole service/timer units.")
+    install_p.add_argument("--enable-timer", action="store_true", help="Enable harmonia-homeconsole.timer after installing units; implies --with-systemd.")
 
     uninstall_p = sub.add_parser("uninstall", help="Remove installed Harmonia surfaces.")
     add_common_path_args(uninstall_p)
@@ -145,8 +145,8 @@ def status(paths: InstallPaths) -> int:
         "state_dir": describe_path(paths.state_dir),
         "receipt_dir": describe_path(paths.receipt_dir),
         "log_dir": describe_path(paths.log_dir),
-        "systemd_service": describe_path(paths.systemd_dir / "harmonia.service"),
-        "systemd_timer": describe_path(paths.systemd_dir / "harmonia.timer"),
+        "systemd_service": describe_path(paths.systemd_dir / "harmonia-homeconsole.service"),
+        "systemd_timer": describe_path(paths.systemd_dir / "harmonia-homeconsole.timer"),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -173,7 +173,9 @@ def install(args: argparse.Namespace) -> int:
         f"ensure state/log/receipt dirs -> {paths.state_dir}, {paths.log_dir}, {paths.receipt_dir}",
     ]
     if with_systemd:
-        plan.append(f"install systemd units -> {paths.systemd_dir}/harmonia.service and harmonia.timer")
+        plan.append(
+            f"install systemd units -> {paths.systemd_dir}/harmonia-homeconsole.service and harmonia-homeconsole.timer"
+        )
     emit_plan("harmonia.installer.install_plan.v1", apply, plan)
     if not apply:
         return 0
@@ -194,7 +196,11 @@ def install(args: argparse.Namespace) -> int:
         install_systemd_units(paths, profile=args.profile)
         run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
         if args.enable_timer:
-            run_checked(["systemctl", "enable", "--now", "harmonia.timer"], cwd=REPO_ROOT, allow_missing=True)
+            run_checked(
+                ["systemctl", "enable", "--now", "harmonia-homeconsole.timer"],
+                cwd=REPO_ROOT,
+                allow_missing=True,
+            )
     print("schema=harmonia.installer.install.v1")
     print("ok=true")
     print(f"binary={paths.bin_path}")
@@ -207,7 +213,12 @@ def uninstall(args: argparse.Namespace) -> int:
     apply = bool(args.apply)
     targets: list[Path] = [paths.bin_path]
     if args.with_systemd:
-        targets.extend([paths.systemd_dir / "harmonia.service", paths.systemd_dir / "harmonia.timer"])
+        targets.extend(
+            [
+                paths.systemd_dir / "harmonia-homeconsole.service",
+                paths.systemd_dir / "harmonia-homeconsole.timer",
+            ]
+        )
     if not args.keep_config:
         targets.append(paths.config_dir)
     if not args.keep_state:
@@ -216,7 +227,11 @@ def uninstall(args: argparse.Namespace) -> int:
     if not apply:
         return 0
     if args.with_systemd:
-        run_checked(["systemctl", "disable", "--now", "harmonia.timer"], cwd=REPO_ROOT, allow_missing=True)
+        run_checked(
+            ["systemctl", "disable", "--now", "harmonia-homeconsole.timer"],
+            cwd=REPO_ROOT,
+            allow_missing=True,
+        )
         run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
     for target in targets:
         remove_path(target)
@@ -275,29 +290,36 @@ def copy_tree(src: Path, dst: Path) -> None:
 
 
 def install_systemd_units(paths: InstallPaths, profile: str) -> None:
+    receipt_latest = f"{paths.receipt_dir}/homeconsole-update-latest"
     service = f"""[Unit]
-Description=Harmonia profile update runner
+Description=Run Harmonia HomeConsole profile convergence
+Documentation=file:{receipt_latest}/run.json
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={paths.bin_path} run-profile {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {paths.receipt_dir}/{profile}-latest
+ExecStart={paths.bin_path} homeconsole-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}
+Nice=10
+IOSchedulingClass=idle
 """
     timer = """[Unit]
-Description=Run Harmonia profile update periodically
+Description=Run Harmonia HomeConsole profile convergence on schedule
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=1d
+OnBootSec=2min
+OnCalendar=*:0/10
+OnUnitActiveSec=10min
+AccuracySec=30s
 Persistent=true
+Unit=harmonia-homeconsole.service
 
 [Install]
 WantedBy=timers.target
 """
     paths.systemd_dir.mkdir(parents=True, exist_ok=True)
-    (paths.systemd_dir / "harmonia.service").write_text(service)
-    (paths.systemd_dir / "harmonia.timer").write_text(timer)
+    (paths.systemd_dir / "harmonia-homeconsole.service").write_text(service)
+    (paths.systemd_dir / "harmonia-homeconsole.timer").write_text(timer)
 
 
 def remove_path(path: Path) -> None:
