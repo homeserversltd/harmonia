@@ -969,6 +969,37 @@ mod tests {
     }
 
     #[test]
+    fn homeconsole_caduceus_public_lever_sidecar_stands_up_http_runtime() {
+        let root = repo_root();
+        let manifest = load_module(
+            &root.join("profiles/homeconsole/modules/homeconsole-caduceus-public-lever/sidecar.json"),
+        )
+        .unwrap();
+        assert_eq!(manifest.id, "homeconsole-caduceus-public-lever");
+        assert!(
+            manifest
+                .repo
+                .as_deref()
+                .unwrap_or("")
+                .contains("caduceus"),
+            "caduceus module must sync caduceus source"
+        );
+        assert_eq!(manifest.service.as_deref(), Some("caduceus.service"));
+        assert_eq!(
+            manifest.url.as_deref(),
+            Some("http://127.0.0.1:8787/health")
+        );
+        assert!(
+            manifest
+                .managed_files
+                .iter()
+                .any(|file| file.path == "/etc/systemd/system/caduceus.service"),
+            "caduceus module must install caduceus.service"
+        );
+        validate_registered_module(&manifest).unwrap();
+    }
+
+    #[test]
     fn shared_toolbelt_is_callable_by_modules() {
         assert!(tools::get("command").is_some());
         assert!(tools::get("git-artifact").is_some());
