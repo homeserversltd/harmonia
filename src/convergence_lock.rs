@@ -5,6 +5,18 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub(crate) const HOME_CONSOLE_UPDATE_LOCK_PATH: &str = "/run/harmonia/homeconsole-update.lock";
+pub(crate) const HOME_CONSOLE_UPDATE_RECEIPT_LATEST: &str =
+    "/var/lib/harmonia/receipts/homeconsole-update-latest";
+pub(crate) const HOME_CONSOLE_UPDATE_RECEIPT_LEGACY: &str =
+    "/var/lib/harmonia/receipts/homeconsole-latest";
+
+pub(crate) fn homeconsole_update_receipt_latest() -> PathBuf {
+    PathBuf::from(HOME_CONSOLE_UPDATE_RECEIPT_LATEST)
+}
+
+pub(crate) fn homeconsole_update_receipt_legacy() -> PathBuf {
+    PathBuf::from(HOME_CONSOLE_UPDATE_RECEIPT_LEGACY)
+}
 
 pub(crate) fn homeconsole_update_lock_path() -> PathBuf {
     std::env::var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK")
@@ -78,8 +90,77 @@ pub(crate) fn materialize_homeconsole_receipt_dir(
         .unwrap_or("homeconsole-update");
     let per_run = parent.join(format!("{base}-{run_id}"));
     fs::create_dir_all(&per_run).map_err(|e| e.to_string())?;
+    migrate_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
+}
+
+pub(crate) fn migrate_blocking_receipt_path(latest_path: &Path, run_id: &str) -> Result<(), String> {
+    if !latest_path.exists() || latest_path.is_symlink() {
+        return Ok(());
+    }
+    if latest_path.is_dir() {
+        let parent = latest_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| latest_path.to_path_buf());
+        let migrated = parent.join(format!("homeconsole-update-legacy-{run_id}"));
+        fs::rename(latest_path, &migrated).map_err(|e| {
+            format!(
+                "homeconsole-update-latest-migrate-failed {} -> {}: {e}",
+                latest_path.display(),
+                migrated.display()
+            )
+        })?;
+        return Ok(());
+    }
+    fs::remove_file(latest_path).map_err(|e| e.to_string())
+}
+
+pub(crate) fn link_legacy_receipt_alias(legacy: &Path, canonical: &Path) -> Result<bool, String> {
+    if legacy == canonical {
+        return Ok(false);
+    }
+    if legacy.is_symlink() {
+        let target = fs::read_link(legacy).map_err(|e| e.to_string())?;
+        if target == canonical {
+            return Ok(false);
+        }
+        fs::remove_file(legacy).map_err(|e| e.to_string())?;
+    } else if legacy.exists() {
+        let parent = legacy
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| legacy.to_path_buf());
+        let migrated = parent.join(format!(
+            "homeconsole-latest-legacy-{}",
+            run_id_from_stamp()
+        ));
+        if legacy.is_dir() {
+            fs::rename(legacy, &migrated).map_err(|e| e.to_string())?;
+        } else {
+            fs::remove_file(legacy).map_err(|e| e.to_string())?;
+        }
+    }
+    if !canonical.exists() {
+        fs::create_dir_all(canonical).map_err(|e| e.to_string())?;
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(canonical, legacy).map_err(|e| {
+            format!(
+                "homeconsole-latest-alias-symlink-failed {} -> {}: {e}",
+                canonical.display(),
+                legacy.display()
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (legacy, canonical);
+        return Err("homeconsole-latest-alias-symlink-unsupported".to_string());
+    }
+    Ok(true)
 }
 
 fn refresh_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), String> {
@@ -87,7 +168,10 @@ fn refresh_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), Strin
         if latest_path.is_symlink() {
             fs::remove_file(latest_path).map_err(|e| e.to_string())?;
         } else if latest_path.is_dir() {
-            return Ok(());
+            return Err(format!(
+                "homeconsole-update-latest-still-directory {}",
+                latest_path.display()
+            ));
         } else {
             fs::remove_file(latest_path).map_err(|e| e.to_string())?;
         }
