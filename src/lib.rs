@@ -651,6 +651,25 @@ mod tests {
         ] {
             assert!(profile_text.contains(required), "homeserver Caduceus profile missing {required}");
         }
+        let service_text = caduceus
+            .managed_files
+            .iter()
+            .find(|file| file.path == "/etc/systemd/system/caduceus.service")
+            .expect("homeserver caduceus service managed file")
+            .content
+            .as_str();
+        for writable in [
+            "/opt/coronatio",
+            "/var/lib/coronatio",
+            "/opt/harmonia",
+            "/etc/harmonia",
+            "/var/lib/harmonia",
+        ] {
+            assert!(
+                service_text.contains(writable),
+                "homeserver Caduceus sandbox missing write surface {writable}"
+            );
+        }
     }
 
     #[test]

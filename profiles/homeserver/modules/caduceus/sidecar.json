@@ -13,7 +13,7 @@
     {
       "path": "/etc/systemd/system/caduceus.service",
       "mode": 420,
-      "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nReadWritePaths=/var/lib/caduceus /var/lib/harmonia /var/log/harmonia /var/cache/harmonia /var/cache/caduceus /opt/caduceus /usr/local/bin /etc/caduceus /etc/systemd/system\n\n[Install]\nWantedBy=multi-user.target\n"
+      "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nReadWritePaths=/var/lib/caduceus /var/lib/harmonia /var/log/harmonia /var/cache/harmonia /var/cache/caduceus /var/lib/coronatio /opt/caduceus /opt/coronatio /opt/harmonia /usr/local/bin /etc/caduceus /etc/harmonia /etc/systemd/system\n\n[Install]\nWantedBy=multi-user.target\n"
     },
     {
       "path": "/etc/caduceus/identity.json",
