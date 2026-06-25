@@ -1,20 +1,15 @@
-# HomeServer profile folder skeleton
+# HomeServer profile skeleton
 
 Public Harmonia surface.
 
-This is only a reusable, public-safe folder map. It installs nothing.
+This profile is the fleet product truth for the reusable HOMESERVER appliance. It carries product configuration, module declarations, and public-common service config that every matching body may converge.
 
-It uses generic slot names except SearXNG, which is a public/common homeserver service. Owner-specific service selections, private topology, and private control-plane names belong in the private fork, not here.
+Public contents:
 
-Public slots:
+- `config/` — reusable product configuration and templates
+- `modules/` — Harmonia module spine for the `homeserver` profile
+- `apps/searxng-search/` — public/common search service slot when selected for the product profile
 
-- `apps/ci-automation`
-- `apps/searxng-search`
-- `apps/recipes`
-- `apps/audio-library`
-- `apps/web-crawl-ingest`
-- `control-plane/command-actuator`
-- `control-plane/crown-router`
-- `control-plane/admission-membrane`
-- `control-plane/docs-router`
-- `control-plane/local-lever`
+Private/operator surfaces live in `HOMESERVERSLTD/harmonia-monad` under `profiles/owner-homeserver/`: control plane, CI automation, web-crawl ingest, personal media/library choices, recipes, deployment lanes, topology, credentials, keys, and owner-only services.
+
+Birth orchestration remains private deployables/Fulcrum/Athanor/Chrysalis authority. Public Harmonia describes product desired state; it does not publish the control plane.

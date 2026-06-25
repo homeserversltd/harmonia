@@ -3,33 +3,29 @@
   "id": "homeserver",
   "visibility": "public",
   "installs_now": [],
-  "description": "Reusable public-safe HomeServer profile folder skeleton. SearXNG is explicit because it is a public/common homeserver service; private fork owns owner-only selections.",
+  "description": "Reusable public HOMESERVER product profile skeleton. Public Harmonia carries product config/module truth, not operator control-plane or private service selections.",
   "folder_groups": {
+    "config": [],
+    "modules": [],
     "apps": [
-      "ci-automation",
-      "searxng-search",
-      "recipes",
-      "audio-library",
-      "web-crawl-ingest"
-    ],
-    "control_plane": [
-      "command-actuator",
-      "crown-router",
-      "admission-membrane",
-      "docs-router",
-      "local-lever"
+      "searxng-search"
     ]
   },
+  "public_common_services": [
+    "searxng-search"
+  ],
+  "private_surfaces_live_in": "HOMESERVERSLTD/harmonia-monad/profiles/owner-homeserver",
   "forbidden_here": [
-    "owner-specific service selections",
+    "control-plane",
+    "ci-automation",
+    "web-crawl-ingest",
+    "personal media/library choices",
+    "recipes/personal apps",
+    "operator deployment lanes",
     "private topology",
-    "private control-plane names",
     "credentials",
     "tokens",
     "private keys",
     "vault contents"
-  ],
-  "public_common_services": [
-    "searxng-search"
   ]
 }
