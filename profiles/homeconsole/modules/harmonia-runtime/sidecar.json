@@ -6,5 +6,8 @@
   "branch": "main",
   "source_dir": "/opt/harmonia/source",
   "install_bin": "/usr/local/bin/harmonia",
+  "packages": [
+    "rust"
+  ],
   "install_profile": "homeconsole"
 }
