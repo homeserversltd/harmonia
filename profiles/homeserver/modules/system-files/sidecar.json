@@ -2,7 +2,7 @@
   "schema": "harmonia.module.sidecar.v1",
   "id": "system-files",
   "description": "Reusable HOMESERVER systemd and udev file pack. Rust renders templates with variable replacement and can converge them onto installed targets.",
-  "source_dir": "profiles/homeserver/config/system-files",
+  "source_dir": "profiles/homeserver/modules/system-files/files",
   "variables": {
     "transmission_description": "Start Transmission VPN and Services",
     "nas_mount_description": "NAS Mount Status",
@@ -35,8 +35,9 @@
     }
   ],
   "deployable_consumption": {
-    "authority": "harmonia-profile-adjacent-config",
+    "authority": "harmonia-profile-module-owned-files",
     "mode": "export-rendered-pack-with-receipt",
     "forbidden": "duplicate deployable-owned systemd or udev config truth"
-  }
+  },
+  "module_file_locality": "templates and file payloads live inside this module directory"
 }
