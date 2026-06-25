@@ -4,7 +4,9 @@
   "visibility": "public",
   "installs_now": [
     "coronatio",
-    "caduceus"
+    "caduceus",
+    "udev",
+    "systemd"
   ],
   "description": "Public HOMESERVER appliance profile. Harmonia keeps this profile current by running ordered modules and writing receipts.",
   "folder_groups": {
@@ -28,17 +30,17 @@
       "vaultwarden",
       "udev",
       "systemd",
-      "searx",
-      "system-files"
+      "searx"
     ]
   },
   "identity": "homeserver",
   "modules": [
     "coronatio",
     "caduceus",
-    "system-files"
+    "udev",
+    "systemd"
   ],
-  "scaffold_status": "public modules-only scaffold plus reusable system file pack for systemd and udev templates",
+  "scaffold_status": "public modules-only scaffold; UDEV and systemd files under their owning intent modules",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -59,8 +61,7 @@
     "vaultwarden",
     "udev",
     "systemd",
-    "searx",
-    "system-files"
+    "searx"
   ],
   "public_source_boundary": "public reusable module scaffolding and non-secret constants only",
   "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source"

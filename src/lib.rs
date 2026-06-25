@@ -643,6 +643,16 @@ mod tests {
         assert_eq!(profile.identity, "homeserver");
         assert!(profile.modules.contains(&"coronatio".to_string()));
         assert!(profile.modules.contains(&"caduceus".to_string()));
+        assert!(profile.modules.contains(&"udev".to_string()));
+        assert!(profile.modules.contains(&"systemd".to_string()));
+        assert!(!profile.modules.contains(&"system-files".to_string()));
+        assert!(root
+            .join("profiles/homeserver/modules/udev/files/99-rapl-permissions.rules.tmpl")
+            .is_file());
+        assert!(root
+            .join("profiles/homeserver/modules/systemd/files/transmissionPIA.service.tmpl")
+            .is_file());
+        assert!(!root.join("profiles/homeserver/modules/system-files").exists());
         for module in &profile.modules {
             let dir = root.join("profiles/homeserver/modules").join(module);
             assert!(

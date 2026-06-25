@@ -1,0 +1,22 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "udev",
+  "description": "HOMESERVER UDEV rules. Files live inside this module; the RAPL permissions rule is deployed to reduce noisy log/permission failures from web/runtime telemetry.",
+  "source_dir": "profiles/homeserver/modules/udev/files",
+  "variables": {
+    "web_runtime_group": "www-data"
+  },
+  "template_files": [
+    {
+      "source": "99-rapl-permissions.rules.tmpl",
+      "target": "/etc/udev/rules.d/99-rapl-permissions.rules",
+      "mode": 420
+    }
+  ],
+  "deployable_consumption": {
+    "authority": "harmonia-profile-module-owned-files",
+    "mode": "export-rendered-module-with-receipt",
+    "forbidden": "duplicate deployable-owned udev config truth"
+  },
+  "module_file_locality": "UDEV files live inside profiles/homeserver/modules/udev/files"
+}

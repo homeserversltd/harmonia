@@ -1,7 +1,9 @@
 # udev
 
-Public HOMESERVER module scaffold for `udev`.
+HOMESERVER UDEV rule module. The real deployed RAPL rule lives here:
 
-Device rule module.
+```text
+files/99-rapl-permissions.rules.tmpl
+```
 
-This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.
+This module renders and deploys it to `/etc/udev/rules.d/99-rapl-permissions.rules`. Files belong in this module because `udev` is the intent.
