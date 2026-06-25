@@ -6,7 +6,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-pub(crate) const ID: &str = "system-files";
+pub(crate) const ID: &str = "udev";
 
 pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     reject_executable_sidecar(module)?;
@@ -22,7 +22,7 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
         validate_absolute_target(&file.target)?;
         if let Some(mode) = file.mode {
             if !(0o400..=0o777).contains(&mode) {
-                return Err(format!("system-files-mode-rejected-{}", file.target));
+                return Err(format!("udev-mode-rejected-{}", file.target));
             }
         }
     }
@@ -52,7 +52,7 @@ fn render_templates(
     source_dir: &Path,
 ) -> Result<OperationOutcome, String> {
     let render_dir = receipt_dir.join("rendered");
-    fs::create_dir_all(&render_dir).map_err(|e| format!("system-files-render-dir-failed: {e}"))?;
+    fs::create_dir_all(&render_dir).map_err(|e| format!("udev-render-dir-failed: {e}"))?;
     let mut missing = Vec::new();
     let mut rendered = Vec::new();
     for file in &module.template_files {
@@ -63,25 +63,25 @@ fn render_templates(
         }
         let raw = fs::read_to_string(&source).map_err(|e| {
             format!(
-                "system-files-template-read-failed {}: {e}",
+                "udev-template-read-failed {}: {e}",
                 source.display()
             )
         })?;
         let body = render_template(&raw, &module.variables)?;
         let out = render_dir.join(rendered_name(&file.target));
         fs::write(&out, body.as_bytes())
-            .map_err(|e| format!("system-files-render-write-failed {}: {e}", out.display()))?;
+            .map_err(|e| format!("udev-render-write-failed {}: {e}", out.display()))?;
         if let Some(mode) = file.mode {
             fs::set_permissions(&out, fs::Permissions::from_mode(mode))
-                .map_err(|e| format!("system-files-render-mode-failed {}: {e}", out.display()))?;
+                .map_err(|e| format!("udev-render-mode-failed {}: {e}", out.display()))?;
         }
         rendered.push(json!({"source": file.source, "target": file.target, "rendered": out, "mode": file.mode}));
     }
     let ok = missing.is_empty();
     write_json(
-        &receipt_dir.join("system-files-render.json"),
+        &receipt_dir.join("udev-render.json"),
         &json!({
-            "schema": "harmonia.homeserver.system_files.render.v1",
+            "schema": "harmonia.homeserver.udev_files.render.v1",
             "ok": ok,
             "module": module.id,
             "source_dir": source_dir,
@@ -89,7 +89,7 @@ fn render_templates(
             "rendered": rendered,
             "missing": missing,
             "variables": module.variables.keys().collect::<BTreeSet<_>>(),
-            "first_missing_signal": if ok { "none" } else { "homeserver-system-files-template-missing" }
+            "first_missing_signal": if ok { "none" } else { "homeserver-udev-template-missing" }
         }),
     )?;
     Ok(OperationOutcome {
@@ -97,7 +97,7 @@ fn render_templates(
         changed: false,
         skipped: false,
         message: format!(
-            "rendered {} system file templates",
+            "rendered {} udev file templates",
             module.template_files.len()
         ),
         command: None,
@@ -126,7 +126,7 @@ fn install_rendered(
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
                     format!(
-                        "system-files-target-parent-failed {}: {e}",
+                        "udev-target-parent-failed {}: {e}",
                         parent.display()
                     )
                 })?;
@@ -134,23 +134,23 @@ fn install_rendered(
             let before = fs::read(&target).ok();
             let desired = fs::read(&rendered).map_err(|e| {
                 format!(
-                    "system-files-render-readback-failed {}: {e}",
+                    "udev-render-readback-failed {}: {e}",
                     rendered.display()
                 )
             })?;
             if before.as_deref() != Some(desired.as_slice()) {
                 let tmp = target.with_extension("harmonia-new");
                 fs::write(&tmp, &desired).map_err(|e| {
-                    format!("system-files-target-write-failed {}: {e}", tmp.display())
+                    format!("udev-target-write-failed {}: {e}", tmp.display())
                 })?;
                 if let Some(mode) = file.mode {
                     fs::set_permissions(&tmp, fs::Permissions::from_mode(mode)).map_err(|e| {
-                        format!("system-files-target-mode-failed {}: {e}", tmp.display())
+                        format!("udev-target-mode-failed {}: {e}", tmp.display())
                     })?;
                 }
                 fs::rename(&tmp, &target).map_err(|e| {
                     format!(
-                        "system-files-target-promote-failed {}: {e}",
+                        "udev-target-promote-failed {}: {e}",
                         target.display()
                     )
                 })?;
@@ -161,9 +161,9 @@ fn install_rendered(
     }
     let ok = missing.is_empty();
     write_json(
-        &receipt_dir.join("system-files-install.json"),
+        &receipt_dir.join("udev-install.json"),
         &json!({
-            "schema": "harmonia.homeserver.system_files.install.v1",
+            "schema": "harmonia.homeserver.udev_files.install.v1",
             "ok": ok,
             "module": module.id,
             "apply": apply,
@@ -171,7 +171,7 @@ fn install_rendered(
             "written": written,
             "missing": missing,
             "changed": changed,
-            "first_missing_signal": if ok { "none" } else { "homeserver-system-files-render-missing" }
+            "first_missing_signal": if ok { "none" } else { "homeserver-udev-render-missing" }
         }),
     )?;
     Ok(OperationOutcome {
@@ -179,9 +179,9 @@ fn install_rendered(
         changed,
         skipped: !apply,
         message: if apply {
-            "converged HOMESERVER system files".to_string()
+            "converged HOMESERVER udev files".to_string()
         } else {
-            "planned HOMESERVER system files".to_string()
+            "planned HOMESERVER udev files".to_string()
         },
         command: None,
     })
@@ -190,12 +190,11 @@ fn install_rendered(
 fn validate_absolute_target(target: &str) -> Result<(), String> {
     let path = Path::new(target);
     if !path.is_absolute() || target.contains("..") {
-        return Err(format!("system-files-target-rejected-{target}"));
+        return Err(format!("udev-target-rejected-{target}"));
     }
-    let allowed =
-        target.starts_with("/etc/systemd/system/") || target.starts_with("/etc/udev/rules.d/");
+    let allowed = target.starts_with("/etc/udev/rules.d/");
     if !allowed {
-        return Err(format!("system-files-target-rejected-{target}"));
+        return Err(format!("udev-target-rejected-{target}"));
     }
     Ok(())
 }
@@ -207,7 +206,7 @@ fn render_template(
     let mut out = raw.to_string();
     for (key, value) in variables {
         if !safe_variable_value(value) {
-            return Err(format!("system-files-variable-value-rejected-{key}"));
+            return Err(format!("udev-variable-value-rejected-{key}"));
         }
         out = out.replace(&format!("{{{{{key}}}}}"), value);
     }
@@ -217,7 +216,7 @@ fn render_template(
             .map(|i| start + i + 2)
             .unwrap_or(start + 2);
         return Err(format!(
-            "system-files-variable-unresolved-{}",
+            "udev-variable-unresolved-{}",
             &out[start..end]
         ));
     }

@@ -1,7 +1,11 @@
 # systemd
 
-Public HOMESERVER module scaffold for `systemd`.
+HOMESERVER systemd unit/mount module. The unit templates live here:
 
-System service unit and timer module.
+```text
+files/transmissionPIA.service.tmpl
+files/mountNas.service.tmpl
+files/vault.mount.tmpl
+```
 
-This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.
+Files belong in this module because `systemd` is the intent.
