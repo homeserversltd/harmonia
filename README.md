@@ -35,6 +35,24 @@ A profile says what this machine is. Profile-adjacent Rust modules own the ladde
 - Every module result appends to exactly one JSONL profile ledger under the receipts root, such as `homeconsole-ledger.jsonl`.
 - Installer-ready layout: binary, config, state directory, service, timer, and receipt root.
 
+
+
+## Module currentness
+
+A Harmonia module is a self-contained update intent. It is not a loose folder and not a data-only manifest. The module owns the desired state for one appliance concern and the rule for keeping that concern current.
+
+Each module answers the same questions:
+
+1. What desired state belongs to this concern?
+2. Where is that state expressed on the installed machine?
+3. How is current state read?
+4. What comparison proves drift or no drift?
+5. What safe mutation repairs drift?
+6. What domain-specific reconcile step is required after mutation?
+7. What receipt proves the module is current or names the first blocker?
+
+For managed files, Harmonia renders desired module-owned files, compares them to installed targets, writes only when the bytes or declared metadata differ, performs the domain reconcile step, and records receipts. UDEV modules reload UDEV rules. Systemd modules run daemon-reload and reconcile unit enablement or activity. Service modules own their runtime, configuration, health checks, and currentness receipts.
+
 ## Core concepts
 
 ### Profile
