@@ -641,6 +641,13 @@ mod tests {
         let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
         assert_eq!(profile.id, "homeserver");
         assert_eq!(profile.identity, "homeserver");
+        assert_eq!(
+            profile.modules.first().map(String::as_str),
+            Some("rust-build-toolchain")
+        );
+        assert!(profile
+            .modules
+            .contains(&"rust-build-toolchain".to_string()));
         assert!(profile.modules.contains(&"coronatio".to_string()));
         assert!(profile.modules.contains(&"caduceus".to_string()));
         assert!(profile.modules.contains(&"udev".to_string()));
@@ -670,6 +677,45 @@ mod tests {
             );
             validate_registered_module(&manifest).unwrap();
         }
+
+        let rust_toolchain = load_module(
+            &root.join("profiles/homeserver/modules/rust-build-toolchain/sidecar.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            rust_toolchain
+                .variables
+                .get("RUSTUP_HOME")
+                .map(String::as_str),
+            Some("/opt/rustup")
+        );
+        assert_eq!(
+            rust_toolchain
+                .variables
+                .get("CARGO_HOME")
+                .map(String::as_str),
+            Some("/opt/cargo")
+        );
+        for wrapper in [
+            "/usr/local/bin/rustc",
+            "/usr/local/bin/cargo",
+            "/usr/local/bin/rustup",
+        ] {
+            assert!(
+                rust_toolchain.expected_files.contains(&wrapper.to_string()),
+                "missing wrapper {wrapper}"
+            );
+            assert!(
+                rust_toolchain
+                    .managed_files
+                    .iter()
+                    .any(|file| file.path == wrapper
+                        && file.content.contains("RUSTUP_HOME=/opt/rustup")
+                        && file.content.contains("CARGO_HOME=/opt/cargo")),
+                "missing pinned wrapper content {wrapper}"
+            );
+        }
+
         for module in ["coronatio", "caduceus"] {
             let manifest = load_module(
                 &root

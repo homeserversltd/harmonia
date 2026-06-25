@@ -40,14 +40,13 @@ pub(crate) fn should_self_update_reexec(
     before: Option<(u64, u64)>,
     after: Option<(u64, u64)>,
 ) -> bool {
-    apply
-        && install_ok
-        && !self_update_reexec_guard_active()
-        && after.is_some()
-        && before != after
+    apply && install_ok && !self_update_reexec_guard_active() && after.is_some() && before != after
 }
 
-pub(crate) fn reexec_installed_harmonia(install_bin: &Path, receipt_dir: &Path) -> Result<(), String> {
+pub(crate) fn reexec_installed_harmonia(
+    install_bin: &Path,
+    receipt_dir: &Path,
+) -> Result<(), String> {
     write_json(
         &receipt_dir.join("harmonia-self-update-reexec.json"),
         &json!({
@@ -137,7 +136,8 @@ pub(crate) fn execute(
         tools::git_artifact::Outcome {
             ok: false,
             changed: false,
-            message: "harmonia source repository skipped because bootstrap packages failed".to_string(),
+            message: "harmonia source repository skipped because bootstrap packages failed"
+                .to_string(),
             command: tools::git_artifact::CommandReceipt {
                 ok: false,
                 code: -1,
@@ -197,7 +197,8 @@ pub(crate) fn execute(
     };
     write_command_receipt(receipt_dir, "harmonia-installer", &install)?;
     let install_after = install_bin_fingerprint(&install_bin);
-    let install_changed = should_self_update_reexec(apply, install.ok, install_before, install_after);
+    let install_changed =
+        should_self_update_reexec(apply, install.ok, install_before, install_after);
     let install_outcome = OperationOutcome {
         ok: install.ok,
         changed: install_changed,
@@ -267,7 +268,17 @@ mod tests {
             Some((100, 1)),
             Some((200, 2)),
         ));
-        assert!(!should_self_update_reexec(false, true, Some((1, 1)), Some((2, 2))));
-        assert!(!should_self_update_reexec(true, false, Some((1, 1)), Some((2, 2))));
+        assert!(!should_self_update_reexec(
+            false,
+            true,
+            Some((1, 1)),
+            Some((2, 2))
+        ));
+        assert!(!should_self_update_reexec(
+            true,
+            false,
+            Some((1, 1)),
+            Some((2, 2))
+        ));
     }
 }
