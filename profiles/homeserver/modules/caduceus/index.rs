@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-pub(crate) const ID: &str = "homeserver-caduceus-public-lever";
+pub(crate) const ID: &str = "caduceus";
 
 pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     reject_executable_sidecar(module)?;

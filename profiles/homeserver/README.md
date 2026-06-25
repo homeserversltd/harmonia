@@ -2,29 +2,33 @@
 
 Public Harmonia surface.
 
-This profile is the fleet product truth for the reusable HOMESERVER appliance. It carries public, non-secret product configuration and module declarations. Birth orchestration remains Chrysalis/deployable authority; this tree is the desired-state source Chrysalis consumes.
+This profile is the fleet product truth for the reusable HOMESERVER appliance. The visible hierarchy is intentionally collapsed to one family: `modules/`.
 
-Visible public config concerns:
+Visible public modules:
 
-- `config/nginx/`
-- `config/coronatio/`
-- `config/firewall/`
-- `config/postgres/`
-- `config/tailscale/`
-- `config/calibreweb/`
-- `config/filebrowser/`
-- `config/jellyfin/`
-- `config/piwigo/`
-- `config/transmission/`
-- `config/mkdocs/`
-- `config/forgejo/`
-- `config/yarr/`
-- `config/navidrome/`
-- `config/samba/`
-- `config/vaultwarden/`
-- `config/udev/`
-- `config/systemd/`
+- `modules/coronatio/`
+- `modules/caduceus/`
+- `modules/nginx/`
+- `modules/firewall/`
+- `modules/postgres/`
+- `modules/tailscale/`
+- `modules/calibreweb/`
+- `modules/filebrowser/`
+- `modules/jellyfin/`
+- `modules/piwigo/`
+- `modules/transmission/`
+- `modules/mkdocs/`
+- `modules/forgejo/`
+- `modules/yarr/`
+- `modules/navidrome/`
+- `modules/samba/`
+- `modules/vaultwarden/`
+- `modules/udev/`
+- `modules/systemd/`
+- `modules/searx/`
 
-Each folder is one product concern and later one Chrysalis phase/unit. Do not duplicate these as public `*-runtime` config folders.
+There is no separate `apps/` tree and no separate `config/` tree in this profile. SearXNG is represented as the public `searx` module.
+
+Each module folder is one product concern and later one Chrysalis phase/unit. Folder READMEs are scaffold-only unless paired with executable Rust module code and sidecar constants.
 
 Forbidden here: control plane, CI automation, web-crawl ingest, personal media/library choices, recipes/personal apps, operator deployment lanes, private topology, credentials, tokens, private keys, and vault contents.
