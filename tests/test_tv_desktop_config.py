@@ -8,6 +8,8 @@ def test_tv_bitwarden_windows_float_in_hyprland_profile() -> None:
     assert 'match:class = "^(Bitwarden|bitwarden)$"' in rules
     assert 'name = "bitwarden-title-float"' in rules
     assert 'match:title = "^Bitwarden$"' in rules
+    assert 'name = "bitwarden-chrome-extension-float"' in rules
+    assert 'match:class = "^chrome-nngceckbapebfimnlniiiahkandclblb-.*$"' in rules
     bitwarden_block = rules.split('name = "bitwarden-float"', 1)[1]
     assert "float = true" in bitwarden_block
     assert "center = true" in bitwarden_block
