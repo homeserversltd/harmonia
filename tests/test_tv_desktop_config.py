@@ -3,7 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 def test_tv_bitwarden_windows_float_in_hyprland_profile() -> None:
-    rules = (ROOT / "profiles/tv/config/desktop-config/.config/hypr/windows.conf").read_text(encoding="utf-8")
+    rules = (ROOT / "profiles/tv/modules/desktop-config-payload/files/hyprland/.config/hypr/windows.conf").read_text(encoding="utf-8")
     assert 'name = "bitwarden-float"' in rules
     assert 'match:class = "^(Bitwarden|bitwarden)$"' in rules
     assert 'name = "bitwarden-title-float"' in rules
@@ -20,8 +20,8 @@ def test_tv_bitwarden_windows_float_in_hyprland_profile() -> None:
     assert "center = true" in title_block
 
 def test_tv_hyprland_autostart_owns_bitwarden_listener() -> None:
-    rules = (ROOT / "profiles/tv/config/desktop-config/.config/hypr/windows.conf").read_text(encoding="utf-8")
-    autostart = (ROOT / "profiles/tv/config/desktop-config/.config/hypr/autostart.conf").read_text(encoding="utf-8")
+    rules = (ROOT / "profiles/tv/modules/desktop-config-payload/files/hyprland/.config/hypr/windows.conf").read_text(encoding="utf-8")
+    autostart = (ROOT / "profiles/tv/modules/desktop-config-payload/files/hyprland/.config/hypr/autostart.conf").read_text(encoding="utf-8")
     assert "bitwarden-popup-float.sh" in autostart
     assert "bitwarden-popup-float.sh" not in rules
     assert "windowrulev2" not in rules
