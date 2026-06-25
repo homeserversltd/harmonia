@@ -1,0 +1,2 @@
+# Allow {{web_runtime_group}} group to read RAPL energy files for power monitoring
+SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", ACTION=="add", RUN+="/bin/chgrp {{web_runtime_group}} /sys/class/powercap/%k/energy_uj", RUN+="/bin/chmod g+r /sys/class/powercap/%k/energy_uj"

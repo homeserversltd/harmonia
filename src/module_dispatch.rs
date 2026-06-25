@@ -2,10 +2,6 @@ use crate::*;
 use std::fs;
 use std::path::Path;
 
-#[path = "../profiles/homeserver/modules/caduceus/index.rs"]
-mod homeserver_caduceus;
-#[path = "../profiles/homeserver/modules/coronatio/index.rs"]
-mod homeserver_coronatio;
 #[path = "../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
 mod arcadia_gui_runtime;
 #[path = "../profiles/homeconsole/modules/arch-keyring-maintenance/index.rs"]
@@ -14,10 +10,16 @@ mod arch_keyring_maintenance;
 mod harmonia_runtime;
 #[path = "../profiles/homeconsole/modules/homeconsole-caduceus-public-lever/index.rs"]
 mod homeconsole_caduceus_public_lever;
-#[path = "../profiles/homeconsole/modules/homeconsole-update-runtime/index.rs"]
-mod homeconsole_update_runtime;
 #[path = "../profiles/homeconsole/modules/homeconsole-sync-runtime/index.rs"]
 mod homeconsole_sync_runtime;
+#[path = "../profiles/homeconsole/modules/homeconsole-update-runtime/index.rs"]
+mod homeconsole_update_runtime;
+#[path = "../profiles/homeserver/modules/caduceus/index.rs"]
+mod homeserver_caduceus;
+#[path = "../profiles/homeserver/modules/coronatio/index.rs"]
+mod homeserver_coronatio;
+#[path = "../profiles/homeserver/modules/system-files/index.rs"]
+mod homeserver_system_files;
 #[path = "../profiles/homeconsole/modules/identity/index.rs"]
 mod identity;
 #[path = "../profiles/homeconsole/modules/keyman-runtime/index.rs"]
@@ -127,11 +129,10 @@ pub(crate) fn execute_profile_module(
         homeconsole_caduceus_public_lever::ID => {
             homeconsole_caduceus_public_lever::execute(module, &module_dir, apply)
         }
-        homeserver_caduceus::ID => {
-            homeserver_caduceus::execute(module, &module_dir, apply)
-        }
-        homeserver_coronatio::ID => {
-            homeserver_coronatio::execute(module, &module_dir, apply)
+        homeserver_caduceus::ID => homeserver_caduceus::execute(module, &module_dir, apply),
+        homeserver_coronatio::ID => homeserver_coronatio::execute(module, &module_dir, apply),
+        homeserver_system_files::ID => {
+            homeserver_system_files::execute(module, &module_dir, apply, harmonia_root)
         }
         tv_desktop_config_payload::ID => {
             tv_desktop_config_payload::execute(module, &module_dir, apply, harmonia_root)
@@ -175,10 +176,9 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         homeconsole_caduceus_public_lever::ID => {
             homeconsole_caduceus_public_lever::validate(module)
         }
-        homeserver_caduceus::ID => {
-            homeserver_caduceus::validate(module)
-        }
+        homeserver_caduceus::ID => homeserver_caduceus::validate(module),
         homeserver_coronatio::ID => homeserver_coronatio::validate(module),
+        homeserver_system_files::ID => homeserver_system_files::validate(module),
         tv_desktop_config_payload::ID => tv_desktop_config_payload::validate(module),
         tv_owner_profile::ID => tv_owner_profile::validate(module),
         tv_gpu_display_stack::ID => tv_gpu_display_stack::validate(module),

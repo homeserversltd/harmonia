@@ -1,0 +1,14 @@
+[Unit]
+Description={{transmission_description}}
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart={{vault_scripts_dir}}/transmission.py
+ExecStop=/bin/kill -TERM $MAINPID
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

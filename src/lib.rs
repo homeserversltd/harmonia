@@ -26,6 +26,14 @@ struct ManagedFileManifest {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+struct TemplateFileManifest {
+    source: String,
+    target: String,
+    #[serde(default)]
+    mode: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct ModuleManifest {
     id: String,
     #[serde(default)]
@@ -76,6 +84,10 @@ struct ModuleManifest {
     groups: Vec<String>,
     #[serde(default)]
     managed_files: Vec<ManagedFileManifest>,
+    #[serde(default)]
+    template_files: Vec<TemplateFileManifest>,
+    #[serde(default)]
+    variables: HashMap<String, String>,
     #[serde(default)]
     optional: bool,
     #[serde(default)]
@@ -293,8 +305,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn homeconsole_update_apply_skips_cleanly_when_convergence_lock_held() {
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-flock-skip-{}", process::id()));
+        let scratch = std::env::temp_dir().join(format!("harmonia-flock-skip-{}", process::id()));
         let lock_path = scratch.join("homeconsole-update.lock");
         let receipt_root = scratch.join("receipts");
         let latest = receipt_root.join("homeconsole-update-latest");
@@ -312,7 +323,10 @@ mod tests {
         } else {
             std::env::remove_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK");
         }
-        assert!(result.is_ok(), "lock-held skip should not fail suite: {result:?}");
+        assert!(
+            result.is_ok(),
+            "lock-held skip should not fail suite: {result:?}"
+        );
         let per_run_dirs: Vec<_> = fs::read_dir(&receipt_root)
             .unwrap()
             .filter_map(|entry| entry.ok())
@@ -325,7 +339,11 @@ mod tests {
             .collect();
         assert_eq!(per_run_dirs.len(), 1, "expected one per-run receipt dir");
         let skipped = per_run_dirs[0].join("convergence-skipped.json");
-        assert!(skipped.exists(), "missing skipped receipt at {}", skipped.display());
+        assert!(
+            skipped.exists(),
+            "missing skipped receipt at {}",
+            skipped.display()
+        );
         let text = fs::read_to_string(skipped).unwrap();
         assert!(text.contains("harmonia.convergence.skipped.v1"));
         assert!(text.contains("lock-held"));
@@ -575,6 +593,8 @@ mod tests {
             user_services: vec![],
             groups: vec![],
             managed_files: vec![],
+            template_files: vec![],
+            variables: HashMap::new(),
             optional: false,
             optional_warning: None,
         };
@@ -625,10 +645,19 @@ mod tests {
         assert!(profile.modules.contains(&"caduceus".to_string()));
         for module in &profile.modules {
             let dir = root.join("profiles/homeserver/modules").join(module);
-            assert!(dir.join("index.rs").exists(), "{module} needs profile-adjacent Rust module logic");
+            assert!(
+                dir.join("index.rs").exists(),
+                "{module} needs profile-adjacent Rust module logic"
+            );
             let manifest = load_module(&dir.join("sidecar.json")).unwrap();
-            assert!(manifest.command.is_none(), "{module} sidecar must not own a command");
-            assert!(manifest.args.is_empty(), "{module} sidecar must not own args");
+            assert!(
+                manifest.command.is_none(),
+                "{module} sidecar must not own a command"
+            );
+            assert!(
+                manifest.args.is_empty(),
+                "{module} sidecar must not own args"
+            );
             validate_registered_module(&manifest).unwrap();
         }
         for module in ["coronatio", "caduceus"] {
@@ -648,7 +677,8 @@ mod tests {
                 "{module} homeserver runtime repo must be root-readable HTTPS"
             );
         }
-        let caduceus = load_module(&root.join("profiles/homeserver/modules/caduceus/sidecar.json")).unwrap();
+        let caduceus =
+            load_module(&root.join("profiles/homeserver/modules/caduceus/sidecar.json")).unwrap();
         let profile_text = caduceus
             .managed_files
             .iter()
@@ -666,7 +696,10 @@ mod tests {
             "run-profile",
             "/etc/harmonia/profiles/homeserver/index.json",
         ] {
-            assert!(profile_text.contains(required), "homeserver Caduceus profile missing {required}");
+            assert!(
+                profile_text.contains(required),
+                "homeserver Caduceus profile missing {required}"
+            );
         }
         let service_text = caduceus
             .managed_files
@@ -952,7 +985,10 @@ mod tests {
             assert_eq!(manifest.id, "harmonia-runtime");
             assert_eq!(manifest.install_profile.as_deref(), Some(install_profile));
             assert_eq!(manifest.source_dir.as_deref(), Some("/opt/harmonia/source"));
-            assert_eq!(manifest.install_bin.as_deref(), Some("/usr/local/bin/harmonia"));
+            assert_eq!(
+                manifest.install_bin.as_deref(),
+                Some("/usr/local/bin/harmonia")
+            );
             assert!(manifest.packages.contains(&"rust".to_string()));
             validate_registered_module(&manifest).unwrap();
 
@@ -963,24 +999,20 @@ mod tests {
             )
             .unwrap();
             assert_eq!(keyring_manifest.id, "arch-keyring-maintenance");
-            assert!(keyring_manifest.packages.contains(&"archlinux-keyring".to_string()));
+            assert!(keyring_manifest
+                .packages
+                .contains(&"archlinux-keyring".to_string()));
             assert!(keyring_manifest.command.is_none());
             assert!(keyring_manifest.args.is_empty());
             validate_registered_module(&keyring_manifest).unwrap();
         }
     }
 
-
-
-
-
     #[test]
     fn missing_harmonia_runtime_stops_profile_before_downstream_modules() {
         let root = repo_root();
-        let scratch = std::env::temp_dir().join(format!(
-            "harmonia-terminal-self-modern-{}",
-            process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-terminal-self-modern-{}", process::id()));
         let module_root = scratch.join("modules");
         fs::create_dir_all(module_root.join("identity")).unwrap();
         fs::copy(
@@ -1032,15 +1064,18 @@ mod tests {
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
         assert_eq!(profile.modules[0], "identity");
         assert_eq!(profile.modules[1], "harmonia-runtime");
-        let receipts = std::env::temp_dir().join(format!(
-            "harmonia-tv-self-modern-receipt-{}",
-            process::id()
-        ));
-        run_profile_engine(&profile, &root.join("profiles/tv/modules"), &receipts, false).unwrap();
-        let installer = fs::read_to_string(
-            receipts.join("modules/harmonia-runtime/harmonia-installer.json"),
+        let receipts =
+            std::env::temp_dir().join(format!("harmonia-tv-self-modern-receipt-{}", process::id()));
+        run_profile_engine(
+            &profile,
+            &root.join("profiles/tv/modules"),
+            &receipts,
+            false,
         )
         .unwrap();
+        let installer =
+            fs::read_to_string(receipts.join("modules/harmonia-runtime/harmonia-installer.json"))
+                .unwrap();
         assert!(installer.contains("--profile tv"));
         let inspect = fs::read_to_string(
             receipts.join("modules/harmonia-runtime/harmonia-profile-inspect.json"),
@@ -1231,17 +1266,14 @@ mod tests {
     #[test]
     fn homeconsole_caduceus_public_lever_sidecar_stands_up_http_runtime() {
         let root = repo_root();
-        let manifest = load_module(
-            &root.join("profiles/homeconsole/modules/homeconsole-caduceus-public-lever/sidecar.json"),
-        )
-        .unwrap();
+        let manifest =
+            load_module(&root.join(
+                "profiles/homeconsole/modules/homeconsole-caduceus-public-lever/sidecar.json",
+            ))
+            .unwrap();
         assert_eq!(manifest.id, "homeconsole-caduceus-public-lever");
         assert!(
-            manifest
-                .repo
-                .as_deref()
-                .unwrap_or("")
-                .contains("caduceus"),
+            manifest.repo.as_deref().unwrap_or("").contains("caduceus"),
             "caduceus module must sync caduceus source"
         );
         assert_eq!(manifest.service.as_deref(), Some("caduceus.service"));
@@ -1450,8 +1482,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let path = args
                 .get(1)
                 .ok_or("homeconsole-update requires <profile-index-json>")?;
-            let receipt_dir = receipt_dir_arg(&args)
-                .unwrap_or_else(homeconsole_update_receipt_latest);
+            let receipt_dir =
+                receipt_dir_arg(&args).unwrap_or_else(homeconsole_update_receipt_latest);
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));

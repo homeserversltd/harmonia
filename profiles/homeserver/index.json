@@ -28,15 +28,17 @@
       "vaultwarden",
       "udev",
       "systemd",
-      "searx"
+      "searx",
+      "system-files"
     ]
   },
   "identity": "homeserver",
   "modules": [
     "coronatio",
-    "caduceus"
+    "caduceus",
+    "system-files"
   ],
-  "scaffold_status": "public modules-only scaffold; no live install behavior in this tranche",
+  "scaffold_status": "public modules-only scaffold plus reusable system file pack for systemd and udev templates",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -57,7 +59,8 @@
     "vaultwarden",
     "udev",
     "systemd",
-    "searx"
+    "searx",
+    "system-files"
   ],
   "public_source_boundary": "public reusable module scaffolding and non-secret constants only",
   "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source"
