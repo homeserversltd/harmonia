@@ -78,6 +78,24 @@ pub(crate) fn execute(
     let installed_profile_path = format!("/etc/harmonia/profiles/{install_profile}/index.json");
     let install_before = install_bin_fingerprint(&install_bin);
 
+    let bootstrap = if module.packages.is_empty() {
+        OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "harmonia runtime bootstrap package set empty".to_string(),
+            command: None,
+        }
+    } else {
+        package_tool(
+            receipt_dir,
+            "harmonia-runtime-bootstrap-packages",
+            "install",
+            &module.packages,
+            apply,
+        )?
+    };
+
     write_json(
         &receipt_dir.join("harmonia-binary-explain.json"),
         &json!({
@@ -93,6 +111,7 @@ pub(crate) fn execute(
             "repo": repo,
             "branch": branch,
             "install_profile": install_profile,
+            "bootstrap_packages": module.packages,
         }),
     )?;
     let explain = OperationOutcome {
@@ -112,8 +131,20 @@ pub(crate) fn execute(
             .clone()
             .unwrap_or_else(|| "origin".to_string()),
     );
-    let git_outcome = if apply {
+    let git_outcome = if apply && bootstrap.ok {
         tools::git_artifact::apply(&git_request)
+    } else if apply {
+        tools::git_artifact::Outcome {
+            ok: false,
+            changed: false,
+            message: "harmonia source repository skipped because bootstrap packages failed".to_string(),
+            command: tools::git_artifact::CommandReceipt {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: "skipped because harmonia runtime bootstrap packages failed".to_string(),
+            },
+        }
     } else {
         tools::git_artifact::plan(&git_request)
     };
@@ -194,13 +225,16 @@ pub(crate) fn execute(
     let mut execution = ModuleExecution::from_operations(
         vec![
             ("harmonia-binary-explain", explain),
+            ("harmonia-runtime-bootstrap-packages", bootstrap),
             ("harmonia-source-repository", repo_outcome),
             ("harmonia-installer", install_outcome),
         ],
         &module.id,
     );
     if !execution.ok {
-        execution.first_missing_signal = Some(if !git_outcome.ok {
+        execution.first_missing_signal = Some(if execution.first_missing_signal.is_some() {
+            execution.first_missing_signal.clone().unwrap()
+        } else if !git_outcome.ok {
             "harmonia-source-repository-failed".to_string()
         } else {
             "harmonia-installer-failed".to_string()

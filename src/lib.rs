@@ -879,6 +879,7 @@ mod tests {
             assert_eq!(manifest.install_profile.as_deref(), Some(install_profile));
             assert_eq!(manifest.source_dir.as_deref(), Some("/opt/harmonia/source"));
             assert_eq!(manifest.install_bin.as_deref(), Some("/usr/local/bin/harmonia"));
+            assert!(manifest.packages.contains(&"rust".to_string()));
             validate_registered_module(&manifest).unwrap();
 
             let keyring_manifest = load_module(
