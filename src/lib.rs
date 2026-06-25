@@ -631,6 +631,26 @@ mod tests {
             assert!(manifest.args.is_empty(), "{module} sidecar must not own args");
             validate_registered_module(&manifest).unwrap();
         }
+        let caduceus = load_module(&root.join("profiles/homeserver/modules/caduceus/sidecar.json")).unwrap();
+        let profile_text = caduceus
+            .managed_files
+            .iter()
+            .find(|file| file.path == "/etc/caduceus/profile.yaml")
+            .expect("homeserver caduceus profile managed file")
+            .content
+            .as_str();
+        for required in [
+            "- update status",
+            "- update check",
+            "- update now",
+            "- receipts latest",
+            "harmonia_routes:",
+            "update_now:",
+            "run-profile",
+            "/etc/harmonia/profiles/homeserver/index.json",
+        ] {
+            assert!(profile_text.contains(required), "homeserver Caduceus profile missing {required}");
+        }
     }
 
     #[test]
