@@ -47,6 +47,10 @@ pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {
     serde_json::from_value(raw).map_err(|e| format!("module-parse-failed {}: {e}", path.display()))
 }
 
+pub(crate) fn profile_module_failure_is_terminal(module_id: &str) -> bool {
+    module_id == "harmonia-runtime"
+}
+
 pub(crate) fn run_profile_engine(
     profile: &Profile,
     module_root: &Path,
@@ -93,6 +97,10 @@ pub(crate) fn run_profile_engine(
                         receipt_dir,
                     },
                 )?;
+                if profile_module_failure_is_terminal(module_id) {
+                    event(&mut events, "module-terminal-stop", false, module_id)?;
+                    break;
+                }
                 continue;
             }
         };
@@ -119,6 +127,10 @@ pub(crate) fn run_profile_engine(
                         receipt_dir,
                     },
                 )?;
+                if profile_module_failure_is_terminal(&module.id) {
+                    event(&mut events, "module-terminal-stop", false, &module.id)?;
+                    break;
+                }
                 continue;
             }
         };
@@ -155,6 +167,10 @@ pub(crate) fn run_profile_engine(
             execution.ok,
             &format!("{} operations={}", module.id, execution.operation_count),
         )?;
+        if !execution.ok && profile_module_failure_is_terminal(&module.id) {
+            event(&mut events, "module-terminal-stop", false, &module.id)?;
+            break;
+        }
     }
 
     write_engine_run_receipt(
