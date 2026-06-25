@@ -6,7 +6,7 @@
     "coronatio",
     "caduceus"
   ],
-  "description": "Reusable public HOMESERVER product profile skeleton. Public Harmonia carries product config/module truth, not operator control-plane or private service selections.",
+  "description": "Public HOMESERVER appliance profile. Harmonia keeps this profile current by running ordered modules and writing receipts.",
   "folder_groups": {
     "modules": [
       "caduceus",
@@ -31,26 +31,12 @@
       "searx"
     ]
   },
-  "private_surfaces_live_in": "HOMESERVERSLTD/harmonia-monad private fork",
-  "forbidden_here": [
-    "control-plane",
-    "ci-automation",
-    "web-crawl-ingest",
-    "personal media/library choices",
-    "recipes/personal apps",
-    "operator deployment lanes",
-    "private topology",
-    "credentials",
-    "tokens",
-    "private keys",
-    "vault contents"
-  ],
   "identity": "homeserver",
   "modules": [
     "coronatio",
     "caduceus"
   ],
-  "scaffold_status": "visible modules-only scaffold; apps/ and config/ are intentionally absent",
+  "scaffold_status": "public modules-only scaffold; no live install behavior in this tranche",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -72,5 +58,7 @@
     "udev",
     "systemd",
     "searx"
-  ]
+  ],
+  "public_source_boundary": "public reusable module scaffolding and non-secret constants only",
+  "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source"
 }

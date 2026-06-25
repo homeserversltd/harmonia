@@ -1,7 +1,7 @@
 # postgres
 
-Visible HOMESERVER public scaffold for the `postgres` Chrysalis concern phase.
+Public HOMESERVER module scaffold for `postgres`.
 
-Postgres desired state and templates. Birth fills secrets/placeholders outside git.
+Database service settings for appliance modules that use PostgreSQL.
 
-This folder is desired-state/config authority only. It installs nothing by itself, carries no secrets, and is consumed later by a single Chrysalis phase/unit for `postgres`.
+This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.

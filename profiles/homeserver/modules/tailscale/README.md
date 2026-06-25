@@ -1,7 +1,7 @@
 # tailscale
 
-Visible HOMESERVER public scaffold for the `tailscale` Chrysalis concern phase.
+Public HOMESERVER module scaffold for `tailscale`.
 
-Tailscale product posture when applicable. No private keys or auth tokens.
+Optional secure mesh-network settings for appliance access.
 
-This folder is desired-state/config authority only. It installs nothing by itself, carries no secrets, and is consumed later by a single Chrysalis phase/unit for `tailscale`.
+This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.

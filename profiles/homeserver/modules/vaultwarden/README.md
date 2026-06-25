@@ -1,7 +1,7 @@
 # vaultwarden
 
-Visible HOMESERVER public scaffold for the `vaultwarden` Chrysalis concern phase.
+Public HOMESERVER module scaffold for `vaultwarden`.
 
-Vaultwarden public appliance service config; secret values remain birth-owned placeholders.
+Password manager service module.
 
-This folder is desired-state/config authority only. It installs nothing by itself, carries no secrets, and is consumed later by a single Chrysalis phase/unit for `vaultwarden`.
+This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.

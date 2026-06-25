@@ -1,7 +1,7 @@
 # systemd
 
-Visible HOMESERVER public scaffold for the `systemd` Chrysalis concern phase.
+Public HOMESERVER module scaffold for `systemd`.
 
-Public systemd unit/drop-in desired state.
+System service unit and timer module.
 
-This folder is desired-state/config authority only. It installs nothing by itself, carries no secrets, and is consumed later by a single Chrysalis phase/unit for `systemd`.
+This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.
