@@ -2,10 +2,10 @@ use crate::*;
 use std::fs;
 use std::path::Path;
 
-#[path = "../profiles/homeserver/modules/homeserver-caduceus-public-lever/index.rs"]
-mod homeserver_caduceus_public_lever;
-#[path = "../profiles/homeserver/modules/homeserver-coronatio-runtime/index.rs"]
-mod homeserver_coronatio_runtime;
+#[path = "../profiles/homeserver/modules/caduceus/index.rs"]
+mod homeserver_caduceus;
+#[path = "../profiles/homeserver/modules/coronatio/index.rs"]
+mod homeserver_coronatio;
 #[path = "../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
 mod arcadia_gui_runtime;
 #[path = "../profiles/homeconsole/modules/arch-keyring-maintenance/index.rs"]
@@ -127,11 +127,11 @@ pub(crate) fn execute_profile_module(
         homeconsole_caduceus_public_lever::ID => {
             homeconsole_caduceus_public_lever::execute(module, &module_dir, apply)
         }
-        homeserver_caduceus_public_lever::ID => {
-            homeserver_caduceus_public_lever::execute(module, &module_dir, apply)
+        homeserver_caduceus::ID => {
+            homeserver_caduceus::execute(module, &module_dir, apply)
         }
-        homeserver_coronatio_runtime::ID => {
-            homeserver_coronatio_runtime::execute(module, &module_dir, apply)
+        homeserver_coronatio::ID => {
+            homeserver_coronatio::execute(module, &module_dir, apply)
         }
         tv_desktop_config_payload::ID => {
             tv_desktop_config_payload::execute(module, &module_dir, apply, harmonia_root)
@@ -175,10 +175,10 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         homeconsole_caduceus_public_lever::ID => {
             homeconsole_caduceus_public_lever::validate(module)
         }
-        homeserver_caduceus_public_lever::ID => {
-            homeserver_caduceus_public_lever::validate(module)
+        homeserver_caduceus::ID => {
+            homeserver_caduceus::validate(module)
         }
-        homeserver_coronatio_runtime::ID => homeserver_coronatio_runtime::validate(module),
+        homeserver_coronatio::ID => homeserver_coronatio::validate(module),
         tv_desktop_config_payload::ID => tv_desktop_config_payload::validate(module),
         tv_owner_profile::ID => tv_owner_profile::validate(module),
         tv_gpu_display_stack::ID => tv_gpu_display_stack::validate(module),

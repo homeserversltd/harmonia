@@ -621,8 +621,8 @@ mod tests {
         let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
         assert_eq!(profile.id, "homeserver");
         assert_eq!(profile.identity, "homeserver");
-        assert!(profile.modules.contains(&"homeserver-coronatio-runtime".to_string()));
-        assert!(profile.modules.contains(&"homeserver-caduceus-public-lever".to_string()));
+        assert!(profile.modules.contains(&"coronatio".to_string()));
+        assert!(profile.modules.contains(&"caduceus".to_string()));
         for module in &profile.modules {
             let dir = root.join("profiles/homeserver/modules").join(module);
             assert!(dir.join("index.rs").exists(), "{module} needs profile-adjacent Rust module logic");

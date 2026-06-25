@@ -3,12 +3,13 @@
   "id": "homeserver",
   "visibility": "public",
   "installs_now": [
-    "homeserver-coronatio-runtime",
-    "homeserver-caduceus-public-lever"
+    "coronatio",
+    "caduceus"
   ],
   "description": "Reusable public HOMESERVER product profile skeleton. Public Harmonia carries product config/module truth, not operator control-plane or private service selections.",
   "folder_groups": {
-    "config": [
+    "modules": [
+      "caduceus",
       "nginx",
       "coronatio",
       "firewall",
@@ -26,19 +27,10 @@
       "samba",
       "vaultwarden",
       "udev",
-      "systemd"
-    ],
-    "modules": [
-      "homeserver-coronatio-runtime",
-      "homeserver-caduceus-public-lever"
-    ],
-    "apps": [
-      "searxng-search"
+      "systemd",
+      "searx"
     ]
   },
-  "public_common_services": [
-    "searxng-search"
-  ],
   "private_surfaces_live_in": "HOMESERVERSLTD/harmonia-monad private fork",
   "forbidden_here": [
     "control-plane",
@@ -55,10 +47,12 @@
   ],
   "identity": "homeserver",
   "modules": [
-    "homeserver-coronatio-runtime",
-    "homeserver-caduceus-public-lever"
+    "coronatio",
+    "caduceus"
   ],
-  "public_config_concerns": [
+  "scaffold_status": "visible modules-only scaffold; apps/ and config/ are intentionally absent",
+  "public_module_scaffold": [
+    "caduceus",
     "nginx",
     "coronatio",
     "firewall",
@@ -76,7 +70,7 @@
     "samba",
     "vaultwarden",
     "udev",
-    "systemd"
-  ],
-  "scaffold_status": "visible concern folders only; no live install behavior in this tranche"
+    "systemd",
+    "searx"
+  ]
 }

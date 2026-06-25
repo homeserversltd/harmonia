@@ -1,6 +1,6 @@
 {
   "schema": "harmonia.module.sidecar.v1",
-  "id": "homeserver-coronatio-runtime",
+  "id": "coronatio",
   "description": "HOMESERVER Coronatio Rust crown runtime. Rust owns source sync, cargo build, binary install, service profile, coronatio.service standup, and HTTP health proof; this sidecar carries constants only.",
   "repo": "git@git.home.arpa:HOMESERVERSLTD/coronatio.git",
   "branch": "main",

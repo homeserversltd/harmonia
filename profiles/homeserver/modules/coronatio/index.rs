@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-pub(crate) const ID: &str = "homeserver-coronatio-runtime";
+pub(crate) const ID: &str = "coronatio";
 
 pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     reject_executable_sidecar(module)?;
