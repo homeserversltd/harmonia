@@ -84,5 +84,26 @@
       "harmonia"
     ],
     "proof": "root PATH resolves /usr/local/bin wrappers and target-native cargo builds pass before binary promotion"
+  },
+  "managed_file_update_contract": {
+    "schema": "harmonia.managed_file_update_contract.v1",
+    "meaning": "A module owns desired files directly in its module directory; Harmonia renders, compares desired bytes to installed bytes, writes only on drift, and records receipts.",
+    "udev": {
+      "source_dir": "profiles/homeserver/modules/udev",
+      "source_glob": "*.rules.tmpl",
+      "target_dir": "/etc/udev/rules.d",
+      "target_name": "strip .tmpl suffix",
+      "update_steps": [
+        "render desired rule",
+        "read installed target if present",
+        "compare desired bytes to installed bytes",
+        "write temporary target only on difference",
+        "promote into place",
+        "set declared mode and ownership",
+        "reload UDEV rules when any rule changed",
+        "record per-rule receipt"
+      ],
+      "initial_rule": "99-rapl-permissions.rules.tmpl"
+    }
   }
 }
