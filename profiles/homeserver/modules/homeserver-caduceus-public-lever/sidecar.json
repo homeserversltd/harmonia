@@ -1,0 +1,34 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "homeserver-caduceus-public-lever",
+  "description": "HOMESERVER Caduceus public lever runtime. Rust owns source sync, cargo build, binary install, profile/policy/state convergence, caduceus.service standup, and HTTP health proof; this sidecar carries constants only.",
+  "repo": "git@git.home.arpa:HOMESERVERSLTD/caduceus.git",
+  "branch": "main",
+  "source_dir": "/opt/caduceus/source",
+  "install_bin": "/usr/local/bin/caduceus",
+  "service": "caduceus.service",
+  "url": "http://127.0.0.1:3014/health",
+  "source_sha_file": "/var/lib/harmonia/state/caduceus.sha",
+  "managed_files": [
+    {
+      "path": "/etc/systemd/system/caduceus.service",
+      "mode": 420,
+      "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nReadWritePaths=/var/lib/caduceus /var/lib/harmonia /var/log/harmonia /var/cache/harmonia /var/cache/caduceus /opt/caduceus /usr/local/bin /etc/caduceus /etc/systemd/system\n\n[Install]\nWantedBy=multi-user.target\n"
+    },
+    {
+      "path": "/etc/caduceus/identity.json",
+      "mode": 420,
+      "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"homeserver\",\n  \"profile\": \"homeserver\",\n  \"mode\": \"homeserver\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeserver/index.json\"\n}\n"
+    },
+    {
+      "path": "/etc/caduceus/profile.yaml",
+      "mode": 420,
+      "content": "schema: caduceus.profile.v1\nprofile: homeserver\nmode: homeserver\nharmonia_profile: /etc/harmonia/profiles/homeserver/index.json\ncommands:\n- help\n- identity show\n- profile show\n- health\n- legacy-sbin list\n- legacy-sbin show\n- network status\n- homeserver-sbin list\n- homeserver-sbin show\n- staff status\n- staff actuators\n"
+    },
+    {
+      "path": "/var/lib/caduceus/state.json",
+      "mode": 420,
+      "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"profile\": \"homeserver\"\n  }\n}\n"
+    }
+  ]
+}
