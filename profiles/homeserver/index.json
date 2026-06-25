@@ -1,12 +1,18 @@
 {
-  "schema": "harmonia.profile.folder_skeleton.v1",
+  "schema": "harmonia.profile.v1",
   "id": "homeserver",
   "visibility": "public",
-  "installs_now": [],
+  "installs_now": [
+    "homeserver-coronatio-runtime",
+    "homeserver-caduceus-public-lever"
+  ],
   "description": "Reusable public HOMESERVER product profile skeleton. Public Harmonia carries product config/module truth, not operator control-plane or private service selections.",
   "folder_groups": {
     "config": [],
-    "modules": [],
+    "modules": [
+      "homeserver-coronatio-runtime",
+      "homeserver-caduceus-public-lever"
+    ],
     "apps": [
       "searxng-search"
     ]
@@ -27,5 +33,10 @@
     "tokens",
     "private keys",
     "vault contents"
+  ],
+  "identity": "homeserver",
+  "modules": [
+    "homeserver-coronatio-runtime",
+    "homeserver-caduceus-public-lever"
   ]
 }

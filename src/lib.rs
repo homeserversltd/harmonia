@@ -616,6 +616,24 @@ mod tests {
     }
 
     #[test]
+    fn homeserver_profile_registers_coronatio_and_caduceus_runtime_modules() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
+        assert_eq!(profile.id, "homeserver");
+        assert_eq!(profile.identity, "homeserver");
+        assert!(profile.modules.contains(&"homeserver-coronatio-runtime".to_string()));
+        assert!(profile.modules.contains(&"homeserver-caduceus-public-lever".to_string()));
+        for module in &profile.modules {
+            let dir = root.join("profiles/homeserver/modules").join(module);
+            assert!(dir.join("index.rs").exists(), "{module} needs profile-adjacent Rust module logic");
+            let manifest = load_module(&dir.join("sidecar.json")).unwrap();
+            assert!(manifest.command.is_none(), "{module} sidecar must not own a command");
+            assert!(manifest.args.is_empty(), "{module} sidecar must not own args");
+            validate_registered_module(&manifest).unwrap();
+        }
+    }
+
+    #[test]
     fn tv_profile_owns_deployable_configuration_inside_harmonia_profile() {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
