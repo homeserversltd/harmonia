@@ -1,0 +1,32 @@
+{
+  "schema": "harmonia.profile.folder_skeleton.v1",
+  "id": "homeserver",
+  "visibility": "public",
+  "installs_now": [],
+  "description": "Reusable public-safe HomeServer profile folder skeleton. Generic slots only; private fork owns concrete owner selections.",
+  "folder_groups": {
+    "apps": [
+      "ci-automation",
+      "search",
+      "recipes",
+      "audio-library",
+      "web-crawl-ingest"
+    ],
+    "control_plane": [
+      "command-actuator",
+      "crown-router",
+      "admission-membrane",
+      "docs-router",
+      "local-lever"
+    ]
+  },
+  "forbidden_here": [
+    "owner-specific service selections",
+    "private topology",
+    "private control-plane names",
+    "credentials",
+    "tokens",
+    "private keys",
+    "vault contents"
+  ]
+}
