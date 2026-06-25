@@ -87,7 +87,7 @@
   },
   "managed_file_update_contract": {
     "schema": "harmonia.managed_file_update_contract.v1",
-    "meaning": "A module owns desired files directly in its module directory; Harmonia renders, compares desired bytes to installed bytes, writes only on drift, and records receipts.",
+    "meaning": "Managed-file modules own desired files directly in their module directory; Harmonia renders, compares desired bytes to installed bytes, writes only on drift, performs the domain reconcile step, and records receipts.",
     "udev": {
       "source_dir": "profiles/homeserver/modules/udev",
       "source_glob": "*.rules.tmpl",
@@ -104,6 +104,50 @@
         "record per-rule receipt"
       ],
       "initial_rule": "99-rapl-permissions.rules.tmpl"
+    },
+    "systemd": {
+      "source_dir": "profiles/homeserver/modules/systemd",
+      "source_glob": "*.service.tmpl,*.mount.tmpl,*.timer.tmpl,*.socket.tmpl,*.path.tmpl,*.target.tmpl",
+      "target_dir": "/etc/systemd/system",
+      "target_name": "strip .tmpl suffix",
+      "update_steps": [
+        "render desired unit",
+        "read installed unit if present",
+        "compare desired bytes to installed bytes",
+        "write temporary target only on difference",
+        "promote into place",
+        "set declared mode and ownership",
+        "run systemctl daemon-reload when any unit changed",
+        "reconcile declared unit enablement or activity",
+        "record per-unit receipt"
+      ],
+      "initial_units": [
+        "transmissionPIA.service.tmpl",
+        "mountNas.service.tmpl",
+        "vault.mount.tmpl"
+      ]
     }
+  },
+  "module_currentness_contract": {
+    "schema": "harmonia.module_currentness_contract.v1",
+    "meaning": "A module is a self-contained intent that must remain updated.",
+    "module_owns": [
+      "desired state",
+      "target surfaces",
+      "current-state readback",
+      "drift comparison",
+      "safe mutation sequence",
+      "domain-specific reconcile step",
+      "receipts"
+    ],
+    "update_skeleton": [
+      "read declared module intent",
+      "read live target state",
+      "compare desired to live state",
+      "mutate only when drift exists",
+      "run domain reconcile step",
+      "prove currentness or first blocker in receipts"
+    ],
+    "tool_boundary": "shared tools provide primitives; modules compose them into the update law for one appliance concern"
   }
 }

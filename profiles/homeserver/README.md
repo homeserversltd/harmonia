@@ -21,10 +21,17 @@ A profile names one appliance identity and the modules that maintain it. Each fo
 - `postgres` defines the shared database service concern.
 - `tailscale` defines private network access as a product capability.
 - `samba` defines LAN file sharing.
-- `systemd` carries public unit and mount templates used by deployment and update flows.
+- `systemd` owns HOMESERVER systemd unit and mount management. Every reusable unit template lives directly in `profiles/homeserver/modules/systemd/`; Harmonia treats those files as the desired unit set for `/etc/systemd/system/`.
 - `udev` owns HOMESERVER UDEV rule management. Every reusable HOMESERVER UDEV rule lives directly in `profiles/homeserver/modules/udev/`; Harmonia treats those files as the desired rule set for `/etc/udev/rules.d/`.
 - Application modules describe the public service concerns Harmonia will maintain as they graduate into executable modules.
 
+
+
+## Self-contained module intent
+
+Every HOMESERVER module is a self-contained intent that must remain updated. The module owns the desired state for its appliance concern, the installed surfaces that express that state, the comparison that proves drift, the safe mutation sequence, the domain-specific reconcile step, and the receipt that proves the concern current.
+
+For managed-file modules, Harmonia renders the desired file from the module, reads the installed target, compares desired bytes to installed bytes, writes only when drift exists, applies declared metadata, runs the domain reconcile step, and records per-file plus aggregate receipts. UDEV reloads UDEV rules when rule files change. Systemd runs daemon-reload when unit files change and then reconciles declared unit state.
 
 ## Managed file update contract
 
