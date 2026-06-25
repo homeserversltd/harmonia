@@ -2,7 +2,7 @@
   "schema": "harmonia.module.sidecar.v1",
   "id": "caduceus",
   "description": "HOMESERVER Caduceus public lever runtime. Rust owns source sync, cargo build, binary install, profile/policy/state convergence, caduceus.service standup, and HTTP health proof; this sidecar carries constants only.",
-  "repo": "git@git.home.arpa:HOMESERVERSLTD/caduceus.git",
+  "repo": "https://git.home.arpa/HOMESERVERSLTD/caduceus.git",
   "branch": "main",
   "source_dir": "/opt/caduceus/source",
   "install_bin": "/usr/local/bin/caduceus",

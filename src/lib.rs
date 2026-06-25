@@ -631,6 +631,23 @@ mod tests {
             assert!(manifest.args.is_empty(), "{module} sidecar must not own args");
             validate_registered_module(&manifest).unwrap();
         }
+        for module in ["coronatio", "caduceus"] {
+            let manifest = load_module(
+                &root
+                    .join("profiles/homeserver/modules")
+                    .join(module)
+                    .join("sidecar.json"),
+            )
+            .unwrap();
+            assert!(
+                manifest
+                    .repo
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("https://git.home.arpa/HOMESERVERSLTD/"),
+                "{module} homeserver runtime repo must be root-readable HTTPS"
+            );
+        }
         let caduceus = load_module(&root.join("profiles/homeserver/modules/caduceus/sidecar.json")).unwrap();
         let profile_text = caduceus
             .managed_files
