@@ -1,12 +1,12 @@
 # Harmonia
 
-Harmonia is a Rust update manager for appliance-style systems: home servers, game consoles, TV boxes, kiosks, and other machines that should update predictably without turning into a pile of one-off shell scripts.
+Harmonia is a Rust appliance update manager for serious HOMESERVERSLTD systems: home servers, game consoles, TV boxes, kiosks, and other managed machines that require predictable maintenance, explicit state, and receipt-backed proof.
 
 It gives each machine one selected profile, runs that profile's ordered Rust module spine, calls focused Rust tools to make changes, writes per-run receipts, and appends each module result to one profile ledger. The result is an update path that can be tested, explained, repeated, installed, and historically audited.
 
 ## Why Harmonia exists
 
-Most small appliance deployments start simple and then drift:
+Appliance deployments require disciplined maintenance boundaries:
 
 - one script updates packages;
 - another script restarts services;
@@ -14,7 +14,7 @@ Most small appliance deployments start simple and then drift:
 - a cron job runs without proof;
 - nobody can tell whether the machine is current, skipped, or half-updated.
 
-Harmonia replaces that pattern with a small public contract:
+Harmonia provides a public contract for that work:
 
 ```text
 profile -> ordered modules -> focused tools -> one profile ledger + receipts

@@ -18,10 +18,6 @@ mod homeconsole_update_runtime;
 mod homeserver_caduceus;
 #[path = "../profiles/homeserver/modules/coronatio/index.rs"]
 mod homeserver_coronatio;
-#[path = "../profiles/homeserver/modules/systemd/index.rs"]
-mod homeserver_systemd;
-#[path = "../profiles/homeserver/modules/udev/index.rs"]
-mod homeserver_udev;
 #[path = "../profiles/homeconsole/modules/identity/index.rs"]
 mod identity;
 #[path = "../profiles/homeconsole/modules/keyman-runtime/index.rs"]
@@ -133,10 +129,6 @@ pub(crate) fn execute_profile_module(
         }
         homeserver_caduceus::ID => homeserver_caduceus::execute(module, &module_dir, apply),
         homeserver_coronatio::ID => homeserver_coronatio::execute(module, &module_dir, apply),
-        homeserver_systemd::ID => {
-            homeserver_systemd::execute(module, &module_dir, apply, harmonia_root)
-        }
-        homeserver_udev::ID => homeserver_udev::execute(module, &module_dir, apply, harmonia_root),
         tv_desktop_config_payload::ID => {
             tv_desktop_config_payload::execute(module, &module_dir, apply, harmonia_root)
         }
@@ -181,8 +173,6 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         }
         homeserver_caduceus::ID => homeserver_caduceus::validate(module),
         homeserver_coronatio::ID => homeserver_coronatio::validate(module),
-        homeserver_systemd::ID => homeserver_systemd::validate(module),
-        homeserver_udev::ID => homeserver_udev::validate(module),
         tv_desktop_config_payload::ID => tv_desktop_config_payload::validate(module),
         tv_owner_profile::ID => tv_owner_profile::validate(module),
         tv_gpu_display_stack::ID => tv_gpu_display_stack::validate(module),

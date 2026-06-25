@@ -1,7 +1,25 @@
-# calibreweb
+# Calibre-Web
 
-Public HOMESERVER module scaffold for `calibreweb`.
+## Role
 
-Book library service module.
+Ebook Library Service.
 
-This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.
+## Product purpose
+
+Calibre-Web provides a web interface for an ebook library. In HOMESERVER it is treated as a maintained product service with runtime, data, and web health boundaries.
+
+## Harmonia maintenance contract
+
+This module represents service currentness, data path ownership, web reachability, and receipt-backed readiness. Harmonia will use the concern to keep the ebook service current without embedding library contents in public source.
+
+## Public boundary
+
+This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
+
+## Proof shape
+
+A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
+
+## Product readiness
+
+This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
