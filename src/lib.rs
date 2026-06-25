@@ -57,6 +57,8 @@ struct ModuleManifest {
     #[serde(default)]
     source_dir: Option<String>,
     #[serde(default)]
+    install_profile: Option<String>,
+    #[serde(default)]
     target_dir: Option<String>,
     #[serde(default)]
     source_sha_file: Option<String>,
@@ -563,6 +565,7 @@ mod tests {
             remote: None,
             lock: None,
             source_dir: None,
+            install_profile: None,
             target_dir: None,
             source_sha_file: None,
             packages: vec![],
@@ -622,6 +625,7 @@ mod tests {
             profile.modules,
             vec![
                 "identity".to_string(),
+                "harmonia-runtime".to_string(),
                 "arch-keyring-maintenance".to_string(),
                 "system-packages".to_string(),
                 "owner-profile".to_string(),
@@ -840,10 +844,18 @@ mod tests {
     }
 
     #[test]
-    fn arch_keyring_maintenance_precedes_package_updates_on_arch_profiles() {
+    fn harmonia_runtime_precedes_package_updates_on_arch_profiles() {
         let root = repo_root();
-        for profile_path in ["profiles/homeconsole/index.json", "profiles/tv/index.json"] {
+        for (profile_path, install_profile) in [
+            ("profiles/homeconsole/index.json", "homeconsole"),
+            ("profiles/tv/index.json", "tv"),
+        ] {
             let profile = load_profile(&root.join(profile_path)).unwrap();
+            let runtime_pos = profile
+                .modules
+                .iter()
+                .position(|module| module == "harmonia-runtime")
+                .expect("profile must include harmonia-runtime");
             let keyring_pos = profile
                 .modules
                 .iter()
@@ -854,19 +866,60 @@ mod tests {
                 .iter()
                 .position(|module| module == "system-packages")
                 .expect("profile must include system-packages");
+            assert!(runtime_pos < keyring_pos);
             assert!(keyring_pos < packages_pos);
+
             let manifest = load_module(
+                &root
+                    .join(profile_path.replace("index.json", "modules"))
+                    .join("harmonia-runtime/sidecar.json"),
+            )
+            .unwrap();
+            assert_eq!(manifest.id, "harmonia-runtime");
+            assert_eq!(manifest.install_profile.as_deref(), Some(install_profile));
+            assert_eq!(manifest.source_dir.as_deref(), Some("/opt/harmonia/source"));
+            assert_eq!(manifest.install_bin.as_deref(), Some("/usr/local/bin/harmonia"));
+            validate_registered_module(&manifest).unwrap();
+
+            let keyring_manifest = load_module(
                 &root
                     .join(profile_path.replace("index.json", "modules"))
                     .join("arch-keyring-maintenance/sidecar.json"),
             )
             .unwrap();
-            assert_eq!(manifest.id, "arch-keyring-maintenance");
-            assert!(manifest.packages.contains(&"archlinux-keyring".to_string()));
-            assert!(manifest.command.is_none());
-            assert!(manifest.args.is_empty());
-            validate_registered_module(&manifest).unwrap();
+            assert_eq!(keyring_manifest.id, "arch-keyring-maintenance");
+            assert!(keyring_manifest.packages.contains(&"archlinux-keyring".to_string()));
+            assert!(keyring_manifest.command.is_none());
+            assert!(keyring_manifest.args.is_empty());
+            validate_registered_module(&keyring_manifest).unwrap();
         }
+    }
+
+
+
+    #[test]
+    fn tv_harmonia_runtime_plan_uses_tv_install_profile_before_downstream_modules() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
+        assert_eq!(profile.modules[0], "identity");
+        assert_eq!(profile.modules[1], "harmonia-runtime");
+        let receipts = std::env::temp_dir().join(format!(
+            "harmonia-tv-self-modern-receipt-{}",
+            process::id()
+        ));
+        run_profile_engine(&profile, &root.join("profiles/tv/modules"), &receipts, false).unwrap();
+        let installer = fs::read_to_string(
+            receipts.join("modules/harmonia-runtime/harmonia-installer.json"),
+        )
+        .unwrap();
+        assert!(installer.contains("--profile tv"));
+        let inspect = fs::read_to_string(
+            receipts.join("modules/harmonia-runtime/harmonia-profile-inspect.json"),
+        )
+        .unwrap();
+        assert!(inspect.contains("/etc/harmonia/profiles/tv/index.json"));
+        assert!(inspect.contains("\"profile_id\": \"tv\""));
+        let _ = fs::remove_dir_all(receipts);
     }
 
     #[test]

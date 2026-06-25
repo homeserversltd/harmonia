@@ -236,9 +236,9 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
     let mut found = Vec::new();
     for module_id in [
         "identity",
+        "harmonia-runtime",
         "arch-keyring-maintenance",
         "system-packages",
-        "harmonia-runtime",
         "keyman-runtime",
         "homeconsole-sync-runtime",
         "rust-build-toolchain",

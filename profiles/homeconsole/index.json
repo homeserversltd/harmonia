@@ -6,9 +6,9 @@
   "module_spine_entered": "profiles/homeconsole/modules",
   "modules": [
     "identity",
+    "harmonia-runtime",
     "arch-keyring-maintenance",
     "system-packages",
-    "harmonia-runtime",
     "keyman-runtime",
     "homeconsole-sync-runtime",
     "rust-build-toolchain",
