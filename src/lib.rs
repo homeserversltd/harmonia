@@ -898,6 +898,60 @@ mod tests {
 
 
 
+
+
+    #[test]
+    fn missing_harmonia_runtime_stops_profile_before_downstream_modules() {
+        let root = repo_root();
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-terminal-self-modern-{}",
+            process::id()
+        ));
+        let module_root = scratch.join("modules");
+        fs::create_dir_all(module_root.join("identity")).unwrap();
+        fs::copy(
+            root.join("profiles/tv/modules/identity/sidecar.json"),
+            module_root.join("identity/sidecar.json"),
+        )
+        .unwrap();
+        fs::copy(
+            root.join("profiles/tv/modules/identity/index.rs"),
+            module_root.join("identity/index.rs"),
+        )
+        .unwrap();
+        fs::create_dir_all(module_root.join("system-packages")).unwrap();
+        fs::copy(
+            root.join("profiles/tv/modules/system-packages/sidecar.json"),
+            module_root.join("system-packages/sidecar.json"),
+        )
+        .unwrap();
+        fs::copy(
+            root.join("profiles/tv/modules/system-packages/index.rs"),
+            module_root.join("system-packages/index.rs"),
+        )
+        .unwrap();
+        let receipts = scratch.join("receipts");
+        let profile = Profile {
+            id: "tv".into(),
+            identity: "arch-tv".into(),
+            modules: vec![
+                "identity".into(),
+                "harmonia-runtime".into(),
+                "system-packages".into(),
+            ],
+        };
+        let result = run_profile_engine(&profile, &module_root, &receipts, false);
+        assert_eq!(result.unwrap_err(), "module-missing-harmonia-runtime");
+        assert!(receipts.join("modules/identity").exists());
+        assert!(
+            !receipts.join("modules/system-packages").exists(),
+            "downstream package module must not run after harmonia-runtime failure"
+        );
+        let events = fs::read_to_string(receipts.join("events.jsonl")).unwrap();
+        assert!(events.contains("module-terminal-stop"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
     #[test]
     fn tv_harmonia_runtime_plan_uses_tv_install_profile_before_downstream_modules() {
         let root = repo_root();
