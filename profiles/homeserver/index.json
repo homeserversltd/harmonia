@@ -4,7 +4,9 @@
   "visibility": "public",
   "installs_now": [
     "coronatio",
-    "caduceus"
+    "caduceus",
+    "udev",
+    "systemd"
   ],
   "description": "Public HOMESERVER appliance profile. Harmonia keeps this profile current by running ordered modules and writing receipts.",
   "folder_groups": {
@@ -29,7 +31,7 @@
       "udev",
       "systemd",
       "searx",
-      "system-files"
+      "rust-build-toolchain"
     ]
   },
   "identity": "homeserver",
@@ -37,9 +39,10 @@
     "rust-build-toolchain",
     "coronatio",
     "caduceus",
-    "system-files"
+    "udev",
+    "systemd"
   ],
-  "scaffold_status": "public modules-only scaffold plus reusable system file pack for systemd and udev templates",
+  "scaffold_status": "public modules-only scaffold; UDEV and systemd files under their owning intent modules; Rust toolchain parity maintained before Rust runtime builds",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -61,7 +64,6 @@
     "udev",
     "systemd",
     "searx",
-    "system-files",
     "rust-build-toolchain"
   ],
   "public_source_boundary": "public reusable module scaffolding and non-secret constants only",
