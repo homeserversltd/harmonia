@@ -22,8 +22,17 @@ A profile names one appliance identity and the modules that maintain it. Each fo
 - `tailscale` defines private network access as a product capability.
 - `samba` defines LAN file sharing.
 - `systemd` carries public unit and mount templates used by deployment and update flows.
-- `udev` carries the public RAPL telemetry permission rule used by deployment and update flows.
+- `udev` owns HOMESERVER UDEV rule management. Every reusable HOMESERVER UDEV rule lives directly in `profiles/homeserver/modules/udev/`; Harmonia treats those files as the desired rule set for `/etc/udev/rules.d/`.
 - Application modules describe the public service concerns Harmonia will maintain as they graduate into executable modules.
+
+
+## Managed file update contract
+
+Harmonia managed-file modules own both the desired files and the update rule for those files. For the HOMESERVER UDEV module, the module directory is the complete public desired state: each `*.rules.tmpl` file in `profiles/homeserver/modules/udev/` renders to a rule in `/etc/udev/rules.d/`.
+
+A UDEV update is not a blind copy. Harmonia renders the desired file, reads the current target file, compares the rendered bytes to the installed bytes, and writes only when the desired content differs. A changed file is written through a temporary target, promoted into place, assigned the declared mode and ownership, and followed by a UDEV rule reload. The receipt records every rule considered, whether it changed, the target path, the reload decision, and the first missing signal if the module cannot close.
+
+This same managed-file pattern applies to other HOMESERVER module files: the module owns the desired content, Harmonia compares desired state to installed state, and updates are performed only when the comparison proves drift.
 
 ## Rust toolchain parity
 
