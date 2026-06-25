@@ -1,7 +1,7 @@
 use crate::module_dispatch::{reject_executable_sidecar, require_path, ModuleExecution};
-use crate::tools::files::{converge_files, FileConvergenceRequest, FileSpec};
 use crate::*;
 use serde_json::json;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) const ID: &str = "desktop-config-payload";
@@ -53,7 +53,7 @@ fn verify_payload_manifest(
     let missing: Vec<String> = module
         .expected_files
         .iter()
-        .filter(|rel| !source_dir.join(rel).is_file())
+        .filter(|rel| !source_path_for_target(source_dir, rel).is_file())
         .cloned()
         .collect();
     let outcome = OperationOutcome {
@@ -94,46 +94,88 @@ fn install_payload_tree(
     target_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let request = FileConvergenceRequest {
-        source_root: source_dir.to_path_buf(),
-        target_root: target_dir.to_path_buf(),
-        files: module
-            .expected_files
-            .iter()
-            .map(|rel| FileSpec {
-                relative_path: PathBuf::from(rel),
-                mode: None,
-            })
-            .collect(),
-        backup_existing: true,
-        receipt_name: "tv-desktop-config-files".to_string(),
-    };
-    let files = converge_files(&request, receipt_dir, apply)?;
+    let mut planned = Vec::new();
+    let mut missing = Vec::new();
+    let mut written = Vec::new();
+    let mut backed_up = Vec::new();
+    let mut changed = false;
+    for rel in &module.expected_files {
+        let source = source_path_for_target(source_dir, rel);
+        let target = target_dir.join(rel);
+        if !source.is_file() {
+            missing.push(rel.clone());
+            continue;
+        }
+        let desired = fs::read(&source).map_err(|e| {
+            format!(
+                "tv-desktop-config-source-read-failed {}: {e}",
+                source.display()
+            )
+        })?;
+        let before = fs::read(&target).ok();
+        let file_changed = before.as_deref() != Some(desired.as_slice());
+        planned.push(json!({
+            "intent": intent_folder_for_target(rel),
+            "source": source,
+            "target": target,
+            "changed": file_changed,
+        }));
+        if apply && file_changed {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "tv-desktop-config-target-parent-failed {}: {e}",
+                        parent.display()
+                    )
+                })?;
+            }
+            if target.exists() {
+                let backup = target.with_extension("harmonia-backup");
+                fs::copy(&target, &backup).map_err(|e| {
+                    format!("tv-desktop-config-backup-failed {}: {e}", target.display())
+                })?;
+                backed_up.push(backup.display().to_string());
+            }
+            let tmp = target.with_extension("harmonia-new");
+            fs::write(&tmp, &desired)
+                .map_err(|e| format!("tv-desktop-config-write-failed {}: {e}", tmp.display()))?;
+            fs::rename(&tmp, &target).map_err(|e| {
+                format!("tv-desktop-config-promote-failed {}: {e}", target.display())
+            })?;
+            written.push(rel.clone());
+            changed = true;
+        }
+    }
+    let ok = missing.is_empty();
+    let checked = module.expected_files.len();
     let outcome = OperationOutcome {
-        ok: files.ok,
-        changed: files.changed,
+        ok,
+        changed,
         skipped: !apply,
         message: if apply {
-            format!("converged {} TV config files", files.checked)
+            format!("converged {checked} TV config files from module intent folders")
         } else {
-            format!("planned {} TV config files", files.checked)
+            format!("planned {checked} TV config files from module intent folders")
         },
         command: None,
     };
     let receipt = json!({
         "schema": "harmonia.tv.desktop_config_install.v1",
-        "ok": files.ok,
+        "ok": ok,
         "module": module.id,
         "apply": apply,
         "source_dir": source_dir,
         "target_dir": target_dir,
-        "planned_file_count": files.checked,
-        "written_file_count": files.written,
-        "backed_up_file_count": files.backed_up,
-        "changed": files.changed,
-        "missing": files.missing,
-        "generic_convergence_receipt": receipt_dir.join("tv-desktop-config-files.json"),
-        "first_missing_signal": if files.ok { "none" } else { "tv-desktop-config-files-incomplete" },
+        "planned_file_count": checked,
+        "written_file_count": written.len(),
+        "backed_up_file_count": backed_up.len(),
+        "changed": changed,
+        "missing": missing,
+        "planned": planned,
+        "written": written,
+        "backed_up": backed_up,
+        "source_locality": "profiles/tv/modules/desktop-config-payload/files/<intent>",
+        "first_missing_signal": if ok { "none" } else { "tv-desktop-config-files-incomplete" },
     });
     write_json(
         &receipt_dir.join("tv-desktop-config-install.json"),
@@ -205,6 +247,62 @@ fn refresh_launcher_cache(receipt_dir: &Path, apply: bool) -> Result<OperationOu
     })
 }
 
+fn source_path_for_target(source_dir: &Path, rel: &str) -> PathBuf {
+    source_dir.join(intent_folder_for_target(rel)).join(rel)
+}
+
+fn intent_folder_for_target(rel: &str) -> &'static str {
+    if rel.starts_with(".config/hypr/") {
+        "hyprland"
+    } else if rel.starts_with(".config/kitty/") {
+        "kitty"
+    } else if rel.starts_with(".config/waybar/") {
+        "waybar"
+    } else if rel.starts_with(".config/wofi/") {
+        "wofi"
+    } else if rel.starts_with(".config/dunst/") {
+        "dunst"
+    } else if rel.starts_with(".config/gtk-") {
+        "gtk"
+    } else if rel.starts_with(".config/kate") || rel.starts_with(".local/share/kate") {
+        "kate"
+    } else if matches!(
+        rel,
+        ".config/kdeglobals"
+            | ".config/kde-mimeapps.list"
+            | ".config/mimeapps.list"
+            | ".local/share/applications/mimeapps.list"
+            | ".local/share/applications/org.kde.kate.desktop"
+    ) {
+        "kde-applications"
+    } else if rel.starts_with(".config/systemd/user/") {
+        "systemd-user"
+    } else if rel.starts_with("firefox/") || rel == ".config/chromium-flags.conf" {
+        "browser"
+    } else if rel.starts_with("bin/") {
+        "launcher-bin"
+    } else if matches!(
+        rel,
+        ".aliases"
+            | ".functions"
+            | ".inputrc"
+            | ".nanorc"
+            | ".profile"
+            | ".zshrc"
+            | ".zshrc.arch-install"
+    ) {
+        "shell-rc"
+    } else if rel == "omp.json" {
+        "prompt"
+    } else if rel.starts_with(".config/xdg-desktop-portal/") {
+        "portal"
+    } else if matches!(rel, "MANIFEST.captured.txt" | "SANITIZATION.md") {
+        "manifest"
+    } else {
+        "misc"
+    }
+}
+
 fn resolve_profile_source_dir(source_dir: &str, harmonia_root: &Path) -> PathBuf {
     let candidate = PathBuf::from(source_dir);
     if candidate.is_absolute() {
@@ -222,10 +320,10 @@ mod tests {
     fn relative_source_dir_resolves_from_harmonia_root() {
         assert_eq!(
             resolve_profile_source_dir(
-                "profiles/tv/config/desktop-config",
+                "profiles/tv/modules/desktop-config-payload/files",
                 Path::new("/etc/harmonia")
             ),
-            PathBuf::from("/etc/harmonia/profiles/tv/config/desktop-config")
+            PathBuf::from("/etc/harmonia/profiles/tv/modules/desktop-config-payload/files")
         );
     }
 

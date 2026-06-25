@@ -1,8 +1,8 @@
 {
   "schema": "harmonia.module.sidecar.v1",
   "id": "desktop-config-payload",
-  "description": "TV desktop configuration payload module. Rust verifies and installs Harmonia-owned TV config files; this sidecar carries constants only.",
-  "source_dir": "profiles/tv/config/desktop-config",
+  "description": "TV desktop configuration payload module. Files live inside this module under files/<intent>/...; Rust verifies and installs Harmonia-owned TV config files; this sidecar carries constants only.",
+  "source_dir": "profiles/tv/modules/desktop-config-payload/files",
   "target_dir": "/home/owner",
   "expected_files": [
     ".aliases",
@@ -78,11 +78,29 @@
   ],
   "deployable_consumption": {
     "schema": "harmonia.tv.deployable_consumption.v1",
-    "authority": "harmonia-profile-adjacent-config",
+    "authority": "harmonia-profile-module-owned-files",
     "modes": [
       "safe-repository-symlink",
       "declared-export-vendor-with-receipt"
     ],
     "forbidden": "two-hand-maintained-payload-trees"
-  }
+  },
+  "file_locality": "module-owned intent folders; no sibling profiles/tv/config tree",
+  "intent_folders": [
+    "browser",
+    "dunst",
+    "gtk",
+    "hyprland",
+    "kate",
+    "kde-applications",
+    "kitty",
+    "launcher-bin",
+    "manifest",
+    "portal",
+    "prompt",
+    "shell-rc",
+    "systemd-user",
+    "waybar",
+    "wofi"
+  ]
 }

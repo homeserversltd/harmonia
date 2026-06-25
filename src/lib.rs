@@ -753,10 +753,20 @@ mod tests {
             !root.join("payloads").exists(),
             "TV config must be profile-adjacent, not a top-level payload execution tree"
         );
-        let config_root = root.join("profiles/tv/config/desktop-config");
-        assert!(config_root.join(".config/hypr/hyprland.conf").is_file());
-        assert!(config_root.join(".config/waybar/waybar.conf").is_file());
-        assert!(config_root.join("bin/tv-launcher.sh").is_file());
+        assert!(
+            !root.join("profiles/tv/config").exists(),
+            "TV files belong inside profiles/tv/modules/<intent>; sibling config folders are rejected"
+        );
+        let config_root = root.join("profiles/tv/modules/desktop-config-payload/files");
+        assert!(config_root
+            .join("hyprland/.config/hypr/hyprland.conf")
+            .is_file());
+        assert!(config_root
+            .join("waybar/.config/waybar/waybar.conf")
+            .is_file());
+        assert!(config_root
+            .join("launcher-bin/bin/tv-launcher.sh")
+            .is_file());
 
         for module in &profile.modules {
             let dir = root.join("profiles/tv/modules").join(module);
@@ -904,7 +914,7 @@ mod tests {
         assert_eq!(manifest.id, "desktop-config-payload");
         assert_eq!(
             manifest.source_dir.as_deref(),
-            Some("profiles/tv/config/desktop-config")
+            Some("profiles/tv/modules/desktop-config-payload/files")
         );
         assert_eq!(manifest.target_dir.as_deref(), Some("/home/owner"));
         assert!(manifest
@@ -928,16 +938,19 @@ mod tests {
             "TV hyprland-desktop must install kcalc"
         );
 
-        let config_root = root.join("profiles/tv/config/desktop-config");
-        let windows = fs::read_to_string(config_root.join(".config/hypr/windows.conf")).unwrap();
-        assert!(windows.contains("org.kde.kcalc"));
-        assert!(windows.contains("float = true"));
+        let config_root = root.join("profiles/tv/modules/desktop-config-payload/files");
+        let windows =
+            fs::read_to_string(config_root.join("hyprland/.config/hypr/windows.conf")).unwrap();
+        assert!(windows.contains("org\\.kde\\.kcalc"));
+        assert!(windows.contains("windowrule = float 1"));
 
-        let bindings = fs::read_to_string(config_root.join(".config/hypr/bindings.conf")).unwrap();
+        let bindings =
+            fs::read_to_string(config_root.join("hyprland/.config/hypr/bindings.conf")).unwrap();
         assert!(bindings.contains("bind = SUPER, K, exec, kcalc"));
 
         let refresh =
-            fs::read_to_string(config_root.join("bin/refresh-launcher-cache.sh")).unwrap();
+            fs::read_to_string(config_root.join("launcher-bin/bin/refresh-launcher-cache.sh"))
+                .unwrap();
         assert!(refresh.contains("update-desktop-database"));
         assert!(refresh.contains("kbuildsycoca6"));
         assert!(refresh.contains("wofi-drun-cache"));
@@ -1116,8 +1129,9 @@ mod tests {
         )
         .unwrap();
         assert!(
-            manifest.contains("/etc/harmonia/profiles/tv/config/desktop-config")
-                || manifest.contains("etc/harmonia/profiles/tv/config/desktop-config")
+            manifest.contains("/etc/harmonia/profiles/tv/modules/desktop-config-payload/files")
+                || manifest
+                    .contains("etc/harmonia/profiles/tv/modules/desktop-config-payload/files")
         );
         let _ = fs::remove_dir_all(scratch);
     }
@@ -1150,17 +1164,15 @@ mod tests {
             false,
         )
         .unwrap();
-        let generic = receipts.join("modules/desktop-config-payload/tv-desktop-config-files.json");
         let wrapper =
             receipts.join("modules/desktop-config-payload/tv-desktop-config-install.json");
-        assert!(generic.exists());
         assert!(wrapper.exists());
-        let generic_text = fs::read_to_string(generic).unwrap();
-        assert!(generic_text.contains("harmonia.files.converge.v1"));
-        assert!(!generic_text.contains("sha256"));
-        assert!(!generic_text.contains("digest"));
         let wrapper_text = fs::read_to_string(wrapper).unwrap();
-        assert!(wrapper_text.contains("generic_convergence_receipt"));
+        assert!(wrapper_text.contains("harmonia.tv.desktop_config_install.v1"));
+        assert!(wrapper_text.contains("profiles/tv/modules/desktop-config-payload/files/<intent>"));
+        assert!(wrapper_text.contains("hyprland/.config/hypr/windows.conf"));
+        assert!(!wrapper_text.contains("sha256"));
+        assert!(!wrapper_text.contains("digest"));
         let _ = fs::remove_dir_all(receipts);
     }
 
