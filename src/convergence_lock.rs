@@ -95,7 +95,10 @@ pub(crate) fn materialize_homeconsole_receipt_dir(
     Ok(per_run)
 }
 
-pub(crate) fn migrate_blocking_receipt_path(latest_path: &Path, run_id: &str) -> Result<(), String> {
+pub(crate) fn migrate_blocking_receipt_path(
+    latest_path: &Path,
+    run_id: &str,
+) -> Result<(), String> {
     if !latest_path.exists() || latest_path.is_symlink() {
         return Ok(());
     }
@@ -132,10 +135,7 @@ pub(crate) fn link_legacy_receipt_alias(legacy: &Path, canonical: &Path) -> Resu
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| legacy.to_path_buf());
-        let migrated = parent.join(format!(
-            "homeconsole-latest-legacy-{}",
-            run_id_from_stamp()
-        ));
+        let migrated = parent.join(format!("homeconsole-latest-legacy-{}", run_id_from_stamp()));
         if legacy.is_dir() {
             fs::rename(legacy, &migrated).map_err(|e| e.to_string())?;
         } else {
@@ -219,7 +219,8 @@ pub(crate) fn write_convergence_skipped_receipt(
             "suite_ok": true,
         }),
     )?;
-    let mut events = fs::File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
+    let mut events =
+        fs::File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
     event(
         &mut events,
         "convergence-skipped",
@@ -228,11 +229,7 @@ pub(crate) fn write_convergence_skipped_receipt(
     )
 }
 
-pub(crate) fn emit_convergence_skipped_stdout(
-    receipt_dir: &Path,
-    reason: &str,
-    profile_id: &str,
-) {
+pub(crate) fn emit_convergence_skipped_stdout(receipt_dir: &Path, reason: &str, profile_id: &str) {
     println!("schema=harmonia.convergence.skipped.v1");
     println!("ok=true");
     println!("changed=false");

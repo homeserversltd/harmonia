@@ -34,6 +34,7 @@
   },
   "identity": "homeserver",
   "modules": [
+    "rust-build-toolchain",
     "coronatio",
     "caduceus",
     "system-files"
@@ -60,8 +61,29 @@
     "udev",
     "systemd",
     "searx",
-    "system-files"
+    "system-files",
+    "rust-build-toolchain"
   ],
   "public_source_boundary": "public reusable module scaffolding and non-secret constants only",
-  "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source"
+  "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source",
+  "toolchain_contract": {
+    "schema": "harmonia.rust_toolchain_parity.v1",
+    "rustup_home": "/opt/rustup",
+    "cargo_home": "/opt/cargo",
+    "wrappers": [
+      "/usr/local/bin/rustc",
+      "/usr/local/bin/cargo",
+      "/usr/local/bin/rustup"
+    ],
+    "wrapper_environment": {
+      "RUSTUP_HOME": "/opt/rustup",
+      "CARGO_HOME": "/opt/cargo"
+    },
+    "maintained_for": [
+      "coronatio",
+      "caduceus",
+      "harmonia"
+    ],
+    "proof": "root PATH resolves /usr/local/bin wrappers and target-native cargo builds pass before binary promotion"
+  }
 }

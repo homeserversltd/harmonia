@@ -33,8 +33,9 @@ fn managed_files(
         if !content_equal {
             if apply {
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|e| format!("homeconsole-update-managed-file-parent-failed: {e}"))?;
+                    fs::create_dir_all(parent).map_err(|e| {
+                        format!("homeconsole-update-managed-file-parent-failed: {e}")
+                    })?;
                 }
                 fs::write(&path, file.content.as_bytes())
                     .map_err(|e| format!("homeconsole-update-managed-file-write-failed: {e}"))?;
@@ -88,7 +89,11 @@ pub(crate) fn execute(
         operations.push(("homeconsole-update-timer-dropin-cleanup", dropin_removed));
 
         let daemon_reload = command_capture("/usr/bin/systemctl", &["daemon-reload"]);
-        write_command_receipt(receipt_dir, "homeconsole-update-daemon-reload", &daemon_reload)?;
+        write_command_receipt(
+            receipt_dir,
+            "homeconsole-update-daemon-reload",
+            &daemon_reload,
+        )?;
         let reload_outcome = OperationOutcome {
             ok: daemon_reload.ok,
             changed: daemon_reload.ok,
@@ -131,7 +136,10 @@ pub(crate) fn execute(
         operations.push(("homeconsole-update-timer-enable", enable_outcome));
 
         let restart = if timer_enabled {
-            command_capture("/usr/bin/systemctl", &["restart", "harmonia-homeconsole.timer"])
+            command_capture(
+                "/usr/bin/systemctl",
+                &["restart", "harmonia-homeconsole.timer"],
+            )
         } else {
             CmdResult {
                 ok: false,
@@ -187,9 +195,8 @@ pub(crate) fn execute(
 }
 
 fn remove_legacy_timer_dropin(receipt_dir: &Path) -> Result<OperationOutcome, String> {
-    let dropin = PathBuf::from(
-        "/etc/systemd/system/harmonia-homeconsole.timer.d/always-modern.conf",
-    );
+    let dropin =
+        PathBuf::from("/etc/systemd/system/harmonia-homeconsole.timer.d/always-modern.conf");
     let mut changed = false;
     if dropin.exists() {
         fs::remove_file(&dropin).map_err(|e| e.to_string())?;

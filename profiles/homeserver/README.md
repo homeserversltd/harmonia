@@ -32,3 +32,9 @@ Visible public modules:
 - `modules/searx/`
 
 This profile is safe for public source. It contains product module scaffolding and public constants only. Runtime credentials, keys, tokens, passwords, and site-specific values are supplied outside public source.
+
+## Rust toolchain parity
+
+HOMESERVER appliances require one maintained Rust toolchain contract across deployable birth, Harmonia updates, and live runtime repair. The profile module `rust-build-toolchain` maintains `/opt/rustup`, `/opt/cargo`, and `/usr/local/bin/{rustc,cargo,rustup}` wrappers that export `RUSTUP_HOME=/opt/rustup` and `CARGO_HOME=/opt/cargo`.
+
+This is why Rust-built services are built target-native before promotion: every appliance should be on the same page, and packaging problems collapse into Python bootstrap/control plus Rust toolchain parity instead of per-host binary improvisation.
