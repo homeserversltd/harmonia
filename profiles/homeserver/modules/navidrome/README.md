@@ -1,7 +1,7 @@
 # navidrome
 
-Visible HOMESERVER public scaffold for the `navidrome` Chrysalis concern phase.
+Public HOMESERVER module scaffold for `navidrome`.
 
-Navidrome public appliance service config.
+Music library service module.
 
-This folder is desired-state/config authority only. It installs nothing by itself, carries no secrets, and is consumed later by a single Chrysalis phase/unit for `navidrome`.
+This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.

@@ -1,8 +1,12 @@
-# HomeServer profile scaffold
+# HomeServer profile
 
-Public Harmonia surface.
+This is the public HOMESERVER appliance profile for Harmonia.
 
-This profile is the fleet product truth for the reusable HOMESERVER appliance. The visible hierarchy is intentionally collapsed to one family: `modules/`.
+Harmonia is a Rust appliance update manager. It keeps a selected appliance profile current by running ordered modules and writing receipts.
+
+A profile names one appliance identity and the modules that maintain it. Each folder under `modules/` names one reusable, non-secret product concern. Module code and sidecar constants describe how Harmonia checks or applies that concern when the profile is run.
+
+A Harmonia run reads `index.json`, runs the declared modules, and writes receipts showing what was checked, what changed, and the first missing signal if the appliance is not current.
 
 Visible public modules:
 
@@ -27,8 +31,4 @@ Visible public modules:
 - `modules/systemd/`
 - `modules/searx/`
 
-There is no separate `apps/` tree and no separate `config/` tree in this profile. SearXNG is represented as the public `searx` module.
-
-Each module folder is one product concern and later one Chrysalis phase/unit. Folder READMEs are scaffold-only unless paired with executable Rust module code and sidecar constants.
-
-Forbidden here: control plane, CI automation, web-crawl ingest, personal media/library choices, recipes/personal apps, operator deployment lanes, private topology, credentials, tokens, private keys, and vault contents.
+This profile is safe for public source. It contains product module scaffolding and public constants only. Runtime credentials, keys, tokens, passwords, and site-specific values are supplied outside public source.

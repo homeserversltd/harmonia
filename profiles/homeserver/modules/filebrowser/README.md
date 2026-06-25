@@ -1,7 +1,7 @@
 # filebrowser
 
-Visible HOMESERVER public scaffold for the `filebrowser` Chrysalis concern phase.
+Public HOMESERVER module scaffold for `filebrowser`.
 
-File Browser public appliance service config.
+Browser-based file access service module.
 
-This folder is desired-state/config authority only. It installs nothing by itself, carries no secrets, and is consumed later by a single Chrysalis phase/unit for `filebrowser`.
+This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.

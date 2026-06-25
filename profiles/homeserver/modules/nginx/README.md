@@ -1,7 +1,7 @@
 # nginx
 
-Visible HOMESERVER public scaffold for the `nginx` Chrysalis concern phase.
+Public HOMESERVER module scaffold for `nginx`.
 
-New HOMESERVER Nginx desired state; this is the only public nginx config folder.
+HTTP reverse proxy and web entrypoint settings for the HOMESERVER appliance.
 
-This folder is desired-state/config authority only. It installs nothing by itself, carries no secrets, and is consumed later by a single Chrysalis phase/unit for `nginx`.
+This folder is public, reusable, and non-secret. Module code and sidecar constants define how Harmonia checks or applies this concern when the `homeserver` profile is run.
