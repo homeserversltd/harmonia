@@ -1,10 +1,10 @@
 {
   "schema": "harmonia.module.sidecar.v1",
   "id": "harmonia-runtime",
-  "description": "HomeConsole Harmonia runtime possession. Rust owns source checkout, binary/profile/module install, and receipt proof; this sidecar provides constants only.",
+  "description": "TV Harmonia runtime possession. Rust owns source checkout, binary/profile/module install, and receipt proof before downstream TV modules run; this sidecar provides constants only.",
   "repo": "git@git.home.arpa:HOMESERVERSLTD/harmonia.git",
   "branch": "main",
   "source_dir": "/opt/harmonia/source",
   "install_bin": "/usr/local/bin/harmonia",
-  "install_profile": "homeconsole"
+  "install_profile": "tv"
 }

@@ -74,6 +74,8 @@ pub(crate) fn execute(
     let source_dir = PathBuf::from(require_path(module, &module.source_dir, "source_dir")?);
     let install_bin = PathBuf::from(require_path(module, &module.install_bin, "install_bin")?);
     let branch = module.branch.as_deref().unwrap_or("main");
+    let install_profile = module.install_profile.as_deref().unwrap_or("homeconsole");
+    let installed_profile_path = format!("/etc/harmonia/profiles/{install_profile}/index.json");
     let install_before = install_bin_fingerprint(&install_bin);
 
     write_json(
@@ -90,6 +92,7 @@ pub(crate) fn execute(
             "source_dir": source_dir,
             "repo": repo,
             "branch": branch,
+            "install_profile": install_profile,
         }),
     )?;
     let explain = OperationOutcome {
@@ -142,7 +145,7 @@ pub(crate) fn execute(
                 "install",
                 "--apply",
                 "--profile",
-                "homeconsole",
+                install_profile,
             ],
             source_dir.to_str(),
         )
@@ -150,7 +153,7 @@ pub(crate) fn execute(
         CmdResult {
             ok: true,
             code: 0,
-            stdout: "planned: ./cli.py install --apply --profile homeconsole".to_string(),
+            stdout: format!("planned: ./cli.py install --apply --profile {install_profile}"),
             stderr: String::new(),
         }
     } else {
@@ -181,9 +184,8 @@ pub(crate) fn execute(
         &json!({
             "schema": "harmonia.runtime.profile_inspect_receipt.v1",
             "ok": git_outcome.ok && install.ok,
-            "profile_path": "/etc/harmonia/profiles/homeconsole/index.json",
-            "profile_id": "homeconsole",
-            "identity": "homeconsole",
+            "profile_path": installed_profile_path,
+            "profile_id": install_profile,
             "source_dir": source_dir,
             "install_bin": install_bin,
         }),
