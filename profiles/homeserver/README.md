@@ -1,15 +1,30 @@
-# HomeServer profile skeleton
+# HomeServer profile scaffold
 
 Public Harmonia surface.
 
-This profile is the fleet product truth for the reusable HOMESERVER appliance. It carries product configuration, module declarations, and public-common service config that every matching body may converge.
+This profile is the fleet product truth for the reusable HOMESERVER appliance. It carries public, non-secret product configuration and module declarations. Birth orchestration remains Chrysalis/deployable authority; this tree is the desired-state source Chrysalis consumes.
 
-Public contents:
+Visible public config concerns:
 
-- `config/` — reusable product configuration and templates
-- `modules/` — Harmonia module spine for the `homeserver` profile
-- `apps/searxng-search/` — public/common search service slot when selected for the product profile
+- `config/nginx/`
+- `config/coronatio/`
+- `config/firewall/`
+- `config/postgres/`
+- `config/tailscale/`
+- `config/calibreweb/`
+- `config/filebrowser/`
+- `config/jellyfin/`
+- `config/piwigo/`
+- `config/transmission/`
+- `config/mkdocs/`
+- `config/forgejo/`
+- `config/yarr/`
+- `config/navidrome/`
+- `config/samba/`
+- `config/vaultwarden/`
+- `config/udev/`
+- `config/systemd/`
 
-Private/operator surfaces live in `HOMESERVERSLTD/harmonia-monad` under `profiles/owner-homeserver/`: control plane, CI automation, web-crawl ingest, personal media/library choices, recipes, deployment lanes, topology, credentials, keys, and owner-only services.
+Each folder is one product concern and later one Chrysalis phase/unit. Do not duplicate these as public `*-runtime` config folders.
 
-Birth orchestration remains private deployables/Fulcrum/Athanor/Chrysalis authority. Public Harmonia describes product desired state; it does not publish the control plane.
+Forbidden here: control plane, CI automation, web-crawl ingest, personal media/library choices, recipes/personal apps, operator deployment lanes, private topology, credentials, tokens, private keys, and vault contents.

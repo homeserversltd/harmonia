@@ -8,7 +8,26 @@
   ],
   "description": "Reusable public HOMESERVER product profile skeleton. Public Harmonia carries product config/module truth, not operator control-plane or private service selections.",
   "folder_groups": {
-    "config": [],
+    "config": [
+      "nginx",
+      "coronatio",
+      "firewall",
+      "postgres",
+      "tailscale",
+      "calibreweb",
+      "filebrowser",
+      "jellyfin",
+      "piwigo",
+      "transmission",
+      "mkdocs",
+      "forgejo",
+      "yarr",
+      "navidrome",
+      "samba",
+      "vaultwarden",
+      "udev",
+      "systemd"
+    ],
     "modules": [
       "homeserver-coronatio-runtime",
       "homeserver-caduceus-public-lever"
@@ -20,7 +39,7 @@
   "public_common_services": [
     "searxng-search"
   ],
-  "private_surfaces_live_in": "HOMESERVERSLTD/harmonia-monad/profiles/owner-homeserver",
+  "private_surfaces_live_in": "HOMESERVERSLTD/harmonia-monad private fork",
   "forbidden_here": [
     "control-plane",
     "ci-automation",
@@ -38,5 +57,26 @@
   "modules": [
     "homeserver-coronatio-runtime",
     "homeserver-caduceus-public-lever"
-  ]
+  ],
+  "public_config_concerns": [
+    "nginx",
+    "coronatio",
+    "firewall",
+    "postgres",
+    "tailscale",
+    "calibreweb",
+    "filebrowser",
+    "jellyfin",
+    "piwigo",
+    "transmission",
+    "mkdocs",
+    "forgejo",
+    "yarr",
+    "navidrome",
+    "samba",
+    "vaultwarden",
+    "udev",
+    "systemd"
+  ],
+  "scaffold_status": "visible concern folders only; no live install behavior in this tranche"
 }
