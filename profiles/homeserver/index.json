@@ -3,10 +3,9 @@
   "id": "homeserver",
   "visibility": "public",
   "installs_now": [
+    "rust-build-toolchain",
     "coronatio",
-    "caduceus",
-    "udev",
-    "systemd"
+    "caduceus"
   ],
   "description": "Public HOMESERVER appliance profile. Harmonia keeps this profile current by running ordered modules and writing receipts.",
   "folder_groups": {
@@ -38,11 +37,9 @@
   "modules": [
     "rust-build-toolchain",
     "coronatio",
-    "caduceus",
-    "udev",
-    "systemd"
+    "caduceus"
   ],
-  "scaffold_status": "public modules-only scaffold; UDEV and systemd files under their owning intent modules; Rust toolchain parity maintained before Rust runtime builds",
+  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, and Caduceus modules; represented UDEV and systemd configuration modules",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -66,7 +63,7 @@
     "searx",
     "rust-build-toolchain"
   ],
-  "public_source_boundary": "public reusable module scaffolding and non-secret constants only",
+  "public_source_boundary": "public reusable product module concerns and non-secret configuration only",
   "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source",
   "toolchain_contract": {
     "schema": "harmonia.rust_toolchain_parity.v1",
