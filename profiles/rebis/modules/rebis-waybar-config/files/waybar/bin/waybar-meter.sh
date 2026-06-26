@@ -90,6 +90,12 @@ case "$kind" in
     class=$(class_for "$pct")
     tooltip="RAM: ${pct}% (${used}/${total} MiB)"
     ;;
+  disk|root)
+    read -r used total pct < <(df -Pm / | awk 'NR==2{gsub(/%/,"",$5); print $3, $2, $5}')
+    text="DSK $(bars_for "$pct")"
+    class=$(class_for "$pct")
+    tooltip="Disk /: ${pct}% (${used}/${total} MiB)"
+    ;;
   temp|temperature)
     if c=$(temp_c); then
       # Scale 30–100°C to the four-bar gauge.

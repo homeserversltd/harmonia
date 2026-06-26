@@ -68,7 +68,8 @@ window#waybar {
 
 #custom-cpu,
 #custom-temperature,
-#custom-memory {
+#custom-memory,
+#custom-disk {
     padding: 0 8px;
     min-width: 54px;
     letter-spacing: -0.5px;
@@ -77,19 +78,22 @@ window#waybar {
 
 #custom-cpu.low,
 #custom-temperature.low,
-#custom-memory.low {
+#custom-memory.low,
+#custom-disk.low {
     color: #a3be8c;
 }
 
 #custom-cpu.medium,
 #custom-temperature.medium,
-#custom-memory.medium {
+#custom-memory.medium,
+#custom-disk.medium {
     color: #ebcb8b;
 }
 
 #custom-cpu.high,
 #custom-temperature.high,
-#custom-memory.high {
+#custom-memory.high,
+#custom-disk.high {
     color: #bf616a;
 }
 
