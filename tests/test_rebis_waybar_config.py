@@ -26,6 +26,13 @@ def test_rebis_waybar_preserves_local_land_guard_and_laptop_controls() -> None:
     assert '"backlight"' in config
     assert '"battery"' in config
     assert '"custom/printer"' in config
+    assert '"exec": "$HOME/bin/waybar-meter.sh disk"' in config
+    disk_start = config.index('"custom/disk": {')
+    disk_end = config.index('"pulseaudio"', disk_start)
+    disk_block = config[disk_start:disk_end]
+    assert '"return-type": "json"' in disk_block
+    assert '"tooltip": true' in disk_block
+    assert 'df -h / | awk' not in disk_block
     assert '#custom-land-guard.local' in style
     assert '#custom-land-guard.locked' in style
     assert '#custom-land-guard.broken' in style
@@ -40,3 +47,6 @@ def test_rebis_waybar_helper_scripts_are_local_and_executable_intent() -> None:
     assert "CPU $(bars_for" in meter
     assert "RAM $(bars_for" in meter
     assert "TMP $(bars_for" in meter
+    assert "disk|root" in meter
+    assert "DSK $(bars_for" in meter
+    assert "Disk /:" in meter
