@@ -1,0 +1,5 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "identity",
+  "description": "Rebis laptop identity proof; Rust reads host identity during profile execution."
+}

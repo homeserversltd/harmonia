@@ -660,8 +660,12 @@ mod tests {
             .join("profiles/homeserver/modules/systemd/transmissionPIA.service.tmpl")
             .is_file());
         assert!(!root.join("profiles/homeserver/modules/udev/files").exists());
-        assert!(!root.join("profiles/homeserver/modules/systemd/files").exists());
-        assert!(!root.join("profiles/homeserver/modules/system-files").exists());
+        assert!(!root
+            .join("profiles/homeserver/modules/systemd/files")
+            .exists());
+        assert!(!root
+            .join("profiles/homeserver/modules/system-files")
+            .exists());
         for module in &profile.modules {
             let dir = root.join("profiles/homeserver/modules").join(module);
             assert!(

@@ -1,0 +1,169 @@
+* {
+    font-family: "MesloLGS Nerd Font", "Noto Sans", sans-serif;
+    font-size: 14px;
+    color: #e5e9f0;
+    border: none;
+    min-height: 0;
+}
+
+window#waybar {
+    background: transparent;
+}
+
+#custom-launcher,
+#taskbar,
+#workspaces,
+#custom-cpu,
+#temperature,
+#custom-temperature,
+#custom-memory,
+#custom-disk,
+#bluetooth,
+#backlight,
+#pulseaudio,
+#battery,
+#clock,
+#tray,
+#custom-clipboard,
+#custom-power,
+#custom-restart,
+#custom-printer,
+#custom-fetch,
+#custom-land-guard,
+#custom-drives,
+#custom-notifications {
+    background-color: rgba(20, 22, 28, 0.82);
+    padding: 0 10px;
+    margin: 3px 2px;
+    border-radius: 10px;
+}
+
+#taskbar button {
+    padding: 0 6px;
+    margin: 2px;
+    border-radius: 8px;
+    background: transparent;
+}
+
+#taskbar button.active,
+#workspaces button.active {
+    background-color: rgba(94, 129, 172, 0.9);
+}
+
+#workspaces button {
+    padding: 0 7px;
+    margin: 2px;
+    border-radius: 8px;
+    color: #aeb6c3;
+    background: transparent;
+}
+
+#workspaces button.persistent {
+    color: #ffffff;
+}
+
+#workspaces button.empty {
+    color: #6b7280;
+}
+
+#custom-cpu,
+#custom-temperature,
+#custom-memory {
+    padding: 0 8px;
+    min-width: 54px;
+    letter-spacing: -0.5px;
+    font-size: 12px;
+}
+
+#custom-cpu.low,
+#custom-temperature.low,
+#custom-memory.low {
+    color: #a3be8c;
+}
+
+#custom-cpu.medium,
+#custom-temperature.medium,
+#custom-memory.medium {
+    color: #ebcb8b;
+}
+
+#custom-cpu.high,
+#custom-temperature.high,
+#custom-memory.high {
+    color: #bf616a;
+}
+
+#backlight {
+    color: #ebcb8b;
+}
+
+#clock {
+    font-size: 12px;
+}
+
+#battery.warning {
+    color: #ebcb8b;
+}
+
+#battery.critical {
+    color: #bf616a;
+}
+
+#battery.charging,
+#battery.plugged {
+    color: #a3be8c;
+}
+
+#custom-launcher,
+#custom-printer,
+#custom-fetch,
+#custom-drives,
+#custom-power,
+#custom-restart {
+    font-size: 16px;
+}
+
+#custom-clipboard {
+    color: #a3be8c;
+}
+
+#custom-clipboard.multiline {
+    color: #ebcb8b;
+}
+
+#custom-clipboard.empty {
+    color: #6b7280;
+}
+
+#custom-land-guard {
+    font-size: 14px;
+    font-weight: 700;
+    padding: 0 12px;
+    border: 1px solid rgba(229, 233, 240, 0.12);
+}
+
+#custom-land-guard.local {
+    color: #0b1f14;
+    background-color: rgba(163, 190, 140, 0.95);
+    border-color: rgba(163, 190, 140, 1.0);
+}
+
+#custom-land-guard.locked,
+#custom-land-guard.remote {
+    color: #f8f0f0;
+    background-color: rgba(191, 97, 106, 0.95);
+    border-color: rgba(191, 97, 106, 1.0);
+}
+
+#custom-land-guard.broken {
+    color: #1f120b;
+    background-color: rgba(235, 203, 139, 0.95);
+    border-color: rgba(235, 203, 139, 1.0);
+}
+
+#custom-land-guard.pending {
+    color: #eceff4;
+    background-color: rgba(94, 129, 172, 0.9);
+    border-color: rgba(94, 129, 172, 1.0);
+}
+

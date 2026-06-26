@@ -1,0 +1,15 @@
+{
+  "schema": "harmonia.profile.v1",
+  "id": "rebis",
+  "aliases": [
+    "laptop",
+    "laptop-01"
+  ],
+  "description": "Rebis laptop profile: Harmonia-owned local Waybar configuration path for the field endpoint when it is on the Home LAN.",
+  "modules": [
+    "identity",
+    "rebis-waybar-config"
+  ],
+  "identity": "laptop-01",
+  "module_spine_entered": "profiles/rebis/modules"
+}

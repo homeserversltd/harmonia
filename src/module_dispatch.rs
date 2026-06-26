@@ -26,6 +26,8 @@ mod keyman_runtime;
 mod local_ai_runtime;
 #[path = "../profiles/homeconsole/modules/pinned-artifacts-runtime/index.rs"]
 mod pinned_artifacts_runtime;
+#[path = "../profiles/rebis/modules/rebis-waybar-config/index.rs"]
+mod rebis_waybar_config;
 #[path = "../profiles/homeconsole/modules/rust-build-toolchain/index.rs"]
 mod rust_build_toolchain;
 #[path = "../profiles/homeconsole/modules/system-packages/index.rs"]
@@ -129,6 +131,9 @@ pub(crate) fn execute_profile_module(
         }
         homeserver_caduceus::ID => homeserver_caduceus::execute(module, &module_dir, apply),
         homeserver_coronatio::ID => homeserver_coronatio::execute(module, &module_dir, apply),
+        rebis_waybar_config::ID => {
+            rebis_waybar_config::execute(module, &module_dir, apply, harmonia_root)
+        }
         tv_desktop_config_payload::ID => {
             tv_desktop_config_payload::execute(module, &module_dir, apply, harmonia_root)
         }
@@ -173,6 +178,7 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
         }
         homeserver_caduceus::ID => homeserver_caduceus::validate(module),
         homeserver_coronatio::ID => homeserver_coronatio::validate(module),
+        rebis_waybar_config::ID => rebis_waybar_config::validate(module),
         tv_desktop_config_payload::ID => tv_desktop_config_payload::validate(module),
         tv_owner_profile::ID => tv_owner_profile::validate(module),
         tv_gpu_display_stack::ID => tv_gpu_display_stack::validate(module),
