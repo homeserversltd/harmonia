@@ -1,0 +1,20 @@
+# Windows-like Start menu / app launcher
+show=drun
+location=bottom_left
+width=520
+height=640
+xoffset=12
+yoffset=-44
+prompt=Type here to search
+allow_images=true
+image_size=30
+insensitive=true
+matching=fuzzy
+sort_order=alphabetical
+hide_scroll=true
+no_custom_entry=true
+gtk_dark=true
+filter_rate=80
+columns=1
+orientation=vertical
+content_halign=fill
