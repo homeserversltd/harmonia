@@ -1,4 +1,6 @@
 use crate::*;
+use serde_json::json;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self};
 use std::path::{Path, PathBuf};
@@ -22,6 +24,23 @@ impl LoadedModule {
             Self::Ladder(manifest) => Some(&manifest.version),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct GroupProbeObservation {
+    module_id: String,
+    ok: bool,
+    tool: String,
+    permutation: String,
+    signal: String,
+}
+
+#[derive(Debug, Clone)]
+struct GroupSelection {
+    group_id: String,
+    winner: String,
+    losers: Vec<String>,
+    observations: Vec<GroupProbeObservation>,
 }
 
 pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
@@ -77,6 +96,125 @@ fn load_profile_module(module_root: &Path, module_id: &str) -> Result<LoadedModu
         return load_module(&sidecar_path).map(LoadedModule::Sidecar);
     }
     load_module(&sidecar_path).map(LoadedModule::Sidecar)
+}
+
+fn resolve_group_selections(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+) -> Result<BTreeMap<String, GroupSelection>, String> {
+    let mut groups: BTreeMap<String, Vec<(String, LadderManifest)>> = BTreeMap::new();
+    for module_id in &profile.modules {
+        let module = match load_profile_module(module_root, module_id) {
+            Ok(LoadedModule::Ladder(manifest)) => manifest,
+            Ok(LoadedModule::Sidecar(_)) | Err(_) => continue,
+        };
+        validate_ladder(&module)
+            .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
+        if let Some(group) = &module.group {
+            groups
+                .entry(group.group_id.clone())
+                .or_default()
+                .push((module_id.clone(), module));
+        }
+    }
+
+    let mut selections = BTreeMap::new();
+    for (group_id, mut members) in groups {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_by(|(left_id, left), (right_id, right)| {
+            left.group
+                .as_ref()
+                .map(|group| group.group_order)
+                .unwrap_or(i64::MAX)
+                .cmp(
+                    &right
+                        .group
+                        .as_ref()
+                        .map(|group| group.group_order)
+                        .unwrap_or(i64::MAX),
+                )
+                .then_with(|| left_id.cmp(right_id))
+        });
+        let group_receipt_dir = receipt_dir.join("groups").join(&group_id);
+        let mut observations = Vec::new();
+        let mut live_winners = Vec::new();
+        for (module_id, manifest) in &members {
+            let group = manifest.group.as_ref().expect("grouped manifest");
+            let probe_dir = group_receipt_dir.join("probes").join(module_id);
+            let outcome = execute_group_live_probe(manifest, &probe_dir)?;
+            let signal = if outcome.ok {
+                "probe-live".to_string()
+            } else {
+                outcome.message.clone()
+            };
+            if outcome.ok {
+                live_winners.push(module_id.clone());
+            }
+            observations.push(GroupProbeObservation {
+                module_id: module_id.clone(),
+                ok: outcome.ok,
+                tool: group.live_probe.tool.clone(),
+                permutation: group.live_probe.permutation.clone(),
+                signal,
+            });
+        }
+        let winner = live_winners
+            .first()
+            .cloned()
+            .unwrap_or_else(|| members[0].0.clone());
+        let losers: Vec<String> = members
+            .iter()
+            .map(|(module_id, _)| module_id.clone())
+            .filter(|module_id| module_id != &winner)
+            .collect();
+        let selection = GroupSelection {
+            group_id: group_id.clone(),
+            winner: winner.clone(),
+            losers: losers.clone(),
+            observations,
+        };
+        write_group_selection_receipt(receipt_dir, &selection)?;
+        selections.insert(group_id, selection);
+    }
+    Ok(selections)
+}
+
+fn group_loser_winners(selections: &BTreeMap<String, GroupSelection>) -> BTreeMap<String, String> {
+    let mut losers = BTreeMap::new();
+    for selection in selections.values() {
+        for loser in &selection.losers {
+            losers.insert(loser.clone(), selection.winner.clone());
+        }
+    }
+    losers
+}
+
+fn write_group_selection_receipt(
+    receipt_dir: &Path,
+    selection: &GroupSelection,
+) -> Result<(), String> {
+    fs::create_dir_all(receipt_dir.join("groups")).map_err(|e| e.to_string())?;
+    write_json(
+        &receipt_dir
+            .join("groups")
+            .join(format!("{}-selection.json", selection.group_id)),
+        &json!({
+            "schema": "harmonia.group.selection.v1",
+            "group_id": selection.group_id,
+            "probes_observed": selection.observations.iter().map(|probe| json!({
+                "module_id": probe.module_id,
+                "ok": probe.ok,
+                "tool": probe.tool,
+                "permutation": probe.permutation,
+                "signal": probe.signal,
+            })).collect::<Vec<_>>(),
+            "winner": selection.winner,
+            "losers": selection.losers,
+        }),
+    )
 }
 
 pub(crate) fn profile_module_failure_is_terminal(module_id: &str) -> bool {
@@ -152,6 +290,9 @@ pub(crate) fn run_profile_engine(
         )?;
     }
 
+    let group_selections = resolve_group_selections(profile, module_root, receipt_dir)?;
+    let group_losers = group_loser_winners(&group_selections);
+
     for module_id in &profile.modules {
         let module = match load_profile_module(module_root, module_id) {
             Ok(m) => m,
@@ -184,6 +325,30 @@ pub(crate) fn run_profile_engine(
         };
         module_count += 1;
         event(&mut events, "module-start", true, module.id())?;
+        if let Some(winner) = group_losers.get(module.id()) {
+            let signal = format!("group-lost-to:{winner}");
+            append_profile_ledger_entry(
+                receipt_dir,
+                profile,
+                ProfileLedgerEntry {
+                    run_id: &run_id,
+                    module_id: module.id(),
+                    ok: true,
+                    changed: false,
+                    operation_count: 0,
+                    first_missing_signal: &signal,
+                    receipt_dir,
+                    module_version: module.version(),
+                },
+            )?;
+            event(
+                &mut events,
+                "module-skipped",
+                true,
+                &format!("{} {signal}", module.id()),
+            )?;
+            continue;
+        }
         let execution_result = match &module {
             LoadedModule::Sidecar(sidecar) => {
                 execute_profile_module(sidecar, module_root, receipt_dir, apply, &harmonia_root)

@@ -19,12 +19,31 @@ pub(crate) struct LadderManifest {
     #[serde(default)]
     pub optional_warning: Option<String>,
     #[serde(default)]
+    pub group: Option<LadderGroup>,
+    #[serde(default)]
     pub constants: BTreeMap<String, Value>,
     #[serde(default)]
     pub files_root: Option<String>,
     pub ladder: Vec<LadderStep>,
     #[serde(skip)]
     pub(crate) base_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LadderGroup {
+    pub group_id: String,
+    pub group_order: i64,
+    pub live_probe: LadderProbe,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LadderProbe {
+    pub tool: String,
+    pub permutation: String,
+    #[serde(default)]
+    pub args: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -100,6 +119,9 @@ pub(crate) fn validate_ladder(
             defect: format!("unsupported-schema-{}", manifest.schema),
         });
     }
+    if let Some(group) = &manifest.group {
+        validate_group(group, &manifest.constants)?;
+    }
     let mut seen = BTreeSet::new();
     let mut validated = Vec::new();
     for step in &manifest.ladder {
@@ -143,6 +165,58 @@ pub(crate) fn validate_ladder(
         });
     }
     Ok(validated)
+}
+
+pub(crate) fn validate_group(
+    group: &LadderGroup,
+    constants: &BTreeMap<String, Value>,
+) -> Result<ValidatedStep, LadderValidationError> {
+    if group.group_id.trim().is_empty() {
+        return Err(LadderValidationError {
+            step_id: "group".into(),
+            defect: "missing-group_id".into(),
+        });
+    }
+    let step_id = "group.live_probe";
+    let Some(tool) = tools::get(&group.live_probe.tool) else {
+        return Err(LadderValidationError {
+            step_id: step_id.into(),
+            defect: format!("unknown-tool-{}", group.live_probe.tool),
+        });
+    };
+    let Some(permutation) = tool.permutation(&group.live_probe.permutation) else {
+        return Err(LadderValidationError {
+            step_id: step_id.into(),
+            defect: format!("undeclared-permutation-{}", group.live_probe.permutation),
+        });
+    };
+    let resolved = resolve_args(&group.live_probe.args, constants).map_err(|defect| {
+        LadderValidationError {
+            step_id: step_id.into(),
+            defect,
+        }
+    })?;
+    validate_args(step_id, permutation, &resolved)?;
+    Ok(ValidatedStep {
+        step_id: step_id.into(),
+        tool: group.live_probe.tool.clone(),
+        permutation: group.live_probe.permutation.clone(),
+        args: resolved,
+        on_failure: OnFailure::Stop,
+    })
+}
+
+pub(crate) fn execute_group_live_probe(
+    manifest: &LadderManifest,
+    receipt_dir: &Path,
+) -> Result<OperationOutcome, String> {
+    let Some(group) = &manifest.group else {
+        return Err(format!("module-{}-has-no-group", manifest.id));
+    };
+    let step = validate_group(group, &manifest.constants)
+        .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    execute_validated_step(&step, manifest, receipt_dir, true)
 }
 
 fn resolve_args(
@@ -796,6 +870,7 @@ mod tests {
             description: "synthetic ladder".into(),
             optional: false,
             optional_warning: None,
+            group: None,
             constants: BTreeMap::new(),
             files_root: None,
             base_dir: PathBuf::new(),
@@ -907,6 +982,27 @@ mod tests {
     }
 
     #[test]
+    fn validator_accepts_group_live_probe_and_rejects_unknown_group_field_by_name() {
+        let mut manifest = base_manifest();
+        manifest.group = Some(LadderGroup {
+            group_id: "git-host".into(),
+            group_order: 1,
+            live_probe: LadderProbe {
+                tool: "systemd".into(),
+                permutation: "is-active-probe".into(),
+                args: BTreeMap::from([("service".into(), json!("forgejo.service"))]),
+            },
+        });
+        validate_ladder(&manifest).unwrap();
+
+        let text = r#"{"schema":"harmonia.module.ladder.v1","id":"x","version":"1","description":"x","group":{"group_id":"git-host","group_order":1,"live_probe":{"tool":"systemd","permutation":"is-active-probe","args":{"service":"forgejo.service"}},"stray":true},"constants":{},"ladder":[]}"#;
+        let err = serde_json::from_str::<LadderManifest>(text)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `stray`"), "{err}");
+    }
+
+    #[test]
     fn executor_happy_path_stop_and_optional_continue() {
         let scratch = std::env::temp_dir().join(format!("harmonia-ladder-exec-{}", process::id()));
         let _ = fs::remove_dir_all(&scratch);
@@ -961,6 +1057,117 @@ mod tests {
         run_profile_engine(&profile, &module_root, &receipts, false).unwrap();
         let ledger = fs::read_to_string(scratch.join("receipts/test-ledger.jsonl")).unwrap();
         assert!(ledger.contains("\"module_version\":\"1.2.3\""), "{ledger}");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    fn fixture_group_manifest(id: &str, group_order: i64, probe_program: &str) -> LadderManifest {
+        LadderManifest {
+            schema: SCHEMA.into(),
+            id: id.into(),
+            version: "1.0.0".into(),
+            description: format!("{id} fixture"),
+            optional: false,
+            optional_warning: None,
+            group: Some(LadderGroup {
+                group_id: "git-host".into(),
+                group_order,
+                live_probe: LadderProbe {
+                    tool: "command".into(),
+                    permutation: "capture".into(),
+                    args: BTreeMap::from([
+                        ("program".into(), json!(probe_program)),
+                        ("args".into(), json!([])),
+                    ]),
+                },
+            }),
+            constants: BTreeMap::new(),
+            files_root: None,
+            base_dir: PathBuf::new(),
+            ladder: vec![LadderStep {
+                step_id: format!("{id}-runs"),
+                tool: "command".into(),
+                permutation: "capture".into(),
+                args: BTreeMap::from([
+                    ("program".into(), json!("/usr/bin/true")),
+                    ("args".into(), json!([])),
+                ]),
+                on_failure: OnFailure::Stop,
+            }],
+        }
+    }
+
+    fn write_fixture_manifest(module_root: &Path, manifest: &LadderManifest) {
+        let dir = module_root.join(&manifest.id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn group_selection_live_winner_runs_and_loser_skips_with_receipt() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-group-live-{}", process::id()));
+        let module_root = scratch.join("modules");
+        let receipts = scratch.join("receipts");
+        write_fixture_manifest(
+            &module_root,
+            &fixture_group_manifest("forgejo", 1, "/usr/bin/true"),
+        );
+        write_fixture_manifest(
+            &module_root,
+            &fixture_group_manifest("gogs", 2, "/usr/bin/false"),
+        );
+        let profile = Profile {
+            id: "test".into(),
+            identity: "test".into(),
+            modules: vec!["forgejo".into(), "gogs".into()],
+        };
+        run_profile_engine(&profile, &module_root, &receipts, false).unwrap();
+        assert!(receipts.join("modules/forgejo/forgejo-runs.json").exists());
+        assert!(!receipts.join("modules/gogs/gogs-runs.json").exists());
+        let selection =
+            fs::read_to_string(receipts.join("groups/git-host-selection.json")).unwrap();
+        assert!(
+            selection.contains("harmonia.group.selection.v1"),
+            "{selection}"
+        );
+        assert!(selection.contains("\"winner\": \"forgejo\""), "{selection}");
+        assert!(
+            selection.contains("\"losers\": [\n    \"gogs\"\n  ]"),
+            "{selection}"
+        );
+        let ledger = fs::read_to_string(scratch.join("test-ledger.jsonl")).unwrap();
+        assert!(ledger.contains("group-lost-to:forgejo"), "{ledger}");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn group_selection_all_probes_failing_still_runs_lowest_order_winner() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-group-dead-{}", process::id()));
+        let module_root = scratch.join("modules");
+        let receipts = scratch.join("receipts");
+        write_fixture_manifest(
+            &module_root,
+            &fixture_group_manifest("forgejo", 1, "/usr/bin/false"),
+        );
+        write_fixture_manifest(
+            &module_root,
+            &fixture_group_manifest("gogs", 2, "/usr/bin/false"),
+        );
+        let profile = Profile {
+            id: "test".into(),
+            identity: "test".into(),
+            modules: vec!["forgejo".into(), "gogs".into()],
+        };
+        run_profile_engine(&profile, &module_root, &receipts, false).unwrap();
+        assert!(receipts.join("modules/forgejo/forgejo-runs.json").exists());
+        assert!(!receipts.join("modules/gogs/gogs-runs.json").exists());
+        let selection =
+            fs::read_to_string(receipts.join("groups/git-host-selection.json")).unwrap();
+        assert!(selection.contains("\"winner\": \"forgejo\""), "{selection}");
+        assert!(selection.contains("\"ok\": false"), "{selection}");
         let _ = fs::remove_dir_all(&scratch);
     }
 

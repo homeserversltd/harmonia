@@ -929,6 +929,9 @@ mod tests {
             .contains(&"rust-build-toolchain".to_string()));
         assert!(profile.modules.contains(&"coronatio".to_string()));
         assert!(profile.modules.contains(&"caduceus".to_string()));
+        assert!(profile.modules.contains(&"forgejo".to_string()));
+        assert!(profile.modules.contains(&"gogs".to_string()));
+        assert!(profile.modules.contains(&"jellyfin".to_string()));
         assert!(!profile.modules.contains(&"system-files".to_string()));
         assert!(!profile.modules.contains(&"udev".to_string()));
         assert!(!profile.modules.contains(&"systemd".to_string()));
