@@ -101,6 +101,109 @@ pub fn plan(request: &Request) -> Outcome {
     }
 }
 
+pub(crate) struct ManagedFilesRequest<'a> {
+    pub module_id: &'a str,
+    pub files: &'a [crate::ManagedFileManifest],
+    pub receipt_name: &'a str,
+    pub schema: &'a str,
+    pub first_missing_signal: &'a str,
+}
+
+pub(crate) fn converge_managed_files(
+    request: &ManagedFilesRequest<'_>,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<crate::OperationOutcome, String> {
+    validate_receipt_name(request.receipt_name)?;
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let mut missing = Vec::new();
+    let mut written = Vec::new();
+    let mut changed = false;
+    let mut entries = Vec::new();
+    for file in request.files {
+        let path = PathBuf::from(&file.path);
+        let existing = fs::read(&path).ok();
+        let desired = file.content.as_bytes();
+        let content_equal = existing.as_deref() == Some(desired);
+        let mode = file.mode.unwrap_or(0o644);
+        let mode_equal = path.exists() && target_mode(&path)? == Some(mode);
+        let file_changed = !content_equal || !mode_equal;
+        if file_changed {
+            if apply {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| {
+                        format!("managed-file-parent-failed {}: {e}", parent.display())
+                    })?;
+                }
+                atomic_write_bytes(&path, desired, Some(mode))?;
+                written.push(file.path.clone());
+                changed = true;
+            } else {
+                missing.push(file.path.clone());
+            }
+        }
+        entries.push(json!({
+            "path": file.path,
+            "mode": mode,
+            "content_equal_before": content_equal,
+            "mode_equal_before": mode_equal,
+            "changed": file_changed,
+            "written": apply && file_changed,
+        }));
+        let safe_name = file
+            .path
+            .replace('/', "_")
+            .trim_start_matches('_')
+            .to_string();
+        let per_file = receipt_dir.join(format!(
+            "{}-{}.json",
+            request.receipt_name.trim_end_matches(".json"),
+            safe_name
+        ));
+        crate::write_json(
+            &per_file,
+            &json!({
+                "schema": "harmonia.files.managed_file.v1",
+                "ok": !file_changed || apply,
+                "module": request.module_id,
+                "path": file.path,
+                "mode": mode,
+                "apply": apply,
+                "changed": file_changed,
+                "written": apply && file_changed,
+                "first_missing_signal": if !file_changed || apply { "none" } else { request.first_missing_signal },
+            }),
+        )?;
+    }
+    let ok = missing.is_empty() || !apply;
+    let receipt = receipt_dir.join(if request.receipt_name.ends_with(".json") {
+        request.receipt_name.to_string()
+    } else {
+        format!("{}.json", request.receipt_name)
+    });
+    crate::write_json(
+        &receipt,
+        &json!({
+            "schema": request.schema,
+            "ok": ok,
+            "module": request.module_id,
+            "missing": missing,
+            "written": written,
+            "apply": apply,
+            "changed": changed,
+            "entries": entries,
+            "first_missing_signal": if ok { "none" } else { request.first_missing_signal },
+        }),
+    )?;
+    Ok(crate::OperationOutcome {
+        ok,
+        changed,
+        skipped: !apply && !request.files.is_empty(),
+        message: format!("{} managed files checked", request.files.len()),
+        command: None,
+    })
+}
+
 pub fn converge_files(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
@@ -411,7 +514,7 @@ fn backup_target(target: &Path, receipt_dir: &Path, rel: &Path) -> Result<PathBu
     Ok(backup)
 }
 
-fn atomic_copy(source: &Path, target: &Path, mode: Option<u32>) -> Result<(), String> {
+fn atomic_write_bytes(target: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), String> {
     let parent = target
         .parent()
         .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
@@ -423,12 +526,10 @@ fn atomic_copy(source: &Path, target: &Path, mode: Option<u32>) -> Result<(), St
             .unwrap_or("file"),
         std::process::id()
     ));
-    let bytes = fs::read(source)
-        .map_err(|e| format!("files-source-read-failed {}: {e}", source.display()))?;
     {
         let mut file = File::create(&temp)
             .map_err(|e| format!("files-temp-create-failed {}: {e}", temp.display()))?;
-        file.write_all(&bytes)
+        file.write_all(bytes)
             .map_err(|e| format!("files-temp-write-failed {}: {e}", temp.display()))?;
         file.sync_all()
             .map_err(|e| format!("files-temp-sync-failed {}: {e}", temp.display()))?;
@@ -444,6 +545,12 @@ fn atomic_copy(source: &Path, target: &Path, mode: Option<u32>) -> Result<(), St
         )
     })?;
     Ok(())
+}
+
+fn atomic_copy(source: &Path, target: &Path, mode: Option<u32>) -> Result<(), String> {
+    let bytes = fs::read(source)
+        .map_err(|e| format!("files-source-read-failed {}: {e}", source.display()))?;
+    atomic_write_bytes(target, &bytes, mode)
 }
 
 #[cfg(unix)]

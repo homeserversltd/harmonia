@@ -74,7 +74,6 @@ pub(crate) fn execute(
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::process::Command;
 
 pub(crate) fn load_sync_module(path: &Path) -> Result<SyncModuleConfig, String> {
     let text = fs::read_to_string(path)
@@ -140,25 +139,8 @@ pub(crate) fn command_capture_with_env(
     args: &[&str],
     envs: &HashMap<String, String>,
 ) -> CmdResult {
-    let mut cmd = Command::new(program);
-    cmd.args(args);
-    for (key, value) in envs {
-        cmd.env(key, value);
-    }
-    match cmd.output() {
-        Ok(output) => CmdResult {
-            ok: output.status.success(),
-            code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        },
-        Err(err) => CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: err.to_string(),
-        },
-    }
+    let values: Vec<(String, String)> = envs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    tools::command::capture_with_env(program, args, &values)
 }
 
 pub(crate) fn homeconsole_sync(

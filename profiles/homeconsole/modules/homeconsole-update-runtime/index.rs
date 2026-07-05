@@ -2,7 +2,6 @@ use crate::module_dispatch::{reject_executable_sidecar, ModuleExecution};
 use crate::*;
 use serde_json::json;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) const ID: &str = "homeconsole-update-runtime";
@@ -23,53 +22,17 @@ fn managed_files(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let mut missing = Vec::new();
-    let mut written = Vec::new();
-    let mut changed = false;
-    for file in &module.managed_files {
-        let path = PathBuf::from(&file.path);
-        let existing = fs::read_to_string(&path).ok();
-        let content_equal = existing.as_deref() == Some(file.content.as_str());
-        if !content_equal {
-            if apply {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| {
-                        format!("homeconsole-update-managed-file-parent-failed: {e}")
-                    })?;
-                }
-                fs::write(&path, file.content.as_bytes())
-                    .map_err(|e| format!("homeconsole-update-managed-file-write-failed: {e}"))?;
-                fs::set_permissions(
-                    &path,
-                    fs::Permissions::from_mode(file.mode.unwrap_or(0o644)),
-                )
-                .map_err(|e| format!("homeconsole-update-managed-file-mode-failed: {e}"))?;
-                written.push(file.path.clone());
-                changed = true;
-            } else {
-                missing.push(file.path.clone());
-            }
-        }
-    }
-    let ok = missing.is_empty() || !apply;
-    write_json(
-        &receipt_dir.join("homeconsole-update-managed-files.json"),
-        &json!({
-            "schema": "harmonia.homeconsole.update_runtime.managed_files.v1",
-            "ok": ok,
-            "module": module.id,
-            "missing": missing,
-            "written": written,
-            "changed": changed,
-        }),
-    )?;
-    Ok(OperationOutcome {
-        ok,
-        changed,
-        skipped: !apply && !missing.is_empty(),
-        message: format!("{} managed files checked", module.managed_files.len()),
-        command: None,
-    })
+    tools::files::converge_managed_files(
+        &tools::files::ManagedFilesRequest {
+            module_id: &module.id,
+            files: &module.managed_files,
+            receipt_name: "homeconsole-update-managed-files",
+            schema: "harmonia.homeconsole.update_runtime.managed_files.v1",
+            first_missing_signal: "homeconsole-update-managed-file-missing",
+        },
+        receipt_dir,
+        apply,
+    )
 }
 
 pub(crate) fn execute(

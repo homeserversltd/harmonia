@@ -1,4 +1,4 @@
-use super::ToolContract;
+use super::{command, ToolContract};
 
 pub const NAME: &str = "git-artifact";
 pub const DESCRIPTION: &str = "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.";
@@ -6,16 +6,9 @@ pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION);
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandReceipt {
-    pub ok: bool,
-    pub code: i32,
-    pub stdout: String,
-    pub stderr: String,
-}
+pub type CommandReceipt = crate::CmdResult;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -46,7 +39,7 @@ impl Request {
 
 pub fn plan(request: &Request) -> Outcome {
     let command = if request.path.join(".git").exists() {
-        command_capture_with_cwd(
+        command::capture_with_cwd(
             "/usr/bin/git",
             &["status", "--short"],
             request.path.to_str(),
@@ -136,7 +129,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                 }
             }
         }
-        let clone = command_capture(
+        let clone = command::capture(
             "/usr/bin/git",
             &[
                 "clone",
@@ -176,14 +169,14 @@ fn sync_repo(request: &Request) -> SyncResult {
     }
 
     let cwd = request.path.to_str();
-    let before = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    let before = command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
     if !before.ok {
         return SyncResult {
             command: before,
             changed: false,
         };
     }
-    let dirty = command_capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], cwd);
+    let dirty = command::capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], cwd);
     if !dirty.ok {
         return SyncResult {
             command: dirty,
@@ -202,7 +195,7 @@ fn sync_repo(request: &Request) -> SyncResult {
         };
     }
 
-    let fetch = command_capture_with_cwd(
+    let fetch = command::capture_with_cwd(
         "/usr/bin/git",
         &["fetch", &request.remote, &request.branch],
         cwd,
@@ -219,7 +212,7 @@ fn sync_repo(request: &Request) -> SyncResult {
             changed: false,
         };
     }
-    let checkout = command_capture_with_cwd("/usr/bin/git", &["checkout", &request.branch], cwd);
+    let checkout = command::capture_with_cwd("/usr/bin/git", &["checkout", &request.branch], cwd);
     transcript.push(format!(
         "checkout exit={} ok={}",
         checkout.code, checkout.ok
@@ -236,7 +229,7 @@ fn sync_repo(request: &Request) -> SyncResult {
         };
     }
     let pull_ref = format!("{}/{}", request.remote, request.branch);
-    let merge = command_capture_with_cwd("/usr/bin/git", &["merge", "--ff-only", &pull_ref], cwd);
+    let merge = command::capture_with_cwd("/usr/bin/git", &["merge", "--ff-only", &pull_ref], cwd);
     transcript.push(format!("merge_ff exit={} ok={}", merge.code, merge.ok));
     if !merge.stdout.is_empty() {
         transcript.push(merge.stdout.clone());
@@ -252,7 +245,7 @@ fn sync_repo(request: &Request) -> SyncResult {
             changed: false,
         };
     }
-    let after = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    let after = command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
     if !after.ok {
         return SyncResult {
             command: after,
@@ -289,86 +282,6 @@ fn preserved_non_git_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.non-git-preserved-{stamp}"))
 }
 
-const DEFAULT_GIT_COMMAND_TIMEOUT_SECS: u64 = 900;
-
-fn command_capture(program: &str, args: &[&str]) -> CommandReceipt {
-    command_capture_with_cwd(program, args, None)
-}
-
-fn command_capture_with_cwd(program: &str, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
-    command_capture_with_cwd_and_timeout(program, args, cwd, DEFAULT_GIT_COMMAND_TIMEOUT_SECS)
-}
-
-fn command_capture_with_cwd_and_timeout(
-    program: &str,
-    args: &[&str],
-    cwd: Option<&str>,
-    timeout_secs: u64,
-) -> CommandReceipt {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::thread;
-    use std::time::{Duration, Instant};
-    let mut cmd = Command::new(program);
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-    }
-    let command_label = format!("{} {}", program, args.join(" "));
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            return CommandReceipt {
-                ok: false,
-                code: -1,
-                stdout: String::new(),
-                stderr: err.to_string(),
-            }
-        }
-    };
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_string(&mut stderr);
-                }
-                return CommandReceipt {
-                    ok: status.success(),
-                    code: status.code().unwrap_or(-1),
-                    stdout: stdout.trim().to_string(),
-                    stderr: stderr.trim().to_string(),
-                };
-            }
-            Ok(None) if start.elapsed() >= Duration::from_secs(timeout_secs) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return CommandReceipt {
-                    ok: false,
-                    code: -1,
-                    stdout: String::new(),
-                    stderr: format!("command-timeout-after-{timeout_secs}s: {command_label}"),
-                };
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(err) => {
-                let _ = child.kill();
-                return CommandReceipt {
-                    ok: false,
-                    code: -1,
-                    stdout: String::new(),
-                    stderr: err.to_string(),
-                };
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,20 +309,20 @@ mod tests {
         let repo = root.join("repo");
         let target = root.join("source");
         fs::create_dir_all(&repo).unwrap();
-        command_capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], repo.to_str());
-        command_capture_with_cwd(
+        command::capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], repo.to_str());
+        command::capture_with_cwd(
             "/usr/bin/git",
             &["config", "user.email", "harmonia@example.invalid"],
             repo.to_str(),
         );
-        command_capture_with_cwd(
+        command::capture_with_cwd(
             "/usr/bin/git",
             &["config", "user.name", "Harmonia Test"],
             repo.to_str(),
         );
         fs::write(repo.join("README.md"), "repo source\n").unwrap();
-        command_capture_with_cwd("/usr/bin/git", &["add", "README.md"], repo.to_str());
-        command_capture_with_cwd("/usr/bin/git", &["commit", "-m", "seed"], repo.to_str());
+        command::capture_with_cwd("/usr/bin/git", &["add", "README.md"], repo.to_str());
+        command::capture_with_cwd("/usr/bin/git", &["commit", "-m", "seed"], repo.to_str());
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("old-payload"), "preserve me\n").unwrap();
 
@@ -441,7 +354,7 @@ mod tests {
     #[test]
     fn command_timeout_kills_sleeping_child() {
         let result =
-            command_capture_with_cwd_and_timeout("/usr/bin/sh", &["-c", "sleep 2"], None, 1);
+            command::capture_with_cwd_and_timeout("/usr/bin/sh", &["-c", "sleep 2"], None, 1);
         assert!(!result.ok);
         assert!(result.stderr.contains("command-timeout-after-1s"));
         assert!(result.stderr.contains("/usr/bin/sh -c sleep 2"));
