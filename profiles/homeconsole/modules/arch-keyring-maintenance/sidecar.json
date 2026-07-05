@@ -1,8 +1,0 @@
-{
-  "schema": "harmonia.module.sidecar.v1",
-  "id": "arch-keyring-maintenance",
-  "description": "Arch keyring maintenance module. Rust owns pacman-key initialization, archlinux-keyring refresh, key database update, and receipts before package updates.",
-  "packages": [
-    "archlinux-keyring"
-  ]
-}

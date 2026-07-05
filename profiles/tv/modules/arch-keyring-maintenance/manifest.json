@@ -1,0 +1,33 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "arch-keyring-maintenance",
+  "version": "1.0.0",
+  "description": "tv Arch keyring maintenance ladder using the package tool.",
+  "optional": false,
+  "constants": {
+    "package": "archlinux-keyring",
+    "packages": [
+      "archlinux-keyring"
+    ]
+  },
+  "ladder": [
+    {
+      "step_id": "package-keyring-repair",
+      "tool": "package",
+      "permutation": "keyring-repair",
+      "args": {
+        "package": "$constants.package"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "archlinux-keyring-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

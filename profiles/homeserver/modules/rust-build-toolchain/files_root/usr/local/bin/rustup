@@ -1,0 +1,4 @@
+#!/bin/sh
+export RUSTUP_HOME=/opt/rustup
+export CARGO_HOME=/opt/cargo
+exec /opt/cargo/bin/rustup "$@"

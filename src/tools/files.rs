@@ -14,7 +14,7 @@ pub const DESCRIPTION: &str =
 pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
     "managed-files",
     "converge managed file declarations from typed JSON",
-    &[ToolArg::required("files", ToolArgKind::Json)],
+    &[ToolArg::optional("files", ToolArgKind::Json)],
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 

@@ -1,8 +1,0 @@
-{
-  "schema": "harmonia.module.sidecar.v1",
-  "id": "rust-build-toolchain",
-  "description": "HomeConsole Rust build toolchain package possession. Rust module owns package install/check sequencing.",
-  "packages": [
-    "rust"
-  ]
-}

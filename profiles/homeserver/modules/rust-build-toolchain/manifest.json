@@ -1,0 +1,35 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "rust-build-toolchain",
+  "version": "1.0.0",
+  "description": "homeserver Rust build toolchain ladder using package install.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "ca-certificates",
+      "curl",
+      "gcc",
+      "make",
+      "pkg-config"
+    ]
+  },
+  "ladder": [
+    {
+      "step_id": "rust-package-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "rust-wrapper-shims",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ],
+  "files_root": "files_root"
+}
