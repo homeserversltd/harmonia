@@ -214,6 +214,7 @@ pub(crate) use keyman_runtime::homeconsole_keyman_update;
 pub(crate) use keyman_runtime::{redact_secret_text, sync_directory};
 pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 
+mod capsule;
 mod convergence_lock;
 mod deployable_config;
 mod ladder;
@@ -222,6 +223,7 @@ mod preflight;
 mod profile_engine;
 mod receipts;
 
+pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
 pub(crate) use deployable_config::*;
 pub(crate) use ladder::*;
@@ -1873,6 +1875,33 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             run_profile_engine(&profile, &module_root, &receipt_dir, apply)
         }
+        Some("capsule") => {
+            let action = args
+                .get(1)
+                .ok_or("capsule requires <pack|verify|install>")?;
+            match action.as_str() {
+                "pack" => {
+                    let profile_id = args.get(2).ok_or("capsule pack requires <profile-id>")?;
+                    let output_dir =
+                        value_arg(&args, "--out").ok_or("capsule pack requires --out <dir>")?;
+                    let harmonia_root =
+                        value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from("."));
+                    capsule_pack(profile_id, &output_dir, &harmonia_root)
+                }
+                "verify" => {
+                    let capsule_dir = args.get(2).ok_or("capsule verify requires <dir>")?;
+                    capsule_verify(Path::new(capsule_dir)).map(|_| ())
+                }
+                "install" => {
+                    let capsule_dir = args.get(2).ok_or("capsule install requires <dir>")?;
+                    let apply = args.iter().any(|arg| arg == "--apply");
+                    let config_dir = value_arg(&args, "--config-dir")
+                        .unwrap_or_else(|| PathBuf::from("/etc/harmonia"));
+                    capsule_install(Path::new(capsule_dir), &config_dir, apply)
+                }
+                other => Err(format!("capsule-action-unsupported-{other}")),
+            }
+        }
         Some("deployable-config") => {
             let action = args
                 .get(1)
@@ -1887,9 +1916,11 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("deployable-config export requires --out <path>")?;
             let harmonia_root =
                 value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from("."));
-            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| output_dir.join("receipts"));
-            let mode = DeployableConfigMode::parse(value_arg_string(&args, "--mode"))?;
-            export_deployable_config(&harmonia_root, profile_id, &output_dir, &receipt_dir, mode)
+            // Tranche 4 keeps deployable-config export as a thin compatibility alias to capsule pack.
+            let _receipt_dir =
+                receipt_dir_arg(&args).unwrap_or_else(|| output_dir.join("receipts"));
+            let _mode = DeployableConfigMode::parse(value_arg_string(&args, "--mode"))?;
+            capsule_pack(profile_id, &output_dir, &harmonia_root)
         }
         Some("pinned-artifacts") => {
             let action = args

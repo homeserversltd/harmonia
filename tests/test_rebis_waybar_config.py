@@ -7,12 +7,12 @@ WAYBAR = REBIS / "modules/rebis-waybar-config/files/waybar"
 
 def test_rebis_profile_owns_waybar_config_through_module_path() -> None:
     profile = (REBIS / "index.json").read_text(encoding="utf-8")
-    sidecar = (REBIS / "modules/rebis-waybar-config/sidecar.json").read_text(encoding="utf-8")
+    manifest = (REBIS / "modules/rebis-waybar-config/manifest.json").read_text(encoding="utf-8")
     assert '"id": "rebis"' in profile
     assert '"rebis-waybar-config"' in profile
-    assert '"source_dir": "profiles/rebis/modules/rebis-waybar-config/files/waybar"' in sidecar
-    assert '".config/waybar/waybar.conf"' in sidecar
-    assert '"bin/waybar-clipboard.sh"' in sidecar
+    assert '"files_root": "files/waybar"' in manifest
+    assert '".config/waybar/waybar.conf"' in manifest
+    assert '"bin/waybar-clipboard.sh"' in manifest
 
 
 def test_rebis_waybar_preserves_local_land_guard_and_laptop_controls() -> None:
