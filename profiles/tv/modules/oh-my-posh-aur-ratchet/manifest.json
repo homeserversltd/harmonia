@@ -1,0 +1,53 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "oh-my-posh-aur-ratchet",
+  "version": "1.0.0",
+  "description": "TV oh-my-posh AUR ratchet module. Public TV data owns the blessed oh-my-posh-bin pin, checks upstream every cycle, and installs the pinned package only when installed state diverges.",
+  "optional": false,
+  "constants": {
+    "package": "oh-my-posh-bin",
+    "lock": "ratchet-lock.json",
+    "build_root": "/var/tmp/harmonia/aur",
+    "builder_user": "nobody",
+    "timeout_secs": 3600,
+    "binary": "oh-my-posh"
+  },
+  "ladder": [
+    {
+      "step_id": "aur-check",
+      "tool": "aur",
+      "permutation": "check",
+      "args": {
+        "package": "$constants.package",
+        "lock": "$constants.lock"
+      }
+    },
+    {
+      "step_id": "aur-build-pinned",
+      "tool": "aur",
+      "permutation": "build-pinned",
+      "args": {
+        "package": "$constants.package",
+        "lock": "$constants.lock",
+        "build_root": "$constants.build_root",
+        "builder_user": "$constants.builder_user",
+        "timeout_secs": "$constants.timeout_secs",
+        "install": true
+      }
+    },
+    {
+      "step_id": "binary-oh-my-posh",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v oh-my-posh >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

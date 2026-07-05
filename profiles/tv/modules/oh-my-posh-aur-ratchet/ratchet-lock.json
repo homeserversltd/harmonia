@@ -1,0 +1,7 @@
+{
+  "schema": "harmonia.aur.ratchet_lock.v1",
+  "package": "oh-my-posh-bin",
+  "pinned_version": "29.20.1-1",
+  "pkgbuild_sha": "ed800be1c781d41ce83ce6e693d6e00e868883c9",
+  "aur_url": "https://aur.archlinux.org/oh-my-posh-bin.git"
+}
