@@ -1,0 +1,50 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "caduceus",
+  "version": "1.0.0",
+  "description": "HOMESERVER Caduceus public lever runtime. Rust owns source sync, cargo build, binary install, profile/policy/state convergence, caduceus.service standup, and HTTP health proof; this sidecar carries constants only.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "caduceus-service-runtime",
+      "tool": "service-runtime",
+      "permutation": "converge",
+      "args": {
+        "module_id": "caduceus",
+        "repo": "https://git.home.arpa/HOMESERVERSLTD/caduceus.git",
+        "branch": "main",
+        "source_dir": "/opt/caduceus/source",
+        "install_bin": "/usr/local/bin/caduceus",
+        "service": "caduceus.service",
+        "url": "http://127.0.0.1:3014/health",
+        "source_sha_file": "/var/lib/harmonia/state/caduceus.sha",
+        "binary_name": "caduceus",
+        "op_prefix": "caduceus",
+        "run_schema": "harmonia.homeserver.caduceus_public_lever.v1",
+        "managed_files_schema": "harmonia.homeserver.caduceus_managed_files.v1",
+        "managed_files": [
+          {
+            "path": "/etc/systemd/system/caduceus.service",
+            "mode": 420,
+            "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nReadWritePaths=/var/lib/caduceus /var/lib/harmonia /var/log/harmonia /var/cache/harmonia /var/cache/caduceus /var/lib/coronatio /opt/caduceus /opt/coronatio /opt/harmonia /usr/local/bin /etc/caduceus /etc/harmonia /etc/systemd/system\n\n[Install]\nWantedBy=multi-user.target\n"
+          },
+          {
+            "path": "/etc/caduceus/identity.json",
+            "mode": 420,
+            "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"homeserver\",\n  \"profile\": \"homeserver\",\n  \"mode\": \"homeserver\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeserver/index.json\"\n}\n"
+          },
+          {
+            "path": "/etc/caduceus/profile.yaml",
+            "mode": 420,
+            "content": "schema: caduceus.profile.v1\nprofile: homeserver\nmode: homeserver\nharmonia_profile: /etc/harmonia/profiles/homeserver/index.json\ncommands:\n- help\n- identity show\n- profile show\n- health\n- legacy-sbin list\n- legacy-sbin show\n- network status\n- homeserver-sbin list\n- homeserver-sbin show\n- staff status\n- staff actuators\n- receipts latest\n- receipts ledger\n- update status\n- update check\n- update now\n- update service status\n- update service toggle\nservices:\n  ledger: /var/lib/harmonia/receipts/homeserver-ledger.jsonl\n  update:\n    timer: harmonia-homeserver.timer\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/run.json\n  coronatio:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/coronatio/run.json\n  caduceus:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/caduceus/run.json\nharmonia_routes:\n  update_now:\n    bin: /usr/local/bin/harmonia\n    args:\n    - run-profile\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --apply\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/homeserver-activate-latest\n  update_check:\n    bin: /usr/local/bin/harmonia\n    args:\n    - run-profile\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/homeserver-check-latest\noperator_aliases:\n  update: caduceus update now\n  update-check: caduceus update check\n  update-status: caduceus update status\n  receipts: caduceus receipts latest\n  health: caduceus health\n"
+          },
+          {
+            "path": "/var/lib/caduceus/state.json",
+            "mode": 420,
+            "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"profile\": \"homeserver\"\n  }\n}\n"
+          }
+        ]
+      }
+    }
+  ]
+}

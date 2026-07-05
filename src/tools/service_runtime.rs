@@ -1,6 +1,126 @@
+use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::module_dispatch::{reject_executable_sidecar, require_path, ModuleExecution};
 use crate::*;
 use serde_json::json;
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+pub const NAME: &str = "service-runtime";
+pub const DESCRIPTION: &str = "Rust service runtime convergence primitive for source sync, managed files, build, install, systemd, and health proof.";
+pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
+    "converge",
+    "converge a Rust service runtime from typed constants",
+    &[
+        ToolArg::optional("module_id", ToolArgKind::String),
+        ToolArg::required("repo", ToolArgKind::String),
+        ToolArg::optional("branch", ToolArgKind::String),
+        ToolArg::optional("remote", ToolArgKind::String),
+        ToolArg::required("source_dir", ToolArgKind::String),
+        ToolArg::required("install_bin", ToolArgKind::String),
+        ToolArg::required("service", ToolArgKind::String),
+        ToolArg::required("url", ToolArgKind::String),
+        ToolArg::required("source_sha_file", ToolArgKind::String),
+        ToolArg::required("binary_name", ToolArgKind::String),
+        ToolArg::required("op_prefix", ToolArgKind::String),
+        ToolArg::required("run_schema", ToolArgKind::String),
+        ToolArg::required("managed_files_schema", ToolArgKind::String),
+        ToolArg::optional("managed_files", ToolArgKind::Json),
+    ],
+)];
+pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
+
+fn string_arg(args: &BTreeMap<String, Value>, name: &str) -> Result<String, String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("service-runtime-missing-{name}"))
+}
+
+pub(crate) fn execute_ladder_step(
+    args: &BTreeMap<String, Value>,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<ModuleExecution, String> {
+    let op_prefix = string_arg(args, "op_prefix")?;
+    let source_op = format!("{op_prefix}-source-git-artifact");
+    let source_sha_op = format!("{op_prefix}-source-sha");
+    let managed_files_op = format!("{op_prefix}-managed-files");
+    let build_op = format!("{op_prefix}-cargo-build");
+    let binary_install_op = format!("{op_prefix}-binary-install");
+    let service_stop_op = format!("{op_prefix}-service-stop");
+    let daemon_reload_op = format!("{op_prefix}-daemon-reload");
+    let service_enable_op = format!("{op_prefix}-service-enable");
+    let service_active_op = format!("{op_prefix}-service-active");
+    let service_op = format!("{op_prefix}-service");
+    let health_op = format!("{op_prefix}-health");
+    let binary_name = string_arg(args, "binary_name")?;
+    let spec = ServiceRuntimeSpec {
+        op_prefix: Box::leak(op_prefix.into_boxed_str()),
+        run_schema: Box::leak(string_arg(args, "run_schema")?.into_boxed_str()),
+        managed_files_schema: Box::leak(string_arg(args, "managed_files_schema")?.into_boxed_str()),
+        source_op: Box::leak(source_op.into_boxed_str()),
+        source_sha_op: Box::leak(source_sha_op.into_boxed_str()),
+        managed_files_op: Box::leak(managed_files_op.into_boxed_str()),
+        build_op: Box::leak(build_op.into_boxed_str()),
+        binary_install_op: Box::leak(binary_install_op.into_boxed_str()),
+        service_stop_op: Box::leak(service_stop_op.into_boxed_str()),
+        daemon_reload_op: Box::leak(daemon_reload_op.into_boxed_str()),
+        service_enable_op: Box::leak(service_enable_op.into_boxed_str()),
+        service_active_op: Box::leak(service_active_op.into_boxed_str()),
+        service_op: Box::leak(service_op.into_boxed_str()),
+        health_op: Box::leak(health_op.into_boxed_str()),
+        binary_name: Box::leak(binary_name.into_boxed_str()),
+    };
+    let managed_files: Vec<ManagedFileManifest> = args
+        .get("managed_files")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("service-runtime-managed-files-invalid: {e}"))?
+        .unwrap_or_default();
+    let module = ModuleManifest {
+        id: string_arg(args, "module_id").unwrap_or_else(|_| spec.op_prefix.to_string()),
+        description: String::new(),
+        command: None,
+        args: vec![],
+        cwd: None,
+        service: Some(string_arg(args, "service")?),
+        install_bin: Some(string_arg(args, "install_bin")?),
+        url: Some(string_arg(args, "url")?),
+        expected_contains: None,
+        repo: Some(string_arg(args, "repo")?),
+        path: None,
+        branch: args
+            .get("branch")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        remote: args
+            .get("remote")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        lock: None,
+        source_dir: Some(string_arg(args, "source_dir")?),
+        install_profile: None,
+        target_dir: None,
+        source_sha_file: Some(string_arg(args, "source_sha_file")?),
+        packages: vec![],
+        package_conflict_policy: None,
+        package_conflict_paths: vec![],
+        expected_files: vec![],
+        binaries: vec![],
+        services: vec![],
+        user_services: vec![],
+        groups: vec![],
+        managed_files,
+        template_files: vec![],
+        variables: std::collections::HashMap::new(),
+        optional: false,
+        optional_warning: None,
+    };
+    execute(&module, receipt_dir, apply, &spec)
+}
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -369,8 +489,15 @@ fn install_binary(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let before_len = fs::metadata(install_bin).map(|m| m.len()).ok();
-    let stop = tools::command::capture("/usr/bin/systemctl", &["stop", service]);
-    write_command_receipt(receipt_dir, spec.service_stop_op, &stop)?;
+    let _stop = tools::systemd::run_action(
+        receipt_dir,
+        spec.service_stop_op,
+        "stop",
+        Some(service),
+        false,
+        30,
+        apply,
+    )?;
     let tmp_install = install_bin.with_extension("harmonia-new");
     fs::copy(artifact, &tmp_install)
         .map_err(|e| format!("{}-artifact-copy-failed: {e}", spec.op_prefix))?;
@@ -411,8 +538,15 @@ fn ensure_service_active(
             command: None,
         });
     }
-    let daemon_reload = tools::command::capture("/usr/bin/systemctl", &["daemon-reload"]);
-    write_command_receipt(receipt_dir, spec.daemon_reload_op, &daemon_reload)?;
+    let daemon_reload = tools::systemd::run_action(
+        receipt_dir,
+        spec.daemon_reload_op,
+        "daemon-reload",
+        Some(service),
+        false,
+        30,
+        apply,
+    )?;
     if !daemon_reload.ok {
         return Ok(OperationOutcome {
             ok: false,
@@ -422,10 +556,24 @@ fn ensure_service_active(
             command: None,
         });
     }
-    let enable = tools::command::capture("/usr/bin/systemctl", &["enable", "--now", service]);
-    write_command_receipt(receipt_dir, spec.service_enable_op, &enable)?;
-    let active = tools::command::capture("/usr/bin/systemctl", &["is-active", service]);
-    write_command_receipt(receipt_dir, spec.service_active_op, &active)?;
+    let enable = tools::systemd::run_action(
+        receipt_dir,
+        spec.service_enable_op,
+        "enable-now",
+        Some(service),
+        false,
+        30,
+        apply,
+    )?;
+    let active = tools::systemd::run_action(
+        receipt_dir,
+        spec.service_active_op,
+        "is-active-probe",
+        Some(service),
+        false,
+        30,
+        apply,
+    )?;
     Ok(OperationOutcome {
         ok: enable.ok && active.ok,
         changed: enable.ok,

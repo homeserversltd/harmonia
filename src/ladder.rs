@@ -316,6 +316,21 @@ fn execute_validated_step(
         ("command", "capture") => command_capture_step(step, module_dir, apply),
         ("health", "probe") => health_probe_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
+        ("files", "converge") => files_converge_step(step, manifest, module_dir, apply),
+        ("systemd", _) => systemd_step(step, module_dir, apply),
+        ("service-runtime", "converge") => tools::service_runtime::execute_ladder_step(
+            &step.args, module_dir, apply,
+        )
+        .map(|execution| OperationOutcome {
+            ok: execution.ok,
+            changed: execution.changed,
+            skipped: false,
+            message: format!(
+                "service-runtime converge operations={}",
+                execution.operation_count
+            ),
+            command: None,
+        }),
         ("git-artifact", "sync") => git_artifact_step(step, module_dir, apply),
         ("package", "check")
         | ("package", "install")
@@ -492,6 +507,101 @@ fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileMa
     walk(root, root, &mut files)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
+}
+
+fn files_converge_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
+    let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
+    let files = string_array_arg(&step.args, "files")
+        .into_iter()
+        .map(|rel| crate::tools::files::FileSpec {
+            mode: if rel.starts_with("bin/") {
+                Some(0o755)
+            } else {
+                Some(0o644)
+            },
+            relative_path: PathBuf::from(rel),
+        })
+        .collect();
+    let request = crate::tools::files::FileConvergenceRequest {
+        source_root,
+        target_root,
+        files,
+        backup_existing: step
+            .args
+            .get("backup_existing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        receipt_name: optional_string_arg(&step.args, "receipt_name")
+            .unwrap_or(&step.step_id)
+            .to_string(),
+    };
+    let outcome = crate::tools::files::converge_files(&request, module_dir, apply)?;
+    if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
+        let name = summary
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("files-summary");
+        let schema = summary
+            .get("schema")
+            .and_then(Value::as_str)
+            .unwrap_or("harmonia.files.summary.v1");
+        crate::write_json(
+            &module_dir.join(format!("{name}.json")),
+            &serde_json::json!({
+                "schema": schema,
+                "ok": outcome.ok,
+                "apply": apply,
+                "module": manifest.id,
+                "source_dir": request.source_root,
+                "target_dir": request.target_root,
+                "checked_file_count": outcome.checked,
+                "written_file_count": outcome.written,
+                "backed_up_file_count": outcome.backed_up,
+                "changed": outcome.changed,
+                "missing": outcome.missing,
+                "authority": summary.get("authority").and_then(Value::as_str).unwrap_or(""),
+                "waybar_contract": summary.get("waybar_contract").cloned().unwrap_or(Value::Null),
+                "first_missing_signal": if outcome.ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
+            }),
+        )?;
+    }
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+
+fn resolve_ladder_path(manifest: &LadderManifest, path: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        p
+    } else {
+        manifest.base_dir.join(p)
+    }
+}
+
+fn systemd_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    tools::systemd::run_permutation(
+        module_dir,
+        &step.step_id,
+        &step.permutation,
+        optional_string_arg(&step.args, "service"),
+        integer_arg(&step.args, "timeout_secs", 30),
+        apply,
+    )
 }
 
 fn package_step(

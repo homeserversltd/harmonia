@@ -1,0 +1,44 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "rebis-waybar-config",
+  "version": "1.0.0",
+  "description": "Rebis laptop Waybar configuration module. Files live inside profiles/rebis/modules/rebis-waybar-config/files/waybar/...; Rust verifies and installs the local Waybar config and helper scripts when the laptop is on trusted land.",
+  "files_root": "files/waybar",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "rebis-waybar-config-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files/waybar",
+        "target_root": "/home/owner",
+        "files": [
+          ".config/waybar/waybar.conf",
+          ".config/waybar/style.css",
+          ".config/wofi/config",
+          ".config/wofi/style.css",
+          "bin/waybar-clipboard.sh",
+          "bin/waybar-meter.sh",
+          "bin/waybar-app-toggle.sh",
+          "bin/fetch.sh",
+          "bin/tooltips.sh"
+        ],
+        "backup_existing": true,
+        "receipt_name": "rebis-waybar-config-files",
+        "summary_receipt": {
+          "name": "rebis-waybar-config-install",
+          "schema": "harmonia.rebis.waybar_config.v1",
+          "authority": "profiles/rebis/modules/rebis-waybar-config/files/waybar",
+          "first_missing_signal": "rebis-waybar-config-files-incomplete",
+          "waybar_contract": {
+            "module": "custom/land-guard",
+            "exec": "$HOME/bin/rebis status",
+            "toggle": "$HOME/bin/rebis toggle",
+            "receipt": "$HOME/bin/rebis receipt"
+          }
+        }
+      }
+    }
+  ]
+}
