@@ -156,6 +156,7 @@ pub(crate) fn validate_ladder(
             }
         })?;
         validate_args(&step.step_id, permutation, &resolved)?;
+        validate_tool_semantics(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validated.push(ValidatedStep {
             step_id: step.step_id.clone(),
             tool: step.tool.clone(),
@@ -197,6 +198,12 @@ pub(crate) fn validate_group(
         }
     })?;
     validate_args(step_id, permutation, &resolved)?;
+    validate_tool_semantics(
+        step_id,
+        &group.live_probe.tool,
+        &group.live_probe.permutation,
+        &resolved,
+    )?;
     Ok(ValidatedStep {
         step_id: step_id.into(),
         tool: group.live_probe.tool.clone(),
@@ -295,6 +302,22 @@ fn validate_args(
         }
     }
     Ok(())
+}
+
+fn validate_tool_semantics(
+    step_id: &str,
+    tool: &str,
+    permutation: &str,
+    args: &BTreeMap<String, Value>,
+) -> Result<(), LadderValidationError> {
+    match (tool, permutation) {
+        ("service-runtime", "converge") => tools::service_runtime::validate_ladder_args(args)
+            .map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            }),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone)]
