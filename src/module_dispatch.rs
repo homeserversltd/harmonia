@@ -18,8 +18,6 @@ mod homeconsole_update_runtime;
 mod homeserver_caduceus;
 #[path = "../profiles/homeserver/modules/coronatio/index.rs"]
 mod homeserver_coronatio;
-#[path = "../profiles/homeconsole/modules/identity/index.rs"]
-mod identity;
 #[path = "../profiles/homeconsole/modules/keyman-runtime/index.rs"]
 mod keyman_runtime;
 #[path = "../profiles/homeconsole/modules/local-ai-runtime/index.rs"]
@@ -113,7 +111,6 @@ pub(crate) fn execute_profile_module(
     let module_dir = receipt_dir.join("modules").join(&module.id);
     fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
     match module.id.as_str() {
-        identity::ID => identity::execute(module, &module_dir, apply),
         arch_keyring_maintenance::ID => {
             arch_keyring_maintenance::execute(module, &module_dir, apply)
         }
@@ -183,8 +180,7 @@ pub(crate) fn execute_profile_module(
 pub(crate) fn is_registered_module_id(module_id: &str) -> bool {
     matches!(
         module_id,
-        identity::ID
-            | arch_keyring_maintenance::ID
+        arch_keyring_maintenance::ID
             | system_packages::ID
             | harmonia_runtime::ID
             | keyman_runtime::ID
@@ -215,7 +211,6 @@ pub(crate) fn is_registered_module_id(module_id: &str) -> bool {
 
 pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), String> {
     match module.id.as_str() {
-        identity::ID => identity::validate(module),
         arch_keyring_maintenance::ID => arch_keyring_maintenance::validate(module),
         system_packages::ID => system_packages::validate(module),
         harmonia_runtime::ID => harmonia_runtime::validate(module),
