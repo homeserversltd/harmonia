@@ -79,5 +79,64 @@ class InstallerCliTests(unittest.TestCase):
             self.assertFalse(payload["binary"]["exists"])
 
 
+    def test_uninstall_apply_preserves_state_dir_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_path = root / "bin" / "harmonia"
+            config_dir = root / "etc" / "harmonia"
+            state_dir = root / "var" / "lib" / "harmonia"
+            log_dir = root / "var" / "log" / "harmonia"
+            receipt_dir = state_dir / "receipts"
+            systemd_dir = root / "systemd"
+            for path in [bin_path.parent, config_dir, state_dir, log_dir, receipt_dir, systemd_dir]:
+                path.mkdir(parents=True, exist_ok=True)
+            bin_path.write_text("binary")
+            (state_dir / "ledger.jsonl").write_text("{}\n")
+            result = run_cli(
+                "uninstall",
+                "--apply",
+                "--bin-path", str(bin_path),
+                "--config-dir", str(config_dir),
+                "--state-dir", str(state_dir),
+                "--log-dir", str(log_dir),
+                "--receipt-dir", str(receipt_dir),
+                "--systemd-dir", str(systemd_dir),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("state_preserved=true", result.stdout)
+            self.assertTrue(state_dir.exists())
+            self.assertTrue((state_dir / "ledger.jsonl").exists())
+            self.assertTrue(log_dir.exists())
+            self.assertFalse(bin_path.exists())
+
+    def test_uninstall_apply_purge_state_removes_state_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_path = root / "bin" / "harmonia"
+            config_dir = root / "etc" / "harmonia"
+            state_dir = root / "var" / "lib" / "harmonia"
+            log_dir = root / "var" / "log" / "harmonia"
+            receipt_dir = state_dir / "receipts"
+            systemd_dir = root / "systemd"
+            for path in [bin_path.parent, config_dir, state_dir, log_dir, receipt_dir, systemd_dir]:
+                path.mkdir(parents=True, exist_ok=True)
+            bin_path.write_text("binary")
+            result = run_cli(
+                "uninstall",
+                "--apply",
+                "--purge-state",
+                "--bin-path", str(bin_path),
+                "--config-dir", str(config_dir),
+                "--state-dir", str(state_dir),
+                "--log-dir", str(log_dir),
+                "--receipt-dir", str(receipt_dir),
+                "--systemd-dir", str(systemd_dir),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("purge_state=true", result.stdout)
+            self.assertFalse(state_dir.exists())
+            self.assertFalse(log_dir.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

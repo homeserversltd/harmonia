@@ -73,6 +73,10 @@ struct ModuleManifest {
     #[serde(default)]
     packages: Vec<String>,
     #[serde(default)]
+    package_conflict_policy: Option<String>,
+    #[serde(default)]
+    package_conflict_paths: Vec<String>,
+    #[serde(default)]
     expected_files: Vec<String>,
     #[serde(default)]
     binaries: Vec<String>,
@@ -712,6 +716,8 @@ mod tests {
             target_dir: None,
             source_sha_file: None,
             packages: vec![],
+            package_conflict_policy: None,
+            package_conflict_paths: vec![],
             expected_files: vec![],
             binaries: vec![],
             services: vec![],

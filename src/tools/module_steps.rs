@@ -4,32 +4,97 @@ use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn pacman_needs_overwrite_retry(result: &CmdResult) -> bool {
+pub(crate) fn pacman_conflict_signal(result: &CmdResult) -> Option<String> {
     if result.ok {
-        return false;
+        return None;
     }
     let combined = format!("{}\n{}", result.stdout, result.stderr);
-    combined.contains("conflicting files") || combined.contains("exists in filesystem")
+    if combined.contains("conflicting files") || combined.contains("exists in filesystem") {
+        Some("pacman-package-file-conflict".to_string())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn pacman_needs_overwrite_retry(result: &CmdResult) -> bool {
+    pacman_conflict_signal(result).is_some()
+}
+
+fn pacman_base_args(sync: bool) -> Vec<&'static str> {
+    if sync {
+        vec!["-Syu", "--noconfirm"]
+    } else {
+        vec!["-S", "--noconfirm"]
+    }
+}
+
+fn overwrite_allowed_args<'a>(base: &[&'a str], paths: &'a [String]) -> Option<Vec<&'a str>> {
+    if paths.is_empty() || paths.iter().any(|path| path == "*") {
+        return None;
+    }
+    let mut args = base.to_vec();
+    for path in paths {
+        args.push("--overwrite");
+        args.push(path.as_str());
+    }
+    Some(args)
 }
 
 pub(crate) fn pacman_mutate_packages(sync: bool, packages: &[String]) -> CmdResult {
-    let mut args: Vec<&str> = if sync {
-        vec!["-Sy", "--noconfirm"]
-    } else {
-        vec!["-S", "--noconfirm"]
-    };
+    pacman_mutate_packages_with_conflict_policy(sync, packages, None, &[])
+}
+
+pub(crate) fn pacman_mutate_packages_with_conflict_policy(
+    sync: bool,
+    packages: &[String],
+    conflict_policy: Option<&str>,
+    conflict_paths: &[String],
+) -> CmdResult {
+    let mut args = pacman_base_args(sync);
     args.extend(packages.iter().map(String::as_str));
-    let result = command_capture("/usr/bin/pacman", &args);
+    let mut result = command_capture_with_timeout("/usr/bin/pacman", &args, 1800);
     if result.ok || !pacman_needs_overwrite_retry(&result) {
         return result;
     }
-    let mut overwrite_args: Vec<&str> = if sync {
-        vec!["-Sy", "--noconfirm", "--overwrite", "*"]
-    } else {
-        vec!["-S", "--noconfirm", "--overwrite", "*"]
+    let Some(policy) = conflict_policy else {
+        return result;
+    };
+    if policy != "overwrite-declared-paths" {
+        result.stderr = format!(
+            "{}\npacman-package-file-conflict-policy-unsupported:{policy}",
+            result.stderr
+        );
+        return result;
+    }
+    let Some(mut overwrite_args) = overwrite_allowed_args(&pacman_base_args(sync), conflict_paths)
+    else {
+        result.stderr = format!(
+            "{}\npacman-package-file-conflict-overwrite-paths-missing-or-wildcard",
+            result.stderr
+        );
+        return result;
     };
     overwrite_args.extend(packages.iter().map(String::as_str));
-    command_capture("/usr/bin/pacman", &overwrite_args)
+    let second = command_capture_with_timeout("/usr/bin/pacman", &overwrite_args, 1800);
+    CmdResult {
+        ok: second.ok,
+        code: second.code,
+        stdout: format!(
+            "first_command=/usr/bin/pacman {}\nfirst_ok={}\nsecond_command=/usr/bin/pacman {}\n{}",
+            args.join(" "),
+            result.ok,
+            overwrite_args.join(" "),
+            second.stdout
+        )
+        .trim()
+        .to_string(),
+        stderr: format!(
+            "first_stderr={}\nsecond_stderr={}",
+            result.stderr, second.stderr
+        )
+        .trim()
+        .to_string(),
+    }
 }
 
 pub(crate) fn command_tool(
@@ -75,15 +140,7 @@ pub(crate) fn package_tool(
     }
     let result = match action {
         "update" if apply => {
-            let first = command_capture("/usr/bin/pacman", &["-Syu", "--noconfirm"]);
-            if first.ok || !pacman_needs_overwrite_retry(&first) {
-                first
-            } else {
-                command_capture(
-                    "/usr/bin/pacman",
-                    &["-Syu", "--noconfirm", "--overwrite", "*"],
-                )
-            }
+            command_capture_with_timeout("/usr/bin/pacman", &["-Syu", "--noconfirm"], 1800)
         }
         "update" | "check" => command_capture("/usr/bin/pacman", &["-Qu"]),
         "install" if apply => pacman_mutate_packages(false, packages),
@@ -376,4 +433,36 @@ pub(crate) fn cargo_tool(
         message: "cargo".into(),
         command: Some(result),
     })
+}
+
+#[cfg(test)]
+mod pacman_safety_tests {
+    use super::*;
+
+    #[test]
+    fn sync_package_mutation_uses_full_upgrade_semantics() {
+        let args = pacman_base_args(true);
+        assert_eq!(args, vec!["-Syu", "--noconfirm"]);
+    }
+
+    #[test]
+    fn overwrite_without_sidecar_allowance_remains_conflict_failure() {
+        let result = CmdResult {
+            ok: false,
+            code: 1,
+            stdout: String::new(),
+            stderr: "error: failed to commit transaction (conflicting files)\nfoo: /usr/bin/foo exists in filesystem".to_string(),
+        };
+        assert!(!result.ok);
+        assert_eq!(
+            pacman_conflict_signal(&result).as_deref(),
+            Some("pacman-package-file-conflict")
+        );
+        assert!(result.stderr.contains("exists in filesystem"));
+    }
+
+    #[test]
+    fn overwrite_policy_rejects_wildcard_paths() {
+        assert!(overwrite_allowed_args(&pacman_base_args(false), &["*".to_string()]).is_none());
+    }
 }

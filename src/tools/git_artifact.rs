@@ -289,29 +289,83 @@ fn preserved_non_git_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.non-git-preserved-{stamp}"))
 }
 
+const DEFAULT_GIT_COMMAND_TIMEOUT_SECS: u64 = 900;
+
 fn command_capture(program: &str, args: &[&str]) -> CommandReceipt {
     command_capture_with_cwd(program, args, None)
 }
 
 fn command_capture_with_cwd(program: &str, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
+    command_capture_with_cwd_and_timeout(program, args, cwd, DEFAULT_GIT_COMMAND_TIMEOUT_SECS)
+}
+
+fn command_capture_with_cwd_and_timeout(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    timeout_secs: u64,
+) -> CommandReceipt {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::{Duration, Instant};
     let mut cmd = Command::new(program);
-    cmd.args(args);
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    match cmd.output() {
-        Ok(output) => CommandReceipt {
-            ok: output.status.success(),
-            code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        },
-        Err(err) => CommandReceipt {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: err.to_string(),
-        },
+    let command_label = format!("{} {}", program, args.join(" "));
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return CommandReceipt {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: err.to_string(),
+            }
+        }
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_string(&mut stdout);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut stderr);
+                }
+                return CommandReceipt {
+                    ok: status.success(),
+                    code: status.code().unwrap_or(-1),
+                    stdout: stdout.trim().to_string(),
+                    stderr: stderr.trim().to_string(),
+                };
+            }
+            Ok(None) if start.elapsed() >= Duration::from_secs(timeout_secs) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return CommandReceipt {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: format!("command-timeout-after-{timeout_secs}s: {command_label}"),
+                };
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(err) => {
+                let _ = child.kill();
+                return CommandReceipt {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: err.to_string(),
+                };
+            }
+        }
     }
 }
 
@@ -382,5 +436,14 @@ mod tests {
             });
         assert!(preserved_exists);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn command_timeout_kills_sleeping_child() {
+        let result =
+            command_capture_with_cwd_and_timeout("/usr/bin/sh", &["-c", "sleep 2"], None, 1);
+        assert!(!result.ok);
+        assert!(result.stderr.contains("command-timeout-after-1s"));
+        assert!(result.stderr.contains("/usr/bin/sh -c sleep 2"));
     }
 }

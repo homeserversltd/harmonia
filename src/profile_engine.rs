@@ -292,8 +292,18 @@ pub(crate) fn enforce_homeconsole_update_suite(
     }
 }
 
+const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 900;
+
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {
     command_capture_with_cwd(program, args, None)
+}
+
+pub(crate) fn command_capture_with_timeout(
+    program: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> CmdResult {
+    command_capture_with_cwd_and_timeout(program, args, None, timeout_secs)
 }
 
 pub(crate) fn command_capture_with_cwd(
@@ -301,24 +311,90 @@ pub(crate) fn command_capture_with_cwd(
     args: &[&str],
     cwd: Option<&str>,
 ) -> CmdResult {
+    command_capture_with_cwd_and_timeout(program, args, cwd, DEFAULT_COMMAND_TIMEOUT_SECS)
+}
+
+pub(crate) fn command_capture_with_cwd_and_timeout(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    timeout_secs: u64,
+) -> CmdResult {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
     let mut cmd = Command::new(program);
-    cmd.args(args);
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    match cmd.output() {
-        Ok(output) => CmdResult {
-            ok: output.status.success(),
-            code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        },
-        Err(err) => CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: err.to_string(),
-        },
+    let command_label = format!("{} {}", program, args.join(" "));
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: format!("command-spawn-failed: {command_label}: {err}"),
+            }
+        }
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_string(&mut stdout);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut stderr);
+                }
+                return CmdResult {
+                    ok: status.success(),
+                    code: status.code().unwrap_or(-1),
+                    stdout: stdout.trim().to_string(),
+                    stderr: stderr.trim().to_string(),
+                };
+            }
+            Ok(None) if start.elapsed() >= Duration::from_secs(timeout_secs) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_string(&mut stdout);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut stderr);
+                }
+                let signal = format!("command-timeout-after-{timeout_secs}s: {command_label}");
+                return CmdResult {
+                    ok: false,
+                    code: -1,
+                    stdout: stdout.trim().to_string(),
+                    stderr: if stderr.trim().is_empty() {
+                        signal.clone()
+                    } else {
+                        format!("{}\n{}", stderr.trim(), signal)
+                    },
+                };
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(err) => {
+                let _ = child.kill();
+                return CmdResult {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: format!("command-wait-failed: {command_label}: {err}"),
+                };
+            }
+        }
     }
 }
 
@@ -355,6 +431,22 @@ mod profile_authority_tests {
         assert_eq!(
             harmonia_root_from_module_root(Path::new("profiles/tv/modules")),
             PathBuf::from("")
+        );
+    }
+
+    #[test]
+    fn command_timeout_kills_sleeping_child() {
+        let result = command_capture_with_timeout("/usr/bin/sh", &["-c", "sleep 2"], 1);
+        assert!(!result.ok);
+        assert!(
+            result.stderr.contains("command-timeout-after-1s"),
+            "{}",
+            result.stderr
+        );
+        assert!(
+            result.stderr.contains("/usr/bin/sh -c sleep 2"),
+            "{}",
+            result.stderr
         );
     }
 }
