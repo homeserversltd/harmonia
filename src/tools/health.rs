@@ -1,4 +1,4 @@
-use super::ToolContract;
+use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::{tools, CmdResult};
 use std::thread;
 use std::time::Duration;
@@ -6,7 +6,17 @@ use std::time::Duration;
 pub const NAME: &str = "health";
 pub const DESCRIPTION: &str =
     "HTTP health probe primitive with curl-backed retry and timeout controls.";
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION);
+pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
+    "probe",
+    "probe an HTTP endpoint with optional expected content and retry controls",
+    &[
+        ToolArg::required("url", ToolArgKind::String),
+        ToolArg::optional("expected_contains", ToolArgKind::String),
+        ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ToolArg::optional("retries", ToolArgKind::Integer),
+    ],
+)];
+pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {

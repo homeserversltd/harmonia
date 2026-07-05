@@ -1,8 +1,18 @@
-use super::{command, ToolContract};
+use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 
 pub const NAME: &str = "git-artifact";
 pub const DESCRIPTION: &str = "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.";
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION);
+pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
+    "sync",
+    "clone or fast-forward a repository artifact",
+    &[
+        ToolArg::optional("repo", ToolArgKind::String),
+        ToolArg::required("path", ToolArgKind::String),
+        ToolArg::optional("branch", ToolArgKind::String),
+        ToolArg::optional("remote", ToolArgKind::String),
+    ],
+)];
+pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 use std::fs;
 use std::path::{Path, PathBuf};

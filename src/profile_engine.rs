@@ -3,6 +3,27 @@ use std::fs::{self, File};
 use std::io::{self};
 use std::path::{Path, PathBuf};
 
+enum LoadedModule {
+    Sidecar(ModuleManifest),
+    Ladder(LadderManifest),
+}
+
+impl LoadedModule {
+    fn id(&self) -> &str {
+        match self {
+            Self::Sidecar(module) => &module.id,
+            Self::Ladder(manifest) => &manifest.id,
+        }
+    }
+
+    fn version(&self) -> Option<&str> {
+        match self {
+            Self::Sidecar(_) => None,
+            Self::Ladder(manifest) => Some(&manifest.version),
+        }
+    }
+}
+
 pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
     PathBuf::from("/etc/harmonia/locks")
         .join(&profile.id)
@@ -45,6 +66,19 @@ pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {
     serde_json::from_value(raw).map_err(|e| format!("module-parse-failed {}: {e}", path.display()))
 }
 
+fn load_profile_module(module_root: &Path, module_id: &str) -> Result<LoadedModule, String> {
+    let module_dir = module_root.join(module_id);
+    let sidecar_path = module_dir.join("sidecar.json");
+    if sidecar_path.exists() {
+        return load_module(&sidecar_path).map(LoadedModule::Sidecar);
+    }
+    let manifest_path = module_dir.join("manifest.json");
+    if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
+        return load_ladder_manifest(&manifest_path).map(LoadedModule::Ladder);
+    }
+    load_module(&sidecar_path).map(LoadedModule::Sidecar)
+}
+
 pub(crate) fn profile_module_failure_is_terminal(module_id: &str) -> bool {
     module_id == "harmonia-runtime"
 }
@@ -84,8 +118,7 @@ pub(crate) fn run_profile_engine(
     }
 
     for module_id in &profile.modules {
-        let module_path = module_root.join(module_id).join("sidecar.json");
-        let module = match load_module(&module_path) {
+        let module = match load_profile_module(module_root, module_id) {
             Ok(m) => m,
             Err(err) => {
                 ok = false;
@@ -104,6 +137,7 @@ pub(crate) fn run_profile_engine(
                         operation_count: 0,
                         first_missing_signal: &format!("module-missing-{module_id}"),
                         receipt_dir,
+                        module_version: None,
                     },
                 )?;
                 if profile_module_failure_is_terminal(module_id) {
@@ -114,8 +148,19 @@ pub(crate) fn run_profile_engine(
             }
         };
         module_count += 1;
-        event(&mut events, "module-start", true, &module.id)?;
-        let execution = match execute_profile_module(&module, receipt_dir, apply, &harmonia_root) {
+        event(&mut events, "module-start", true, module.id())?;
+        let execution_result = match &module {
+            LoadedModule::Sidecar(sidecar) => {
+                execute_profile_module(sidecar, module_root, receipt_dir, apply, &harmonia_root)
+            }
+            LoadedModule::Ladder(manifest) => {
+                validate_ladder(manifest)
+                    .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
+                let module_dir = receipt_dir.join("modules").join(&manifest.id);
+                execute_ladder_manifest(manifest, &module_dir, apply)
+            }
+        };
+        let execution = match execution_result {
             Ok(execution) => execution,
             Err(err) => {
                 ok = false;
@@ -128,16 +173,17 @@ pub(crate) fn run_profile_engine(
                     profile,
                     ProfileLedgerEntry {
                         run_id: &run_id,
-                        module_id: &module.id,
+                        module_id: module.id(),
                         ok: false,
                         changed: false,
                         operation_count: 0,
                         first_missing_signal: &err,
                         receipt_dir,
+                        module_version: module.version(),
                     },
                 )?;
-                if profile_module_failure_is_terminal(&module.id) {
-                    event(&mut events, "module-terminal-stop", false, &module.id)?;
+                if profile_module_failure_is_terminal(module.id()) {
+                    event(&mut events, "module-terminal-stop", false, module.id())?;
                     break;
                 }
                 continue;
@@ -162,22 +208,23 @@ pub(crate) fn run_profile_engine(
             profile,
             ProfileLedgerEntry {
                 run_id: &run_id,
-                module_id: &module.id,
+                module_id: module.id(),
                 ok: execution.ok,
                 changed: execution.changed,
                 operation_count: execution.operation_count,
                 first_missing_signal: module_signal,
                 receipt_dir,
+                module_version: module.version(),
             },
         )?;
         event(
             &mut events,
             "module-complete",
             execution.ok,
-            &format!("{} operations={}", module.id, execution.operation_count),
+            &format!("{} operations={}", module.id(), execution.operation_count),
         )?;
-        if !execution.ok && profile_module_failure_is_terminal(&module.id) {
-            event(&mut events, "module-terminal-stop", false, &module.id)?;
+        if !execution.ok && profile_module_failure_is_terminal(module.id()) {
+            event(&mut events, "module-terminal-stop", false, module.id())?;
             break;
         }
     }

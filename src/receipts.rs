@@ -51,6 +51,7 @@ pub(crate) struct ProfileLedgerEntry<'a> {
     pub operation_count: usize,
     pub first_missing_signal: &'a str,
     pub receipt_dir: &'a Path,
+    pub module_version: Option<&'a str>,
 }
 
 pub(crate) fn append_profile_ledger_entry(
@@ -89,6 +90,7 @@ pub(crate) fn append_profile_ledger_entry(
             "operation_count": entry.operation_count,
             "first_missing_signal": entry.first_missing_signal,
             "receipt_dir": entry.receipt_dir,
+            "module_version": entry.module_version,
         })
     )
     .map_err(|e| e.to_string())
