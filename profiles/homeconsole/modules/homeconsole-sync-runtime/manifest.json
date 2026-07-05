@@ -1,0 +1,34 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "homeconsole-sync-runtime",
+  "version": "3.6.0",
+  "description": "HomeConsole sync ladder: source sync then repository installer command.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "homeconsole-sync-source-repository",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "repo": "git@git.home.arpa:HOMESERVERSLTD/homeconsole-sync.git",
+        "path": "/opt/homeconsole-sync/source",
+        "branch": "main",
+        "remote": "origin"
+      }
+    },
+    {
+      "step_id": "homeconsole-sync-install",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/opt/homeconsole-sync/source/cli.py",
+        "args": [
+          "install",
+          "--apply"
+        ],
+        "cwd": "/opt/homeconsole-sync/source",
+        "timeout_secs": 900
+      }
+    }
+  ]
+}

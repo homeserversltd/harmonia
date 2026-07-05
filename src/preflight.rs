@@ -1,4 +1,3 @@
-use crate::module_dispatch::{reject_executable_sidecar, require_path, ModuleExecution};
 use crate::*;
 use serde_json::json;
 use std::env;
@@ -8,16 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
-pub(crate) const ID: &str = "harmonia-runtime";
+pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
-
-pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
-    reject_executable_sidecar(module)?;
-    require_path(module, &module.repo, "repo")?;
-    require_path(module, &module.source_dir, "source_dir")?;
-    require_path(module, &module.install_bin, "install_bin")?;
-    Ok(())
-}
 
 pub(crate) fn install_bin_fingerprint(path: &Path) -> Option<(u64, u64)> {
     let meta = fs::metadata(path).ok()?;
@@ -43,92 +34,74 @@ pub(crate) fn should_self_update_reexec(
     apply && install_ok && !self_update_reexec_guard_active() && after.is_some() && before != after
 }
 
-pub(crate) fn reexec_installed_harmonia(
-    install_bin: &Path,
-    receipt_dir: &Path,
-) -> Result<(), String> {
-    write_json(
-        &receipt_dir.join("harmonia-self-update-reexec.json"),
-        &json!({
-            "schema": "harmonia.runtime.self_update_reexec.v1",
-            "ok": true,
-            "install_bin": install_bin,
-            "reason": "installed harmonia binary changed; re-exec same argv so downstream profile modules run on the fresh process",
-        }),
-    )?;
-    let mut cmd = Command::new(install_bin);
-    cmd.args(env::args().skip(1));
-    cmd.env(SELF_UPDATE_REEXEC_ENV, "1");
-    let err = cmd.exec();
-    Err(format!("harmonia-self-update-reexec-failed: {err}"))
-}
-
-pub(crate) fn execute(
-    module: &ModuleManifest,
+pub(crate) fn run_engine_preflight(
+    module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<ModuleExecution, String> {
-    validate(module)?;
-    let repo = require_path(module, &module.repo, "repo")?.to_string();
-    let source_dir = PathBuf::from(require_path(module, &module.source_dir, "source_dir")?);
-    let install_bin = PathBuf::from(require_path(module, &module.install_bin, "install_bin")?);
+    let sidecar = module_root.join("harmonia-runtime/sidecar.json");
+    if !sidecar.exists() {
+        return Ok(ModuleExecution {
+            ok: true,
+            changed: false,
+            operation_count: 0,
+            first_missing_signal: None,
+        });
+    }
+    let module = load_module(&sidecar)?;
+    reject_executable_sidecar(&module)?;
+    let preflight_dir = receipt_dir.join("engine-preflight");
+    fs::create_dir_all(&preflight_dir).map_err(|e| e.to_string())?;
+    let repo = require_path(&module, &module.repo, "repo")?.to_string();
+    let source_dir = PathBuf::from(require_path(&module, &module.source_dir, "source_dir")?);
+    let install_bin = PathBuf::from(require_path(&module, &module.install_bin, "install_bin")?);
     let branch = module.branch.as_deref().unwrap_or("main");
     let install_profile = module.install_profile.as_deref().unwrap_or("homeconsole");
-    let installed_profile_path = format!("/etc/harmonia/profiles/{install_profile}/index.json");
     let install_before = install_bin_fingerprint(&install_bin);
-
     let bootstrap = if module.packages.is_empty() {
         OperationOutcome {
             ok: true,
             changed: false,
             skipped: true,
-            message: "harmonia runtime bootstrap package set empty".to_string(),
+            message: "harmonia runtime bootstrap package set empty".into(),
             command: None,
         }
     } else {
         package_tool(
-            receipt_dir,
+            &preflight_dir,
             "harmonia-runtime-bootstrap-packages",
             "install",
             &module.packages,
             apply,
         )?
     };
-
-    write_json(
-        &receipt_dir.join("harmonia-binary-explain.json"),
-        &json!({
-            "schema": "harmonia.runtime.explain_receipt.v1",
-            "ok": true,
-            "name": "harmonia",
-            "version": env!("CARGO_PKG_VERSION"),
-            "covenant": "Rust update manager and appliance-profile execution engine",
-            "shell": "bootstrap-only",
-            "python_helper_lane": false,
-            "install_bin": install_bin,
-            "source_dir": source_dir,
-            "repo": repo,
-            "branch": branch,
-            "install_profile": install_profile,
-            "bootstrap_packages": module.packages,
-        }),
-    )?;
     let explain = OperationOutcome {
         ok: true,
         changed: false,
         skipped: false,
-        message: "harmonia runtime explained by current Rust process".to_string(),
+        message: "engine pre-flight explains current Rust process".into(),
         command: None,
     };
-
+    write_json(
+        &preflight_dir.join("harmonia-engine-preflight-explain.json"),
+        &json!({
+            "schema": PREFLIGHT_SCHEMA,
+            "ok": true,
+            "stage": "engine-preflight",
+            "version": env!("CARGO_PKG_VERSION"),
+            "repo": repo,
+            "branch": branch,
+            "source_dir": source_dir,
+            "install_bin": install_bin,
+            "install_profile": install_profile,
+            "reexec_guard_active": self_update_reexec_guard_active(),
+        }),
+    )?;
     let git_request = tools::git_artifact::Request::new(
         Some(repo),
         source_dir.clone(),
         branch.to_string(),
-        module
-            .remote
-            .clone()
-            .unwrap_or_else(|| "origin".to_string()),
+        module.remote.clone().unwrap_or_else(|| "origin".into()),
     );
     let git_outcome = if apply && bootstrap.ok {
         tools::git_artifact::apply(&git_request)
@@ -136,13 +109,12 @@ pub(crate) fn execute(
         tools::git_artifact::Outcome {
             ok: false,
             changed: false,
-            message: "harmonia source repository skipped because bootstrap packages failed"
-                .to_string(),
+            message: "harmonia source repository skipped because bootstrap packages failed".into(),
             command: tools::git_artifact::CommandReceipt {
                 ok: false,
                 code: -1,
                 stdout: String::new(),
-                stderr: "skipped because harmonia runtime bootstrap packages failed".to_string(),
+                stderr: "skipped because harmonia runtime bootstrap packages failed".into(),
             },
         }
     } else {
@@ -154,19 +126,19 @@ pub(crate) fn execute(
         stdout: git_outcome.command.stdout.clone(),
         stderr: git_outcome.command.stderr.clone(),
     };
-    write_command_receipt(receipt_dir, "harmonia-source-repository", &git_cmd)?;
+    write_command_receipt(&preflight_dir, "harmonia-source-repository", &git_cmd)?;
     let repo_outcome = OperationOutcome {
         ok: git_outcome.ok,
         changed: git_outcome.changed,
         skipped: false,
         message: if git_outcome.ok {
-            "harmonia source repository possessed".to_string()
+            "harmonia source repository possessed"
         } else {
-            "harmonia source repository failed".to_string()
-        },
+            "harmonia source repository failed"
+        }
+        .into(),
         command: Some(git_cmd),
     };
-
     let install = if apply && git_outcome.ok {
         command_capture_with_cwd(
             "/usr/bin/python3",
@@ -192,81 +164,81 @@ pub(crate) fn execute(
             ok: false,
             code: -1,
             stdout: String::new(),
-            stderr: "skipped because source repository possession failed".to_string(),
+            stderr: "skipped because source repository possession failed".into(),
         }
     };
-    write_command_receipt(receipt_dir, "harmonia-installer", &install)?;
+    write_command_receipt(&preflight_dir, "harmonia-installer", &install)?;
     let install_after = install_bin_fingerprint(&install_bin);
     let install_changed =
         should_self_update_reexec(apply, install.ok, install_before, install_after);
-    let install_outcome = OperationOutcome {
-        ok: install.ok,
-        changed: install_changed,
-        skipped: !apply,
-        message: if install.ok {
-            "harmonia binary/profile/module install path converged".to_string()
-        } else {
-            "harmonia installer failed".to_string()
-        },
-        command: Some(install.clone()),
-    };
-
     write_json(
-        &receipt_dir.join("harmonia-profile-inspect.json"),
+        &preflight_dir.join("run.json"),
         &json!({
-            "schema": "harmonia.runtime.profile_inspect_receipt.v1",
-            "ok": git_outcome.ok && install.ok,
-            "profile_path": installed_profile_path,
-            "profile_id": install_profile,
-            "source_dir": source_dir,
-            "install_bin": install_bin,
+            "schema": PREFLIGHT_SCHEMA,
+            "ok": bootstrap.ok && git_outcome.ok && install.ok,
+            "apply": apply,
+            "changed": install_changed || git_outcome.changed,
+            "reexec_once_guard_preserved": true,
+            "reexec_planned": install_changed,
+            "first_missing_signal": if bootstrap.ok && git_outcome.ok && install.ok { "none" } else if !bootstrap.ok { "harmonia-runtime-bootstrap-packages-failed" } else if !git_outcome.ok { "harmonia-source-repository-failed" } else { "harmonia-installer-failed" },
         }),
     )?;
-
     let mut execution = ModuleExecution::from_operations(
         vec![
             ("harmonia-binary-explain", explain),
             ("harmonia-runtime-bootstrap-packages", bootstrap),
             ("harmonia-source-repository", repo_outcome),
-            ("harmonia-installer", install_outcome),
+            (
+                "harmonia-installer",
+                OperationOutcome {
+                    ok: install.ok,
+                    changed: install_changed,
+                    skipped: !apply,
+                    message: if install.ok {
+                        "harmonia binary/profile/module install path converged"
+                    } else {
+                        "harmonia installer failed"
+                    }
+                    .into(),
+                    command: Some(install),
+                },
+            ),
         ],
-        &module.id,
+        "engine-preflight",
     );
-    if !execution.ok {
-        execution.first_missing_signal = Some(if execution.first_missing_signal.is_some() {
-            execution.first_missing_signal.clone().unwrap()
-        } else if !git_outcome.ok {
-            "harmonia-source-repository-failed".to_string()
-        } else {
-            "harmonia-installer-failed".to_string()
-        });
-        return Ok(execution);
+    if !execution.ok && execution.first_missing_signal.is_none() {
+        execution.first_missing_signal = Some("harmonia-engine-preflight-failed".into());
     }
-
-    if install_changed {
-        reexec_installed_harmonia(&install_bin, receipt_dir)?;
+    if execution.ok && install_changed {
+        write_json(
+            &preflight_dir.join("harmonia-self-update-reexec.json"),
+            &json!({"schema":"harmonia.runtime.self_update_reexec.v1","ok":true,"install_bin":install_bin,"reason":"engine pre-flight installed a changed harmonia binary; re-exec same argv before module convergence"}),
+        )?;
+        let mut cmd = Command::new(&install_bin);
+        cmd.args(env::args().skip(1));
+        cmd.env(SELF_UPDATE_REEXEC_ENV, "1");
+        let err = cmd.exec();
+        return Err(format!("harmonia-self-update-reexec-failed: {err}"));
     }
-
     Ok(execution)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn self_update_reexec_requires_binary_fingerprint_change() {
         assert!(!should_self_update_reexec(
             true,
             true,
             Some((100, 1)),
-            Some((100, 1)),
+            Some((100, 1))
         ));
         assert!(should_self_update_reexec(
             true,
             true,
             Some((100, 1)),
-            Some((200, 2)),
+            Some((200, 2))
         ));
         assert!(!should_self_update_reexec(
             false,
@@ -274,11 +246,9 @@ mod tests {
             Some((1, 1)),
             Some((2, 2))
         ));
-        assert!(!should_self_update_reexec(
-            true,
-            false,
-            Some((1, 1)),
-            Some((2, 2))
-        ));
+    }
+    #[test]
+    fn preflight_schema_names_engine_plane() {
+        assert_eq!(PREFLIGHT_SCHEMA, "harmonia.engine.preflight.v1");
     }
 }

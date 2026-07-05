@@ -105,6 +105,7 @@ impl ToolArgKind {
     }
 }
 
+pub mod artifact_lock;
 pub mod command;
 pub mod files;
 pub mod git_artifact;
@@ -115,6 +116,7 @@ pub(crate) mod service_runtime;
 pub mod systemd;
 
 pub const TOOLBELT: &[ToolContract] = &[
+    artifact_lock::CONTRACT,
     command::CONTRACT,
     files::CONTRACT,
     git_artifact::CONTRACT,
@@ -212,6 +214,7 @@ mod tests {
     fn registered_tool_names_have_real_behavioral_entry_points() {
         let root = repo_root();
         let expected = BTreeSet::from([
+            "artifact-lock",
             "command",
             "files",
             "git-artifact",

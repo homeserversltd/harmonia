@@ -1,0 +1,51 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "keyman-runtime",
+  "version": "3.6.0",
+  "description": "HomeConsole Keyman source/runtime ladder: source sync, redacted installer command, and local store carry.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "keyman-source-repository",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "repo": "git@git.home.arpa:HOMESERVERSLTD/keyman.git",
+        "path": "/opt/keyman/source",
+        "branch": "main",
+        "remote": "origin"
+      }
+    },
+    {
+      "step_id": "keyman-source-store",
+      "tool": "files",
+      "permutation": "directory-sync",
+      "args": {
+        "source_root": "/opt/keyman/source",
+        "target_root": "/opt/keyman/source",
+        "allow_same_root": true,
+        "receipt_name": "keyman-source-store"
+      }
+    },
+    {
+      "step_id": "keyman-runtime-install",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/local/bin/harmonia",
+        "args": [
+          "homeconsole-keyman-update",
+          "/etc/harmonia/profiles/homeconsole/index.json",
+          "--source",
+          "/opt/keyman/source",
+          "--store-dir",
+          "/opt/keyman/source",
+          "--apply",
+          "--receipt-dir",
+          "/var/lib/harmonia/receipts/keyman-latest"
+        ],
+        "timeout_secs": 900
+      }
+    }
+  ]
+}

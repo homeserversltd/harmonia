@@ -97,16 +97,7 @@ pub(crate) fn export_deployable_config(
             .join(&profile.id)
             .join("modules")
             .join(module);
-        if sidecar.exists() {
-            load_module(&sidecar)?;
-            export_one(
-                &sidecar,
-                &module_output_dir.join("sidecar.json"),
-                "module-sidecar",
-                mode,
-                &mut artifacts,
-            )?;
-        } else if manifest.exists() && is_ladder_manifest(&manifest) {
+        if manifest.exists() && is_ladder_manifest(&manifest) {
             let ladder = load_ladder_manifest(&manifest)?;
             export_one(
                 &manifest,
@@ -124,6 +115,15 @@ pub(crate) fn export_deployable_config(
                     &mut artifacts,
                 )?;
             }
+        } else if sidecar.exists() {
+            load_module(&sidecar)?;
+            export_one(
+                &sidecar,
+                &module_output_dir.join("sidecar.json"),
+                "module-sidecar",
+                mode,
+                &mut artifacts,
+            )?;
         } else {
             return Err(format!(
                 "deployable-config-module-manifest-missing {}",

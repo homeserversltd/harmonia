@@ -29,6 +29,18 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("summary_receipt", ToolArgKind::Json),
         ],
     ),
+    ToolPermutation::new(
+        "directory-sync",
+        "verify or copy a source directory tree into a target directory",
+        &[
+            ToolArg::required("source_root", ToolArgKind::String),
+            ToolArg::required("target_root", ToolArgKind::String),
+            ToolArg::optional("files", ToolArgKind::StringArray),
+            ToolArg::optional("backup_existing", ToolArgKind::Bool),
+            ToolArg::optional("receipt_name", ToolArgKind::String),
+            ToolArg::optional("allow_same_root", ToolArgKind::Bool),
+        ],
+    ),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
