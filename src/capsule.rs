@@ -1,4 +1,9 @@
-use crate::{is_ladder_manifest, load_ladder_manifest, load_profile, VERSION};
+use crate::{
+    diff_subscription_modules, is_ladder_manifest, load_ladder_manifest, load_profile,
+    preserve_existing_lane_or_default, run_id_from_stamp, subscription_path,
+    update_subscription_record, SubscriptionModuleStatus, SubscriptionModuleUpdate,
+    SubscriptionUpdate, VERSION,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -83,6 +88,9 @@ struct CapsuleInstallReceipt {
     changes: Vec<InstallChange>,
     prunes: Vec<InstallChange>,
     untouched_modules: Vec<String>,
+    subscription_path: String,
+    subscription_modules: Vec<SubscriptionModuleStatus>,
+    subscription_updated: bool,
     first_missing_signal: String,
 }
 
@@ -317,6 +325,20 @@ pub(crate) fn capsule_install(
         Err(err) => return Err(err),
     };
     let manifest = load_capsule_manifest(capsule_dir)?;
+    let run_id = run_id_from_stamp();
+    let subscription_path = subscription_path();
+    let subscription_modules: Vec<SubscriptionModuleUpdate> = manifest
+        .modules
+        .iter()
+        .map(|module| SubscriptionModuleUpdate {
+            id: module.id.clone(),
+            version: module.version.clone(),
+            tree_sha256: module.tree_sha256.clone(),
+            received_at_run_id: run_id.clone(),
+        })
+        .collect();
+    let subscription_statuses =
+        diff_subscription_modules(&subscription_path, &subscription_modules)?;
     let target_profiles = config_dir.join("profiles");
     let target_profile_dir = target_profiles.join(&manifest.profile_id);
     let source_profile_dir = capsule_dir.join("profiles").join(&manifest.profile_id);
@@ -393,6 +415,20 @@ pub(crate) fn capsule_install(
         }
         prune_empty_dirs(&locks_dst, apply, &mut prunes, None)?;
     }
+    if apply {
+        let lane = preserve_existing_lane_or_default(&subscription_path);
+        update_subscription_record(
+            &subscription_path,
+            SubscriptionUpdate {
+                lane,
+                source: format!("capsule:{}", capsule_dir.display()),
+                ref_name: manifest.created_from.clone(),
+                selected_profile: manifest.profile_id.clone(),
+                engine_version_received: manifest.engine_version.clone(),
+                modules: subscription_modules,
+            },
+        )?;
+    }
     let receipt = CapsuleInstallReceipt {
         schema: "harmonia.capsule.install.v1",
         ok: true,
@@ -405,6 +441,9 @@ pub(crate) fn capsule_install(
         changes,
         prunes,
         untouched_modules,
+        subscription_path: subscription_path.display().to_string(),
+        subscription_modules: subscription_statuses,
+        subscription_updated: apply,
         first_missing_signal: "none".into(),
     };
     let receipt_dir = config_dir.join("receipts").join("capsule-install-latest");
@@ -425,6 +464,17 @@ pub(crate) fn capsule_install(
     println!("change_count={}", receipt.changes.len());
     println!("prune_count={}", receipt.prunes.len());
     println!("untouched_modules={}", receipt.untouched_modules.join(","));
+    for status in &receipt.subscription_modules {
+        println!(
+            "subscription_module={} status={} record_version={} capsule_version={}",
+            status.id,
+            status.status,
+            status.record_version.as_deref().unwrap_or("absent"),
+            status.capsule_version
+        );
+    }
+    println!("subscription_path={}", receipt.subscription_path);
+    println!("subscription_updated={}", receipt.subscription_updated);
     println!("receipt={}", receipt_path.display());
     println!("first_missing_signal=none");
     Ok(())
@@ -668,7 +718,28 @@ fn rel_slash(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::write_json_value_atomic;
+    use serde_json::json;
     use std::process;
+    use std::sync::{Mutex, OnceLock};
+
+    static SUBSCRIPTION_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn with_subscription_path<T>(path: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = SUBSCRIPTION_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("subscription env lock");
+        let previous = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
+        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", path);
+        let result = f();
+        if let Some(value) = previous {
+            std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", value);
+        } else {
+            std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
+        }
+        result
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("harmonia-capsule-{name}-{}", process::id()));
@@ -750,9 +821,12 @@ mod tests {
         let root = scratch("bump-src");
         let capsule = scratch("bump-capsule");
         let config = scratch("bump-config");
+        let subscription = scratch("bump-subscription").join("subscription.json");
         write_fixture(&root, "1.0.0");
         capsule_pack("demo", &capsule, &root).unwrap();
-        capsule_install(&capsule, &config, true).unwrap();
+        with_subscription_path(&subscription, || {
+            capsule_install(&capsule, &config, true).unwrap();
+        });
         fs::write(root.join("profiles/demo/modules/alpha/manifest.json"), r#"{"schema":"harmonia.module.ladder.v1","id":"alpha","version":"1.0.1","description":"alpha","files_root":"files_root","ladder":[]}"#).unwrap();
         fs::write(
             root.join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt"),
@@ -761,15 +835,74 @@ mod tests {
         .unwrap();
         let capsule2 = scratch("bump-capsule2");
         capsule_pack("demo", &capsule2, &root).unwrap();
-        capsule_install(&capsule2, &config, true).unwrap();
+        with_subscription_path(&subscription, || {
+            capsule_install(&capsule2, &config, false).unwrap();
+            let plan = fs::read_to_string(capsule2.join("install-plan-receipt.json")).unwrap();
+            assert!(plan.contains("\"status\": \"stale\""));
+            assert!(plan.contains("\"record_version\": \"1.0.0\""));
+            assert!(plan.contains("\"capsule_version\": \"1.0.1\""));
+            let before = fs::read_to_string(&subscription).unwrap();
+            capsule_install(&capsule2, &config, true).unwrap();
+            let after = fs::read_to_string(&subscription).unwrap();
+            assert!(after.contains("\"alpha\""));
+            assert!(after.contains("\"version\": \"1.0.1\""));
+            assert_ne!(before, after);
+        });
         let receipt =
             fs::read_to_string(config.join("receipts/capsule-install-latest/install-receipt.json"))
                 .unwrap();
         assert!(receipt.contains("alpha"));
         assert!(receipt.contains("write-file"));
+        assert!(receipt.contains("harmonia.subscription.v1") || subscription.exists());
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(capsule);
         let _ = fs::remove_dir_all(capsule2);
         let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn capsule_plan_and_apply_preserve_unowned_subscription_fields() {
+        let root = scratch("subscription-src");
+        let capsule = scratch("subscription-capsule");
+        let config = scratch("subscription-config");
+        let state = scratch("subscription-state");
+        let subscription = state.join("subscription.json");
+        write_fixture(&root, "1.0.0");
+        update_subscription_record(
+            &subscription,
+            SubscriptionUpdate {
+                lane: "owner".into(),
+                source: "fixture://previous".into(),
+                ref_name: "previous-ref".into(),
+                selected_profile: "demo".into(),
+                engine_version_received: "0.0.1".into(),
+                modules: vec![],
+            },
+        )
+        .unwrap();
+        let mut value: Value =
+            serde_json::from_str(&fs::read_to_string(&subscription).unwrap()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("machine_local_divergence".into(), json!("lawful"));
+        write_json_value_atomic(&subscription, &value).unwrap();
+        capsule_pack("demo", &capsule, &root).unwrap();
+        with_subscription_path(&subscription, || {
+            capsule_install(&capsule, &config, false).unwrap();
+            let planned = fs::read_to_string(&subscription).unwrap();
+            assert!(planned.contains("machine_local_divergence"));
+            assert!(!planned.contains("alpha"));
+            capsule_install(&capsule, &config, true).unwrap();
+        });
+        let applied = fs::read_to_string(&subscription).unwrap();
+        assert!(applied.contains("machine_local_divergence"));
+        assert!(applied.contains("\"lane\": \"owner\""));
+        assert!(applied.contains("\"selected_profile\": \"demo\""));
+        assert!(applied.contains("\"alpha\""));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(capsule);
+        let _ = fs::remove_dir_all(config);
+        let _ = fs::remove_dir_all(state);
     }
 }

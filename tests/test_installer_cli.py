@@ -114,6 +114,7 @@ class InstallerCliTests(unittest.TestCase):
                 path.mkdir(parents=True, exist_ok=True)
             bin_path.write_text("binary")
             (state_dir / "ledger.jsonl").write_text("{}\n")
+            (state_dir / "subscription.json").write_text('{"schema":"harmonia.subscription.v1"}\n')
             result = run_cli(
                 "uninstall",
                 "--apply",
@@ -128,8 +129,50 @@ class InstallerCliTests(unittest.TestCase):
             self.assertIn("state_preserved=true", result.stdout)
             self.assertTrue(state_dir.exists())
             self.assertTrue((state_dir / "ledger.jsonl").exists())
+            self.assertTrue((state_dir / "subscription.json").exists())
             self.assertTrue(log_dir.exists())
             self.assertFalse(bin_path.exists())
+
+    def test_seed_subscription_record_preserves_machine_local_fields(self) -> None:
+        from installer.harmonia_installer import seed_subscription_record
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capsule = root / "capsule.json"
+            subscription = root / "state" / "subscription.json"
+            capsule.write_text(json.dumps({
+                "schema": "harmonia.capsule.v1",
+                "profile_id": "tv",
+                "identity": "arch-tv",
+                "engine_version": "0.1.0",
+                "created_from": "abc123",
+                "modules": [{"id": "alpha", "version": "1.0.0", "tree_sha256": "aaa"}],
+            }))
+            subscription.parent.mkdir(parents=True)
+            subscription.write_text(json.dumps({
+                "schema": "harmonia.subscription.v1",
+                "machine_local_divergence": "keep",
+                "modules": {"beta": {"version": "0.9.0", "tree_sha256": "bbb", "received_at_run_id": "old"}},
+            }))
+            seed_subscription_record(
+                subscription,
+                capsule,
+                lane="owner",
+                source="fixture://capsule",
+                ref="ref-a",
+                selected_profile="tv",
+            )
+            payload = json.loads(subscription.read_text())
+            self.assertEqual(payload["schema"], "harmonia.subscription.v1")
+            self.assertEqual(payload["lane"], "owner")
+            self.assertEqual(payload["source"], "fixture://capsule")
+            self.assertEqual(payload["ref"], "ref-a")
+            self.assertEqual(payload["selected_profile"], "tv")
+            self.assertEqual(payload["engine_version_received"], "0.1.0")
+            self.assertEqual(payload["machine_local_divergence"], "keep")
+            self.assertIn("alpha", payload["modules"])
+            self.assertIn("beta", payload["modules"])
+            self.assertFalse(subscription.with_suffix(".json.harmonia-new").exists())
 
     def test_uninstall_apply_purge_state_removes_state_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

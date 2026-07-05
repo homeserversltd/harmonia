@@ -100,6 +100,9 @@ Install contract:
     install_p.add_argument("--skip-build", action="store_true", help="Install existing target artifact without running cargo build.")
     install_p.add_argument("--debug", action="store_true", help="Use target/debug/harmonia instead of target/release/harmonia.")
     install_p.add_argument("--profile", default="homeconsole", help="Profile to install under /etc/harmonia/profiles/<profile>.")
+    install_p.add_argument("--lane", default="upstream", choices=("upstream", "owner"), help="Machine subscription lane to seed after apply.")
+    install_p.add_argument("--source", default=None, help="Machine subscription source repo URL or capsule origin. Defaults to git origin or repo path.")
+    install_p.add_argument("--ref", default=None, help="Machine subscription ref. Defaults to this repo HEAD.")
     install_p.add_argument("--cargo", default="cargo", help="Cargo executable to use.")
     install_p.add_argument("--package", default="harmonia", help="Cargo package name.")
     install_p.add_argument("--with-systemd", action="store_true", help="Install harmonia-homeconsole service/timer units.")
@@ -209,6 +212,14 @@ def install(args: argparse.Namespace) -> int:
     if install_code != 0:
         print("ok=false")
         return install_code
+    seed_subscription_record(
+        paths.state_dir / "subscription.json",
+        capsule_dir / "capsule.json",
+        lane=args.lane,
+        source=args.source or repo_source(),
+        ref=args.ref or repo_ref(),
+        selected_profile=args.profile,
+    )
     if with_systemd:
         install_systemd_units(paths, profile=args.profile)
         daemon_reload = run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
@@ -230,6 +241,7 @@ def install(args: argparse.Namespace) -> int:
     print("ok=true")
     print("profile=" + args.profile)
     print("lane=capsule")
+    print(f"subscription={paths.state_dir / 'subscription.json'}")
     print(f"binary={paths.bin_path}")
     print(f"config_dir={paths.config_dir}")
     return 0
@@ -356,6 +368,49 @@ WantedBy=timers.target
     paths.systemd_dir.mkdir(parents=True, exist_ok=True)
     (paths.systemd_dir / service_name).write_text(service)
     (paths.systemd_dir / timer_name).write_text(timer)
+
+
+def seed_subscription_record(path: Path, capsule_manifest_path: Path, *, lane: str, source: str, ref: str, selected_profile: str) -> None:
+    capsule = json.loads(capsule_manifest_path.read_text())
+    if path.exists():
+        existing: dict[str, object] = json.loads(path.read_text())
+    else:
+        existing = {}
+    raw_modules = existing.get("modules", {})
+    modules = dict(raw_modules) if isinstance(raw_modules, dict) else {}
+    run_id = f"installer-{os.getpid()}"
+    for module in capsule.get("modules", []):
+        modules[module["id"]] = {
+            "version": module["version"],
+            "tree_sha256": module["tree_sha256"],
+            "received_at_run_id": run_id,
+        }
+    existing.update(
+        {
+            "schema": "harmonia.subscription.v1",
+            "lane": lane,
+            "source": source,
+            "ref": ref,
+            "selected_profile": selected_profile,
+            "engine_version_received": capsule.get("engine_version", "unknown"),
+            "modules": modules,
+            "updated_at_unix_ms": int(__import__("time").time() * 1000),
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".harmonia-new")
+    tmp.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def repo_source() -> str:
+    completed = subprocess.run(["git", "remote", "get-url", "origin"], cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    return completed.stdout.strip() if completed.returncode == 0 and completed.stdout.strip() else str(REPO_ROOT)
+
+
+def repo_ref() -> str:
+    completed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    return completed.stdout.strip() if completed.returncode == 0 and completed.stdout.strip() else "unknown"
 
 
 def requires_root(paths: InstallPaths) -> bool:
