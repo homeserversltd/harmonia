@@ -1,0 +1,163 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "operator-rc-profile",
+  "version": "1.0.0",
+  "description": "TV operator-rc-profile module. Rust owns operator rc files, zsh login shell helpers, Oh My Posh config path, and bin helpers are maintained; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "zsh",
+      "zsh-autosuggestions",
+      "zsh-syntax-highlighting",
+      "fzf",
+      "atuin",
+      "oh-my-posh"
+    ],
+    "binaries": [
+      "oh-my-posh"
+    ],
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".zshrc",
+      ".zshrc.arch-install",
+      ".aliases",
+      ".functions",
+      "omp.json",
+      ".config/omp.json",
+      "bin/waybar-meter.sh",
+      "bin/volume.sh"
+    ],
+    "phase": 4,
+    "receipt_schema": "harmonia.tv.operator_rc_profile.v1",
+    "meaning": "operator rc files, zsh login shell helpers, Oh My Posh config path, and bin helpers are maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "binary-oh-my-posh",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v oh-my-posh >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-zshrc",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.zshrc"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-zshrc-arch-install",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.zshrc.arch-install"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-aliases",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.aliases"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-functions",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.functions"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-omp-json",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/omp.json"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-config-omp-json",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.config/omp.json"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-bin-waybar-meter-sh",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/bin/waybar-meter.sh"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-bin-volume-sh",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/bin/volume.sh"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

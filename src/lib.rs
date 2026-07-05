@@ -1010,7 +1010,7 @@ mod tests {
             !root.join("profiles/tv/config").exists(),
             "TV files belong inside profiles/tv/modules/<intent>; sibling config folders are rejected"
         );
-        let config_root = root.join("profiles/tv/modules/desktop-config-payload/files");
+        let config_root = root.join("profiles/tv/modules/desktop-config-payload/files_root");
         assert!(config_root
             .join("hyprland/.config/hypr/hyprland.conf")
             .is_file());
@@ -1028,57 +1028,15 @@ mod tests {
     }
 
     #[test]
-    fn tv_profile_runtime_modules_are_constants_only_and_registered() {
+    fn tv_profile_runtime_modules_are_ladder_manifests() {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
-        for module in &profile.modules {
-            let dir = root.join("profiles/tv/modules").join(module);
-            assert_lawful_profile_module(&dir, module);
-            let sidecar = dir.join("sidecar.json");
-            if sidecar.exists() {
-                let manifest = load_module(&sidecar).unwrap();
-                assert!(
-                    manifest.command.is_none(),
-                    "{module} sidecar must not own a command"
-                );
-                assert!(
-                    manifest.args.is_empty(),
-                    "{module} sidecar must not own args"
-                );
-                validate_registered_module(&manifest).unwrap();
-            }
-        }
-        let steam =
-            load_module(&root.join("profiles/tv/modules/steam-game-lane/sidecar.json")).unwrap();
-        assert_eq!(
-            steam.managed_files.len(),
-            3,
-            "steam_game_lane_managed_files"
-        );
-        assert!(
-            steam.optional,
-            "steam_game_lane_is_optional_customer_surface"
-        );
-        assert!(steam
-            .optional_warning
-            .as_deref()
-            .unwrap_or("")
-            .contains("customer may have uninstalled Steam"));
-
-        let caduceus =
-            load_module(&root.join("profiles/tv/modules/caduceus-public-lever/sidecar.json"))
-                .unwrap();
-        assert_eq!(caduceus.managed_files.len(), 4, "caduceus_managed_files");
-        assert!(caduceus.binaries.contains(&"caduceus".to_string()));
-        assert!(caduceus
-            .expected_files
-            .contains(&"/etc/caduceus/identity.json".to_string()));
-
-        for module in [
+        let converted = [
             "owner-profile",
             "gpu-display-stack",
             "hyprland-desktop",
             "operator-rc-profile",
+            "desktop-config-payload",
             "user-session-services",
             "sddm-autologin-hyprland",
             "steam-game-lane",
@@ -1086,106 +1044,133 @@ mod tests {
             "console-recovery",
             "caduceus-public-lever",
             "appliance-proof",
-        ] {
+        ];
+        for module in converted {
             assert!(
                 profile.modules.contains(&module.to_string()),
                 "missing {module}"
             );
+            let dir = root.join("profiles/tv/modules").join(module);
+            assert!(
+                dir.join("manifest.json").is_file(),
+                "{module} manifest missing"
+            );
+            assert!(
+                !dir.join("sidecar.json").exists(),
+                "{module} sidecar retired"
+            );
+            assert!(!dir.join("index.rs").exists(), "{module} wrapper retired");
+            let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
+            assert_eq!(manifest.id, module);
+            assert_eq!(manifest.version, "1.0.0");
+            validate_ladder(&manifest).unwrap();
+        }
+        assert!(
+            !root
+                .join("profiles/tv/modules/tv-runtime-support.rs")
+                .exists(),
+            "shared TV runtime support helper retired when last includer converted"
+        );
+    }
+
+    #[test]
+    fn tv_steam_ladder_preserves_optional_continue_semantics() {
+        let root = repo_root();
+        let steam =
+            load_ladder_manifest(&root.join("profiles/tv/modules/steam-game-lane/manifest.json"))
+                .unwrap();
+        assert!(steam.optional, "steam game lane remains optional");
+        assert!(steam
+            .optional_warning
+            .as_deref()
+            .unwrap_or("")
+            .contains("customer may have uninstalled Steam"));
+        for step in &steam.ladder {
+            assert_eq!(step.on_failure, OnFailure::ContinueOptional);
+        }
+        let steps: Vec<_> = steam
+            .ladder
+            .iter()
+            .map(|step| (step.tool.as_str(), step.permutation.as_str()))
+            .collect();
+        assert!(
+            steps.contains(&("command", "capture")),
+            "steam optional checks use command probes"
+        );
+        assert!(
+            steps.contains(&("files", "managed-files")),
+            "steam managed files moved to files_root"
+        );
+    }
+
+    #[test]
+    fn tv_ladder_managed_file_payloads_live_in_files_root() {
+        let root = repo_root();
+        for (module, required) in [
+            ("steam-game-lane", "usr/local/bin/arch-tv-steam-game-lane"),
+            ("caduceus-public-lever", "etc/caduceus/identity.json"),
+        ] {
+            let dir = root.join("profiles/tv/modules").join(module);
+            let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
+            assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
+            assert!(
+                dir.join("files_root").join(required).is_file(),
+                "{module} missing {required}"
+            );
+            assert!(manifest
+                .ladder
+                .iter()
+                .any(|step| step.tool == "files" && step.permutation == "managed-files"));
         }
     }
 
     #[test]
-    fn tv_runtime_modules_reject_unsafe_sidecar_values() {
+    fn tv_desktop_config_manifest_uses_files_root_tree() {
         let root = repo_root();
-        let mut manifest =
-            load_module(&root.join("profiles/tv/modules/steam-game-lane/sidecar.json")).unwrap();
-        manifest.binaries = vec!["steam;touch-/tmp/pwn".to_string()];
-        assert!(validate_registered_module(&manifest)
-            .unwrap_err()
-            .contains("tv-module-binary-value-rejected"));
-        manifest.binaries = vec!["steam".to_string()];
-        manifest.services = vec!["../../escape.service".to_string()];
-        assert!(validate_registered_module(&manifest)
-            .unwrap_err()
-            .contains("tv-module-service-value-rejected"));
-        manifest.services = vec!["power-profiles-daemon.service".to_string()];
-        manifest.expected_files = vec!["../escape".to_string()];
-        assert!(validate_registered_module(&manifest)
-            .unwrap_err()
-            .contains("tv-module-expected-path-rejected"));
-        manifest.expected_files = vec![];
-        manifest.managed_files = vec![ManagedFileManifest {
-            path: "../escape".to_string(),
-            content: "bad".to_string(),
-            mode: Some(0o644),
-        }];
-        assert!(validate_registered_module(&manifest)
-            .unwrap_err()
-            .contains("tv-module-managed-file-path-rejected"));
-    }
-
-    #[test]
-    fn tv_optional_steam_lane_warns_without_blocking_profile() {
-        let root = repo_root();
-        let receipts =
-            std::env::temp_dir().join(format!("harmonia-tv-optional-steam-{}", process::id()));
-        let mut manifest =
-            load_module(&root.join("profiles/tv/modules/steam-game-lane/sidecar.json")).unwrap();
-        manifest.packages = vec!["definitely-missing-customer-steam-package".to_string()];
-        manifest.binaries = vec!["definitely-missing-customer-steam-binary".to_string()];
-        manifest.services = vec![];
-        manifest.expected_files =
-            vec!["/definitely/missing/customer/optional/steam-lane".to_string()];
-        manifest.managed_files = vec![];
-        let execution = tv_steam_game_lane_execute_for_test(&manifest, &receipts, true).unwrap();
-        assert!(execution.ok);
-        assert_eq!(execution.first_missing_signal, None);
-        let module_receipt = fs::read_to_string(receipts.join("steam-game-lane.json")).unwrap();
-        assert!(module_receipt.contains("optional_missing_warning"));
-        assert!(module_receipt.contains("customer may have uninstalled Steam"));
-        let binary_receipt = fs::read_to_string(receipts.join("tv-binaries.json")).unwrap();
-        assert!(binary_receipt.contains("definitely-missing-customer-steam-binary"));
-        assert!(binary_receipt.contains("customer may have uninstalled Steam"));
-        let package_receipt = fs::read_to_string(receipts.join("tv-packages.json")).unwrap();
-        assert!(package_receipt.contains("optional"));
-        assert!(!package_receipt.contains("--needed"));
-        let _ = fs::remove_dir_all(receipts);
-    }
-
-    #[test]
-    fn tv_desktop_config_sidecar_is_constants_only_manifest() {
-        let root = repo_root();
-        let manifest =
-            load_module(&root.join("profiles/tv/modules/desktop-config-payload/sidecar.json"))
-                .unwrap();
+        let manifest = load_ladder_manifest(
+            &root.join("profiles/tv/modules/desktop-config-payload/manifest.json"),
+        )
+        .unwrap();
         assert_eq!(manifest.id, "desktop-config-payload");
-        assert_eq!(
-            manifest.source_dir.as_deref(),
-            Some("profiles/tv/modules/desktop-config-payload/files")
+        assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
+        assert!(
+            manifest
+                .constants
+                .get("target_dir")
+                .and_then(serde_json::Value::as_str)
+                == Some("/home/owner")
         );
-        assert_eq!(manifest.target_dir.as_deref(), Some("/home/owner"));
+        assert!(root
+            .join("profiles/tv/modules/desktop-config-payload/files_root/hyprland/.config/hypr/monitors.conf")
+            .is_file());
+        assert!(root
+            .join("profiles/tv/modules/desktop-config-payload/files_root/waybar/.config/waybar/waybar.conf")
+            .is_file());
+        assert!(root
+            .join("profiles/tv/modules/desktop-config-payload/files_root/launcher-bin/bin/tv-launcher.sh")
+            .is_file());
         assert!(manifest
-            .expected_files
-            .contains(&".config/hypr/monitors.conf".to_string()));
-        assert!(manifest
-            .expected_files
-            .contains(&"firefox/distribution/policies.json".to_string()));
-        assert!(manifest.command.is_none());
-        assert!(manifest.args.is_empty());
-        validate_registered_module(&manifest).unwrap();
+            .ladder
+            .iter()
+            .any(|step| step.tool == "files" && step.permutation == "converge"));
+        validate_ladder(&manifest).unwrap();
     }
 
     #[test]
     fn tv_hyprland_desktop_includes_kcalc_and_launcher_refresh_surface() {
         let root = repo_root();
         let hyprland =
-            load_module(&root.join("profiles/tv/modules/hyprland-desktop/sidecar.json")).unwrap();
+            load_ladder_manifest(&root.join("profiles/tv/modules/hyprland-desktop/manifest.json"))
+                .unwrap();
+        let packages = hyprland.constants["packages"].as_array().unwrap();
         assert!(
-            hyprland.packages.contains(&"kcalc".to_string()),
+            packages
+                .iter()
+                .any(|package| package.as_str() == Some("kcalc")),
             "TV hyprland-desktop must install kcalc"
         );
 
-        let config_root = root.join("profiles/tv/modules/desktop-config-payload/files");
+        let config_root = root.join("profiles/tv/modules/desktop-config-payload/files_root");
         let windows =
             fs::read_to_string(config_root.join("hyprland/.config/hypr/windows.conf")).unwrap();
         assert!(windows.contains("org\\.kde\\.kcalc"));
@@ -1202,12 +1187,14 @@ mod tests {
         assert!(refresh.contains("kbuildsycoca6"));
         assert!(refresh.contains("wofi-drun-cache"));
 
-        let desktop =
-            load_module(&root.join("profiles/tv/modules/desktop-config-payload/sidecar.json"))
-                .unwrap();
-        assert!(desktop
-            .expected_files
-            .contains(&"bin/refresh-launcher-cache.sh".to_string()));
+        let desktop = load_ladder_manifest(
+            &root.join("profiles/tv/modules/desktop-config-payload/manifest.json"),
+        )
+        .unwrap();
+        let expected = desktop.constants["expected_files"].as_array().unwrap();
+        assert!(expected
+            .iter()
+            .any(|value| value.as_str() == Some("bin/refresh-launcher-cache.sh")));
     }
 
     #[test]
@@ -1370,13 +1357,16 @@ mod tests {
             "absolute profile run should not depend on cwd: {result:?}"
         );
         let manifest = fs::read_to_string(
-            receipt_dir.join("modules/desktop-config-payload/tv-desktop-config-manifest.json"),
+            receipt_dir
+                .join("modules/desktop-config-payload/tv-desktop-config-hyprland-summary.json"),
         )
         .unwrap();
         assert!(
-            manifest.contains("/etc/harmonia/profiles/tv/modules/desktop-config-payload/files")
-                || manifest
-                    .contains("etc/harmonia/profiles/tv/modules/desktop-config-payload/files")
+            manifest.contains(
+                "/etc/harmonia/profiles/tv/modules/desktop-config-payload/files_root/hyprland"
+            ) || manifest.contains(
+                "etc/harmonia/profiles/tv/modules/desktop-config-payload/files_root/hyprland"
+            )
         );
         let _ = fs::remove_dir_all(scratch);
     }
@@ -1411,15 +1401,15 @@ mod tests {
             )
             .unwrap();
         });
-        let wrapper =
-            receipts.join("modules/desktop-config-payload/tv-desktop-config-install.json");
-        assert!(wrapper.exists());
-        let wrapper_text = fs::read_to_string(wrapper).unwrap();
-        assert!(wrapper_text.contains("harmonia.tv.desktop_config_install.v1"));
-        assert!(wrapper_text.contains("profiles/tv/modules/desktop-config-payload/files/<intent>"));
-        assert!(wrapper_text.contains("hyprland/.config/hypr/windows.conf"));
-        assert!(!wrapper_text.contains("sha256"));
-        assert!(!wrapper_text.contains("digest"));
+        let summary =
+            receipts.join("modules/desktop-config-payload/tv-desktop-config-hyprland-summary.json");
+        assert!(summary.exists());
+        let summary_text = fs::read_to_string(summary).unwrap();
+        assert!(summary_text.contains("harmonia.tv.desktop_config_install.v1"));
+        assert!(summary_text.contains("harmonia-profile-module-owned-files"));
+        assert!(summary_text.contains("files_root/hyprland"));
+        assert!(!summary_text.contains("sha256"));
+        assert!(!summary_text.contains("digest"));
         let _ = fs::remove_dir_all(receipts);
     }
 

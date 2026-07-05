@@ -1,0 +1,3 @@
+#!/bin/sh
+export MANGOHUD=1
+exec gamescope -e -W 1920 -H 1080 -w 1920 -h 1080 -r 60 -- steam -gamepadui

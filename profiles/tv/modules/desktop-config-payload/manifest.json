@@ -1,0 +1,485 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "desktop-config-payload",
+  "version": "1.0.0",
+  "description": "TV desktop configuration payload module. Files live inside this module under files/<intent>/...; Rust verifies and installs Harmonia-owned TV config files; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "source_dir": "files_root",
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".aliases",
+      ".config/chromium-flags.conf",
+      ".config/dunst/dunstrc",
+      ".config/gtk-3.0/settings.ini",
+      ".config/gtk-4.0/settings.ini",
+      ".config/hypr/autostart.conf",
+      ".config/hypr/bindings.conf",
+      ".config/hypr/envs.conf",
+      ".config/hypr/hyprland.conf",
+      ".config/hypr/input.conf",
+      ".config/hypr/looknfeel.conf",
+      ".config/hypr/monitors.conf",
+      ".config/hypr/windows.conf",
+      ".config/kate-externaltoolspluginrc",
+      ".config/kate/externaltools/Clang%20Format%20Full%20File.ini",
+      ".config/kate/externaltools/Clang%20Format%20Selected%20Text.ini",
+      ".config/kate/externaltools/Compile%20and%20Run%20cpp.ini",
+      ".config/kate/externaltools/Go%20Fmt%20Full%20File.ini",
+      ".config/kate/externaltools/GoImports%20Full%20File.ini",
+      ".config/kate/externaltools/Google%20Selected%20Text.ini",
+      ".config/kate/externaltools/Insert%20UUID.ini",
+      ".config/kate/externaltools/JSON%20Format%20Full%20File.ini",
+      ".config/kate/externaltools/Prettier%20Format%20Current%20File.ini",
+      ".config/kate/externaltools/Qt%20Quick%202%20Preview%20%28qmlscene%29.ini",
+      ".config/kate/externaltools/Run%20Shell%20Script.ini",
+      ".config/kate/externaltools/Rust%20Fmt%20Full%20File.ini",
+      ".config/kate/externaltools/Search%20KDE%20API.ini",
+      ".config/kate/externaltools/Search%20Qt%20API.ini",
+      ".config/kate/externaltools/XML%20Format%20Full%20File.ini",
+      ".config/kate/externaltools/git%20blame.ini",
+      ".config/kate/externaltools/git-cola.ini",
+      ".config/kate/externaltools/gitk.ini",
+      ".config/katepartrc",
+      ".config/katerc",
+      ".config/katevirc",
+      ".config/kde-mimeapps.list",
+      ".config/kdeglobals",
+      ".config/kitty/kitty.conf",
+      ".config/kitty/theme.conf",
+      ".config/mimeapps.list",
+      ".config/systemd/user/hs-dunst.service",
+      ".config/systemd/user/hs-waybar.service",
+      ".config/waybar/style.css",
+      ".config/waybar/waybar.conf",
+      ".config/wofi/config",
+      ".config/wofi/style.css",
+      ".config/xdg-desktop-portal/hyprland-portals.conf",
+      ".functions",
+      ".inputrc",
+      ".local/share/applications/mimeapps.list",
+      ".local/share/applications/org.kde.kate.desktop",
+      ".local/share/kate/anonymous.katesession",
+      ".nanorc",
+      ".profile",
+      ".zshrc",
+      ".zshrc.arch-install",
+      "MANIFEST.captured.txt",
+      "SANITIZATION.md",
+      "bin/alt-tab.sh",
+      "bin/dynamic-waybar.sh",
+      "bin/fetch.sh",
+      "bin/tooltips.sh",
+      "bin/refresh-launcher-cache.sh",
+      "bin/tv-launcher.sh",
+      "bin/volume.sh",
+      "bin/waybar-app-toggle.sh",
+      "bin/waybar-meter.sh",
+      "bin/waybar-toggle.sh",
+      "firefox/distribution/policies.json",
+      "omp.json"
+    ],
+    "deployable_consumption": {
+      "schema": "harmonia.tv.deployable_consumption.v1",
+      "authority": "harmonia-profile-module-owned-files",
+      "modes": [
+        "safe-repository-symlink",
+        "declared-export-vendor-with-receipt"
+      ],
+      "forbidden": "two-hand-maintained-payload-trees"
+    },
+    "file_locality": "module-owned intent folders; no sibling profiles/tv/config tree",
+    "intent_folders": [
+      "browser",
+      "dunst",
+      "gtk",
+      "hyprland",
+      "kate",
+      "kde-applications",
+      "kitty",
+      "launcher-bin",
+      "manifest",
+      "portal",
+      "prompt",
+      "shell-rc",
+      "systemd-user",
+      "waybar",
+      "wofi"
+    ],
+    "phase": 5,
+    "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
+    "meaning": "TV desktop configuration payload is converged from the module files_root into the owner home"
+  },
+  "ladder": [
+    {
+      "step_id": "files-browser",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/browser",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/chromium-flags.conf",
+          "firefox/distribution/policies.json"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-browser",
+        "summary_receipt": {
+          "name": "tv-desktop-config-browser-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-dunst",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/dunst",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/dunst/dunstrc"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-dunst",
+        "summary_receipt": {
+          "name": "tv-desktop-config-dunst-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-gtk",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/gtk",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/gtk-3.0/settings.ini",
+          ".config/gtk-4.0/settings.ini"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-gtk",
+        "summary_receipt": {
+          "name": "tv-desktop-config-gtk-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-hyprland",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/hyprland",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/hypr/autostart.conf",
+          ".config/hypr/bindings.conf",
+          ".config/hypr/envs.conf",
+          ".config/hypr/hyprland.conf",
+          ".config/hypr/input.conf",
+          ".config/hypr/looknfeel.conf",
+          ".config/hypr/monitors.conf",
+          ".config/hypr/windows.conf"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-hyprland",
+        "summary_receipt": {
+          "name": "tv-desktop-config-hyprland-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-kate",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/kate",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/kate-externaltoolspluginrc",
+          ".config/kate/externaltools/Clang%20Format%20Full%20File.ini",
+          ".config/kate/externaltools/Clang%20Format%20Selected%20Text.ini",
+          ".config/kate/externaltools/Compile%20and%20Run%20cpp.ini",
+          ".config/kate/externaltools/Go%20Fmt%20Full%20File.ini",
+          ".config/kate/externaltools/GoImports%20Full%20File.ini",
+          ".config/kate/externaltools/Google%20Selected%20Text.ini",
+          ".config/kate/externaltools/Insert%20UUID.ini",
+          ".config/kate/externaltools/JSON%20Format%20Full%20File.ini",
+          ".config/kate/externaltools/Prettier%20Format%20Current%20File.ini",
+          ".config/kate/externaltools/Qt%20Quick%202%20Preview%20%28qmlscene%29.ini",
+          ".config/kate/externaltools/Run%20Shell%20Script.ini",
+          ".config/kate/externaltools/Rust%20Fmt%20Full%20File.ini",
+          ".config/kate/externaltools/Search%20KDE%20API.ini",
+          ".config/kate/externaltools/Search%20Qt%20API.ini",
+          ".config/kate/externaltools/XML%20Format%20Full%20File.ini",
+          ".config/kate/externaltools/git%20blame.ini",
+          ".config/kate/externaltools/git-cola.ini",
+          ".config/kate/externaltools/gitk.ini",
+          ".config/katepartrc",
+          ".config/katerc",
+          ".config/katevirc",
+          ".local/share/kate/anonymous.katesession"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-kate",
+        "summary_receipt": {
+          "name": "tv-desktop-config-kate-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-kde-applications",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/kde-applications",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/kde-mimeapps.list",
+          ".config/kdeglobals",
+          ".config/mimeapps.list",
+          ".local/share/applications/mimeapps.list",
+          ".local/share/applications/org.kde.kate.desktop"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-kde-applications",
+        "summary_receipt": {
+          "name": "tv-desktop-config-kde-applications-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-kitty",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/kitty",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/kitty/kitty.conf",
+          ".config/kitty/theme.conf"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-kitty",
+        "summary_receipt": {
+          "name": "tv-desktop-config-kitty-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-launcher-bin",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/launcher-bin",
+        "target_root": "$constants.target_dir",
+        "files": [
+          "bin/alt-tab.sh",
+          "bin/dynamic-waybar.sh",
+          "bin/fetch.sh",
+          "bin/tooltips.sh",
+          "bin/refresh-launcher-cache.sh",
+          "bin/tv-launcher.sh",
+          "bin/volume.sh",
+          "bin/waybar-app-toggle.sh",
+          "bin/waybar-meter.sh",
+          "bin/waybar-toggle.sh"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-launcher-bin",
+        "summary_receipt": {
+          "name": "tv-desktop-config-launcher-bin-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-manifest",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/manifest",
+        "target_root": "$constants.target_dir",
+        "files": [
+          "MANIFEST.captured.txt",
+          "SANITIZATION.md"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-manifest",
+        "summary_receipt": {
+          "name": "tv-desktop-config-manifest-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-portal",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/portal",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/xdg-desktop-portal/hyprland-portals.conf"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-portal",
+        "summary_receipt": {
+          "name": "tv-desktop-config-portal-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-prompt",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/prompt",
+        "target_root": "$constants.target_dir",
+        "files": [
+          "omp.json"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-prompt",
+        "summary_receipt": {
+          "name": "tv-desktop-config-prompt-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-shell-rc",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/shell-rc",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".aliases",
+          ".functions",
+          ".inputrc",
+          ".nanorc",
+          ".profile",
+          ".zshrc",
+          ".zshrc.arch-install"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-shell-rc",
+        "summary_receipt": {
+          "name": "tv-desktop-config-shell-rc-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-systemd-user",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/systemd-user",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/systemd/user/hs-dunst.service",
+          ".config/systemd/user/hs-waybar.service"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-systemd-user",
+        "summary_receipt": {
+          "name": "tv-desktop-config-systemd-user-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-waybar",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/waybar",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/waybar/style.css",
+          ".config/waybar/waybar.conf"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-waybar",
+        "summary_receipt": {
+          "name": "tv-desktop-config-waybar-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-wofi",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/wofi",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/wofi/config",
+          ".config/wofi/style.css"
+        ],
+        "backup_existing": true,
+        "receipt_name": "tv-desktop-config-wofi",
+        "summary_receipt": {
+          "name": "tv-desktop-config-wofi-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "launcher-cache-refresh",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "[ ! -x /usr/bin/su ] || su - owner -c \"sh /home/owner/bin/refresh-launcher-cache.sh\""
+        ],
+        "timeout_secs": 120
+      }
+    }
+  ],
+  "files_root": "files_root"
+}

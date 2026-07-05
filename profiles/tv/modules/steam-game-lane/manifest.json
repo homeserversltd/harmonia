@@ -1,0 +1,143 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "steam-game-lane",
+  "version": "1.0.0",
+  "description": "TV steam-game-lane module. Rust owns Steam and Gamescope exist as optional game lane, not the main Arch TV session; this sidecar carries constants only.",
+  "optional": true,
+  "optional_warning": "Steam/Gamescope are optional customer-owned game-lane surfaces; customer may have uninstalled Steam, so Harmonia warns and preserves the TV update instead of reinstalling or failing.",
+  "constants": {
+    "packages": [
+      "steam",
+      "gamescope",
+      "mangohud",
+      "gamemode",
+      "power-profiles-daemon"
+    ],
+    "services": [
+      "power-profiles-daemon.service"
+    ],
+    "binaries": [
+      "gamescope",
+      "steam"
+    ],
+    "expected_files": [
+      "/usr/local/bin/arch-tv-steam-game-lane",
+      "/usr/share/applications/arch-tv-steam-game-lane.desktop",
+      "/etc/arch-tv/steam-game-lane-policy.md"
+    ],
+    "optional": true,
+    "optional_warning": "Steam/Gamescope are optional customer-owned game-lane surfaces; customer may have uninstalled Steam, so Harmonia warns and preserves the TV update instead of reinstalling or failing.",
+    "phase": 8,
+    "receipt_schema": "harmonia.tv.steam_game_lane.v1",
+    "meaning": "Steam and Gamescope exist as optional game lane, not the main Arch TV session"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-check",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/pacman",
+        "args": [
+          "-Q",
+          "steam",
+          "gamescope",
+          "mangohud",
+          "gamemode",
+          "power-profiles-daemon"
+        ],
+        "timeout_secs": 180
+      },
+      "on_failure": "continue-optional"
+    },
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "on_failure": "continue-optional"
+    },
+    {
+      "step_id": "binary-gamescope",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v gamescope >/dev/null"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "continue-optional"
+    },
+    {
+      "step_id": "binary-steam",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v steam >/dev/null"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "continue-optional"
+    },
+    {
+      "step_id": "service-power-profiles-daemon-service",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "power-profiles-daemon.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "continue-optional"
+    },
+    {
+      "step_id": "expected-file-usr-local-bin-arch-tv-steam-game-lane",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/usr/local/bin/arch-tv-steam-game-lane"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "continue-optional"
+    },
+    {
+      "step_id": "expected-file-usr-share-applications-arch-tv-steam-game-lane-desktop",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/usr/share/applications/arch-tv-steam-game-lane.desktop"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "continue-optional"
+    },
+    {
+      "step_id": "expected-file-etc-arch-tv-steam-game-lane-policy-md",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/arch-tv/steam-game-lane-policy.md"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "continue-optional"
+    }
+  ],
+  "files_root": "files_root"
+}

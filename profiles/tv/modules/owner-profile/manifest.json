@@ -1,0 +1,93 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "owner-profile",
+  "version": "1.0.0",
+  "description": "TV owner-profile module. Rust owns owner account, sudo posture, shell, and TV operator groups are maintained; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "groups": [
+      "wheel",
+      "video",
+      "input",
+      "render",
+      "audio",
+      "storage",
+      "network",
+      "uucp"
+    ],
+    "packages": [
+      "sudo",
+      "zsh"
+    ],
+    "expected_files": [
+      "/etc/sudoers.d/10-owner-wheel",
+      "/home/owner"
+    ],
+    "phase": 1,
+    "receipt_schema": "harmonia.tv.owner_profile.v1",
+    "meaning": "owner account, sudo posture, shell, and TV operator groups are maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "owner-groups-check",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/id",
+        "args": [
+          "-nG",
+          "owner"
+        ]
+      }
+    },
+    {
+      "step_id": "owner-groups-apply",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "missing=\"\"; have=\"$(id -nG owner 2>/dev/null || true)\"; for g in wheel video input render audio storage network uucp; do echo \"$have\" | tr \" \" \"\n\" | grep -qx \"$g\" || missing=\"$missing${missing:+,}$g\"; done; [ -z \"$missing\" ] || /usr/sbin/usermod -aG \"$missing\" owner"
+        ],
+        "timeout_secs": 120
+      }
+    },
+    {
+      "step_id": "expected-file-etc-sudoers-d-10-owner-wheel",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/sudoers.d/10-owner-wheel"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-home-owner",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

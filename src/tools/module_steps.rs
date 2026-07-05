@@ -4,7 +4,6 @@ use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-pub(crate) use crate::tools::package::pacman_program;
 #[cfg(test)]
 pub(crate) use crate::tools::package::set_test_pacman_path;
 

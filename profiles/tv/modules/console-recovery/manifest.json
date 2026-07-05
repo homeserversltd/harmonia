@@ -1,0 +1,135 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "console-recovery",
+  "version": "1.0.0",
+  "description": "TV console-recovery module. Rust owns TTY recovery, SSH continuity, git, tmux, kitty, curl, and jq are maintained; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "openssh",
+      "git",
+      "tmux",
+      "kitty",
+      "curl",
+      "jq"
+    ],
+    "services": [
+      "sshd.service"
+    ],
+    "binaries": [
+      "ssh",
+      "git",
+      "tmux",
+      "kitty",
+      "curl",
+      "jq"
+    ],
+    "phase": 10,
+    "receipt_schema": "harmonia.tv.console_recovery.v1",
+    "meaning": "TTY recovery, SSH continuity, git, tmux, kitty, curl, and jq are maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "binary-ssh",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v ssh >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-git",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v git >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-tmux",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v tmux >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-kitty",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v kitty >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-curl",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v curl >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-jq",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v jq >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "service-sshd-service",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "sshd.service",
+        "timeout_secs": 60
+      }
+    }
+  ]
+}

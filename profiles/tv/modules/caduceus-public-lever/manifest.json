@@ -1,0 +1,109 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "caduceus-public-lever",
+  "version": "1.0.0",
+  "description": "TV Caduceus public-lever module. Rust owns identity/profile/policy/state file convergence and public binary possession checks; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "binaries": [
+      "caduceus"
+    ],
+    "expected_files": [
+      "/usr/local/bin/caduceus",
+      "/etc/caduceus/identity.json",
+      "/etc/caduceus/profile.json",
+      "/etc/caduceus/policies/update.json",
+      "/var/lib/caduceus/state.json"
+    ],
+    "phase": 11,
+    "receipt_schema": "harmonia.tv.caduceus_public_lever.v1",
+    "meaning": "Caduceus public appliance lever identity, policy, state, and binary possession are maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "managed-files"
+    },
+    {
+      "step_id": "binary-caduceus",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v caduceus >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-usr-local-bin-caduceus",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/usr/local/bin/caduceus"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-etc-caduceus-identity-json",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/caduceus/identity.json"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-etc-caduceus-profile-json",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/caduceus/profile.json"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-etc-caduceus-policies-update-json",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/caduceus/policies/update.json"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-var-lib-caduceus-state-json",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/var/lib/caduceus/state.json"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ],
+  "files_root": "files_root"
+}
