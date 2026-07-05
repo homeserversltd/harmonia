@@ -96,6 +96,7 @@ pub(crate) fn execute(
 
 // from former src/arcadia.rs.
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
@@ -301,6 +302,14 @@ fn read_arcadia_control_surface_authority(service: &str) -> CmdResult {
     )
 }
 
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let bytes =
+        fs::read(path).map_err(|e| format!("sha256-read-failed {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 pub(crate) fn homeconsole_arcadia_update(
     profile: &Profile,
     receipt_dir: &Path,
@@ -322,14 +331,7 @@ pub(crate) fn homeconsole_arcadia_update(
     event(&mut events, "arcadia-start", true, "Arcadia update started")?;
     let metadata = fs::metadata(artifact).map_err(|e| format!("artifact-missing: {e}"))?;
     let artifact_len = metadata.len();
-    write_artifact_receipt(
-        receipt_dir,
-        artifact,
-        install_bin,
-        service,
-        apply,
-        artifact_len,
-    )?;
+    let artifact_sha = sha256_file(artifact)?;
     event(&mut events, "artifact", true, "Arcadia artifact present")?;
     let mut ok = true;
     let mut changed = false;
@@ -338,7 +340,7 @@ pub(crate) fn homeconsole_arcadia_update(
         if let Some(parent) = install_bin.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let before_len = fs::metadata(install_bin).map(|m| m.len()).ok();
+        let before_sha = sha256_file(install_bin).ok();
         let stop = command_capture("/usr/bin/systemctl", &["stop", service]);
         write_command_receipt(receipt_dir, "arcadia-service-stop", &stop)?;
         if !stop.ok {
@@ -358,7 +360,7 @@ pub(crate) fn homeconsole_arcadia_update(
         fs::set_permissions(&tmp_install, perms).map_err(|e| e.to_string())?;
         fs::rename(&tmp_install, install_bin)
             .map_err(|e| format!("artifact-promote-failed: {e}"))?;
-        changed = before_len != Some(artifact_len);
+        changed = before_sha.as_deref() != Some(artifact_sha.as_str());
         event(
             &mut events,
             "artifact-installed",
@@ -431,6 +433,20 @@ pub(crate) fn homeconsole_arcadia_update(
             first_missing_signal = "arcadia-control-surface-authority-unproven".to_string();
         }
     }
+    let installed_sha = sha256_file(install_bin).ok();
+    write_artifact_receipt(
+        receipt_dir,
+        artifact,
+        install_bin,
+        service,
+        apply,
+        ok,
+        changed,
+        &first_missing_signal,
+        artifact_len,
+        &artifact_sha,
+        installed_sha.as_deref(),
+    )?;
     write_run_receipt(receipt_dir, profile, apply, ok, &first_missing_signal)?;
     println!("schema=harmonia.homeconsole_arcadia_update.v1");
     println!("ok={}", ok);

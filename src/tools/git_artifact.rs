@@ -68,36 +68,48 @@ pub fn plan(request: &Request) -> Outcome {
 }
 
 pub fn apply(request: &Request) -> Outcome {
-    let command = sync_repo(request);
+    let sync = sync_repo(request);
     Outcome {
-        ok: command.ok,
-        changed: command.ok && stdout_changed(&command.stdout),
+        ok: sync.command.ok,
+        changed: sync.command.ok && sync.changed,
         message: format!("git-artifact sync {}", request.path.display()),
-        command,
+        command: sync.command,
     }
 }
 
-fn sync_repo(request: &Request) -> CommandReceipt {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncResult {
+    command: CommandReceipt,
+    changed: bool,
+}
+
+fn sync_repo(request: &Request) -> SyncResult {
     let mut transcript = Vec::new();
     if !request.path.join(".git").exists() {
         let Some(repo) = request.repo.as_deref() else {
-            return CommandReceipt {
-                ok: false,
-                code: 2,
-                stdout: String::new(),
-                stderr: format!(
-                    "repo missing and no clone URL supplied for {}",
-                    request.path.display()
-                ),
+            return SyncResult {
+                command: CommandReceipt {
+                    ok: false,
+                    code: 2,
+                    stdout: String::new(),
+                    stderr: format!(
+                        "repo missing and no clone URL supplied for {}",
+                        request.path.display()
+                    ),
+                },
+                changed: false,
             };
         };
         if let Some(parent) = request.path.parent() {
             if let Err(err) = fs::create_dir_all(parent) {
-                return CommandReceipt {
-                    ok: false,
-                    code: 2,
-                    stdout: String::new(),
-                    stderr: format!("create parent failed {}: {err}", parent.display()),
+                return SyncResult {
+                    command: CommandReceipt {
+                        ok: false,
+                        code: 2,
+                        stdout: String::new(),
+                        stderr: format!("create parent failed {}: {err}", parent.display()),
+                    },
+                    changed: false,
                 };
             }
         }
@@ -109,15 +121,18 @@ fn sync_repo(request: &Request) -> CommandReceipt {
                     preserved.display()
                 )),
                 Err(err) => {
-                    return CommandReceipt {
-                        ok: false,
-                        code: 2,
-                        stdout: transcript.join("\n"),
-                        stderr: format!(
-                            "existing non-git path could not be preserved {}: {err}",
-                            request.path.display()
-                        ),
-                    }
+                    return SyncResult {
+                        command: CommandReceipt {
+                            ok: false,
+                            code: 2,
+                            stdout: transcript.join("\n"),
+                            stderr: format!(
+                                "existing non-git path could not be preserved {}: {err}",
+                                request.path.display()
+                            ),
+                        },
+                        changed: false,
+                    };
                 }
             }
         }
@@ -139,33 +154,51 @@ fn sync_repo(request: &Request) -> CommandReceipt {
             transcript.push(clone.stderr.clone());
         }
         if !clone.ok {
-            return CommandReceipt {
-                ok: false,
-                code: clone.code,
-                stdout: transcript.join("\n"),
-                stderr: clone.stderr,
+            return SyncResult {
+                command: CommandReceipt {
+                    ok: false,
+                    code: clone.code,
+                    stdout: transcript.join("\n"),
+                    stderr: clone.stderr,
+                },
+                changed: false,
             };
         }
-        return CommandReceipt {
-            ok: true,
-            code: 0,
-            stdout: format!("changed=true\n{}", transcript.join("\n")),
-            stderr: String::new(),
+        return SyncResult {
+            command: CommandReceipt {
+                ok: true,
+                code: 0,
+                stdout: transcript.join("\n"),
+                stderr: String::new(),
+            },
+            changed: true,
         };
     }
 
     let cwd = request.path.to_str();
     let before = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    if !before.ok {
+        return SyncResult {
+            command: before,
+            changed: false,
+        };
+    }
     let dirty = command_capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], cwd);
     if !dirty.ok {
-        return dirty;
+        return SyncResult {
+            command: dirty,
+            changed: false,
+        };
     }
     if !dirty.stdout.trim().is_empty() {
-        return CommandReceipt {
-            ok: false,
-            code: 3,
-            stdout: dirty.stdout,
-            stderr: "working tree has local modifications; refusing repo sync".to_string(),
+        return SyncResult {
+            command: CommandReceipt {
+                ok: false,
+                code: 3,
+                stdout: dirty.stdout,
+                stderr: "working tree has local modifications; refusing repo sync".to_string(),
+            },
+            changed: false,
         };
     }
 
@@ -176,11 +209,14 @@ fn sync_repo(request: &Request) -> CommandReceipt {
     );
     transcript.push(format!("fetch exit={} ok={}", fetch.code, fetch.ok));
     if !fetch.ok {
-        return CommandReceipt {
-            ok: false,
-            code: fetch.code,
-            stdout: transcript.join("\n"),
-            stderr: fetch.stderr,
+        return SyncResult {
+            command: CommandReceipt {
+                ok: false,
+                code: fetch.code,
+                stdout: transcript.join("\n"),
+                stderr: fetch.stderr,
+            },
+            changed: false,
         };
     }
     let checkout = command_capture_with_cwd("/usr/bin/git", &["checkout", &request.branch], cwd);
@@ -189,11 +225,14 @@ fn sync_repo(request: &Request) -> CommandReceipt {
         checkout.code, checkout.ok
     ));
     if !checkout.ok {
-        return CommandReceipt {
-            ok: false,
-            code: checkout.code,
-            stdout: transcript.join("\n"),
-            stderr: checkout.stderr,
+        return SyncResult {
+            command: CommandReceipt {
+                ok: false,
+                code: checkout.code,
+                stdout: transcript.join("\n"),
+                stderr: checkout.stderr,
+            },
+            changed: false,
         };
     }
     let pull_ref = format!("{}/{}", request.remote, request.branch);
@@ -203,23 +242,34 @@ fn sync_repo(request: &Request) -> CommandReceipt {
         transcript.push(merge.stdout.clone());
     }
     if !merge.ok {
-        return CommandReceipt {
-            ok: false,
-            code: merge.code,
-            stdout: transcript.join("\n"),
-            stderr: merge.stderr,
+        return SyncResult {
+            command: CommandReceipt {
+                ok: false,
+                code: merge.code,
+                stdout: transcript.join("\n"),
+                stderr: merge.stderr,
+            },
+            changed: false,
         };
     }
     let after = command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    if !after.ok {
+        return SyncResult {
+            command: after,
+            changed: false,
+        };
+    }
     let changed = before.stdout.trim() != after.stdout.trim();
     transcript.push(format!("before={}", before.stdout.trim()));
     transcript.push(format!("after={}", after.stdout.trim()));
-    transcript.push(format!("changed={changed}"));
-    CommandReceipt {
-        ok: true,
-        code: 0,
-        stdout: transcript.join("\n"),
-        stderr: String::new(),
+    SyncResult {
+        command: CommandReceipt {
+            ok: true,
+            code: 0,
+            stdout: transcript.join("\n"),
+            stderr: String::new(),
+        },
+        changed,
     }
 }
 
@@ -270,12 +320,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn change_detector_reads_receipt_line() {
-        assert!(stdout_changed("fetch ok\nchanged=true"));
-        assert!(!stdout_changed("Already up to date.\nchanged=false"));
-    }
-
-    #[test]
     fn plan_accepts_missing_repo_as_future_clone() {
         let request = Request::new(
             Some("git@git.home.arpa:HOMESERVERSLTD/keyman.git".into()),
@@ -321,8 +365,10 @@ mod tests {
             "main".into(),
             "origin".into(),
         );
-        let receipt = sync_repo(&request);
+        let sync = sync_repo(&request);
+        let receipt = sync.command;
         assert!(receipt.ok, "{}", receipt.stderr);
+        assert!(sync.changed);
         assert!(target.join(".git").exists());
         assert!(receipt.stdout.contains("non_git_existing_path_preserved="));
         let preserved_exists = fs::read_dir(&root)

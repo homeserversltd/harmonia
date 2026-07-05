@@ -12,12 +12,11 @@ pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
 
 pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     let text = fs::read_to_string(path)?;
-    serde_json::from_str(&text).or_else(|_| {
-        Ok(Profile {
-            id: extract_string(&text, "id").unwrap_or_else(|| "unknown".to_string()),
-            identity: extract_string(&text, "identity").unwrap_or_else(|| "unknown".to_string()),
-            modules: extract_string_array(&text, "modules"),
-        })
+    serde_json::from_str(&text).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("profile-parse-failed {}: {err}", path.display()),
+        )
     })
 }
 
@@ -73,6 +72,17 @@ pub(crate) fn run_profile_engine(
     let mut operation_count = 0usize;
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
+
+    if profile.modules.is_empty() {
+        ok = false;
+        first_missing_signal = "profile-modules-empty".to_string();
+        event(
+            &mut events,
+            "profile-modules",
+            false,
+            "profile module spine is empty",
+        )?;
+    }
 
     for module_id in &profile.modules {
         let module_path = module_root.join(module_id).join("sidecar.json");

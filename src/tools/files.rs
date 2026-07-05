@@ -144,13 +144,38 @@ pub fn converge_files(
         }
 
         if target_exists_before && !target.is_file() {
-            return Err(format!(
-                "files-converge-target-not-file {}",
-                target.display()
-            ));
+            let signal = format!("files-converge-target-not-file {}", target.display());
+            write_partial_failure_receipt(
+                receipt_dir,
+                request,
+                apply,
+                request.files.len(),
+                written,
+                backed_up,
+                &missing,
+                &entries,
+                &signal,
+            )?;
+            return Err(signal);
         }
         let content_equal_before = if target_exists_before {
-            same_file_bytes(&source, &target)?
+            match same_file_bytes(&source, &target) {
+                Ok(equal) => equal,
+                Err(signal) => {
+                    write_partial_failure_receipt(
+                        receipt_dir,
+                        request,
+                        apply,
+                        request.files.len(),
+                        written,
+                        backed_up,
+                        &missing,
+                        &entries,
+                        &signal,
+                    )?;
+                    return Err(signal);
+                }
+            }
         } else {
             false
         };
@@ -177,7 +202,20 @@ pub fn converge_files(
                 backed_up_to = Some(backup);
                 backed_up += 1;
             }
-            atomic_copy(&source, &target, final_mode)?;
+            if let Err(signal) = atomic_copy(&source, &target, final_mode) {
+                write_partial_failure_receipt(
+                    receipt_dir,
+                    request,
+                    apply,
+                    request.files.len(),
+                    written,
+                    backed_up,
+                    &missing,
+                    &entries,
+                    &signal,
+                )?;
+                return Err(signal);
+            }
             written += 1;
         }
 
@@ -193,10 +231,38 @@ pub fn converge_files(
             false
         };
         if apply && (!target_exists_after || !content_equal_after || !mode_equal_after) {
-            return Err(format!(
+            let signal = format!(
                 "files-converge-post-write-readback-failed {}",
                 target.display()
-            ));
+            );
+            let mut failure_entries = entries.clone();
+            failure_entries.push(FileConvergenceEntry {
+                relative_path: relative_path.clone(),
+                source: source.clone(),
+                target: target.clone(),
+                source_exists,
+                target_exists_before,
+                content_equal_before,
+                mode_equal_before,
+                target_exists_after,
+                content_equal_after,
+                mode_equal_after,
+                changed: entry_changed,
+                backed_up_to: backed_up_to.clone(),
+                final_mode,
+            });
+            write_partial_failure_receipt(
+                receipt_dir,
+                request,
+                apply,
+                request.files.len(),
+                written,
+                backed_up,
+                &missing,
+                &failure_entries,
+                &signal,
+            )?;
+            return Err(signal);
         }
 
         entries.push(FileConvergenceEntry {
@@ -395,6 +461,30 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), String> {
     Ok(())
 }
 
+fn write_partial_failure_receipt(
+    receipt_dir: &Path,
+    request: &FileConvergenceRequest,
+    apply: bool,
+    checked: usize,
+    written: usize,
+    backed_up: usize,
+    missing: &[String],
+    entries: &[FileConvergenceEntry],
+    signal: &str,
+) -> Result<(), String> {
+    let outcome = FileConvergenceOutcome {
+        ok: false,
+        changed: entries.iter().any(|entry| entry.changed) || written > 0 || backed_up > 0,
+        checked,
+        written,
+        backed_up,
+        missing: missing.to_vec(),
+        entries: entries.to_vec(),
+        message: signal.to_string(),
+    };
+    write_convergence_receipt(receipt_dir, request, &outcome, apply)
+}
+
 fn write_convergence_receipt(
     receipt_dir: &Path,
     request: &FileConvergenceRequest,
@@ -415,7 +505,7 @@ fn write_convergence_receipt(
         "changed": outcome.changed,
         "missing": outcome.missing,
         "entries": outcome.entries,
-        "first_missing_signal": if outcome.ok { "none" } else { "files-convergence-source-incomplete" },
+        "first_missing_signal": if outcome.ok { "none" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
     });
     let mut receipt_name = request.receipt_name.clone();
     if receipt_name.is_empty() {
