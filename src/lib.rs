@@ -228,15 +228,140 @@ mod tests {
     }
 
     #[test]
-    fn extracts_profile_identity_fields() {
-        let text =
-            r#"{"id":"homeconsole","identity":"homeconsole","modules":["identity","packages"]}"#;
-        assert_eq!(extract_string(text, "id").unwrap(), "homeconsole");
-        assert_eq!(extract_string(text, "identity").unwrap(), "homeconsole");
-        assert_eq!(
-            extract_string_array(text, "modules"),
-            vec!["identity", "packages"]
-        );
+    fn corrupt_profile_index_is_loud_parse_error() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-corrupt-profile-{}", process::id()));
+        fs::create_dir_all(&scratch).unwrap();
+        let profile_path = scratch.join("index.json");
+        fs::write(
+            &profile_path,
+            r#"{"id":"tv","identity":"arch-tv","modules":["identity",]}"#,
+        )
+        .unwrap();
+        let err = load_profile(&profile_path).unwrap_err().to_string();
+        assert!(err.contains("profile-parse-failed"));
+        assert!(err.contains(profile_path.to_str().unwrap()));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn empty_profile_spine_writes_false_run_receipt() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-empty-spine-{}", process::id()));
+        let module_root = scratch.join("modules");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&module_root).unwrap();
+        let profile = Profile {
+            id: "hollow".into(),
+            identity: "hollow".into(),
+            modules: vec![],
+        };
+        let err = run_profile_engine(&profile, &module_root, &receipts, false).unwrap_err();
+        assert_eq!(err, "profile-modules-empty");
+        let run = fs::read_to_string(receipts.join("run.json")).unwrap();
+        assert!(run.contains("\"ok\": false"));
+        assert!(run.contains("profile-modules-empty"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn plan_receipt_validates_module_sidecars_before_green() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-plan-validates-{}", process::id()));
+        let module_root = scratch.join("modules");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(module_root.join("missing-sidecar")).unwrap();
+        let profile = Profile {
+            id: "plan".into(),
+            identity: "plan".into(),
+            modules: vec!["missing-sidecar".into()],
+        };
+        write_plan_receipts(&profile, &module_root, &receipts).unwrap();
+        let run = fs::read_to_string(receipts.join("run.json")).unwrap();
+        assert!(run.contains("\"ok\": false"));
+        assert!(run.contains("module-missing-missing-sidecar"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn command_tool_records_unknown_change_observation() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-command-unknown-{}", process::id()));
+        let outcome = command_tool(&scratch, "true-command", "/usr/bin/true", &[], None).unwrap();
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
+        let receipt = fs::read_to_string(scratch.join("true-command.json")).unwrap();
+        assert!(receipt.contains("change_observed"));
+        assert!(receipt.contains("unknown"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn artifact_promote_detects_equal_length_byte_change_by_sha256() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-artifact-sha-{}", process::id()));
+        let receipts = scratch.join("receipts");
+        let artifact = scratch.join("artifact.bin");
+        let install = scratch.join("install.bin");
+        fs::create_dir_all(&scratch).unwrap();
+        fs::write(&artifact, b"BBBB").unwrap();
+        fs::write(&install, b"AAAA").unwrap();
+        let outcome =
+            artifact_promote_tool(&receipts, "artifact-promote", &artifact, &install, true)
+                .unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(fs::read(&install).unwrap(), b"BBBB");
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn git_artifact_invalid_repo_rev_parse_failure_is_not_changed() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-git-invalid-{}", process::id()));
+        let target = scratch.join("repo");
+        fs::create_dir_all(target.join(".git")).unwrap();
+        let request =
+            tools::git_artifact::Request::new(None, target, "main".into(), "origin".into());
+        let outcome = tools::git_artifact::apply(&request);
+        assert!(!outcome.ok);
+        assert!(!outcome.changed);
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn files_convergence_error_path_still_writes_partial_receipt() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-files-error-receipt-{}", process::id()));
+        let source = scratch.join("source");
+        let target = scratch.join("target");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("first.conf"), "first-new\n").unwrap();
+        fs::write(source.join("second.conf"), "second-new\n").unwrap();
+        fs::write(target.join("first.conf"), "first-old\n").unwrap();
+        fs::create_dir_all(target.join("second.conf")).unwrap();
+        let request = tools::files::FileConvergenceRequest {
+            source_root: source,
+            target_root: target,
+            files: vec![
+                tools::files::FileSpec {
+                    relative_path: PathBuf::from("first.conf"),
+                    mode: Some(0o644),
+                },
+                tools::files::FileSpec {
+                    relative_path: PathBuf::from("second.conf"),
+                    mode: Some(0o644),
+                },
+            ],
+            backup_existing: false,
+            receipt_name: "partial".to_string(),
+        };
+        let err = tools::files::converge_files(&request, &receipts, true).unwrap_err();
+        assert!(err.contains("files-converge-target-not-file"));
+        let receipt = fs::read_to_string(receipts.join("partial.json")).unwrap();
+        assert!(receipt.contains("\"ok\": false"));
+        assert!(receipt.contains("\"written\": 1"));
+        assert!(receipt.contains("files-converge-target-not-file"));
+        let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]
@@ -1475,8 +1600,10 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("plan-run requires <profile-index-json>")?;
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(|| PathBuf::from("target/harmonia-receipts"));
-            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            write_plan_receipts(&profile, &receipt_dir).map_err(|e| e.to_string())?;
+            let profile_path = Path::new(path);
+            let profile = load_profile(profile_path).map_err(|e| e.to_string())?;
+            let module_root = default_module_root(profile_path);
+            write_plan_receipts(&profile, &module_root, &receipt_dir).map_err(|e| e.to_string())?;
             println!("schema=harmonia.plan_run.v1");
             println!("ok=true");
             println!("profile_id={}", profile.id);

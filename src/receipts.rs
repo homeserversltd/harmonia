@@ -153,18 +153,27 @@ pub(crate) fn write_artifact_receipt(
     install_bin: &Path,
     service: &str,
     apply: bool,
+    ok: bool,
+    changed: bool,
+    first_missing_signal: &str,
     artifact_len: u64,
+    artifact_sha256: &str,
+    installed_sha256: Option<&str>,
 ) -> Result<(), String> {
     write_json(
         &receipt_dir.join("arcadia-artifact.json"),
         &json!({
             "schema": "harmonia.arcadia_artifact.v1",
-            "ok": true,
+            "ok": ok,
+            "changed": changed,
             "mutation": apply,
+            "first_missing_signal": first_missing_signal,
             "artifact": artifact,
             "install_bin": install_bin,
             "service": service,
             "artifact_bytes": artifact_len,
+            "artifact_sha256": artifact_sha256,
+            "installed_sha256": installed_sha256,
         }),
     )
 }
@@ -237,68 +246,63 @@ pub(crate) fn event(events: &mut File, event: &str, ok: bool, message: &str) -> 
     .map_err(|e| e.to_string())
 }
 
-pub(crate) fn extract_string(text: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{}\"", key);
-    let start = text.find(&needle)?;
-    let after_key = &text[start + needle.len()..];
-    let colon = after_key.find(':')?;
-    let after_colon = after_key[colon + 1..].trim_start();
-    let rest = after_colon.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-pub(crate) fn extract_string_array(text: &str, key: &str) -> Vec<String> {
-    let needle = format!("\"{}\"", key);
-    let Some(start) = text.find(&needle) else {
-        return Vec::new();
-    };
-    let after_key = &text[start + needle.len()..];
-    let Some(colon) = after_key.find(':') else {
-        return Vec::new();
-    };
-    let after_colon = after_key[colon + 1..].trim_start();
-    let Some(rest) = after_colon.strip_prefix('[') else {
-        return Vec::new();
-    };
-    let Some(end) = rest.find(']') else {
-        return Vec::new();
-    };
-    rest[..end]
-        .split(',')
-        .filter_map(|item| {
-            let t = item.trim();
-            let t = t.strip_prefix('"')?.strip_suffix('"')?;
-            Some(t.to_string())
-        })
-        .collect()
-}
-
-pub(crate) fn write_plan_receipts(profile: &Profile, receipt_dir: &Path) -> io::Result<()> {
+pub(crate) fn write_plan_receipts(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+) -> io::Result<()> {
     fs::create_dir_all(receipt_dir)?;
     let mut events = File::create(receipt_dir.join("events.jsonl"))?;
+    let mut ok = true;
+    let mut first_missing_signal = "none".to_string();
     writeln!(
         events,
         "{}",
         json!({"event":"plan-start","profile":profile.id,"ok":true})
     )?;
-    for module in &profile.modules {
+    if profile.modules.is_empty() {
+        ok = false;
+        first_missing_signal = "profile-modules-empty".to_string();
         writeln!(
             events,
             "{}",
-            json!({"event":"module-planned","module":module,"ok":true})
+            json!({"event":"profile-modules","ok":false,"message":"profile module spine is empty"})
         )?;
+    }
+    for module in &profile.modules {
+        let module_path = module_root.join(module).join("sidecar.json");
+        match load_module(&module_path) {
+            Ok(_) => {
+                writeln!(
+                    events,
+                    "{}",
+                    json!({"event":"module-planned","module":module,"ok":true})
+                )?;
+            }
+            Err(err) => {
+                ok = false;
+                if first_missing_signal == "none" {
+                    first_missing_signal = format!("module-missing-{module}");
+                }
+                writeln!(
+                    events,
+                    "{}",
+                    json!({"event":"module-planned","module":module,"ok":false,"message":err})
+                )?;
+            }
+        }
     }
     let mut run = File::create(receipt_dir.join("run.json"))?;
     serde_json::to_writer_pretty(
         &mut run,
         &json!({
             "schema": "harmonia.run.v1",
-            "ok": true,
+            "ok": ok,
             "mutation": false,
             "profile_id": profile.id,
             "identity": profile.identity,
             "module_count": profile.modules.len(),
+            "first_missing_signal": first_missing_signal,
         }),
     )?;
     writeln!(run)?;

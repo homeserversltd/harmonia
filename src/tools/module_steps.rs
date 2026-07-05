@@ -1,4 +1,5 @@
 use crate::*;
+use sha2::{Digest, Sha256};
 use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -40,12 +41,12 @@ pub(crate) fn command_tool(
 ) -> Result<OperationOutcome, String> {
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = command_capture_with_cwd(program, &arg_refs, cwd);
-    write_command_receipt(receipt_dir, name, &result)?;
+    write_command_receipt_with_change_observed(receipt_dir, name, &result, "unknown")?;
     Ok(OperationOutcome {
         ok: result.ok,
         changed: false,
         skipped: false,
-        message: format!("command {program}"),
+        message: format!("command {program}; change_observed=unknown"),
         command: Some(result),
     })
 }
@@ -139,6 +140,8 @@ pub(crate) fn systemd_tool(
         write_tool_receipt(receipt_dir, name, "systemd", action, &outcome)?;
         return Ok(outcome);
     }
+    let before_enabled = systemctl_state("is-enabled", service);
+    let before_active = systemctl_state("is-active", service);
     let result = match action {
         "daemon-reload" => command_capture("/usr/bin/systemctl", &["daemon-reload"]),
         "active" | "is-active" => command_capture("/usr/bin/systemctl", &["is-active", service]),
@@ -158,10 +161,23 @@ pub(crate) fn systemd_tool(
             return Ok(outcome);
         }
     };
-    write_command_receipt(receipt_dir, name, &result)?;
+    let after_enabled = systemctl_state("is-enabled", service);
+    let after_active = systemctl_state("is-active", service);
+    let changed =
+        mutating && result.ok && (before_enabled != after_enabled || before_active != after_active);
+    write_systemd_command_receipt(
+        receipt_dir,
+        name,
+        &result,
+        before_enabled.as_deref(),
+        before_active.as_deref(),
+        after_enabled.as_deref(),
+        after_active.as_deref(),
+        changed,
+    )?;
     Ok(OperationOutcome {
         ok: result.ok,
-        changed: mutating,
+        changed,
         skipped: false,
         message: format!("systemd {action} {service}"),
         command: Some(result),
@@ -192,7 +208,8 @@ pub(crate) fn artifact_promote_tool(
     if let Some(parent) = install_bin.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let before_len = fs::metadata(install_bin).map(|m| m.len()).ok();
+    let before_sha = sha256_file(install_bin).ok();
+    let artifact_sha = sha256_file(artifact)?;
     let tmp_install = install_bin.with_extension("harmonia-new");
     fs::copy(artifact, &tmp_install).map_err(|e| format!("artifact-copy-failed: {e}"))?;
     let mut perms = fs::metadata(&tmp_install)
@@ -203,13 +220,79 @@ pub(crate) fn artifact_promote_tool(
     fs::rename(&tmp_install, install_bin).map_err(|e| format!("artifact-promote-failed: {e}"))?;
     let outcome = OperationOutcome {
         ok: true,
-        changed: before_len != Some(metadata.len()),
+        changed: before_sha.as_deref() != Some(artifact_sha.as_str()),
         skipped: false,
         message: format!("artifact promoted to {}", install_bin.display()),
         command: None,
     };
     write_tool_receipt(receipt_dir, name, "artifact", "promote", &outcome)?;
     Ok(outcome)
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let bytes =
+        fs::read(path).map_err(|e| format!("sha256-read-failed {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn systemctl_state(kind: &str, service: &str) -> Option<String> {
+    let result = command_capture("/usr/bin/systemctl", &[kind, service]);
+    if result.code == -1 {
+        None
+    } else {
+        Some(result.stdout.trim().to_string())
+    }
+}
+
+fn write_command_receipt_with_change_observed(
+    receipt_dir: &Path,
+    name: &str,
+    result: &CmdResult,
+    change_observed: &str,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{}.json", name)),
+        &serde_json::json!({
+            "schema": "harmonia.command_receipt.v1",
+            "name": name,
+            "ok": result.ok,
+            "exit_code": result.code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "change_observed": change_observed,
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_systemd_command_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    result: &CmdResult,
+    enabled_before: Option<&str>,
+    active_before: Option<&str>,
+    enabled_after: Option<&str>,
+    active_after: Option<&str>,
+    changed: bool,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{}.json", name)),
+        &serde_json::json!({
+            "schema": "harmonia.command_receipt.v1",
+            "name": name,
+            "ok": result.ok,
+            "exit_code": result.code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "enabled_before": enabled_before,
+            "active_before": active_before,
+            "enabled_after": enabled_after,
+            "active_after": active_after,
+            "changed": changed,
+        }),
+    )
 }
 
 pub(crate) fn git_artifact_tool(
