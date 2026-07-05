@@ -324,13 +324,28 @@ mod tests {
         fs::create_dir_all(scratch).unwrap();
         fs::write(
             &fake,
-            "#!/usr/bin/env sh\ncase \"$1\" in\n  -Qu) exit 0 ;;\n  -Q) exit 0 ;;\n  -Syu) echo 'there is nothing to do'; exit 0 ;;\n  -S) echo 'there is nothing to do'; exit 0 ;;\n  *) exit 0 ;;\nesac\n",
+            "#!/usr/bin/env sh\ncase \"$1\" in\n  -Qu) exit 0 ;;\n  -Q) if [ \"$2\" = \"oh-my-posh-bin\" ]; then echo 'oh-my-posh-bin 29.20.1-1'; fi; exit 0 ;;\n  -Syu) echo 'there is nothing to do'; exit 0 ;;\n  -S) echo 'there is nothing to do'; exit 0 ;;\n  -U) echo 'installed local package'; exit 0 ;;\n  *) exit 0 ;;\nesac\n",
         )
         .unwrap();
         #[cfg(unix)]
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let upstream = scratch.join("aur-upstream.json");
+        fs::write(
+            &upstream,
+            serde_json::json!({
+                "schema": "harmonia.aur.upstream_state.v1",
+                "package": "oh-my-posh-bin",
+                "available_version": "29.20.1-1",
+                "pkgbuild_sha": "ed800be1c781d41ce83ce6e693d6e00e868883c9",
+                "observed_source": "test-seam"
+            })
+            .to_string(),
+        )
+        .unwrap();
         set_test_pacman_path(Some(fake.display().to_string()));
+        crate::tools::aur::set_test_upstream_state_path(Some(upstream.display().to_string()));
         let result = f();
+        crate::tools::aur::set_test_upstream_state_path(None);
         set_test_pacman_path(None);
         result
     }
@@ -1062,6 +1077,7 @@ mod tests {
                 "owner-profile".to_string(),
                 "gpu-display-stack".to_string(),
                 "hyprland-desktop".to_string(),
+                "oh-my-posh-aur-ratchet".to_string(),
                 "operator-rc-profile".to_string(),
                 "desktop-config-payload".to_string(),
                 "user-session-services".to_string(),
@@ -1807,6 +1823,80 @@ mod tests {
             .collect();
         assert_eq!(ledgers.len(), 1, "only one profile ledger should exist");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tv_oh_my_posh_aur_ratchet_owns_public_pin_and_spine_position() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
+        let ratchet_pos = profile
+            .modules
+            .iter()
+            .position(|module| module == "oh-my-posh-aur-ratchet")
+            .expect("TV spine must include the oh-my-posh AUR ratchet");
+        let operator_pos = profile
+            .modules
+            .iter()
+            .position(|module| module == "operator-rc-profile")
+            .expect("TV spine must include operator rc profile");
+        assert!(ratchet_pos < operator_pos);
+
+        let ratchet = load_ladder_manifest(
+            &root.join("profiles/tv/modules/oh-my-posh-aur-ratchet/manifest.json"),
+        )
+        .unwrap();
+        assert_eq!(ratchet.version, "1.0.0");
+        assert_eq!(
+            ratchet.constants["package"].as_str(),
+            Some("oh-my-posh-bin")
+        );
+        let step_names: Vec<_> = ratchet
+            .ladder
+            .iter()
+            .map(|step| (step.tool.as_str(), step.permutation.as_str()))
+            .collect();
+        assert_eq!(
+            step_names,
+            vec![
+                ("aur", "check"),
+                ("aur", "build-pinned"),
+                ("command", "capture")
+            ]
+        );
+        validate_ladder(&ratchet).unwrap();
+
+        let lock: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(
+                root.join("profiles/tv/modules/oh-my-posh-aur-ratchet/ratchet-lock.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lock["schema"], "harmonia.aur.ratchet_lock.v1");
+        assert_eq!(lock["package"], "oh-my-posh-bin");
+        assert_eq!(lock["pinned_version"], "29.20.1-1");
+        assert_eq!(
+            lock["pkgbuild_sha"],
+            "ed800be1c781d41ce83ce6e693d6e00e868883c9"
+        );
+    }
+
+    #[test]
+    fn operator_rc_profile_no_longer_installs_oh_my_posh() {
+        let root = repo_root();
+        let operator = load_ladder_manifest(
+            &root.join("profiles/tv/modules/operator-rc-profile/manifest.json"),
+        )
+        .unwrap();
+        let packages = operator.constants["packages"].as_array().unwrap();
+        assert!(!packages
+            .iter()
+            .any(|package| package.as_str() == Some("oh-my-posh")));
+        assert!(!operator
+            .ladder
+            .iter()
+            .any(|step| step.step_id == "binary-oh-my-posh"));
+        validate_ladder(&operator).unwrap();
     }
 }
 

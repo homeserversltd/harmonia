@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "operator-rc-profile",
   "version": "1.0.0",
-  "description": "TV operator-rc-profile module. Rust owns operator rc files, zsh login shell helpers, Oh My Posh config path, and bin helpers are maintained; this sidecar carries constants only.",
+  "description": "TV operator-rc-profile module. Rust owns operator rc files, zsh login shell helpers, Oh My Posh config paths, and bin helpers; oh-my-posh package currentness is owned by the oh-my-posh-aur-ratchet module.",
   "optional": false,
   "constants": {
     "packages": [
@@ -10,11 +10,7 @@
       "zsh-autosuggestions",
       "zsh-syntax-highlighting",
       "fzf",
-      "atuin",
-      "oh-my-posh"
-    ],
-    "binaries": [
-      "oh-my-posh"
+      "atuin"
     ],
     "target_dir": "/home/owner",
     "expected_files": [
@@ -29,7 +25,7 @@
     ],
     "phase": 4,
     "receipt_schema": "harmonia.tv.operator_rc_profile.v1",
-    "meaning": "operator rc files, zsh login shell helpers, Oh My Posh config path, and bin helpers are maintained"
+    "meaning": "operator rc files, zsh login shell helpers, Oh My Posh config paths, and bin helpers are maintained; oh-my-posh package currentness is owned by oh-my-posh-aur-ratchet"
   },
   "ladder": [
     {
@@ -39,20 +35,6 @@
       "args": {
         "packages": "$constants.packages",
         "timeout_secs": 1800
-      }
-    },
-    {
-      "step_id": "binary-oh-my-posh",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v oh-my-posh >/dev/null"
-        ],
-        "timeout_secs": 30
       }
     },
     {

@@ -31,6 +31,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("source_dir", ToolArgKind::String),
             ToolArg::optional("builder_user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+            ToolArg::optional("install", ToolArgKind::Bool),
         ],
     ),
 ];
@@ -99,6 +100,9 @@ pub(crate) struct AurBuildReceipt {
     pub pinned_pkgbuild_sha: String,
     pub build_dir: PathBuf,
     pub produced_package_path: Option<PathBuf>,
+    pub installed_version_before: Option<String>,
+    pub install_requested: bool,
+    pub installed_converged: bool,
     pub first_blocker: Option<String>,
     pub timeout_policy: String,
     pub safety_posture: String,
@@ -106,6 +110,7 @@ pub(crate) struct AurBuildReceipt {
     pub ok: bool,
     pub changed: bool,
     pub command: Option<CmdResult>,
+    pub install_command: Option<CmdResult>,
 }
 
 fn read_lock(path: &Path, package: &str) -> Result<AurRatchetLock, String> {
@@ -160,20 +165,28 @@ fn upstream_state_path(arg: Option<&str>) -> Option<String> {
 }
 
 fn read_upstream_state(path: Option<&str>, package: &str) -> Result<AurUpstreamState, String> {
-    let Some(path) = upstream_state_path(path) else {
-        return Err("aur-upstream-state-not-injected".into());
+    let state = if let Some(path) = upstream_state_path(path) {
+        let text = fs::read_to_string(&path)
+            .map_err(|e| format!("aur-upstream-state-read-failed {path}: {e}"))?;
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|e| format!("aur-upstream-state-parse-failed {path}: {e}"))?;
+        let state_value = value
+            .get("packages")
+            .and_then(|packages| packages.get(package))
+            .cloned()
+            .unwrap_or(value);
+        serde_json::from_value(state_value)
+            .map_err(|e| format!("aur-upstream-state-package-invalid {package}: {e}"))?
+    } else {
+        observe_live_upstream_state(package)?
     };
-    let text = fs::read_to_string(&path)
-        .map_err(|e| format!("aur-upstream-state-read-failed {path}: {e}"))?;
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|e| format!("aur-upstream-state-parse-failed {path}: {e}"))?;
-    let state_value = value
-        .get("packages")
-        .and_then(|packages| packages.get(package))
-        .cloned()
-        .unwrap_or(value);
-    let state: AurUpstreamState = serde_json::from_value(state_value)
-        .map_err(|e| format!("aur-upstream-state-package-invalid {package}: {e}"))?;
+    validate_upstream_state(state, package)
+}
+
+fn validate_upstream_state(
+    state: AurUpstreamState,
+    package: &str,
+) -> Result<AurUpstreamState, String> {
     if state.schema != "harmonia.aur.upstream_state.v1" {
         return Err(format!(
             "aur-upstream-state-schema-unsupported-{}",
@@ -190,6 +203,47 @@ fn read_upstream_state(path: Option<&str>, package: &str) -> Result<AurUpstreamS
         return Err("aur-upstream-pkgbuild-sha-not-hex40".into());
     }
     Ok(state)
+}
+
+fn observe_live_upstream_state(package: &str) -> Result<AurUpstreamState, String> {
+    let info_url = format!("{DEFAULT_AUR_BASE_URL}/rpc/v5/info/{package}");
+    let info = command::capture_with_timeout("/usr/bin/curl", &["-fsSL", &info_url], 30);
+    if !info.ok {
+        return Err(format!(
+            "aur-upstream-rpc-unreachable {package}: {}",
+            first_blocker(&info)
+        ));
+    }
+    let value: Value = serde_json::from_str(&info.stdout)
+        .map_err(|e| format!("aur-upstream-rpc-parse-failed {package}: {e}"))?;
+    let version = value
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("Version"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("aur-upstream-version-missing {package}"))?;
+    let repo_url = format!("{DEFAULT_AUR_BASE_URL}/{package}.git");
+    let head = command::capture_with_timeout("/usr/bin/git", &["ls-remote", &repo_url, "HEAD"], 30);
+    if !head.ok {
+        return Err(format!(
+            "aur-upstream-git-unreachable {package}: {}",
+            first_blocker(&head)
+        ));
+    }
+    let sha = head
+        .stdout
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| format!("aur-upstream-head-missing {package}"))?
+        .to_string();
+    Ok(AurUpstreamState {
+        schema: "harmonia.aur.upstream_state.v1".into(),
+        package: package.to_string(),
+        available_version: version.to_string(),
+        pkgbuild_sha: sha,
+        observed_source: format!("aur-rpc+git:{info_url}"),
+    })
 }
 
 pub(crate) fn check(
@@ -243,6 +297,7 @@ pub(crate) fn build_pinned(
     source_dir: Option<&str>,
     builder_user: Option<&str>,
     timeout_secs: u64,
+    install: bool,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
     let lock = read_lock(lock_path, package)?;
@@ -261,6 +316,9 @@ pub(crate) fn build_pinned(
         pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
         build_dir: build_dir.clone(),
         produced_package_path: None,
+        installed_version_before: None,
+        install_requested: install,
+        installed_converged: false,
         first_blocker: None,
         timeout_policy: format!("bounded-timeout-seconds={timeout_secs}"),
         safety_posture: safety_posture.into(),
@@ -268,6 +326,7 @@ pub(crate) fn build_pinned(
         ok: false,
         changed: false,
         command: None,
+        install_command: None,
     };
 
     if !apply {
@@ -281,6 +340,25 @@ pub(crate) fn build_pinned(
             message: format!("aur build-pinned planned {package}"),
             command: None,
         });
+    }
+
+    if install {
+        let installed = installed_version(package);
+        if let Some(version) = &installed {
+            receipt.installed_version_before = Some(version.clone());
+            if version == &lock.pinned_version {
+                receipt.ok = true;
+                receipt.installed_converged = true;
+                write_build_receipt(receipt_dir, receipt_name, &receipt)?;
+                return Ok(OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: false,
+                    message: format!("aur build-pinned idle {package}"),
+                    command: None,
+                });
+            }
+        }
     }
 
     let result = prepare_and_build(
@@ -297,7 +375,23 @@ pub(crate) fn build_pinned(
             receipt.changed = command.ok;
             receipt.command = Some(command.clone());
             if command.ok {
-                receipt.produced_package_path = package_path;
+                receipt.produced_package_path = package_path.clone();
+                if install {
+                    if let Some(path) = package_path {
+                        let install_result = install_built_package(&path, timeout_secs);
+                        receipt.installed_converged = install_result.ok;
+                        receipt.changed = install_result.ok;
+                        receipt.ok = install_result.ok;
+                        if !install_result.ok {
+                            receipt.first_blocker = Some(first_blocker(&install_result));
+                        }
+                        receipt.install_command = Some(install_result);
+                    } else {
+                        receipt.ok = false;
+                        receipt.changed = false;
+                        receipt.first_blocker = Some("aur-produced-package-missing".into());
+                    }
+                }
             } else {
                 receipt.first_blocker = Some(first_blocker(&command));
             }
@@ -314,6 +408,26 @@ pub(crate) fn build_pinned(
         message: format!("aur build-pinned {package}"),
         command: receipt.command,
     })
+}
+
+fn installed_version(package: &str) -> Option<String> {
+    let pacman = crate::tools::package::pacman_program();
+    if !Path::new(&pacman).exists() {
+        return None;
+    }
+    let result = command::capture(&pacman, &["-Q", package]);
+    if !result.ok {
+        return None;
+    }
+    let mut fields = result.stdout.split_whitespace();
+    let _name = fields.next()?;
+    fields.next().map(ToString::to_string)
+}
+
+fn install_built_package(path: &Path, timeout_secs: u64) -> CmdResult {
+    let pacman = crate::tools::package::pacman_program();
+    let path = path.to_string_lossy().to_string();
+    command::capture_with_timeout(&pacman, &["-U", "--noconfirm", &path], timeout_secs)
 }
 
 fn bounded_timeout(timeout_secs: u64) -> u64 {
@@ -516,6 +630,8 @@ pub(crate) fn validate_ladder_args(
 mod tests {
     use super::*;
     use crate::ladder::{load_ladder_manifest, validate_ladder};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root(name: &str) -> PathBuf {
@@ -656,6 +772,7 @@ mod tests {
             Some(source.to_str().unwrap()),
             Some("aur-builder"),
             30,
+            false,
             true,
         )
         .unwrap();
@@ -668,6 +785,58 @@ mod tests {
             .unwrap()
             .contains("unable to read tree"));
         assert_eq!(receipt["produced_package_path"], Value::Null);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_pinned_install_is_truthful_idle_noop_when_installed_pin_matches() {
+        let root = temp_root("idle-install");
+        fs::create_dir_all(&root).unwrap();
+        let fake_pacman = root.join("fake-pacman");
+        fs::write(
+            &fake_pacman,
+            "#!/usr/bin/env sh\nif [ \"$1\" = \"-Q\" ] && [ \"$2\" = \"oh-my-posh-bin\" ]; then echo 'oh-my-posh-bin 29.20.1-1'; exit 0; fi\necho unexpected pacman call >&2\nexit 2\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&fake_pacman, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::tools::package::set_test_pacman_path(Some(fake_pacman.display().to_string()));
+        let lock = root.join("lock.json");
+        fs::write(
+            &lock,
+            serde_json::json!({
+                "schema": "harmonia.aur.ratchet_lock.v1",
+                "package": "oh-my-posh-bin",
+                "pinned_version": "29.20.1-1",
+                "pkgbuild_sha": "ed800be1c781d41ce83ce6e693d6e00e868883c9"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let receipt_dir = root.join("receipts");
+        let out = build_pinned(
+            &receipt_dir,
+            "aur-build",
+            "oh-my-posh-bin",
+            &lock,
+            &root.join("build"),
+            None,
+            Some("aur-builder"),
+            30,
+            true,
+            true,
+        )
+        .unwrap();
+        crate::tools::package::set_test_pacman_path(None);
+        assert!(out.ok);
+        assert!(!out.changed);
+        assert!(!root.join("build/oh-my-posh-bin").exists());
+        let receipt: Value =
+            serde_json::from_str(&fs::read_to_string(receipt_dir.join("aur-build.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["installed_version_before"], "29.20.1-1");
+        assert_eq!(receipt["installed_converged"], true);
+        assert_eq!(receipt["changed"], false);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -697,6 +866,7 @@ mod tests {
             None,
             Some("aur-builder"),
             30,
+            false,
             false,
         )
         .unwrap();

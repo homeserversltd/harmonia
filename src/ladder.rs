@@ -440,7 +440,7 @@ fn execute_validated_step(
             command: None,
         }),
         ("git-artifact", "sync") => git_artifact_step(step, module_dir, apply),
-        ("aur", "check") | ("aur", "build-pinned") => aur_step(step, module_dir, apply),
+        ("aur", "check") | ("aur", "build-pinned") => aur_step(step, manifest, module_dir, apply),
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
@@ -835,11 +835,12 @@ fn package_step(
 
 fn aur_step(
     step: &ValidatedStep,
+    manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
     let package = string_arg(&step.args, "package");
-    let lock = PathBuf::from(string_arg(&step.args, "lock"));
+    let lock = resolve_ladder_path(manifest, string_arg(&step.args, "lock"));
     match step.permutation.as_str() {
         "check" => crate::tools::aur::check(
             module_dir,
@@ -857,6 +858,10 @@ fn aur_step(
             optional_string_arg(&step.args, "source_dir"),
             optional_string_arg(&step.args, "builder_user"),
             integer_arg(&step.args, "timeout_secs", 3600),
+            step.args
+                .get("install")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             apply,
         ),
         other => Err(format!("aur-permutation-unsupported-{other}")),
