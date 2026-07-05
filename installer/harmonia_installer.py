@@ -165,21 +165,24 @@ def install(args: argparse.Namespace) -> int:
     apply = bool(args.apply)
     with_systemd = bool(args.with_systemd or args.enable_timer)
     artifact = REPO_ROOT / "target" / ("debug" if getattr(args, "debug", False) else "release") / "harmonia"
+    capsule_dir = paths.state_dir / "capsules" / args.profile
     plan = [
         f"build binary with cargo unless --skip-build ({artifact})",
         f"install binary -> {paths.bin_path}",
-        f"install profiles -> {paths.config_dir / 'profiles'}",
-        f"install modules -> {paths.config_dir / 'modules'}",
-        f"install locks -> {paths.config_dir / 'locks'}",
+        f"pack capsule for profile {args.profile} -> {capsule_dir}",
+        f"install capsule into {paths.config_dir} (lane=capsule)",
         f"ensure state/log/receipt dirs -> {paths.state_dir}, {paths.log_dir}, {paths.receipt_dir}",
     ]
     if with_systemd:
         plan.append(
-            f"install systemd units -> {paths.systemd_dir}/harmonia-homeconsole.service and harmonia-homeconsole.timer"
+            f"install systemd units -> {paths.systemd_dir}/harmonia-{args.profile}.service and harmonia-{args.profile}.timer"
         )
     emit_plan("harmonia.installer.install_plan.v1", apply, plan)
     if not apply:
         return 0
+    if requires_root(paths) and os.geteuid() != 0:
+        print("harmonia installer apply requires root for system paths; rerun with sudo or pass fake --*-dir paths for hermetic tests", file=sys.stderr)
+        return 1
     if not args.skip_build:
         code = build(args)
         if code != 0:
@@ -188,11 +191,24 @@ def install(args: argparse.Namespace) -> int:
         print(f"missing build artifact: {artifact}", file=sys.stderr)
         return 1
     install_file(artifact, paths.bin_path, mode=0o755)
-    copy_tree(REPO_ROOT / "profiles", paths.config_dir / "profiles")
-    copy_tree(REPO_ROOT / "modules", paths.config_dir / "modules")
-    copy_tree(REPO_ROOT / "locks", paths.config_dir / "locks")
     for directory in [paths.state_dir, paths.receipt_dir, paths.log_dir]:
         directory.mkdir(parents=True, exist_ok=True)
+    pack_code = run_checked(
+        [str(paths.bin_path), "capsule", "pack", args.profile, "--out", str(capsule_dir), "--harmonia-root", str(REPO_ROOT)],
+        cwd=REPO_ROOT,
+    )
+    print(f"capsule_pack_exit={pack_code}")
+    if pack_code != 0:
+        print("ok=false")
+        return pack_code
+    install_code = run_checked(
+        [str(paths.bin_path), "capsule", "install", str(capsule_dir), "--config-dir", str(paths.config_dir), "--apply"],
+        cwd=REPO_ROOT,
+    )
+    print(f"capsule_install_exit={install_code}")
+    if install_code != 0:
+        print("ok=false")
+        return install_code
     if with_systemd:
         install_systemd_units(paths, profile=args.profile)
         daemon_reload = run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
@@ -202,7 +218,7 @@ def install(args: argparse.Namespace) -> int:
             return daemon_reload
         if args.enable_timer:
             enable_timer = run_checked(
-                ["systemctl", "enable", "--now", "harmonia-homeconsole.timer"],
+                ["systemctl", "enable", "--now", f"harmonia-{args.profile}.timer"],
                 cwd=REPO_ROOT,
                 allow_missing=True,
             )
@@ -212,6 +228,8 @@ def install(args: argparse.Namespace) -> int:
                 return enable_timer
     print("schema=harmonia.installer.install.v1")
     print("ok=true")
+    print("profile=" + args.profile)
+    print("lane=capsule")
     print(f"binary={paths.bin_path}")
     print(f"config_dir={paths.config_dir}")
     return 0
@@ -302,21 +320,27 @@ def copy_tree(src: Path, dst: Path) -> None:
 
 
 def install_systemd_units(paths: InstallPaths, profile: str) -> None:
-    receipt_latest = f"{paths.receipt_dir}/homeconsole-update-latest"
+    receipt_latest = f"{paths.receipt_dir}/{profile}-update-latest"
+    if profile == "homeconsole":
+        run_command = f"{paths.bin_path} homeconsole-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
+    else:
+        run_command = f"{paths.bin_path} run-profile {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
+    service_name = f"harmonia-{profile}.service"
+    timer_name = f"harmonia-{profile}.timer"
     service = f"""[Unit]
-Description=Run Harmonia HomeConsole profile convergence
+Description=Run Harmonia {profile} profile convergence
 Documentation=file:{receipt_latest}/run.json
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={paths.bin_path} homeconsole-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}
+ExecStart={run_command}
 Nice=10
 IOSchedulingClass=idle
 """
-    timer = """[Unit]
-Description=Run Harmonia HomeConsole profile convergence on schedule
+    timer = f"""[Unit]
+Description=Run Harmonia {profile} profile convergence on schedule
 
 [Timer]
 OnBootSec=2min
@@ -324,14 +348,26 @@ OnCalendar=*:0/10
 OnUnitActiveSec=10min
 AccuracySec=30s
 Persistent=true
-Unit=harmonia-homeconsole.service
+Unit={service_name}
 
 [Install]
 WantedBy=timers.target
 """
     paths.systemd_dir.mkdir(parents=True, exist_ok=True)
-    (paths.systemd_dir / "harmonia-homeconsole.service").write_text(service)
-    (paths.systemd_dir / "harmonia-homeconsole.timer").write_text(timer)
+    (paths.systemd_dir / service_name).write_text(service)
+    (paths.systemd_dir / timer_name).write_text(timer)
+
+
+def requires_root(paths: InstallPaths) -> bool:
+    system_prefixes = (Path("/etc"), Path("/usr"), Path("/var"))
+    for path in [paths.bin_path, paths.config_dir, paths.state_dir, paths.log_dir, paths.receipt_dir, paths.systemd_dir]:
+        try:
+            resolved = path if path.is_absolute() else (Path.cwd() / path)
+            if any(resolved == prefix or prefix in resolved.parents for prefix in system_prefixes):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def remove_path(path: Path) -> None:

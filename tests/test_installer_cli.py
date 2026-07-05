@@ -78,6 +78,28 @@ class InstallerCliTests(unittest.TestCase):
             self.assertEqual(payload["schema"], "harmonia.installer.status.v1")
             self.assertFalse(payload["binary"]["exists"])
 
+    def test_systemd_units_are_profile_correct(self) -> None:
+        from installer.harmonia_installer import InstallPaths, install_systemd_units
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = InstallPaths(
+                bin_path=root / "bin" / "harmonia",
+                config_dir=root / "etc" / "harmonia",
+                state_dir=root / "var" / "lib" / "harmonia",
+                log_dir=root / "var" / "log" / "harmonia",
+                receipt_dir=root / "var" / "lib" / "harmonia" / "receipts",
+                systemd_dir=root / "systemd",
+            )
+            install_systemd_units(paths, profile="tv")
+            service = (paths.systemd_dir / "harmonia-tv.service").read_text()
+            timer = (paths.systemd_dir / "harmonia-tv.timer").read_text()
+            self.assertIn("run-profile", service)
+            self.assertIn("profiles/tv/index.json", service)
+            self.assertIn("tv-update-latest", service)
+            self.assertIn("Unit=harmonia-tv.service", timer)
+            self.assertNotIn("homeconsole-update", service)
+
 
     def test_uninstall_apply_preserves_state_dir_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
