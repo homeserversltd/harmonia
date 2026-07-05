@@ -1,0 +1,48 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "gogs",
+  "version": "1.0.0",
+  "description": "Generic Gogs legacy git host maintenance competitor: package currentness, gogs.service convergence, and default localhost web health proof.",
+  "group": {
+    "group_id": "git-host",
+    "group_order": 2,
+    "live_probe": {
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "gogs.service"
+      }
+    }
+  },
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "gogs-package-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": [
+          "gogs"
+        ]
+      }
+    },
+    {
+      "step_id": "gogs-service-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "gogs.service"
+      }
+    },
+    {
+      "step_id": "gogs-health",
+      "tool": "health",
+      "permutation": "probe",
+      "args": {
+        "url": "http://127.0.0.1:3000/",
+        "timeout_secs": 3,
+        "retries": 1
+      }
+    }
+  ]
+}

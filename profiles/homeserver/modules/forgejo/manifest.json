@@ -1,0 +1,48 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "forgejo",
+  "version": "1.0.0",
+  "description": "Generic Forgejo git host maintenance: package currentness, forgejo.service convergence, and default localhost web health proof.",
+  "group": {
+    "group_id": "git-host",
+    "group_order": 1,
+    "live_probe": {
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "forgejo.service"
+      }
+    }
+  },
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "forgejo-package-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": [
+          "forgejo"
+        ]
+      }
+    },
+    {
+      "step_id": "forgejo-service-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "forgejo.service"
+      }
+    },
+    {
+      "step_id": "forgejo-health",
+      "tool": "health",
+      "permutation": "probe",
+      "args": {
+        "url": "http://127.0.0.1:3000/",
+        "timeout_secs": 3,
+        "retries": 1
+      }
+    }
+  ]
+}

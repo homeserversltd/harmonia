@@ -775,16 +775,20 @@ mod tests {
         let root = scratch("roundtrip-src");
         let capsule = scratch("roundtrip-capsule");
         let config = scratch("roundtrip-config");
+        let subscription_root = scratch("roundtrip-subscription");
+        let subscription = subscription_root.join("subscription.json");
         write_fixture(&root, "1.0.0");
         fs::create_dir_all(config.join("profiles/demo/modules/old/files_root/tmp")).unwrap();
         fs::write(config.join("profiles/demo/modules/old/manifest.json"), "{}").unwrap();
         capsule_pack("demo", &capsule, &root).unwrap();
         capsule_verify(&capsule).unwrap();
-        capsule_install(&capsule, &config, false).unwrap();
-        let plan = fs::read_to_string(capsule.join("install-plan-receipt.json")).unwrap();
-        assert!(plan.contains("prune-module"));
-        assert!(plan.contains("old"));
-        capsule_install(&capsule, &config, true).unwrap();
+        with_subscription_path(&subscription, || {
+            capsule_install(&capsule, &config, false).unwrap();
+            let plan = fs::read_to_string(capsule.join("install-plan-receipt.json")).unwrap();
+            assert!(plan.contains("prune-module"));
+            assert!(plan.contains("old"));
+            capsule_install(&capsule, &config, true).unwrap();
+        });
         assert!(!config.join("profiles/demo/modules/old").exists());
         assert!(config
             .join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt")
@@ -796,6 +800,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(capsule);
         let _ = fs::remove_dir_all(config);
+        let _ = fs::remove_dir_all(subscription_root);
     }
 
     #[test]

@@ -23,6 +23,7 @@
       "transmission",
       "mkdocs",
       "forgejo",
+      "gogs",
       "yarr",
       "navidrome",
       "samba",
@@ -37,9 +38,12 @@
   "modules": [
     "rust-build-toolchain",
     "coronatio",
-    "caduceus"
+    "caduceus",
+    "forgejo",
+    "gogs",
+    "jellyfin"
   ],
-  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, and Caduceus modules; represented UDEV and systemd configuration modules",
+  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, and Jellyfin plain service modules; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -54,6 +58,7 @@
     "transmission",
     "mkdocs",
     "forgejo",
+    "gogs",
     "yarr",
     "navidrome",
     "samba",
