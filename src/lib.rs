@@ -222,6 +222,7 @@ mod module_dispatch;
 mod preflight;
 mod profile_engine;
 mod receipts;
+mod subscription;
 
 pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
@@ -231,6 +232,7 @@ pub(crate) use module_dispatch::*;
 pub(crate) use preflight::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
+pub(crate) use subscription::*;
 
 pub fn main_entry() {
     if let Err(err) = run(env::args().skip(1).collect()) {
@@ -1902,6 +1904,13 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 other => Err(format!("capsule-action-unsupported-{other}")),
             }
         }
+        Some("subscription") => {
+            let action = args.get(1).ok_or("subscription requires <show>")?;
+            match action.as_str() {
+                "show" => subscription_show(&subscription_path()),
+                other => Err(format!("subscription-action-unsupported-{other}")),
+            }
+        }
         Some("deployable-config") => {
             let action = args
                 .get(1)
@@ -2201,6 +2210,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia validate-ladder <manifest.json>");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia subscription show");
     println!("  harmonia deployable-config export <profile-id> --out <path> [--harmonia-root <path>] [--mode copy|symlink] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts check <profiles/<id>/index.json> [--lock <path>] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts nudge <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--receipt-dir <path>]");
