@@ -108,7 +108,8 @@ Install contract:
     uninstall_p = sub.add_parser("uninstall", help="Remove installed Harmonia surfaces.")
     add_common_path_args(uninstall_p)
     uninstall_p.add_argument("--apply", action="store_true", help="Actually remove install surfaces. Omit for dry-run.")
-    uninstall_p.add_argument("--keep-state", action="store_true", help="Preserve /var/lib/harmonia state and receipts.")
+    uninstall_p.add_argument("--purge-state", action="store_true", help="Remove /var/lib/harmonia state/receipts and logs. Default preserves history.")
+    uninstall_p.add_argument("--keep-state", action="store_true", help=argparse.SUPPRESS)
     uninstall_p.add_argument("--keep-config", action="store_true", help="Preserve /etc/harmonia config.")
     uninstall_p.add_argument("--with-systemd", action="store_true", help="Remove harmonia service/timer units too.")
 
@@ -194,13 +195,21 @@ def install(args: argparse.Namespace) -> int:
         directory.mkdir(parents=True, exist_ok=True)
     if with_systemd:
         install_systemd_units(paths, profile=args.profile)
-        run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
+        daemon_reload = run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
+        print(f"systemctl_daemon_reload_exit={daemon_reload}")
+        if daemon_reload != 0:
+            print("ok=false")
+            return daemon_reload
         if args.enable_timer:
-            run_checked(
+            enable_timer = run_checked(
                 ["systemctl", "enable", "--now", "harmonia-homeconsole.timer"],
                 cwd=REPO_ROOT,
                 allow_missing=True,
             )
+            print(f"systemctl_enable_timer_exit={enable_timer}")
+            if enable_timer != 0:
+                print("ok=false")
+                return enable_timer
     print("schema=harmonia.installer.install.v1")
     print("ok=true")
     print(f"binary={paths.bin_path}")
@@ -221,7 +230,8 @@ def uninstall(args: argparse.Namespace) -> int:
         )
     if not args.keep_config:
         targets.append(paths.config_dir)
-    if not args.keep_state:
+    purge_state = bool(getattr(args, "purge_state", False)) and not bool(getattr(args, "keep_state", False))
+    if purge_state:
         targets.extend([paths.state_dir, paths.log_dir])
     emit_plan("harmonia.installer.uninstall_plan.v1", apply, [f"remove {target}" for target in targets])
     if not apply:
@@ -237,6 +247,8 @@ def uninstall(args: argparse.Namespace) -> int:
         remove_path(target)
     print("schema=harmonia.installer.uninstall.v1")
     print("ok=true")
+    print(f"purge_state={str(purge_state).lower()}")
+    print(f"state_preserved={str(not purge_state).lower()}")
     return 0
 
 

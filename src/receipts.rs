@@ -113,6 +113,7 @@ pub(crate) fn write_tool_receipt(
             "skipped": outcome.skipped,
             "message": outcome.message,
             "command": outcome.command,
+            "first_missing_signal": outcome.command.as_ref().map(command_first_missing_signal).unwrap_or(if outcome.ok { "none" } else { "operation-failed" }),
         }),
     )
 }
@@ -198,6 +199,20 @@ pub(crate) fn write_redacted_command_receipt(
     )
 }
 
+fn command_first_missing_signal(result: &CmdResult) -> &'static str {
+    if result.ok {
+        "none"
+    } else if result.stderr.contains("command-timeout-after-") {
+        "command-timeout"
+    } else if result.stderr.contains("conflicting files")
+        || result.stderr.contains("exists in filesystem")
+    {
+        "pacman-package-file-conflict"
+    } else {
+        "command-failed"
+    }
+}
+
 pub(crate) fn write_command_receipt(
     receipt_dir: &Path,
     name: &str,
@@ -212,6 +227,7 @@ pub(crate) fn write_command_receipt(
             "exit_code": result.code,
             "stdout": result.stdout,
             "stderr": result.stderr,
+            "first_missing_signal": command_first_missing_signal(result),
         }),
     )
 }
