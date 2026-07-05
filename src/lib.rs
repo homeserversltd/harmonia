@@ -522,8 +522,12 @@ mod tests {
 
     #[test]
     fn detects_pacman_change_from_stdout() {
-        assert!(pacman_stdout_indicates_change("\nupgrading ffmpeg..."));
-        assert!(!pacman_stdout_indicates_change(" there is nothing to do"));
+        assert!(crate::tools::package::pacman_stdout_indicates_change(
+            "\nupgrading ffmpeg..."
+        ));
+        assert!(!crate::tools::package::pacman_stdout_indicates_change(
+            " there is nothing to do"
+        ));
     }
 
     #[test]
@@ -888,42 +892,24 @@ mod tests {
             }
         }
 
-        let rust_toolchain = load_module(
-            &root.join("profiles/homeserver/modules/rust-build-toolchain/sidecar.json"),
+        let rust_toolchain = load_ladder_manifest(
+            &root.join("profiles/homeserver/modules/rust-build-toolchain/manifest.json"),
         )
         .unwrap();
-        assert_eq!(
-            rust_toolchain
-                .variables
-                .get("RUSTUP_HOME")
-                .map(String::as_str),
-            Some("/opt/rustup")
-        );
-        assert_eq!(
-            rust_toolchain
-                .variables
-                .get("CARGO_HOME")
-                .map(String::as_str),
-            Some("/opt/cargo")
-        );
+        assert_eq!(rust_toolchain.id, "rust-build-toolchain");
+        assert_eq!(rust_toolchain.files_root.as_deref(), Some("files_root"));
         for wrapper in [
-            "/usr/local/bin/rustc",
-            "/usr/local/bin/cargo",
-            "/usr/local/bin/rustup",
+            "usr/local/bin/rustc",
+            "usr/local/bin/cargo",
+            "usr/local/bin/rustup",
         ] {
-            assert!(
-                rust_toolchain.expected_files.contains(&wrapper.to_string()),
-                "missing wrapper {wrapper}"
-            );
-            assert!(
-                rust_toolchain
-                    .managed_files
-                    .iter()
-                    .any(|file| file.path == wrapper
-                        && file.content.contains("RUSTUP_HOME=/opt/rustup")
-                        && file.content.contains("CARGO_HOME=/opt/cargo")),
-                "missing pinned wrapper content {wrapper}"
-            );
+            let wrapper_path = root
+                .join("profiles/homeserver/modules/rust-build-toolchain/files_root")
+                .join(wrapper);
+            assert!(wrapper_path.is_file(), "missing wrapper {wrapper}");
+            let text = fs::read_to_string(wrapper_path).unwrap();
+            assert!(text.contains("RUSTUP_HOME=/opt/rustup"));
+            assert!(text.contains("CARGO_HOME=/opt/cargo"));
         }
 
         for module in ["coronatio", "caduceus"] {
@@ -1265,19 +1251,23 @@ mod tests {
             assert!(manifest.packages.contains(&"rust".to_string()));
             validate_registered_module(&manifest).unwrap();
 
-            let keyring_manifest = load_module(
+            let keyring_manifest = load_ladder_manifest(
                 &root
                     .join(profile_path.replace("index.json", "modules"))
-                    .join("arch-keyring-maintenance/sidecar.json"),
+                    .join("arch-keyring-maintenance/manifest.json"),
             )
             .unwrap();
             assert_eq!(keyring_manifest.id, "arch-keyring-maintenance");
-            assert!(keyring_manifest
-                .packages
-                .contains(&"archlinux-keyring".to_string()));
-            assert!(keyring_manifest.command.is_none());
-            assert!(keyring_manifest.args.is_empty());
-            validate_registered_module(&keyring_manifest).unwrap();
+            let step_names: Vec<_> = keyring_manifest
+                .ladder
+                .iter()
+                .map(|step| (step.tool.as_str(), step.permutation.as_str()))
+                .collect();
+            assert_eq!(
+                step_names,
+                vec![("package", "keyring-repair"), ("package", "install")]
+            );
+            validate_ladder(&keyring_manifest).unwrap();
         }
     }
 
@@ -1295,13 +1285,8 @@ mod tests {
         .unwrap();
         fs::create_dir_all(module_root.join("system-packages")).unwrap();
         fs::copy(
-            root.join("profiles/tv/modules/system-packages/sidecar.json"),
-            module_root.join("system-packages/sidecar.json"),
-        )
-        .unwrap();
-        fs::copy(
-            root.join("profiles/tv/modules/system-packages/index.rs"),
-            module_root.join("system-packages/index.rs"),
+            root.join("profiles/tv/modules/system-packages/manifest.json"),
+            module_root.join("system-packages/manifest.json"),
         )
         .unwrap();
         let receipts = scratch.join("receipts");
@@ -1565,11 +1550,72 @@ mod tests {
     }
 
     #[test]
+    fn package_family_modules_are_ladder_manifests() {
+        let root = repo_root();
+        let cases = [
+            (
+                "homeconsole",
+                "arch-keyring-maintenance",
+                vec![("package", "keyring-repair"), ("package", "install")],
+            ),
+            (
+                "tv",
+                "arch-keyring-maintenance",
+                vec![("package", "keyring-repair"), ("package", "install")],
+            ),
+            (
+                "homeconsole",
+                "rust-build-toolchain",
+                vec![("package", "install")],
+            ),
+            (
+                "homeserver",
+                "rust-build-toolchain",
+                vec![("package", "install"), ("files", "managed-files")],
+            ),
+            (
+                "homeconsole",
+                "system-packages",
+                vec![("package", "upgrade")],
+            ),
+            ("tv", "system-packages", vec![("package", "upgrade")]),
+        ];
+        for (profile, module, expected) in cases {
+            let dir = root
+                .join("profiles")
+                .join(profile)
+                .join("modules")
+                .join(module);
+            assert!(
+                dir.join("manifest.json").is_file(),
+                "{profile}/{module} ladder manifest missing"
+            );
+            assert!(
+                !dir.join("sidecar.json").exists(),
+                "{profile}/{module} sidecar retired"
+            );
+            assert!(
+                !dir.join("index.rs").exists(),
+                "{profile}/{module} compiled module retired"
+            );
+            let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
+            validate_ladder(&manifest).unwrap();
+            let steps: Vec<_> = manifest
+                .ladder
+                .iter()
+                .map(|step| (step.tool.as_str(), step.permutation.as_str()))
+                .collect();
+            assert_eq!(steps, expected, "{profile}/{module} ladder steps");
+        }
+    }
+
+    #[test]
     fn shared_toolbelt_is_callable_by_modules() {
         assert!(tools::get("command").is_some());
         assert!(tools::get("git-artifact").is_some());
         assert!(tools::get("health").is_some());
         assert!(tools::get("files").is_some());
+        assert!(tools::get("package").is_some());
         let root = repo_root();
         let manifest = load_module(
             &root.join("profiles/homeconsole/modules/homeconsole-sync-runtime/sidecar.json"),

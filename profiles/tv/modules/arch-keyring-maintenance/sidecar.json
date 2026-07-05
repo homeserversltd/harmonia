@@ -1,8 +1,0 @@
-{
-  "schema": "harmonia.module.sidecar.v1",
-  "id": "arch-keyring-maintenance",
-  "description": "TV Arch keyring maintenance module. Rust owns keyring repair before package updates; this sidecar carries constants only.",
-  "packages": [
-    "archlinux-keyring"
-  ]
-}

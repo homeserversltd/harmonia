@@ -347,6 +347,7 @@ pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {
     tools::command::capture(program, args)
 }
 
+#[allow(dead_code)]
 pub(crate) fn command_capture_with_timeout(
     program: &str,
     args: &[&str],
@@ -364,10 +365,7 @@ pub(crate) fn command_capture_with_cwd(
 }
 
 pub(crate) fn pacman_stdout_indicates_change(stdout: &str) -> bool {
-    stdout.contains("\nupgrading ")
-        || stdout.contains("\ninstalling ")
-        || stdout.contains("\nreinstalling ")
-        || stdout.contains("\nremoving ")
+    crate::tools::package::pacman_stdout_indicates_change(stdout)
 }
 
 pub(crate) fn harmonia_root_from_module_root(module_root: &Path) -> PathBuf {

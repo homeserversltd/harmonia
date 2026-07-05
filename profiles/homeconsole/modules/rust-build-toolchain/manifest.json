@@ -1,0 +1,23 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "rust-build-toolchain",
+  "version": "1.0.0",
+  "description": "homeconsole Rust build toolchain ladder using package install.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "rust"
+    ]
+  },
+  "ladder": [
+    {
+      "step_id": "rust-package-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

@@ -4,8 +4,6 @@ use std::path::Path;
 
 #[path = "../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
 mod arcadia_gui_runtime;
-#[path = "../profiles/homeconsole/modules/arch-keyring-maintenance/index.rs"]
-mod arch_keyring_maintenance;
 #[path = "../profiles/homeconsole/modules/harmonia-runtime/index.rs"]
 mod harmonia_runtime;
 #[path = "../profiles/homeconsole/modules/homeconsole-caduceus-public-lever/index.rs"]
@@ -26,10 +24,6 @@ mod local_ai_runtime;
 mod pinned_artifacts_runtime;
 #[path = "../profiles/rebis/modules/rebis-waybar-config/index.rs"]
 mod rebis_waybar_config;
-#[path = "../profiles/homeconsole/modules/rust-build-toolchain/index.rs"]
-mod rust_build_toolchain;
-#[path = "../profiles/homeconsole/modules/system-packages/index.rs"]
-mod system_packages;
 #[path = "../profiles/tv/modules/appliance-proof/index.rs"]
 mod tv_appliance_proof;
 #[path = "../profiles/tv/modules/caduceus-public-lever/index.rs"]
@@ -111,16 +105,11 @@ pub(crate) fn execute_profile_module(
     let module_dir = receipt_dir.join("modules").join(&module.id);
     fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
     match module.id.as_str() {
-        arch_keyring_maintenance::ID => {
-            arch_keyring_maintenance::execute(module, &module_dir, apply)
-        }
-        system_packages::ID => system_packages::execute(module, &module_dir, apply),
         harmonia_runtime::ID => harmonia_runtime::execute(module, &module_dir, apply),
         keyman_runtime::ID => keyman_runtime::execute(module, &module_dir, apply),
         homeconsole_sync_runtime::ID => {
             homeconsole_sync_runtime::execute(module, &module_dir, apply)
         }
-        rust_build_toolchain::ID => rust_build_toolchain::execute(module, &module_dir, apply),
         arcadia_gui_runtime::ID => arcadia_gui_runtime::execute(module, &module_dir, apply),
         local_ai_runtime::ID => local_ai_runtime::execute(module, &module_dir, apply),
         pinned_artifacts_runtime::ID => {
@@ -180,12 +169,9 @@ pub(crate) fn execute_profile_module(
 pub(crate) fn is_registered_module_id(module_id: &str) -> bool {
     matches!(
         module_id,
-        arch_keyring_maintenance::ID
-            | system_packages::ID
-            | harmonia_runtime::ID
+        harmonia_runtime::ID
             | keyman_runtime::ID
             | homeconsole_sync_runtime::ID
-            | rust_build_toolchain::ID
             | arcadia_gui_runtime::ID
             | local_ai_runtime::ID
             | pinned_artifacts_runtime::ID
@@ -211,12 +197,9 @@ pub(crate) fn is_registered_module_id(module_id: &str) -> bool {
 
 pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), String> {
     match module.id.as_str() {
-        arch_keyring_maintenance::ID => arch_keyring_maintenance::validate(module),
-        system_packages::ID => system_packages::validate(module),
         harmonia_runtime::ID => harmonia_runtime::validate(module),
         keyman_runtime::ID => keyman_runtime::validate(module),
         homeconsole_sync_runtime::ID => homeconsole_sync_runtime::validate(module),
-        rust_build_toolchain::ID => rust_build_toolchain::validate(module),
         arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
         local_ai_runtime::ID => local_ai_runtime::validate(module),
         pinned_artifacts_runtime::ID => pinned_artifacts_runtime::validate(module),

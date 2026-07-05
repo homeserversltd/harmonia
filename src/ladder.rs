@@ -1,6 +1,6 @@
 use crate::{tools, CmdResult, ModuleExecution, OperationOutcome};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,8 @@ pub(crate) struct LadderManifest {
     #[serde(default)]
     pub files_root: Option<String>,
     pub ladder: Vec<LadderStep>,
+    #[serde(skip)]
+    pub(crate) base_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -65,8 +67,9 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
         .map_err(|e| format!("ladder-manifest-read-failed {}: {e}", path.display()))?;
     serde_json::from_str::<LadderManifest>(&text)
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
-        .and_then(|manifest| {
+        .and_then(|mut manifest| {
             if manifest.schema == SCHEMA {
+                manifest.base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
                 Ok(manifest)
             } else {
                 Err(format!(
@@ -243,7 +246,7 @@ pub(crate) fn execute_ladder_manifest(
     let mut operation_count = 0usize;
     for step in steps {
         operation_count += 1;
-        let outcome = execute_validated_step(&step, module_dir, apply)?;
+        let outcome = execute_validated_step(&step, manifest, module_dir, apply)?;
         if outcome.changed {
             changed = true;
         }
@@ -305,14 +308,19 @@ pub(crate) fn shadow_diff_receipt_families(
 
 fn execute_validated_step(
     step: &ValidatedStep,
+    manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("command", "capture") => command_capture_step(step, module_dir, apply),
         ("health", "probe") => health_probe_step(step, module_dir, apply),
-        ("files", "managed-files") => managed_files_step(step, module_dir, apply),
+        ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
         ("git-artifact", "sync") => git_artifact_step(step, module_dir, apply),
+        ("package", "check")
+        | ("package", "install")
+        | ("package", "upgrade")
+        | ("package", "keyring-repair") => package_step(step, module_dir, apply),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
@@ -415,12 +423,18 @@ fn health_probe_step(
 
 fn managed_files_step(
     step: &ValidatedStep,
+    manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let files_value = step.args.get("files").cloned().unwrap_or_else(|| json!([]));
-    let files: Vec<crate::ManagedFileManifest> = serde_json::from_value(files_value)
-        .map_err(|e| format!("managed-files-args-invalid: {e}"))?;
+    let files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
+        serde_json::from_value(files_value.clone())
+            .map_err(|e| format!("managed-files-args-invalid: {e}"))?
+    } else if let Some(files_root) = &manifest.files_root {
+        managed_files_from_files_root(&manifest.base_dir.join(files_root))?
+    } else {
+        Vec::new()
+    };
     tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: "ladder",
@@ -432,6 +446,101 @@ fn managed_files_step(
         module_dir,
         apply,
     )
+}
+
+fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileManifest>, String> {
+    let mut files = Vec::new();
+    if !root.exists() {
+        return Err(format!("managed-files-root-missing {}", root.display()));
+    }
+    fn walk(
+        root: &Path,
+        path: &Path,
+        out: &mut Vec<crate::ManagedFileManifest>,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let p = entry.path();
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                walk(root, &p, out)?;
+            } else {
+                let rel = p.strip_prefix(root).map_err(|e| e.to_string())?;
+                let content = fs::read_to_string(&p)
+                    .map_err(|e| format!("managed-files-root-read-failed {}: {e}", p.display()))?;
+                #[cfg(unix)]
+                let mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    Some(
+                        fs::metadata(&p)
+                            .map_err(|e| e.to_string())?
+                            .permissions()
+                            .mode()
+                            & 0o777,
+                    )
+                };
+                #[cfg(not(unix))]
+                let mode = Some(0o644);
+                out.push(crate::ManagedFileManifest {
+                    path: format!("/{}", rel.to_string_lossy()),
+                    content,
+                    mode,
+                });
+            }
+        }
+        Ok(())
+    }
+    walk(root, root, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+fn package_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let packages = string_array_arg(&step.args, "packages");
+    let timeout_secs = integer_arg(&step.args, "timeout_secs", 1800);
+    match step.permutation.as_str() {
+        "check" => crate::tools::package::package_tool(
+            module_dir,
+            &step.step_id,
+            "check",
+            &packages,
+            apply,
+        ),
+        "install" => {
+            let conflict_paths = string_array_arg(&step.args, "conflict_paths");
+            crate::tools::package::package_tool_with_policy(
+                module_dir,
+                &step.step_id,
+                "install",
+                &packages,
+                apply,
+                optional_string_arg(&step.args, "conflict_policy"),
+                &conflict_paths,
+                timeout_secs,
+            )
+        }
+        "upgrade" => crate::tools::package::package_tool_with_policy(
+            module_dir,
+            &step.step_id,
+            "upgrade",
+            &[],
+            apply,
+            None,
+            &[],
+            timeout_secs,
+        ),
+        "keyring-repair" => crate::tools::package::keyring_repair_tool(
+            module_dir,
+            &step.step_id,
+            optional_string_arg(&step.args, "package").unwrap_or("archlinux-keyring"),
+            apply,
+            timeout_secs,
+        ),
+        other => Err(format!("package-permutation-unsupported-{other}")),
+    }
 }
 
 fn git_artifact_step(
@@ -492,6 +601,7 @@ pub(crate) fn shadow_proof_receipt_family_diff_for_test(
 mod tests {
     use super::*;
     use crate::{run_profile_engine, write_command_receipt, ModuleExecution, Profile};
+    use serde_json::json;
     use std::process;
 
     fn base_manifest() -> LadderManifest {
@@ -504,6 +614,7 @@ mod tests {
             optional_warning: None,
             constants: BTreeMap::new(),
             files_root: None,
+            base_dir: PathBuf::new(),
             ladder: vec![LadderStep {
                 step_id: "say-ok".into(),
                 tool: "command".into(),

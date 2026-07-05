@@ -110,6 +110,7 @@ pub mod files;
 pub mod git_artifact;
 pub mod health;
 pub(crate) mod module_steps;
+pub mod package;
 pub(crate) mod service_runtime;
 
 pub const TOOLBELT: &[ToolContract] = &[
@@ -117,6 +118,7 @@ pub const TOOLBELT: &[ToolContract] = &[
     files::CONTRACT,
     git_artifact::CONTRACT,
     health::CONTRACT,
+    package::CONTRACT,
 ];
 
 pub fn all() -> &'static [ToolContract] {
@@ -206,7 +208,7 @@ mod tests {
     #[test]
     fn registered_tool_names_have_real_behavioral_entry_points() {
         let root = repo_root();
-        let expected = BTreeSet::from(["command", "files", "git-artifact", "health"]);
+        let expected = BTreeSet::from(["command", "files", "git-artifact", "health", "package"]);
         let actual: BTreeSet<&str> = all().iter().map(|tool| tool.name).collect();
         assert_eq!(actual, expected);
         for tool in all() {

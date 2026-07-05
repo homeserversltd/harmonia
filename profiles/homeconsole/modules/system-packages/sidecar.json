@@ -1,5 +1,0 @@
-{
-  "schema": "harmonia.module.sidecar.v1",
-  "id": "system-packages",
-  "description": "HomeConsole package module. Rust owns package check/update sequencing."
-}

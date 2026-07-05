@@ -1,0 +1,17 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "system-packages",
+  "version": "1.0.0",
+  "description": "homeconsole system package upgrade ladder using the package tool.",
+  "optional": false,
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "pacman-upgrade",
+      "tool": "package",
+      "permutation": "upgrade",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ]
+}

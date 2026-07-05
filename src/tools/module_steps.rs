@@ -1,106 +1,21 @@
 use crate::*;
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use std::cell::RefCell;
-use std::env;
 use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn pacman_conflict_signal(result: &CmdResult) -> Option<String> {
-    if result.ok {
-        return None;
-    }
-    let combined = format!("{}\n{}", result.stdout, result.stderr);
-    if combined.contains("conflicting files") || combined.contains("exists in filesystem") {
-        Some("pacman-package-file-conflict".to_string())
-    } else {
-        None
-    }
-}
+pub(crate) use crate::tools::package::pacman_program;
+#[cfg(test)]
+pub(crate) use crate::tools::package::set_test_pacman_path;
 
-pub(crate) fn pacman_needs_overwrite_retry(result: &CmdResult) -> bool {
-    pacman_conflict_signal(result).is_some()
-}
-
-fn pacman_base_args(sync: bool) -> Vec<&'static str> {
-    if sync {
-        vec!["-Syu", "--noconfirm"]
-    } else {
-        vec!["-S", "--noconfirm"]
-    }
-}
-
-fn overwrite_allowed_args<'a>(base: &[&'a str], paths: &'a [String]) -> Option<Vec<&'a str>> {
-    if paths.is_empty() || paths.iter().any(|path| path == "*") {
-        return None;
-    }
-    let mut args = base.to_vec();
-    for path in paths {
-        args.push("--overwrite");
-        args.push(path.as_str());
-    }
-    Some(args)
-}
-
-pub(crate) fn pacman_mutate_packages(sync: bool, packages: &[String]) -> CmdResult {
-    pacman_mutate_packages_with_conflict_policy(sync, packages, None, &[])
-}
-
-pub(crate) fn pacman_mutate_packages_with_conflict_policy(
-    sync: bool,
+pub(crate) fn package_tool(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
     packages: &[String],
-    conflict_policy: Option<&str>,
-    conflict_paths: &[String],
-) -> CmdResult {
-    let program = pacman_program();
-    let mut args = pacman_base_args(sync);
-    args.extend(packages.iter().map(String::as_str));
-    let mut result = command_capture_with_timeout(&program, &args, 1800);
-    if result.ok || !pacman_needs_overwrite_retry(&result) {
-        return result;
-    }
-    let Some(policy) = conflict_policy else {
-        return result;
-    };
-    if policy != "overwrite-declared-paths" {
-        result.stderr = format!(
-            "{}\npacman-package-file-conflict-policy-unsupported:{policy}",
-            result.stderr
-        );
-        return result;
-    }
-    let Some(mut overwrite_args) = overwrite_allowed_args(&pacman_base_args(sync), conflict_paths)
-    else {
-        result.stderr = format!(
-            "{}\npacman-package-file-conflict-overwrite-paths-missing-or-wildcard",
-            result.stderr
-        );
-        return result;
-    };
-    overwrite_args.extend(packages.iter().map(String::as_str));
-    let second = command_capture_with_timeout(&program, &overwrite_args, 1800);
-    CmdResult {
-        ok: second.ok,
-        code: second.code,
-        stdout: format!(
-            "first_command={} {}\nfirst_ok={}\nsecond_command={} {}\n{}",
-            program,
-            args.join(" "),
-            result.ok,
-            program,
-            overwrite_args.join(" "),
-            second.stdout
-        )
-        .trim()
-        .to_string(),
-        stderr: format!(
-            "first_stderr={}\nsecond_stderr={}",
-            result.stderr, second.stderr
-        )
-        .trim()
-        .to_string(),
-    }
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    crate::tools::package::package_tool(receipt_dir, name, action, packages, apply)
 }
 
 pub(crate) fn command_tool(
@@ -120,92 +35,6 @@ pub(crate) fn command_tool(
         message: format!("command {program}; change_observed=unknown"),
         command: Some(result),
     })
-}
-
-const HARMONIA_PACMAN_PATH_ENV: &str = "HARMONIA_PACMAN_PATH";
-
-#[cfg(test)]
-thread_local! {
-    static TEST_PACMAN_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn set_test_pacman_path(path: Option<String>) {
-    TEST_PACMAN_PATH.with(|slot| {
-        *slot.borrow_mut() = path;
-    });
-}
-
-pub(crate) fn pacman_program() -> String {
-    #[cfg(test)]
-    if let Some(path) = TEST_PACMAN_PATH.with(|slot| slot.borrow().clone()) {
-        return path;
-    }
-    env::var(HARMONIA_PACMAN_PATH_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "/usr/bin/pacman".to_string())
-}
-
-pub(crate) fn pacman_available(program: &str) -> bool {
-    Path::new(program).exists()
-}
-
-pub(crate) fn package_tool(
-    receipt_dir: &Path,
-    name: &str,
-    action: &str,
-    packages: &[String],
-    apply: bool,
-) -> Result<OperationOutcome, String> {
-    let pacman = pacman_program();
-    if !pacman_available(&pacman) {
-        let outcome = OperationOutcome {
-            ok: !apply,
-            changed: false,
-            skipped: !apply,
-            message: if apply {
-                "pacman missing for package mutation".to_string()
-            } else {
-                "package manager absent on scout host; planned only".to_string()
-            },
-            command: None,
-        };
-        write_tool_receipt(receipt_dir, name, "package", action, &outcome)?;
-        return Ok(outcome);
-    }
-    let result = match action {
-        "update" if apply => command_capture_with_timeout(&pacman, &["-Syu", "--noconfirm"], 1800),
-        "update" | "check" => command_capture(&pacman, &["-Qu"]),
-        "install" if apply => pacman_mutate_packages(false, packages),
-        "install" => command_capture(&pacman, &["-Q"]),
-        other => {
-            let outcome = OperationOutcome {
-                ok: false,
-                changed: false,
-                skipped: false,
-                message: format!("unsupported package action {other}"),
-                command: None,
-            };
-            write_tool_receipt(receipt_dir, name, "package", action, &outcome)?;
-            return Ok(outcome);
-        }
-    };
-    let changed =
-        action == "update" && apply && result.ok && pacman_stdout_indicates_change(&result.stdout);
-    let ok = match action {
-        "check" => result.ok || result.code == 1,
-        _ => result.ok,
-    };
-    let outcome = OperationOutcome {
-        ok,
-        changed,
-        skipped: false,
-        message: format!("package {action}"),
-        command: Some(result),
-    };
-    write_tool_receipt(receipt_dir, name, "package", action, &outcome)?;
-    Ok(outcome)
 }
 
 #[allow(dead_code)]
@@ -477,7 +306,7 @@ mod pacman_safety_tests {
 
     #[test]
     fn sync_package_mutation_uses_full_upgrade_semantics() {
-        let args = pacman_base_args(true);
+        let args = crate::tools::package::pacman_base_args(true);
         assert_eq!(args, vec!["-Syu", "--noconfirm"]);
     }
 
@@ -491,7 +320,7 @@ mod pacman_safety_tests {
         };
         assert!(!result.ok);
         assert_eq!(
-            pacman_conflict_signal(&result).as_deref(),
+            crate::tools::package::pacman_conflict_signal(&result).as_deref(),
             Some("pacman-package-file-conflict")
         );
         assert!(result.stderr.contains("exists in filesystem"));
@@ -499,6 +328,10 @@ mod pacman_safety_tests {
 
     #[test]
     fn overwrite_policy_rejects_wildcard_paths() {
-        assert!(overwrite_allowed_args(&pacman_base_args(false), &["*".to_string()]).is_none());
+        assert!(crate::tools::package::overwrite_allowed_args(
+            &crate::tools::package::pacman_base_args(false),
+            &["*".to_string()]
+        )
+        .is_none());
     }
 }
