@@ -2,11 +2,106 @@
 pub struct ToolContract {
     pub name: &'static str,
     pub description: &'static str,
+    pub permutations: &'static [ToolPermutation],
 }
 
 impl ToolContract {
-    pub const fn new(name: &'static str, description: &'static str) -> Self {
-        Self { name, description }
+    pub const fn new(
+        name: &'static str,
+        description: &'static str,
+        permutations: &'static [ToolPermutation],
+    ) -> Self {
+        Self {
+            name,
+            description,
+            permutations,
+        }
+    }
+
+    pub fn permutation(&self, name: &str) -> Option<&'static ToolPermutation> {
+        self.permutations
+            .iter()
+            .find(|permutation| permutation.name == name)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolPermutation {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub args: &'static [ToolArg],
+}
+
+impl ToolPermutation {
+    pub const fn new(
+        name: &'static str,
+        description: &'static str,
+        args: &'static [ToolArg],
+    ) -> Self {
+        Self {
+            name,
+            description,
+            args,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolArg {
+    pub name: &'static str,
+    pub kind: ToolArgKind,
+    pub required: bool,
+}
+
+impl ToolArg {
+    pub const fn required(name: &'static str, kind: ToolArgKind) -> Self {
+        Self {
+            name,
+            kind,
+            required: true,
+        }
+    }
+
+    pub const fn optional(name: &'static str, kind: ToolArgKind) -> Self {
+        Self {
+            name,
+            kind,
+            required: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolArgKind {
+    String,
+    Bool,
+    Integer,
+    StringArray,
+    Json,
+}
+
+impl ToolArgKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Bool => "bool",
+            Self::Integer => "integer",
+            Self::StringArray => "string_array",
+            Self::Json => "json",
+        }
+    }
+
+    pub fn matches(self, value: &serde_json::Value) -> bool {
+        match self {
+            Self::String => value.is_string(),
+            Self::Bool => value.is_boolean(),
+            Self::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
+            Self::StringArray => value
+                .as_array()
+                .map(|items| items.iter().all(serde_json::Value::is_string))
+                .unwrap_or(false),
+            Self::Json => true,
+        }
     }
 }
 
@@ -28,7 +123,6 @@ pub fn all() -> &'static [ToolContract] {
     TOOLBELT
 }
 
-#[cfg(test)]
 pub fn get(name: &str) -> Option<&'static ToolContract> {
     TOOLBELT.iter().find(|tool| tool.name == name)
 }
@@ -86,6 +180,26 @@ mod tests {
                 "tool {} description must name one primitive job",
                 tool.name
             );
+            assert!(
+                !tool.permutations.is_empty(),
+                "tool {} must declare permutations",
+                tool.name
+            );
+            let mut permutations = BTreeSet::new();
+            for permutation in tool.permutations {
+                assert!(
+                    permutations.insert(permutation.name),
+                    "duplicate permutation {} for {}",
+                    permutation.name,
+                    tool.name
+                );
+                assert!(
+                    !permutation.args.is_empty(),
+                    "permutation {} for {} must declare args",
+                    permutation.name,
+                    tool.name
+                );
+            }
         }
     }
 

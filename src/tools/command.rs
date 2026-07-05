@@ -1,4 +1,4 @@
-use super::ToolContract;
+use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::CmdResult;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -9,7 +9,17 @@ use std::time::{Duration, Instant};
 
 pub const NAME: &str = "command";
 pub const DESCRIPTION: &str = "Host command execution primitive with cwd/env/timeout/exit capture; every subprocess produces a command receipt.";
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION);
+pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
+    "capture",
+    "capture a host command with optional args/cwd/timeout",
+    &[
+        ToolArg::required("program", ToolArgKind::String),
+        ToolArg::optional("args", ToolArgKind::StringArray),
+        ToolArg::optional("cwd", ToolArgKind::String),
+        ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+    ],
+)];
+pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

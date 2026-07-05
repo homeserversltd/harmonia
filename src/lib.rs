@@ -202,12 +202,14 @@ struct OperationOutcome {
 
 mod convergence_lock;
 mod deployable_config;
+mod ladder;
 mod module_dispatch;
 mod profile_engine;
 mod receipts;
 
 pub(crate) use convergence_lock::*;
 pub(crate) use deployable_config::*;
+pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
@@ -1574,6 +1576,7 @@ mod tests {
                 operation_count: 1,
                 first_missing_signal: "none",
                 receipt_dir: &first_receipt,
+                module_version: None,
             },
         )
         .unwrap();
@@ -1588,6 +1591,7 @@ mod tests {
                 operation_count: 0,
                 first_missing_signal: "identity-failed",
                 receipt_dir: &second_receipt,
+                module_version: None,
             },
         )
         .unwrap();
@@ -1617,6 +1621,31 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
+        Some("validate-ladder") => {
+            let path = args
+                .get(1)
+                .ok_or("validate-ladder requires <manifest.json>")?;
+            let manifest = load_ladder_manifest(Path::new(path))?;
+            match validate_ladder(&manifest) {
+                Ok(steps) => {
+                    println!("schema=harmonia.ladder.validate.v1");
+                    println!("ok=true");
+                    println!("module_id={}", manifest.id);
+                    println!("version={}", manifest.version);
+                    println!("step_count={}", steps.len());
+                    println!("first_missing_signal=none");
+                    Ok(())
+                }
+                Err(err) => {
+                    println!("schema=harmonia.ladder.validate.v1");
+                    println!("ok=false");
+                    println!("module_id={}", manifest.id);
+                    println!("version={}", manifest.version);
+                    println!("first_missing_signal={}", err.first_missing_signal());
+                    Err(format!("module-invalid {}", err.first_missing_signal()))
+                }
+            }
+        }
         Some("inspect-profile") => {
             let path = args
                 .get(1)
@@ -1776,7 +1805,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             }
             let module = load_module(&module_root.join("local-ai-runtime").join("sidecar.json"))?;
             let harmonia_root = harmonia_root_from_module_root(&module_root);
-            let execution = execute_profile_module(&module, &receipt_dir, apply, &harmonia_root)?;
+            let execution =
+                execute_profile_module(&module, &module_root, &receipt_dir, apply, &harmonia_root)?;
             write_engine_run_receipt(
                 &receipt_dir,
                 &profile,
@@ -1901,7 +1931,33 @@ pub(crate) fn toolbelt() -> Result<(), String> {
     println!("ok=true");
     println!("tool_count={}", tools::all().len());
     for tool in tools::all() {
-        println!("tool={} description={}", tool.name, tool.description);
+        let permutations: Vec<&str> = tool.permutations.iter().map(|p| p.name).collect();
+        println!(
+            "tool={} description={} permutations={}",
+            tool.name,
+            tool.description,
+            permutations.join(",")
+        );
+        for permutation in tool.permutations {
+            let args: Vec<String> = permutation
+                .args
+                .iter()
+                .map(|arg| {
+                    format!(
+                        "{}:{}:{}",
+                        arg.name,
+                        arg.kind.name(),
+                        if arg.required { "required" } else { "optional" }
+                    )
+                })
+                .collect();
+            println!(
+                "tool={} permutation={} args={}",
+                tool.name,
+                permutation.name,
+                args.join(",")
+            );
+        }
     }
     Ok(())
 }
@@ -1925,6 +1981,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
+    println!("  harmonia validate-ladder <manifest.json>");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia deployable-config export <profile-id> --out <path> [--harmonia-root <path>] [--mode copy|symlink] [--receipt-dir <path>]");

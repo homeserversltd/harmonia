@@ -102,11 +102,14 @@ impl ModuleExecution {
 
 pub(crate) fn execute_profile_module(
     module: &ModuleManifest,
+    module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
     harmonia_root: &Path,
 ) -> Result<ModuleExecution, String> {
-    validate_registered_module(module)?;
+    if is_registered_module_id(&module.id) {
+        validate_registered_module(module)?;
+    }
     let module_dir = receipt_dir.join("modules").join(&module.id);
     fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
     match module.id.as_str() {
@@ -159,8 +162,55 @@ pub(crate) fn execute_profile_module(
             tv_caduceus_public_lever::execute(module, &module_dir, apply)
         }
         tv_appliance_proof::ID => tv_appliance_proof::execute(module, &module_dir, apply),
-        other => Err(format!("module-unregistered-{other}")),
+        other => {
+            let manifest_path = module_root.join(other).join("manifest.json");
+            if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
+                let manifest = load_ladder_manifest(&manifest_path)?;
+                if manifest.id != other {
+                    return Err(format!(
+                        "module-invalid step_id=manifest defect=id-mismatch-{}",
+                        manifest.id
+                    ));
+                }
+                execute_ladder_manifest(&manifest, &module_dir, apply)
+            } else {
+                Err(format!("module-unregistered-{other}"))
+            }
+        }
     }
+}
+
+pub(crate) fn is_registered_module_id(module_id: &str) -> bool {
+    matches!(
+        module_id,
+        identity::ID
+            | arch_keyring_maintenance::ID
+            | system_packages::ID
+            | harmonia_runtime::ID
+            | keyman_runtime::ID
+            | homeconsole_sync_runtime::ID
+            | rust_build_toolchain::ID
+            | arcadia_gui_runtime::ID
+            | local_ai_runtime::ID
+            | pinned_artifacts_runtime::ID
+            | homeconsole_update_runtime::ID
+            | homeconsole_caduceus_public_lever::ID
+            | homeserver_caduceus::ID
+            | homeserver_coronatio::ID
+            | rebis_waybar_config::ID
+            | tv_desktop_config_payload::ID
+            | tv_owner_profile::ID
+            | tv_gpu_display_stack::ID
+            | tv_hyprland_desktop::ID
+            | tv_operator_rc_profile::ID
+            | tv_user_session_services::ID
+            | tv_sddm_autologin_hyprland::ID
+            | tv_steam_game_lane::ID
+            | tv_power_controller_maintenance::ID
+            | tv_console_recovery::ID
+            | tv_caduceus_public_lever::ID
+            | tv_appliance_proof::ID
+    )
 }
 
 pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), String> {
