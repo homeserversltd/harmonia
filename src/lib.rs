@@ -913,26 +913,28 @@ mod tests {
         }
 
         for module in ["coronatio", "caduceus"] {
-            let manifest = load_module(
+            let manifest = load_ladder_manifest(
                 &root
                     .join("profiles/homeserver/modules")
                     .join(module)
-                    .join("sidecar.json"),
+                    .join("manifest.json"),
             )
             .unwrap();
+            assert_eq!(manifest.ladder[0].tool, "service-runtime");
             assert!(
-                manifest
-                    .repo
-                    .as_deref()
+                manifest.ladder[0].args["repo"]
+                    .as_str()
                     .unwrap_or("")
                     .starts_with("https://git.home.arpa/HOMESERVERSLTD/"),
                 "{module} homeserver runtime repo must be root-readable HTTPS"
             );
         }
         let caduceus =
-            load_module(&root.join("profiles/homeserver/modules/caduceus/sidecar.json")).unwrap();
-        let profile_text = caduceus
-            .managed_files
+            load_ladder_manifest(&root.join("profiles/homeserver/modules/caduceus/manifest.json"))
+                .unwrap();
+        let managed_files: Vec<ManagedFileManifest> =
+            serde_json::from_value(caduceus.ladder[0].args["managed_files"].clone()).unwrap();
+        let profile_text = managed_files
             .iter()
             .find(|file| file.path == "/etc/caduceus/profile.yaml")
             .expect("homeserver caduceus profile managed file")
@@ -953,8 +955,7 @@ mod tests {
                 "homeserver Caduceus profile missing {required}"
             );
         }
-        let service_text = caduceus
-            .managed_files
+        let service_text = managed_files
             .iter()
             .find(|file| file.path == "/etc/systemd/system/caduceus.service")
             .expect("homeserver caduceus service managed file")
@@ -1525,28 +1526,36 @@ mod tests {
     fn homeconsole_caduceus_public_lever_sidecar_stands_up_http_runtime() {
         let root = repo_root();
         let manifest =
-            load_module(&root.join(
-                "profiles/homeconsole/modules/homeconsole-caduceus-public-lever/sidecar.json",
+            load_ladder_manifest(&root.join(
+                "profiles/homeconsole/modules/homeconsole-caduceus-public-lever/manifest.json",
             ))
             .unwrap();
         assert_eq!(manifest.id, "homeconsole-caduceus-public-lever");
+        assert_eq!(manifest.ladder[0].tool, "service-runtime");
         assert!(
-            manifest.repo.as_deref().unwrap_or("").contains("caduceus"),
+            manifest.ladder[0].args["repo"]
+                .as_str()
+                .unwrap_or("")
+                .contains("caduceus"),
             "caduceus module must sync caduceus source"
         );
-        assert_eq!(manifest.service.as_deref(), Some("caduceus.service"));
         assert_eq!(
-            manifest.url.as_deref(),
+            manifest.ladder[0].args["service"].as_str(),
+            Some("caduceus.service")
+        );
+        assert_eq!(
+            manifest.ladder[0].args["url"].as_str(),
             Some("http://127.0.0.1:8787/health")
         );
+        let managed_files: Vec<ManagedFileManifest> =
+            serde_json::from_value(manifest.ladder[0].args["managed_files"].clone()).unwrap();
         assert!(
-            manifest
-                .managed_files
+            managed_files
                 .iter()
                 .any(|file| file.path == "/etc/systemd/system/caduceus.service"),
             "caduceus module must install caduceus.service"
         );
-        validate_registered_module(&manifest).unwrap();
+        validate_ladder(&manifest).unwrap();
     }
 
     #[test]
@@ -1606,6 +1615,78 @@ mod tests {
                 .map(|step| (step.tool.as_str(), step.permutation.as_str()))
                 .collect();
             assert_eq!(steps, expected, "{profile}/{module} ladder steps");
+        }
+    }
+
+    #[test]
+    fn tranche_3_c4_runtime_and_rebis_modules_are_ladder_manifests() {
+        let root = repo_root();
+        let cases = [
+            (
+                "homeserver",
+                "caduceus",
+                vec![("service-runtime", "converge")],
+            ),
+            (
+                "homeserver",
+                "coronatio",
+                vec![("service-runtime", "converge")],
+            ),
+            (
+                "homeconsole",
+                "homeconsole-caduceus-public-lever",
+                vec![("service-runtime", "converge")],
+            ),
+            ("rebis", "rebis-waybar-config", vec![("files", "converge")]),
+        ];
+        for (profile, module, expected) in cases {
+            let dir = root
+                .join("profiles")
+                .join(profile)
+                .join("modules")
+                .join(module);
+            assert!(
+                dir.join("manifest.json").is_file(),
+                "{profile}/{module} ladder manifest missing"
+            );
+            assert!(
+                !dir.join("sidecar.json").exists(),
+                "{profile}/{module} sidecar retired"
+            );
+            assert!(
+                !dir.join("index.rs").exists(),
+                "{profile}/{module} compiled wrapper retired"
+            );
+            let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
+            validate_ladder(&manifest).unwrap();
+            let steps: Vec<_> = manifest
+                .ladder
+                .iter()
+                .map(|step| (step.tool.as_str(), step.permutation.as_str()))
+                .collect();
+            assert_eq!(steps, expected, "{profile}/{module} ladder steps");
+        }
+    }
+
+    #[test]
+    fn systemd_tool_declares_system_and_user_lifecycle_permutations() {
+        let systemd = tools::get("systemd").expect("systemd tool registered");
+        let names: std::collections::BTreeSet<_> =
+            systemd.permutations.iter().map(|p| p.name).collect();
+        for required in [
+            "daemon-reload",
+            "enable-now",
+            "restart",
+            "is-active-probe",
+            "user-daemon-reload",
+            "user-enable-now",
+            "user-restart",
+            "user-is-active-probe",
+        ] {
+            assert!(
+                names.contains(required),
+                "missing systemd permutation {required}"
+            );
         }
     }
 

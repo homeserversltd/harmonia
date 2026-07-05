@@ -11,11 +11,25 @@ use std::path::{Component, Path, PathBuf};
 pub const NAME: &str = "files";
 pub const DESCRIPTION: &str =
     "Staged file/template/directory/symlink primitive with atomic promotion.";
-pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
-    "managed-files",
-    "converge managed file declarations from typed JSON",
-    &[ToolArg::optional("files", ToolArgKind::Json)],
-)];
+pub const PERMUTATIONS: &[ToolPermutation] = &[
+    ToolPermutation::new(
+        "managed-files",
+        "converge managed file declarations from typed JSON",
+        &[ToolArg::optional("files", ToolArgKind::Json)],
+    ),
+    ToolPermutation::new(
+        "converge",
+        "converge a source file tree into a target root",
+        &[
+            ToolArg::required("source_root", ToolArgKind::String),
+            ToolArg::required("target_root", ToolArgKind::String),
+            ToolArg::required("files", ToolArgKind::StringArray),
+            ToolArg::optional("backup_existing", ToolArgKind::Bool),
+            ToolArg::optional("receipt_name", ToolArgKind::String),
+            ToolArg::optional("summary_receipt", ToolArgKind::Json),
+        ],
+    ),
+];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]

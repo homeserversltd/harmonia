@@ -112,6 +112,7 @@ pub mod health;
 pub(crate) mod module_steps;
 pub mod package;
 pub(crate) mod service_runtime;
+pub mod systemd;
 
 pub const TOOLBELT: &[ToolContract] = &[
     command::CONTRACT,
@@ -119,6 +120,8 @@ pub const TOOLBELT: &[ToolContract] = &[
     git_artifact::CONTRACT,
     health::CONTRACT,
     package::CONTRACT,
+    service_runtime::CONTRACT,
+    systemd::CONTRACT,
 ];
 
 pub fn all() -> &'static [ToolContract] {
@@ -208,7 +211,15 @@ mod tests {
     #[test]
     fn registered_tool_names_have_real_behavioral_entry_points() {
         let root = repo_root();
-        let expected = BTreeSet::from(["command", "files", "git-artifact", "health", "package"]);
+        let expected = BTreeSet::from([
+            "command",
+            "files",
+            "git-artifact",
+            "health",
+            "package",
+            "service-runtime",
+            "systemd",
+        ]);
         let actual: BTreeSet<&str> = all().iter().map(|tool| tool.name).collect();
         assert_eq!(actual, expected);
         for tool in all() {
@@ -225,7 +236,8 @@ mod tests {
             assert!(
                 source.contains("pub(crate) fn")
                     || source.contains("pub fn converge_files")
-                    || source.contains("pub fn apply"),
+                    || source.contains("pub fn apply")
+                    || source.contains("pub(crate) fn execute"),
                 "tool {} must expose an executable behavioral entry point",
                 tool.name
             );
