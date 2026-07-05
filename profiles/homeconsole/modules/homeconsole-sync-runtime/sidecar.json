@@ -1,9 +1,0 @@
-{
-  "schema": "harmonia.module.sidecar.v1",
-  "id": "homeconsole-sync-runtime",
-  "description": "HomeConsole Sync source/runtime possession. Rust module requires a git checkout at the source path, refreshes it through git-artifact, then invokes the repository installer.",
-  "repo": "git@git.home.arpa:HOMESERVERSLTD/homeconsole-sync.git",
-  "path": "/opt/homeconsole-sync/source",
-  "branch": "main",
-  "remote": "origin"
-}
