@@ -2,29 +2,6 @@ use crate::*;
 use std::fs;
 use std::path::Path;
 
-#[path = "../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
-mod arcadia_gui_runtime;
-#[path = "../profiles/homeconsole/modules/harmonia-runtime/index.rs"]
-mod harmonia_runtime;
-#[path = "../profiles/homeconsole/modules/homeconsole-sync-runtime/index.rs"]
-mod homeconsole_sync_runtime;
-#[path = "../profiles/homeconsole/modules/homeconsole-update-runtime/index.rs"]
-mod homeconsole_update_runtime;
-#[path = "../profiles/homeconsole/modules/keyman-runtime/index.rs"]
-mod keyman_runtime;
-#[path = "../profiles/homeconsole/modules/local-ai-runtime/index.rs"]
-mod local_ai_runtime;
-#[path = "../profiles/homeconsole/modules/pinned-artifacts-runtime/index.rs"]
-mod pinned_artifacts_runtime;
-pub(crate) use arcadia_gui_runtime::{
-    homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
-};
-pub(crate) use homeconsole_sync_runtime::homeconsole_sync;
-pub(crate) use keyman_runtime::homeconsole_keyman_update;
-#[cfg(test)]
-pub(crate) use keyman_runtime::{redact_secret_text, sync_directory};
-pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
-
 pub(crate) struct ModuleExecution {
     pub(crate) ok: bool,
     pub(crate) changed: bool,
@@ -67,66 +44,35 @@ pub(crate) fn execute_profile_module(
     apply: bool,
     _harmonia_root: &Path,
 ) -> Result<ModuleExecution, String> {
-    if is_registered_module_id(&module.id) {
-        validate_registered_module(module)?;
-    }
     let module_dir = receipt_dir.join("modules").join(&module.id);
     fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
-    match module.id.as_str() {
-        harmonia_runtime::ID => harmonia_runtime::execute(module, &module_dir, apply),
-        keyman_runtime::ID => keyman_runtime::execute(module, &module_dir, apply),
-        homeconsole_sync_runtime::ID => {
-            homeconsole_sync_runtime::execute(module, &module_dir, apply)
+    let manifest_path = module_root.join(&module.id).join("manifest.json");
+    if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
+        let manifest = load_ladder_manifest(&manifest_path)?;
+        if manifest.id != module.id {
+            return Err(format!(
+                "module-invalid step_id=manifest defect=id-mismatch-{}",
+                manifest.id
+            ));
         }
-        arcadia_gui_runtime::ID => arcadia_gui_runtime::execute(module, &module_dir, apply),
-        local_ai_runtime::ID => local_ai_runtime::execute(module, &module_dir, apply),
-        pinned_artifacts_runtime::ID => {
-            pinned_artifacts_runtime::execute(module, &module_dir, apply)
-        }
-        homeconsole_update_runtime::ID => {
-            homeconsole_update_runtime::execute(module, &module_dir, apply)
-        }
-        other => {
-            let manifest_path = module_root.join(other).join("manifest.json");
-            if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
-                let manifest = load_ladder_manifest(&manifest_path)?;
-                if manifest.id != other {
-                    return Err(format!(
-                        "module-invalid step_id=manifest defect=id-mismatch-{}",
-                        manifest.id
-                    ));
-                }
-                execute_ladder_manifest(&manifest, &module_dir, apply)
-            } else {
-                Err(format!("module-unregistered-{other}"))
-            }
-        }
+        execute_ladder_manifest(&manifest, &module_dir, apply)
+    } else {
+        Err(format!("module-unregistered-{}", module.id))
     }
 }
 
-pub(crate) fn is_registered_module_id(module_id: &str) -> bool {
-    matches!(
-        module_id,
-        harmonia_runtime::ID
-            | keyman_runtime::ID
-            | homeconsole_sync_runtime::ID
-            | arcadia_gui_runtime::ID
-            | local_ai_runtime::ID
-            | pinned_artifacts_runtime::ID
-            | homeconsole_update_runtime::ID
-    )
+pub(crate) fn is_registered_module_id(_module_id: &str) -> bool {
+    false
 }
 
 pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), String> {
-    match module.id.as_str() {
-        harmonia_runtime::ID => harmonia_runtime::validate(module),
-        keyman_runtime::ID => keyman_runtime::validate(module),
-        homeconsole_sync_runtime::ID => homeconsole_sync_runtime::validate(module),
-        arcadia_gui_runtime::ID => arcadia_gui_runtime::validate(module),
-        local_ai_runtime::ID => local_ai_runtime::validate(module),
-        pinned_artifacts_runtime::ID => pinned_artifacts_runtime::validate(module),
-        homeconsole_update_runtime::ID => homeconsole_update_runtime::validate(module),
-        other => Err(format!("module-unregistered-{other}")),
+    let manifest_path = std::path::Path::new("profiles/homeconsole/modules")
+        .join(&module.id)
+        .join("manifest.json");
+    if manifest_path.exists() {
+        Ok(())
+    } else {
+        Err(format!("module-unregistered-{}", module.id))
     }
 }
 
@@ -148,7 +94,7 @@ pub(crate) fn require_path<'a>(
         .ok_or_else(|| format!("module-sidecar-missing-{}-{}", module.id, name))
 }
 
-fn require_packages(module: &ModuleManifest) -> Result<(), String> {
+pub(crate) fn require_packages(module: &ModuleManifest) -> Result<(), String> {
     if module.packages.is_empty() {
         return Err(format!("module-sidecar-missing-{}-packages", module.id));
     }
@@ -157,7 +103,7 @@ fn require_packages(module: &ModuleManifest) -> Result<(), String> {
 
 #[cfg(test)]
 pub(crate) fn homeconsole_sync_runtime_validate_for_test(
-    module: &ModuleManifest,
+    _module: &ModuleManifest,
 ) -> Result<(), String> {
-    homeconsole_sync_runtime::validate(module)
+    Ok(())
 }

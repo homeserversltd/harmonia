@@ -200,10 +200,27 @@ struct OperationOutcome {
     command: Option<CmdResult>,
 }
 
+#[path = "../profiles/homeconsole/modules/arcadia-gui-runtime/index.rs"]
+mod arcadia_gui_runtime;
+#[path = "../profiles/homeconsole/modules/homeconsole-sync-runtime/index.rs"]
+mod homeconsole_sync_runtime;
+#[path = "../profiles/homeconsole/modules/keyman-runtime/index.rs"]
+mod keyman_runtime;
+#[path = "../profiles/homeconsole/modules/pinned-artifacts-runtime/index.rs"]
+mod pinned_artifacts_runtime;
+
+pub(crate) use arcadia_gui_runtime::{
+    homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
+};
+pub(crate) use homeconsole_sync_runtime::homeconsole_sync;
+pub(crate) use keyman_runtime::{homeconsole_keyman_update, redact_secret_text, sync_directory};
+pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
+
 mod convergence_lock;
 mod deployable_config;
 mod ladder;
 mod module_dispatch;
+mod preflight;
 mod profile_engine;
 mod receipts;
 
@@ -211,6 +228,7 @@ pub(crate) use convergence_lock::*;
 pub(crate) use deployable_config::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
+pub(crate) use preflight::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
 
@@ -985,7 +1003,6 @@ mod tests {
             profile.modules,
             vec![
                 "identity".to_string(),
-                "harmonia-runtime".to_string(),
                 "arch-keyring-maintenance".to_string(),
                 "system-packages".to_string(),
                 "owner-profile".to_string(),
@@ -1198,18 +1215,18 @@ mod tests {
     }
 
     #[test]
-    fn harmonia_runtime_precedes_package_updates_on_arch_profiles() {
+    fn harmonia_runtime_is_engine_preflight_before_package_updates_on_arch_profiles() {
         let root = repo_root();
         for (profile_path, install_profile) in [
             ("profiles/homeconsole/index.json", "homeconsole"),
             ("profiles/tv/index.json", "tv"),
         ] {
             let profile = load_profile(&root.join(profile_path)).unwrap();
-            let runtime_pos = profile
-                .modules
-                .iter()
-                .position(|module| module == "harmonia-runtime")
-                .expect("profile must include harmonia-runtime");
+            assert!(
+                !profile.modules.contains(&"harmonia-runtime".to_string()),
+                "harmonia-runtime belongs to engine pre-flight, not the module spine"
+            );
+            assert_eq!(profile.modules[0], "identity");
             let keyring_pos = profile
                 .modules
                 .iter()
@@ -1220,7 +1237,6 @@ mod tests {
                 .iter()
                 .position(|module| module == "system-packages")
                 .expect("profile must include system-packages");
-            assert!(runtime_pos < keyring_pos);
             assert!(keyring_pos < packages_pos);
 
             let manifest = load_module(
@@ -1237,7 +1253,6 @@ mod tests {
                 Some("/usr/local/bin/harmonia")
             );
             assert!(manifest.packages.contains(&"rust".to_string()));
-            validate_registered_module(&manifest).unwrap();
 
             let keyring_manifest = load_ladder_manifest(
                 &root
@@ -1260,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_harmonia_runtime_stops_profile_before_downstream_modules() {
+    fn missing_harmonia_runtime_preflight_absence_allows_ladder_modules() {
         let root = repo_root();
         let scratch =
             std::env::temp_dir().join(format!("harmonia-terminal-self-modern-{}", process::id()));
@@ -1281,21 +1296,13 @@ mod tests {
         let profile = Profile {
             id: "tv".into(),
             identity: "arch-tv".into(),
-            modules: vec![
-                "identity".into(),
-                "harmonia-runtime".into(),
-                "system-packages".into(),
-            ],
+            modules: vec!["identity".into(), "system-packages".into()],
         };
-        let result = run_profile_engine(&profile, &module_root, &receipts, false);
-        assert_eq!(result.unwrap_err(), "module-missing-harmonia-runtime");
+        run_profile_engine(&profile, &module_root, &receipts, false).unwrap();
         assert!(receipts.join("modules/identity").exists());
-        assert!(
-            !receipts.join("modules/system-packages").exists(),
-            "downstream package module must not run after harmonia-runtime failure"
-        );
+        assert!(receipts.join("modules/system-packages").exists());
         let events = fs::read_to_string(receipts.join("events.jsonl")).unwrap();
-        assert!(events.contains("module-terminal-stop"));
+        assert!(!events.contains("module-terminal-stop"));
         let _ = fs::remove_dir_all(scratch);
     }
 
@@ -1304,7 +1311,7 @@ mod tests {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
         assert_eq!(profile.modules[0], "identity");
-        assert_eq!(profile.modules[1], "harmonia-runtime");
+        assert!(!profile.modules.contains(&"harmonia-runtime".to_string()));
         let receipts =
             std::env::temp_dir().join(format!("harmonia-tv-self-modern-receipt-{}", process::id()));
         with_fake_pacman(&receipts.join("fixtures"), || {
@@ -1317,15 +1324,14 @@ mod tests {
             .unwrap();
         });
         let installer =
-            fs::read_to_string(receipts.join("modules/harmonia-runtime/harmonia-installer.json"))
-                .unwrap();
+            fs::read_to_string(receipts.join("engine-preflight/harmonia-installer.json")).unwrap();
         assert!(installer.contains("--profile tv"));
         let inspect = fs::read_to_string(
-            receipts.join("modules/harmonia-runtime/harmonia-profile-inspect.json"),
+            receipts.join("engine-preflight/harmonia-engine-preflight-explain.json"),
         )
         .unwrap();
-        assert!(inspect.contains("/etc/harmonia/profiles/tv/index.json"));
-        assert!(inspect.contains("\"profile_id\": \"tv\""));
+        assert!(inspect.contains("harmonia.engine.preflight.v1"));
+        assert!(inspect.contains("\"install_profile\": \"tv\""));
         let _ = fs::remove_dir_all(receipts);
     }
 
@@ -1432,10 +1438,13 @@ mod tests {
         .unwrap();
         assert!(output.join("profiles/homeconsole/index.json").exists());
         assert!(output
-            .join("profiles/homeconsole/modules/arcadia-gui-runtime/sidecar.json")
+            .join("profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json")
             .exists());
         assert!(output
-            .join("profiles/homeconsole/modules/pinned-artifacts-runtime/sidecar.json")
+            .join("profiles/homeconsole/modules/pinned-artifacts-runtime/manifest.json")
+            .exists());
+        assert!(output
+            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia-homeconsole.timer")
             .exists());
         assert!(output
             .join("locks/homeconsole/pinned-artifacts.json")
@@ -1444,7 +1453,8 @@ mod tests {
         let receipt = fs::read_to_string(receipts.join("deployable-config-export.json")).unwrap();
         assert!(receipt.contains("harmonia.deployable_config_export.v1"));
         assert!(receipt.contains("profile-index"));
-        assert!(receipt.contains("module-sidecar"));
+        assert!(receipt.contains("module-ladder-manifest"));
+        assert!(receipt.contains("module-ladder-files-root"));
         assert!(receipt.contains("profile-lock"));
         assert!(
             !output
@@ -1482,33 +1492,29 @@ mod tests {
     #[test]
     fn homeconsole_runtime_modules_require_git_checkout_authority() {
         let root = repo_root();
-        for module in [
-            "harmonia-runtime",
-            "keyman-runtime",
-            "homeconsole-sync-runtime",
-        ] {
-            let manifest = load_module(
+        let runtime =
+            load_module(&root.join("profiles/homeconsole/modules/harmonia-runtime/sidecar.json"))
+                .unwrap();
+        assert_eq!(runtime.id, "harmonia-runtime");
+        assert_eq!(runtime.source_dir.as_deref(), Some("/opt/harmonia/source"));
+        assert_eq!(
+            runtime.install_bin.as_deref(),
+            Some("/usr/local/bin/harmonia")
+        );
+        for module in ["keyman-runtime", "homeconsole-sync-runtime"] {
+            let manifest = load_ladder_manifest(
                 &root
                     .join("profiles/homeconsole/modules")
                     .join(module)
-                    .join("sidecar.json"),
+                    .join("manifest.json"),
             )
             .unwrap();
             assert_eq!(manifest.id, module);
-            assert!(
-                manifest.repo.is_some(),
-                "{module} must carry git checkout source authority"
-            );
-            if module == "harmonia-runtime" {
-                assert_eq!(manifest.source_dir.as_deref(), Some("/opt/harmonia/source"));
-                assert_eq!(
-                    manifest.install_bin.as_deref(),
-                    Some("/usr/local/bin/harmonia")
-                );
-            } else {
-                assert!(manifest.path.is_some());
-            }
-            validate_registered_module(&manifest).unwrap();
+            assert!(manifest
+                .ladder
+                .iter()
+                .any(|step| step.tool == "git-artifact"));
+            validate_ladder(&manifest).unwrap();
         }
     }
 

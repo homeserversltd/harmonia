@@ -1,0 +1,18 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "pinned-artifacts-runtime",
+  "version": "3.6.0",
+  "description": "Pinned artifact verification ladder using artifact-lock directly, preserving operator CLI subcommands outside module execution.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "pinned-artifacts-check",
+      "tool": "artifact-lock",
+      "permutation": "verify",
+      "args": {
+        "lock": "/etc/harmonia/locks/homeconsole/pinned-artifacts.json",
+        "profile": "homeconsole"
+      }
+    }
+  ]
+}

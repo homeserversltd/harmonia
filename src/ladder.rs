@@ -314,9 +314,12 @@ fn execute_validated_step(
 ) -> Result<OperationOutcome, String> {
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("command", "capture") => command_capture_step(step, module_dir, apply),
+        ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, apply),
         ("health", "probe") => health_probe_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
-        ("files", "converge") => files_converge_step(step, manifest, module_dir, apply),
+        ("files", "converge") | ("files", "directory-sync") => {
+            files_converge_step(step, manifest, module_dir, apply)
+        }
         ("systemd", _) => systemd_step(step, module_dir, apply),
         ("service-runtime", "converge") => tools::service_runtime::execute_ladder_step(
             &step.args, module_dir, apply,
@@ -366,6 +369,19 @@ fn string_array_arg(args: &BTreeMap<String, Value>, name: &str) -> Vec<String> {
 
 fn integer_arg(args: &BTreeMap<String, Value>, name: &str, default: u64) -> u64 {
     args.get(name).and_then(Value::as_u64).unwrap_or(default)
+}
+
+fn artifact_lock_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    tools::artifact_lock::verify(
+        &PathBuf::from(string_arg(&step.args, "lock")),
+        optional_string_arg(&step.args, "profile"),
+        module_dir,
+        apply,
+    )
 }
 
 fn command_capture_step(
@@ -517,10 +533,42 @@ fn files_converge_step(
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
-    let files = string_array_arg(&step.args, "files")
+    if step.permutation == "directory-sync"
+        && source_root == target_root
+        && step
+            .args
+            .get("allow_same_root")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        let outcome = OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: !apply,
+            message: format!(
+                "directory-sync same-root verified {}",
+                source_root.display()
+            ),
+            command: None,
+        };
+        crate::write_tool_receipt(
+            module_dir,
+            &step.step_id,
+            "files",
+            "directory-sync",
+            &outcome,
+        )?;
+        return Ok(outcome);
+    }
+    let rels = if step.permutation == "directory-sync" && !step.args.contains_key("files") {
+        files_under_root(&source_root)?
+    } else {
+        string_array_arg(&step.args, "files")
+    };
+    let files = rels
         .into_iter()
         .map(|rel| crate::tools::files::FileSpec {
-            mode: if rel.starts_with("bin/") {
+            mode: if rel.starts_with("bin/") || rel.starts_with("usr/local/bin/") {
                 Some(0o755)
             } else {
                 Some(0o644)
@@ -578,6 +626,32 @@ fn files_converge_step(
         message: outcome.message,
         command: None,
     })
+}
+
+fn files_under_root(root: &Path) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    fn walk(root: &Path, path: &Path, out: &mut Vec<String>) -> Result<(), String> {
+        for entry in fs::read_dir(path)
+            .map_err(|e| format!("directory-sync-read-failed {}: {e}", path.display()))?
+        {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let p = entry.path();
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                walk(root, &p, out)?;
+            } else {
+                out.push(
+                    p.strip_prefix(root)
+                        .map_err(|e| e.to_string())?
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+    walk(root, root, &mut out)?;
+    out.sort();
+    Ok(out)
 }
 
 fn resolve_ladder_path(manifest: &LadderManifest, path: &str) -> PathBuf {

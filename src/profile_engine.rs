@@ -68,13 +68,13 @@ pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {
 
 fn load_profile_module(module_root: &Path, module_id: &str) -> Result<LoadedModule, String> {
     let module_dir = module_root.join(module_id);
-    let sidecar_path = module_dir.join("sidecar.json");
-    if sidecar_path.exists() {
-        return load_module(&sidecar_path).map(LoadedModule::Sidecar);
-    }
     let manifest_path = module_dir.join("manifest.json");
     if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
         return load_ladder_manifest(&manifest_path).map(LoadedModule::Ladder);
+    }
+    let sidecar_path = module_dir.join("sidecar.json");
+    if sidecar_path.exists() {
+        return load_module(&sidecar_path).map(LoadedModule::Sidecar);
     }
     load_module(&sidecar_path).map(LoadedModule::Sidecar)
 }
@@ -105,6 +105,41 @@ pub(crate) fn run_profile_engine(
     let mut operation_count = 0usize;
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
+
+    if apply {
+        let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
+        operation_count += preflight.operation_count;
+        if preflight.changed {
+            changed = true;
+        }
+        if !preflight.ok {
+            ok = false;
+            first_missing_signal = preflight
+                .first_missing_signal
+                .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
+            event(
+                &mut events,
+                "engine-preflight-terminal-stop",
+                false,
+                &first_missing_signal,
+            )?;
+            write_engine_run_receipt(
+                receipt_dir,
+                profile,
+                apply,
+                ok,
+                changed,
+                module_count,
+                operation_count,
+                &first_missing_signal,
+                module_root,
+            )?;
+            return Err(first_missing_signal);
+        }
+    } else {
+        let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
+        operation_count += preflight.operation_count;
+    }
 
     if profile.modules.is_empty() {
         ok = false;
@@ -306,7 +341,6 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
     let mut found = Vec::new();
     for module_id in [
         "identity",
-        "harmonia-runtime",
         "arch-keyring-maintenance",
         "system-packages",
         "keyman-runtime",

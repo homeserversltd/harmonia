@@ -1,0 +1,29 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "arcadia-gui-runtime",
+  "version": "3.6.0",
+  "description": "Arcadia GUI runtime ladder: source sync, cargo build, binary promote, systemd, health, and source SHA state.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "arcadia-gui-service-runtime",
+      "tool": "service-runtime",
+      "permutation": "converge",
+      "args": {
+        "module_id": "arcadia-gui-runtime",
+        "repo": "git@git.home.arpa:HOMESERVERSLTD/arcadia.git",
+        "branch": "main",
+        "source_dir": "/opt/arcadia/source",
+        "install_bin": "/usr/local/bin/arcadia",
+        "service": "arcadia.service",
+        "url": "http://127.0.0.1:8080/health",
+        "source_sha_file": "/var/lib/harmonia/state/arcadia.sha",
+        "binary_name": "arcadia",
+        "op_prefix": "arcadia-gui",
+        "run_schema": "harmonia.arcadia_gui_runtime.v1",
+        "managed_files_schema": "harmonia.arcadia_gui_runtime.managed_files.v1",
+        "managed_files": []
+      }
+    }
+  ]
+}

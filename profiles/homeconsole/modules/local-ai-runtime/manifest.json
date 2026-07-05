@@ -1,0 +1,83 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "local-ai-runtime",
+  "version": "3.6.0",
+  "description": "Local AI runtime ladder: package install, model/state directories, compatibility links, binary readback, service status readback.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "local-ai-package-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": [
+          "llama-cpp-vulkan"
+        ],
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "local-ai-directories",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/install",
+        "args": [
+          "-d",
+          "/var/lib/arcadia/models",
+          "/var/lib/arcadia"
+        ],
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "local-ai-server-link",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/sh",
+        "args": [
+          "-c",
+          "if [ -e /usr/local/bin/llama-server ]; then exit 0; fi; ln -s /usr/bin/llama-server /usr/local/bin/llama-server"
+        ],
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "local-ai-cli-link",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/sh",
+        "args": [
+          "-c",
+          "if [ -e /usr/local/bin/llama-cli ]; then exit 0; fi; ln -s /usr/bin/llama-cli /usr/local/bin/llama-cli"
+        ],
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "local-ai-binary-readback",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/local/bin/llama-server",
+        "args": [
+          "--version"
+        ],
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "local-ai-service-readback",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "arcadia-llama-server.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "continue-optional"
+    }
+  ],
+  "optional": true
+}
