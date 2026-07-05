@@ -1,0 +1,47 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "gpu-display-stack",
+  "version": "1.0.0",
+  "description": "TV gpu-display-stack module. Rust owns GPU/Vulkan display stack for the TV appliance is maintained; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "mesa",
+      "vulkan-intel",
+      "lib32-mesa",
+      "lib32-vulkan-intel",
+      "vulkan-tools"
+    ],
+    "binaries": [
+      "vulkaninfo"
+    ],
+    "phase": 2,
+    "receipt_schema": "harmonia.tv.gpu_display_stack.v1",
+    "meaning": "GPU/Vulkan display stack for the TV appliance is maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "binary-vulkaninfo",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v vulkaninfo >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

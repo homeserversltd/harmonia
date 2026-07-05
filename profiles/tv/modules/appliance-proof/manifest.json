@@ -1,0 +1,176 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "appliance-proof",
+  "version": "1.0.0",
+  "description": "TV appliance-proof module. Rust owns terminal proof that Arch TV behaves as a Hyprland living-room appliance with optional game lane and recovery paths; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "expected_files": [
+      "/usr/share/wayland-sessions/arch-tv-hyprland.desktop",
+      "/etc/sddm.conf.d/10-arch-tv-autologin.conf",
+      "/home/owner/.config/hypr/hyprland.conf",
+      "/home/owner/.config/waybar/waybar.conf",
+      "/home/owner/.config/dunst/dunstrc",
+      "/home/owner/.config/chromium-flags.conf",
+      "/usr/local/bin/arch-tv-steam-game-lane"
+    ],
+    "binaries": [
+      "Hyprland",
+      "waybar",
+      "dunst",
+      "chromium"
+    ],
+    "phase": 12,
+    "receipt_schema": "harmonia.tv.appliance_proof.v1",
+    "meaning": "terminal proof that Arch TV behaves as a Hyprland living-room appliance with optional game lane and recovery paths"
+  },
+  "ladder": [
+    {
+      "step_id": "binary-hyprland",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v Hyprland >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-waybar",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v waybar >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-dunst",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v dunst >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-chromium",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v chromium >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-usr-share-wayland-sessions-arch-tv-hyprland-desktop",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/usr/share/wayland-sessions/arch-tv-hyprland.desktop"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-etc-sddm-conf-d-10-arch-tv-autologin-conf",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/sddm.conf.d/10-arch-tv-autologin.conf"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-home-owner--config-hypr-hyprland-conf",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.config/hypr/hyprland.conf"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-home-owner--config-waybar-waybar-conf",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.config/waybar/waybar.conf"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-home-owner--config-dunst-dunstrc",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.config/dunst/dunstrc"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-home-owner--config-chromium-flags-conf",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.config/chromium-flags.conf"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-usr-local-bin-arch-tv-steam-game-lane",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/usr/local/bin/arch-tv-steam-game-lane"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

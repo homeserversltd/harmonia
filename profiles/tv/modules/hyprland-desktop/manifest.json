@@ -1,0 +1,142 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hyprland-desktop",
+  "version": "1.0.0",
+  "description": "TV hyprland-desktop module. Rust owns Hyprland, portals, desktop shell, browser, audio, and KDE integration packages are maintained; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "hyprland",
+      "uwsm",
+      "waybar",
+      "dunst",
+      "swayidle",
+      "wl-clipboard",
+      "chromium",
+      "xdg-desktop-portal",
+      "xdg-desktop-portal-hyprland",
+      "xdg-desktop-portal-gtk",
+      "polkit-kde-agent",
+      "dolphin",
+      "kate",
+      "kcalc",
+      "zsh",
+      "fzf",
+      "wofi",
+      "pavucontrol",
+      "pipewire",
+      "wireplumber",
+      "pipewire-pulse",
+      "pipewire-alsa",
+      "alsa-utils",
+      "kitty",
+      "jq"
+    ],
+    "binaries": [
+      "Hyprland",
+      "waybar",
+      "dunst",
+      "chromium",
+      "pipewire",
+      "wireplumber"
+    ],
+    "phase": 3,
+    "receipt_schema": "harmonia.tv.hyprland_desktop.v1",
+    "meaning": "Hyprland, portals, desktop shell, browser, audio, and KDE integration packages are maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "binary-hyprland",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v Hyprland >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-waybar",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v waybar >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-dunst",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v dunst >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-chromium",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v chromium >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-pipewire",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v pipewire >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "binary-wireplumber",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "command -v wireplumber >/dev/null"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

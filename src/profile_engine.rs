@@ -364,10 +364,6 @@ pub(crate) fn command_capture_with_cwd(
     tools::command::capture_with_cwd(program, args, cwd)
 }
 
-pub(crate) fn pacman_stdout_indicates_change(stdout: &str) -> bool {
-    crate::tools::package::pacman_stdout_indicates_change(stdout)
-}
-
 pub(crate) fn harmonia_root_from_module_root(module_root: &Path) -> PathBuf {
     module_root
         .parent()

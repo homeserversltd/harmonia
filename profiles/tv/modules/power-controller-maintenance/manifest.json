@@ -1,0 +1,49 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "power-controller-maintenance",
+  "version": "1.0.0",
+  "description": "TV power-controller-maintenance module. Rust owns fstrim and optional Bluetooth/controller support are maintained; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "bluez",
+      "bluez-utils"
+    ],
+    "services": [
+      "fstrim.timer",
+      "bluetooth.service"
+    ],
+    "phase": 9,
+    "receipt_schema": "harmonia.tv.power_controller_maintenance.v1",
+    "meaning": "fstrim and optional Bluetooth/controller support are maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "service-fstrim-timer",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "fstrim.timer",
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "service-bluetooth-service",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "bluetooth.service",
+        "timeout_secs": 60
+      }
+    }
+  ]
+}

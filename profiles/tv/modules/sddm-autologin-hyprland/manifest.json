@@ -1,0 +1,68 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sddm-autologin-hyprland",
+  "version": "1.0.0",
+  "description": "TV sddm-autologin-hyprland module. Rust owns SDDM autologin enters owner Arch TV Hyprland session; Gamescope is not the main session; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "sddm"
+    ],
+    "services": [
+      "sddm.service"
+    ],
+    "expected_files": [
+      "/usr/share/wayland-sessions/arch-tv-hyprland.desktop",
+      "/etc/sddm.conf.d/10-arch-tv-autologin.conf"
+    ],
+    "phase": 7,
+    "receipt_schema": "harmonia.tv.sddm_autologin_hyprland.v1",
+    "meaning": "SDDM autologin enters owner Arch TV Hyprland session; Gamescope is not the main session"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "service-sddm-service",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "sddm.service",
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "expected-file-usr-share-wayland-sessions-arch-tv-hyprland-desktop",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/usr/share/wayland-sessions/arch-tv-hyprland.desktop"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-etc-sddm-conf-d-10-arch-tv-autologin-conf",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/sddm.conf.d/10-arch-tv-autologin.conf"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

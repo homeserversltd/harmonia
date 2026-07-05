@@ -1,0 +1,16 @@
+{
+  "schema": "caduceus.policy.v1",
+  "profile": "tv",
+  "allowed_public_actions": [
+    "identity show",
+    "profile show",
+    "health",
+    "receipts latest",
+    "update status",
+    "update now",
+    "update service status",
+    "update service toggle on",
+    "update service toggle off"
+  ],
+  "private_land_organs_exposed": false
+}

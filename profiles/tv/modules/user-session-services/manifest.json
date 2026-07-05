@@ -1,0 +1,143 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "user-session-services",
+  "version": "1.0.0",
+  "description": "TV user-session-services module. Rust owns Dunst, Waybar, PipeWire, Bluetooth, HDMI audio fallback, and TV user session services are maintained; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "pipewire",
+      "wireplumber",
+      "pipewire-pulse",
+      "pipewire-alsa",
+      "alsa-utils",
+      "bluez",
+      "bluez-utils"
+    ],
+    "services": [
+      "bluetooth.service"
+    ],
+    "user_services": [
+      "hs-dunst.service",
+      "hs-waybar.service",
+      "tv-hdmi-audio.service"
+    ],
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".config/systemd/user/hs-dunst.service",
+      ".config/systemd/user/hs-waybar.service",
+      ".local/bin/tv-hdmi-audio-ensure",
+      "/etc/asound.conf"
+    ],
+    "phase": 6,
+    "receipt_schema": "harmonia.tv.user_session_services.v1",
+    "meaning": "Dunst, Waybar, PipeWire, Bluetooth, HDMI audio fallback, and TV user session services are maintained"
+  },
+  "ladder": [
+    {
+      "step_id": "packages-install",
+      "tool": "package",
+      "permutation": "install",
+      "args": {
+        "packages": "$constants.packages",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "service-bluetooth-service",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "bluetooth.service",
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "user-daemon-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "user-service-hs-dunst-service",
+      "tool": "systemd",
+      "permutation": "user-enable-now",
+      "args": {
+        "service": "hs-dunst.service",
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "user-service-hs-waybar-service",
+      "tool": "systemd",
+      "permutation": "user-enable-now",
+      "args": {
+        "service": "hs-waybar.service",
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "user-service-tv-hdmi-audio-service",
+      "tool": "systemd",
+      "permutation": "user-enable-now",
+      "args": {
+        "service": "tv-hdmi-audio.service",
+        "timeout_secs": 60
+      }
+    },
+    {
+      "step_id": "expected-file-config-systemd-user-hs-dunst-service",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.config/systemd/user/hs-dunst.service"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-config-systemd-user-hs-waybar-service",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.config/systemd/user/hs-waybar.service"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-local-bin-tv-hdmi-audio-ensure",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/home/owner/.local/bin/tv-hdmi-audio-ensure"
+        ],
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "expected-file-etc-asound-conf",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-e",
+          "/etc/asound.conf"
+        ],
+        "timeout_secs": 30
+      }
+    }
+  ]
+}
