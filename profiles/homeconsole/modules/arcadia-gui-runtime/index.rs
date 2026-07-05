@@ -100,8 +100,6 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 use std::time::Instant;
 
 const ARCADIA_CONTROL_DROPIN_DIR: &str = "/etc/systemd/system/arcadia.service.d";
@@ -618,21 +616,9 @@ pub(crate) fn homeconsole_arcadia_gui_update(
 }
 
 fn arcadia_health_with_retry() -> CmdResult {
-    let mut last = command_capture(
-        "/usr/bin/curl",
-        &["-fsS", "--max-time", "3", "http://127.0.0.1:8080/health"],
-    );
-    for _ in 0..5 {
-        if last.ok {
-            return last;
-        }
-        thread::sleep(Duration::from_secs(1));
-        last = command_capture(
-            "/usr/bin/curl",
-            &["-fsS", "--max-time", "3", "http://127.0.0.1:8080/health"],
-        );
-    }
-    last
+    tools::health::curl_probe(&tools::health::ProbeRequest::new(
+        "http://127.0.0.1:8080/health",
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,5 +1,8 @@
 use crate::*;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::cell::RefCell;
+use std::env;
 use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -50,9 +53,10 @@ pub(crate) fn pacman_mutate_packages_with_conflict_policy(
     conflict_policy: Option<&str>,
     conflict_paths: &[String],
 ) -> CmdResult {
+    let program = pacman_program();
     let mut args = pacman_base_args(sync);
     args.extend(packages.iter().map(String::as_str));
-    let mut result = command_capture_with_timeout("/usr/bin/pacman", &args, 1800);
+    let mut result = command_capture_with_timeout(&program, &args, 1800);
     if result.ok || !pacman_needs_overwrite_retry(&result) {
         return result;
     }
@@ -75,14 +79,16 @@ pub(crate) fn pacman_mutate_packages_with_conflict_policy(
         return result;
     };
     overwrite_args.extend(packages.iter().map(String::as_str));
-    let second = command_capture_with_timeout("/usr/bin/pacman", &overwrite_args, 1800);
+    let second = command_capture_with_timeout(&program, &overwrite_args, 1800);
     CmdResult {
         ok: second.ok,
         code: second.code,
         stdout: format!(
-            "first_command=/usr/bin/pacman {}\nfirst_ok={}\nsecond_command=/usr/bin/pacman {}\n{}",
+            "first_command={} {}\nfirst_ok={}\nsecond_command={} {}\n{}",
+            program,
             args.join(" "),
             result.ok,
+            program,
             overwrite_args.join(" "),
             second.stdout
         )
@@ -116,6 +122,35 @@ pub(crate) fn command_tool(
     })
 }
 
+const HARMONIA_PACMAN_PATH_ENV: &str = "HARMONIA_PACMAN_PATH";
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PACMAN_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_pacman_path(path: Option<String>) {
+    TEST_PACMAN_PATH.with(|slot| {
+        *slot.borrow_mut() = path;
+    });
+}
+
+pub(crate) fn pacman_program() -> String {
+    #[cfg(test)]
+    if let Some(path) = TEST_PACMAN_PATH.with(|slot| slot.borrow().clone()) {
+        return path;
+    }
+    env::var(HARMONIA_PACMAN_PATH_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "/usr/bin/pacman".to_string())
+}
+
+pub(crate) fn pacman_available(program: &str) -> bool {
+    Path::new(program).exists()
+}
+
 pub(crate) fn package_tool(
     receipt_dir: &Path,
     name: &str,
@@ -123,7 +158,8 @@ pub(crate) fn package_tool(
     packages: &[String],
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    if !Path::new("/usr/bin/pacman").exists() {
+    let pacman = pacman_program();
+    if !pacman_available(&pacman) {
         let outcome = OperationOutcome {
             ok: !apply,
             changed: false,
@@ -139,12 +175,10 @@ pub(crate) fn package_tool(
         return Ok(outcome);
     }
     let result = match action {
-        "update" if apply => {
-            command_capture_with_timeout("/usr/bin/pacman", &["-Syu", "--noconfirm"], 1800)
-        }
-        "update" | "check" => command_capture("/usr/bin/pacman", &["-Qu"]),
+        "update" if apply => command_capture_with_timeout(&pacman, &["-Syu", "--noconfirm"], 1800),
+        "update" | "check" => command_capture(&pacman, &["-Qu"]),
         "install" if apply => pacman_mutate_packages(false, packages),
-        "install" => command_capture("/usr/bin/pacman", &["-Q"]),
+        "install" => command_capture(&pacman, &["-Q"]),
         other => {
             let outcome = OperationOutcome {
                 ok: false,
@@ -394,13 +428,15 @@ pub(crate) fn health_tool(
     cwd: Option<&str>,
 ) -> Result<OperationOutcome, String> {
     if let Some(url) = url {
-        let result = command_capture("/usr/bin/curl", &["-fsS", "--max-time", "3", url]);
-        let expected_ok = expected_contains
-            .map(|needle| result.stdout.contains(needle))
-            .unwrap_or(true);
+        let result = crate::tools::health::curl_probe(&crate::tools::health::ProbeRequest {
+            url,
+            retries: 0,
+            timeout_secs: 3,
+            expected_contains,
+        });
         write_command_receipt(receipt_dir, name, &result)?;
         return Ok(OperationOutcome {
-            ok: result.ok && expected_ok,
+            ok: result.ok,
             changed: false,
             skipped: false,
             message: format!("health {url}"),

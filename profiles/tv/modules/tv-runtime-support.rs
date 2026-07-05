@@ -1,6 +1,5 @@
 use crate::*;
 use serde_json::json;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -122,51 +121,21 @@ fn managed_files(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let mut missing = Vec::new();
-    let mut written = Vec::new();
-    let mut changed = false;
-    for file in &module.managed_files {
-        let path = PathBuf::from(&file.path);
-        let existing = fs::read_to_string(&path).ok();
-        let content_equal = existing.as_deref() == Some(file.content.as_str());
-        if !content_equal {
-            if apply {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| {
-                        format!("tv-managed-file-parent-failed {}: {e}", parent.display())
-                    })?;
-                }
-                fs::write(&path, file.content.as_bytes())
-                    .map_err(|e| format!("tv-managed-file-write-failed {}: {e}", path.display()))?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(
-                        &path,
-                        fs::Permissions::from_mode(file.mode.unwrap_or(0o644)),
-                    )
-                    .map_err(|e| format!("tv-managed-file-mode-failed {}: {e}", path.display()))?;
-                }
-                written.push(file.path.clone());
-                changed = true;
-            } else {
-                missing.push(file.path.clone());
-            }
-        }
-    }
-    let ok = missing.is_empty() || !apply;
-    let outcome = OperationOutcome {
-        ok,
-        changed,
-        skipped: !apply && !missing.is_empty(),
-        message: format!("{} managed files checked", module.managed_files.len()),
-        command: None,
-    };
-    write_json(
-        &receipt_dir.join("tv-managed-files.json"),
-        &json!({"schema":"harmonia.tv.managed_files.v1","ok":ok,"module":module.id,"checked":module.managed_files.len(),"missing":missing,"written":written,"apply":apply,"changed":changed,"first_missing_signal": if ok {"none"} else {"tv-managed-file-missing"}}),
-    )?;
-    Ok(outcome)
+    tools::files::converge_managed_files(
+        &tools::files::ManagedFilesRequest {
+            module_id: &module.id,
+            files: &module.managed_files,
+            receipt_name: "tv-managed-files",
+            schema: "harmonia.tv.managed_files.v1",
+            first_missing_signal: "tv-managed-file-missing",
+        },
+        receipt_dir,
+        apply,
+    )
+}
+
+fn pacman_command_path() -> String {
+    crate::tools::module_steps::pacman_program()
 }
 
 fn packages(
@@ -175,7 +144,8 @@ fn packages(
     apply: bool,
     optional: bool,
 ) -> Result<OperationOutcome, String> {
-    if !Path::new("/usr/bin/pacman").exists() {
+    let pacman = pacman_command_path();
+    if !Path::new(&pacman).exists() {
         let outcome = planned_outcome(
             if apply && !optional {
                 "pacman missing for TV package mutation"
@@ -202,8 +172,12 @@ fn packages(
         vec!["-S".into(), "--needed".into(), "--noconfirm".into()]
     };
     args.extend(module.packages.iter().cloned());
-    let result = command_tool(receipt_dir, "tv-packages", "/usr/bin/pacman", &args, None)?;
+    let result = command_tool(receipt_dir, "tv-packages", &pacman, &args, None)?;
     if optional {
+        write_json(
+            &receipt_dir.join("tv-packages.json"),
+            &json!({"schema":"harmonia.tv.packages.v1","ok":true,"module":module.id,"operation":"packages","tool":"package","action":"tv-package-set","apply":apply,"optional":true,"warning":"optional package set is customer-owned; Harmonia checked only and did not reinstall","packages":module.packages,"command":result.command,"first_missing_signal":"none"}),
+        )?;
         write_json(
             &receipt_dir.join("tv-packages-warning.json"),
             &json!({"schema":"harmonia.tv.optional_warning.v1","ok":true,"module":module.id,"operation":"packages","warning":"optional package set is customer-owned; Harmonia checked only and did not reinstall","packages":module.packages,"apply":apply,"command_ok":result.ok,"first_missing_signal":"none"}),

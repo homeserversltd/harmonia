@@ -611,7 +611,8 @@ pub(crate) fn collect_fingerprint(
 }
 
 pub(crate) fn command_capture_redacted(program: &str, args: &[&str]) -> CmdResult {
-    let mut result = command_capture(program, args);
+    let redactions: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    let mut result = tools::command::capture_redacted(program, args, &redactions);
     result.stdout = redact_secret_text(&result.stdout);
     result.stderr = redact_secret_text(&result.stderr);
     result

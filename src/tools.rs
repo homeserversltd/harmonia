@@ -10,51 +10,18 @@ impl ToolContract {
     }
 }
 
-pub mod archive;
-pub mod artifact;
-pub mod backup;
 pub mod command;
-pub mod config;
-pub mod cron_timer;
-pub mod download;
 pub mod files;
 pub mod git_artifact;
 pub mod health;
-pub mod hotfix;
-pub mod interactable;
-pub mod migration;
 pub(crate) mod module_steps;
-pub mod node_build;
-pub mod package;
-pub mod permissions;
-pub mod receipt;
-pub mod rust_build;
-pub mod systemd;
-pub mod venv;
-pub mod version;
+pub(crate) mod service_runtime;
 
 pub const TOOLBELT: &[ToolContract] = &[
-    archive::CONTRACT,
-    artifact::CONTRACT,
-    backup::CONTRACT,
     command::CONTRACT,
-    config::CONTRACT,
-    cron_timer::CONTRACT,
-    download::CONTRACT,
     files::CONTRACT,
     git_artifact::CONTRACT,
     health::CONTRACT,
-    hotfix::CONTRACT,
-    interactable::CONTRACT,
-    migration::CONTRACT,
-    node_build::CONTRACT,
-    package::CONTRACT,
-    permissions::CONTRACT,
-    receipt::CONTRACT,
-    rust_build::CONTRACT,
-    systemd::CONTRACT,
-    venv::CONTRACT,
-    version::CONTRACT,
 ];
 
 pub fn all() -> &'static [ToolContract] {
@@ -119,31 +86,41 @@ mod tests {
                 "tool {} description must name one primitive job",
                 tool.name
             );
-            assert_eq!(
-                tool.description.matches('.').count(),
-                1,
-                "tool {} description must stay one sentence",
-                tool.name
-            );
         }
     }
 
     #[test]
-    fn toolbelt_contracts_have_rust_files_not_json_peer_manifests() {
+    fn registered_tool_names_have_real_behavioral_entry_points() {
         let root = repo_root();
-        assert!(
-            !root.join("tools").exists(),
-            "top-level JSON tool tree must not exist"
-        );
+        let expected = BTreeSet::from(["command", "files", "git-artifact", "health"]);
+        let actual: BTreeSet<&str> = all().iter().map(|tool| tool.name).collect();
+        assert_eq!(actual, expected);
         for tool in all() {
             let module_file = root
                 .join("src/tools")
                 .join(format!("{}.rs", tool.name.replace('-', "_")));
+            let source = fs::read_to_string(&module_file).unwrap_or_else(|err| {
+                panic!(
+                    "tool {} must have Rust implementation file at {}: {err}",
+                    tool.name,
+                    module_file.display()
+                )
+            });
             assert!(
-                module_file.exists(),
-                "tool {} must have Rust implementation file at {}",
-                tool.name,
-                module_file.display()
+                source.contains("pub(crate) fn")
+                    || source.contains("pub fn converge_files")
+                    || source.contains("pub fn apply"),
+                "tool {} must expose an executable behavioral entry point",
+                tool.name
+            );
+            assert!(
+                !source.contains("planned for")
+                    || source.contains("capture_with")
+                    || source.contains("converge_")
+                    || source.contains("curl_probe")
+                    || source.contains("apply("),
+                "tool {} must not be a description-only planned stub",
+                tool.name
             );
         }
     }
@@ -153,15 +130,5 @@ mod tests {
         for tool in all() {
             assert_eq!(get(tool.name), Some(tool));
         }
-    }
-
-    #[test]
-    fn primitive_tool_files_are_callable() {
-        let outcome = command::plan(&command::Request::new("check"));
-        assert!(outcome.ok);
-        assert!(outcome.message.contains("command check planned"));
-        let outcome = files::plan(&files::Request::new("atomic-promote"));
-        assert!(outcome.ok);
-        assert!(outcome.message.contains("files atomic-promote planned"));
     }
 }

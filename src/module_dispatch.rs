@@ -73,7 +73,10 @@ pub(crate) struct ModuleExecution {
 }
 
 impl ModuleExecution {
-    fn from_operations(outcomes: Vec<(&'static str, OperationOutcome)>, module_id: &str) -> Self {
+    pub(crate) fn from_operations(
+        outcomes: Vec<(&'static str, OperationOutcome)>,
+        module_id: &str,
+    ) -> Self {
         let mut ok = true;
         let mut changed = false;
         let mut first_missing_signal = None;
@@ -195,14 +198,14 @@ pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), 
     }
 }
 
-fn reject_executable_sidecar(module: &ModuleManifest) -> Result<(), String> {
+pub(crate) fn reject_executable_sidecar(module: &ModuleManifest) -> Result<(), String> {
     if module.command.is_some() || !module.args.is_empty() || module.cwd.is_some() {
         return Err(format!("module-executable-sidecar-rejected-{}", module.id));
     }
     Ok(())
 }
 
-fn require_path<'a>(
+pub(crate) fn require_path<'a>(
     module: &'a ModuleManifest,
     value: &'a Option<String>,
     name: &str,

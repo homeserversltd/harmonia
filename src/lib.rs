@@ -98,8 +98,8 @@ struct ModuleManifest {
     optional_warning: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct CmdResult {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CmdResult {
     ok: bool,
     code: i32,
     stdout: String,
@@ -226,9 +226,32 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
 
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
+    }
+
+    static PACMAN_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn with_fake_pacman<T>(scratch: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = PACMAN_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("pacman env lock");
+        let fake = scratch.join("fake-pacman");
+        fs::create_dir_all(scratch).unwrap();
+        fs::write(
+            &fake,
+            "#!/usr/bin/env sh\ncase \"$1\" in\n  -Qu) exit 0 ;;\n  -Q) exit 0 ;;\n  -Syu) echo 'there is nothing to do'; exit 0 ;;\n  -S) echo 'there is nothing to do'; exit 0 ;;\n  *) exit 0 ;;\nesac\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        set_test_pacman_path(Some(fake.display().to_string()));
+        let result = f();
+        set_test_pacman_path(None);
+        result
     }
 
     #[test]
@@ -1272,13 +1295,15 @@ mod tests {
         assert_eq!(profile.modules[1], "harmonia-runtime");
         let receipts =
             std::env::temp_dir().join(format!("harmonia-tv-self-modern-receipt-{}", process::id()));
-        run_profile_engine(
-            &profile,
-            &root.join("profiles/tv/modules"),
-            &receipts,
-            false,
-        )
-        .unwrap();
+        with_fake_pacman(&receipts.join("fixtures"), || {
+            run_profile_engine(
+                &profile,
+                &root.join("profiles/tv/modules"),
+                &receipts,
+                false,
+            )
+            .unwrap();
+        });
         let installer =
             fs::read_to_string(receipts.join("modules/harmonia-runtime/harmonia-installer.json"))
                 .unwrap();
@@ -1306,12 +1331,14 @@ mod tests {
         std::env::set_current_dir(std::env::temp_dir()).unwrap();
         let profile_path = profile_root.join("index.json");
         let profile = load_profile(&profile_path).unwrap();
-        let result = run_profile_engine(
-            &profile,
-            &default_module_root(&profile_path),
-            &receipt_dir,
-            false,
-        );
+        let result = with_fake_pacman(&scratch.join("fixtures"), || {
+            run_profile_engine(
+                &profile,
+                &default_module_root(&profile_path),
+                &receipt_dir,
+                false,
+            )
+        });
         std::env::set_current_dir(previous).unwrap();
         assert!(
             result.is_ok(),
@@ -1350,13 +1377,15 @@ mod tests {
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
         let receipts =
             std::env::temp_dir().join(format!("harmonia-tv-files-receipt-{}", process::id()));
-        run_profile_engine(
-            &profile,
-            &root.join("profiles/tv/modules"),
-            &receipts,
-            false,
-        )
-        .unwrap();
+        with_fake_pacman(&receipts.join("fixtures"), || {
+            run_profile_engine(
+                &profile,
+                &root.join("profiles/tv/modules"),
+                &receipts,
+                false,
+            )
+            .unwrap();
+        });
         let wrapper =
             receipts.join("modules/desktop-config-payload/tv-desktop-config-install.json");
         assert!(wrapper.exists());
@@ -1500,7 +1529,8 @@ mod tests {
     fn shared_toolbelt_is_callable_by_modules() {
         assert!(tools::get("command").is_some());
         assert!(tools::get("git-artifact").is_some());
-        assert!(tools::get("receipt").is_some());
+        assert!(tools::get("health").is_some());
+        assert!(tools::get("files").is_some());
         let root = repo_root();
         let manifest = load_module(
             &root.join("profiles/homeconsole/modules/homeconsole-sync-runtime/sidecar.json"),

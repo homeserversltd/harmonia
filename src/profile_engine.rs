@@ -2,7 +2,6 @@ use crate::*;
 use std::fs::{self, File};
 use std::io::{self};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
     PathBuf::from("/etc/harmonia/locks")
@@ -292,10 +291,8 @@ pub(crate) fn enforce_homeconsole_update_suite(
     }
 }
 
-const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 900;
-
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {
-    command_capture_with_cwd(program, args, None)
+    tools::command::capture(program, args)
 }
 
 pub(crate) fn command_capture_with_timeout(
@@ -303,7 +300,7 @@ pub(crate) fn command_capture_with_timeout(
     args: &[&str],
     timeout_secs: u64,
 ) -> CmdResult {
-    command_capture_with_cwd_and_timeout(program, args, None, timeout_secs)
+    tools::command::capture_with_timeout(program, args, timeout_secs)
 }
 
 pub(crate) fn command_capture_with_cwd(
@@ -311,91 +308,7 @@ pub(crate) fn command_capture_with_cwd(
     args: &[&str],
     cwd: Option<&str>,
 ) -> CmdResult {
-    command_capture_with_cwd_and_timeout(program, args, cwd, DEFAULT_COMMAND_TIMEOUT_SECS)
-}
-
-pub(crate) fn command_capture_with_cwd_and_timeout(
-    program: &str,
-    args: &[&str],
-    cwd: Option<&str>,
-    timeout_secs: u64,
-) -> CmdResult {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::thread;
-    use std::time::{Duration, Instant};
-
-    let mut cmd = Command::new(program);
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-    }
-    let command_label = format!("{} {}", program, args.join(" "));
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            return CmdResult {
-                ok: false,
-                code: -1,
-                stdout: String::new(),
-                stderr: format!("command-spawn-failed: {command_label}: {err}"),
-            }
-        }
-    };
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_string(&mut stderr);
-                }
-                return CmdResult {
-                    ok: status.success(),
-                    code: status.code().unwrap_or(-1),
-                    stdout: stdout.trim().to_string(),
-                    stderr: stderr.trim().to_string(),
-                };
-            }
-            Ok(None) if start.elapsed() >= Duration::from_secs(timeout_secs) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_string(&mut stderr);
-                }
-                let signal = format!("command-timeout-after-{timeout_secs}s: {command_label}");
-                return CmdResult {
-                    ok: false,
-                    code: -1,
-                    stdout: stdout.trim().to_string(),
-                    stderr: if stderr.trim().is_empty() {
-                        signal.clone()
-                    } else {
-                        format!("{}\n{}", stderr.trim(), signal)
-                    },
-                };
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(err) => {
-                let _ = child.kill();
-                return CmdResult {
-                    ok: false,
-                    code: -1,
-                    stdout: String::new(),
-                    stderr: format!("command-wait-failed: {command_label}: {err}"),
-                };
-            }
-        }
-    }
+    tools::command::capture_with_cwd(program, args, cwd)
 }
 
 pub(crate) fn pacman_stdout_indicates_change(stdout: &str) -> bool {
