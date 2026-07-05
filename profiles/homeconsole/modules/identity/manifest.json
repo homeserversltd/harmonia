@@ -1,0 +1,25 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "identity",
+  "version": "1.0.0",
+  "description": "HomeConsole identity module. Ladder owns the uname proof receipt.",
+  "optional": false,
+  "constants": {
+    "program": "/usr/bin/uname",
+    "args": [
+      "-a"
+    ]
+  },
+  "ladder": [
+    {
+      "step_id": "uname",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "$constants.program",
+        "args": "$constants.args"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

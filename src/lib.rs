@@ -234,6 +234,22 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
     }
 
+    fn assert_lawful_profile_module(dir: &Path, module: &str) {
+        assert!(
+            lawful_module_manifest_exists(dir),
+            "{module} needs sidecar+index.rs or ladder manifest"
+        );
+        let sidecar = dir.join("sidecar.json");
+        if sidecar.exists() {
+            let manifest = load_module(&sidecar).unwrap();
+            validate_registered_module(&manifest).unwrap();
+        } else {
+            let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
+            assert_eq!(manifest.id, module);
+            validate_ladder(&manifest).unwrap();
+        }
+    }
+
     static PACMAN_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn with_fake_pacman<T>(scratch: &Path, f: impl FnOnce() -> T) -> T {
@@ -690,6 +706,45 @@ mod tests {
     }
 
     #[test]
+    fn identity_ladder_shadow_proofs_match_compiled_receipt_family_for_profile_instances() {
+        let root = repo_root();
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-identity-shadow-{}", process::id()));
+        for profile in ["homeconsole", "tv"] {
+            let manifest = load_ladder_manifest(
+                &root
+                    .join("profiles")
+                    .join(profile)
+                    .join("modules/identity/manifest.json"),
+            )
+            .unwrap();
+            let diff = shadow_proof_receipt_family_diff_for_test(
+                &manifest,
+                &scratch.join(profile).join("ladder"),
+                &scratch.join(profile).join("compiled"),
+                |compiled_dir| {
+                    let result = CmdResult {
+                        ok: true,
+                        code: 0,
+                        stdout: "planned command /usr/bin/uname".to_string(),
+                        stderr: String::new(),
+                    };
+                    write_command_receipt(compiled_dir, "uname", &result)?;
+                    Ok(ModuleExecution {
+                        ok: true,
+                        changed: false,
+                        operation_count: 1,
+                        first_missing_signal: None,
+                    })
+                },
+            )
+            .unwrap();
+            assert!(diff.is_empty(), "{profile} identity shadow diff: {diff:?}");
+        }
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
     fn module_sidecar_rejects_legacy_steps_ladder() {
         let receipt_dir =
             std::env::temp_dir().join(format!("harmonia-legacy-steps-{}", process::id()));
@@ -782,12 +837,7 @@ mod tests {
         );
         for module in &profile.modules {
             let dir = root.join("profiles/homeconsole/modules").join(module);
-            assert!(
-                dir.join("index.rs").exists(),
-                "{module} needs profile-adjacent Rust marker"
-            );
-            let manifest = load_module(&dir.join("sidecar.json")).unwrap();
-            validate_registered_module(&manifest).unwrap();
+            assert_lawful_profile_module(&dir, module);
         }
     }
 
@@ -824,20 +874,18 @@ mod tests {
             .exists());
         for module in &profile.modules {
             let dir = root.join("profiles/homeserver/modules").join(module);
-            assert!(
-                dir.join("index.rs").exists(),
-                "{module} needs profile-adjacent Rust module logic"
-            );
-            let manifest = load_module(&dir.join("sidecar.json")).unwrap();
-            assert!(
-                manifest.command.is_none(),
-                "{module} sidecar must not own a command"
-            );
-            assert!(
-                manifest.args.is_empty(),
-                "{module} sidecar must not own args"
-            );
-            validate_registered_module(&manifest).unwrap();
+            assert_lawful_profile_module(&dir, module);
+            if dir.join("sidecar.json").exists() {
+                let manifest = load_module(&dir.join("sidecar.json")).unwrap();
+                assert!(
+                    manifest.command.is_none(),
+                    "{module} sidecar must not own a command"
+                );
+                assert!(
+                    manifest.args.is_empty(),
+                    "{module} sidecar must not own args"
+                );
+            }
         }
 
         let rust_toolchain = load_module(
@@ -988,12 +1036,7 @@ mod tests {
 
         for module in &profile.modules {
             let dir = root.join("profiles/tv/modules").join(module);
-            assert!(
-                dir.join("index.rs").exists(),
-                "{module} needs profile-adjacent Rust module logic"
-            );
-            let manifest = load_module(&dir.join("sidecar.json")).unwrap();
-            validate_registered_module(&manifest).unwrap();
+            assert_lawful_profile_module(&dir, module);
         }
     }
 
@@ -1002,22 +1045,21 @@ mod tests {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
         for module in &profile.modules {
-            let manifest = load_module(
-                &root
-                    .join("profiles/tv/modules")
-                    .join(module)
-                    .join("sidecar.json"),
-            )
-            .unwrap();
-            assert!(
-                manifest.command.is_none(),
-                "{module} sidecar must not own a command"
-            );
-            assert!(
-                manifest.args.is_empty(),
-                "{module} sidecar must not own args"
-            );
-            validate_registered_module(&manifest).unwrap();
+            let dir = root.join("profiles/tv/modules").join(module);
+            assert_lawful_profile_module(&dir, module);
+            let sidecar = dir.join("sidecar.json");
+            if sidecar.exists() {
+                let manifest = load_module(&sidecar).unwrap();
+                assert!(
+                    manifest.command.is_none(),
+                    "{module} sidecar must not own a command"
+                );
+                assert!(
+                    manifest.args.is_empty(),
+                    "{module} sidecar must not own args"
+                );
+                validate_registered_module(&manifest).unwrap();
+            }
         }
         let steam =
             load_module(&root.join("profiles/tv/modules/steam-game-lane/sidecar.json")).unwrap();
@@ -1247,13 +1289,8 @@ mod tests {
         let module_root = scratch.join("modules");
         fs::create_dir_all(module_root.join("identity")).unwrap();
         fs::copy(
-            root.join("profiles/tv/modules/identity/sidecar.json"),
-            module_root.join("identity/sidecar.json"),
-        )
-        .unwrap();
-        fs::copy(
-            root.join("profiles/tv/modules/identity/index.rs"),
-            module_root.join("identity/index.rs"),
+            root.join("profiles/tv/modules/identity/manifest.json"),
+            module_root.join("identity/manifest.json"),
         )
         .unwrap();
         fs::create_dir_all(module_root.join("system-packages")).unwrap();

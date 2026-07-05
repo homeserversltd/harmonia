@@ -89,26 +89,47 @@ pub(crate) fn export_deployable_config(
         .join(&profile.id)
         .join("modules");
     for module in &profile.modules {
-        let sidecar = module_root.join(module).join("sidecar.json");
-        if !sidecar.exists() {
+        let module_dir = module_root.join(module);
+        let sidecar = module_dir.join("sidecar.json");
+        let manifest = module_dir.join("manifest.json");
+        let module_output_dir = output_dir
+            .join("profiles")
+            .join(&profile.id)
+            .join("modules")
+            .join(module);
+        if sidecar.exists() {
+            load_module(&sidecar)?;
+            export_one(
+                &sidecar,
+                &module_output_dir.join("sidecar.json"),
+                "module-sidecar",
+                mode,
+                &mut artifacts,
+            )?;
+        } else if manifest.exists() && is_ladder_manifest(&manifest) {
+            let ladder = load_ladder_manifest(&manifest)?;
+            export_one(
+                &manifest,
+                &module_output_dir.join("manifest.json"),
+                "module-ladder-manifest",
+                mode,
+                &mut artifacts,
+            )?;
+            if let Some(files_root) = ladder.files_root.as_deref() {
+                export_tree(
+                    &module_dir.join(files_root),
+                    &module_output_dir.join(files_root),
+                    "module-ladder-files-root",
+                    mode,
+                    &mut artifacts,
+                )?;
+            }
+        } else {
             return Err(format!(
-                "deployable-config-module-sidecar-missing {}",
-                sidecar.display()
+                "deployable-config-module-manifest-missing {}",
+                module_dir.display()
             ));
         }
-        load_module(&sidecar)?;
-        export_one(
-            &sidecar,
-            &output_dir
-                .join("profiles")
-                .join(&profile.id)
-                .join("modules")
-                .join(module)
-                .join("sidecar.json"),
-            "module-sidecar",
-            mode,
-            &mut artifacts,
-        )?;
     }
 
     let lock_path = harmonia_root
@@ -216,6 +237,32 @@ fn export_one(
         output: output.display().to_string(),
         mode: mode.as_str(),
     });
+    Ok(())
+}
+
+fn export_tree(
+    source_root: &Path,
+    output_root: &Path,
+    kind: &'static str,
+    mode: DeployableConfigMode,
+    artifacts: &mut Vec<DeployableConfigArtifact>,
+) -> Result<(), String> {
+    if !source_root.is_dir() {
+        return Err(format!(
+            "deployable-config-files-root-missing {}",
+            source_root.display()
+        ));
+    }
+    for entry in fs::read_dir(source_root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let source = entry.path();
+        let output = output_root.join(entry.file_name());
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            export_tree(&source, &output, kind, mode, artifacts)?;
+        } else {
+            export_one(&source, &output, kind, mode, artifacts)?;
+        }
+    }
     Ok(())
 }
 

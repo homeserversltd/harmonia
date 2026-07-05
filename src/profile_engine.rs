@@ -297,6 +297,11 @@ pub(crate) fn homeconsole_module_root() -> std::path::PathBuf {
     Path::new("profiles/homeconsole/modules").to_path_buf()
 }
 
+pub(crate) fn lawful_module_manifest_exists(module_dir: &Path) -> bool {
+    (module_dir.join("index.rs").exists() && module_dir.join("sidecar.json").exists())
+        || module_dir.join("manifest.json").exists()
+}
+
 pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<String>, String> {
     let mut found = Vec::new();
     for module_id in [
@@ -314,7 +319,7 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
         "homeconsole-caduceus-public-lever",
     ] {
         let module_dir = module_root.join(module_id);
-        if module_dir.join("index.rs").exists() && module_dir.join("sidecar.json").exists() {
+        if lawful_module_manifest_exists(&module_dir) {
             found.push(module_id.to_string());
         }
     }
