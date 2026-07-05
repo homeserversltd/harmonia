@@ -72,6 +72,49 @@ pub(crate) fn execute_ladder_step(
         health_op: Box::leak(health_op.into_boxed_str()),
         binary_name: Box::leak(binary_name.into_boxed_str()),
     };
+    let module = module_from_args(args, &spec)?;
+    execute(&module, receipt_dir, apply, &spec)
+}
+
+pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
+    let op_prefix = string_arg(args, "op_prefix")?;
+    let source_op = format!("{op_prefix}-source-git-artifact");
+    let source_sha_op = format!("{op_prefix}-source-sha");
+    let managed_files_op = format!("{op_prefix}-managed-files");
+    let build_op = format!("{op_prefix}-cargo-build");
+    let binary_install_op = format!("{op_prefix}-binary-install");
+    let service_stop_op = format!("{op_prefix}-service-stop");
+    let daemon_reload_op = format!("{op_prefix}-daemon-reload");
+    let service_enable_op = format!("{op_prefix}-service-enable");
+    let service_active_op = format!("{op_prefix}-service-active");
+    let service_op = format!("{op_prefix}-service");
+    let health_op = format!("{op_prefix}-health");
+    let binary_name = string_arg(args, "binary_name")?;
+    let spec = ServiceRuntimeSpec {
+        op_prefix: Box::leak(op_prefix.into_boxed_str()),
+        run_schema: Box::leak(string_arg(args, "run_schema")?.into_boxed_str()),
+        managed_files_schema: Box::leak(string_arg(args, "managed_files_schema")?.into_boxed_str()),
+        source_op: Box::leak(source_op.into_boxed_str()),
+        source_sha_op: Box::leak(source_sha_op.into_boxed_str()),
+        managed_files_op: Box::leak(managed_files_op.into_boxed_str()),
+        build_op: Box::leak(build_op.into_boxed_str()),
+        binary_install_op: Box::leak(binary_install_op.into_boxed_str()),
+        service_stop_op: Box::leak(service_stop_op.into_boxed_str()),
+        daemon_reload_op: Box::leak(daemon_reload_op.into_boxed_str()),
+        service_enable_op: Box::leak(service_enable_op.into_boxed_str()),
+        service_active_op: Box::leak(service_active_op.into_boxed_str()),
+        service_op: Box::leak(service_op.into_boxed_str()),
+        health_op: Box::leak(health_op.into_boxed_str()),
+        binary_name: Box::leak(binary_name.into_boxed_str()),
+    };
+    let module = module_from_args(args, &spec)?;
+    validate(&module)
+}
+
+fn module_from_args(
+    args: &BTreeMap<String, Value>,
+    spec: &ServiceRuntimeSpec,
+) -> Result<ModuleManifest, String> {
     let managed_files: Vec<ManagedFileManifest> = args
         .get("managed_files")
         .cloned()
@@ -79,7 +122,7 @@ pub(crate) fn execute_ladder_step(
         .transpose()
         .map_err(|e| format!("service-runtime-managed-files-invalid: {e}"))?
         .unwrap_or_default();
-    let module = ModuleManifest {
+    Ok(ModuleManifest {
         id: string_arg(args, "module_id").unwrap_or_else(|_| spec.op_prefix.to_string()),
         description: String::new(),
         command: None,
@@ -117,8 +160,7 @@ pub(crate) fn execute_ladder_step(
         variables: std::collections::HashMap::new(),
         optional: false,
         optional_warning: None,
-    };
-    execute(&module, receipt_dir, apply, &spec)
+    })
 }
 
 use std::fs;
@@ -150,12 +192,6 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     require_path(module, &module.service, "service")?;
     require_path(module, &module.url, "url")?;
     require_path(module, &module.source_sha_file, "source_sha_file")?;
-    if module.managed_files.is_empty() {
-        return Err(format!(
-            "module-sidecar-missing-{}-managed_files",
-            module.id
-        ));
-    }
     Ok(())
 }
 
@@ -609,4 +645,142 @@ fn write_run_receipt(
             "first_missing_signal": first_missing_signal,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time moves forward")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "harmonia-service-runtime-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn base_args(root: &Path) -> BTreeMap<String, Value> {
+        let source_dir = root.join("source");
+        let install_bin = root.join("bin/service");
+        let source_sha_file = root.join("state/service.sha");
+        BTreeMap::from([
+            (
+                "module_id".to_string(),
+                json!("empty-managed-files-runtime"),
+            ),
+            ("repo".to_string(), json!(source_dir.display().to_string())),
+            ("branch".to_string(), json!("main")),
+            ("remote".to_string(), json!("origin")),
+            (
+                "source_dir".to_string(),
+                json!(source_dir.display().to_string()),
+            ),
+            (
+                "install_bin".to_string(),
+                json!(install_bin.display().to_string()),
+            ),
+            ("service".to_string(), json!("empty-managed-files.service")),
+            ("url".to_string(), json!("http://127.0.0.1:1/health")),
+            (
+                "source_sha_file".to_string(),
+                json!(source_sha_file.display().to_string()),
+            ),
+            ("binary_name".to_string(), json!("service")),
+            ("op_prefix".to_string(), json!("empty-managed-files")),
+            (
+                "run_schema".to_string(),
+                json!("harmonia.test.service_runtime.v1"),
+            ),
+            (
+                "managed_files_schema".to_string(),
+                json!("harmonia.test.service_runtime.managed_files.v1"),
+            ),
+            ("managed_files".to_string(), json!([])),
+        ])
+    }
+
+    fn init_git_repo(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "harmonia-test@example.invalid"],
+            vec!["config", "user.name", "Harmonia Test"],
+        ] {
+            assert!(Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(path)
+                .status()
+                .unwrap()
+                .success());
+        }
+        fs::write(path.join("README.md"), "test repo\n").unwrap();
+        assert!(Command::new("/usr/bin/git")
+            .args(["add", "README.md"])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("/usr/bin/git")
+            .args(["commit", "-m", "seed"])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    #[test]
+    fn validate_allows_declared_empty_managed_files_but_keeps_required_args() {
+        let root = scratch("validate");
+        let mut args = base_args(&root);
+        validate_ladder_args(&args).unwrap();
+        args.remove("repo");
+        assert_eq!(
+            validate_ladder_args(&args).unwrap_err(),
+            "service-runtime-missing-repo"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_managed_files_idle_plan_writes_truthful_noop_receipt() {
+        let root = scratch("noop");
+        let source_dir = root.join("source");
+        init_git_repo(&source_dir);
+        let receipt_dir = root.join("receipts");
+        let args = base_args(&root);
+
+        let execution = execute_ladder_step(&args, &receipt_dir, false).unwrap();
+        assert!(execution.ok);
+        assert!(!execution.changed);
+
+        let receipt: Value = serde_json::from_str(
+            &fs::read_to_string(receipt_dir.join("empty-managed-files-managed-files.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            receipt.get("schema").and_then(Value::as_str),
+            Some("harmonia.test.service_runtime.managed_files.v1")
+        );
+        assert_eq!(receipt.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(receipt.get("changed").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            receipt
+                .get("entries")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            receipt.get("first_missing_signal").and_then(Value::as_str),
+            Some("none")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
