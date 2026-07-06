@@ -145,8 +145,35 @@ class InstallerCliTests(unittest.TestCase):
             )
             payload = json.loads(engine.read_text())
             self.assertEqual(payload["ratchet_lock"], str(lock))
-            self.assertEqual(payload["artifact_transport"]["repo_url"], "ssh://git@git.home.arpa/HOMESERVERSLTD/blessed-artifacts.git")
-            self.assertEqual(payload["artifact_transport"]["cache_dir"], str(cache))
+            self.assertNotIn("artifact_transport", payload)
+            self.assertEqual(payload["artifact_transports"][0]["name"], "estate-forge")
+            self.assertEqual(payload["artifact_transports"][0]["repo_url"], "ssh://git@git.home.arpa/HOMESERVERSLTD/blessed-artifacts.git")
+            self.assertEqual(payload["artifact_transports"][0]["cache_dir"], str(cache / "estate-forge"))
+            self.assertEqual(payload["artifact_transports"][1]["name"], "github-canonical")
+            self.assertEqual(payload["artifact_transports"][1]["repo_url"], "https://github.com/homeserversltd/blessed-artifacts.git")
+
+    def test_seed_engine_config_accepts_custom_artifact_chain(self) -> None:
+        from installer.harmonia_installer import seed_engine_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = root / "etc" / "harmonia" / "engine.json"
+            chain = [
+                {"name": "one", "repo_url": "file:///one", "branch": "main", "cache_dir": str(root / "one")},
+                {"name": "two", "repo_url": "https://example.invalid/two.git", "branch": "stable", "cache_dir": str(root / "two")},
+            ]
+            seed_engine_config(
+                engine,
+                source="https://git.home.arpa/HOMESERVERSLTD/harmonia.git",
+                ref="main",
+                source_dir=root / "opt" / "harmonia",
+                install_bin=root / "bin" / "harmonia",
+                enabled=True,
+                artifact_transport_chain=chain,
+            )
+            payload = json.loads(engine.read_text())
+            self.assertEqual(payload["artifact_transports"], chain)
+            self.assertNotIn("artifact_transport", payload)
 
     def test_uninstall_apply_preserves_state_dir_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
