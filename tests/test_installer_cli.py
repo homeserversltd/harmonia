@@ -119,8 +119,34 @@ class InstallerCliTests(unittest.TestCase):
             self.assertEqual(payload["branch"], "main")
             self.assertEqual(payload["source_dir"], str(root / "opt" / "harmonia"))
             self.assertEqual(payload["install_bin"], str(root / "bin" / "harmonia"))
+            self.assertEqual(payload["ratchet_lock"], str(engine.parent / "engine-ratchet-lock.json"))
             self.assertTrue(payload["enabled"])
             self.assertNotIn("profiles", str(engine.relative_to(root)))
+
+    def test_seed_engine_config_can_wire_blessed_artifact_transport(self) -> None:
+        from installer.harmonia_installer import seed_engine_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = root / "etc" / "harmonia" / "engine.json"
+            lock = root / "etc" / "harmonia" / "locks" / "engine.json"
+            cache = root / "var" / "lib" / "harmonia" / "engine-artifacts"
+            seed_engine_config(
+                engine,
+                source="ssh://git@git.home.arpa/HOMESERVERSLTD/harmonia.git",
+                ref="main",
+                source_dir=root / "opt" / "harmonia",
+                install_bin=root / "bin" / "harmonia",
+                enabled=True,
+                ratchet_lock=lock,
+                artifact_repo="ssh://git@git.home.arpa/HOMESERVERSLTD/blessed-artifacts.git",
+                artifact_branch="main",
+                artifact_cache_dir=cache,
+            )
+            payload = json.loads(engine.read_text())
+            self.assertEqual(payload["ratchet_lock"], str(lock))
+            self.assertEqual(payload["artifact_transport"]["repo_url"], "ssh://git@git.home.arpa/HOMESERVERSLTD/blessed-artifacts.git")
+            self.assertEqual(payload["artifact_transport"]["cache_dir"], str(cache))
 
     def test_uninstall_apply_preserves_state_dir_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -105,6 +105,10 @@ Install contract:
     install_p.add_argument("--ref", default=None, help="Machine subscription ref. Defaults to this repo HEAD.")
     install_p.add_argument("--cargo", default="cargo", help="Cargo executable to use.")
     install_p.add_argument("--package", default="harmonia", help="Cargo package name.")
+    install_p.add_argument("--artifact-repo", default=None, help="SSH git repo carrying blessed Harmonia engine binaries for binary-first self-update.")
+    install_p.add_argument("--artifact-branch", default="main", help="Blessed artifact repo branch (default main).")
+    install_p.add_argument("--artifact-cache-dir", default=None, help="Local cache dir for blessed engine artifacts. Defaults under state-dir.")
+    install_p.add_argument("--ratchet-lock", default=None, help="Kernel-owned engine ratchet lock path. Defaults beside engine.json.")
     install_p.add_argument("--with-systemd", action="store_true", help="Install harmonia-homeconsole service/timer units.")
     install_p.add_argument("--enable-timer", action="store_true", help="Enable harmonia-homeconsole.timer after installing units; implies --with-systemd.")
 
@@ -202,6 +206,10 @@ def install(args: argparse.Namespace) -> int:
         source_dir=REPO_ROOT,
         install_bin=paths.bin_path,
         enabled=True,
+        ratchet_lock=Path(args.ratchet_lock) if args.ratchet_lock else None,
+        artifact_repo=args.artifact_repo,
+        artifact_branch=args.artifact_branch,
+        artifact_cache_dir=Path(args.artifact_cache_dir) if args.artifact_cache_dir else paths.state_dir / "engine-artifacts",
     )
     for directory in [paths.state_dir, paths.receipt_dir, paths.log_dir]:
         directory.mkdir(parents=True, exist_ok=True)
@@ -412,7 +420,19 @@ def seed_subscription_record(path: Path, capsule_manifest_path: Path, *, lane: s
     os.replace(tmp, path)
 
 
-def seed_engine_config(path: Path, *, source: str, ref: str, source_dir: Path, install_bin: Path, enabled: bool) -> None:
+def seed_engine_config(
+    path: Path,
+    *,
+    source: str,
+    ref: str,
+    source_dir: Path,
+    install_bin: Path,
+    enabled: bool,
+    ratchet_lock: Path | None = None,
+    artifact_repo: str | None = None,
+    artifact_branch: str = "main",
+    artifact_cache_dir: Path | None = None,
+) -> None:
     if path.exists():
         try:
             raw = json.loads(path.read_text())
@@ -421,15 +441,21 @@ def seed_engine_config(path: Path, *, source: str, ref: str, source_dir: Path, i
             existing = {}
     else:
         existing = {}
-    existing.update(
-        {
-            "source_repo_url": source,
-            "branch": ref if ref and ref != "unknown" else "main",
-            "source_dir": str(source_dir),
-            "install_bin": str(install_bin),
-            "enabled": enabled,
+    update = {
+        "source_repo_url": source,
+        "branch": ref if ref and ref != "unknown" else "main",
+        "source_dir": str(source_dir),
+        "install_bin": str(install_bin),
+        "enabled": enabled,
+    }
+    update["ratchet_lock"] = str(ratchet_lock or (path.parent / "engine-ratchet-lock.json"))
+    if artifact_repo:
+        update["artifact_transport"] = {
+            "repo_url": artifact_repo,
+            "branch": artifact_branch or "main",
+            "cache_dir": str(artifact_cache_dir or Path("/var/lib/harmonia/engine-artifacts")),
         }
-    )
+    existing.update(update)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".harmonia-new")
     tmp.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n")
