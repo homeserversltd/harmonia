@@ -44,7 +44,7 @@
         "args": [
           "sh",
           "-c",
-          "command -v oh-my-posh >/dev/null"
+          "command -v oh-my-posh || { echo oh-my-posh-binary-missing >&2; exit 1; }"
         ],
         "timeout_secs": 30
       }

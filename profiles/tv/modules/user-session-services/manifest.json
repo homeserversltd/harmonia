@@ -23,6 +23,7 @@
       "tv-hdmi-audio.service"
     ],
     "target_dir": "/home/owner",
+    "target_user": "owner",
     "expected_files": [
       ".config/systemd/user/hs-dunst.service",
       ".config/systemd/user/hs-waybar.service",
@@ -57,6 +58,7 @@
       "tool": "systemd",
       "permutation": "user-daemon-reload",
       "args": {
+        "user": "$constants.target_user",
         "timeout_secs": 60
       }
     },
@@ -66,6 +68,7 @@
       "permutation": "user-enable-now",
       "args": {
         "service": "hs-dunst.service",
+        "user": "$constants.target_user",
         "timeout_secs": 60
       }
     },
@@ -75,6 +78,7 @@
       "permutation": "user-enable-now",
       "args": {
         "service": "hs-waybar.service",
+        "user": "$constants.target_user",
         "timeout_secs": 60
       }
     },
@@ -84,6 +88,7 @@
       "permutation": "user-enable-now",
       "args": {
         "service": "tv-hdmi-audio.service",
+        "user": "$constants.target_user",
         "timeout_secs": 60
       }
     },

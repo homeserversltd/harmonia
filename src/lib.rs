@@ -1522,6 +1522,29 @@ mod tests {
     }
 
     #[test]
+    fn deployable_config_export_carries_ladder_module_sibling_files() {
+        let root = repo_root();
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-deployable-config-tv-ratchet-{}",
+            process::id()
+        ));
+        let output = scratch.join("payload");
+        let receipts = scratch.join("receipts");
+        export_deployable_config(&root, "tv", &output, &receipts, DeployableConfigMode::Copy)
+            .unwrap();
+        assert!(output
+            .join("profiles/tv/modules/oh-my-posh-aur-ratchet/manifest.json")
+            .exists());
+        assert!(output
+            .join("profiles/tv/modules/oh-my-posh-aur-ratchet/ratchet-lock.json")
+            .exists());
+        let receipt = fs::read_to_string(receipts.join("deployable-config-export.json")).unwrap();
+        assert!(receipt.contains("module-ladder-sibling-file"));
+        assert!(receipt.contains("ratchet-lock.json"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
     fn deployable_config_export_rejects_non_harmonia_authority_root() {
         let scratch = std::env::temp_dir().join(format!(
             "harmonia-deployable-config-reject-{}",

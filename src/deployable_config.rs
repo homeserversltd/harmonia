@@ -115,6 +115,13 @@ pub(crate) fn export_deployable_config(
                     &mut artifacts,
                 )?;
             }
+            export_module_sibling_files(
+                &module_dir,
+                &module_output_dir,
+                ladder.files_root.as_deref(),
+                mode,
+                &mut artifacts,
+            )?;
         } else if sidecar.exists() {
             load_module(&sidecar)?;
             export_one(
@@ -237,6 +244,38 @@ fn export_one(
         output: output.display().to_string(),
         mode: mode.as_str(),
     });
+    Ok(())
+}
+
+fn export_module_sibling_files(
+    module_dir: &Path,
+    module_output_dir: &Path,
+    files_root: Option<&str>,
+    mode: DeployableConfigMode,
+    artifacts: &mut Vec<DeployableConfigArtifact>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(module_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let name_text = name.to_string_lossy();
+        if name_text == "manifest.json" || name_text == "sidecar.json" {
+            continue;
+        }
+        if files_root == Some(name_text.as_ref()) {
+            continue;
+        }
+        let source = entry.path();
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if kind.is_file() {
+            export_one(
+                &source,
+                &module_output_dir.join(&name),
+                "module-ladder-sibling-file",
+                mode,
+                artifacts,
+            )?;
+        }
+    }
     Ok(())
 }
 

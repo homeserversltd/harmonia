@@ -39,13 +39,17 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
     ToolPermutation::new(
         "user-daemon-reload",
         "reload the user systemd manager",
-        &[ToolArg::optional("timeout_secs", ToolArgKind::Integer)],
+        &[
+            ToolArg::optional("user", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
     ),
     ToolPermutation::new(
         "user-enable-now",
         "enable and start a user unit",
         &[
             ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
     ),
@@ -54,6 +58,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         "restart a user unit",
         &[
             ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
     ),
@@ -62,6 +67,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         "probe active state for a user unit",
         &[
             ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
     ),
@@ -73,6 +79,7 @@ pub(crate) fn run_permutation(
     name: &str,
     permutation: &str,
     service: Option<&str>,
+    target_user: Option<&str>,
     timeout_secs: u64,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
@@ -84,6 +91,7 @@ pub(crate) fn run_permutation(
         action,
         service,
         user,
+        target_user,
         timeout_secs,
         apply,
     )
@@ -95,13 +103,14 @@ pub(crate) fn run_action(
     action: &str,
     service: Option<&str>,
     user: bool,
+    target_user: Option<&str>,
     timeout_secs: u64,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     let mutating = matches!(action, "daemon-reload" | "enable-now" | "restart" | "stop");
-    let before_enabled = state("is-enabled", service, user, timeout_secs);
-    let before_active = state("is-active", service, user, timeout_secs);
+    let before_enabled = state("is-enabled", service, user, target_user, timeout_secs);
+    let before_active = state("is-active", service, user, target_user, timeout_secs);
     let result = if mutating && !apply {
         CmdResult {
             ok: true,
@@ -110,10 +119,10 @@ pub(crate) fn run_action(
             stderr: String::new(),
         }
     } else {
-        systemctl(action, service, user, timeout_secs)
+        systemctl(action, service, user, target_user, timeout_secs)
     };
-    let after_enabled = state("is-enabled", service, user, timeout_secs);
-    let after_active = state("is-active", service, user, timeout_secs);
+    let after_enabled = state("is-enabled", service, user, target_user, timeout_secs);
+    let after_active = state("is-active", service, user, target_user, timeout_secs);
     let changed =
         mutating && result.ok && (before_enabled != after_enabled || before_active != after_active);
     write_systemd_receipt(
@@ -129,6 +138,7 @@ pub(crate) fn run_action(
         after_enabled.as_deref(),
         after_active.as_deref(),
         changed,
+        target_user,
     )?;
     Ok(OperationOutcome {
         ok: result.ok,
@@ -142,21 +152,28 @@ pub(crate) fn run_action(
     })
 }
 
-fn systemctl(action: &str, service: &str, user: bool, timeout_secs: u64) -> CmdResult {
-    let mut args: Vec<&str> = Vec::new();
-    if user {
-        args.push("--user");
-    }
+fn systemctl(
+    action: &str,
+    service: &str,
+    user: bool,
+    target_user: Option<&str>,
+    timeout_secs: u64,
+) -> CmdResult {
+    let mut args: Vec<String> = systemctl_scope_args(user, target_user);
     match action {
-        "daemon-reload" => args.push("daemon-reload"),
+        "daemon-reload" => args.push("daemon-reload".to_string()),
         "enable-now" => {
-            args.extend(["enable", "--now", service]);
+            args.extend([
+                "enable".to_string(),
+                "--now".to_string(),
+                service.to_string(),
+            ]);
         }
         "restart" | "stop" => {
-            args.extend([action, service]);
+            args.extend([action.to_string(), service.to_string()]);
         }
         "is-active-probe" => {
-            args.extend(["is-active", service]);
+            args.extend(["is-active".to_string(), service.to_string()]);
         }
         other => {
             return CmdResult {
@@ -167,20 +184,36 @@ fn systemctl(action: &str, service: &str, user: bool, timeout_secs: u64) -> CmdR
             }
         }
     }
-    crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &args, timeout_secs)
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs)
 }
 
-fn state(kind: &str, service: &str, user: bool, timeout_secs: u64) -> Option<String> {
+fn systemctl_scope_args(user: bool, target_user: Option<&str>) -> Vec<String> {
+    if !user {
+        return Vec::new();
+    }
+    let mut args = vec!["--user".to_string()];
+    if let Some(target_user) = target_user.filter(|value| !value.trim().is_empty()) {
+        args.push(format!("--machine={target_user}@.host"));
+    }
+    args
+}
+
+fn state(
+    kind: &str,
+    service: &str,
+    user: bool,
+    target_user: Option<&str>,
+    timeout_secs: u64,
+) -> Option<String> {
     if service.is_empty() {
         return None;
     }
-    let mut args: Vec<&str> = Vec::new();
-    if user {
-        args.push("--user");
-    }
-    args.extend([kind, service]);
+    let mut args: Vec<String> = systemctl_scope_args(user, target_user);
+    args.extend([kind.to_string(), service.to_string()]);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let result =
-        crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &args, timeout_secs);
+        crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs);
     if result.code == -1 {
         None
     } else {
@@ -202,6 +235,7 @@ fn write_systemd_receipt(
     enabled_after: Option<&str>,
     active_after: Option<&str>,
     changed: bool,
+    target_user: Option<&str>,
 ) -> Result<(), String> {
     write_json(
         &receipt_dir.join(format!("{}.json", name)),
@@ -211,6 +245,8 @@ fn write_systemd_receipt(
             "action": action,
             "service": service,
             "scope": if user { "user" } else { "system" },
+            "target_user": target_user,
+            "systemctl_transport": if user && target_user.is_some() { "machine-user" } else if user { "ambient-user" } else { "system" },
             "apply": apply,
             "ok": result.ok,
             "exit_code": result.code,
@@ -223,4 +259,77 @@ fn write_systemd_receipt(
             "changed": changed,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ladder::{load_ladder_manifest, validate_ladder};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("harmonia-systemd-{name}-{stamp}"))
+    }
+
+    #[test]
+    fn user_scope_args_use_machine_transport_when_target_user_declared() {
+        assert_eq!(
+            systemctl_scope_args(true, Some("owner")),
+            vec!["--user".to_string(), "--machine=owner@.host".to_string()]
+        );
+        assert_eq!(
+            systemctl_scope_args(false, Some("owner")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn tv_user_session_manifest_declares_target_user_for_user_systemd_steps() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let manifest = load_ladder_manifest(
+            &root.join("profiles/tv/modules/user-session-services/manifest.json"),
+        )
+        .unwrap();
+        let steps = validate_ladder(&manifest).unwrap();
+        for step in steps
+            .iter()
+            .filter(|step| step.permutation.starts_with("user-"))
+        {
+            assert_eq!(
+                step.args.get("user").and_then(|v| v.as_str()),
+                Some("owner")
+            );
+        }
+    }
+
+    #[test]
+    fn planned_user_systemd_receipt_names_machine_user_transport() {
+        let root = temp_root("receipt");
+        fs::create_dir_all(&root).unwrap();
+        run_action(
+            &root,
+            "user-daemon-reload",
+            "daemon-reload",
+            None,
+            true,
+            Some("owner"),
+            30,
+            false,
+        )
+        .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("user-daemon-reload.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["scope"], "user");
+        assert_eq!(receipt["target_user"], "owner");
+        assert_eq!(receipt["systemctl_transport"], "machine-user");
+        let _ = fs::remove_dir_all(root);
+    }
 }
