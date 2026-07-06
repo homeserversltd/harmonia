@@ -204,6 +204,36 @@ pub(crate) fn subscription_show(path: &Path) -> Result<(), String> {
     }
 }
 
+pub(crate) fn update_engine_plane(
+    path: &Path,
+    engine_version: &str,
+    engine_lane: &str,
+    lock_sha256: Option<&str>,
+) -> Result<(), String> {
+    let existing_value = if path.exists() {
+        let text = fs::read_to_string(path)
+            .map_err(|e| format!("subscription-read-failed {}: {e}", path.display()))?;
+        serde_json::from_str::<Value>(&text)
+            .map_err(|e| format!("subscription-parse-failed {}: {e}", path.display()))?
+    } else {
+        Value::Object(Map::new())
+    };
+    let mut object = existing_value.as_object().cloned().unwrap_or_default();
+    object.insert("schema".to_string(), json!(SUBSCRIPTION_SCHEMA));
+    object.insert("engine_version_received".to_string(), json!(engine_version));
+    object.insert(
+        "engine_plane".to_string(),
+        json!({
+            "version": engine_version,
+            "lane": engine_lane,
+            "lock_sha256": lock_sha256,
+            "updated_at_unix_ms": now_unix_ms(),
+        }),
+    );
+    object.insert("updated_at_unix_ms".to_string(), json!(now_unix_ms()));
+    write_json_value_atomic(path, &Value::Object(object))
+}
+
 pub(crate) fn write_json_value_atomic(path: &Path, value: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "\n";
     write_bytes_atomic(path, text.as_bytes())
