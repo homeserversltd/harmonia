@@ -244,39 +244,25 @@ pub(crate) fn run_profile_engine(
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
 
-    if apply {
-        let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
-        operation_count += preflight.operation_count;
-        if preflight.changed {
-            changed = true;
-        }
-        if !preflight.ok {
+    let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
+    operation_count += preflight.operation_count;
+    if preflight.changed {
+        changed = true;
+    }
+    if !preflight.ok {
+        let preflight_signal = preflight
+            .first_missing_signal
+            .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
+        event(
+            &mut events,
+            "engine-preflight-honest-staleness",
+            false,
+            &preflight_signal,
+        )?;
+        if apply {
             ok = false;
-            first_missing_signal = preflight
-                .first_missing_signal
-                .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
-            event(
-                &mut events,
-                "engine-preflight-terminal-stop",
-                false,
-                &first_missing_signal,
-            )?;
-            write_engine_run_receipt(
-                receipt_dir,
-                profile,
-                apply,
-                ok,
-                changed,
-                module_count,
-                operation_count,
-                &first_missing_signal,
-                module_root,
-            )?;
-            return Err(first_missing_signal);
+            first_missing_signal = preflight_signal;
         }
-    } else {
-        let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
-        operation_count += preflight.operation_count;
     }
 
     if profile.modules.is_empty() {
