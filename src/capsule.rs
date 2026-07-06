@@ -167,6 +167,7 @@ pub(crate) fn capsule_pack(
                 None,
             )?;
         }
+        copy_module_sibling_files(&src, &dst, manifest.files_root.as_deref())?;
         let tree_sha256 = module_tree_sha256(&dst)?;
         modules.push(CapsuleModuleEntry {
             id: module_id.clone(),
@@ -638,6 +639,28 @@ fn converge_file(
     Ok(())
 }
 
+fn copy_module_sibling_files(
+    module_dir: &Path,
+    module_output_dir: &Path,
+    files_root: Option<&str>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(module_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let name_text = name.to_string_lossy();
+        if name_text == "manifest.json" || name_text == "sidecar.json" {
+            continue;
+        }
+        if files_root == Some(name_text.as_ref()) {
+            continue;
+        }
+        if entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            copy_file_atomic(&entry.path(), &module_output_dir.join(&name))?;
+        }
+    }
+    Ok(())
+}
+
 fn copy_file_atomic(src: &Path, dst: &Path) -> Result<(), String> {
     let bytes = fs::read(src).map_err(|e| format!("copy-read-failed {}: {e}", src.display()))?;
     write_bytes_atomic(dst, &bytes)
@@ -764,6 +787,11 @@ mod tests {
         )
         .unwrap();
         fs::write(
+            root.join("profiles/demo/modules/alpha/ratchet-lock.json"),
+            r#"{"schema":"harmonia.aur.ratchet_lock.v1","package":"oh-my-posh-bin","pinned_version":"29.20.1-1","pkgbuild_sha":"ed800be1c781d41ce83ce6e693d6e00e868883c9"}"#,
+        )
+        .unwrap();
+        fs::write(
             root.join("locks/demo/pinned-artifacts.json"),
             r#"{"schema":"lock"}"#,
         )
@@ -781,6 +809,9 @@ mod tests {
         fs::create_dir_all(config.join("profiles/demo/modules/old/files_root/tmp")).unwrap();
         fs::write(config.join("profiles/demo/modules/old/manifest.json"), "{}").unwrap();
         capsule_pack("demo", &capsule, &root).unwrap();
+        assert!(capsule
+            .join("profiles/demo/modules/alpha/ratchet-lock.json")
+            .exists());
         capsule_verify(&capsule).unwrap();
         with_subscription_path(&subscription, || {
             capsule_install(&capsule, &config, false).unwrap();
@@ -792,6 +823,9 @@ mod tests {
         assert!(!config.join("profiles/demo/modules/old").exists());
         assert!(config
             .join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt")
+            .exists());
+        assert!(config
+            .join("profiles/demo/modules/alpha/ratchet-lock.json")
             .exists());
         let receipt =
             fs::read_to_string(config.join("receipts/capsule-install-latest/install-receipt.json"))

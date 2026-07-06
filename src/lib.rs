@@ -2041,11 +2041,9 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("deployable-config export requires --out <path>")?;
             let harmonia_root =
                 value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from("."));
-            // Tranche 4 keeps deployable-config export as a thin compatibility alias to capsule pack.
-            let _receipt_dir =
-                receipt_dir_arg(&args).unwrap_or_else(|| output_dir.join("receipts"));
-            let _mode = DeployableConfigMode::parse(value_arg_string(&args, "--mode"))?;
-            capsule_pack(profile_id, &output_dir, &harmonia_root)
+            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| output_dir.join("receipts"));
+            let mode = DeployableConfigMode::parse(value_arg_string(&args, "--mode"))?;
+            export_deployable_config(&harmonia_root, profile_id, &output_dir, &receipt_dir, mode)
         }
         Some("pinned-artifacts") => {
             let action = args
