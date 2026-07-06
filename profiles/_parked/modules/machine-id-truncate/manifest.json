@@ -1,0 +1,23 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "machine-id-truncate",
+  "version": "0.1.0",
+  "description": "PARKED manual-only machine-id truncation module. Inert until copied/forked into a selected profile spine and explicitly converged by an operator.",
+  "optional": true,
+  "constants": {
+    "etc_machine_id": "/etc/machine-id",
+    "dbus_machine_id": "/var/lib/dbus/machine-id"
+  },
+  "ladder": [
+    {
+      "step_id": "truncate-machine-id",
+      "tool": "machine-id",
+      "permutation": "truncate",
+      "args": {
+        "etc_machine_id": "$constants.etc_machine_id",
+        "dbus_machine_id": "$constants.dbus_machine_id"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
