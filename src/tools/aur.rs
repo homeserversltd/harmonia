@@ -106,6 +106,7 @@ pub(crate) struct AurBuildReceipt {
     pub install_requested: bool,
     pub installed_converged: bool,
     pub first_blocker: Option<String>,
+    pub pkgver_neutralized: bool,
     pub timeout_policy: String,
     pub safety_posture: String,
     pub unprivileged_builder: String,
@@ -323,6 +324,7 @@ pub(crate) fn build_pinned(
         install_requested: install,
         installed_converged: false,
         first_blocker: None,
+        pkgver_neutralized: false,
         timeout_policy: format!("bounded-timeout-seconds={timeout_secs}"),
         safety_posture: safety_posture.into(),
         unprivileged_builder: unprivileged_builder.clone(),
@@ -374,7 +376,8 @@ pub(crate) fn build_pinned(
         timeout_secs,
     );
     match result {
-        Ok((command, package_path)) => {
+        Ok((command, package_path, pkgver_neutralized)) => {
+            receipt.pkgver_neutralized = pkgver_neutralized;
             receipt.ok = command.ok;
             receipt.changed = command.ok;
             receipt.command = Some(command.clone());
@@ -470,7 +473,7 @@ fn prepare_and_build(
     source_dir: Option<&str>,
     builder: &str,
     timeout_secs: u64,
-) -> Result<(CmdResult, Option<PathBuf>), String> {
+) -> Result<(CmdResult, Option<PathBuf>, bool), String> {
     if build_dir.exists() {
         fs::remove_dir_all(build_dir).map_err(|e| format!("aur-build-dir-clean-failed: {e}"))?;
     }
@@ -487,13 +490,13 @@ fn prepare_and_build(
         let clone =
             command::capture_with_timeout("/usr/bin/git", &["clone", &url, &target], timeout_secs);
         if !clone.ok {
-            return Ok((clone, None));
+            return Ok((clone, None, false));
         }
     }
     let head =
         command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], build_dir.to_str());
     if !head.ok {
-        return Ok((head, None));
+        return Ok((head, None, false));
     }
     let checkout = command::capture_with_cwd_and_timeout(
         "/usr/bin/git",
@@ -502,7 +505,7 @@ fn prepare_and_build(
         timeout_secs,
     );
     if !checkout.ok {
-        return Ok((checkout, None));
+        return Ok((checkout, None, false));
     }
     let verified =
         command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], build_dir.to_str());
@@ -514,13 +517,80 @@ fn prepare_and_build(
         ));
     }
     prepare_build_dir_for_builder(build_dir, builder)?;
+    let pkgver_neutralized = neutralize_pkgver_function(build_dir, builder, timeout_secs)?;
     let makepkg = makepkg_command(builder, timeout_secs, build_dir)?;
     let produced = if makepkg.ok {
         pinned_pkg_tar(build_dir, package, &lock.pinned_version)?
     } else {
         None
     };
-    Ok((makepkg, produced))
+    Ok((makepkg, produced, pkgver_neutralized))
+}
+
+fn neutralize_pkgver_function(
+    build_dir: &Path,
+    builder: &str,
+    timeout_secs: u64,
+) -> Result<bool, String> {
+    let pkgbuild = build_dir.join("PKGBUILD");
+    let before = fs::read_to_string(&pkgbuild)
+        .map_err(|e| format!("aur-pkgbuild-read-failed {}: {e}", pkgbuild.display()))?;
+    let (after, changed) = neutralize_pkgver_function_text(&before)?;
+    if !changed {
+        return Ok(false);
+    }
+    fs::write(&pkgbuild, after)
+        .map_err(|e| format!("aur-pkgver-neutralize-failed {}: {e}", pkgbuild.display()))?;
+    if unsafe { libc::geteuid() } == 0 && builder != "current-user" {
+        let verify = command::capture_with_options(
+            "/usr/bin/runuser",
+            &["-u", builder, "--", "/usr/bin/test", "-w", "PKGBUILD"],
+            command::CaptureOptions::new()
+                .cwd(build_dir.to_str())
+                .timeout_secs(timeout_secs),
+        );
+        if !verify.ok {
+            return Err(format!(
+                "aur-pkgver-neutralize-builder-write-check-failed {}",
+                first_blocker(&verify)
+            ));
+        }
+    }
+    Ok(true)
+}
+
+fn neutralize_pkgver_function_text(text: &str) -> Result<(String, bool), String> {
+    let mut out = Vec::new();
+    let mut lines = text.lines();
+    let mut changed = false;
+    while let Some(line) = lines.next() {
+        if line.trim_start().starts_with("pkgver()") {
+            changed = true;
+            if !line.contains('{') {
+                return Err("aur-pkgver-function-unsupported-shape".into());
+            }
+            if line[line.find('{').unwrap() + 1..].contains('}') {
+                continue;
+            }
+            let mut closed = false;
+            for inner in lines.by_ref() {
+                if inner.trim_start().starts_with('}') {
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                return Err("aur-pkgver-function-unclosed".into());
+            }
+        } else {
+            out.push(line);
+        }
+    }
+    let mut rendered = out.join("\n");
+    if text.ends_with('\n') || changed {
+        rendered.push('\n');
+    }
+    Ok((rendered, changed))
 }
 
 fn makepkg_command(builder: &str, timeout_secs: u64, cwd: &Path) -> Result<CmdResult, String> {
@@ -959,6 +1029,31 @@ mod tests {
             .contains("bounded-timeout"));
         let _ = fs::remove_dir_all(root);
     }
+    #[test]
+    fn build_pinned_neutralizes_pkgver_function_before_exact_package_selection() {
+        let root = temp_root("pkgver-neutralize");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("PKGBUILD"),
+            "pkgname=oh-my-posh-bin\npkgver=29.20.1\npkgrel=1\npkgver() {\n  curl -fsSL https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest\n}\nsource=(fixture)\n",
+        )
+        .unwrap();
+        let changed = neutralize_pkgver_function(&root, "current-user", 30).unwrap();
+        assert!(changed);
+        let pkgbuild = fs::read_to_string(root.join("PKGBUILD")).unwrap();
+        assert!(pkgbuild.contains("pkgver=29.20.1"));
+        assert!(pkgbuild.contains("pkgrel=1"));
+        assert!(!pkgbuild.contains("pkgver()"));
+        assert!(!pkgbuild.contains("curl -fsSL"));
+        let main = root.join("oh-my-posh-bin-29.20.1-1-x86_64.pkg.tar.zst");
+        fs::write(&main, "main").unwrap();
+        let selected = pinned_pkg_tar(&root, "oh-my-posh-bin", "29.20.1-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected, main);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn pinned_pkg_tar_selects_exact_package_and_excludes_debug_split() {
         let root = temp_root("pkg-select");
