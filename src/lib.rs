@@ -1384,9 +1384,11 @@ mod tests {
             .unwrap();
         });
         assert!(
-            !receipts.join("engine-preflight").exists(),
-            "retired harmonia-runtime profile artifact must not produce deployable-config/preflight payload"
+            receipts.join("engine-preflight/run.json").exists(),
+            "engine preflight now reports kernel-owned engine-plane state instead of sidecar-gating"
         );
+        let preflight = fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap();
+        assert!(preflight.contains("retired_sidecar_gate"));
         assert!(receipts.join("modules/identity").exists());
         let _ = fs::remove_dir_all(receipts);
     }

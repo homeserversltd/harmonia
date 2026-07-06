@@ -100,6 +100,27 @@ class InstallerCliTests(unittest.TestCase):
             self.assertIn("Unit=harmonia-tv.service", timer)
             self.assertNotIn("homeconsole-update", service)
 
+    def test_seed_engine_config_writes_kernel_owned_plane_outside_profile(self) -> None:
+        from installer.harmonia_installer import seed_engine_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = root / "etc" / "harmonia" / "engine.json"
+            seed_engine_config(
+                engine,
+                source="https://git.home.arpa/HOMESERVERSLTD/harmonia.git",
+                ref="main",
+                source_dir=root / "opt" / "harmonia",
+                install_bin=root / "bin" / "harmonia",
+                enabled=True,
+            )
+            payload = json.loads(engine.read_text())
+            self.assertEqual(payload["source_repo_url"], "https://git.home.arpa/HOMESERVERSLTD/harmonia.git")
+            self.assertEqual(payload["branch"], "main")
+            self.assertEqual(payload["source_dir"], str(root / "opt" / "harmonia"))
+            self.assertEqual(payload["install_bin"], str(root / "bin" / "harmonia"))
+            self.assertTrue(payload["enabled"])
+            self.assertNotIn("profiles", str(engine.relative_to(root)))
 
     def test_uninstall_apply_preserves_state_dir_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

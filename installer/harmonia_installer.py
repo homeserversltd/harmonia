@@ -172,6 +172,7 @@ def install(args: argparse.Namespace) -> int:
     plan = [
         f"build binary with cargo unless --skip-build ({artifact})",
         f"install binary -> {paths.bin_path}",
+        f"seed kernel-owned engine config -> {paths.config_dir / 'engine.json'}",
         f"pack capsule for profile {args.profile} -> {capsule_dir}",
         f"install capsule into {paths.config_dir} (lane=capsule)",
         f"ensure state/log/receipt dirs -> {paths.state_dir}, {paths.log_dir}, {paths.receipt_dir}",
@@ -194,6 +195,14 @@ def install(args: argparse.Namespace) -> int:
         print(f"missing build artifact: {artifact}", file=sys.stderr)
         return 1
     install_file(artifact, paths.bin_path, mode=0o755)
+    seed_engine_config(
+        paths.config_dir / "engine.json",
+        source=args.source or repo_source(),
+        ref=args.ref or repo_ref(),
+        source_dir=REPO_ROOT,
+        install_bin=paths.bin_path,
+        enabled=True,
+    )
     for directory in [paths.state_dir, paths.receipt_dir, paths.log_dir]:
         directory.mkdir(parents=True, exist_ok=True)
     pack_code = run_checked(
@@ -395,6 +404,30 @@ def seed_subscription_record(path: Path, capsule_manifest_path: Path, *, lane: s
             "engine_version_received": capsule.get("engine_version", "unknown"),
             "modules": modules,
             "updated_at_unix_ms": int(__import__("time").time() * 1000),
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".harmonia-new")
+    tmp.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def seed_engine_config(path: Path, *, source: str, ref: str, source_dir: Path, install_bin: Path, enabled: bool) -> None:
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text())
+            existing: dict[str, object] = dict(raw) if isinstance(raw, dict) else {}
+        except json.JSONDecodeError:
+            existing = {}
+    else:
+        existing = {}
+    existing.update(
+        {
+            "source_repo_url": source,
+            "branch": ref if ref and ref != "unknown" else "main",
+            "source_dir": str(source_dir),
+            "install_bin": str(install_bin),
+            "enabled": enabled,
         }
     )
     path.parent.mkdir(parents=True, exist_ok=True)
