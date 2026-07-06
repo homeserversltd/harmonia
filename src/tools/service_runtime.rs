@@ -531,6 +531,7 @@ fn install_binary(
         "stop",
         Some(service),
         false,
+        None,
         30,
         apply,
     )?;
@@ -580,6 +581,7 @@ fn ensure_service_active(
         "daemon-reload",
         Some(service),
         false,
+        None,
         30,
         apply,
     )?;
@@ -598,6 +600,7 @@ fn ensure_service_active(
         "enable-now",
         Some(service),
         false,
+        None,
         30,
         apply,
     )?;
@@ -607,6 +610,7 @@ fn ensure_service_active(
         "is-active-probe",
         Some(service),
         false,
+        None,
         30,
         apply,
     )?;

@@ -518,7 +518,14 @@ fn command_capture_step(
             stderr: String::new(),
         }
     };
-    crate::write_command_receipt(module_dir, &step.step_id, &result)?;
+    crate::write_command_receipt_with_request(
+        module_dir,
+        &step.step_id,
+        program,
+        &argv,
+        optional_string_arg(&step.args, "cwd"),
+        &result,
+    )?;
     Ok(OperationOutcome {
         ok: result.ok,
         changed: false,
@@ -779,6 +786,7 @@ fn systemd_step(
         &step.step_id,
         &step.permutation,
         optional_string_arg(&step.args, "service"),
+        optional_string_arg(&step.args, "user"),
         integer_arg(&step.args, "timeout_secs", 30),
         apply,
     )

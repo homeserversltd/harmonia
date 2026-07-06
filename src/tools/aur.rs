@@ -5,6 +5,7 @@ use serde_json::Value;
 #[cfg(test)]
 use std::cell::RefCell;
 use std::env;
+use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +45,7 @@ const HARMONIA_AUR_UPSTREAM_STATE_ENV: &str = "HARMONIA_AUR_UPSTREAM_STATE";
 #[cfg(test)]
 thread_local! {
     static TEST_UPSTREAM_STATE_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
+
 }
 
 #[allow(dead_code)]
@@ -111,6 +113,7 @@ pub(crate) struct AurBuildReceipt {
     pub changed: bool,
     pub command: Option<CmdResult>,
     pub install_command: Option<CmdResult>,
+    pub install_verify_command: Option<CmdResult>,
 }
 
 fn read_lock(path: &Path, package: &str) -> Result<AurRatchetLock, String> {
@@ -327,6 +330,7 @@ pub(crate) fn build_pinned(
         changed: false,
         command: None,
         install_command: None,
+        install_verify_command: None,
     };
 
     if !apply {
@@ -379,13 +383,23 @@ pub(crate) fn build_pinned(
                 if install {
                     if let Some(path) = package_path {
                         let install_result = install_built_package(&path, timeout_secs);
-                        receipt.installed_converged = install_result.ok;
+                        let verify_result = installed_version_command(package);
+                        let verified_version = installed_version_from_result(&verify_result);
+                        receipt.installed_converged = install_result.ok
+                            && verified_version.as_deref() == Some(lock.pinned_version.as_str());
                         receipt.changed = install_result.ok;
-                        receipt.ok = install_result.ok;
+                        receipt.ok = receipt.installed_converged;
                         if !install_result.ok {
                             receipt.first_blocker = Some(first_blocker(&install_result));
+                        } else if !receipt.installed_converged {
+                            receipt.first_blocker = Some(format!(
+                                "aur-installed-package-verify-failed expected={} actual={}",
+                                lock.pinned_version,
+                                verified_version.unwrap_or_else(|| "missing".to_string())
+                            ));
                         }
                         receipt.install_command = Some(install_result);
+                        receipt.install_verify_command = Some(verify_result);
                     } else {
                         receipt.ok = false;
                         receipt.changed = false;
@@ -411,11 +425,23 @@ pub(crate) fn build_pinned(
 }
 
 fn installed_version(package: &str) -> Option<String> {
+    installed_version_from_result(&installed_version_command(package))
+}
+
+fn installed_version_command(package: &str) -> CmdResult {
     let pacman = crate::tools::package::pacman_program();
     if !Path::new(&pacman).exists() {
-        return None;
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: format!("pacman-not-found {pacman}"),
+        };
     }
-    let result = command::capture(&pacman, &["-Q", package]);
+    command::capture(&pacman, &["-Q", package])
+}
+
+fn installed_version_from_result(result: &CmdResult) -> Option<String> {
     if !result.ok {
         return None;
     }
@@ -487,9 +513,10 @@ fn prepare_and_build(
             verified.stdout.trim()
         ));
     }
+    prepare_build_dir_for_builder(build_dir, builder)?;
     let makepkg = makepkg_command(builder, timeout_secs, build_dir)?;
     let produced = if makepkg.ok {
-        newest_pkg_tar(build_dir)?
+        pinned_pkg_tar(build_dir, package, &lock.pinned_version)?
     } else {
         None
     };
@@ -526,18 +553,64 @@ fn makepkg_command(builder: &str, timeout_secs: u64, cwd: &Path) -> Result<CmdRe
     }
 }
 
-fn newest_pkg_tar(build_dir: &Path) -> Result<Option<PathBuf>, String> {
+fn pinned_pkg_tar(
+    build_dir: &Path,
+    package: &str,
+    pinned_version: &str,
+) -> Result<Option<PathBuf>, String> {
     let mut packages = Vec::new();
+    let expected_prefix = format!("{package}-{pinned_version}-");
+    let debug_prefix = format!("{package}-debug-");
     for entry in fs::read_dir(build_dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
-        if name.contains(".pkg.tar") {
+        if name.starts_with(&expected_prefix)
+            && !name.starts_with(&debug_prefix)
+            && name.contains(".pkg.tar")
+        {
             packages.push(path);
         }
     }
     packages.sort();
-    Ok(packages.pop())
+    match packages.len() {
+        0 => Ok(None),
+        1 => Ok(packages.pop()),
+        _ => Err(format!(
+            "aur-produced-package-ambiguous package={package} version={pinned_version}"
+        )),
+    }
+}
+
+fn prepare_build_dir_for_builder(build_dir: &Path, builder: &str) -> Result<(), String> {
+    if unsafe { libc::geteuid() } != 0 || builder == "current-user" {
+        return Ok(());
+    }
+    let c_user = CString::new(builder).map_err(|_| "aur-builder-user-invalid".to_string())?;
+    let passwd = unsafe { libc::getpwnam(c_user.as_ptr()) };
+    if passwd.is_null() {
+        return Err(format!("aur-builder-user-missing-{builder}"));
+    }
+    let uid = unsafe { (*passwd).pw_uid };
+    let gid = unsafe { (*passwd).pw_gid };
+    chown_recursive(build_dir, uid, gid)
+}
+
+#[cfg(unix)]
+fn chown_recursive(path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("aur-build-dir-chown-path-invalid {}", path.display()))?;
+    if unsafe { libc::chown(c_path.as_ptr(), uid, gid) } != 0 {
+        return Err(format!("aur-build-dir-chown-failed {}", path.display()));
+    }
+    if path.is_dir() {
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            chown_recursive(&entry.path(), uid, gid)?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
@@ -884,6 +957,38 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("bounded-timeout"));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn pinned_pkg_tar_selects_exact_package_and_excludes_debug_split() {
+        let root = temp_root("pkg-select");
+        fs::create_dir_all(&root).unwrap();
+        let main = root.join("oh-my-posh-bin-29.20.1-1-x86_64.pkg.tar.zst");
+        let debug = root.join("oh-my-posh-bin-debug-29.20.1-1-x86_64.pkg.tar.zst");
+        fs::write(&main, "main").unwrap();
+        fs::write(&debug, "debug").unwrap();
+        let selected = pinned_pkg_tar(&root, "oh-my-posh-bin", "29.20.1-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            selected.file_name().and_then(|v| v.to_str()),
+            main.file_name().and_then(|v| v.to_str())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pinned_pkg_tar_does_not_select_debug_when_main_missing() {
+        let root = temp_root("pkg-select-debug-only");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("oh-my-posh-bin-debug-29.20.1-1-x86_64.pkg.tar.zst"),
+            "debug",
+        )
+        .unwrap();
+        assert!(pinned_pkg_tar(&root, "oh-my-posh-bin", "29.20.1-1")
+            .unwrap()
+            .is_none());
         let _ = fs::remove_dir_all(root);
     }
 }

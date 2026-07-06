@@ -234,6 +234,31 @@ pub(crate) fn write_command_receipt(
     )
 }
 
+pub(crate) fn write_command_receipt_with_request(
+    receipt_dir: &Path,
+    name: &str,
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    result: &CmdResult,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{}.json", name)),
+        &json!({
+            "schema": "harmonia.command_receipt.v1",
+            "name": name,
+            "program": program,
+            "args": args,
+            "cwd": cwd,
+            "ok": result.ok,
+            "exit_code": result.code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "first_missing_signal": command_first_missing_signal(result),
+        }),
+    )
+}
+
 pub(crate) fn write_run_receipt(
     receipt_dir: &Path,
     profile: &Profile,
