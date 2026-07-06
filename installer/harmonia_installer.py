@@ -18,6 +18,8 @@ DEFAULT_STATE_DIR = Path("/var/lib/harmonia")
 DEFAULT_LOG_DIR = Path("/var/log/harmonia")
 DEFAULT_RECEIPT_DIR = DEFAULT_STATE_DIR / "receipts"
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
+DEFAULT_ESTATE_ARTIFACT_REPO = "git@git.home.arpa:HOMESERVERSLTD/blessed-artifacts.git"
+DEFAULT_GLOBAL_ARTIFACT_REPO = "https://github.com/homeserversltd/blessed-artifacts.git"
 
 
 @dataclass(frozen=True)
@@ -105,7 +107,9 @@ Install contract:
     install_p.add_argument("--ref", default=None, help="Machine subscription ref. Defaults to this repo HEAD.")
     install_p.add_argument("--cargo", default="cargo", help="Cargo executable to use.")
     install_p.add_argument("--package", default="harmonia", help="Cargo package name.")
-    install_p.add_argument("--artifact-repo", default=None, help="SSH git repo carrying blessed Harmonia engine binaries for binary-first self-update.")
+    install_p.add_argument("--artifact-repo", default=None, help="Estate blessed-artifacts SSH git repo. Defaults to git@git.home.arpa:HOMESERVERSLTD/blessed-artifacts.git.")
+    install_p.add_argument("--artifact-github-repo", default=None, help="Canonical global blessed-artifacts HTTPS repo. Defaults to https://github.com/homeserversltd/blessed-artifacts.git.")
+    install_p.add_argument("--artifact-transport-chain", default=None, help="JSON list overriding the full ordered artifact transport chain.")
     install_p.add_argument("--artifact-branch", default="main", help="Blessed artifact repo branch (default main).")
     install_p.add_argument("--artifact-cache-dir", default=None, help="Local cache dir for blessed engine artifacts. Defaults under state-dir.")
     install_p.add_argument("--ratchet-lock", default=None, help="Kernel-owned engine ratchet lock path. Defaults beside engine.json.")
@@ -208,6 +212,8 @@ def install(args: argparse.Namespace) -> int:
         enabled=True,
         ratchet_lock=Path(args.ratchet_lock) if args.ratchet_lock else None,
         artifact_repo=args.artifact_repo,
+        artifact_github_repo=args.artifact_github_repo,
+        artifact_transport_chain=json.loads(args.artifact_transport_chain) if args.artifact_transport_chain else None,
         artifact_branch=args.artifact_branch,
         artifact_cache_dir=Path(args.artifact_cache_dir) if args.artifact_cache_dir else paths.state_dir / "engine-artifacts",
     )
@@ -430,6 +436,8 @@ def seed_engine_config(
     enabled: bool,
     ratchet_lock: Path | None = None,
     artifact_repo: str | None = None,
+    artifact_github_repo: str | None = None,
+    artifact_transport_chain: list[dict[str, object]] | None = None,
     artifact_branch: str = "main",
     artifact_cache_dir: Path | None = None,
 ) -> None:
@@ -449,12 +457,27 @@ def seed_engine_config(
         "enabled": enabled,
     }
     update["ratchet_lock"] = str(ratchet_lock or (path.parent / "engine-ratchet-lock.json"))
-    if artifact_repo:
-        update["artifact_transport"] = {
-            "repo_url": artifact_repo,
-            "branch": artifact_branch or "main",
-            "cache_dir": str(artifact_cache_dir or Path("/var/lib/harmonia/engine-artifacts")),
-        }
+    base_cache = artifact_cache_dir or Path("/var/lib/harmonia/engine-artifacts")
+    if artifact_transport_chain is not None:
+        update["artifact_transports"] = artifact_transport_chain
+    else:
+        estate_repo = artifact_repo or DEFAULT_ESTATE_ARTIFACT_REPO
+        global_repo = artifact_github_repo or DEFAULT_GLOBAL_ARTIFACT_REPO
+        update["artifact_transports"] = [
+            {
+                "name": "estate-forge",
+                "repo_url": estate_repo,
+                "branch": artifact_branch or "main",
+                "cache_dir": str(base_cache / "estate-forge"),
+            },
+            {
+                "name": "github-canonical",
+                "repo_url": global_repo,
+                "branch": artifact_branch or "main",
+                "cache_dir": str(base_cache / "github-canonical"),
+            },
+        ]
+    existing.pop("artifact_transport", None)
     existing.update(update)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".harmonia-new")

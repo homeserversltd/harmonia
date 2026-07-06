@@ -54,17 +54,38 @@ pub(crate) struct EnginePlaneConfig {
     pub ratchet_lock: Option<PathBuf>,
     #[serde(default)]
     pub artifact_transport: Option<EngineArtifactTransport>,
+    #[serde(default)]
+    pub artifact_transports: Vec<EngineArtifactTransport>,
+}
+
+impl EnginePlaneConfig {
+    fn artifact_transport_chain(&self) -> Vec<EngineArtifactTransport> {
+        if !self.artifact_transports.is_empty() {
+            return self.artifact_transports.clone();
+        }
+        self.artifact_transport.clone().into_iter().collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EngineArtifactTransport {
+    #[serde(default)]
+    pub name: Option<String>,
     pub repo_url: String,
     #[serde(default = "default_artifact_branch")]
     pub branch: String,
     pub cache_dir: PathBuf,
     #[serde(default = "default_remote")]
     pub remote: String,
+}
+
+impl EngineArtifactTransport {
+    fn label(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", self.remote, self.repo_url))
+    }
 }
 
 fn default_artifact_branch() -> String {
@@ -497,6 +518,8 @@ fn emit_preflight_receipt(
     lock_sha256: Option<&str>,
     staged_sha256: Option<&str>,
     installed_sha256: Option<&str>,
+    transport_used: Option<&str>,
+    artifact_transport_attempts: &[serde_json::Value],
 ) -> Result<(), String> {
     write_json(
         &preflight_dir.join("run.json"),
@@ -521,6 +544,8 @@ fn emit_preflight_receipt(
             "artifact_ratchet": "version+sha-lock",
             "engine_content_head": config.map(|c| c.branch.as_str()).unwrap_or("unknown"),
             "lane": lane,
+            "transport_used": transport_used,
+            "artifact_transport_attempts": artifact_transport_attempts,
             "ratchet_lock_path": lock_path,
             "ratchet_lock_sha256": lock_sha256,
             "staged_sha256": staged_sha256,
@@ -559,6 +584,8 @@ pub(crate) fn run_engine_preflight(
             None,
             None,
             None,
+            None,
+            &[],
         )?;
         return Ok(ModuleExecution {
             ok: false,
@@ -584,6 +611,8 @@ pub(crate) fn run_engine_preflight(
             None,
             None,
             install_bin_fingerprint(&config.install_bin).as_deref(),
+            None,
+            &[],
         )?;
         return Ok(ModuleExecution {
             ok: false,
@@ -615,6 +644,8 @@ pub(crate) fn run_engine_preflight(
     let lock_sha = sha256_file(&lock_path).ok();
     let ratchet_lock = load_ratchet_lock(&lock_path)?;
     let mut lane = "source-fallback".to_string();
+    let mut transport_used: Option<String> = None;
+    let mut artifact_transport_attempts: Vec<serde_json::Value> = Vec::new();
     let mut staged_sha: Option<String> = None;
     let install_before = install_bin_fingerprint(&config.install_bin);
     let keyring = tools::package::keyring_repair_tool(
@@ -719,9 +750,7 @@ pub(crate) fn run_engine_preflight(
     let staged = staged_bin(&config);
 
     if first_missing_signal == "none" {
-        if let (Some(lock), Some(transport)) =
-            (ratchet_lock.as_ref(), config.artifact_transport.as_ref())
-        {
+        if let Some(lock) = ratchet_lock.as_ref() {
             let arch = current_arch_key();
             if let Some(artifact) = lock.artifacts.get(&arch) {
                 let version_order =
@@ -729,58 +758,156 @@ pub(crate) fn run_engine_preflight(
                 if version_order == std::cmp::Ordering::Greater
                     || install_before.as_deref() != Some(artifact.sha256.as_str())
                 {
-                    let request = tools::git_artifact::Request::new(
-                        Some(transport.repo_url.clone()),
-                        transport.cache_dir.clone(),
-                        transport.branch.clone(),
-                        transport.remote.clone(),
-                    );
-                    let git_outcome = if apply {
-                        tools::git_artifact::apply(&request)
-                    } else {
-                        tools::git_artifact::plan(&request)
-                    };
-                    let git_cmd = CmdResult {
-                        ok: git_outcome.command.ok,
-                        code: git_outcome.command.code,
-                        stdout: git_outcome.command.stdout.clone(),
-                        stderr: git_outcome.command.stderr.clone(),
-                    };
-                    write_command_receipt(&preflight_dir, "artifact-transport", &git_cmd)?;
-                    operation_count += 1;
-                    if git_outcome.ok {
+                    let transport_chain = config.artifact_transport_chain();
+                    for (index, transport) in transport_chain.iter().enumerate() {
+                        let attempt_index = index + 1;
+                        let transport_label = transport.label();
+                        let request = tools::git_artifact::Request::new(
+                            Some(transport.repo_url.clone()),
+                            transport.cache_dir.clone(),
+                            transport.branch.clone(),
+                            transport.remote.clone(),
+                        );
+                        let git_outcome = if apply {
+                            tools::git_artifact::apply(&request)
+                        } else {
+                            tools::git_artifact::plan(&request)
+                        };
+                        let git_cmd = CmdResult {
+                            ok: git_outcome.command.ok,
+                            code: git_outcome.command.code,
+                            stdout: git_outcome.command.stdout.clone(),
+                            stderr: git_outcome.command.stderr.clone(),
+                        };
+                        write_command_receipt(
+                            &preflight_dir,
+                            &format!("artifact-transport-{attempt_index}"),
+                            &git_cmd,
+                        )?;
+                        if attempt_index == 1 {
+                            write_command_receipt(&preflight_dir, "artifact-transport", &git_cmd)?;
+                        }
+                        operation_count += 1;
+                        if !git_outcome.ok {
+                            artifact_transport_attempts.push(json!({
+                                "index": attempt_index,
+                                "transport": transport_label,
+                                "repo_url": transport.repo_url,
+                                "branch": transport.branch,
+                                "cache_dir": transport.cache_dir,
+                                "remote": transport.remote,
+                                "outcome": "miss",
+                                "reason": "fetch-failed",
+                                "ok": false,
+                                "code": git_cmd.code,
+                            }));
+                            continue;
+                        }
+
                         let artifact_path = transport.cache_dir.join(&artifact.name);
+                        if !artifact_path.exists() {
+                            let missing_cmd = CmdResult {
+                                ok: false,
+                                code: -1,
+                                stdout: String::new(),
+                                stderr: format!(
+                                    "engine-artifact-absent name={} transport={} path={}",
+                                    artifact.name,
+                                    transport_label,
+                                    artifact_path.display()
+                                ),
+                            };
+                            write_command_receipt(
+                                &preflight_dir,
+                                &format!("artifact-stage-{attempt_index}"),
+                                &missing_cmd,
+                            )?;
+                            operation_count += 1;
+                            artifact_transport_attempts.push(json!({
+                                "index": attempt_index,
+                                "transport": transport_label,
+                                "repo_url": transport.repo_url,
+                                "branch": transport.branch,
+                                "cache_dir": transport.cache_dir,
+                                "remote": transport.remote,
+                                "outcome": "miss",
+                                "reason": "artifact-absent",
+                                "artifact_name": artifact.name,
+                                "ok": false,
+                            }));
+                            continue;
+                        }
+
                         let stage_cmd = copy_verified_artifact(
                             &staged,
                             &artifact_path,
                             &artifact.sha256,
                             apply,
                         )?;
-                        write_command_receipt(&preflight_dir, "artifact-stage", &stage_cmd)?;
+                        write_command_receipt(
+                            &preflight_dir,
+                            &format!("artifact-stage-{attempt_index}"),
+                            &stage_cmd,
+                        )?;
+                        if attempt_index == 1 {
+                            write_command_receipt(&preflight_dir, "artifact-stage", &stage_cmd)?;
+                        }
                         operation_count += 1;
                         artifact_outcome = OperationOutcome {
                             ok: stage_cmd.ok,
                             changed: stage_cmd.ok && apply,
                             skipped: false,
                             message: format!(
-                                "artifact lane version={} arch={} source_head_sha={}",
-                                lock.engine_version, arch, lock.source_head_sha
+                                "artifact lane version={} arch={} source_head_sha={} transport={}",
+                                lock.engine_version, arch, lock.source_head_sha, transport_label
                             ),
-                            command: Some(stage_cmd),
+                            command: Some(stage_cmd.clone()),
                         };
                         if artifact_outcome.ok {
                             lane = "artifact".to_string();
+                            transport_used = Some(transport_label.clone());
                             staged_sha = Some(artifact.sha256.clone());
-                        } else {
-                            first_missing_signal = stage_signal("artifact-sha256");
+                            artifact_transport_attempts.push(json!({
+                                "index": attempt_index,
+                                "transport": transport_label,
+                                "repo_url": transport.repo_url,
+                                "branch": transport.branch,
+                                "cache_dir": transport.cache_dir,
+                                "remote": transport.remote,
+                                "outcome": "served",
+                                "artifact_name": artifact.name,
+                                "sha256": artifact.sha256,
+                                "ok": true,
+                            }));
+                            break;
                         }
-                    } else {
+
+                        artifact_transport_attempts.push(json!({
+                            "index": attempt_index,
+                            "transport": transport_label,
+                            "repo_url": transport.repo_url,
+                            "branch": transport.branch,
+                            "cache_dir": transport.cache_dir,
+                            "remote": transport.remote,
+                            "outcome": "hard-red",
+                            "reason": "sha256-mismatch",
+                            "artifact_name": artifact.name,
+                            "ok": false,
+                        }));
+                        first_missing_signal = stage_signal("artifact-sha256");
+                        break;
+                    }
+                    if lane != "artifact"
+                        && first_missing_signal == "none"
+                        && !transport_chain.is_empty()
+                    {
                         artifact_outcome = OperationOutcome {
                             ok: false,
                             changed: false,
                             skipped: false,
-                            message: "artifact transport failed; source fallback selected".into(),
-                            command: Some(git_cmd),
+                            message: "artifact transport chain missed; source fallback selected"
+                                .into(),
+                            command: None,
                         };
                     }
                 } else {
@@ -970,6 +1097,8 @@ pub(crate) fn run_engine_preflight(
         lock_sha.as_deref(),
         staged_sha.as_deref(),
         install_after.as_deref(),
+        transport_used.as_deref(),
+        &artifact_transport_attempts,
     )?;
 
     let mut execution = ModuleExecution::from_operations(
@@ -1214,6 +1343,37 @@ mod tests {
                     "branch": "main",
                     "cache_dir": artifact_cache
                 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn write_artifact_chain_engine_config(
+        path: &Path,
+        source_repo_url: &str,
+        transports: Vec<serde_json::Value>,
+        build_program: &Path,
+        staged_bin: &Path,
+        install_bin: &Path,
+        profile_index: &Path,
+        source_dir: &Path,
+        lock_path: &Path,
+    ) {
+        fs::write(
+            path,
+            serde_json::json!({
+                "source_repo_url": source_repo_url,
+                "branch": "main",
+                "source_dir": source_dir,
+                "install_bin": install_bin,
+                "enabled": true,
+                "build_program": build_program,
+                "build_args": [],
+                "staged_bin": staged_bin,
+                "profile_index": profile_index,
+                "ratchet_lock": lock_path,
+                "artifact_transports": transports,
             })
             .to_string(),
         )
@@ -1543,6 +1703,211 @@ mod tests {
                 receipt.contains("\"lane\": \"source-fallback\""),
                 "{receipt}"
             );
+        });
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_chain_primary_miss_second_transport_serves() {
+        let root = temp_root("artifact-chain-second");
+        with_engine_env(&root, |config_path| {
+            let (profile_index, module_root) = fixture_profile(&root);
+            let source_repo = fixture_repo(&root);
+            let empty_repo = fixture_repo(&root.join("empty-artifacts"));
+            let source_dir = root.join("source");
+            let staged = root.join("staged/harmonia");
+            let install_bin = root.join("bin/harmonia");
+            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
+            fs::write(&install_bin, "old-engine\n").unwrap();
+            let artifact_name = "harmonia-x86_64";
+            let artifact_body = artifact_binary_body("second-served");
+            let artifact_repo = fixture_artifact_repo(&root, artifact_name, &artifact_body);
+            let artifact_sha =
+                sha256_file(&root.join("artifact-repo").join(artifact_name)).unwrap();
+            let lock = root.join("engine-ratchet-lock.json");
+            write_ratchet_lock(&lock, "0.1.1", artifact_name, &artifact_sha);
+            let build = root.join("build-should-not-run.sh");
+            fake_tool(
+                &build,
+                "#!/usr/bin/env sh\necho source-build-ran >&2\nexit 9\n",
+            );
+            write_artifact_chain_engine_config(
+                config_path,
+                &source_repo,
+                vec![
+                    serde_json::json!({"name":"estate-forge","repo_url": empty_repo,"branch":"main","cache_dir": root.join("artifact-cache/estate")}),
+                    serde_json::json!({"name":"github-canonical","repo_url": artifact_repo,"branch":"main","cache_dir": root.join("artifact-cache/github")}),
+                ],
+                &build,
+                &staged,
+                &install_bin,
+                &profile_index,
+                &source_dir,
+                &lock,
+            );
+            let receipts = root.join("receipts");
+            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
+            let execution = with_fake_bootstrap(&root, pacman, || {
+                run_engine_preflight(&module_root, &receipts, true).unwrap()
+            });
+            assert!(execution.ok, "{:?}", execution.first_missing_signal);
+            assert_eq!(sha256_file(&install_bin).unwrap(), artifact_sha);
+            let receipt: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["transport_used"], "github-canonical");
+            assert_eq!(receipt["artifact_transport_attempts"][0]["outcome"], "miss");
+            assert_eq!(
+                receipt["artifact_transport_attempts"][0]["reason"],
+                "artifact-absent"
+            );
+            assert_eq!(
+                receipt["artifact_transport_attempts"][1]["outcome"],
+                "served"
+            );
+        });
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_chain_sha_mismatch_stops_before_second_transport() {
+        let root = temp_root("artifact-chain-tamper-stop");
+        with_engine_env(&root, |config_path| {
+            let (profile_index, module_root) = fixture_profile(&root);
+            let source_repo = fixture_repo(&root);
+            let source_dir = root.join("source");
+            let staged = root.join("staged/harmonia");
+            let install_bin = root.join("bin/harmonia");
+            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
+            fs::write(&install_bin, "old-engine\n").unwrap();
+            let artifact_name = "harmonia-x86_64";
+            let tampered_repo =
+                fixture_artifact_repo(&root, artifact_name, &artifact_binary_body("tampered"));
+            let good_repo_root = root.join("good-second");
+            let good_repo = fixture_artifact_repo(
+                &good_repo_root,
+                artifact_name,
+                &artifact_binary_body("good"),
+            );
+            let good_sha =
+                sha256_file(&good_repo_root.join("artifact-repo").join(artifact_name)).unwrap();
+            let lock = root.join("engine-ratchet-lock.json");
+            write_ratchet_lock(&lock, "0.1.1", artifact_name, &good_sha);
+            let build = root.join("build-should-not-run.sh");
+            fake_tool(&build, "#!/usr/bin/env sh\nexit 9\n");
+            write_artifact_chain_engine_config(
+                config_path,
+                &source_repo,
+                vec![
+                    serde_json::json!({"name":"estate-forge","repo_url": tampered_repo,"branch":"main","cache_dir": root.join("artifact-cache/estate")}),
+                    serde_json::json!({"name":"github-canonical","repo_url": good_repo,"branch":"main","cache_dir": root.join("artifact-cache/github")}),
+                ],
+                &build,
+                &staged,
+                &install_bin,
+                &profile_index,
+                &source_dir,
+                &lock,
+            );
+            let receipts = root.join("receipts");
+            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
+            let execution = with_fake_bootstrap(&root, pacman, || {
+                run_engine_preflight(&module_root, &receipts, true).unwrap()
+            });
+            assert!(!execution.ok);
+            assert_eq!(
+                execution.first_missing_signal.as_deref(),
+                Some("engine-artifact-sha256-failed")
+            );
+            assert!(!receipts
+                .join("engine-preflight/artifact-transport-2.json")
+                .exists());
+            let receipt: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["transport_used"], serde_json::Value::Null);
+            assert_eq!(
+                receipt["artifact_transport_attempts"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                receipt["artifact_transport_attempts"][0]["outcome"],
+                "hard-red"
+            );
+        });
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_chain_exhausted_misses_fall_back_to_source_lane() {
+        let root = temp_root("artifact-chain-exhausted");
+        with_engine_env(&root, |config_path| {
+            let (profile_index, module_root) = fixture_profile(&root);
+            let source_repo = fixture_repo(&root);
+            let source_dir = root.join("source");
+            let staged = root.join("staged/harmonia");
+            let install_bin = root.join("bin/harmonia");
+            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
+            fs::write(&install_bin, "old-engine\n").unwrap();
+            let empty_repo = fixture_repo(&root.join("empty-one"));
+            let missing_repo = root.join("missing-two").display().to_string();
+            let lock = root.join("engine-ratchet-lock.json");
+            write_ratchet_lock(
+                &lock,
+                "0.1.1",
+                "missing-artifact",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            );
+            let build = root.join("build-success.sh");
+            fake_tool(
+                &build,
+                &format!(
+                    "#!/usr/bin/env sh\nmkdir -p '{}'\ncat > '{}' <<'EOF'\n{}EOF\nchmod 755 '{}'\n",
+                    staged.parent().unwrap().display(),
+                    staged.display(),
+                    artifact_binary_body("source-fallback"),
+                    staged.display()
+                ),
+            );
+            write_artifact_chain_engine_config(
+                config_path,
+                &source_repo,
+                vec![
+                    serde_json::json!({"name":"estate-forge","repo_url": empty_repo,"branch":"main","cache_dir": root.join("artifact-cache/estate")}),
+                    serde_json::json!({"name":"github-canonical","repo_url": missing_repo,"branch":"main","cache_dir": root.join("artifact-cache/github")}),
+                ],
+                &build,
+                &staged,
+                &install_bin,
+                &profile_index,
+                &source_dir,
+                &lock,
+            );
+            let receipts = root.join("receipts");
+            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
+            let execution = with_fake_bootstrap(&root, pacman, || {
+                run_engine_preflight(&module_root, &receipts, true).unwrap()
+            });
+            assert!(execution.ok, "{:?}", execution.first_missing_signal);
+            let receipt: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["lane"], "source-fallback");
+            assert_eq!(
+                receipt["artifact_transport_attempts"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(receipt["artifact_transport_attempts"][0]["outcome"], "miss");
+            assert_eq!(receipt["artifact_transport_attempts"][1]["outcome"], "miss");
         });
         let _ = fs::remove_dir_all(root);
     }

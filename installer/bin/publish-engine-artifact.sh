@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: tools/publish-engine-artifact.sh --artifact-repo <ssh-git-url-or-path> [--version <v>] [--source-head <sha>] [--arch <arch>]
+usage: tools/publish-engine-artifact.sh --artifact-repo <ssh-git-url-or-path> [--github-mirror <git-url>] [--version <v>] [--source-head <sha>] [--arch <arch>]
 
 Builds the Harmonia engine binary at the current admitted source head, computes sha256,
 and publishes a per-version artifact plus harmonia.engine.ratchet_lock.v1 into the
@@ -12,12 +12,13 @@ untrusted: bodies promote only after lock sha256 verification in preflight.
 
 Canonical product release surface split:
   - estate transport: blessed-artifacts git repo over SSH root deploy keys;
-  - Forgejo release: may mirror the same artifact/sha as product release surface;
-  - GitHub mirror: later customer-egress lane, not used here.
+  - homeserversltd GitHub: canonical global transport of last resort and optional mirror;
+  - Forgejo release: may mirror the same artifact/sha as product release surface.
 EOF
 }
 
 artifact_repo=""
+github_mirror=""
 version=""
 source_head=""
 arch="${HARMONIA_ARTIFACT_ARCH:-$(uname -m)}"
@@ -27,6 +28,7 @@ branch="main"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --artifact-repo) artifact_repo="${2:?}"; shift 2 ;;
+    --github-mirror) github_mirror="${2:?}"; shift 2 ;;
     --version) version="${2:?}"; shift 2 ;;
     --source-head) source_head="${2:?}"; shift 2 ;;
     --arch) arch="${2:?}"; shift 2 ;;
@@ -86,6 +88,19 @@ python3 -m json.tool "locks/harmonia-engine-${version}.json" >/tmp/harmonia-engi
 git add "engine/${version}/${arch}/${artifact_name}" "locks/harmonia-engine-${version}.json"
 git commit -m "Publish Harmonia engine ${version} ${arch}" || true
 git push "$remote" "$branch"
+mirror_status="not-configured"
+if [[ -n "$github_mirror" ]]; then
+  if git remote get-url github-mirror >/dev/null 2>&1; then
+    git remote set-url github-mirror "$github_mirror"
+  else
+    git remote add github-mirror "$github_mirror"
+  fi
+  if git push github-mirror "$branch"; then
+    mirror_status="ok"
+  else
+    mirror_status="warning:push-failed"
+  fi
+fi
 cat <<EOF
 schema=harmonia.engine.artifact_publication.v1
 ok=true
@@ -97,5 +112,5 @@ sha256=${sha256}
 source_head_sha=${source_head}
 lock_path=locks/harmonia-engine-${version}.json
 forgejo_release_surface=mirror-same-artifact-and-sha-product-surface
-github_mirror=out-of-scope-later-customer-egress
+github_mirror=${mirror_status}
 EOF
