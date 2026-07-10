@@ -1,0 +1,11 @@
+{
+  "default_server_name": "matrix.home.arpa",
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://matrix.home.arpa"
+    }
+  },
+  "disable_custom_urls": true,
+  "disable_guests": true,
+  "brand": "HOMESERVER Element"
+}

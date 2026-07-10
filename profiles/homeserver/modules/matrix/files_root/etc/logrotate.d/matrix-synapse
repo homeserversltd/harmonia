@@ -1,0 +1,14 @@
+/var/log/matrix-synapse/*.log {
+    daily
+    rotate 14
+    size 50M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 matrix-synapse adm
+    sharedscripts
+    postrotate
+        /bin/systemctl kill -s HUP matrix-synapse.service >/dev/null 2>&1 || true
+    endscript
+}

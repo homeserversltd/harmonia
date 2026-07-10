@@ -1,0 +1,60 @@
+#!/bin/sh
+set -eu
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Package bytes come from the appliance's configured Debian/Matrix repositories.
+# No package credential or repository secret is carried by this module.
+apt-get update
+apt-get install -y matrix-synapse-py3 element-web nginx postgresql-client logrotate openssl unbound
+
+getent group matrix-synapse >/dev/null 2>&1 || groupadd --system matrix-synapse
+id -u matrix-synapse >/dev/null 2>&1 || useradd --system --gid matrix-synapse --home-dir /var/lib/matrix-synapse --shell /usr/sbin/nologin matrix-synapse
+
+install -d -o root -g matrix-synapse -m 0750 /etc/matrix-synapse /etc/matrix-synapse/conf.d
+install -d -o matrix-synapse -g matrix-synapse -m 0750 /var/lib/matrix-synapse /var/lib/matrix-synapse/media
+install -d -o matrix-synapse -g adm -m 0750 /var/log/matrix-synapse
+install -d -o root -g root -m 0755 /usr/share/harmonia/matrix
+
+# Birth-owned values are generated once. Harmonia owns only presence, owner, and mode;
+# it never renders or replaces this file.
+secrets=/etc/matrix-synapse/conf.d/90-birth-secrets.yaml
+if [ ! -e "$secrets" ]; then
+    umask 077
+    macaroon_secret_key="$(openssl rand -hex 32)"
+    form_secret="$(openssl rand -hex 32)"
+    registration_shared_secret="$(openssl rand -hex 32)"
+    tmp="${secrets}.new.$$"
+    {
+        printf 'macaroon_secret_key: "%s"\n' "$macaroon_secret_key"
+        printf 'form_secret: "%s"\n' "$form_secret"
+        printf 'registration_shared_secret: "%s"\n' "$registration_shared_secret"
+    } >"$tmp"
+    chown root:matrix-synapse "$tmp"
+    chmod 0600 "$tmp"
+    mv "$tmp" "$secrets"
+fi
+chown root:matrix-synapse "$secrets"
+chmod 0600 "$secrets"
+
+chown root:matrix-synapse /etc/matrix-synapse/homeserver.yaml /etc/matrix-synapse/log.yaml
+chmod 0640 /etc/matrix-synapse/homeserver.yaml /etc/matrix-synapse/log.yaml
+
+# psql's \gexec declarations create missing objects and converge role attributes;
+# peer authentication means no database password is required or stored.
+runuser -u postgres -- psql --set=ON_ERROR_STOP=1 --file=/usr/share/harmonia/matrix/postgres.sql postgres
+
+ln -sfn /etc/nginx/sites-available/homeserver-matrix /etc/nginx/sites-enabled/homeserver-matrix
+ln -sfn /etc/nginx/sites-available/homeserver-element /etc/nginx/sites-enabled/homeserver-element
+
+test -f /usr/share/element-web/index.html
+nginx -t
+unbound-checkconf
+logrotate --debug /etc/logrotate.d/matrix-synapse >/dev/null
+
+if systemctl is-active --quiet nginx.service; then
+    systemctl reload nginx.service
+fi
+if systemctl is-active --quiet unbound.service; then
+    systemctl reload unbound.service
+fi

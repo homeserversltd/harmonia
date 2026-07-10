@@ -1,0 +1,28 @@
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name element.home.arpa;
+
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+    include /etc/nginx/ssl_params.conf;
+
+    root /usr/share/element-web;
+    index index.html;
+    client_max_body_size 100M;
+
+    allow 192.168.123.0/24;
+    allow 100.64.0.0/10;
+    allow fd7a:115c:a1e0::/48;
+    deny all;
+
+    location = /config.json {
+        alias /etc/element-web/config.json;
+        default_type application/json;
+        add_header Cache-Control "no-store";
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -1,0 +1,89 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "matrix",
+  "version": "1.0.0",
+  "description": "Matrix Synapse and Element Web product surface: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback service, LAN/Tailscale web entry points, DNS, log rotation, and health proof.",
+  "constants": {
+    "server_name": "home.arpa",
+    "synapse_loopback": "127.0.0.1:8008",
+    "matrix_domain": "matrix.home.arpa",
+    "element_domain": "element.home.arpa"
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "matrix-managed-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {}
+    },
+    {
+      "step_id": "matrix-substrate-converge",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/local/libexec/harmonia-matrix-converge",
+        "timeout_secs": 1800
+      }
+    },
+    {
+      "step_id": "matrix-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {}
+    },
+    {
+      "step_id": "matrix-nginx-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "nginx.service"
+      }
+    },
+    {
+      "step_id": "matrix-unbound-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "unbound.service"
+      }
+    },
+    {
+      "step_id": "matrix-prepare-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "harmonia-matrix-prepare.service"
+      }
+    },
+    {
+      "step_id": "matrix-synapse-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "matrix-synapse.service",
+        "timeout_secs": 120
+      }
+    },
+    {
+      "step_id": "matrix-synapse-restart",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "matrix-synapse.service",
+        "timeout_secs": 120
+      }
+    },
+    {
+      "step_id": "matrix-synapse-health",
+      "tool": "health",
+      "permutation": "probe",
+      "args": {
+        "url": "http://127.0.0.1:8008/_matrix/client/versions",
+        "expected_contains": "versions",
+        "timeout_secs": 5,
+        "retries": 5
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Prepare Matrix Synapse product substrate
+After=postgresql.service network.target
+Wants=postgresql.service
+Before=matrix-synapse.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/harmonia-matrix-converge
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
