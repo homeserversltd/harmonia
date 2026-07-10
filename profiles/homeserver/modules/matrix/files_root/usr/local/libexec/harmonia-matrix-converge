@@ -116,18 +116,67 @@ if [ ! -e "$secrets" ]; then
         printf 'registration_shared_secret: "%s"\n' "$registration_shared_secret"
     } >"$tmp"
     chown root:matrix-synapse "$tmp"
-    chmod 0600 "$tmp"
+    chmod 0640 "$tmp"
     mv "$tmp" "$secrets"
 fi
 chown root:matrix-synapse "$secrets"
-chmod 0600 "$secrets"
+chmod 0640 "$secrets"
 
 chown root:matrix-synapse /etc/matrix-synapse/homeserver.yaml /etc/matrix-synapse/log.yaml
 chmod 0640 /etc/matrix-synapse/homeserver.yaml /etc/matrix-synapse/log.yaml
 
+ensure_postgres_peer_admission() {
+    desired='local   synapse         matrix-synapse                          peer'
+    changed=0
+    found=0
+    for hba in /etc/postgresql/*/main/pg_hba.conf; do
+        [ -f "$hba" ] || continue
+        found=1
+        if grep -Fqx "$desired" "$hba"; then
+            continue
+        fi
+        tmp="${hba}.harmonia-matrix-new.$$"
+        awk -v desired="$desired" '
+            $1 == "local" && $2 == "all" && $3 == "all" && $4 == "scram-sha-256" && !inserted {
+                print desired
+                inserted = 1
+            }
+            { print }
+            END {
+                if (!inserted) {
+                    print desired
+                }
+            }
+        ' "$hba" >"$tmp"
+        chown --reference="$hba" "$tmp"
+        chmod --reference="$hba" "$tmp"
+        mv "$tmp" "$hba"
+        changed=1
+    done
+    if [ "$found" -eq 0 ]; then
+        echo "matrix-postgresql-pg-hba-missing" >&2
+        return 1
+    fi
+    if [ "$changed" -eq 1 ]; then
+        runuser -u postgres -- psql --set=ON_ERROR_STOP=1 --command='SELECT pg_reload_conf();' postgres >/dev/null
+    fi
+}
+
+ensure_unbound_conf_d_include() {
+    conf=/etc/unbound/unbound.conf
+    include='include-toplevel: "/etc/unbound/unbound.conf.d/*.conf"'
+    [ -f "$conf" ] || return 0
+    if grep -Fqx "$include" "$conf"; then
+        return 0
+    fi
+    printf '\n%s\n' "$include" >>"$conf"
+}
+
 # psql's \gexec declarations create missing objects and converge role attributes;
 # peer authentication means no database password is required or stored.
 runuser -u postgres -- psql --set=ON_ERROR_STOP=1 --file=/usr/share/harmonia/matrix/postgres.sql postgres
+ensure_postgres_peer_admission
+ensure_unbound_conf_d_include
 
 ln -sfn /etc/nginx/sites-available/homeserver-matrix /etc/nginx/sites-enabled/homeserver-matrix
 ln -sfn /etc/nginx/sites-available/homeserver-element /etc/nginx/sites-enabled/homeserver-element
