@@ -500,14 +500,14 @@ fn validate_harmonia_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn installed_module_version(module_dir: &Path) -> Option<String> {
+pub(crate) fn installed_module_version(module_dir: &Path) -> Option<String> {
     let manifest_path = module_dir.join("manifest.json");
     let text = fs::read_to_string(manifest_path).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
     value.get("version")?.as_str().map(ToOwned::to_owned)
 }
 
-fn module_tree_sha256(module_dir: &Path) -> Result<String, String> {
+pub(crate) fn module_tree_sha256(module_dir: &Path) -> Result<String, String> {
     let mut chain = Sha256::new();
     for rel in sorted_file_paths(module_dir)? {
         let rels = rel_slash(&rel);

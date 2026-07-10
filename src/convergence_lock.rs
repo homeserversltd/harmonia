@@ -9,6 +9,9 @@ pub(crate) const HOME_CONSOLE_UPDATE_RECEIPT_LATEST: &str =
     "/var/lib/harmonia/receipts/homeconsole-update-latest";
 pub(crate) const HOME_CONSOLE_UPDATE_RECEIPT_LEGACY: &str =
     "/var/lib/harmonia/receipts/homeconsole-latest";
+pub(crate) const HOME_SERVER_UPDATE_LOCK_PATH: &str = "/run/harmonia/homeserver-update.lock";
+pub(crate) const HOME_SERVER_UPDATE_RECEIPT_LATEST: &str =
+    "/var/lib/harmonia/receipts/homeserver-update-latest";
 
 pub(crate) fn homeconsole_update_receipt_latest() -> PathBuf {
     PathBuf::from(HOME_CONSOLE_UPDATE_RECEIPT_LATEST)
@@ -22,6 +25,16 @@ pub(crate) fn homeconsole_update_lock_path() -> PathBuf {
     std::env::var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(HOME_CONSOLE_UPDATE_LOCK_PATH))
+}
+
+pub(crate) fn homeserver_update_receipt_latest() -> PathBuf {
+    PathBuf::from(HOME_SERVER_UPDATE_RECEIPT_LATEST)
+}
+
+pub(crate) fn homeserver_update_lock_path() -> PathBuf {
+    std::env::var("HARMONIA_HOMESERVER_UPDATE_LOCK")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(HOME_SERVER_UPDATE_LOCK_PATH))
 }
 
 #[derive(Debug)]
@@ -60,6 +73,12 @@ pub(crate) fn try_acquire_homeconsole_update_lock(
     Ok(ConvergenceLockGuard { _file: file })
 }
 
+pub(crate) fn try_acquire_homeserver_update_lock(
+    lock_path: &Path,
+) -> Result<ConvergenceLockGuard, ConvergenceLockBusy> {
+    try_acquire_homeconsole_update_lock(lock_path)
+}
+
 #[cfg(not(unix))]
 pub(crate) fn try_acquire_homeconsole_update_lock(
     _lock_path: &Path,
@@ -93,6 +112,76 @@ pub(crate) fn materialize_homeconsole_receipt_dir(
     migrate_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
+}
+
+pub(crate) fn materialize_homeserver_receipt_dir(
+    receipt_dir: &Path,
+    run_id: &str,
+) -> Result<PathBuf, String> {
+    let file_name = receipt_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let use_per_run = matches!(file_name, "latest" | "homeserver-update-latest")
+        || file_name.ends_with("-latest");
+    if !use_per_run {
+        return Ok(receipt_dir.to_path_buf());
+    }
+    let parent = receipt_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| receipt_dir.to_path_buf());
+    let base = file_name
+        .strip_suffix("-latest")
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("homeserver-update");
+    let per_run = parent.join(format!("{base}-{run_id}"));
+    fs::create_dir_all(&per_run).map_err(|e| e.to_string())?;
+    migrate_homeserver_blocking_receipt_path(receipt_dir, run_id)?;
+    refresh_homeserver_latest_symlink(receipt_dir, &per_run)?;
+    Ok(per_run)
+}
+
+fn migrate_homeserver_blocking_receipt_path(
+    latest_path: &Path,
+    run_id: &str,
+) -> Result<(), String> {
+    if !latest_path.exists() || latest_path.is_symlink() {
+        return Ok(());
+    }
+    if latest_path.is_dir() {
+        let parent = latest_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| latest_path.to_path_buf());
+        let migrated = parent.join(format!("homeserver-update-legacy-{run_id}"));
+        fs::rename(latest_path, &migrated).map_err(|e| {
+            format!(
+                "homeserver-update-latest-migrate-failed {} -> {}: {e}",
+                latest_path.display(),
+                migrated.display()
+            )
+        })?;
+        return Ok(());
+    }
+    fs::remove_file(latest_path).map_err(|e| e.to_string())
+}
+
+fn refresh_homeserver_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), String> {
+    if latest_path.exists() {
+        fs::remove_file(latest_path).map_err(|e| e.to_string())?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, latest_path).map_err(|e| {
+        format!(
+            "homeserver-update-latest-symlink-failed {} -> {}: {e}",
+            target.display(),
+            latest_path.display()
+        )
+    })?;
+    #[cfg(not(unix))]
+    return Err("homeserver-update-latest-symlink-unsupported".to_string());
+    Ok(())
 }
 
 pub(crate) fn migrate_blocking_receipt_path(

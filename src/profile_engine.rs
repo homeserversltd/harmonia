@@ -227,6 +227,16 @@ pub(crate) fn run_profile_engine(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<(), String> {
+    run_profile_engine_with_preflight(profile, module_root, receipt_dir, apply, false)
+}
+
+pub(crate) fn run_profile_engine_with_preflight(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    apply: bool,
+    skip_preflight: bool,
+) -> Result<(), String> {
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
     event(
@@ -244,24 +254,33 @@ pub(crate) fn run_profile_engine(
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
 
-    let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
-    operation_count += preflight.operation_count;
-    if preflight.changed {
-        changed = true;
-    }
-    if !preflight.ok {
-        let preflight_signal = preflight
-            .first_missing_signal
-            .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
+    if skip_preflight {
         event(
             &mut events,
-            "engine-preflight-honest-staleness",
-            false,
-            &preflight_signal,
+            "engine-preflight-skipped",
+            true,
+            "already completed by update suite",
         )?;
-        if apply {
-            ok = false;
-            first_missing_signal = preflight_signal;
+    } else {
+        let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
+        operation_count += preflight.operation_count;
+        if preflight.changed {
+            changed = true;
+        }
+        if !preflight.ok {
+            let preflight_signal = preflight
+                .first_missing_signal
+                .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
+            event(
+                &mut events,
+                "engine-preflight-honest-staleness",
+                false,
+                &preflight_signal,
+            )?;
+            if apply {
+                ok = false;
+                first_missing_signal = preflight_signal;
+            }
         }
     }
 
@@ -521,6 +540,185 @@ pub(crate) fn enforce_homeconsole_update_suite(
     } else {
         Err(format!(
             "homeconsole-update-suite-spine-mismatch module_root={} expected={} got={}",
+            module_root.display(),
+            expected.join(","),
+            profile.modules.join(",")
+        ))
+    }
+}
+
+pub(crate) fn homeserver_update(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<(), String> {
+    if profile.id != "homeserver" || profile.identity != "homeserver" {
+        return Err(format!(
+            "homeserver-update requires homeserver/homeserver profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    enforce_homeserver_update_suite(profile, module_root)?;
+    let run_id = run_id_from_stamp();
+    let effective_receipt_dir = materialize_homeserver_receipt_dir(receipt_dir, &run_id)?;
+    fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
+    let run = || {
+        normalize_homeserver_engine_branch()?;
+        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, apply)?;
+        if !preflight.ok {
+            return Err(preflight
+                .first_missing_signal
+                .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string()));
+        }
+        let engine = load_engine_plane_config(&engine_config_path())?
+            .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
+        sync_homeserver_profile(&engine.source_dir, module_root, &effective_receipt_dir)?;
+        let refreshed_profile = load_profile(
+            &module_root
+                .parent()
+                .ok_or_else(|| "homeserver-profile-root-missing".to_string())?
+                .join("index.json"),
+        )
+        .map_err(|e| e.to_string())?;
+        run_profile_engine_with_preflight(
+            &refreshed_profile,
+            module_root,
+            &effective_receipt_dir,
+            apply,
+            true,
+        )
+    };
+    if apply {
+        let lock_path = homeserver_update_lock_path();
+        match try_acquire_homeserver_update_lock(&lock_path) {
+            Ok(_guard) => run(),
+            Err(ConvergenceLockBusy) => {
+                write_convergence_skipped_receipt(
+                    &effective_receipt_dir,
+                    profile,
+                    apply,
+                    "lock-held",
+                    &lock_path,
+                    receipt_dir,
+                )?;
+                emit_convergence_skipped_stdout(&effective_receipt_dir, "lock-held", &profile.id);
+                Ok(())
+            }
+        }
+    } else {
+        run()
+    }
+}
+
+pub(crate) fn normalize_homeserver_engine_branch() -> Result<(), String> {
+    if preserve_existing_lane_or_default(&subscription_path()) != "upstream" {
+        return Ok(());
+    }
+    let engine_path = engine_config_path();
+    let text = fs::read_to_string(&engine_path)
+        .map_err(|e| format!("engine-config-read-failed {}: {e}", engine_path.display()))?;
+    let mut engine: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("engine-config-parse-failed {}: {e}", engine_path.display()))?;
+    let object = engine.as_object_mut().ok_or_else(|| {
+        format!(
+            "engine-config-parse-failed {}: root-not-object",
+            engine_path.display()
+        )
+    })?;
+    if object.get("branch").and_then(serde_json::Value::as_str) != Some("main") {
+        object.insert("branch".to_string(), json!("main"));
+        write_json_value_atomic(&engine_path, &engine)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_homeserver_profile(
+    source_root: &Path,
+    installed_module_root: &Path,
+    receipt_dir: &Path,
+) -> Result<(), String> {
+    let installed_root = installed_module_root
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| "homeserver-config-root-missing".to_string())?;
+    export_deployable_config(
+        source_root,
+        "homeserver",
+        installed_root,
+        receipt_dir,
+        DeployableConfigMode::Copy,
+    )?;
+    let profile = load_profile(&source_root.join("profiles/homeserver/index.json"))
+        .map_err(|e| format!("homeserver-profile-source-read-failed: {e}"))?;
+    let modules = profile
+        .modules
+        .iter()
+        .map(|id| {
+            let module_dir = source_root.join("profiles/homeserver/modules").join(id);
+            Ok(SubscriptionModuleUpdate {
+                id: id.clone(),
+                version: installed_module_version(&module_dir)
+                    .unwrap_or_else(|| "sidecar".to_string()),
+                tree_sha256: module_tree_sha256(&module_dir)?,
+                received_at_run_id: run_id_from_stamp(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let head = command_capture_with_cwd("git", &["rev-parse", "HEAD"], source_root.to_str());
+    if !head.ok {
+        return Err(format!("homeserver-source-head-failed {}", head.stderr));
+    }
+    update_subscription_record(
+        &subscription_path(),
+        SubscriptionUpdate {
+            lane: preserve_existing_lane_or_default(&subscription_path()),
+            source: source_root.display().to_string(),
+            ref_name: head.stdout.trim().to_string(),
+            selected_profile: profile.id,
+            engine_version_received: VERSION.to_string(),
+            modules,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn homeserver_module_root() -> PathBuf {
+    Path::new("profiles/homeserver/modules").to_path_buf()
+}
+
+pub(crate) fn homeserver_module_ids_from_profile_modules(
+    module_root: &Path,
+) -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    for module_id in [
+        "rust-build-toolchain",
+        "coronatio",
+        "caduceus",
+        "forgejo",
+        "gogs",
+        "jellyfin",
+        "matrix",
+        "homeserver-update-runtime",
+    ] {
+        if lawful_module_manifest_exists(&module_root.join(module_id)) {
+            found.push(module_id.to_string());
+        }
+    }
+    Ok(found)
+}
+
+pub(crate) fn enforce_homeserver_update_suite(
+    profile: &Profile,
+    module_root: &Path,
+) -> Result<(), String> {
+    let expected = homeserver_module_ids_from_profile_modules(module_root)?;
+    if profile.modules == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "homeserver-update-suite-spine-mismatch module_root={} expected={} got={}",
             module_root.display(),
             expected.join(","),
             profile.modules.join(",")
