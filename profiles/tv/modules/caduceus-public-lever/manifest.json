@@ -52,7 +52,7 @@
           {
             "path": "/usr/local/sbin/caduceus_staff/__init__.py",
             "mode": 420,
-            "content": "\"\"\"Caduceus staff Python library (additive).\\n\"\"\"\\n__version__ = \"0.1.0\"\\n"
+            "content": "\"\"\"Caduceus staff Python library (additive).\"\"\"\n__version__ = \"0.1.0\"\n"
           },
           {
             "path": "/usr/local/sbin/caduceus_staff/house_ca.py",
@@ -62,7 +62,7 @@
           {
             "path": "/usr/local/sbin/caduceus-house-ca",
             "mode": 493,
-            "content": "#!/bin/bash\n# Caduceus staff house CA launcher (Python snake). Does not call sslKey.sh.\nset -euo pipefail\nROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport PYTHONPATH=\"${ROOT}${PYTHONPATH:+:$PYTHONPATH}\"\nif [[ -x /var/lib/caduceus/venv/bin/python ]]; then\n  exec /var/lib/caduceus/venv/bin/python -m caduceus_staff.house_ca \"$@\"\nfi\nexec python3 -m caduceus_staff.house_ca \"$@\"\n"
+            "content": "#!/bin/bash\nset -euo pipefail\nROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport PYTHONPATH=\"${ROOT}${PYTHONPATH:+:$PYTHONPATH}\"\nif [[ -x /var/lib/caduceus/venv/bin/python ]]; then\n  exec /var/lib/caduceus/venv/bin/python -m caduceus_staff.house_ca \"$@\"\nfi\nexec python3 -m caduceus_staff.house_ca \"$@\"\n"
           }
         ]
       }
