@@ -21,6 +21,35 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 class InstallerCliTests(unittest.TestCase):
+
+    def test_matrix_converger_asserts_floor_without_installation_lifts(self) -> None:
+        helper = ROOT / "profiles/homeserver/modules/matrix/files_root/usr/local/libexec/harmonia-matrix-converge"
+        source = helper.read_text(encoding="utf-8")
+        rejected = [
+            "install_matrix_apt_source",
+            "install_element_web_fallback",
+            "apt-get update",
+            "apt-get install",
+            "curl -fsSL",
+            "matrix_key_sha256",
+            "element_sha256=",
+        ]
+        for needle in rejected:
+            self.assertNotIn(needle, source)
+        for package in [
+            "matrix-synapse-py3",
+            "nginx",
+            "postgresql-client",
+            "logrotate",
+            "openssl",
+            "unbound",
+            "ca-certificates",
+        ]:
+            self.assertIn(f'assert_dpkg_package "$package"', source)
+        self.assertIn("matrix-floor-missing:${package} (born-incomplete — floor belongs to the deployables birth module)", source)
+        self.assertIn("assert_floor_file /usr/share/element-web/index.html element-web-index", source)
+        self.assertIn("assert_floor_file /usr/share/element-web/.artifact-sha256 element-web-artifact-sha256", source)
+
     def test_root_cli_prints_full_help_by_default(self) -> None:
         result = run_cli()
         self.assertEqual(result.returncode, 0, result.stderr)

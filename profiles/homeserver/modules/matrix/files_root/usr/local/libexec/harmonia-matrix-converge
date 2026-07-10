@@ -1,97 +1,28 @@
 #!/bin/sh
 set -eu
 
-export DEBIAN_FRONTEND=noninteractive
-
-matrix_repo="https://packages.matrix.org/debian/"
-matrix_key_url="https://packages.matrix.org/debian/matrix-org-archive-keyring.gpg"
-matrix_key_sha256="c2d12a3b2dc4dec8f1d3bf51df6d16878fcfa47a2423b6b06ded502b3014c98b"
-matrix_key_fingerprint="AAF9AE843A7584B5A3E4CD2BCF45A512DE2DA058"
-element_version="1.12.23"
-element_url="https://github.com/element-hq/element-web/releases/download/v${element_version}/element-v${element_version}.tar.gz"
-element_sha256="d4ba438d5c6222cbab9175c20ce32373b8d7c9b344489b6911de8bd6a630c894"
-
-os_release=/etc/os-release
-if [ ! -r "$os_release" ]; then
-    echo "matrix-suite-os-release-missing" >&2
-    exit 1
-fi
-# shellcheck disable=SC1090
-. "$os_release"
-suite="${VERSION_CODENAME:-}"
-case "$suite" in
-    bookworm|trixie) ;;
-    *)
-        echo "matrix-suite-unsupported:${suite:-missing}" >&2
+assert_dpkg_package() {
+    package="$1"
+    if ! dpkg -s "$package" >/dev/null 2>&1; then
+        echo "matrix-floor-missing:${package} (born-incomplete — floor belongs to the deployables birth module)" >&2
         exit 1
-        ;;
-esac
+    fi
+}
 
-verify_sha256() {
+assert_floor_file() {
     path="$1"
-    expected="$2"
-    actual="$(sha256sum "$path" | awk '{print $1}')"
-    if [ "$actual" != "$expected" ]; then
-        echo "sha256-mismatch:$path:$actual" >&2
-        return 1
+    signal="$2"
+    if [ ! -f "$path" ]; then
+        echo "matrix-floor-missing:${signal} (born-incomplete — floor belongs to the deployables birth module)" >&2
+        exit 1
     fi
 }
 
-install_matrix_apt_source() {
-    install -d -o root -g root -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
-    key=/usr/share/keyrings/matrix-org-archive-keyring.gpg
-    tmp="$(mktemp)"
-    curl -fsSL "$matrix_key_url" -o "$tmp"
-    verify_sha256 "$tmp" "$matrix_key_sha256"
-    if command -v gpg >/dev/null 2>&1; then
-        if ! gpg --show-keys --with-fingerprint --with-colons "$tmp" 2>/dev/null | grep -Fq "fpr:::::::::${matrix_key_fingerprint}:"; then
-            echo "matrix-key-fingerprint-mismatch" >&2
-            rm -f "$tmp"
-            exit 1
-        fi
-    fi
-    if [ ! -f "$key" ] || ! cmp -s "$tmp" "$key"; then
-        install -o root -g root -m 0644 "$tmp" "$key"
-    fi
-    rm -f "$tmp"
-    printf 'deb [signed-by=%s] %s %s main\n' "$key" "$matrix_repo" "$suite" >/etc/apt/sources.list.d/matrix-org.list
-}
-
-install_element_web_fallback() {
-    release=/usr/share/element-web
-    marker="$release/.artifact-sha256"
-    if [ -f "$marker" ] && [ "$(cat "$marker")" = "$element_sha256" ] && [ -f "$release/index.html" ]; then
-        return 0
-    fi
-    work="$(mktemp -d)"
-    archive="$work/element-web.tar.gz"
-    staging="$work/staging"
-    mkdir -p "$staging"
-    curl -fsSL "$element_url" -o "$archive"
-    verify_sha256 "$archive" "$element_sha256"
-    tar -xzf "$archive" -C "$staging" --strip-components=1
-    test -f "$staging/index.html"
-    printf '%s\n' "$element_sha256" >"$staging/.artifact-sha256"
-    install -d -o root -g root -m 0755 /usr/share
-    rm -rf "${release}.new" "${release}.old"
-    mv "$staging" "${release}.new"
-    if [ -d "$release" ]; then
-        mv "$release" "${release}.old"
-    fi
-    mv "${release}.new" "$release"
-    rm -rf "${release}.old" "$work"
-}
-
-# Package bytes come from the body's suite-specific Matrix.org apt repository,
-# verified by pinned public keyring. Element Web is not suite-published for
-# bookworm/trixie apt; converge the pinned release tarball into /usr/share.
-install_matrix_apt_source
-apt-get update
-apt-get install -y \
-    -o Dpkg::Options::=--force-confdef \
-    -o Dpkg::Options::=--force-confold \
-    matrix-synapse-py3 nginx postgresql-client logrotate openssl unbound ca-certificates curl tar
-install_element_web_fallback
+for package in matrix-synapse-py3 nginx postgresql-client logrotate openssl unbound ca-certificates curl tar python3; do
+    assert_dpkg_package "$package"
+done
+assert_floor_file /usr/share/element-web/index.html element-web-index
+assert_floor_file /usr/share/element-web/.artifact-sha256 element-web-artifact-sha256
 
 getent group matrix-synapse >/dev/null 2>&1 || groupadd --system matrix-synapse
 id -u matrix-synapse >/dev/null 2>&1 || useradd --system --gid matrix-synapse --home-dir /var/lib/matrix-synapse --shell /usr/sbin/nologin matrix-synapse
@@ -180,8 +111,6 @@ ensure_unbound_conf_d_include
 
 ln -sfn /etc/nginx/sites-available/homeserver-matrix /etc/nginx/sites-enabled/homeserver-matrix
 ln -sfn /etc/nginx/sites-available/homeserver-element /etc/nginx/sites-enabled/homeserver-element
-
-test -f /usr/share/element-web/index.html
 
 python3 - <<'PY'
 import json
