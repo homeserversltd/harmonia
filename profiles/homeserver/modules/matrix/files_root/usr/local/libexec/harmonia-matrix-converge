@@ -31,6 +31,7 @@ install -d -o root -g matrix-synapse -m 0750 /etc/matrix-synapse /etc/matrix-syn
 install -d -o matrix-synapse -g matrix-synapse -m 0750 /var/lib/matrix-synapse /var/lib/matrix-synapse/media
 install -d -o matrix-synapse -g adm -m 0750 /var/log/matrix-synapse
 install -d -o root -g root -m 0755 /usr/share/harmonia/matrix
+install -d -o root -g root -m 0755 /etc/homeserver
 
 # Birth-owned values are generated once. Harmonia owns only presence, owner, and mode;
 # it never renders or replaces this file.
@@ -116,7 +117,7 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-path = Path('/etc/homeserver.json')
+path = Path('/etc/homeserver/config.json')
 if path.exists():
     data = json.loads(path.read_text(encoding='utf-8'))
 else:
@@ -137,7 +138,8 @@ visibility.setdefault('tab', True)
 elements = visibility.setdefault('elements', {})
 if not isinstance(elements, dict):
     raise SystemExit('homeserver-json-portals-elements-not-object')
-elements['element'] = True
+elements.pop('element', None)
+elements['Element'] = True
 pdata = portals_tab.setdefault('data', {})
 if not isinstance(pdata, dict):
     raise SystemExit('homeserver-json-portals-data-not-object')
@@ -145,25 +147,23 @@ items = pdata.setdefault('portals', [])
 if not isinstance(items, list):
     raise SystemExit('homeserver-json-portals-list-not-array')
 entry = {
-    'name': 'element',
+    'name': 'Element',
     'description': 'Private chat for your homeserver.',
-    'services': ['matrix-synapse.service', 'nginx.service'],
-    'owningUnits': ['matrix-synapse.service', 'nginx.service'],
+    'services': ['matrix-synapse'],
     'type': 'systemd',
-    'port': 443,
+    'port': 8008,
     'localURL': 'https://chat.home.arpa',
-    'remoteURL': '',
-    'status': 'unknown',
 }
 for index, item in enumerate(items):
-    if isinstance(item, dict) and item.get('name') == 'element':
-        items[index] = {**item, **entry}
+    if isinstance(item, dict) and item.get('name', '').casefold() == 'element':
+        items[index] = entry
         break
 else:
     items.append(entry)
 tmp = path.with_suffix(path.suffix + '.harmonia-matrix-new')
 tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + '\n', encoding='utf-8')
 tmp.replace(path)
+path.chmod(0o644)
 PY
 
 nginx -t
