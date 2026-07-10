@@ -7,10 +7,15 @@
     "health",
     "receipts latest",
     "update status",
+    "update check",
     "update now",
     "update service status",
     "update service toggle on",
-    "update service toggle off"
+    "update service toggle off",
+    "cert status",
+    "cert issue-leaf",
+    "cert rotate-ca",
+    "cert bundle create"
   ],
   "private_land_organs_exposed": false
 }

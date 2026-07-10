@@ -1,107 +1,70 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus-public-lever",
-  "version": "1.0.0",
-  "description": "TV Caduceus public-lever module. Rust owns identity/profile/policy/state file convergence and public binary possession checks; this sidecar carries constants only.",
+  "version": "1.1.0",
+  "description": "TV Caduceus public lever: sync/build/install caduceus from main (dual-snake cert face), converge profile/routes, install additive caduceus_staff house_ca Python snake, stand up caduceus.service.",
   "optional": false,
-  "constants": {
-    "binaries": [
-      "caduceus"
-    ],
-    "expected_files": [
-      "/usr/local/bin/caduceus",
-      "/etc/caduceus/identity.json",
-      "/etc/caduceus/profile.json",
-      "/etc/caduceus/policies/update.json",
-      "/var/lib/caduceus/state.json"
-    ],
-    "phase": 11,
-    "receipt_schema": "harmonia.tv.caduceus_public_lever.v1",
-    "meaning": "Caduceus public appliance lever identity, policy, state, and binary possession are maintained"
-  },
+  "constants": {},
   "ladder": [
     {
-      "step_id": "managed-files",
-      "tool": "files",
-      "permutation": "managed-files"
-    },
-    {
-      "step_id": "binary-caduceus",
-      "tool": "command",
-      "permutation": "capture",
+      "step_id": "caduceus-service-runtime",
+      "tool": "service-runtime",
+      "permutation": "converge",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v caduceus >/dev/null"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-usr-local-bin-caduceus",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/usr/local/bin/caduceus"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-etc-caduceus-identity-json",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/etc/caduceus/identity.json"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-etc-caduceus-profile-json",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/etc/caduceus/profile.json"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-etc-caduceus-policies-update-json",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/etc/caduceus/policies/update.json"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-var-lib-caduceus-state-json",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/var/lib/caduceus/state.json"
-        ],
-        "timeout_secs": 30
+        "module_id": "caduceus-public-lever",
+        "repo": "git@git.home.arpa:HOMESERVERSLTD/caduceus.git",
+        "branch": "main",
+        "source_dir": "/opt/caduceus/source",
+        "install_bin": "/usr/local/bin/caduceus",
+        "service": "caduceus.service",
+        "url": "http://127.0.0.1:8787/health",
+        "source_sha_file": "/var/lib/harmonia/state/caduceus.sha",
+        "binary_name": "caduceus",
+        "op_prefix": "caduceus",
+        "run_schema": "harmonia.tv.caduceus_public_lever.v1",
+        "managed_files_schema": "harmonia.tv.caduceus_managed_files.v1",
+        "managed_files": [
+          {
+            "path": "/etc/systemd/system/caduceus.service",
+            "mode": 420,
+            "content": "[Unit]\nDescription=Caduceus LAN-open appliance API (TV)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:8787\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
+          },
+          {
+            "path": "/etc/caduceus/identity.json",
+            "mode": 420,
+            "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"arch-tv\",\n  \"profile\": \"tv\",\n  \"mode\": \"tv\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/tv/index.json\"\n}\n"
+          },
+          {
+            "path": "/etc/caduceus/profile.yaml",
+            "mode": 420,
+            "content": "schema: caduceus.profile.v1\nprofile: tv\nmode: tv\nharmonia_profile: /etc/harmonia/profiles/tv/index.json\ncommands:\n- help\n- identity show\n- profile show\n- health\n- receipts latest\n- update status\n- update check\n- update now\n- update service status\n- update service toggle\n- cert status\n- cert issue-leaf\n- cert rotate-ca\n- cert bundle create\nservices:\n  update:\n    timer: harmonia-tv.timer\n    latest_receipt: /var/lib/harmonia/receipts/tv-latest/run.json\nharmonia_routes:\n  update_now:\n    bin: /usr/local/bin/harmonia\n    args:\n    - run-profile\n    - /etc/harmonia/profiles/tv/index.json\n    - --apply\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/tv-latest\n  update_check:\n    bin: /usr/local/bin/harmonia\n    args:\n    - run-profile\n    - /etc/harmonia/profiles/tv/index.json\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/tv-check-latest\noperator_aliases:\n  update: caduceus update now\n  update-check: caduceus update check\n  update-status: caduceus update status\n  health: caduceus health\n"
+          },
+          {
+            "path": "/etc/caduceus/policies/update.json",
+            "mode": 420,
+            "content": "{\n  \"schema\": \"caduceus.policy.v1\",\n  \"profile\": \"tv\",\n  \"allowed_public_actions\": [\n    \"identity show\",\n    \"profile show\",\n    \"health\",\n    \"receipts latest\",\n    \"update status\",\n    \"update check\",\n    \"update now\",\n    \"update service status\",\n    \"update service toggle on\",\n    \"update service toggle off\",\n    \"cert status\",\n    \"cert issue-leaf\",\n    \"cert rotate-ca\",\n    \"cert bundle create\"\n  ],\n  \"private_land_organs_exposed\": false\n}\n"
+          },
+          {
+            "path": "/var/lib/caduceus/state.json",
+            "mode": 420,
+            "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"harmonia-tv.timer\"\n    }\n  }\n}\n"
+          },
+          {
+            "path": "/usr/local/sbin/caduceus_staff/__init__.py",
+            "mode": 420,
+            "content": "\"\"\"Caduceus staff Python library (additive).\\n\"\"\"\\n__version__ = \"0.1.0\"\\n"
+          },
+          {
+            "path": "/usr/local/sbin/caduceus_staff/house_ca.py",
+            "mode": 420,
+            "content": "\"\"\"Caduceus staff house CA \u2014 stable trust anchor + renewable leaf.\n\nSnake 2 (Python) of Caduceus dual actuators. Paths default under\n/var/lib/caduceus/certs. Never edits legacy sslKey.sh / createCertBundle.sh.\n\"\"\"\nfrom __future__ import annotations\n\nimport argparse\nimport json\nimport os\nimport shutil\nimport subprocess\nimport sys\nimport tempfile\nfrom pathlib import Path\nfrom typing import Sequence\n\n\ndef cert_dir() -> Path:\n    return Path(os.environ.get(\"CADUCEUS_CERT_DIR\", \"/var/lib/caduceus/certs\"))\n\n\ndef _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:\n    return subprocess.run(cmd, check=check, text=True, capture_output=True)\n\n\ndef _fp(path: Path) -> str:\n    out = _run([\"openssl\", \"x509\", \"-in\", str(path), \"-noout\", \"-fingerprint\", \"-sha256\"])\n    line = out.stdout.strip()\n    return line.split(\"=\", 1)[-1] if \"=\" in line else line\n\n\ndef _not_after(path: Path) -> str:\n    out = _run([\"openssl\", \"x509\", \"-in\", str(path), \"-noout\", \"-enddate\"])\n    return out.stdout.strip().removeprefix(\"notAfter=\")\n\n\ndef _emit(obj: dict) -> int:\n    print(json.dumps(obj, indent=2, sort_keys=True))\n    return 0 if obj.get(\"ok\", False) else 1\n\n\ndef _write_ca_config(path: Path) -> None:\n    path.write_text(\n        \"\"\"[req]\ndefault_bits = 4096\nprompt = no\ndefault_md = sha256\ndistinguished_name = dn\nx509_extensions = v3_ca\n\n[dn]\nC = US\nO = HomeServer\nOU = House CA\nCN = HomeServer House CA\n\n[v3_ca]\nbasicConstraints = critical, CA:TRUE, pathlen:0\nkeyUsage = critical, keyCertSign, cRLSign\nsubjectKeyIdentifier = hash\n\"\"\"\n    )\n\n\ndef _write_leaf_config(path: Path, sans: list[str]) -> None:\n    alt = \"\\n\".join(f\"DNS.{i} = {name}\" for i, name in enumerate(sans, start=1))\n    path.write_text(\n        f\"\"\"[req]\ndefault_bits = 4096\nprompt = no\ndefault_md = sha256\ndistinguished_name = dn\nreq_extensions = v3_req\n\n[dn]\nC = US\nO = HomeServer\nOU = HTTPS\nCN = home.arpa\n\n[v3_req]\nbasicConstraints = CA:FALSE\nkeyUsage = digitalSignature, keyEncipherment\nextendedKeyUsage = serverAuth\nsubjectAltName = @alt_names\n\n[v3_leaf]\nbasicConstraints = CA:FALSE\nkeyUsage = digitalSignature, keyEncipherment\nextendedKeyUsage = serverAuth\nsubjectAltName = @alt_names\n\n[alt_names]\n{alt}\n\"\"\"\n    )\n\n\ndef ensure_ca(*, rotate: bool = False) -> dict:\n    d = cert_dir()\n    d.mkdir(parents=True, exist_ok=True)\n    ca_pem = d / \"ca.pem\"\n    ca_key = d / \"ca.key.pem\"\n    reinstall = False\n    if rotate or not ca_pem.is_file() or not ca_key.is_file():\n        reinstall = ca_pem.is_file() or rotate\n        conf = d / \"openssl-ca.conf\"\n        _write_ca_config(conf)\n        _run(\n            [\n                \"openssl\",\n                \"req\",\n                \"-x509\",\n                \"-newkey\",\n                \"rsa:4096\",\n                \"-nodes\",\n                \"-keyout\",\n                str(ca_key),\n                \"-out\",\n                str(ca_pem),\n                \"-days\",\n                \"3650\",\n                \"-config\",\n                str(conf),\n            ]\n        )\n        ca_key.chmod(0o600)\n        ca_pem.chmod(0o644)\n        conf.unlink(missing_ok=True)\n        (d / \"ca.srl\").unlink(missing_ok=True)\n    return {\n        \"ca_pem\": str(ca_pem),\n        \"ca_key\": str(ca_key),\n        \"ca_fingerprint\": _fp(ca_pem),\n        \"ca_not_after\": _not_after(ca_pem),\n        \"client_reinstall_required\": bool(reinstall and rotate),\n        \"ok\": True,\n    }\n\n\ndef default_sans(extra: Sequence[str] | None = None) -> list[str]:\n    base = [\"home.arpa\", \"*.home.arpa\"]\n    for item in extra or []:\n        item = item.strip()\n        if item and item not in base:\n            base.append(item)\n    return base\n\n\ndef issue_leaf(sans: Sequence[str] | None = None) -> dict:\n    d = cert_dir()\n    ca = ensure_ca(rotate=False)\n    names = default_sans(sans)\n    leaf_pem = d / \"leaf.pem\"\n    leaf_key = d / \"leaf.key.pem\"\n    conf = d / \"openssl-leaf.conf\"\n    csr = d / \"leaf.csr.pem\"\n    _write_leaf_config(conf, names)\n    _run(\n        [\n            \"openssl\",\n            \"req\",\n            \"-new\",\n            \"-newkey\",\n            \"rsa:4096\",\n            \"-nodes\",\n            \"-keyout\",\n            str(leaf_key),\n            \"-out\",\n            str(csr),\n            \"-config\",\n            str(conf),\n        ]\n    )\n    _run(\n        [\n            \"openssl\",\n            \"x509\",\n            \"-req\",\n            \"-in\",\n            str(csr),\n            \"-CA\",\n            str(d / \"ca.pem\"),\n            \"-CAkey\",\n            str(d / \"ca.key.pem\"),\n            \"-CAcreateserial\",\n            \"-out\",\n            str(leaf_pem),\n            \"-days\",\n            \"824\",\n            \"-extfile\",\n            str(conf),\n            \"-extensions\",\n            \"v3_leaf\",\n        ]\n    )\n    leaf_key.chmod(0o640)\n    leaf_pem.chmod(0o644)\n    csr.unlink(missing_ok=True)\n    conf.unlink(missing_ok=True)\n    # verify\n    _run([\"openssl\", \"verify\", \"-CAfile\", str(d / \"ca.pem\"), str(leaf_pem)])\n    return {\n        \"schema\": \"caduceus.staff.house_ca.issue_leaf.v1\",\n        \"ok\": True,\n        \"ca_fingerprint\": ca[\"ca_fingerprint\"],\n        \"leaf_fingerprint\": _fp(leaf_pem),\n        \"leaf_not_after\": _not_after(leaf_pem),\n        \"sans\": names,\n        \"client_reinstall_required\": False,\n        \"paths\": {\"ca_pem\": str(d / \"ca.pem\"), \"leaf_pem\": str(leaf_pem), \"leaf_key\": str(leaf_key)},\n        \"firstMissingSignal\": \"none\",\n    }\n\n\ndef rotate_ca(understood: bool) -> dict:\n    if not understood:\n        return {\n            \"schema\": \"caduceus.staff.house_ca.rotate_ca.v1\",\n            \"ok\": False,\n            \"client_reinstall_required\": False,\n            \"firstMissingSignal\": \"caduceus-house-ca-rotate-confirmation-required\",\n            \"message\": \"Pass --i-understand-clients-reinstall to rotate the house CA.\",\n        }\n    before = None\n    ca_pem = cert_dir() / \"ca.pem\"\n    if ca_pem.is_file():\n        before = _fp(ca_pem)\n    ca = ensure_ca(rotate=True)\n    leaf = issue_leaf()\n    return {\n        \"schema\": \"caduceus.staff.house_ca.rotate_ca.v1\",\n        \"ok\": True,\n        \"ca_fingerprint_before\": before,\n        \"ca_fingerprint\": ca[\"ca_fingerprint\"],\n        \"leaf_fingerprint\": leaf[\"leaf_fingerprint\"],\n        \"client_reinstall_required\": True,\n        \"firstMissingSignal\": \"none\",\n    }\n\n\ndef status() -> dict:\n    d = cert_dir()\n    ca_pem = d / \"ca.pem\"\n    leaf_pem = d / \"leaf.pem\"\n    if not ca_pem.is_file():\n        return {\n            \"schema\": \"caduceus.staff.house_ca.status.v1\",\n            \"ok\": False,\n            \"client_reinstall_required\": False,\n            \"firstMissingSignal\": \"caduceus-house-ca-missing\",\n        }\n    out: dict = {\n        \"schema\": \"caduceus.staff.house_ca.status.v1\",\n        \"ok\": True,\n        \"ca_fingerprint\": _fp(ca_pem),\n        \"ca_not_after\": _not_after(ca_pem),\n        \"client_reinstall_required\": False,\n        \"cert_dir\": str(d),\n        \"firstMissingSignal\": \"none\",\n    }\n    if leaf_pem.is_file():\n        out[\"leaf_fingerprint\"] = _fp(leaf_pem)\n        out[\"leaf_not_after\"] = _not_after(leaf_pem)\n        # SANs\n        text = _run([\"openssl\", \"x509\", \"-in\", str(leaf_pem), \"-noout\", \"-ext\", \"subjectAltName\"]).stdout\n        out[\"sans_raw\"] = text.strip()\n    return out\n\n\ndef bundle_create(platform: str = \"linux\") -> dict:\n    d = cert_dir()\n    ca_pem = d / \"ca.pem\"\n    if not ca_pem.is_file():\n        return {\n            \"schema\": \"caduceus.staff.house_ca.bundle.v1\",\n            \"ok\": False,\n            \"firstMissingSignal\": \"caduceus-house-ca-missing\",\n            \"message\": \"Run issue-leaf or ensure CA first.\",\n        }\n    out_dir = Path(os.environ.get(\"CADUCEUS_CERT_BUNDLE_DIR\", str(d / \"bundles\")))\n    out_dir.mkdir(parents=True, exist_ok=True)\n    platform = platform.lower()\n    if platform == \"windows\":\n        out = out_dir / \"homeserver_ca.cer\"\n        _run([\"openssl\", \"x509\", \"-in\", str(ca_pem), \"-outform\", \"DER\", \"-out\", str(out)])\n    elif platform in (\"android\", \"chromeos\"):\n        out = out_dir / \"homeserver_ca.crt\"\n        shutil.copy(ca_pem, out)\n    else:\n        # linux/macos \u2014 CA-only p12 (no private key)\n        out = out_dir / \"homeserver_ca.p12\"\n        _run(\n            [\n                \"openssl\",\n                \"pkcs12\",\n                \"-export\",\n                \"-nokeys\",\n                \"-in\",\n                str(ca_pem),\n                \"-out\",\n                str(out),\n                \"-name\",\n                \"HomeServer House CA\",\n                \"-passout\",\n                \"pass:homeserver\",\n            ]\n        )\n    out.chmod(0o644)\n    # prove no private key material in pem export path\n    raw = out.read_bytes()\n    if b\"PRIVATE KEY\" in raw:\n        return {\"schema\": \"caduceus.staff.house_ca.bundle.v1\", \"ok\": False, \"firstMissingSignal\": \"private-key-leaked\"}\n    return {\n        \"schema\": \"caduceus.staff.house_ca.bundle.v1\",\n        \"ok\": True,\n        \"platform\": platform,\n        \"path\": str(out),\n        \"ca_fingerprint\": _fp(ca_pem),\n        \"client_reinstall_required\": False,\n        \"firstMissingSignal\": \"none\",\n    }\n\n\ndef main(argv: Sequence[str] | None = None) -> int:\n    p = argparse.ArgumentParser(prog=\"caduceus-house-ca\", description=\"Caduceus staff house CA (Python snake)\")\n    sub = p.add_subparsers(dest=\"cmd\", required=True)\n    sub.add_parser(\"status\")\n    il = sub.add_parser(\"issue-leaf\")\n    il.add_argument(\"--sans\", default=\"\", help=\"comma-separated extra DNS SANs\")\n    rc = sub.add_parser(\"rotate-ca\")\n    rc.add_argument(\"--i-understand-clients-reinstall\", action=\"store_true\")\n    bu = sub.add_parser(\"bundle\")\n    bu.add_argument(\"platform\", nargs=\"?\", default=\"linux\", choices=[\"windows\", \"android\", \"chromeos\", \"linux\", \"macos\"])\n    args = p.parse_args(argv)\n    if args.cmd == \"status\":\n        return _emit(status())\n    if args.cmd == \"issue-leaf\":\n        extra = [x for x in args.sans.split(\",\") if x.strip()]\n        return _emit(issue_leaf(extra))\n    if args.cmd == \"rotate-ca\":\n        return _emit(rotate_ca(args.i_understand_clients_reinstall))\n    if args.cmd == \"bundle\":\n        return _emit(bundle_create(args.platform))\n    return 2\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n"
+          },
+          {
+            "path": "/usr/local/sbin/caduceus-house-ca",
+            "mode": 493,
+            "content": "#!/bin/bash\n# Caduceus staff house CA launcher (Python snake). Does not call sslKey.sh.\nset -euo pipefail\nROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport PYTHONPATH=\"${ROOT}${PYTHONPATH:+:$PYTHONPATH}\"\nif [[ -x /var/lib/caduceus/venv/bin/python ]]; then\n  exec /var/lib/caduceus/venv/bin/python -m caduceus_staff.house_ca \"$@\"\nfi\nexec python3 -m caduceus_staff.house_ca \"$@\"\n"
+          }
+        ]
       }
     }
   ],
