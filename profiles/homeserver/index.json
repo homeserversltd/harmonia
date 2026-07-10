@@ -5,7 +5,8 @@
   "installs_now": [
     "rust-build-toolchain",
     "coronatio",
-    "caduceus"
+    "caduceus",
+    "matrix"
   ],
   "description": "Public HOMESERVER appliance profile. Harmonia keeps this profile current by running ordered modules and writing receipts.",
   "folder_groups": {
@@ -31,7 +32,8 @@
       "udev",
       "systemd",
       "searx",
-      "rust-build-toolchain"
+      "rust-build-toolchain",
+      "matrix"
     ]
   },
   "identity": "homeserver",
@@ -41,9 +43,10 @@
     "caduceus",
     "forgejo",
     "gogs",
-    "jellyfin"
+    "jellyfin",
+    "matrix"
   ],
-  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, and Jellyfin plain service modules; remaining homeserver ghosts stay README-only for later slices",
+  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, and Matrix/Element service modules; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -66,7 +69,8 @@
     "udev",
     "systemd",
     "searx",
-    "rust-build-toolchain"
+    "rust-build-toolchain",
+    "matrix"
   ],
   "public_source_boundary": "public reusable product module concerns and non-secret configuration only",
   "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source",
@@ -154,5 +158,24 @@
       "prove currentness or first blocker in receipts"
     ],
     "tool_boundary": "shared tools provide primitives; modules compose them into the update law for one appliance concern"
+  },
+  "matrix_contract": {
+    "schema": "harmonia.homeserver.matrix_contract.v1",
+    "module": "matrix",
+    "server_name": "home.arpa",
+    "synapse_loopback": "127.0.0.1:8008",
+    "domains": [
+      "matrix.home.arpa",
+      "chat.home.arpa"
+    ],
+    "exposure": "lan-and-tailscale-only",
+    "federation": false,
+    "registration": "closed-admin-shared-secret",
+    "secret_values": "generated once on the appliance when absent; repo owns only paths/modes/presence/validity and never overwrites filled values",
+    "maintenance_executor": "public Harmonia profiles/homeserver",
+    "client_portal_domain": "chat.home.arpa",
+    "element_alias_domain": "element.home.arpa",
+    "portal": "Element",
+    "portal_local_url": "https://chat.home.arpa"
   }
 }

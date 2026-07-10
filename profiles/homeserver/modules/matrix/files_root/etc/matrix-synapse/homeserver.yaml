@@ -1,0 +1,41 @@
+server_name: "home.arpa"
+public_baseurl: "https://matrix.home.arpa/"
+pid_file: /run/matrix-synapse/homeserver.pid
+web_client_location: "https://chat.home.arpa/"
+
+listeners:
+  - port: 8008
+    bind_addresses:
+      - "127.0.0.1"
+    type: http
+    tls: false
+    x_forwarded: true
+    resources:
+      - names:
+          - client
+        compress: false
+
+database:
+  name: psycopg2
+  args:
+    database: synapse
+    user: matrix-synapse
+    host: /var/run/postgresql
+    cp_min: 5
+    cp_max: 10
+
+media_store_path: /var/lib/matrix-synapse/media
+max_upload_size: 100M
+signing_key_path: /var/lib/matrix-synapse/home.arpa.signing.key
+log_config: /etc/matrix-synapse/log.yaml
+
+federation_domain_whitelist: []
+allow_public_rooms_over_federation: false
+allow_public_rooms_without_auth: false
+enable_registration: false
+report_stats: false
+trusted_key_servers: []
+suppress_key_server_warning: true
+
+include_config_files:
+  - /etc/matrix-synapse/conf.d/*.yaml

@@ -19,6 +19,7 @@ A profile names one appliance identity and the modules that maintain it. Each fo
 - `nginx` defines the secure web entry point.
 - `firewall` defines network exposure boundaries.
 - `postgres` defines the shared database service concern.
+- `matrix` defines the private Synapse chat service and its Element Web client surface.
 - `tailscale` defines private network access as a product capability.
 - `samba` defines LAN file sharing.
 - `systemd` owns HOMESERVER systemd unit and mount management. Every reusable unit template lives directly in `profiles/homeserver/modules/systemd/`; Harmonia treats those files as the desired unit set for `/etc/systemd/system/`.
