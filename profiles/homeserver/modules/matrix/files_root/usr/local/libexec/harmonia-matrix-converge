@@ -54,8 +54,7 @@ install_matrix_apt_source() {
         install -o root -g root -m 0644 "$tmp" "$key"
     fi
     rm -f "$tmp"
-    printf 'deb [signed-by=%s] %s %s main
-' "$key" "$matrix_repo" "$suite" >/etc/apt/sources.list.d/matrix-org.list
+    printf 'deb [signed-by=%s] %s %s main\n' "$key" "$matrix_repo" "$suite" >/etc/apt/sources.list.d/matrix-org.list
 }
 
 install_element_web_fallback() {
@@ -72,8 +71,7 @@ install_element_web_fallback() {
     verify_sha256 "$archive" "$element_sha256"
     tar -xzf "$archive" -C "$staging" --strip-components=1
     test -f "$staging/index.html"
-    printf '%s
-' "$element_sha256" >"$staging/.artifact-sha256"
+    printf '%s\n' "$element_sha256" >"$staging/.artifact-sha256"
     install -d -o root -g root -m 0755 /usr/share
     rm -rf "${release}.new" "${release}.old"
     mv "$staging" "${release}.new"
@@ -89,7 +87,10 @@ install_element_web_fallback() {
 # bookworm/trixie apt; converge the pinned release tarball into /usr/share.
 install_matrix_apt_source
 apt-get update
-apt-get install -y matrix-synapse-py3 nginx postgresql-client logrotate openssl unbound ca-certificates curl tar
+apt-get install -y \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confold \
+    matrix-synapse-py3 nginx postgresql-client logrotate openssl unbound ca-certificates curl tar
 install_element_web_fallback
 
 getent group matrix-synapse >/dev/null 2>&1 || groupadd --system matrix-synapse
@@ -110,12 +111,9 @@ if [ ! -e "$secrets" ]; then
     registration_shared_secret="$(openssl rand -hex 32)"
     tmp="${secrets}.new.$$"
     {
-        printf 'macaroon_secret_key: "%s"
-' "$macaroon_secret_key"
-        printf 'form_secret: "%s"
-' "$form_secret"
-        printf 'registration_shared_secret: "%s"
-' "$registration_shared_secret"
+        printf 'macaroon_secret_key: "%s"\n' "$macaroon_secret_key"
+        printf 'form_secret: "%s"\n' "$form_secret"
+        printf 'registration_shared_secret: "%s"\n' "$registration_shared_secret"
     } >"$tmp"
     chown root:matrix-synapse "$tmp"
     chmod 0600 "$tmp"
@@ -186,8 +184,7 @@ for index, item in enumerate(items):
 else:
     items.append(entry)
 tmp = path.with_suffix(path.suffix + '.harmonia-matrix-new')
-tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + '
-', encoding='utf-8')
+tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + '\n', encoding='utf-8')
 tmp.replace(path)
 PY
 
