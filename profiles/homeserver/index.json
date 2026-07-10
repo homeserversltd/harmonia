@@ -166,12 +166,16 @@
     "synapse_loopback": "127.0.0.1:8008",
     "domains": [
       "matrix.home.arpa",
-      "element.home.arpa"
+      "chat.home.arpa"
     ],
     "exposure": "lan-and-tailscale-only",
     "federation": false,
     "registration": "closed-admin-shared-secret",
     "secret_values": "generated once on the appliance when absent; repo owns only paths/modes/presence/validity and never overwrites filled values",
-    "maintenance_executor": "public Harmonia profiles/homeserver"
+    "maintenance_executor": "public Harmonia profiles/homeserver",
+    "client_portal_domain": "chat.home.arpa",
+    "element_alias_domain": "element.home.arpa",
+    "portal": "Element",
+    "portal_local_url": "https://chat.home.arpa"
   }
 }

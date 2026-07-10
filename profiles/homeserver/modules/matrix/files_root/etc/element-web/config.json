@@ -7,5 +7,6 @@
   },
   "disable_custom_urls": true,
   "disable_guests": true,
-  "brand": "HOMESERVER Element"
+  "brand": "HOMESERVER Chat",
+  "hosting_welcome_url": "https://chat.home.arpa"
 }

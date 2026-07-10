@@ -1,7 +1,7 @@
 server_name: "home.arpa"
 public_baseurl: "https://matrix.home.arpa/"
 pid_file: /run/matrix-synapse/homeserver.pid
-web_client_location: "https://element.home.arpa/"
+web_client_location: "https://chat.home.arpa/"
 
 listeners:
   - port: 8008

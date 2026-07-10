@@ -1,7 +1,7 @@
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    server_name element.home.arpa;
+    server_name chat.home.arpa element.home.arpa;
 
     ssl_certificate /etc/ssl/home.arpa/cert.pem;
     ssl_certificate_key /etc/ssl/home.arpa/key.pem;

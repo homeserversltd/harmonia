@@ -2,12 +2,15 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "matrix",
   "version": "1.0.0",
-  "description": "Matrix Synapse and Element Web product surface: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback service, LAN/Tailscale web entry points, DNS, log rotation, and health proof.",
+  "description": "Matrix Synapse host server and Element Web chat portal: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback API, LAN/Tailscale web entry points, DNS, homeserver.json portal registration, log rotation, and health proof.",
   "constants": {
     "server_name": "home.arpa",
     "synapse_loopback": "127.0.0.1:8008",
     "matrix_domain": "matrix.home.arpa",
-    "element_domain": "element.home.arpa"
+    "element_domain": "chat.home.arpa",
+    "element_alias_domain": "element.home.arpa",
+    "portal_name": "element",
+    "portal_local_url": "https://chat.home.arpa"
   },
   "files_root": "files_root",
   "ladder": [

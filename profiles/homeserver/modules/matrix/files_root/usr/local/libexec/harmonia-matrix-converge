@@ -48,6 +48,61 @@ ln -sfn /etc/nginx/sites-available/homeserver-matrix /etc/nginx/sites-enabled/ho
 ln -sfn /etc/nginx/sites-available/homeserver-element /etc/nginx/sites-enabled/homeserver-element
 
 test -f /usr/share/element-web/index.html
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path('/etc/homeserver.json')
+if path.exists():
+    data = json.loads(path.read_text(encoding='utf-8'))
+else:
+    data = {'tabs': {}, 'global': {}, 'capabilities': {}, 'settings': {}}
+if not isinstance(data, dict):
+    raise SystemExit('homeserver-json-root-not-object')
+for key in ('tabs', 'global', 'capabilities', 'settings'):
+    data.setdefault(key, {})
+    if not isinstance(data[key], dict):
+        raise SystemExit(f'homeserver-json-{key}-not-object')
+portals_tab = data['tabs'].setdefault('portals', {})
+if not isinstance(portals_tab, dict):
+    raise SystemExit('homeserver-json-portals-tab-not-object')
+visibility = portals_tab.setdefault('visibility', {})
+if not isinstance(visibility, dict):
+    raise SystemExit('homeserver-json-portals-visibility-not-object')
+visibility.setdefault('tab', True)
+elements = visibility.setdefault('elements', {})
+if not isinstance(elements, dict):
+    raise SystemExit('homeserver-json-portals-elements-not-object')
+elements['element'] = True
+pdata = portals_tab.setdefault('data', {})
+if not isinstance(pdata, dict):
+    raise SystemExit('homeserver-json-portals-data-not-object')
+items = pdata.setdefault('portals', [])
+if not isinstance(items, list):
+    raise SystemExit('homeserver-json-portals-list-not-array')
+entry = {
+    'name': 'element',
+    'description': 'Private chat for your homeserver.',
+    'services': ['matrix-synapse.service', 'nginx.service'],
+    'owningUnits': ['matrix-synapse.service', 'nginx.service'],
+    'type': 'systemd',
+    'port': 443,
+    'localURL': 'https://chat.home.arpa',
+    'remoteURL': '',
+    'status': 'unknown',
+}
+for index, item in enumerate(items):
+    if isinstance(item, dict) and item.get('name') == 'element':
+        items[index] = {**item, **entry}
+        break
+else:
+    items.append(entry)
+tmp = path.with_suffix(path.suffix + '.harmonia-matrix-new')
+tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + '\n', encoding='utf-8')
+tmp.replace(path)
+PY
+
 nginx -t
 unbound-checkconf
 logrotate --debug /etc/logrotate.d/matrix-synapse >/dev/null
