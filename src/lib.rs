@@ -732,6 +732,109 @@ mod tests {
     }
 
     #[test]
+    fn tv_update_requires_tv_identity() {
+        let profile = Profile {
+            id: "tv".into(),
+            identity: "homeconsole".into(),
+            modules: tv_module_ids_from_profile_modules(&tv_module_root()).unwrap(),
+        };
+        assert!(tv_update(
+            &profile,
+            &tv_module_root(),
+            &PathBuf::from("target/unused"),
+            false,
+        )
+        .unwrap_err()
+        .contains("tv/arch-tv"));
+    }
+
+    #[test]
+    fn run_profile_tv_delegates_to_rolling_update_suite() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-run-profile-tv-{}", process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(scratch.join("modules")).unwrap();
+        let profile_path = scratch.join("index.json");
+        fs::write(
+            &profile_path,
+            r#"{"id":"tv","identity":"arch-tv","modules":["identity"]}"#,
+        )
+        .unwrap();
+        let err = run(vec![
+            "run-profile".into(),
+            profile_path.display().to_string(),
+            "--receipt-dir".into(),
+            scratch.join("receipts").display().to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("tv-update-suite-spine-mismatch"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn tv_profile_registers_tv_update_runtime() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
+        assert!(profile
+            .modules
+            .contains(&"tv-update-runtime".to_string()));
+        enforce_tv_update_suite(&profile, &root.join("profiles/tv/modules")).unwrap();
+    }
+
+    #[test]
+    fn tv_profile_sync_advances_subscription_module_digest() {
+        let root = repo_root();
+        let scratch = std::env::temp_dir().join(format!("harmonia-tv-sync-{}", process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        let modules = scratch.join("profiles/tv/modules");
+        fs::create_dir_all(&modules).unwrap();
+        let subscription = scratch.join("subscription.json");
+        let previous = std::env::var("HARMONIA_SUBSCRIPTION_PATH").ok();
+        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
+        sync_tv_profile(&root, &modules, &scratch.join("receipts")).unwrap();
+        if let Some(value) = previous {
+            std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", value);
+        } else {
+            std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
+        }
+        let record = read_subscription_record(&subscription).unwrap().unwrap();
+        assert_eq!(
+            record.ref_name,
+            command_capture_with_cwd("git", &["rev-parse", "HEAD"], root.to_str())
+                .stdout
+                .trim()
+        );
+        assert_eq!(
+            record.modules["tv-update-runtime"].tree_sha256,
+            module_tree_sha256(&root.join("profiles/tv/modules/tv-update-runtime")).unwrap()
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn tv_update_runtime_ladder_registers_convergence_timer() {
+        let root = repo_root();
+        let manifest = load_ladder_manifest(
+            &root.join("profiles/tv/modules/tv-update-runtime/manifest.json"),
+        )
+        .unwrap();
+        assert_eq!(manifest.id, "tv-update-runtime");
+        assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
+        assert!(manifest.ladder.iter().any(|step| {
+            step.step_id == "tv-update-timer-enable"
+                && step.tool == "systemd"
+                && step.permutation == "enable-now"
+                && step.args["service"].as_str() == Some("harmonia-tv.timer")
+        }));
+        let timer = fs::read_to_string(root.join(
+            "profiles/tv/modules/tv-update-runtime/files_root/etc/systemd/system/harmonia-tv.timer",
+        ))
+        .unwrap();
+        assert!(timer.contains("harmonia-tv.service"));
+        validate_ladder(&manifest).unwrap();
+    }
+
+    #[test]
     fn homeconsole_update_runtime_ladder_registers_convergence_timer() {
         let root = repo_root();
         let manifest = load_ladder_manifest(
@@ -1301,6 +1404,7 @@ mod tests {
                 "steam-game-lane".to_string(),
                 "power-controller-maintenance".to_string(),
                 "console-recovery".to_string(),
+                "tv-update-runtime".to_string(),
                 "caduceus-public-lever".to_string(),
                 "appliance-proof".to_string()
             ]
@@ -1345,6 +1449,7 @@ mod tests {
             "steam-game-lane",
             "power-controller-maintenance",
             "console-recovery",
+            "tv-update-runtime",
             "caduceus-public-lever",
             "appliance-proof",
         ];
@@ -1365,7 +1470,12 @@ mod tests {
             assert!(!dir.join("index.rs").exists(), "{module} wrapper retired");
             let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
             assert_eq!(manifest.id, module);
-            assert_eq!(manifest.version, "1.0.0");
+            let expected_version = if module == "caduceus-public-lever" {
+                "1.1.0"
+            } else {
+                "1.0.0"
+            };
+            assert_eq!(manifest.version, expected_version);
             validate_ladder(&manifest).unwrap();
         }
         assert!(
@@ -1409,22 +1519,33 @@ mod tests {
     #[test]
     fn tv_ladder_managed_file_payloads_live_in_files_root() {
         let root = repo_root();
-        for (module, required) in [
-            ("steam-game-lane", "usr/local/bin/arch-tv-steam-game-lane"),
-            ("caduceus-public-lever", "etc/caduceus/identity.json"),
-        ] {
-            let dir = root.join("profiles/tv/modules").join(module);
-            let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
-            assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
-            assert!(
-                dir.join("files_root").join(required).is_file(),
-                "{module} missing {required}"
-            );
-            assert!(manifest
-                .ladder
-                .iter()
-                .any(|step| step.tool == "files" && step.permutation == "managed-files"));
-        }
+        let steam_dir = root.join("profiles/tv/modules/steam-game-lane");
+        let steam = load_ladder_manifest(&steam_dir.join("manifest.json")).unwrap();
+        assert_eq!(steam.files_root.as_deref(), Some("files_root"));
+        assert!(
+            steam_dir
+                .join("files_root/usr/local/bin/arch-tv-steam-game-lane")
+                .is_file()
+        );
+        assert!(steam
+            .ladder
+            .iter()
+            .any(|step| step.tool == "files" && step.permutation == "managed-files"));
+
+        let caduceus_dir = root.join("profiles/tv/modules/caduceus-public-lever");
+        let caduceus =
+            load_ladder_manifest(&caduceus_dir.join("manifest.json")).unwrap();
+        assert_eq!(caduceus.files_root.as_deref(), Some("files_root"));
+        assert!(
+            caduceus_dir
+                .join("files_root/etc/caduceus/identity.json")
+                .is_file()
+        );
+        assert!(caduceus.ladder.iter().any(|step| {
+            step.tool == "service-runtime"
+                && step.permutation == "converge"
+                && step.args.get("managed_files").is_some()
+        }));
     }
 
     #[test]
@@ -2211,6 +2332,10 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             if profile.id == "homeserver" && profile.identity == "homeserver" {
                 homeserver_update(&profile, &module_root, &receipt_dir, apply)
+            } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
+                homeconsole_update(&profile, &module_root, &receipt_dir, apply)
+            } else if profile.id == "tv" && profile.identity == "arch-tv" {
+                tv_update(&profile, &module_root, &receipt_dir, apply)
             } else {
                 run_profile_engine(&profile, &module_root, &receipt_dir, apply)
             }
@@ -2327,6 +2452,14 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
             homeconsole_update(&profile, &module_root, &receipt_dir, apply)
+        }
+        Some("tv-update") => {
+            let path = args.get(1).ok_or("tv-update requires <profile-index-json>")?;
+            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
+            let apply = args.iter().any(|arg| arg == "--apply");
+            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            let module_root = default_module_root(Path::new(path));
+            tv_update(&profile, &module_root, &receipt_dir, apply)
         }
         Some("homeconsole-keyman-update") => {
             let path = args
@@ -2564,6 +2697,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia pinned-artifacts bless <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--install-path <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeserver-update <profiles/homeserver/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia tv-update <profiles/tv/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> [--module <profiles/homeconsole/modules/sync/sidecar.json>] [--provider-env <path>] [--adapter-command <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-local-ai-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");

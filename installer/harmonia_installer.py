@@ -360,6 +360,8 @@ def install_systemd_units(paths: InstallPaths, profile: str) -> None:
         run_command = f"{paths.bin_path} homeconsole-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
     elif profile == "homeserver":
         run_command = f"{paths.bin_path} homeserver-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
+    elif profile == "tv":
+        run_command = f"{paths.bin_path} tv-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
     else:
         run_command = f"{paths.bin_path} run-profile {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
     service_name = f"harmonia-{profile}.service"
