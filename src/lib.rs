@@ -1350,6 +1350,11 @@ mod tests {
             "- update check",
             "- update now",
             "- receipts latest",
+            "- cert status",
+            "- cert issue-leaf",
+            "- cert bundle create",
+            "- cert apply",
+            "- cert portal-admit",
             "harmonia_routes:",
             "update_now:",
             "homeserver-update",
@@ -1373,12 +1378,28 @@ mod tests {
             "/opt/harmonia",
             "/etc/harmonia",
             "/var/lib/harmonia",
+            "/var/lib/caduceus/certs",
         ] {
             assert!(
                 service_text.contains(writable),
                 "homeserver Caduceus sandbox missing write surface {writable}"
             );
         }
+        for installed in [
+            "/usr/local/sbin/caduceus_staff/house_ca.py",
+            "/usr/local/sbin/caduceus-house-ca",
+        ] {
+            assert!(
+                managed_files.iter().any(|file| file.path == installed),
+                "homeserver Caduceus package missing {installed}"
+            );
+        }
+        assert!(root
+            .join("profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/caduceus_staff/house_ca.py")
+            .is_file());
+        assert!(root
+            .join("profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/caduceus-house-ca")
+            .is_file());
     }
 
     #[test]
