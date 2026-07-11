@@ -44,7 +44,8 @@
     "forgejo",
     "gogs",
     "jellyfin",
-    "matrix"
+    "matrix",
+    "homeserver-update-runtime"
   ],
   "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, and Matrix/Element service modules; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [

@@ -120,6 +120,11 @@ class InstallerCliTests(unittest.TestCase):
                 receipt_dir=root / "var" / "lib" / "harmonia" / "receipts",
                 systemd_dir=root / "systemd",
             )
+            install_systemd_units(paths, profile="homeserver")
+            homeserver_service = (paths.systemd_dir / "harmonia-homeserver.service").read_text()
+            self.assertIn("homeserver-update", homeserver_service)
+            self.assertNotIn("run-profile", homeserver_service)
+
             install_systemd_units(paths, profile="tv")
             service = (paths.systemd_dir / "harmonia-tv.service").read_text()
             timer = (paths.systemd_dir / "harmonia-tv.timer").read_text()
@@ -138,7 +143,7 @@ class InstallerCliTests(unittest.TestCase):
             seed_engine_config(
                 engine,
                 source="https://git.home.arpa/HOMESERVERSLTD/harmonia.git",
-                ref="main",
+                ref="8e0611322d5bd4dc4e16c16cab2ea9aeaaaed8d6",
                 source_dir=root / "opt" / "harmonia",
                 install_bin=root / "bin" / "harmonia",
                 enabled=True,

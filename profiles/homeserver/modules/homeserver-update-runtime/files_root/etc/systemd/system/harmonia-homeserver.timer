@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Harmonia HOMESERVER rolling-release convergence on schedule
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/10
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=true
+Unit=harmonia-homeserver.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "homeserver-update-runtime",
+  "version": "1.0.0",
+  "description": "HOMESERVER rolling-release convergence scheduler ladder: managed unit files, daemon reload, timer enable-now.",
+  "constants": {},
+  "ladder": [
+    {"step_id": "homeserver-update-managed-files", "tool": "files", "permutation": "managed-files", "args": {}},
+    {"step_id": "homeserver-update-daemon-reload", "tool": "systemd", "permutation": "daemon-reload", "args": {"timeout_secs": 30}},
+    {"step_id": "homeserver-update-timer-enable", "tool": "systemd", "permutation": "enable-now", "args": {"service": "harmonia-homeserver.timer", "timeout_secs": 30}}
+  ],
+  "files_root": "files_root"
+}

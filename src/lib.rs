@@ -627,6 +627,111 @@ mod tests {
     }
 
     #[test]
+    fn homeserver_update_runtime_ladder_registers_convergence_timer() {
+        let root = repo_root();
+        let manifest = load_ladder_manifest(
+            &root.join("profiles/homeserver/modules/homeserver-update-runtime/manifest.json"),
+        )
+        .unwrap();
+        assert_eq!(manifest.id, "homeserver-update-runtime");
+        assert!(manifest.ladder.iter().any(|step| {
+            step.step_id == "homeserver-update-timer-enable"
+                && step.tool == "systemd"
+                && step.permutation == "enable-now"
+                && step.args["service"].as_str() == Some("harmonia-homeserver.timer")
+        }));
+        let timer = fs::read_to_string(root.join(
+            "profiles/homeserver/modules/homeserver-update-runtime/files_root/etc/systemd/system/harmonia-homeserver.timer",
+        ))
+        .unwrap();
+        assert!(timer.contains("harmonia-homeserver.service"));
+        validate_ladder(&manifest).unwrap();
+    }
+
+    #[test]
+    fn homeserver_update_requires_homeserver_identity() {
+        let profile = Profile {
+            id: "homeserver".into(),
+            identity: "homeconsole".into(),
+            modules: homeserver_module_ids_from_profile_modules(&homeserver_module_root()).unwrap(),
+        };
+        assert!(homeserver_update(
+            &profile,
+            &homeserver_module_root(),
+            &PathBuf::from("target/unused"),
+            false,
+        )
+        .unwrap_err()
+        .contains("homeserver/homeserver"));
+    }
+
+    #[test]
+    fn run_profile_homeserver_delegates_to_rolling_update_suite() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-run-profile-homeserver-{}", process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(scratch.join("modules")).unwrap();
+        let profile_path = scratch.join("index.json");
+        fs::write(
+            &profile_path,
+            r#"{"id":"homeserver","identity":"homeserver","modules":["identity"]}"#,
+        )
+        .unwrap();
+        let err = run(vec![
+            "run-profile".into(),
+            profile_path.display().to_string(),
+            "--receipt-dir".into(),
+            scratch.join("receipts").display().to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("homeserver-update-suite-spine-mismatch"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn homeserver_profile_registers_homeserver_update_runtime() {
+        let root = repo_root();
+        let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
+        assert!(profile
+            .modules
+            .contains(&"homeserver-update-runtime".to_string()));
+        enforce_homeserver_update_suite(&profile, &root.join("profiles/homeserver/modules"))
+            .unwrap();
+    }
+
+    #[test]
+    fn homeserver_profile_sync_advances_subscription_module_digest() {
+        let root = repo_root();
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-homeserver-sync-{}", process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        let modules = scratch.join("profiles/homeserver/modules");
+        fs::create_dir_all(&modules).unwrap();
+        let subscription = scratch.join("subscription.json");
+        let previous = std::env::var("HARMONIA_SUBSCRIPTION_PATH").ok();
+        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
+        sync_homeserver_profile(&root, &modules, &scratch.join("receipts")).unwrap();
+        if let Some(value) = previous {
+            std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", value);
+        } else {
+            std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
+        }
+        let record = read_subscription_record(&subscription).unwrap().unwrap();
+        assert_eq!(
+            record.ref_name,
+            command_capture_with_cwd("git", &["rev-parse", "HEAD"], root.to_str())
+                .stdout
+                .trim()
+        );
+        assert_eq!(
+            record.modules["homeserver-update-runtime"].tree_sha256,
+            module_tree_sha256(&root.join("profiles/homeserver/modules/homeserver-update-runtime"))
+                .unwrap()
+        );
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
     fn homeconsole_update_runtime_ladder_registers_convergence_timer() {
         let root = repo_root();
         let manifest = load_ladder_manifest(
@@ -1144,8 +1249,9 @@ mod tests {
             "- receipts latest",
             "harmonia_routes:",
             "update_now:",
-            "run-profile",
+            "homeserver-update",
             "/etc/harmonia/profiles/homeserver/index.json",
+            "/var/lib/harmonia/receipts/homeserver-update-latest/run.json",
         ] {
             assert!(
                 profile_text.contains(required),
@@ -2103,7 +2209,11 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let apply = args.iter().any(|arg| arg == "--apply");
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            run_profile_engine(&profile, &module_root, &receipt_dir, apply)
+            if profile.id == "homeserver" && profile.identity == "homeserver" {
+                homeserver_update(&profile, &module_root, &receipt_dir, apply)
+            } else {
+                run_profile_engine(&profile, &module_root, &receipt_dir, apply)
+            }
         }
         Some("capsule") => {
             let action = args
@@ -2195,6 +2305,17 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 adapter_override.as_deref(),
                 apply,
             )
+        }
+        Some("homeserver-update") => {
+            let path = args
+                .get(1)
+                .ok_or("homeserver-update requires <profile-index-json>")?;
+            let receipt_dir =
+                receipt_dir_arg(&args).unwrap_or_else(homeserver_update_receipt_latest);
+            let apply = args.iter().any(|arg| arg == "--apply");
+            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            let module_root = default_module_root(Path::new(path));
+            homeserver_update(&profile, &module_root, &receipt_dir, apply)
         }
         Some("homeconsole-update") => {
             let path = args
@@ -2441,6 +2562,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia pinned-artifacts check <profiles/<id>/index.json> [--lock <path>] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts nudge <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts bless <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--install-path <path>] [--apply] [--receipt-dir <path>]");
+    println!("  harmonia homeserver-update <profiles/homeserver/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> [--module <profiles/homeconsole/modules/sync/sidecar.json>] [--provider-env <path>] [--adapter-command <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
