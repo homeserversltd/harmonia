@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import base64
+import importlib.util
+import json
+import os
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+ROOT = Path(__file__).resolve().parents[1]
+MODULE = ROOT / "profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/caduceus_staff/household_capability.py"
+SPEC = importlib.util.spec_from_file_location("household_capability", MODULE)
+assert SPEC and SPEC.loader
+household = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(household)
+
+
+def _decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+class HouseholdCapabilityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.seed_file = root / "seed"
+        self.key_file = root / "vault/.keys/caduceus_household.key"
+        self.exchange = root / "run/caduceus_household"
+        self.profile = root / "etc/caduceus/profile.yaml"
+        self.newkey = root / "newkey.sh"
+        self.exportkey = root / "exportkey.sh"
+        self.profile.parent.mkdir(parents=True)
+        self.profile.write_text("schema: caduceus.profile.v1\nprofile: tv\nmode: tv\n", encoding="utf-8")
+        self.newkey.write_text(f'''#!/bin/sh
+set -eu
+[ "$1" = caduceus_household ]
+[ "$2" = signing ]
+mkdir -p "{self.key_file.parent}"
+printf '%s' "$3" > "{self.seed_file}"
+printf encrypted > "{self.key_file}"
+''', encoding="utf-8")
+        self.exportkey.write_text(f'''#!/bin/sh
+set -eu
+[ "$1" = caduceus_household ]
+mkdir -p "{self.exchange.parent}"
+cp "{self.seed_file}" "{self.exchange}"
+''', encoding="utf-8")
+        self.newkey.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        self.exportkey.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        self.environment = mock.patch.dict(os.environ, {
+            "CADUCEUS_KEYMAN_NEWKEY": str(self.newkey),
+            "CADUCEUS_KEYMAN_EXPORTKEY": str(self.exportkey),
+            "CADUCEUS_KEYMAN_KEY": str(self.key_file),
+            "CADUCEUS_KEYMAN_EXCHANGE": str(self.exchange),
+            "CADUCEUS_PROFILE_PATH": str(self.profile),
+        })
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def test_ensure_is_idempotent_and_writes_profile_public_key(self) -> None:
+        first = household.ensure_signing_key()
+        seed = bytes.fromhex(self.seed_file.read_text())
+        expected = household._public_hex(seed)
+        self.assertTrue(first["changed"])
+        self.assertIn(f"household_verifying_key: {expected}", self.profile.read_text())
+        second = household.ensure_signing_key()
+        self.assertFalse(second["changed"])
+        self.assertTrue(second["profile_match"])
+
+    def test_sign_roundtrip_matches_ed25519_public_hex(self) -> None:
+        household.ensure_signing_key()
+        token = household.sign_capability("update now", "tv", actor="coronatio", ttl_seconds=60)
+        payload_part, signature_part = token.split(".")
+        payload = _decode(payload_part)
+        signature = _decode(signature_part)
+        public_hex = household.status()["public_key"]
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_hex)).verify(signature, payload)
+        value = json.loads(payload)
+        self.assertEqual(value["actor"], "coronatio")
+        self.assertEqual(value["action"], "update now")
+        self.assertEqual(value["target"], "tv")
+        self.assertIsInstance(value["exp"], int)
+
+    def test_sign_cli_accepts_launcher_flags(self) -> None:
+        with mock.patch("builtins.print") as emit:
+            self.assertEqual(
+                household.main(["sign", "--action", "staff intent", "--target", "/api/admin/updates/apply"]),
+                0,
+            )
+        token = emit.call_args.args[0]
+        payload = json.loads(_decode(token.split(".", 1)[0]))
+        self.assertEqual(payload["action"], "staff intent")
+        self.assertEqual(payload["target"], "/api/admin/updates/apply")
+
+    def test_rotate_replaces_seed_and_profile_key(self) -> None:
+        household.ensure_signing_key()
+        before = self.seed_file.read_text()
+        result = household.rotate_signing_key()
+        self.assertNotEqual(before, self.seed_file.read_text())
+        self.assertTrue(result["rotated"])
+        self.assertTrue(household.status()["profile_match"])
+
+    def test_homeserver_and_tv_manifests_install_identical_signer(self) -> None:
+        manifests = [
+            ROOT / "profiles/homeserver/modules/caduceus/manifest.json",
+            ROOT / "profiles/tv/modules/caduceus-public-lever/manifest.json",
+        ]
+        expected = MODULE.read_text(encoding="utf-8")
+        for path in manifests:
+            managed = json.loads(path.read_text(encoding="utf-8"))["ladder"][0]["args"]["managed_files"]
+            by_path = {entry["path"]: entry for entry in managed}
+            self.assertEqual(by_path["/usr/local/sbin/caduceus_staff/household_capability.py"]["content"], expected)
+            self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-sign-capability"]["mode"], 493)
+            self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-rotate-capability"]["mode"], 493)
+            profile = by_path["/etc/caduceus/profile.yaml"]["content"]
+            self.assertIn("capability:\n  household_verifying_key:\n  default_ttl_seconds: 60", profile)
+            self.assertIn("- staff intent", profile)
+
+
+if __name__ == "__main__":
+    unittest.main()
