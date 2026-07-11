@@ -1,0 +1,18 @@
+{
+  "schema": "harmonia.module.sidecar.v1",
+  "id": "permissions",
+  "pack": {
+    "kind": "source_artifact",
+    "repo": "https://github.com/homeserversltd/permissions.git",
+    "ref": "main",
+    "artifact_id": "sudoers",
+    "auth_posture": "none",
+    "strip_git": true
+  },
+  "profile_declaration": "profiles/homeserver/profile.json",
+  "unpack": {
+    "capsule_relpath": "artifacts/sudoers",
+    "dest": "/etc/sudoers.d",
+    "install_manifest": "profiles/homeserver/profile.json"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "permissions",
+  "version": "0.1.0",
+  "description": "Scaffold for profile-declared sudoers policy convergence from the sovereign permissions source artifact.",
+  "constants": {
+    "profile_declaration": "profiles/homeserver/profile.json",
+    "install_target": "/etc/sudoers.d",
+    "install_owner": "root:root",
+    "install_mode": "0440",
+    "validation": "visudo"
+  },
+  "ladder": [
+    {
+      "step_id": "permissions-managed-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {
+        "files": []
+      }
+    }
+  ]
+}

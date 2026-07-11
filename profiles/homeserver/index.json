@@ -33,6 +33,7 @@
       "systemd",
       "searx",
       "rust-build-toolchain",
+      "permissions",
       "matrix"
     ]
   },
@@ -47,7 +48,7 @@
     "matrix",
     "homeserver-update-runtime"
   ],
-  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, and Matrix/Element service modules; remaining homeserver ghosts stay README-only for later slices",
+  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Matrix/Element service modules, and the permissions source-artifact scaffold; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
     "nginx",
@@ -71,6 +72,7 @@
     "systemd",
     "searx",
     "rust-build-toolchain",
+    "permissions",
     "matrix"
   ],
   "public_source_boundary": "public reusable product module concerns and non-secret configuration only",
