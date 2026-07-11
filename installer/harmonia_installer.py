@@ -358,6 +358,8 @@ def install_systemd_units(paths: InstallPaths, profile: str) -> None:
     receipt_latest = f"{paths.receipt_dir}/{profile}-update-latest"
     if profile == "homeconsole":
         run_command = f"{paths.bin_path} homeconsole-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
+    elif profile == "homeserver":
+        run_command = f"{paths.bin_path} homeserver-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
     else:
         run_command = f"{paths.bin_path} run-profile {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
     service_name = f"harmonia-{profile}.service"
@@ -451,7 +453,7 @@ def seed_engine_config(
         existing = {}
     update = {
         "source_repo_url": source,
-        "branch": ref if ref and ref != "unknown" else "main",
+        "branch": "main",
         "source_dir": str(source_dir),
         "install_bin": str(install_bin),
         "enabled": enabled,

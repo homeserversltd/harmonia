@@ -666,6 +666,29 @@ mod tests {
     }
 
     #[test]
+    fn run_profile_homeserver_delegates_to_rolling_update_suite() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-run-profile-homeserver-{}", process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(scratch.join("modules")).unwrap();
+        let profile_path = scratch.join("index.json");
+        fs::write(
+            &profile_path,
+            r#"{"id":"homeserver","identity":"homeserver","modules":["identity"]}"#,
+        )
+        .unwrap();
+        let err = run(vec![
+            "run-profile".into(),
+            profile_path.display().to_string(),
+            "--receipt-dir".into(),
+            scratch.join("receipts").display().to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("homeserver-update-suite-spine-mismatch"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
     fn homeserver_profile_registers_homeserver_update_runtime() {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
@@ -2186,7 +2209,11 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let apply = args.iter().any(|arg| arg == "--apply");
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            run_profile_engine(&profile, &module_root, &receipt_dir, apply)
+            if profile.id == "homeserver" && profile.identity == "homeserver" {
+                homeserver_update(&profile, &module_root, &receipt_dir, apply)
+            } else {
+                run_profile_engine(&profile, &module_root, &receipt_dir, apply)
+            }
         }
         Some("capsule") => {
             let action = args
