@@ -250,14 +250,10 @@ pub(crate) fn package_tool_with_policy(
     let pacman = pacman_program();
     if !pacman_available(&pacman) {
         let outcome = OperationOutcome {
-            ok: !apply,
+            ok: true,
             changed: false,
-            skipped: !apply,
-            message: if apply {
-                "pacman missing for package mutation".to_string()
-            } else {
-                "package manager absent on scout host; planned only".to_string()
-            },
+            skipped: true,
+            message: "non-Arch bootstrap not applicable".to_string(),
             command: None,
         };
         write_package_receipt(receipt_dir, name, action, &outcome)?;
@@ -320,14 +316,10 @@ pub(crate) fn keyring_repair_tool(
     let pacman_key_present = pacman_available(&pacman_key);
     if !pacman_present || !pacman_key_present {
         let outcome = OperationOutcome {
-            ok: !apply,
+            ok: true,
             changed: false,
-            skipped: !apply,
-            message: if apply {
-                "Arch keyring tools absent for mutation".to_string()
-            } else {
-                "Arch keyring tools absent on scout host; planned only".to_string()
-            },
+            skipped: true,
+            message: "non-Arch bootstrap not applicable".to_string(),
             command: None,
         };
         write_keyring_receipt(
@@ -453,7 +445,7 @@ fn write_keyring_receipt(
             "pacman_present": pacman_present,
             "pacman_key_present": pacman_key_present,
             "operation_count": operation_count,
-            "first_missing_signal": if outcome.ok { "none" } else if !pacman_present || !pacman_key_present { "arch-keyring-tools-missing" } else { "package-keyring-repair-failed" },
+            "first_missing_signal": if outcome.ok || outcome.skipped { "none" } else if !pacman_present || !pacman_key_present { "arch-keyring-tools-missing" } else { "package-keyring-repair-failed" },
         }),
     )
 }
@@ -461,6 +453,17 @@ fn write_keyring_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn receipt_dir(test_name: &str) -> std::path::PathBuf {
+        let path = env::temp_dir().join(format!(
+            "harmonia-package-{test_name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     #[test]
     fn sync_package_mutation_uses_full_upgrade_semantics() {
@@ -477,5 +480,46 @@ mod tests {
     #[test]
     fn overwrite_policy_rejects_wildcard_paths() {
         assert!(overwrite_allowed_args(&pacman_base_args(false), &["*".to_string()]).is_none());
+    }
+
+    #[test]
+    fn keyring_repair_skips_non_arch_host_when_applying() {
+        let receipt_dir = receipt_dir("keyring-skip");
+        set_test_pacman_path(Some("/nonexistent/harmonia-pacman".to_string()));
+        let outcome = keyring_repair_tool(
+            &receipt_dir,
+            "keyring",
+            "archlinux-keyring",
+            true,
+            DEFAULT_PACKAGE_TIMEOUT_SECS,
+        )
+        .unwrap();
+        set_test_pacman_path(None);
+
+        assert!(outcome.ok);
+        assert!(outcome.skipped);
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipt_dir.join("keyring.json")).unwrap()).unwrap();
+        assert_eq!(receipt["first_missing_signal"], "none");
+        fs::remove_dir_all(receipt_dir).unwrap();
+    }
+
+    #[test]
+    fn package_install_skips_non_arch_host_when_applying() {
+        let receipt_dir = receipt_dir("package-skip");
+        set_test_pacman_path(Some("/nonexistent/harmonia-pacman".to_string()));
+        let outcome = package_tool(
+            &receipt_dir,
+            "package",
+            "install",
+            &["git".to_string()],
+            true,
+        )
+        .unwrap();
+        set_test_pacman_path(None);
+
+        assert!(outcome.ok);
+        assert!(outcome.skipped);
+        fs::remove_dir_all(receipt_dir).unwrap();
     }
 }
