@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus-public-lever",
-  "version": "1.2.0",
+  "version": "1.1.0",
   "description": "TV Caduceus public lever: sync/build/install caduceus from main (dual-snake cert face), converge profile/routes, install additive caduceus_staff house_ca Python snake, stand up caduceus.service.",
   "optional": false,
   "constants": {},

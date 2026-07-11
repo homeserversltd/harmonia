@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
-  "version": "1.2.0",
+  "version": "1.1.0",
   "description": "HOMESERVER Caduceus public lever: Rust cert face, additive caduceus_staff house-CA engine, profile/state convergence, service standup, and HTTP health proof.",
   "constants": {},
   "ladder": [
