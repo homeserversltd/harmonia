@@ -28,7 +28,7 @@ def _path(env: str, default: Path) -> Path:
 
 
 def _run(command: list[str]) -> None:
-    subprocess.run(command, check=True, text=True)
+    subprocess.run(command, check=True, text=True, stdout=subprocess.DEVNULL)
 
 
 def _public_hex(seed: bytes) -> str:
@@ -91,18 +91,32 @@ def ensure_signing_key() -> dict[str, Any]:
     return {"ok": True, "service": SERVICE_NAME, "changed": True, "public_key": public_hex}
 
 
-def _read_exported_seed() -> bytes:
-    exportkey = _path("CADUCEUS_KEYMAN_EXPORTKEY", KEYMAN_EXPORTKEY)
-    exchange = _path("CADUCEUS_KEYMAN_EXCHANGE", KEYMAN_EXCHANGE)
-    _run([str(exportkey), SERVICE_NAME])
-    value = exchange.read_bytes().strip()
+def _decode_exported_secret(raw: bytes) -> bytes:
+    text = raw.decode("utf-8").strip()
+    if "password=" in text:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("password="):
+                value = stripped.split("=", 1)[1].strip().strip('"')
+                return bytes.fromhex(value)
+        raise ValueError("caduceus-household-exported-password-missing")
     try:
-        decoded = bytes.fromhex(value.decode("ascii"))
-    except (UnicodeDecodeError, ValueError):
-        decoded = value
+        decoded = bytes.fromhex(text)
+    except ValueError:
+        decoded = raw
     if len(decoded) != 32:
         raise ValueError("caduceus-household-exported-seed-invalid")
     return decoded
+
+
+def _read_exported_seed() -> bytes:
+    exportkey = _path("CADUCEUS_KEYMAN_EXPORTKEY", KEYMAN_EXPORTKEY)
+    exchange = _path("CADUCEUS_KEYMAN_EXCHANGE", KEYMAN_EXCHANGE)
+    exchange.parent.mkdir(parents=True, exist_ok=True)
+    _run([str(exportkey), SERVICE_NAME])
+    if not exchange.is_file():
+        raise ValueError("caduceus-household-exported-missing")
+    return _decode_exported_secret(exchange.read_bytes().strip())
 
 
 def _b64url(value: bytes) -> str:

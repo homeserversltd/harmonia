@@ -48,7 +48,7 @@ printf encrypted > "{self.key_file}"
 set -eu
 [ "$1" = caduceus_household ]
 mkdir -p "{self.exchange.parent}"
-cp "{self.seed_file}" "{self.exchange}"
+printf 'username="signing"\\npassword="%s"\\n' "$(cat "{self.seed_file}")" > "{self.exchange}"
 ''', encoding="utf-8")
         self.newkey.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         self.exportkey.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
