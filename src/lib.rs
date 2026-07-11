@@ -1346,6 +1346,10 @@ mod tests {
             .content
             .as_str();
         for required in [
+            "capability:",
+            "household_verifying_key:",
+            "default_ttl_seconds: 60",
+            "- staff intent",
             "- update status",
             "- update check",
             "- update now",
