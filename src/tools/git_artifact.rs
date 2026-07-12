@@ -205,9 +205,13 @@ fn sync_repo(request: &Request) -> SyncResult {
         };
     }
 
+    let remote_tracking_refspec = format!(
+        "+refs/heads/{}:refs/remotes/{}/{}",
+        request.branch, request.remote, request.branch
+    );
     let fetch = command::capture_with_cwd(
         "/usr/bin/git",
-        &["fetch", &request.remote, &request.branch],
+        &["fetch", &request.remote, &remote_tracking_refspec],
         cwd,
     );
     transcript.push(format!("fetch exit={} ok={}", fetch.code, fetch.ok));
@@ -358,6 +362,72 @@ mod tests {
                     .contains("non-git-preserved")
             });
         assert!(preserved_exists);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_fetches_configured_branch_into_remote_tracking_ref_before_fast_forward() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-git-artifact-remote-main-{}",
+            std::process::id()
+        ));
+        let seed = root.join("seed");
+        let remote = root.join("remote.git");
+        let target = root.join("target");
+        fs::create_dir_all(&seed).unwrap();
+        command::capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], seed.to_str());
+        for (key, value) in [
+            ("user.email", "harmonia@example.invalid"),
+            ("user.name", "Harmonia Test"),
+        ] {
+            command::capture_with_cwd("/usr/bin/git", &["config", key, value], seed.to_str());
+        }
+        fs::write(seed.join("payload"), "first\n").unwrap();
+        command::capture_with_cwd("/usr/bin/git", &["add", "payload"], seed.to_str());
+        command::capture_with_cwd("/usr/bin/git", &["commit", "-m", "first"], seed.to_str());
+        command::capture(
+            "/usr/bin/git",
+            &[
+                "clone",
+                "--bare",
+                seed.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        );
+        command::capture(
+            "/usr/bin/git",
+            &["clone", remote.to_str().unwrap(), target.to_str().unwrap()],
+        );
+
+        fs::write(seed.join("payload"), "second\n").unwrap();
+        command::capture_with_cwd("/usr/bin/git", &["commit", "-am", "second"], seed.to_str());
+        command::capture_with_cwd(
+            "/usr/bin/git",
+            &["push", remote.to_str().unwrap(), "main"],
+            seed.to_str(),
+        );
+
+        let request = Request::new(
+            Some(remote.display().to_string()),
+            target.clone(),
+            "main".into(),
+            "origin".into(),
+        );
+        let sync = sync_repo(&request);
+        assert!(sync.command.ok, "{}", sync.command.stderr);
+        assert!(sync.changed);
+        assert_eq!(
+            fs::read_to_string(target.join("payload")).unwrap(),
+            "second\n"
+        );
+        let local_head =
+            command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], target.to_str());
+        let tracking_head = command::capture_with_cwd(
+            "/usr/bin/git",
+            &["rev-parse", "refs/remotes/origin/main"],
+            target.to_str(),
+        );
+        assert_eq!(local_head.stdout.trim(), tracking_head.stdout.trim());
         let _ = fs::remove_dir_all(root);
     }
 
