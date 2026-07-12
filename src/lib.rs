@@ -1383,6 +1383,9 @@ mod tests {
             "/etc/harmonia",
             "/var/lib/harmonia",
             "/var/lib/caduceus/certs",
+            "/etc/homeserver",
+            "/etc/homeserver.json",
+            "/var/www/homeserver/src/config",
         ] {
             assert!(
                 service_text.contains(writable),
@@ -1571,6 +1574,15 @@ mod tests {
                 && step.permutation == "converge"
                 && step.args.get("managed_files").is_some()
         }));
+        let managed_files: Vec<ManagedFileManifest> =
+            serde_json::from_value(caduceus.ladder[0].args["managed_files"].clone()).unwrap();
+        let service_text = managed_files
+            .iter()
+            .find(|file| file.path == "/etc/systemd/system/caduceus.service")
+            .expect("tv caduceus service managed file")
+            .content
+            .as_str();
+        assert!(service_text.contains("ReadWritePaths=/etc/tv"));
     }
 
     #[test]
@@ -1988,6 +2000,13 @@ mod tests {
                 .any(|file| file.path == "/etc/systemd/system/caduceus.service"),
             "caduceus module must install caduceus.service"
         );
+        let service_text = managed_files
+            .iter()
+            .find(|file| file.path == "/etc/systemd/system/caduceus.service")
+            .expect("homeconsole caduceus service managed file")
+            .content
+            .as_str();
+        assert!(service_text.contains("ReadWritePaths=/etc/console"));
         validate_ladder(&manifest).unwrap();
     }
 
