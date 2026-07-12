@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -116,6 +117,19 @@ cp "{self.seed_file}" "{self.exchange}"
             household._parse_exported_seed(f"username=alice\npassword={encoded}\n".encode()),
             seed,
         )
+
+    def test_exportkey_stdout_is_discarded_before_json_envelope(self) -> None:
+        self.exportkey.write_text(
+            self.exportkey.read_text(encoding="utf-8")
+            + "printf 'Acquired key for caduceus_household\\n'\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(household.subprocess, "run", wraps=subprocess.run) as run:
+            result = household.main(["sign", "--action", "update now", "--target", "local"])
+        self.assertEqual(result, 0)
+        export_calls = [call for call in run.call_args_list if call.args[0][0] == str(self.exportkey)]
+        self.assertGreaterEqual(len(export_calls), 1)
+        self.assertTrue(all(call.kwargs["stdout"] is subprocess.DEVNULL for call in export_calls))
 
     def test_sign_cli_emits_failure_envelope_and_nonzero_status(self) -> None:
         with mock.patch.object(household, "sign_capability", side_effect=ValueError("bad seed")), mock.patch(

@@ -28,8 +28,13 @@ def _path(env: str, default: Path) -> Path:
     return Path(os.environ.get(env, str(default)))
 
 
-def _run(command: list[str]) -> None:
-    subprocess.run(command, check=True, text=True)
+def _run(command: list[str], *, discard_stdout: bool = False) -> None:
+    subprocess.run(
+        command,
+        check=True,
+        text=True,
+        stdout=subprocess.DEVNULL if discard_stdout else None,
+    )
 
 
 def _public_hex(seed: bytes) -> str:
@@ -95,7 +100,9 @@ def ensure_signing_key() -> dict[str, Any]:
 def _read_exported_seed() -> bytes:
     exportkey = _path("CADUCEUS_KEYMAN_EXPORTKEY", KEYMAN_EXPORTKEY)
     exchange = _path("CADUCEUS_KEYMAN_EXCHANGE", KEYMAN_EXCHANGE)
-    _run([str(exportkey), SERVICE_NAME])
+    # exportkey reports acquisition on stdout. The signer stdout is a machine
+    # envelope, so helper diagnostics must never share that channel.
+    _run([str(exportkey), SERVICE_NAME], discard_stdout=True)
     return _parse_exported_seed(exchange.read_bytes())
 
 
