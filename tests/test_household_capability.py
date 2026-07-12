@@ -96,9 +96,36 @@ cp "{self.seed_file}" "{self.exchange}"
                 0,
             )
         token = emit.call_args.args[0]
-        payload = json.loads(_decode(token.split(".", 1)[0]))
+        envelope = json.loads(token)
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["firstMissingSignal"], "none")
+        payload = json.loads(_decode(envelope["capability"].split(".", 1)[0]))
         self.assertEqual(payload["action"], "staff intent")
         self.assertEqual(payload["target"], "/api/admin/updates/apply")
+
+    def test_export_parser_accepts_raw_hex_and_keyman_password_forms(self) -> None:
+        seed = bytes(range(32))
+        encoded = seed.hex()
+        self.assertEqual(household._parse_exported_seed(seed), seed)
+        self.assertEqual(household._parse_exported_seed(encoded.encode()), seed)
+        self.assertEqual(
+            household._parse_exported_seed(f"username: alice\npassword: '{encoded}'\n".encode()),
+            seed,
+        )
+        self.assertEqual(
+            household._parse_exported_seed(f"username=alice\npassword={encoded}\n".encode()),
+            seed,
+        )
+
+    def test_sign_cli_emits_failure_envelope_and_nonzero_status(self) -> None:
+        with mock.patch.object(household, "sign_capability", side_effect=ValueError("bad seed")), mock.patch(
+            "builtins.print"
+        ) as emit:
+            self.assertEqual(
+                household.main(["sign", "--action", "staff intent", "--target", "/api/admin/updates/apply"]),
+                1,
+            )
+        self.assertEqual(json.loads(emit.call_args.args[0]), {"firstMissingSignal": "bad seed", "ok": False})
 
     def test_rotate_replaces_seed_and_profile_key(self) -> None:
         household.ensure_signing_key()

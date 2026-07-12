@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -95,14 +96,36 @@ def _read_exported_seed() -> bytes:
     exportkey = _path("CADUCEUS_KEYMAN_EXPORTKEY", KEYMAN_EXPORTKEY)
     exchange = _path("CADUCEUS_KEYMAN_EXCHANGE", KEYMAN_EXCHANGE)
     _run([str(exportkey), SERVICE_NAME])
-    value = exchange.read_bytes().strip()
+    return _parse_exported_seed(exchange.read_bytes())
+
+
+def _parse_exported_seed(value: bytes) -> bytes:
+    """Extract the 32-byte seed from the Keyman export format.
+
+    Keyman exports may be the raw seed, a bare 64-character hexadecimal seed,
+    or a username/password record whose password is quoted or unquoted.  The
+    password is the seed; usernames are intentionally not used as key
+    material.
+    """
+    if len(value) == 32:
+        return value
+
     try:
-        decoded = bytes.fromhex(value.decode("ascii"))
-    except (UnicodeDecodeError, ValueError):
-        decoded = value
-    if len(decoded) != 32:
-        raise ValueError("caduceus-household-exported-seed-invalid")
-    return decoded
+        text = value.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("caduceus-household-exported-seed-invalid") from exc
+
+    password_match = re.search(
+        r"(?im)^\s*password\s*[:=]\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s]+))\s*$",
+        text,
+    )
+    candidate = next(
+        (group for group in (password_match.groups() if password_match else ()) if group is not None),
+        text,
+    )
+    if len(candidate) == 64 and re.fullmatch(r"[0-9a-fA-F]{64}", candidate):
+        return bytes.fromhex(candidate)
+    raise ValueError("caduceus-household-exported-seed-invalid")
 
 
 def _b64url(value: bytes) -> str:
@@ -168,7 +191,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("status")
     args = parser.parse_args(argv)
     if args.command == "sign":
-        print(sign_capability(args.action, args.target, args.actor, args.ttl_seconds))
+        try:
+            token = sign_capability(args.action, args.target, args.actor, args.ttl_seconds)
+        except Exception as exc:
+            print(json.dumps({"ok": False, "firstMissingSignal": str(exc) or "caduceus-household-capability-sign-failed"}, sort_keys=True))
+            return 1
+        print(json.dumps({"ok": True, "capability": token, "firstMissingSignal": "none"}, sort_keys=True))
     else:
         result = {"ensure": ensure_signing_key, "rotate": rotate_signing_key, "status": status}[args.command]()
         print(json.dumps(result, sort_keys=True))
