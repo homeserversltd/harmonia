@@ -1417,6 +1417,7 @@ mod tests {
             "/etc/harmonia",
             "/var/lib/harmonia",
             "/var/lib/caduceus/certs",
+            "/var/log/hyalos",
             "/etc/homeserver",
             "/etc/homeserver.json",
             "/var/www/homeserver/src/config",
@@ -1426,6 +1427,26 @@ mod tests {
                 "homeserver Caduceus sandbox missing write surface {writable}"
             );
         }
+        assert!(
+            service_text.contains("LogsDirectory=hyalos"),
+            "homeserver Caduceus service must ask systemd to provision /var/log/hyalos"
+        );
+        assert!(
+            service_text.contains("ExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/caduceus-hyalos.conf"),
+            "homeserver Caduceus service must re-seat Hyalos channel ownership before start"
+        );
+        let hyalos_tmpfiles = managed_files
+            .iter()
+            .find(|file| file.path == "/etc/tmpfiles.d/caduceus-hyalos.conf")
+            .expect("homeserver Caduceus module must install Hyalos tmpfiles ownership rule")
+            .content
+            .as_str();
+        assert!(hyalos_tmpfiles.contains("d /var/log/hyalos 0755 caduceus caduceus -"));
+        assert!(hyalos_tmpfiles.contains("z /var/log/hyalos/channel.jsonl 0644 caduceus caduceus -"));
+        assert!(
+            !hyalos_tmpfiles.contains("/var/log/caduceus/channel"),
+            "Hyalos must remain one channel at /var/log/hyalos/channel.jsonl"
+        );
         for installed in [
             "/usr/local/sbin/caduceus_staff/house_ca.py",
             "/usr/local/sbin/caduceus-house-ca",
