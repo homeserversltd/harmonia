@@ -1,0 +1,17 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hermes-agent-maintenance-tool",
+  "version": "1.0.0",
+  "description": "Generic Hermes Agent update and selected-gateway restart tool payload; scheduling and machine values belong to the selecting profile.",
+  "optional": false,
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "hermes-agent-maintenance-tool-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ]
+}
