@@ -161,9 +161,16 @@ cp "{self.seed_file}" "{self.exchange}"
             self.assertEqual(by_path["/usr/local/sbin/caduceus_staff/household_capability.py"]["content"], expected)
             self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-sign-capability"]["mode"], 493)
             self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-rotate-capability"]["mode"], 493)
-            profile = by_path["/etc/caduceus/profile.yaml"]["content"]
-            self.assertIn("capability:\n  household_verifying_key:\n  default_ttl_seconds: 60", profile)
-            self.assertIn("- staff intent", profile)
+            if path.name == "manifest.json" and "homeserver/modules/caduceus" in str(path):
+                profile_source = json.loads(path.read_text(encoding="utf-8"))["ladder"][0]["args"]["caduceus_profile_source"]
+                self.assertEqual(profile_source["source"], "profiles/homeserver/index.yaml")
+                self.assertEqual(profile_source["path"], "/etc/caduceus/profile.yaml")
+                self.assertIn("capability:\n  household_verifying_key:\n  default_ttl_seconds: 60", profile_source["insert_after_profile"])
+                self.assertNotIn("- staff intent", profile_source["append"])
+            else:
+                profile = by_path["/etc/caduceus/profile.yaml"]["content"]
+                self.assertIn("capability:\n  household_verifying_key:\n  default_ttl_seconds: 60", profile)
+                self.assertIn("- staff intent", profile)
 
 
 if __name__ == "__main__":
