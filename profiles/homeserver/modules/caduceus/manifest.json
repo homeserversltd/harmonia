@@ -34,11 +34,6 @@
             "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"homeserver\",\n  \"profile\": \"homeserver\",\n  \"mode\": \"homeserver\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeserver/index.json\"\n}\n"
           },
           {
-            "path": "/etc/caduceus/profile.yaml",
-            "mode": 420,
-            "content": "schema: caduceus.profile.v1\nprofile: homeserver\ncapability:\n  household_verifying_key:\n  default_ttl_seconds: 60\nmode: homeserver\nharmonia_profile: /etc/harmonia/profiles/homeserver/index.json\ncommands:\n- help\n- identity show\n- profile show\n- health\n- legacy-sbin list\n- legacy-sbin show\n- network status\n- homeserver-sbin list\n- homeserver-sbin show\n- staff status\n- staff actuators\n- staff intent\n- cert status\n- cert issue-leaf\n- cert bundle create\n- cert portal-admit\n- cert apply\n- receipts latest\n- receipts ledger\n- update status\n- update check\n- update now\n- update service status\n- update service toggle\nservices:\n  ledger: /var/lib/harmonia/receipts/homeserver-ledger.jsonl\n  update:\n    timer: harmonia-homeserver.timer\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-update-latest/run.json\n  coronatio:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/coronatio/run.json\n  caduceus:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/caduceus/run.json\nharmonia_routes:\n  update_now:\n    bin: /usr/local/bin/harmonia\n    args:\n    - homeserver-update\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --apply\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/homeserver-update-latest\n  update_check:\n    bin: /usr/local/bin/harmonia\n    args:\n    - homeserver-update\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/homeserver-update-latest\noperator_aliases:\n  update: caduceus update now\n  update-check: caduceus update check\n  update-status: caduceus update status\n  receipts: caduceus receipts latest\n  health: caduceus health\n"
-          },
-          {
             "path": "/var/lib/caduceus/state.json",
             "mode": 420,
             "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"profile\": \"homeserver\"\n  },\n  \"caduceus\": {\n    \"household\": {\n      \"tls\": {\n        \"schema\": \"caduceus.household.tls.v1\",\n        \"root\": {},\n        \"leaves\": {},\n        \"bundles\": {},\n        \"constituents\": {},\n        \"trust\": {}\n      }\n    }\n  }\n}\n"
@@ -123,7 +118,15 @@
             "mode": 493,
             "content": "#!/bin/sh\nset -eu\nPYTHON=${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}\n[ -x \"$PYTHON\" ] || PYTHON=python3\nexport PYTHONPATH=/usr/local/sbin${PYTHONPATH:+:$PYTHONPATH}\nexec \"$PYTHON\" -m caduceus_staff.household_capability rotate \"$@\"\n"
           }
-        ]
+        ],
+        "caduceus_profile_source": {
+          "source": "profiles/homeserver/index.yaml",
+          "path": "/etc/caduceus/profile.yaml",
+          "mode": 420,
+          "insert_after_profile": "capability:\n  household_verifying_key:\n  default_ttl_seconds: 60",
+          "insert_after_mode": "harmonia_profile: /etc/harmonia/profiles/homeserver/index.json",
+          "append": "services:\n  ledger: /var/lib/harmonia/receipts/homeserver-ledger.jsonl\n  update:\n    timer: harmonia-homeserver.timer\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-update-latest/run.json\n  coronatio:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/coronatio/run.json\n  caduceus:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/caduceus/run.json\nharmonia_routes:\n  update_now:\n    bin: /usr/local/bin/harmonia\n    args:\n    - homeserver-update\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --apply\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/homeserver-update-latest\n  update_check:\n    bin: /usr/local/bin/harmonia\n    args:\n    - homeserver-update\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/homeserver-update-latest\noperator_aliases:\n  update: caduceus update now\n  update-check: caduceus update check\n  update-status: caduceus update status\n  receipts: caduceus receipts latest\n  health: caduceus health\n"
+        }
       }
     }
   ],

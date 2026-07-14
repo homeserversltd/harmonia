@@ -26,6 +26,20 @@ struct ManagedFileManifest {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+struct CaduceusProfileSourceManifest {
+    source: String,
+    path: String,
+    #[serde(default)]
+    mode: Option<u32>,
+    #[serde(default)]
+    insert_after_profile: String,
+    #[serde(default)]
+    insert_after_mode: String,
+    #[serde(default)]
+    append: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct TemplateFileManifest {
     source: String,
     target: String,
@@ -88,6 +102,8 @@ struct ModuleManifest {
     groups: Vec<String>,
     #[serde(default)]
     managed_files: Vec<ManagedFileManifest>,
+    #[serde(default)]
+    caduceus_profile_source: Option<CaduceusProfileSourceManifest>,
     #[serde(default)]
     template_files: Vec<TemplateFileManifest>,
     #[serde(default)]
@@ -1210,6 +1226,7 @@ mod tests {
             user_services: vec![],
             groups: vec![],
             managed_files: vec![],
+            caduceus_profile_source: None,
             template_files: vec![],
             variables: HashMap::new(),
             optional: false,
@@ -1337,18 +1354,25 @@ mod tests {
         let caduceus =
             load_ladder_manifest(&root.join("profiles/homeserver/modules/caduceus/manifest.json"))
                 .unwrap();
-        let managed_files: Vec<ManagedFileManifest> =
-            serde_json::from_value(caduceus.ladder[0].args["managed_files"].clone()).unwrap();
-        let profile_text = managed_files
-            .iter()
-            .find(|file| file.path == "/etc/caduceus/profile.yaml")
-            .expect("homeserver caduceus profile managed file")
-            .content
-            .as_str();
+        let source_profile: CaduceusProfileSourceManifest = serde_json::from_value(
+            caduceus.ladder[0].args["caduceus_profile_source"].clone(),
+        )
+        .unwrap();
+        assert_eq!(source_profile.source, "profiles/homeserver/index.yaml");
+        assert_eq!(source_profile.path, "/etc/caduceus/profile.yaml");
         for required in [
             "capability:",
             "household_verifying_key:",
             "default_ttl_seconds: 60",
+            "harmonia_profile: /etc/harmonia/profiles/homeserver/index.json",
+        ] {
+            assert!(
+                source_profile.insert_after_profile.contains(required)
+                    || source_profile.insert_after_mode.contains(required),
+                "homeserver Caduceus profile source overlay missing {required}"
+            );
+        }
+        for required in [
             "- staff intent",
             "- update status",
             "- update check",
@@ -1359,17 +1383,27 @@ mod tests {
             "- cert bundle create",
             "- cert apply",
             "- cert portal-admit",
-            "harmonia_routes:",
-            "update_now:",
-            "homeserver-update",
-            "/etc/harmonia/profiles/homeserver/index.json",
-            "/var/lib/harmonia/receipts/homeserver-update-latest/run.json",
+            "- config set",
+            "- config patch",
         ] {
             assert!(
-                profile_text.contains(required),
-                "homeserver Caduceus profile missing {required}"
+                !source_profile.append.contains(required),
+                "homeserver Caduceus profile command {required} must not be hand-copied into the Harmonia overlay"
             );
         }
+        assert!(source_profile.append.contains("harmonia_routes:"));
+        assert!(source_profile.append.contains("update_now:"));
+        assert!(source_profile.append.contains("homeserver-update"));
+        assert!(source_profile.append.contains("/etc/harmonia/profiles/homeserver/index.json"));
+        assert!(source_profile.append.contains("/var/lib/harmonia/receipts/homeserver-update-latest/run.json"));
+        let managed_files: Vec<ManagedFileManifest> =
+            serde_json::from_value(caduceus.ladder[0].args["managed_files"].clone()).unwrap();
+        assert!(
+            managed_files
+                .iter()
+                .all(|file| file.path != "/etc/caduceus/profile.yaml"),
+            "homeserver Caduceus commands must be lifted from caduceus_profile_source, not hand-copied in managed_files"
+        );
         let service_text = managed_files
             .iter()
             .find(|file| file.path == "/etc/systemd/system/caduceus.service")

@@ -25,6 +25,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("run_schema", ToolArgKind::String),
         ToolArg::required("managed_files_schema", ToolArgKind::String),
         ToolArg::optional("managed_files", ToolArgKind::Json),
+        ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
     ],
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
@@ -122,6 +123,12 @@ fn module_from_args(
         .transpose()
         .map_err(|e| format!("service-runtime-managed-files-invalid: {e}"))?
         .unwrap_or_default();
+    let caduceus_profile_source: Option<CaduceusProfileSourceManifest> = args
+        .get("caduceus_profile_source")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("service-runtime-caduceus-profile-source-invalid: {e}"))?;
     Ok(ModuleManifest {
         id: string_arg(args, "module_id").unwrap_or_else(|_| spec.op_prefix.to_string()),
         description: String::new(),
@@ -156,6 +163,7 @@ fn module_from_args(
         user_services: vec![],
         groups: vec![],
         managed_files,
+        caduceus_profile_source,
         template_files: vec![],
         variables: std::collections::HashMap::new(),
         optional: false,
@@ -271,10 +279,11 @@ pub(crate) fn execute(
     write_command_receipt(receipt_dir, spec.source_sha_op, &source_sha)?;
     let source_sha_value = source_sha.stdout.trim().to_string();
 
+    let managed_files = effective_managed_files(module, &source_dir)?;
     let managed = tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: &module.id,
-            files: &module.managed_files,
+            files: &managed_files,
             receipt_name: &format!("{}-managed-files", spec.op_prefix),
             schema: spec.managed_files_schema,
             first_missing_signal: &format!("{}-managed-file-missing", spec.op_prefix),
@@ -481,6 +490,65 @@ pub(crate) fn execute(
         ],
         &module.id,
     ))
+}
+
+
+fn effective_managed_files(
+    module: &ModuleManifest,
+    source_dir: &Path,
+) -> Result<Vec<ManagedFileManifest>, String> {
+    let mut files = module.managed_files.clone();
+    if let Some(profile_source) = &module.caduceus_profile_source {
+        files.push(render_caduceus_profile_source(profile_source, source_dir)?);
+    }
+    Ok(files)
+}
+
+fn render_caduceus_profile_source(
+    profile_source: &CaduceusProfileSourceManifest,
+    source_dir: &Path,
+) -> Result<ManagedFileManifest, String> {
+    let source_path = source_dir.join(&profile_source.source);
+    let source = fs::read_to_string(&source_path).map_err(|e| {
+        format!(
+            "service-runtime-caduceus-profile-source-read-failed {}: {e}",
+            source_path.display()
+        )
+    })?;
+    let mut rendered = String::new();
+    let mut inserted_profile = profile_source.insert_after_profile.trim().is_empty();
+    let mut inserted_mode = profile_source.insert_after_mode.trim().is_empty();
+    for line in source.lines() {
+        rendered.push_str(line);
+        rendered.push('\n');
+        if !inserted_profile && line.starts_with("profile:") {
+            rendered.push_str(profile_source.insert_after_profile.trim_end());
+            rendered.push('\n');
+            inserted_profile = true;
+        }
+        if !inserted_mode && line.starts_with("mode:") {
+            rendered.push_str(profile_source.insert_after_mode.trim_end());
+            rendered.push('\n');
+            inserted_mode = true;
+        }
+    }
+    if !inserted_profile {
+        return Err("service-runtime-caduceus-profile-source-missing-profile".to_string());
+    }
+    if !inserted_mode {
+        return Err("service-runtime-caduceus-profile-source-missing-mode".to_string());
+    }
+    if !profile_source.append.trim().is_empty() {
+        rendered.push_str(profile_source.append.trim_start());
+        if !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+    }
+    Ok(ManagedFileManifest {
+        path: profile_source.path.clone(),
+        content: rendered,
+        mode: profile_source.mode,
+    })
 }
 
 fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
