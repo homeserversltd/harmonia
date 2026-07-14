@@ -26,7 +26,12 @@
           {
             "path": "/etc/systemd/system/caduceus.service",
             "mode": 420,
-            "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nReadWritePaths=/var/lib/caduceus /var/lib/caduceus/certs /var/lib/harmonia /var/log/harmonia /var/cache/harmonia /var/cache/caduceus /var/lib/coronatio /opt/caduceus /opt/coronatio /opt/harmonia /usr/local/bin /etc/caduceus /etc/harmonia /etc/systemd/system /etc/homeserver /etc/homeserver.json /var/www/homeserver/src/config\n\n[Install]\nWantedBy=multi-user.target\n"
+            "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nRestart=on-failure\nRestartSec=2\nExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/caduceus-hyalos.conf\nLogsDirectory=hyalos\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nReadWritePaths=/var/lib/caduceus /var/lib/caduceus/certs /var/lib/harmonia /var/log/harmonia /var/log/hyalos /var/cache/harmonia /var/cache/caduceus /var/lib/coronatio /opt/caduceus /opt/coronatio /opt/harmonia /usr/local/bin /etc/caduceus /etc/harmonia /etc/systemd/system /etc/homeserver /etc/homeserver.json /var/www/homeserver/src/config\n\n[Install]\nWantedBy=multi-user.target\n"
+          },
+          {
+            "path": "/etc/tmpfiles.d/caduceus-hyalos.conf",
+            "mode": 420,
+            "content": "# Caduceus owns the sole Hyalos structured channel.\n# /var/log/caduceus is reserved for separate service-log concerns, not Hyalos authority.\nd /var/log/hyalos 0755 caduceus caduceus -\nf /var/log/hyalos/channel.jsonl 0644 caduceus caduceus -\nz /var/log/hyalos 0755 caduceus caduceus -\nz /var/log/hyalos/channel.jsonl 0644 caduceus caduceus -\n"
           },
           {
             "path": "/etc/caduceus/identity.json",
