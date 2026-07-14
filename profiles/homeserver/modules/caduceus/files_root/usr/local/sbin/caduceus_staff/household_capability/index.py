@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
+from .skeleton_sha import skeleton_sha_receipt
+
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -168,7 +170,10 @@ def _profile_key() -> str | None:
 
 
 def status() -> dict[str, Any]:
-    key_exists = _path("CADUCEUS_KEYMAN_KEY", KEYMAN_KEY).is_file()
+    try:
+        key_exists = _path("CADUCEUS_KEYMAN_KEY", KEYMAN_KEY).is_file()
+    except OSError:
+        key_exists = False
     profile_key = _profile_key()
     public_key = None
     if key_exists:
@@ -177,6 +182,8 @@ def status() -> dict[str, Any]:
         except (OSError, ValueError, subprocess.CalledProcessError):
             public_key = None
     return {
+        "ok": True,
+        "firstMissingSignal": "none",
         "key_exists": key_exists,
         "public_key": public_key,
         "public_fingerprint": hashlib.sha256(bytes.fromhex(public_key)).hexdigest() if public_key else None,
@@ -196,7 +203,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     sign.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_SECONDS)
     commands.add_parser("rotate")
     commands.add_parser("status")
+    commands.add_parser("skeleton-sha")
     args = parser.parse_args(argv)
+    if args.command == "skeleton-sha":
+        print(json.dumps(skeleton_sha_receipt(), sort_keys=True))
+        return 0
     if args.command == "sign":
         try:
             token = sign_capability(args.action, args.target, args.actor, args.ttl_seconds)
