@@ -51,12 +51,24 @@ pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
 
 pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     let text = fs::read_to_string(path)?;
-    serde_json::from_str(&text).map_err(|err| {
+    let profile: Profile = serde_json::from_str(&text).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("profile-parse-failed {}: {err}", path.display()),
         )
-    })
+    })?;
+    profile
+        .package_authority
+        .as_ref()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("profile-package-authority-missing {}", path.display()),
+            )
+        })?
+        .backend()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    Ok(profile)
 }
 
 pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {
@@ -362,7 +374,12 @@ pub(crate) fn run_profile_engine_with_preflight(
                 validate_ladder(manifest)
                     .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
                 let module_dir = receipt_dir.join("modules").join(&manifest.id);
-                execute_ladder_manifest(manifest, &module_dir, apply)
+                execute_ladder_manifest(
+                    manifest,
+                    &module_dir,
+                    apply,
+                    profile.package_authority.as_ref(),
+                )
             }
         };
         let execution = match execution_result {
@@ -799,6 +816,7 @@ pub(crate) fn homeserver_module_ids_from_profile_modules(
     let mut found = Vec::new();
     for module_id in [
         "rust-build-toolchain",
+        "nginx",
         "coronatio",
         "keyman",
         "caduceus",

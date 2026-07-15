@@ -1,0 +1,54 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "nginx",
+  "version": "1.0.0",
+  "description": "Public HomeServer Nginx shared floor: package, owned safe link, validation-before-promotion, reload, and service readiness.",
+  "constants": {
+    "nginx_package": ["nginx"],
+    "source": "/etc/nginx/sites-available/harmonia-shared",
+    "target": "/etc/nginx/sites-enabled/harmonia-shared"
+  },
+  "ladder": [
+    {
+      "step_id": "nginx-package",
+      "tool": "package",
+      "permutation": "install",
+      "args": {"packages": "$constants.nginx_package"},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nginx-shared-source",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": ["etc/nginx/sites-available/harmonia-shared"],
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nginx-shared-link",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "$constants.source",
+        "target": "$constants.target",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "reload_program": "/usr/bin/systemctl",
+        "reload_args": ["reload", "nginx"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nginx-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {"service": "nginx"},
+      "on_failure": "stop"
+    }
+  ]
+}

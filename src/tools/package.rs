@@ -1,5 +1,5 @@
 use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
-use crate::{write_json, CmdResult, OperationOutcome};
+use crate::{write_json, CmdResult, OperationOutcome, PackageBackend};
 #[cfg(test)]
 use std::cell::RefCell;
 use std::env;
@@ -217,6 +217,105 @@ pub(crate) fn pacman_stdout_indicates_change(stdout: &str) -> bool {
         || lower.contains("removing")
 }
 
+pub(crate) fn package_tool_for_backend(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    packages: &[String],
+    apply: bool,
+    backend: PackageBackend,
+) -> Result<OperationOutcome, String> {
+    package_tool_with_policy_for_backend(
+        receipt_dir,
+        name,
+        action,
+        packages,
+        apply,
+        None,
+        &[],
+        DEFAULT_PACKAGE_TIMEOUT_SECS,
+        backend,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn package_tool_with_policy_for_backend(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    packages: &[String],
+    apply: bool,
+    conflict_policy: Option<&str>,
+    conflict_paths: &[String],
+    timeout_secs: u64,
+    backend: PackageBackend,
+) -> Result<OperationOutcome, String> {
+    match backend {
+        PackageBackend::Pacman => package_tool_with_policy(
+            receipt_dir,
+            name,
+            action,
+            packages,
+            apply,
+            conflict_policy,
+            conflict_paths,
+            timeout_secs,
+        ),
+        PackageBackend::Apt => apt_package_tool(receipt_dir, name, action, packages, apply, timeout_secs),
+    }
+}
+
+fn apt_program() -> String {
+    env::var("HARMONIA_APT_GET_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "/usr/bin/apt-get".to_string())
+}
+
+fn apt_package_tool(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    packages: &[String],
+    apply: bool,
+    timeout_secs: u64,
+) -> Result<OperationOutcome, String> {
+    let program = apt_program();
+    let args: Vec<&str> = match (action, apply) {
+        ("check", _) => vec!["-s", "upgrade"],
+        ("install", true) => {
+            let mut args = vec!["install", "--yes"];
+            args.extend(packages.iter().map(String::as_str));
+            args
+        }
+        ("install", false) => {
+            let mut args = vec!["-s", "install"];
+            args.extend(packages.iter().map(String::as_str));
+            args
+        }
+        ("upgrade" | "update", true) => vec!["full-upgrade", "--yes"],
+        ("upgrade" | "update", false) => vec!["-s", "full-upgrade"],
+        (other, _) => return Err(format!("apt-package-action-unsupported-{other}")),
+    };
+    let result = command::capture_with_timeout(&program, &args, timeout_secs);
+    let ok = result.ok;
+    let changed = apply && ok && apt_stdout_indicates_change(&result.stdout);
+    let outcome = OperationOutcome {
+        ok,
+        changed,
+        skipped: false,
+        message: format!("apt package {action}"),
+        command: Some(result),
+    };
+    write_package_receipt_with_backend(receipt_dir, name, action, &outcome, PackageBackend::Apt)?;
+    Ok(outcome)
+}
+
+fn apt_stdout_indicates_change(stdout: &str) -> bool {
+    let lower = stdout.to_ascii_lowercase();
+    lower.contains("the following packages will be") || lower.contains("setting up ")
+}
+
 pub(crate) fn package_tool(
     receipt_dir: &Path,
     name: &str,
@@ -404,6 +503,16 @@ pub(crate) fn write_package_receipt(
     action: &str,
     outcome: &OperationOutcome,
 ) -> Result<(), String> {
+    write_package_receipt_with_backend(receipt_dir, name, action, outcome, PackageBackend::Pacman)
+}
+
+fn write_package_receipt_with_backend(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    outcome: &OperationOutcome,
+    backend: PackageBackend,
+) -> Result<(), String> {
     write_json(
         &receipt_dir.join(format!("{}.json", name)),
         &serde_json::json!({
@@ -411,6 +520,7 @@ pub(crate) fn write_package_receipt(
             "name": name,
             "tool": NAME,
             "permutation": action,
+            "declared_package_backend": backend.name(),
             "ok": outcome.ok,
             "changed": outcome.changed,
             "skipped": outcome.skipped,

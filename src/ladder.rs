@@ -223,7 +223,7 @@ pub(crate) fn execute_group_live_probe(
     let step = validate_group(group, &manifest.constants)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    execute_validated_step(&step, manifest, receipt_dir, true)
+    execute_validated_step(&step, manifest, receipt_dir, true, None)
 }
 
 fn resolve_args(
@@ -341,6 +341,7 @@ pub(crate) fn execute_ladder_manifest(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    package_authority: Option<&crate::PackageAuthority>,
 ) -> Result<ModuleExecution, String> {
     let steps = validate_ladder(manifest)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
@@ -351,7 +352,13 @@ pub(crate) fn execute_ladder_manifest(
     let mut operation_count = 0usize;
     for step in steps {
         operation_count += 1;
-        let outcome = execute_validated_step(&step, manifest, module_dir, apply)?;
+        let outcome = execute_validated_step(
+            &step,
+            manifest,
+            module_dir,
+            apply,
+            package_authority,
+        )?;
         if outcome.changed {
             changed = true;
         }
@@ -416,12 +423,14 @@ fn execute_validated_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    package_authority: Option<&crate::PackageAuthority>,
 ) -> Result<OperationOutcome, String> {
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("command", "capture") => command_capture_step(step, module_dir, apply),
         ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, apply),
         ("health", "probe") => health_probe_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
+        ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
@@ -445,7 +454,9 @@ fn execute_validated_step(
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => package_step(step, module_dir, apply),
+        | ("package", "keyring-repair") => {
+            package_step(step, module_dir, apply, package_authority)
+        }
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
@@ -639,6 +650,25 @@ fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileMa
     Ok(files)
 }
 
+fn validated_symlink_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    crate::tools::files::validated_symlink(
+        module_dir,
+        &step.step_id,
+        &PathBuf::from(string_arg(&step.args, "source")),
+        &PathBuf::from(string_arg(&step.args, "target")),
+        string_arg(&step.args, "validator_program"),
+        &string_array_arg(&step.args, "validator_args"),
+        optional_string_arg(&step.args, "reload_program"),
+        &string_array_arg(&step.args, "reload_args"),
+        integer_arg(&step.args, "timeout_secs", 30),
+        apply,
+    )
+}
+
 fn files_converge_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -797,20 +827,25 @@ fn package_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
+    package_authority: Option<&crate::PackageAuthority>,
 ) -> Result<OperationOutcome, String> {
+    let backend = package_authority
+        .ok_or_else(|| "profile-package-authority-missing".to_string())?
+        .backend()?;
     let packages = string_array_arg(&step.args, "packages");
     let timeout_secs = integer_arg(&step.args, "timeout_secs", 1800);
     match step.permutation.as_str() {
-        "check" => crate::tools::package::package_tool(
+        "check" => crate::tools::package::package_tool_for_backend(
             module_dir,
             &step.step_id,
             "check",
             &packages,
             apply,
+            backend,
         ),
         "install" => {
             let conflict_paths = string_array_arg(&step.args, "conflict_paths");
-            crate::tools::package::package_tool_with_policy(
+            crate::tools::package::package_tool_with_policy_for_backend(
                 module_dir,
                 &step.step_id,
                 "install",
@@ -819,9 +854,10 @@ fn package_step(
                 optional_string_arg(&step.args, "conflict_policy"),
                 &conflict_paths,
                 timeout_secs,
+                backend,
             )
         }
-        "upgrade" => crate::tools::package::package_tool_with_policy(
+        "upgrade" => crate::tools::package::package_tool_with_policy_for_backend(
             module_dir,
             &step.step_id,
             "upgrade",
@@ -830,14 +866,18 @@ fn package_step(
             None,
             &[],
             timeout_secs,
+            backend,
         ),
-        "keyring-repair" => crate::tools::package::keyring_repair_tool(
-            module_dir,
-            &step.step_id,
-            optional_string_arg(&step.args, "package").unwrap_or("archlinux-keyring"),
-            apply,
-            timeout_secs,
-        ),
+        "keyring-repair" if backend == crate::PackageBackend::Pacman => {
+            crate::tools::package::keyring_repair_tool(
+                module_dir,
+                &step.step_id,
+                optional_string_arg(&step.args, "package").unwrap_or("archlinux-keyring"),
+                apply,
+                timeout_secs,
+            )
+        }
+        "keyring-repair" => Err("package-keyring-repair-backend-unsupported".to_string()),
         other => Err(format!("package-permutation-unsupported-{other}")),
     }
 }
@@ -940,7 +980,7 @@ pub(crate) fn shadow_proof_receipt_family_diff_for_test(
     compiled_receipt_dir: &Path,
     compiled: impl FnOnce(&Path) -> Result<ModuleExecution, String>,
 ) -> Result<Vec<String>, String> {
-    let _ladder = execute_ladder_manifest(ladder_manifest, ladder_receipt_dir, false)?;
+    let _ladder = execute_ladder_manifest(ladder_manifest, ladder_receipt_dir, false, None)?;
     let _compiled = compiled(compiled_receipt_dir)?;
     shadow_diff_receipt_families(ladder_receipt_dir, compiled_receipt_dir)
 }
@@ -1097,7 +1137,7 @@ mod tests {
         let scratch = std::env::temp_dir().join(format!("harmonia-ladder-exec-{}", process::id()));
         let _ = fs::remove_dir_all(&scratch);
         let happy = base_manifest();
-        let result = execute_ladder_manifest(&happy, &scratch.join("happy"), true).unwrap();
+        let result = execute_ladder_manifest(&happy, &scratch.join("happy"), true, None).unwrap();
         assert!(result.ok);
         assert_eq!(result.operation_count, 1);
 
@@ -1112,7 +1152,7 @@ mod tests {
             args: BTreeMap::from([("program".into(), json!("/usr/bin/true"))]),
             on_failure: OnFailure::Stop,
         });
-        let stopped = execute_ladder_manifest(&stop, &scratch.join("stop"), true).unwrap();
+        let stopped = execute_ladder_manifest(&stop, &scratch.join("stop"), true, None).unwrap();
         assert!(!stopped.ok);
         assert_eq!(stopped.operation_count, 1);
 
@@ -1120,7 +1160,7 @@ mod tests {
         optional.optional = true;
         optional.ladder[0].on_failure = OnFailure::ContinueOptional;
         let continued =
-            execute_ladder_manifest(&optional, &scratch.join("optional"), true).unwrap();
+            execute_ladder_manifest(&optional, &scratch.join("optional"), true, None).unwrap();
         assert!(!continued.ok);
         assert_eq!(continued.operation_count, 2);
         let _ = fs::remove_dir_all(&scratch);
@@ -1140,6 +1180,7 @@ mod tests {
         )
         .unwrap();
         let profile = Profile {
+            package_authority: None,
             id: "test".into(),
             identity: "test".into(),
             modules: vec!["synthetic-ladder".into()],
@@ -1210,6 +1251,7 @@ mod tests {
             &fixture_group_manifest("gogs", 2, "/usr/bin/false"),
         );
         let profile = Profile {
+            package_authority: None,
             id: "test".into(),
             identity: "test".into(),
             modules: vec!["forgejo".into(), "gogs".into()],
@@ -1247,6 +1289,7 @@ mod tests {
             &fixture_group_manifest("gogs", 2, "/usr/bin/false"),
         );
         let profile = Profile {
+            package_authority: None,
             id: "test".into(),
             identity: "test".into(),
             modules: vec!["forgejo".into(), "gogs".into()],

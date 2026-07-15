@@ -1,6 +1,12 @@
 # Nginx
 
-## Role
+## Declared package authority
+
+Every profile declares `package_authority` with an `os_family` and `package_manager`. Harmonia validates only supported pairs (`arch`/`pacman` and `debian`/`apt`) and selects package operations from that declaration, never from the host executable that happens to be present. Package receipts name the declared backend; dry runs use backend-native simulation and do not mutate packages.
+
+## Nginx shared floor
+
+The Nginx module now owns only the common floor: the package, a public comment-only shared site source, an explicitly owned `sites-enabled` link, `nginx -t` before link promotion, reload on an actual link change, and systemd readiness. It deliberately does not declare application virtual hosts, domains, upstreams, certificates, or secrets.
 
 Secure Web Entry Point.
 

@@ -1,6 +1,10 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homeconsole",
+  "package_authority": {
+    "os_family": "arch",
+    "package_manager": "pacman"
+  },
   "identity": "homeconsole",
   "description": "HomeConsole appliance profile. HomeConsole is the sole console identity.",
   "module_spine_entered": "profiles/homeconsole/modules",

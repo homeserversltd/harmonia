@@ -1,6 +1,10 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homeserver",
+  "package_authority": {
+    "os_family": "debian",
+    "package_manager": "apt"
+  },
   "visibility": "public",
   "installs_now": [
     "rust-build-toolchain",
@@ -41,6 +45,7 @@
   "identity": "homeserver",
   "modules": [
     "rust-build-toolchain",
+    "nginx",
     "coronatio",
     "keyman",
     "caduceus",

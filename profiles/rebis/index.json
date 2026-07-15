@@ -1,6 +1,10 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "rebis",
+  "package_authority": {
+    "os_family": "arch",
+    "package_manager": "pacman"
+  },
   "aliases": [
     "laptop",
     "laptop-01"
