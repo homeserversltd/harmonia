@@ -55,7 +55,7 @@ pub(crate) fn execute_profile_module(
                 manifest.id
             ));
         }
-        execute_ladder_manifest(&manifest, &module_dir, apply)
+        execute_ladder_manifest(&manifest, &module_dir, apply, None)
     } else {
         Err(format!("module-unregistered-{}", module.id))
     }

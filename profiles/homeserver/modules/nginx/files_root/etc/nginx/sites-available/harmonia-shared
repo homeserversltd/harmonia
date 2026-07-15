@@ -1,0 +1,3 @@
+# Harmonia-owned shared Nginx floor.
+# Application virtual hosts, domains, upstreams, certificates, and secrets remain
+# owned by their application modules or private runtime authority.

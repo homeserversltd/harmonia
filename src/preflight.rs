@@ -1203,7 +1203,7 @@ mod tests {
         fs::create_dir_all(&module_dir).unwrap();
         fs::write(
             profile_root.join("index.json"),
-            r#"{"id":"tv","identity":"arch-tv","modules":["identity"]}"#,
+            r#"{"id":"tv","identity":"arch-tv","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["identity"]}"#,
         )
         .unwrap();
         fs::write(

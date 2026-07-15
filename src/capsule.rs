@@ -777,7 +777,7 @@ mod tests {
         fs::write(root.join("Cargo.toml"), "[package]\nname='fixture'\n").unwrap();
         fs::write(
             root.join("profiles/demo/index.json"),
-            r#"{"id":"demo","identity":"demo-box","modules":["alpha"]}"#,
+            r#"{"id":"demo","identity":"demo-box","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["alpha"]}"#,
         )
         .unwrap();
         fs::write(root.join("profiles/demo/modules/alpha/manifest.json"), format!(r#"{{"schema":"harmonia.module.ladder.v1","id":"alpha","version":"{version}","description":"alpha","files_root":"files_root","ladder":[]}}"#)).unwrap();

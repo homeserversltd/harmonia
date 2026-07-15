@@ -14,7 +14,43 @@ struct Profile {
     id: String,
     identity: String,
     #[serde(default)]
+    package_authority: Option<PackageAuthority>,
+    #[serde(default)]
     modules: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PackageAuthority {
+    os_family: String,
+    package_manager: String,
+}
+
+impl PackageAuthority {
+    fn backend(&self) -> Result<PackageBackend, String> {
+        match (self.os_family.as_str(), self.package_manager.as_str()) {
+            ("arch", "pacman") => Ok(PackageBackend::Pacman),
+            ("debian", "apt") => Ok(PackageBackend::Apt),
+            (os_family, package_manager) => Err(format!(
+                "profile-package-authority-unsupported-os_family={os_family}-package_manager={package_manager}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageBackend {
+    Pacman,
+    Apt,
+}
+
+impl PackageBackend {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Pacman => "pacman",
+            Self::Apt => "apt",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -390,6 +426,7 @@ mod tests {
         let receipts = scratch.join("receipts");
         fs::create_dir_all(&module_root).unwrap();
         let profile = Profile {
+            package_authority: None,
             id: "hollow".into(),
             identity: "hollow".into(),
             modules: vec![],
@@ -410,6 +447,7 @@ mod tests {
         let receipts = scratch.join("receipts");
         fs::create_dir_all(module_root.join("missing-sidecar")).unwrap();
         let profile = Profile {
+            package_authority: None,
             id: "plan".into(),
             identity: "plan".into(),
             modules: vec!["missing-sidecar".into()],
@@ -628,6 +666,7 @@ mod tests {
     #[test]
     fn rejects_old_console_identity_names() {
         let old = Profile {
+            package_authority: None,
             id: "homeconsole".into(),
             identity: format!("{}-{}", "arch", "console"),
             modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap(),
@@ -667,6 +706,7 @@ mod tests {
     #[test]
     fn homeserver_update_requires_homeserver_identity() {
         let profile = Profile {
+            package_authority: None,
             id: "homeserver".into(),
             identity: "homeconsole".into(),
             modules: homeserver_module_ids_from_profile_modules(&homeserver_module_root()).unwrap(),
@@ -690,7 +730,7 @@ mod tests {
         let profile_path = scratch.join("index.json");
         fs::write(
             &profile_path,
-            r#"{"id":"homeserver","identity":"homeserver","modules":["identity"]}"#,
+            r#"{"id":"homeserver","identity":"homeserver","package_authority":{"os_family":"debian","package_manager":"apt"},"modules":["identity"]}"#,
         )
         .unwrap();
         let err = run(vec![
@@ -750,6 +790,7 @@ mod tests {
     #[test]
     fn tv_update_requires_tv_identity() {
         let profile = Profile {
+            package_authority: Some(PackageAuthority { os_family: "arch".into(), package_manager: "pacman".into() }),
             id: "tv".into(),
             identity: "homeconsole".into(),
             modules: tv_module_ids_from_profile_modules(&tv_module_root()).unwrap(),
@@ -773,7 +814,7 @@ mod tests {
         let profile_path = scratch.join("index.json");
         fs::write(
             &profile_path,
-            r#"{"id":"tv","identity":"arch-tv","modules":["identity"]}"#,
+            r#"{"id":"tv","identity":"arch-tv","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["identity"]}"#,
         )
         .unwrap();
         let err = run(vec![
@@ -898,6 +939,7 @@ mod tests {
         let receipt_root = scratch.join("receipts");
         let latest = receipt_root.join("homeconsole-update-latest");
         let profile = Profile {
+            package_authority: None,
             id: "homeconsole".into(),
             identity: "homeconsole".into(),
             modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap(),
@@ -1782,6 +1824,7 @@ mod tests {
         .unwrap();
         let receipts = scratch.join("receipts");
         let profile = Profile {
+            package_authority: Some(PackageAuthority { os_family: "arch".into(), package_manager: "pacman".into() }),
             id: "tv".into(),
             identity: "arch-tv".into(),
             modules: vec!["identity".into(), "system-packages".into()],
@@ -2231,6 +2274,7 @@ mod tests {
         let first_receipt = root.join("runs/first");
         let second_receipt = root.join("runs/second");
         let profile = Profile {
+            package_authority: None,
             id: "homeconsole".into(),
             identity: "homeconsole".into(),
             modules: vec!["identity".into()],

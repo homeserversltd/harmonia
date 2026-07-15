@@ -1,6 +1,10 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "tv",
+  "package_authority": {
+    "os_family": "arch",
+    "package_manager": "pacman"
+  },
   "aliases": [
     "arch-tv"
   ],
