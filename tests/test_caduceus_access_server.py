@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -16,6 +18,10 @@ SOURCE = ROOT / "profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/
 
 
 class Refused(Exception):
+    pass
+
+
+class CommitUncertain(Refused):
     pass
 
 
@@ -37,6 +43,7 @@ class Derived:
 def load_module():
     keyman = types.ModuleType("keyman_caduceus_access")
     keyman.CaduceusAccessRefused = Refused
+    keyman.CaduceusAccessCommitUncertain = CommitUncertain
     keyman.verify_and_derive_caduceus = lambda pin: Derived() if pin in {"good", "next"} else (_ for _ in ()).throw(Refused("caduceus-pin-invalid"))
     keyman.change_caduceus_pin = lambda old, new: None if old == "good" and new else (_ for _ in ()).throw(Refused("caduceus-pin-invalid"))
     keyman.provision_caduceus = lambda *_: None
@@ -83,6 +90,29 @@ class AccessServerTests(unittest.TestCase):
         restarted = self.module.AccessStaff(now=lambda: self.now, token=lambda _: "fresh")
         self.assertFalse(restarted.prove_session(ticket)["ok"])
 
+    def test_two_browser_sessions_refresh_and_clear_are_ticket_local(self) -> None:
+        tokens = iter(["browser-a", "browser-b"])
+        staff = self.module.AccessStaff(now=lambda: self.now, token=lambda _: next(tokens))
+        first = staff.mint_session("good")["ticket"]
+        second = staff.mint_session("good")["ticket"]
+        self.assertNotEqual(first, second)
+        self.assertTrue(staff.prove_session(first)["ok"])
+        self.assertTrue(staff.prove_session(second)["ok"])
+        self.now += 1
+        self.assertEqual(staff.refresh_session(first)["ttl_seconds"], 1800)
+        self.assertTrue(staff.clear_session(first)["cleared"])
+        self.assertFalse(staff.prove_session(first)["ok"])
+        self.assertTrue(staff.prove_session(second)["ok"])
+
+    def test_session_expiry_is_purged_and_capacity_fails_closed(self) -> None:
+        tokens = iter([f"ticket-{index}" for index in range(self.module.SESSION_LIMIT + 2)])
+        staff = self.module.AccessStaff(now=lambda: self.now, token=lambda _: next(tokens))
+        for _ in range(self.module.SESSION_LIMIT):
+            self.assertTrue(staff.mint_session("good")["ok"])
+        self.assertEqual(staff.mint_session("good")["code"], "caduceus-session-capacity")
+        self.now += 1800
+        self.assertTrue(staff.mint_session("good")["ok"])
+
     def test_capability_is_60_seconds_and_signature_has_projection_grammar(self) -> None:
         ticket = self.mint()
         response = self.staff.mint_capability(ticket, "update now", "local", "homeserver")
@@ -113,6 +143,31 @@ class AccessServerTests(unittest.TestCase):
         self.assertEqual(status["state"], "STALE")
         self.assertNotIn("public_key", status)
         self.assertFalse(self.staff.mint_capability(ticket, "update now", "local", "homeserver")["ok"])
+
+    def test_pin_change_commit_uncertain_clears_all_sessions_and_refuses_mint(self) -> None:
+        first = self.mint()
+        second = self.staff.mint_session("good")["ticket"]
+        epoch = self.staff.dispatch({"op": "status"})["epoch"]
+        with mock.patch.object(self.module, "change_caduceus_pin", side_effect=CommitUncertain("caduceus-key-commit-uncertain")):
+            changed = self.staff.change_pin(first, "good", "next")
+        self.assertEqual(changed["code"], "caduceus-access-stale")
+        status = self.staff.dispatch({"op": "status"})
+        self.assertEqual(status["state"], "STALE")
+        self.assertEqual(status["epoch"], epoch + 1)
+        self.assertNotIn("public_key", status)
+        self.assertFalse(self.staff.prove_session(first)["ok"])
+        self.assertFalse(self.staff.prove_session(second)["ok"])
+        self.assertFalse(self.staff.mint_capability(second, "update now", "local", "homeserver")["ok"])
+
+    def test_wrong_old_pin_preserves_current_session_and_signer(self) -> None:
+        ticket = self.mint()
+        before = self.staff.dispatch({"op": "status"})
+        changed = self.staff.change_pin(ticket, "wrong-old", "next")
+        self.assertEqual(changed["code"], "caduceus-pin-invalid")
+        after = self.staff.dispatch({"op": "status"})
+        self.assertEqual(after["state"], "MINT_READY")
+        self.assertEqual(after["epoch"], before["epoch"])
+        self.assertTrue(self.staff.prove_session(ticket)["ok"])
 
     def test_malformed_scope_and_private_material_never_persist(self) -> None:
         ticket = self.mint()
@@ -154,11 +209,37 @@ class AccessServerTests(unittest.TestCase):
         self.assertIn("keyman_caduceus_access.py", unit)
         self.assertIn("keyman_caduceus_access.runtime.json", unit)
         self.assertIn("keyman_installer/index.py verify", unit)
-        self.assertIn("BindReadOnlyPaths=/opt/keyman/runtime/lib", unit)
+        self.assertNotIn("keyman-runtime.service", unit)
+        self.assertIn("ProtectHome=tmpfs", unit)
+        self.assertIn("BindReadOnlyPaths=/opt/keyman/runtime/lib /root/key", unit)
         self.assertNotIn("/root/key", unit.split("ReadWritePaths=", 1)[1].split("\n", 1)[0])
+        self.assertIn("/vault/.keys", unit.split("ReadWritePaths=", 1)[1].split("\n", 1)[0])
         self.assertIn("/run/caduceus/access.sock", unit)
         self.assertIn("Requires=caduceus-access.service", managed["/etc/systemd/system/caduceus.service"])
         self.assertEqual(managed["/usr/local/sbin/caduceus_staff/access_server.py"], SOURCE.read_text())
+        profile = json.loads((ROOT / "profiles/homeserver/index.json").read_text())
+        self.assertLess(profile["modules"].index("keyman"), profile["modules"].index("caduceus"))
+        keyman = json.loads((ROOT / "profiles/homeserver/modules/keyman/manifest.json").read_text())
+        self.assertEqual(keyman["ladder"][0]["args"]["repo"], "https://git.home.arpa/HOMESERVERSLTD/keyman.git")
+        self.assertEqual(keyman["ladder"][0]["args"]["path"], "/opt/keyman/source")
+        install = keyman["ladder"][1]["args"]["args"]
+        self.assertIn("/opt/keyman/runtime", install)
+        self.assertIn("vault-only", install)
+
+    def test_systemd_sandbox_fixture_exposes_only_declared_skeleton_path(self) -> None:
+        manifest = json.loads((ROOT / "profiles/homeserver/modules/caduceus/manifest.json").read_text())
+        unit = next(item["content"] for item in manifest["ladder"][0]["args"]["managed_files"] if item["path"] == "/etc/systemd/system/caduceus-access.service")
+        self.assertIn("ProtectHome=tmpfs", unit)
+        self.assertIn("BindReadOnlyPaths=/opt/keyman/runtime/lib /root/key", unit)
+        self.assertNotIn("ReadWritePaths=/root/key", unit)
+        analyzer = shutil.which("systemd-analyze")
+        if analyzer:
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "caduceus-access.service"
+                fixture = unit.replace("ExecStart=/var/lib/caduceus/venv/bin/python3 -m caduceus_staff.access_server", "ExecStart=/bin/true")
+                path.write_text(fixture, encoding="utf-8")
+                result = subprocess.run([analyzer, "verify", str(path)], text=True, capture_output=True)
+                self.assertNotIn("caduceus-access.service:", result.stderr)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from keyman_caduceus_access import (
+    CaduceusAccessCommitUncertain,
     CaduceusAccessRefused,
     change_caduceus_pin,
     provision_caduceus,
@@ -36,6 +37,7 @@ LOCKOUT_FAILURES = 5
 LOCKOUT_WINDOW_SECONDS = 15 * 60
 LOCKOUT_SECONDS = 15 * 60
 MAX_LINE_BYTES = 8192
+SESSION_LIMIT = 128
 SOCKET_PATH = Path("/run/caduceus/access.sock")
 
 
@@ -62,13 +64,16 @@ class AccessStaff:
         self._state = "UNBOUND"
         self._signer: Ed25519PrivateKey | None = None
         self._identity: str | None = None
-        self._session: _Session | None = None
+        self._sessions: dict[str, _Session] = {}
         self._epoch = 0
         self._failures: list[int] = []
         self._locked_until = 0
 
-    def _clear_session(self) -> None:
-        self._session = None
+    def _clear_sessions(self) -> None:
+        self._sessions.clear()
+
+    def _purge_sessions(self, now: int) -> None:
+        self._sessions = {ticket: session for ticket, session in self._sessions.items() if session.expires_at > now}
 
     def _public_projection(self) -> dict[str, Any]:
         if self._signer is None:
@@ -77,7 +82,7 @@ class AccessStaff:
 
     def _become_stale(self) -> None:
         # A rewritten Keyman credential makes the former signer unlawful.
-        self._clear_session()
+        self._clear_sessions()
         self._signer = None
         self._identity = None
         self._epoch += 1
@@ -92,11 +97,13 @@ class AccessStaff:
         self._failures = [stamp for stamp in self._failures if stamp > now - LOCKOUT_WINDOW_SECONDS]
         if len(self._failures) >= LOCKOUT_FAILURES:
             self._locked_until = now + LOCKOUT_SECONDS
-            self._clear_session()
+            self._clear_sessions()
             self._state = "STALE"
 
     def _session_valid(self, ticket: str, now: int) -> bool:
-        return bool(self._session and self._session.expires_at > now and hmac.compare_digest(self._session.ticket, ticket))
+        self._purge_sessions(now)
+        session = self._sessions.get(ticket)
+        return bool(session and hmac.compare_digest(session.ticket, ticket))
 
     def bind(self, pin: str) -> dict[str, Any]:
         now = self._now()
@@ -107,7 +114,6 @@ class AccessStaff:
                 self._signer = derived.private_key()
                 self._identity = derived.identity_sha256
                 self._state = "MINT_READY"
-                self._clear_session()
                 self._failures.clear()
                 return {"ok": True, "state": self._state, **self._public_projection()}
         except CaduceusAccessRefused as error:
@@ -119,28 +125,32 @@ class AccessStaff:
         if not bound.get("ok"):
             return bound
         now = self._now()
+        self._purge_sessions(now)
+        if len(self._sessions) >= SESSION_LIMIT:
+            return _redacted("caduceus-session-capacity")
         ticket = self._token(32)
-        self._session = _Session(ticket=ticket, expires_at=now + SESSION_SECONDS)
-        return {"ok": True, "ticket": ticket, "expires_at": self._session.expires_at, "ttl_seconds": SESSION_SECONDS, **self._public_projection()}
+        session = _Session(ticket=ticket, expires_at=now + SESSION_SECONDS)
+        self._sessions[ticket] = session
+        return {"ok": True, "ticket": ticket, "expires_at": session.expires_at, "ttl_seconds": SESSION_SECONDS, **self._public_projection()}
 
     def prove_session(self, ticket: str) -> dict[str, Any]:
         now = self._now()
         if not self._session_valid(ticket, now):
             return _redacted("caduceus-session-invalid")
-        assert self._session is not None
-        return {"ok": True, "expires_at": self._session.expires_at, "ttl_seconds": self._session.expires_at - now, "epoch": self._epoch}
+        session = self._sessions[ticket]
+        return {"ok": True, "expires_at": session.expires_at, "ttl_seconds": session.expires_at - now, "epoch": self._epoch}
 
     def refresh_session(self, ticket: str) -> dict[str, Any]:
         now = self._now()
         if not self._session_valid(ticket, now):
             return _redacted("caduceus-session-invalid")
-        assert self._session is not None
-        self._session.expires_at = now + SESSION_SECONDS
-        return {"ok": True, "expires_at": self._session.expires_at, "ttl_seconds": SESSION_SECONDS, "epoch": self._epoch}
+        session = self._sessions[ticket]
+        session.expires_at = now + SESSION_SECONDS
+        return {"ok": True, "expires_at": session.expires_at, "ttl_seconds": SESSION_SECONDS, "epoch": self._epoch}
 
     def clear_session(self, ticket: str | None) -> dict[str, Any]:
-        if ticket and self._session and hmac.compare_digest(ticket, self._session.ticket):
-            self._clear_session()
+        if ticket and self._session_valid(ticket, self._now()):
+            self._sessions.pop(ticket, None)
         return {"ok": True, "cleared": True}
 
     def mint_capability(self, ticket: str, action: str, target: str, profile: str) -> dict[str, Any]:
@@ -167,9 +177,12 @@ class AccessStaff:
                 self._signer = derived.private_key()
                 self._identity = derived.identity_sha256
             self._epoch += 1
-            self._clear_session()
+            self._clear_sessions()
             self._state = "MINT_READY"
             return {"ok": True, "operation": "pin-changed", "session_invalidated": True, **self._public_projection()}
+        except CaduceusAccessCommitUncertain:
+            self._become_stale()
+            return _redacted("caduceus-access-stale")
         except Exception as error:
             if rewritten:
                 self._become_stale()
@@ -185,7 +198,7 @@ class AccessStaff:
         if op == "session.clear": return self.clear_session(request.get("ticket"))
         if op == "capability.mint": return self.mint_capability(str(request.get("session_ticket", "")), str(request.get("action", "")), str(request.get("target", "")), str(request.get("profile", "")))
         if op == "pin.change": return self.change_pin(str(request.get("session_ticket", "")), str(request.get("old_pin", "")), str(request.get("new_pin", "")))
-        if op == "status": return {"ok": True, "state": self._state, "locked": self._lockout(self._now()), **self._public_projection()}
+        if op == "status": return {"ok": True, "state": self._state, "locked": self._lockout(self._now()), "epoch": self._epoch, **self._public_projection()}
         return _redacted("caduceus-access-operation-invalid")
 
 

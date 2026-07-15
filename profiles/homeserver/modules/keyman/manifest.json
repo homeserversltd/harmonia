@@ -1,0 +1,65 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "keyman",
+  "version": "1.0.0",
+  "description": "HOMESERVER Keyman cold-bearer materialization: canonical source, runtime installation, and secret-free access-artifact verification before Caduceus starts.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "keyman-source",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "repo": "https://git.home.arpa/HOMESERVERSLTD/keyman.git",
+        "path": "/opt/keyman/source",
+        "branch": "main",
+        "remote": "origin"
+      }
+    },
+    {
+      "step_id": "keyman-runtime-install",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": [
+          "/opt/keyman/source/lib/keyman_installer/index.py",
+          "install",
+          "--profile",
+          "vault-only",
+          "--source-dir",
+          "/opt/keyman/source",
+          "--runtime-dir",
+          "/opt/keyman/runtime",
+          "--key-dir",
+          "/root/key",
+          "--vault-dir",
+          "/vault/.keys",
+          "--no-mount-exchange-tmpfs",
+          "--receipt",
+          "/var/lib/harmonia/receipts/keyman-latest/install.json"
+        ],
+        "timeout_secs": 900
+      }
+    },
+    {
+      "step_id": "keyman-runtime-verify",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": [
+          "/opt/keyman/runtime/lib/keyman_installer/index.py",
+          "verify",
+          "--runtime-dir",
+          "/opt/keyman/runtime",
+          "--key-dir",
+          "/root/key",
+          "--vault-dir",
+          "/vault/.keys"
+        ],
+        "timeout_secs": 120
+      }
+    }
+  ]
+}
