@@ -800,6 +800,7 @@ pub(crate) fn homeserver_module_ids_from_profile_modules(
     for module_id in [
         "rust-build-toolchain",
         "coronatio",
+        "keyman",
         "caduceus",
         "forgejo",
         "gogs",
