@@ -128,7 +128,9 @@ cp "{self.seed_file}" "{self.exchange}"
             + "printf 'Acquired key for caduceus_household\\n'\n",
             encoding="utf-8",
         )
-        with mock.patch.object(household_index.subprocess, "run", wraps=subprocess.run) as run:
+        with mock.patch.object(household_index.subprocess, "run", wraps=subprocess.run) as run, mock.patch(
+            "builtins.print"
+        ):
             result = household.main(["sign", "--action", "update now", "--target", "local"])
         self.assertEqual(result, 0)
         export_calls = [call for call in run.call_args_list if call.args[0][0] == str(self.exportkey)]
@@ -164,7 +166,8 @@ cp "{self.seed_file}" "{self.exchange}"
         metadata = json.loads((MODULE.parent / "index.json").read_text())
         self.assertEqual(metadata["children"], ["skeleton-sha"])
         self.assertTrue(callable(household.sign_capability))
-        self.assertEqual(household.main(["status"]), 0)
+        with mock.patch("builtins.print"):
+            self.assertEqual(household.main(["status"]), 0)
 
     def test_homeserver_and_tv_manifests_install_identical_signer(self) -> None:
         manifests = [
