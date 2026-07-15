@@ -70,6 +70,19 @@ class AccessStaff:
     def _clear_session(self) -> None:
         self._session = None
 
+    def _public_projection(self) -> dict[str, Any]:
+        if self._signer is None:
+            return {}
+        return {"public_key": self._signer.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex(), "epoch": self._epoch}
+
+    def _become_stale(self) -> None:
+        # A rewritten Keyman credential makes the former signer unlawful.
+        self._clear_session()
+        self._signer = None
+        self._identity = None
+        self._epoch += 1
+        self._state = "STALE"
+
     def _lockout(self, now: int) -> bool:
         self._failures = [stamp for stamp in self._failures if stamp > now - LOCKOUT_WINDOW_SECONDS]
         return now < self._locked_until
@@ -96,7 +109,7 @@ class AccessStaff:
                 self._state = "MINT_READY"
                 self._clear_session()
                 self._failures.clear()
-                return {"ok": True, "state": self._state, "epoch": self._epoch, "public_key": self._signer.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()}
+                return {"ok": True, "state": self._state, **self._public_projection()}
         except CaduceusAccessRefused as error:
             self._record_failure(now)
             return _redacted(str(error))
@@ -108,7 +121,7 @@ class AccessStaff:
         now = self._now()
         ticket = self._token(32)
         self._session = _Session(ticket=ticket, expires_at=now + SESSION_SECONDS)
-        return {"ok": True, "ticket": ticket, "expires_at": self._session.expires_at, "ttl_seconds": SESSION_SECONDS, "epoch": self._epoch}
+        return {"ok": True, "ticket": ticket, "expires_at": self._session.expires_at, "ttl_seconds": SESSION_SECONDS, **self._public_projection()}
 
     def prove_session(self, ticket: str) -> dict[str, Any]:
         now = self._now()
@@ -146,16 +159,21 @@ class AccessStaff:
             return _redacted("caduceus-session-invalid")
         # Six rungs: valid session; old proof; atomic Keyman rewrite; derive fresh signer;
         # rotate epoch; invalidate the old session.
+        rewritten = False
         try:
             change_caduceus_pin(old_pin, new_pin)
+            rewritten = True
             with verify_and_derive_caduceus(new_pin) as derived:
                 self._signer = derived.private_key()
                 self._identity = derived.identity_sha256
             self._epoch += 1
             self._clear_session()
             self._state = "MINT_READY"
-            return {"ok": True, "operation": "pin-changed", "epoch": self._epoch, "session_invalidated": True}
-        except CaduceusAccessRefused as error:
+            return {"ok": True, "operation": "pin-changed", "session_invalidated": True, **self._public_projection()}
+        except Exception as error:
+            if rewritten:
+                self._become_stale()
+                return _redacted("caduceus-access-stale")
             self._record_failure(now)
             return _redacted(str(error))
 
@@ -167,7 +185,7 @@ class AccessStaff:
         if op == "session.clear": return self.clear_session(request.get("ticket"))
         if op == "capability.mint": return self.mint_capability(str(request.get("session_ticket", "")), str(request.get("action", "")), str(request.get("target", "")), str(request.get("profile", "")))
         if op == "pin.change": return self.change_pin(str(request.get("session_ticket", "")), str(request.get("old_pin", "")), str(request.get("new_pin", "")))
-        if op == "status": return {"ok": True, "state": self._state, "epoch": self._epoch, "locked": self._lockout(self._now())}
+        if op == "status": return {"ok": True, "state": self._state, "locked": self._lockout(self._now()), **self._public_projection()}
         return _redacted("caduceus-access-operation-invalid")
 
 
@@ -187,25 +205,56 @@ def serve(socket_path: Path = SOCKET_PATH) -> None:
     server.bind(str(socket_path))
     os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
     server.listen(16)
+    # Serial serving is safe because every accepted peer gets a short deadline.
+    server.settimeout(5.0)
     staff = AccessStaff()
     while True:
-        connection, _ = server.accept()
+        try:
+            connection, _ = server.accept()
+        except TimeoutError:
+            continue
         with connection:
+            connection.settimeout(5.0)
             if not _peer_is_root(connection):
                 connection.sendall(b'{"ok":false,"code":"caduceus-staff-peer-refused"}\n')
                 continue
-            raw = connection.makefile("rb").readline(MAX_LINE_BYTES + 1)
-            if not raw or len(raw) > MAX_LINE_BYTES:
+            try:
+                raw = connection.makefile("rb").readline(MAX_LINE_BYTES + 1)
+            except TimeoutError:
+                raw = b""
+            if not raw or len(raw) > MAX_LINE_BYTES or not raw.endswith(b"\n"):
                 response = _redacted("caduceus-access-request-invalid")
             else:
                 try:
                     response = staff.dispatch(json.loads(raw))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     response = _redacted("caduceus-access-request-invalid")
-            connection.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+            encoded = json.dumps(response, separators=(",", ":")).encode()
+            if len(encoded) > MAX_LINE_BYTES:
+                encoded = b'{"ok":false,"code":"caduceus-access-response-invalid"}'
+            try:
+                connection.sendall(encoded + b"\n")
+            except TimeoutError:
+                continue
 
 
 def main() -> int:
+    # Provisioning is private-only: the initial PIN is bounded stdin, never argv/env.
+    if len(__import__("sys").argv) == 2 and __import__("sys").argv[1] == "--provision":
+        pin = __import__("sys").stdin.buffer.readline(MAX_LINE_BYTES + 1).rstrip(b"\r\n")
+        if not pin or len(pin) > MAX_LINE_BYTES:
+            print(json.dumps(_redacted("caduceus-provision-input-invalid")))
+            return 2
+        try:
+            provision_caduceus(pin.decode("utf-8"))
+        except (UnicodeDecodeError, CaduceusAccessRefused):
+            print(json.dumps(_redacted("caduceus-provision-refused")))
+            return 2
+        print(json.dumps({"ok": True, "state": "UNBOUND", "code": "caduceus-provisioned"}))
+        return 0
+    if len(__import__("sys").argv) != 1:
+        print(json.dumps(_redacted("caduceus-access-operation-invalid")))
+        return 2
     serve(Path(os.environ.get("CADUCEUS_ACCESS_SOCKET", str(SOCKET_PATH))))
     return 0
 

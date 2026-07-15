@@ -92,13 +92,27 @@ class AccessServerTests(unittest.TestCase):
         self.assertEqual(set(payload), {"action", "epoch", "exp", "id", "profile", "target"})
         self.assertEqual(payload["profile"], "homeserver")
 
-    def test_pin_change_rotates_epoch_and_invalidates_session(self) -> None:
-        ticket = self.mint()
-        changed = self.staff.change_pin(ticket, "good", "next")
+    def test_mint_and_pin_change_return_public_projection_for_rust(self) -> None:
+        minted = self.staff.mint_session("good")
+        self.assertTrue(minted["ok"])
+        self.assertEqual(len(minted["public_key"]), 64)
+        self.assertEqual(minted["epoch"], 0)
+        changed = self.staff.change_pin(minted["ticket"], "good", "next")
         self.assertTrue(changed["ok"])
+        self.assertEqual(len(changed["public_key"]), 64)
         self.assertEqual(changed["epoch"], 1)
-        self.assertFalse(self.staff.prove_session(ticket)["ok"])
-        self.assertEqual(self.staff.dispatch({"op": "status"})["epoch"], 1)
+        self.assertFalse(self.staff.prove_session(minted["ticket"])["ok"])
+
+    def test_pin_change_post_write_rebind_failure_fails_stale_closed(self) -> None:
+        ticket = self.mint()
+        with mock.patch.object(self.module, "verify_and_derive_caduceus", side_effect=Refused("fixture-rebind-failed")):
+            changed = self.staff.change_pin(ticket, "good", "next")
+        self.assertFalse(changed["ok"])
+        self.assertEqual(changed["code"], "caduceus-access-stale")
+        status = self.staff.dispatch({"op": "status"})
+        self.assertEqual(status["state"], "STALE")
+        self.assertNotIn("public_key", status)
+        self.assertFalse(self.staff.mint_capability(ticket, "update now", "local", "homeserver")["ok"])
 
     def test_malformed_scope_and_private_material_never_persist(self) -> None:
         ticket = self.mint()
@@ -117,11 +131,31 @@ class AccessServerTests(unittest.TestCase):
                 return struct.pack("3i", 1, 1000, 1000)
         self.assertFalse(self.module._peer_is_root(Connection()))
 
+    def test_root_private_provision_uses_bounded_stdin_only_and_refuses_overwrite(self) -> None:
+        provision = mock.Mock()
+        with mock.patch.object(self.module, "provision_caduceus", provision), mock.patch.object(sys, "argv", ["access_server.py", "--provision"]), mock.patch.object(sys, "stdin") as stdin:
+            stdin.buffer.readline.return_value = b"fixture-initial-pin\n"
+            with mock.patch("builtins.print") as printed:
+                self.assertEqual(self.module.main(), 0)
+        provision.assert_called_once_with("fixture-initial-pin")
+        rendered = " ".join(str(call) for call in printed.call_args_list)
+        self.assertNotIn("fixture-initial-pin", rendered)
+        self.assertNotIn("fixture-initial-pin", SOURCE.read_text(encoding="utf-8"))
+        self.assertNotIn("argv[2]", SOURCE.read_text(encoding="utf-8"))
+        self.assertNotIn("CADUCEUS_PROVISION_PIN", SOURCE.read_text(encoding="utf-8"))
+        with mock.patch.object(self.module, "provision_caduceus", side_effect=Refused("exists")), mock.patch.object(sys, "argv", ["access_server.py", "--provision"]), mock.patch.object(sys, "stdin") as stdin:
+            stdin.buffer.readline.return_value = b"fixture-initial-pin\n"
+            self.assertEqual(self.module.main(), 2)
+
     def test_manifest_owns_private_runtime_and_keyman_dependency(self) -> None:
         manifest = json.loads((ROOT / "profiles/homeserver/modules/caduceus/manifest.json").read_text())
         managed = {item["path"]: item["content"] for item in manifest["ladder"][0]["args"]["managed_files"]}
         unit = managed["/etc/systemd/system/caduceus-access.service"]
         self.assertIn("keyman_caduceus_access.py", unit)
+        self.assertIn("keyman_caduceus_access.runtime.json", unit)
+        self.assertIn("keyman_installer/index.py verify", unit)
+        self.assertIn("BindReadOnlyPaths=/opt/keyman/runtime/lib", unit)
+        self.assertNotIn("/root/key", unit.split("ReadWritePaths=", 1)[1].split("\n", 1)[0])
         self.assertIn("/run/caduceus/access.sock", unit)
         self.assertIn("Requires=caduceus-access.service", managed["/etc/systemd/system/caduceus.service"])
         self.assertEqual(managed["/usr/local/sbin/caduceus_staff/access_server.py"], SOURCE.read_text())
