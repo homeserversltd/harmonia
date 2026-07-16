@@ -86,7 +86,7 @@ def profile_prefix(hermes_bin: str, profile: str) -> list[str]:
     return [hermes_bin, "-p", profile]
 
 
-def gateway_contract(hermes_bin: str, profile: str) -> tuple[str, list[str], str]:
+def gateway_contract(hermes_bin: str, profile: str) -> tuple[str | None, list[str], str]:
     mode = os.environ.get("HERMES_MAINTENANCE_GATEWAY_MODE", "dedicated").strip()
     if mode == "dedicated":
         expected = (
@@ -98,6 +98,11 @@ def gateway_contract(hermes_bin: str, profile: str) -> tuple[str, list[str], str
     elif mode == "multiplex-default":
         expected = "hermes-gateway.service"
         status_prefix = [hermes_bin]
+    elif mode == "none":
+        declared = os.environ.get("HERMES_MAINTENANCE_GATEWAY_UNIT", "").strip()
+        if declared:
+            raise ValueError("hermes-gateway-unit-forbidden")
+        return None, [], mode
     else:
         raise ValueError("hermes-gateway-mode-invalid")
 
@@ -173,6 +178,8 @@ def main() -> int:
         return finish(receipt_path, receipt, False, str(exc))
     receipt["gateway_unit"] = unit
     receipt["gateway_mode"] = gateway_mode
+    if gateway_mode == "none":
+        receipt["gateway_restart_attempted"] = False
 
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
     lock_path = env_path(
@@ -249,7 +256,19 @@ def main() -> int:
             receipt["gateway_restart_attempted"] = False
             return finish(receipt_path, receipt, False, "hermes-post-update-cli-failed")
 
+        if gateway_mode == "none":
+            receipt["update_available"] = update_available
+            receipt["updated"] = update_available
+            receipt["changed"] = update_available
+            return finish(
+                receipt_path,
+                receipt,
+                True,
+                "updated-no-gateway" if update_available else "current-no-gateway",
+            )
+
         unit = receipt["gateway_unit"]
+        assert isinstance(unit, str)
         restart = command_result([systemctl_bin, "--user", "restart", unit], 120)
         receipt["commands"]["gateway_restart"] = restart
         receipt["gateway_restart_attempted"] = True

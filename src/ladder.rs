@@ -668,18 +668,25 @@ fn validated_file_symlink_step(
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    crate::tools::files::validated_file_symlink(
-        module_dir,
-        &step.step_id,
-        &resolve_module_path(module_dir, string_arg(&step.args, "desired_source")),
-        &PathBuf::from(string_arg(&step.args, "source")),
-        &PathBuf::from(string_arg(&step.args, "target")),
-        string_arg(&step.args, "validator_program"),
-        &string_array_arg(&step.args, "validator_args"),
-        optional_string_arg(&step.args, "reload_program"),
-        &string_array_arg(&step.args, "reload_args"),
-        integer_arg(&step.args, "timeout_secs", 30),
-        apply,
+    let desired_source = resolve_module_path(module_dir, string_arg(&step.args, "desired_source"));
+    let source = PathBuf::from(string_arg(&step.args, "source"));
+    let target = PathBuf::from(string_arg(&step.args, "target"));
+    let validator_args = string_array_arg(&step.args, "validator_args");
+    let reload_args = string_array_arg(&step.args, "reload_args");
+    crate::tools::validated_file_symlink::execute(
+        crate::tools::validated_file_symlink::ValidatedFileSymlinkRequest {
+            receipt_dir: module_dir,
+            name: &step.step_id,
+            desired_source: &desired_source,
+            source: &source,
+            target: &target,
+            validator_program: string_arg(&step.args, "validator_program"),
+            validator_args: &validator_args,
+            reload_program: optional_string_arg(&step.args, "reload_program"),
+            reload_args: &reload_args,
+            timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
+            apply,
+        },
     )
 }
 

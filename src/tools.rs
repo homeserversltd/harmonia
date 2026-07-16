@@ -116,6 +116,7 @@ pub(crate) mod module_steps;
 pub mod package;
 pub(crate) mod service_runtime;
 pub mod systemd;
+pub(crate) mod validated_file_symlink;
 
 pub const TOOLBELT: &[ToolContract] = &[
     artifact_lock::CONTRACT,

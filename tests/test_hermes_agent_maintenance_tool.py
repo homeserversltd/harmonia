@@ -37,6 +37,8 @@ if args == ['--version']:
         print('version failed', file=sys.stderr); raise SystemExit(6)
     print('Hermes Agent v0.18.2')
 elif args[-2:] == ['update', '--check']:
+    if os.environ.get('FAKE_CHECK_FAIL') == '1':
+        print('update check failed', file=sys.stderr); raise SystemExit(10)
     print('Update available: 3 commits behind origin/main.' if os.environ.get('FAKE_UPDATE_AVAILABLE') == '1' else os.environ.get('FAKE_CURRENT_TEXT', 'Already up to date.'))
 elif 'update' in args and '--yes' in args:
     if os.environ.get('FAKE_UPDATE_FAIL') == '1':
@@ -122,6 +124,19 @@ def test_failed_update_preserves_running_gateway(tmp_path: Path) -> None:
     assert not any(call[:3] == ["systemctl", "--user", "restart"] for call in calls)
 
 
+def test_failed_no_gateway_update_check_does_not_attempt_gateway_motion(tmp_path: Path) -> None:
+    result, receipt, calls = run_tool(
+        tmp_path,
+        HERMES_MAINTENANCE_GATEWAY_MODE="none",
+        FAKE_CHECK_FAIL="1",
+    )
+    assert result.returncode == 1
+    assert receipt["state"] == "hermes-update-check-failed"
+    assert receipt["gateway_restart_attempted"] is False
+    assert not any(call[0] == "systemctl" for call in calls)
+    assert not any(call[-2:] == ["gateway", "status"] for call in calls)
+
+
 def test_current_install_still_gets_nightly_selected_gateway_restart(tmp_path: Path) -> None:
     result, receipt, calls = run_tool(tmp_path, FAKE_UPDATE_AVAILABLE="0")
     assert result.returncode == 0
@@ -178,6 +193,54 @@ def test_named_multiplex_profile_restarts_and_proves_default_gateway(tmp_path: P
     assert ["hermes", "-p", "research", "update", "--check"] in calls
     assert ["systemctl", "--user", "restart", "hermes-gateway.service"] in calls
     assert ["hermes", "gateway", "status"] in calls
+
+
+def test_no_gateway_current_install_skips_gateway_motion_and_writes_green_receipt(tmp_path: Path) -> None:
+    result, receipt, calls = run_tool(
+        tmp_path,
+        HERMES_MAINTENANCE_GATEWAY_MODE="none",
+        FAKE_UPDATE_AVAILABLE="0",
+    )
+    assert result.returncode == 0
+    assert receipt["ok"] is True
+    assert receipt["gateway_mode"] == "none"
+    assert receipt["gateway_restart_attempted"] is False
+    assert receipt["update_available"] is False
+    assert receipt["updated"] is False
+    assert receipt["state"] == "current-no-gateway"
+    assert not any(call[0] == "systemctl" for call in calls)
+    assert not any(call[-2:] == ["gateway", "status"] for call in calls)
+    assert not any("--yes" in call for call in calls)
+
+
+def test_no_gateway_update_skips_gateway_motion_and_writes_green_receipt(tmp_path: Path) -> None:
+    result, receipt, calls = run_tool(
+        tmp_path,
+        HERMES_MAINTENANCE_GATEWAY_MODE="none",
+        FAKE_UPDATE_AVAILABLE="1",
+    )
+    assert result.returncode == 0
+    assert receipt["ok"] is True
+    assert receipt["gateway_mode"] == "none"
+    assert receipt["gateway_restart_attempted"] is False
+    assert receipt["update_available"] is True
+    assert receipt["updated"] is True
+    assert receipt["state"] == "updated-no-gateway"
+    assert ["hermes", "update", "--yes"] in calls
+    assert not any(call[0] == "systemctl" for call in calls)
+    assert not any(call[-2:] == ["gateway", "status"] for call in calls)
+
+
+def test_no_gateway_rejects_declared_gateway_unit_before_update_motion(tmp_path: Path) -> None:
+    result, receipt, calls = run_tool(
+        tmp_path,
+        HERMES_MAINTENANCE_GATEWAY_MODE="none",
+        HERMES_MAINTENANCE_GATEWAY_UNIT="hermes-gateway.service",
+        FAKE_UPDATE_AVAILABLE="1",
+    )
+    assert result.returncode == 1
+    assert receipt["state"] == "hermes-gateway-unit-forbidden"
+    assert calls == []
 
 
 def test_invalid_timeout_writes_failure_receipt_before_commands(tmp_path: Path) -> None:
