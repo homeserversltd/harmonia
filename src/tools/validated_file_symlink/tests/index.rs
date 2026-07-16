@@ -97,11 +97,15 @@ fn assert_initial_state(source: &Path, target: &Path, old_link: &Path) {
     assert_eq!(fs::read_link(target).unwrap(), old_link);
 }
 
-#[path = "behavior/index.rs"]
-mod behavior;
-#[path = "faults/index.rs"]
-mod faults;
-#[path = "structure/index.rs"]
-mod structure;
+#[rustfmt::skip]
 #[path = "transaction/index.rs"]
 mod transaction;
+#[rustfmt::skip]
+#[path = "faults/index.rs"]
+mod faults;
+#[rustfmt::skip]
+#[path = "behavior/index.rs"]
+mod behavior;
+#[rustfmt::skip]
+#[path = "structure/index.rs"]
+mod structure;

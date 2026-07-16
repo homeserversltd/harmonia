@@ -28,10 +28,30 @@ fn assert_band(path: &Path) {
     let children = declaration["children"]
         .as_array()
         .unwrap_or_else(|| panic!("children array missing: {}", path.display()));
-    let declared: Vec<&str> = children
+    let declared: Vec<String> = children
         .iter()
-        .map(|child| child.as_str().expect("child must be a string"))
+        .map(|child| child.as_str().expect("child must be a string").to_owned())
         .collect();
+    let spine = fs::read_to_string(path.join("index.rs")).unwrap();
+    let wired: Vec<String> = spine
+        .lines()
+        .filter(|line| line.contains("include!(") || line.contains("#[path = "))
+        .filter_map(|line| {
+            let (_, quoted) = line.split_once('"')?;
+            let (marker, _) = quoted.split_once('"')?;
+            marker
+                .contains('/')
+                .then(|| marker.strip_suffix("/index.rs"))
+                .flatten()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        wired,
+        declared,
+        "child spine order drift: {}",
+        path.display()
+    );
     let actual: Vec<String> = fs::read_dir(path)
         .unwrap()
         .filter_map(Result::ok)
@@ -46,7 +66,7 @@ fn assert_band(path: &Path) {
     );
     for child in declared {
         assert!(
-            actual.iter().any(|actual| actual == child),
+            actual.iter().any(|actual| actual == &child),
             "undeclared child: {child}"
         );
         assert_band(&path.join(child));
