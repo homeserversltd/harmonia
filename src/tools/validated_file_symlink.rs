@@ -178,9 +178,12 @@ fn restore_link(path: &Path, saved: &SavedLink) -> Result<(), String> {
 }
 
 fn source_matches_saved(path: &Path, saved: &SavedFile) -> bool {
-    match (&saved.bytes, fs::read(path), file_mode(path)) {
-        (Some(bytes), Ok(observed), Ok(mode)) => observed == *bytes && saved.mode == Some(mode),
-        (None, Err(error), _) if error.kind() == std::io::ErrorKind::NotFound => true,
+    match (fs::symlink_metadata(path), &saved.bytes) {
+        (Err(error), None) if error.kind() == std::io::ErrorKind::NotFound => true,
+        (Ok(metadata), Some(bytes)) if metadata.file_type().is_file() => {
+            fs::read(path).ok().as_deref() == Some(bytes.as_slice())
+                && file_mode(path).ok() == saved.mode
+        }
         _ => false,
     }
 }
@@ -221,6 +224,8 @@ enum FileSymlinkFault {
     BeforeLinkPromotion,
     AfterLinkPromotion,
     DuringSourceRestoration,
+    #[cfg(test)]
+    ReplaceSourceWithDanglingSymlinkDuringRestoration,
     DuringLinkRestoration,
 }
 
@@ -259,6 +264,26 @@ fn file_symlink_fault(_fault: FileSymlinkFault) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+fn replace_source_with_dangling_symlink_during_restoration(path: &Path) -> Result<bool, String> {
+    let fault = FileSymlinkFault::ReplaceSourceWithDanglingSymlinkDuringRestoration;
+    let bit = 1 << (fault as u8);
+    let injected = FILE_SYMLINK_FAULT.with(|slot| {
+        let mask = slot.get();
+        slot.set(mask & !bit);
+        mask & bit != 0
+    });
+    if !injected {
+        return Ok(false);
+    }
+    fs::remove_file(path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(path.with_extension("residual"), path).map_err(|e| e.to_string())?;
+    #[cfg(not(unix))]
+    return Err("validated-file-symlink-unsupported".into());
+    Ok(true)
+}
+
 fn rollback_file_symlink(
     mutations: &[FileSymlinkMutation],
     source: &Path,
@@ -270,6 +295,16 @@ fn rollback_file_symlink(
     for mutation in mutations.iter().rev() {
         let result = match mutation {
             FileSymlinkMutation::Source => {
+                #[cfg(test)]
+                match replace_source_with_dangling_symlink_during_restoration(source) {
+                    Ok(true) => {
+                        Err("injected residual dangling source symlink during restoration".into())
+                    }
+                    Ok(false) => file_symlink_fault(FileSymlinkFault::DuringSourceRestoration)
+                        .and_then(|_| restore_file(source, source_before)),
+                    Err(error) => Err(error),
+                }
+                #[cfg(not(test))]
                 file_symlink_fault(FileSymlinkFault::DuringSourceRestoration)
                     .and_then(|_| restore_file(source, source_before))
             }
@@ -724,6 +759,49 @@ mod validated_file_symlink_tests {
         let outcome = run(&root, &desired, &source, &target, &receipts, None);
         assert!(!outcome.ok && outcome.changed);
         assert_eq!(fs::read(&source).unwrap(), b"new bytes\n");
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("step.json")).unwrap()).unwrap();
+        assert_eq!(receipt["changed"], true);
+        assert_eq!(receipt["restoration"]["ok"], false);
+        assert_eq!(receipt["promotion"]["source"], true);
+        assert_eq!(receipt["promotion"]["link"], false);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_saved_state_comparison_rejects_symlinks_and_accepts_exact_states() {
+        let (root, _desired, source, _target, _receipts) = fixture("source-saved-state");
+        let saved_regular = save_file(&source).unwrap();
+        assert!(source_matches_saved(&source, &saved_regular));
+        let same_bytes = root.join("same-bytes.conf");
+        fs::write(&same_bytes, b"old bytes\n").unwrap();
+        fs::remove_file(&source).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&same_bytes, &source).unwrap();
+        assert!(!source_matches_saved(&source, &saved_regular));
+
+        let absent = root.join("absent.conf");
+        let saved_absent = save_file(&absent).unwrap();
+        assert!(source_matches_saved(&absent, &saved_absent));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("missing-target.conf"), &absent).unwrap();
+        assert!(!source_matches_saved(&absent, &saved_absent));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn residual_source_symlink_after_failed_rollback_is_changed_in_terminal_receipt() {
+        let (root, desired, source, target, receipts) = fixture("residual-source-symlink");
+        set_file_symlink_faults(&[
+            FileSymlinkFault::BeforeLinkRestage,
+            FileSymlinkFault::ReplaceSourceWithDanglingSymlinkDuringRestoration,
+        ]);
+        let outcome = run(&root, &desired, &source, &target, &receipts, None);
+        assert!(!outcome.ok && outcome.changed);
+        assert!(fs::symlink_metadata(&source)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         let receipt: serde_json::Value =
             serde_json::from_slice(&fs::read(receipts.join("step.json")).unwrap()).unwrap();
         assert_eq!(receipt["changed"], true);

@@ -426,7 +426,9 @@ fn execute_validated_step(
         ("health", "probe") => health_probe_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
         ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
-        ("files", "validated-file-symlink") => validated_file_symlink_step(step, module_dir, apply),
+        ("files", "validated-file-symlink") => {
+            validated_file_symlink_step(step, manifest, module_dir, apply)
+        }
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
@@ -665,10 +667,11 @@ fn validated_symlink_step(
 
 fn validated_file_symlink_step(
     step: &ValidatedStep,
+    manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let desired_source = resolve_module_path(module_dir, string_arg(&step.args, "desired_source"));
+    let desired_source = resolve_ladder_path(manifest, string_arg(&step.args, "desired_source"));
     let source = PathBuf::from(string_arg(&step.args, "source"));
     let target = PathBuf::from(string_arg(&step.args, "target"));
     let validator_args = string_array_arg(&step.args, "validator_args");
@@ -817,15 +820,6 @@ fn files_under_root(root: &Path) -> Result<Vec<String>, String> {
     walk(root, root, &mut out)?;
     out.sort();
     Ok(out)
-}
-
-fn resolve_module_path(module_dir: &Path, path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        module_dir.join(path)
-    }
 }
 
 fn resolve_ladder_path(manifest: &LadderManifest, path: &str) -> PathBuf {
@@ -1197,48 +1191,64 @@ mod tests {
     }
 
     #[test]
-    fn relative_desired_source_is_resolved_from_the_mounted_module_directory() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-relative-desired-{}", process::id()));
-        let module_dir = root.join("mounted-module");
-        let source = root.join("live/site.conf");
-        let target = root.join("enabled/site.conf");
-        fs::create_dir_all(&module_dir).unwrap();
+    fn relative_desired_source_uses_manifest_base_dir_and_keeps_receipts_separate() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-relative-desired-source-{}",
+            process::id()
+        ));
+        let manifest_dir = root.join("profiles/homeserver/modules/nginx");
+        let receipt_dir = root.join("receipts/modules/nginx");
+        let source = root.join("live/etc/nginx/sites-available/harmonia-shared");
+        let target = root.join("live/etc/nginx/sites-enabled/harmonia-shared");
+        let desired_source =
+            manifest_dir.join("files_root/etc/nginx/sites-available/harmonia-shared");
+        fs::create_dir_all(desired_source.parent().unwrap()).unwrap();
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(module_dir.join("desired.conf"), b"module-relative bytes\n").unwrap();
-        let manifest = LadderManifest {
-            schema: SCHEMA.into(),
-            id: "mounted-module".into(),
-            version: "1".into(),
-            description: "fixture".into(),
-            optional: false,
-            optional_warning: None,
-            group: None,
-            constants: BTreeMap::new(),
-            files_root: None,
-            base_dir: PathBuf::new(),
-            ladder: vec![LadderStep {
-                step_id: "validated".into(),
-                tool: "files".into(),
-                permutation: "validated-file-symlink".into(),
-                args: BTreeMap::from([
-                    ("desired_source".into(), json!("desired.conf")),
-                    ("source".into(), json!(source)),
-                    ("target".into(), json!(target)),
-                    ("validator_program".into(), json!("/bin/true")),
-                    ("validator_args".into(), json!([])),
-                    ("reload_program".into(), json!("")),
-                    ("reload_args".into(), json!([])),
-                    ("timeout_secs".into(), json!(5)),
-                ]),
-                on_failure: OnFailure::Stop,
-            }],
-        };
-        let result = execute_ladder_manifest(&manifest, &module_dir, true, None).unwrap();
+        fs::write(&desired_source, b"manifest-authority bytes\n").unwrap();
+        fs::write(
+            manifest_dir.join("manifest.json"),
+            format!(
+                r#"{{"schema":"{SCHEMA}","id":"nginx","version":"1","description":"fixture","ladder":[{{"step_id":"validated","tool":"files","permutation":"validated-file-symlink","args":{{"desired_source":"files_root/etc/nginx/sites-available/harmonia-shared","source":"{}","target":"{}","validator_program":"/bin/true","validator_args":[],"reload_program":"","reload_args":[],"timeout_secs":5}},"on_failure":"stop"}}]}}"#,
+                source.display(),
+                target.display()
+            ),
+        )
+        .unwrap();
+        let manifest = load_ladder_manifest(&manifest_dir.join("manifest.json")).unwrap();
+        assert_eq!(manifest.base_dir, manifest_dir);
+
+        let result = execute_ladder_manifest(&manifest, &receipt_dir, true, None).unwrap();
+
         assert!(result.ok && result.changed);
-        assert_eq!(fs::read(&source).unwrap(), b"module-relative bytes\n");
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            fs::read(&desired_source).unwrap()
+        );
+        assert!(receipt_dir.join("validated.json").is_file());
+        assert!(!receipt_dir
+            .join("files_root/etc/nginx/sites-available/harmonia-shared")
+            .exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn nginx_manifest_desired_source_is_a_regular_manifest_relative_file() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/homeserver/modules/nginx/manifest.json");
+        let manifest = load_ladder_manifest(&manifest_path).unwrap();
+        let step = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "nginx-shared-transaction")
+            .unwrap();
+        let desired_source =
+            resolve_ladder_path(&manifest, string_arg(&step.args, "desired_source"));
+        assert!(
+            desired_source.is_file(),
+            "expected regular desired source at {}",
+            desired_source.display()
+        );
     }
 
     #[test]
