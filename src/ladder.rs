@@ -352,13 +352,8 @@ pub(crate) fn execute_ladder_manifest(
     let mut operation_count = 0usize;
     for step in steps {
         operation_count += 1;
-        let outcome = execute_validated_step(
-            &step,
-            manifest,
-            module_dir,
-            apply,
-            package_authority,
-        )?;
+        let outcome =
+            execute_validated_step(&step, manifest, module_dir, apply, package_authority)?;
         if outcome.changed {
             changed = true;
         }
@@ -455,9 +450,7 @@ fn execute_validated_step(
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => {
-            package_step(step, module_dir, apply, package_authority)
-        }
+        | ("package", "keyring-repair") => package_step(step, module_dir, apply, package_authority),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
@@ -678,7 +671,7 @@ fn validated_file_symlink_step(
     crate::tools::files::validated_file_symlink(
         module_dir,
         &step.step_id,
-        &PathBuf::from(string_arg(&step.args, "desired_source")),
+        &resolve_module_path(module_dir, string_arg(&step.args, "desired_source")),
         &PathBuf::from(string_arg(&step.args, "source")),
         &PathBuf::from(string_arg(&step.args, "target")),
         string_arg(&step.args, "validator_program"),
@@ -817,6 +810,15 @@ fn files_under_root(root: &Path) -> Result<Vec<String>, String> {
     walk(root, root, &mut out)?;
     out.sort();
     Ok(out)
+}
+
+fn resolve_module_path(module_dir: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        module_dir.join(path)
+    }
 }
 
 fn resolve_ladder_path(manifest: &LadderManifest, path: &str) -> PathBuf {
@@ -1185,6 +1187,51 @@ mod tests {
         assert!(!continued.ok);
         assert_eq!(continued.operation_count, 2);
         let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn relative_desired_source_is_resolved_from_the_mounted_module_directory() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-relative-desired-{}", process::id()));
+        let module_dir = root.join("mounted-module");
+        let source = root.join("live/site.conf");
+        let target = root.join("enabled/site.conf");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(module_dir.join("desired.conf"), b"module-relative bytes\n").unwrap();
+        let manifest = LadderManifest {
+            schema: SCHEMA.into(),
+            id: "mounted-module".into(),
+            version: "1".into(),
+            description: "fixture".into(),
+            optional: false,
+            optional_warning: None,
+            group: None,
+            constants: BTreeMap::new(),
+            files_root: None,
+            base_dir: PathBuf::new(),
+            ladder: vec![LadderStep {
+                step_id: "validated".into(),
+                tool: "files".into(),
+                permutation: "validated-file-symlink".into(),
+                args: BTreeMap::from([
+                    ("desired_source".into(), json!("desired.conf")),
+                    ("source".into(), json!(source)),
+                    ("target".into(), json!(target)),
+                    ("validator_program".into(), json!("/bin/true")),
+                    ("validator_args".into(), json!([])),
+                    ("reload_program".into(), json!("")),
+                    ("reload_args".into(), json!([])),
+                    ("timeout_secs".into(), json!(5)),
+                ]),
+                on_failure: OnFailure::Stop,
+            }],
+        };
+        let result = execute_ladder_manifest(&manifest, &module_dir, true, None).unwrap();
+        assert!(result.ok && result.changed);
+        assert_eq!(fs::read(&source).unwrap(), b"module-relative bytes\n");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
