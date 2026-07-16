@@ -352,13 +352,8 @@ pub(crate) fn execute_ladder_manifest(
     let mut operation_count = 0usize;
     for step in steps {
         operation_count += 1;
-        let outcome = execute_validated_step(
-            &step,
-            manifest,
-            module_dir,
-            apply,
-            package_authority,
-        )?;
+        let outcome =
+            execute_validated_step(&step, manifest, module_dir, apply, package_authority)?;
         if outcome.changed {
             changed = true;
         }
@@ -431,6 +426,9 @@ fn execute_validated_step(
         ("health", "probe") => health_probe_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
         ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
+        ("files", "validated-file-symlink") => {
+            validated_file_symlink_step(step, manifest, module_dir, apply)
+        }
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
@@ -454,9 +452,7 @@ fn execute_validated_step(
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => {
-            package_step(step, module_dir, apply, package_authority)
-        }
+        | ("package", "keyring-repair") => package_step(step, module_dir, apply, package_authority),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
@@ -666,6 +662,34 @@ fn validated_symlink_step(
         &string_array_arg(&step.args, "reload_args"),
         integer_arg(&step.args, "timeout_secs", 30),
         apply,
+    )
+}
+
+fn validated_file_symlink_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let desired_source = resolve_ladder_path(manifest, string_arg(&step.args, "desired_source"));
+    let source = PathBuf::from(string_arg(&step.args, "source"));
+    let target = PathBuf::from(string_arg(&step.args, "target"));
+    let validator_args = string_array_arg(&step.args, "validator_args");
+    let reload_args = string_array_arg(&step.args, "reload_args");
+    crate::tools::validated_file_symlink::execute(
+        crate::tools::validated_file_symlink::ValidatedFileSymlinkRequest {
+            receipt_dir: module_dir,
+            name: &step.step_id,
+            desired_source: &desired_source,
+            source: &source,
+            target: &target,
+            validator_program: string_arg(&step.args, "validator_program"),
+            validator_args: &validator_args,
+            reload_program: optional_string_arg(&step.args, "reload_program"),
+            reload_args: &reload_args,
+            timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
+            apply,
+        },
     )
 }
 
@@ -1164,6 +1188,67 @@ mod tests {
         assert!(!continued.ok);
         assert_eq!(continued.operation_count, 2);
         let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn relative_desired_source_uses_manifest_base_dir_and_keeps_receipts_separate() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-relative-desired-source-{}",
+            process::id()
+        ));
+        let manifest_dir = root.join("profiles/homeserver/modules/nginx");
+        let receipt_dir = root.join("receipts/modules/nginx");
+        let source = root.join("live/etc/nginx/sites-available/harmonia-shared");
+        let target = root.join("live/etc/nginx/sites-enabled/harmonia-shared");
+        let desired_source =
+            manifest_dir.join("files_root/etc/nginx/sites-available/harmonia-shared");
+        fs::create_dir_all(desired_source.parent().unwrap()).unwrap();
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&desired_source, b"manifest-authority bytes\n").unwrap();
+        fs::write(
+            manifest_dir.join("manifest.json"),
+            format!(
+                r#"{{"schema":"{SCHEMA}","id":"nginx","version":"1","description":"fixture","ladder":[{{"step_id":"validated","tool":"files","permutation":"validated-file-symlink","args":{{"desired_source":"files_root/etc/nginx/sites-available/harmonia-shared","source":"{}","target":"{}","validator_program":"/bin/true","validator_args":[],"reload_program":"","reload_args":[],"timeout_secs":5}},"on_failure":"stop"}}]}}"#,
+                source.display(),
+                target.display()
+            ),
+        )
+        .unwrap();
+        let manifest = load_ladder_manifest(&manifest_dir.join("manifest.json")).unwrap();
+        assert_eq!(manifest.base_dir, manifest_dir);
+
+        let result = execute_ladder_manifest(&manifest, &receipt_dir, true, None).unwrap();
+
+        assert!(result.ok && result.changed);
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            fs::read(&desired_source).unwrap()
+        );
+        assert!(receipt_dir.join("validated.json").is_file());
+        assert!(!receipt_dir
+            .join("files_root/etc/nginx/sites-available/harmonia-shared")
+            .exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn nginx_manifest_desired_source_is_a_regular_manifest_relative_file() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/homeserver/modules/nginx/manifest.json");
+        let manifest = load_ladder_manifest(&manifest_path).unwrap();
+        let step = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "nginx-shared-transaction")
+            .unwrap();
+        let desired_source =
+            resolve_ladder_path(&manifest, string_arg(&step.args, "desired_source"));
+        assert!(
+            desired_source.is_file(),
+            "expected regular desired source at {}",
+            desired_source.display()
+        );
     }
 
     #[test]

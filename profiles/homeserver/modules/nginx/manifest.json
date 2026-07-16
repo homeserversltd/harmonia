@@ -17,22 +17,11 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "nginx-shared-source",
+      "step_id": "nginx-shared-transaction",
       "tool": "files",
-      "permutation": "converge",
+      "permutation": "validated-file-symlink",
       "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": ["etc/nginx/sites-available/harmonia-shared"],
-        "backup_existing": true
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "nginx-shared-link",
-      "tool": "files",
-      "permutation": "validated-symlink",
-      "args": {
+        "desired_source": "files_root/etc/nginx/sites-available/harmonia-shared",
         "source": "$constants.source",
         "target": "$constants.target",
         "validator_program": "/usr/sbin/nginx",
