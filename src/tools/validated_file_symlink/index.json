@@ -1,0 +1,10 @@
+{
+  "schema": "harmonia.recursive-rust-band.v1",
+  "name": "validated_file_symlink",
+  "children": [
+    "observation",
+    "transaction",
+    "receipt",
+    "tests"
+  ]
+}
