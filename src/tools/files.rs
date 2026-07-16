@@ -54,6 +54,20 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
     ),
+    ToolPermutation::new(
+        "validated-file-symlink",
+        "validate staged file and include-visible link candidates before reversible promotion",
+        &[
+            ToolArg::required("desired_source", ToolArgKind::String),
+            ToolArg::required("source", ToolArgKind::String),
+            ToolArg::required("target", ToolArgKind::String),
+            ToolArg::required("validator_program", ToolArgKind::String),
+            ToolArg::optional("validator_args", ToolArgKind::StringArray),
+            ToolArg::optional("reload_program", ToolArgKind::String),
+            ToolArg::optional("reload_args", ToolArgKind::StringArray),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    ),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
@@ -722,4 +736,199 @@ pub(crate) fn validated_symlink(
     let ok = source_ok && signal == "none" && validator.ok && reload.as_ref().map(|v| v.ok).unwrap_or(true);
     crate::write_json(&receipt_dir.join(format!("{name}.json")), &json!({"schema":"harmonia.files.validated_symlink.v1","source":source,"target":target,"apply":apply,"changed":promoted,"source_exists":source_ok,"link_current_before":current,"validator":validator,"reload":reload,"first_missing_signal":signal,"ok":ok}))?;
     Ok(crate::OperationOutcome { ok, changed: promoted, skipped: !apply, message: "validated symlink".into(), command: None })
+}
+
+#[derive(Clone)]
+struct SavedFile {
+    bytes: Option<Vec<u8>>,
+    mode: Option<u32>,
+}
+
+fn save_file(path: &Path) -> Result<SavedFile, String> {
+    if path.exists() {
+        if !path.is_file() {
+            return Err(format!("validated-file-symlink-source-not-file {}", path.display()));
+        }
+        Ok(SavedFile {
+            bytes: Some(fs::read(path).map_err(|e| e.to_string())?),
+            mode: Some(file_mode(path)?),
+        })
+    } else {
+        Ok(SavedFile { bytes: None, mode: None })
+    }
+}
+
+fn restore_file(path: &Path, saved: &SavedFile) -> Result<(), String> {
+    match &saved.bytes {
+        Some(bytes) => atomic_write_bytes(path, bytes, saved.mode),
+        None => {
+            if path.exists() || path.is_symlink() {
+                fs::remove_file(path).map_err(|e| format!("validated-file-symlink-restore-source-remove-failed {}: {e}", path.display()))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn restore_link(path: &Path, saved: &Option<PathBuf>) -> Result<(), String> {
+    if path.exists() || path.is_symlink() {
+        fs::remove_file(path).map_err(|e| format!("validated-file-symlink-restore-link-remove-failed {}: {e}", path.display()))?;
+    }
+    if let Some(link) = saved {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(link, path)
+            .map_err(|e| format!("validated-file-symlink-restore-link-create-failed {}: {e}", path.display()))?;
+        #[cfg(not(unix))]
+        return Err("validated-file-symlink-unsupported".into());
+    }
+    Ok(())
+}
+
+/// Validates desired bytes through a hidden source candidate and a non-hidden sibling
+/// link candidate, so Nginx's `sites-enabled/*` include observes the exact candidate.
+pub(crate) fn validated_file_symlink(
+    receipt_dir: &Path,
+    name: &str,
+    desired_source: &Path,
+    source: &Path,
+    target: &Path,
+    validator_program: &str,
+    validator_args: &[String],
+    reload_program: Option<&str>,
+    reload_args: &[String],
+    timeout_secs: u64,
+    apply: bool,
+) -> Result<crate::OperationOutcome, String> {
+    let desired = match fs::read(desired_source) {
+        Ok(value) => value,
+        Err(_) => return write_validated_file_symlink_receipt(receipt_dir, name, apply, false, false, false, false, false, None, None, None, "validated-file-symlink-desired-source-missing"),
+    };
+    let desired_mode = file_mode(desired_source)?;
+    let source_before = save_file(source)?;
+    let link_before = fs::read_link(target).ok();
+    if (target.exists() || target.is_symlink()) && link_before.is_none() {
+        return write_validated_file_symlink_receipt(receipt_dir, name, apply, false, false, false, false, false, None, None, None, "validated-file-symlink-target-not-link");
+    }
+    let source_current = source_before.bytes.as_deref() == Some(desired.as_slice()) && source_before.mode == Some(desired_mode);
+    let link_current = link_before.as_deref() == Some(source);
+    if (source_current && link_current) || !apply {
+        return write_validated_file_symlink_receipt(receipt_dir, name, apply, true, false, false, false, false, None, None, None, "none");
+    }
+
+    let source_parent = source.parent().ok_or_else(|| "validated-file-symlink-source-parent-missing".to_string())?;
+    let target_parent = target.parent().ok_or_else(|| "validated-file-symlink-target-parent-missing".to_string())?;
+    fs::create_dir_all(source_parent).map_err(|e| e.to_string())?;
+    fs::create_dir_all(target_parent).map_err(|e| e.to_string())?;
+    let pid = std::process::id();
+    let source_candidate = source_parent.join(format!(".{}.harmonia-source-candidate-{pid}", source.file_name().and_then(|v| v.to_str()).unwrap_or("source")));
+    let link_candidate = target_parent.join(format!("{}.harmonia-link-candidate-{pid}", target.file_name().and_then(|v| v.to_str()).unwrap_or("link")));
+    let clean_candidates = || {
+        let _ = fs::remove_file(&source_candidate);
+        let _ = fs::remove_file(&link_candidate);
+    };
+    clean_candidates();
+    if let Err(error) = atomic_write_bytes(&source_candidate, &desired, Some(desired_mode)) {
+        clean_candidates();
+        return write_validated_file_symlink_receipt(receipt_dir, name, apply, false, false, false, false, false, None, None, None, &format!("validated-file-symlink-stage-source-failed: {error}"));
+    }
+    #[cfg(unix)]
+    if let Err(error) = std::os::unix::fs::symlink(&source_candidate, &link_candidate) {
+        clean_candidates();
+        return write_validated_file_symlink_receipt(receipt_dir, name, apply, false, false, false, false, false, None, None, None, &format!("validated-file-symlink-stage-link-failed: {error}"));
+    }
+    #[cfg(not(unix))]
+    return Err("validated-file-symlink-unsupported".into());
+
+    let validator_refs: Vec<&str> = validator_args.iter().map(String::as_str).collect();
+    let validator = crate::tools::command::capture_with_timeout(validator_program, &validator_refs, timeout_secs);
+    if !validator.ok {
+        clean_candidates();
+        return write_validated_file_symlink_receipt(receipt_dir, name, apply, false, true, false, false, false, Some(validator), None, None, "validated-file-symlink-validator-failed");
+    }
+
+    let mut source_promoted = false;
+    let mut link_promoted = false;
+    let mut promotion_error = None;
+    if !source_current {
+        if let Err(error) = fs::rename(&source_candidate, source) {
+            promotion_error = Some(format!("validated-file-symlink-promote-source-failed: {error}"));
+        } else {
+            source_promoted = true;
+        }
+    }
+    if promotion_error.is_none() && !link_current {
+        let _ = fs::remove_file(&link_candidate);
+        #[cfg(unix)]
+        if let Err(error) = std::os::unix::fs::symlink(source, &link_candidate) {
+            promotion_error = Some(format!("validated-file-symlink-restage-live-link-failed: {error}"));
+        }
+        if promotion_error.is_none() {
+            if let Err(error) = fs::rename(&link_candidate, target) {
+                promotion_error = Some(format!("validated-file-symlink-promote-link-failed: {error}"));
+            } else {
+                link_promoted = true;
+            }
+        }
+    }
+    if let Some(error) = promotion_error {
+        let source_restore = restore_file(source, &source_before);
+        let link_restore = restore_link(target, &link_before);
+        let restored = source_restore.is_ok() && link_restore.is_ok();
+        clean_candidates();
+        let signal = if restored { error } else { "validated-file-symlink-restoration-failed".to_string() };
+        return write_validated_file_symlink_receipt(receipt_dir, name, apply, false, true, source_promoted, link_promoted, true, Some(validator), None, Some(restored), &signal);
+    }
+    clean_candidates();
+
+    let mut reconcile = None;
+    let mut restored = None;
+    let mut ok = true;
+    let mut signal = "none";
+    if let Some(program) = reload_program.filter(|value| !value.is_empty()) {
+        let refs: Vec<&str> = reload_args.iter().map(String::as_str).collect();
+        let result = crate::tools::command::capture_with_timeout(program, &refs, timeout_secs);
+        if !result.ok {
+            let source_restore = restore_file(source, &source_before);
+            let link_restore = restore_link(target, &link_before);
+            let restoration_ok = source_restore.is_ok() && link_restore.is_ok();
+            restored = Some(restoration_ok);
+            ok = false;
+            signal = if restoration_ok { "validated-file-symlink-reconcile-failed-restored" } else { "validated-file-symlink-restoration-failed" };
+        }
+        reconcile = Some(result);
+    }
+    write_validated_file_symlink_receipt(receipt_dir, name, apply, ok, true, source_promoted, link_promoted, restored.is_some(), Some(validator), reconcile, restored, signal)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_validated_file_symlink_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    apply: bool,
+    ok: bool,
+    validation_ran: bool,
+    source_promoted: bool,
+    link_promoted: bool,
+    restoration_attempted: bool,
+    validator: Option<crate::CmdResult>,
+    reconcile: Option<crate::CmdResult>,
+    restoration_ok: Option<bool>,
+    signal: &str,
+) -> Result<crate::OperationOutcome, String> {
+    let changed = ok && (source_promoted || link_promoted);
+    crate::write_json(
+        &receipt_dir.join(format!("{name}.json")),
+        &json!({
+            "schema":"harmonia.files.validated_file_symlink.v1",
+            "ok":ok,
+            "apply":apply,
+            "changed":changed,
+            "validation":{"ran":validation_ran,"result":validator},
+            "promotion":{"source":source_promoted,"link":link_promoted},
+            "reconcile":reconcile,
+            "restoration":{"attempted":restoration_attempted,"ok":restoration_ok},
+            "first_missing_signal":signal,
+        }),
+    )?;
+    Ok(crate::OperationOutcome { ok, changed, skipped: !apply, message: "validated file symlink".into(), command: None })
 }

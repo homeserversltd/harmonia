@@ -431,6 +431,7 @@ fn execute_validated_step(
         ("health", "probe") => health_probe_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
         ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
+        ("files", "validated-file-symlink") => validated_file_symlink_step(step, module_dir, apply),
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
@@ -658,6 +659,26 @@ fn validated_symlink_step(
     crate::tools::files::validated_symlink(
         module_dir,
         &step.step_id,
+        &PathBuf::from(string_arg(&step.args, "source")),
+        &PathBuf::from(string_arg(&step.args, "target")),
+        string_arg(&step.args, "validator_program"),
+        &string_array_arg(&step.args, "validator_args"),
+        optional_string_arg(&step.args, "reload_program"),
+        &string_array_arg(&step.args, "reload_args"),
+        integer_arg(&step.args, "timeout_secs", 30),
+        apply,
+    )
+}
+
+fn validated_file_symlink_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    crate::tools::files::validated_file_symlink(
+        module_dir,
+        &step.step_id,
+        &PathBuf::from(string_arg(&step.args, "desired_source")),
         &PathBuf::from(string_arg(&step.args, "source")),
         &PathBuf::from(string_arg(&step.args, "target")),
         string_arg(&step.args, "validator_program"),
