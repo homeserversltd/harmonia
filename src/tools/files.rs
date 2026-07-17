@@ -2,10 +2,14 @@ use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+#[cfg(unix)]
+use std::ffi::CString;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 
 pub const NAME: &str = "files";
@@ -15,7 +19,11 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
     ToolPermutation::new(
         "managed-files",
         "converge managed file declarations from typed JSON",
-        &[ToolArg::optional("files", ToolArgKind::Json)],
+        &[
+            ToolArg::optional("files", ToolArgKind::Json),
+            ToolArg::optional("owner", ToolArgKind::String),
+            ToolArg::optional("group", ToolArgKind::String),
+        ],
     ),
     ToolPermutation::new(
         "converge",
@@ -162,6 +170,8 @@ pub fn plan(request: &Request) -> Outcome {
 pub(crate) struct ManagedFilesRequest<'a> {
     pub module_id: &'a str,
     pub files: &'a [crate::ManagedFileManifest],
+    pub owner: Option<&'a str>,
+    pub group: Option<&'a str>,
     pub receipt_name: &'a str,
     pub schema: &'a str,
     pub first_missing_signal: &'a str,
@@ -178,14 +188,21 @@ pub(crate) fn converge_managed_files(
     let mut written = Vec::new();
     let mut changed = false;
     let mut entries = Vec::new();
+    let desired_uid = request.owner.map(resolve_uid).transpose()?;
+    let desired_gid = request.group.map(resolve_gid).transpose()?;
     for file in request.files {
         let path = PathBuf::from(&file.path);
+        let target_regular = fs::symlink_metadata(&path)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false);
         let existing = fs::read(&path).ok();
         let desired = file.content.as_bytes();
-        let content_equal = existing.as_deref() == Some(desired);
+        let content_equal = target_regular && existing.as_deref() == Some(desired);
         let mode = file.mode.unwrap_or(0o644);
-        let mode_equal = path.exists() && target_mode(&path)? == Some(mode);
-        let file_changed = !content_equal || !mode_equal;
+        let mode_equal = target_regular && target_mode(&path)? == Some(mode);
+        let (owner_equal, group_equal) = ownership_equal(&path, desired_uid, desired_gid)?;
+        let ownership_matches = owner_equal && group_equal;
+        let file_changed = !content_equal || !mode_equal || !ownership_matches;
         if file_changed {
             if apply {
                 if let Some(parent) = path.parent() {
@@ -193,7 +210,18 @@ pub(crate) fn converge_managed_files(
                         format!("managed-file-parent-failed {}: {e}", parent.display())
                     })?;
                 }
-                atomic_write_bytes(&path, desired, Some(mode))?;
+                if !content_equal || !mode_equal {
+                    atomic_write_bytes(&path, desired, Some(mode))?;
+                }
+                set_ownership(&path, desired_uid, desired_gid)?;
+                let (owner_equal_after, group_equal_after) =
+                    ownership_equal(&path, desired_uid, desired_gid)?;
+                if !owner_equal_after || !group_equal_after {
+                    return Err(format!(
+                        "managed-file-owner-readback-failed {}",
+                        path.display()
+                    ));
+                }
                 written.push(file.path.clone());
                 changed = true;
             } else {
@@ -205,6 +233,10 @@ pub(crate) fn converge_managed_files(
             "mode": mode,
             "content_equal_before": content_equal,
             "mode_equal_before": mode_equal,
+            "owner": request.owner,
+            "group": request.group,
+            "owner_equal_before": owner_equal,
+            "group_equal_before": group_equal,
             "changed": file_changed,
             "written": apply && file_changed,
         }));
@@ -226,6 +258,10 @@ pub(crate) fn converge_managed_files(
                 "module": request.module_id,
                 "path": file.path,
                 "mode": mode,
+                "owner": request.owner,
+                "group": request.group,
+                "owner_equal_before": owner_equal,
+                "group_equal_before": group_equal,
                 "apply": apply,
                 "changed": file_changed,
                 "written": apply && file_changed,
@@ -247,6 +283,8 @@ pub(crate) fn converge_managed_files(
             "module": request.module_id,
             "missing": missing,
             "written": written,
+            "owner": request.owner,
+            "group": request.group,
             "apply": apply,
             "changed": changed,
             "entries": entries,
@@ -260,6 +298,95 @@ pub(crate) fn converge_managed_files(
         message: format!("{} managed files checked", request.files.len()),
         command: None,
     })
+}
+
+#[cfg(unix)]
+fn resolve_uid(value: &str) -> Result<u32, String> {
+    if let Ok(uid) = value.parse::<u32>() {
+        return Ok(uid);
+    }
+    let name = CString::new(value).map_err(|_| format!("managed-file-owner-invalid {value:?}"))?;
+    let entry = unsafe { libc::getpwnam(name.as_ptr()) };
+    if entry.is_null() {
+        return Err(format!("managed-file-owner-unknown {value}"));
+    }
+    Ok(unsafe { (*entry).pw_uid })
+}
+
+#[cfg(not(unix))]
+fn resolve_uid(value: &str) -> Result<u32, String> {
+    Err(format!("managed-file-owner-unsupported {value}"))
+}
+
+#[cfg(unix)]
+fn resolve_gid(value: &str) -> Result<u32, String> {
+    if let Ok(gid) = value.parse::<u32>() {
+        return Ok(gid);
+    }
+    let name = CString::new(value).map_err(|_| format!("managed-file-group-invalid {value:?}"))?;
+    let entry = unsafe { libc::getgrnam(name.as_ptr()) };
+    if entry.is_null() {
+        return Err(format!("managed-file-group-unknown {value}"));
+    }
+    Ok(unsafe { (*entry).gr_gid })
+}
+
+#[cfg(not(unix))]
+fn resolve_gid(value: &str) -> Result<u32, String> {
+    Err(format!("managed-file-group-unsupported {value}"))
+}
+
+#[cfg(unix)]
+fn ownership_equal(
+    path: &Path,
+    desired_uid: Option<u32>,
+    desired_gid: Option<u32>,
+) -> Result<(bool, bool), String> {
+    if !path.exists() {
+        return Ok((desired_uid.is_none(), desired_gid.is_none()));
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("managed-file-owner-metadata-failed {}: {e}", path.display()))?;
+    Ok((
+        desired_uid.map_or(true, |uid| metadata.uid() == uid),
+        desired_gid.map_or(true, |gid| metadata.gid() == gid),
+    ))
+}
+
+#[cfg(not(unix))]
+fn ownership_equal(
+    _path: &Path,
+    _desired_uid: Option<u32>,
+    _desired_gid: Option<u32>,
+) -> Result<(bool, bool), String> {
+    Ok((true, true))
+}
+
+#[cfg(unix)]
+fn set_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
+    if uid.is_none() && gid.is_none() {
+        return Ok(());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|e| format!("managed-file-owner-open-failed {}: {e}", path.display()))?;
+    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
+    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
+    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+        return Err(format!(
+            "managed-file-owner-set-failed {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn converge_files(
@@ -779,4 +906,149 @@ pub(crate) fn validated_symlink(
         message: "validated symlink".into(),
         command: None,
     })
+}
+
+#[cfg(test)]
+mod managed_ownership_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_files_reports_declared_owner_drift_even_when_bytes_and_mode_match() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-managed-owner-drift-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(&scratch).unwrap();
+        let target = scratch.join("payload");
+        fs::write(&target, b"desired\n").unwrap();
+        set_mode(&target, 0o644).unwrap();
+        let metadata = fs::metadata(&target).unwrap();
+        let desired_uid = metadata.uid().wrapping_add(1).to_string();
+        let actual_gid = metadata.gid().to_string();
+        let files = vec![crate::ManagedFileManifest {
+            path: target.to_string_lossy().into_owned(),
+            content: "desired\n".to_string(),
+            mode: Some(0o644),
+        }];
+
+        let outcome = converge_managed_files(
+            &ManagedFilesRequest {
+                module_id: "test",
+                files: &files,
+                owner: Some(&desired_uid),
+                group: Some(&actual_gid),
+                receipt_name: "owner-drift",
+                schema: "harmonia.test.owner.v1",
+                first_missing_signal: "managed-files-drift",
+            },
+            &scratch,
+            false,
+        )
+        .unwrap();
+
+        assert!(outcome.ok);
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(scratch.join("owner-drift.json")).unwrap()).unwrap();
+        assert_eq!(receipt["entries"][0]["content_equal_before"], true);
+        assert_eq!(receipt["entries"][0]["mode_equal_before"], true);
+        assert_eq!(receipt["entries"][0]["owner_equal_before"], false);
+        assert_eq!(receipt["entries"][0]["group_equal_before"], true);
+        assert_eq!(receipt["entries"][0]["changed"], true);
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_files_apply_chowns_when_running_with_root_authority() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-managed-owner-apply-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(&scratch).unwrap();
+        let target = scratch.join("payload");
+        fs::write(&target, b"desired\n").unwrap();
+        set_mode(&target, 0o755).unwrap();
+        let files = vec![crate::ManagedFileManifest {
+            path: target.to_string_lossy().into_owned(),
+            content: "desired\n".to_string(),
+            mode: Some(0o755),
+        }];
+
+        let outcome = converge_managed_files(
+            &ManagedFilesRequest {
+                module_id: "test",
+                files: &files,
+                owner: Some("65534"),
+                group: Some("65534"),
+                receipt_name: "owner-apply",
+                schema: "harmonia.test.owner.v1",
+                first_missing_signal: "managed-files-drift",
+            },
+            &scratch,
+            true,
+        )
+        .unwrap();
+
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        let metadata = fs::metadata(&target).unwrap();
+        assert_eq!(metadata.uid(), 65534);
+        assert_eq!(metadata.gid(), 65534);
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_files_replaces_symlink_before_privileged_owner_change() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-managed-owner-symlink-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(&scratch).unwrap();
+        let victim = scratch.join("victim");
+        let target = scratch.join("payload");
+        fs::write(&victim, b"desired\n").unwrap();
+        set_mode(&victim, 0o755).unwrap();
+        std::os::unix::fs::symlink(&victim, &target).unwrap();
+        let files = vec![crate::ManagedFileManifest {
+            path: target.to_string_lossy().into_owned(),
+            content: "desired\n".to_string(),
+            mode: Some(0o755),
+        }];
+
+        converge_managed_files(
+            &ManagedFilesRequest {
+                module_id: "test",
+                files: &files,
+                owner: Some("65534"),
+                group: Some("65534"),
+                receipt_name: "owner-symlink",
+                schema: "harmonia.test.owner.v1",
+                first_missing_signal: "managed-files-drift",
+            },
+            &scratch,
+            true,
+        )
+        .unwrap();
+
+        let target_metadata = fs::symlink_metadata(&target).unwrap();
+        assert!(target_metadata.file_type().is_file());
+        assert_eq!(target_metadata.uid(), 65534);
+        assert_eq!(target_metadata.gid(), 65534);
+        let victim_metadata = fs::metadata(&victim).unwrap();
+        assert_eq!(victim_metadata.uid(), 0);
+        assert_eq!(victim_metadata.gid(), 0);
+        let _ = fs::remove_dir_all(&scratch);
+    }
 }

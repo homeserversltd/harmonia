@@ -284,6 +284,8 @@ pub(crate) fn execute(
         &tools::files::ManagedFilesRequest {
             module_id: &module.id,
             files: &managed_files,
+            owner: None,
+            group: None,
             receipt_name: &format!("{}-managed-files", spec.op_prefix),
             schema: spec.managed_files_schema,
             first_missing_signal: &format!("{}-managed-file-missing", spec.op_prefix),
