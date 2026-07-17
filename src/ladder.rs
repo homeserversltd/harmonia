@@ -591,6 +591,8 @@ fn managed_files_step(
         &tools::files::ManagedFilesRequest {
             module_id: "ladder",
             files: &files,
+            owner: step.args.get("owner").and_then(|value| value.as_str()),
+            group: step.args.get("group").and_then(|value| value.as_str()),
             receipt_name: &step.step_id,
             schema: "harmonia.ladder.files.v1",
             first_missing_signal: "managed-files-drift",
@@ -1133,6 +1135,25 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown field `stray`"), "{err}");
+    }
+
+    #[test]
+    fn managed_files_validator_accepts_string_owner_and_group() {
+        let mut manifest = base_manifest();
+        manifest.ladder[0].tool = "files".into();
+        manifest.ladder[0].permutation = "managed-files".into();
+        manifest.ladder[0].args = BTreeMap::from([
+            ("files".into(), json!([])),
+            ("owner".into(), json!("owner")),
+            ("group".into(), json!("owner")),
+        ]);
+        validate_ladder(&manifest).unwrap();
+
+        manifest.ladder[0].args.insert("group".into(), json!(1000));
+        assert_eq!(
+            defect(manifest),
+            "step_id=say-ok defect=type-mismatch-group-expected-string"
+        );
     }
 
     #[test]
