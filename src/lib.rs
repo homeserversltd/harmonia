@@ -1452,21 +1452,16 @@ mod tests {
             .expect("homeserver caduceus service managed file")
             .content
             .as_str();
-        for writable in [
-            "/opt/coronatio",
-            "/var/lib/coronatio",
-            "/opt/harmonia",
-            "/etc/harmonia",
-            "/var/lib/harmonia",
-            "/var/lib/caduceus/certs",
-            "/var/log/hyalos",
-            "/etc/homeserver",
-            "/etc/homeserver.json",
-            "/var/www/homeserver/src/config",
+        for forbidden in [
+            "NoNewPrivileges=",
+            "PrivateTmp=",
+            "ProtectSystem=",
+            "ProtectHome=",
+            "ReadWritePaths=",
         ] {
             assert!(
-                service_text.contains(writable),
-                "homeserver Caduceus sandbox missing write surface {writable}"
+                !service_text.contains(forbidden),
+                "homeserver public Caduceus unit must not carry unjustified hardening {forbidden}"
             );
         }
         assert!(
@@ -1679,7 +1674,7 @@ mod tests {
             .expect("tv caduceus service managed file")
             .content
             .as_str();
-        assert!(service_text.contains("ReadWritePaths=/etc/tv"));
+        assert!(!service_text.contains("ReadWritePaths="));
     }
 
     #[test]
@@ -2104,7 +2099,7 @@ mod tests {
             .expect("homeconsole caduceus service managed file")
             .content
             .as_str();
-        assert!(service_text.contains("ReadWritePaths=/etc/console"));
+        assert!(!service_text.contains("ReadWritePaths="));
         validate_ladder(&manifest).unwrap();
     }
 
