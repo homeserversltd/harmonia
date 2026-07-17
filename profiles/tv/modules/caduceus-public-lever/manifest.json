@@ -27,7 +27,7 @@
           {
             "path": "/etc/systemd/system/caduceus.service",
             "mode": 420,
-            "content": "[Unit]\nDescription=Caduceus LAN-open appliance API (TV)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:8787\nRestart=on-failure\nRestartSec=2\nReadWritePaths=/etc/tv\n\n[Install]\nWantedBy=multi-user.target\n"
+            "content": "[Unit]\nDescription=Caduceus LAN-open appliance API (TV)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:8787\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
           },
           {
             "path": "/etc/caduceus/identity.json",

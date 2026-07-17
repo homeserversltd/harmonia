@@ -26,7 +26,7 @@
           {
             "path": "/etc/systemd/system/coronatio.service",
             "mode": 420,
-            "content": "[Unit]\nDescription=Coronatio HOMESERVER Rust crown\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nSupplementaryGroups=www-data\nStateDirectory=coronatio\nEnvironment=CORONATIO_PORT=3013\nEnvironment=CORONATIO_TAB_ROOT=/var/lib/coronatio/tabs\nExecStart=/usr/local/bin/coronatio\nRestart=on-failure\nRestartSec=2s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths=/var/lib/coronatio /mnt/keyexchange /mnt/ramdisk\n\n[Install]\nWantedBy=multi-user.target\n"
+            "content": "[Unit]\nDescription=Coronatio HOMESERVER Rust crown\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nSupplementaryGroups=www-data\nStateDirectory=coronatio\nEnvironment=CORONATIO_PORT=3013\nEnvironment=CORONATIO_TAB_ROOT=/var/lib/coronatio/tabs\nExecStart=/usr/local/bin/coronatio\nRestart=on-failure\nRestartSec=2s\n\n[Install]\nWantedBy=multi-user.target\n"
           },
           {
             "path": "/var/lib/coronatio/runtime.json",
