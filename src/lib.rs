@@ -1832,6 +1832,111 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
+    fn write_pro_flow_command_module(module_root: &Path, module_id: &str, program: &str) {
+        let module_dir = module_root.join(module_id);
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::write(
+            module_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema": "harmonia.module.ladder.v1",
+                "id": module_id,
+                "version": "1.0.0",
+                "description": "pro-flow wall fixture",
+                "optional": false,
+                "constants": {},
+                "ladder": [{
+                    "step_id": "execute",
+                    "tool": "command",
+                    "permutation": "capture",
+                    "args": {"program": program, "args": []},
+                    "on_failure": "stop"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn assert_pro_flow_case(
+        scratch: &Path,
+        invalid_ladder: bool,
+        expected_first_missing_signal: &str,
+    ) {
+        let module_root = scratch.join("modules");
+        let failed_module = module_root.join("early-failure");
+        fs::create_dir_all(&failed_module).unwrap();
+        if invalid_ladder {
+            fs::write(
+                failed_module.join("manifest.json"),
+                r#"{"schema":"harmonia.module.ladder.v1","id":"early-failure"}"#,
+            )
+            .unwrap();
+        } else {
+            write_pro_flow_command_module(&module_root, "early-failure", "/usr/bin/false");
+        }
+        write_pro_flow_command_module(&module_root, "later-one", "/usr/bin/true");
+        write_pro_flow_command_module(&module_root, "later-two", "/usr/bin/true");
+
+        let receipts = scratch.join("receipts");
+        let profile = Profile {
+            package_authority: Some(PackageAuthority {
+                os_family: "arch".into(),
+                package_manager: "pacman".into(),
+            }),
+            id: "pro-flow".into(),
+            identity: "pro-flow-wall".into(),
+            modules: vec![
+                "early-failure".into(),
+                "later-one".into(),
+                "later-two".into(),
+            ],
+        };
+
+        assert_eq!(
+            run_profile_engine_with_preflight(&profile, &module_root, &receipts, true, true),
+            Err(expected_first_missing_signal.to_string())
+        );
+        let run: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("run.json")).unwrap()).unwrap();
+        assert_eq!(run["ok"], false);
+        assert_eq!(run["first_missing_signal"], expected_first_missing_signal);
+
+        let ledger = fs::read_to_string(scratch.join("pro-flow-ledger.jsonl")).unwrap();
+        let entries: Vec<serde_json::Value> = ledger
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0]["module_id"], "early-failure");
+        assert_eq!(entries[0]["ok"], false);
+        assert_eq!(entries[1]["module_id"], "later-one");
+        assert_eq!(entries[1]["ok"], true);
+        assert_eq!(entries[2]["module_id"], "later-two");
+        assert_eq!(entries[2]["ok"], true);
+        assert!(receipts.join("modules/later-one/execute.json").is_file());
+        assert!(receipts.join("modules/later-two/execute.json").is_file());
+        let events = fs::read_to_string(receipts.join("events.jsonl")).unwrap();
+        assert!(!events.contains("module-terminal-stop"));
+    }
+
+    #[test]
+    fn spine_continues_past_failed_module_pro_flow_wall() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-pro-flow-wall-{}", process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        assert_pro_flow_case(
+            &scratch.join("invalid-ladder"),
+            true,
+            "module-missing-early-failure",
+        );
+        assert_pro_flow_case(
+            &scratch.join("runtime-failure"),
+            false,
+            "step_id=execute defect=tool-step-failed",
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
     #[test]
     fn tv_profile_has_no_harmonia_runtime_profile_artifact_before_downstream_modules() {
         let root = repo_root();

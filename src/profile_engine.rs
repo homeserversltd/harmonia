@@ -229,10 +229,6 @@ fn write_group_selection_receipt(
     )
 }
 
-pub(crate) fn profile_module_failure_is_terminal(module_id: &str) -> bool {
-    module_id == "harmonia-runtime"
-}
-
 pub(crate) fn run_profile_engine(
     profile: &Profile,
     module_root: &Path,
@@ -333,10 +329,6 @@ pub(crate) fn run_profile_engine_with_preflight(
                         module_version: None,
                     },
                 )?;
-                if profile_module_failure_is_terminal(module_id) {
-                    event(&mut events, "module-terminal-stop", false, module_id)?;
-                    break;
-                }
                 continue;
             }
         };
@@ -404,10 +396,6 @@ pub(crate) fn run_profile_engine_with_preflight(
                         module_version: module.version(),
                     },
                 )?;
-                if profile_module_failure_is_terminal(module.id()) {
-                    event(&mut events, "module-terminal-stop", false, module.id())?;
-                    break;
-                }
                 continue;
             }
         };
@@ -445,10 +433,6 @@ pub(crate) fn run_profile_engine_with_preflight(
             execution.ok,
             &format!("{} operations={}", module.id(), execution.operation_count),
         )?;
-        if !execution.ok && profile_module_failure_is_terminal(module.id()) {
-            event(&mut events, "module-terminal-stop", false, module.id())?;
-            break;
-        }
     }
 
     write_engine_run_receipt(
