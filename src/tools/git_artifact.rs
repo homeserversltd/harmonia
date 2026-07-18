@@ -186,7 +186,11 @@ fn sync_repo(request: &Request) -> SyncResult {
             changed: false,
         };
     }
-    let dirty = command::capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], cwd);
+    let dirty = command::capture_with_cwd(
+        "/usr/bin/git",
+        &["status", "--porcelain", "--", ".", ":(exclude).worktrees"],
+        cwd,
+    );
     if !dirty.ok {
         return SyncResult {
             command: dirty,
@@ -428,6 +432,72 @@ mod tests {
             target.to_str(),
         );
         assert_eq!(local_head.stdout.trim(), tracking_head.stdout.trim());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_ignores_cibation_worktrees_but_refuses_other_untracked_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-git-artifact-worktree-guard-{}",
+            std::process::id()
+        ));
+        let seed = root.join("seed");
+        let remote = root.join("remote.git");
+        let target = root.join("target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&seed).unwrap();
+        command::capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], seed.to_str());
+        for (key, value) in [
+            ("user.email", "harmonia@example.invalid"),
+            ("user.name", "Harmonia Test"),
+        ] {
+            command::capture_with_cwd("/usr/bin/git", &["config", key, value], seed.to_str());
+        }
+        fs::write(seed.join("payload"), "first\n").unwrap();
+        command::capture_with_cwd("/usr/bin/git", &["add", "payload"], seed.to_str());
+        command::capture_with_cwd("/usr/bin/git", &["commit", "-m", "first"], seed.to_str());
+        command::capture(
+            "/usr/bin/git",
+            &[
+                "clone",
+                "--bare",
+                seed.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        );
+        command::capture(
+            "/usr/bin/git",
+            &["clone", remote.to_str().unwrap(), target.to_str().unwrap()],
+        );
+
+        let request = Request::new(
+            Some(remote.display().to_string()),
+            target.clone(),
+            "main".into(),
+            "origin".into(),
+        );
+        fs::create_dir_all(target.join(".worktrees/live-cibation-worktree")).unwrap();
+        fs::write(
+            target.join(".worktrees/live-cibation-worktree/marker"),
+            "preserve me\n",
+        )
+        .unwrap();
+        let allowed = sync_repo(&request);
+        assert!(allowed.command.ok, "{}", allowed.command.stderr);
+        assert!(target
+            .join(".worktrees/live-cibation-worktree/marker")
+            .exists());
+
+        fs::write(target.join("ordinary-untracked"), "must block sync\n").unwrap();
+        let refused = sync_repo(&request);
+        assert!(!refused.command.ok);
+        assert_eq!(refused.command.code, 3);
+        assert!(refused.command.stdout.contains("ordinary-untracked"));
+        assert!(!refused.command.stdout.contains(".worktrees"));
+        assert!(refused
+            .command
+            .stderr
+            .contains("working tree has local modifications"));
         let _ = fs::remove_dir_all(root);
     }
 
