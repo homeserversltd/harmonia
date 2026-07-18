@@ -188,7 +188,24 @@ pub(crate) fn capsule_pack(
             });
         }
     }
-    let created_from = git_head_sha(harmonia_root).unwrap_or_else(|| "unknown".to_string());
+    if modules.len() != profile.modules.len()
+        || modules
+            .iter()
+            .map(|module| module.id.as_str())
+            .ne(profile.modules.iter().map(String::as_str))
+    {
+        return Err(format!(
+            "capsule-module-set-mismatch declared_count={} packed_count={}",
+            profile.modules.len(),
+            modules.len()
+        ));
+    }
+    let created_from = git_head_sha(harmonia_root).ok_or_else(|| {
+        format!(
+            "capsule-created-from-unavailable root={}",
+            harmonia_root.display()
+        )
+    })?;
     let manifest = CapsuleManifest {
         schema: CAPSULE_SCHEMA.to_string(),
         profile_id: profile.id.clone(),
@@ -728,7 +745,11 @@ fn git_head_sha(root: &Path) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.len() != 40 || !sha.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(sha)
 }
 
 fn rel_slash(path: &Path) -> String {
@@ -796,6 +817,34 @@ mod tests {
             r#"{"schema":"lock"}"#,
         )
         .unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "harmonia-test@home.arpa"],
+            vec!["config", "user.name", "Harmonia Test"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "fixture"],
+        ] {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
+    #[test]
+    fn pack_refuses_a_non_git_root_instead_of_emitting_unknown_provenance() {
+        let root = scratch("non-git-src");
+        let capsule = scratch("non-git-capsule");
+        write_fixture(&root, "1.0.0");
+        fs::remove_dir_all(root.join(".git")).unwrap();
+        let err = capsule_pack("demo", &capsule, &root).unwrap_err();
+        assert!(err.contains("capsule-created-from-unavailable"), "{err}");
+        assert!(!capsule.join("capsule.json").exists());
+        assert!(!capsule.join("pack-receipt.json").exists());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(capsule);
     }
 
     #[test]

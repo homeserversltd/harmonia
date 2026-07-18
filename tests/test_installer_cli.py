@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "cli.py"
@@ -106,6 +107,40 @@ class InstallerCliTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual(payload["schema"], "harmonia.installer.status.v1")
             self.assertFalse(payload["binary"]["exists"])
+
+    def test_packed_capsule_must_match_the_invoking_profile_module_set(self) -> None:
+        from installer.harmonia_installer import validate_packed_capsule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"
+            capsule = Path(tmp) / "capsule"
+            (root / "profiles/demo").mkdir(parents=True)
+            capsule.mkdir()
+            (root / "profiles/demo/index.json").write_text(json.dumps({"modules": ["alpha", "beta"]}))
+            (capsule / "capsule.json").write_text(json.dumps({
+                "created_from": "a" * 40,
+                "modules": [{"id": "alpha"}],
+            }))
+            with patch("installer.harmonia_installer.repo_ref", return_value="a" * 40):
+                with self.assertRaisesRegex(ValueError, "capsule-module-set-mismatch declared_count=2 packed_count=1"):
+                    validate_packed_capsule(root, capsule, "demo")
+
+    def test_packed_capsule_must_carry_the_invoking_repo_head(self) -> None:
+        from installer.harmonia_installer import validate_packed_capsule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"
+            capsule = Path(tmp) / "capsule"
+            (root / "profiles/demo").mkdir(parents=True)
+            capsule.mkdir()
+            (root / "profiles/demo/index.json").write_text(json.dumps({"modules": ["alpha"]}))
+            (capsule / "capsule.json").write_text(json.dumps({
+                "created_from": "unknown",
+                "modules": [{"id": "alpha"}],
+            }))
+            with patch("installer.harmonia_installer.repo_ref", return_value="b" * 40):
+                with self.assertRaisesRegex(ValueError, "capsule-created-from-mismatch"):
+                    validate_packed_capsule(root, capsule, "demo")
 
     def test_systemd_units_are_profile_correct(self) -> None:
         from installer.harmonia_installer import InstallPaths, install_systemd_units

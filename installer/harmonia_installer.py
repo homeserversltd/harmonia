@@ -227,6 +227,13 @@ def install(args: argparse.Namespace) -> int:
     if pack_code != 0:
         print("ok=false")
         return pack_code
+    try:
+        packed_module_count = validate_packed_capsule(REPO_ROOT, capsule_dir, args.profile)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"capsule_pack_validation_failed={exc}", file=sys.stderr)
+        print("ok=false")
+        return 1
+    print(f"capsule_pack_validated_module_count={packed_module_count}")
     install_code = run_checked(
         [str(paths.bin_path), "capsule", "install", str(capsule_dir), "--config-dir", str(paths.config_dir), "--apply"],
         cwd=REPO_ROOT,
@@ -397,6 +404,33 @@ WantedBy=timers.target
     (paths.systemd_dir / timer_name).write_text(timer)
 
 
+def validate_packed_capsule(harmonia_root: Path, capsule_dir: Path, profile: str) -> int:
+    profile_path = harmonia_root / "profiles" / profile / "index.json"
+    capsule_path = capsule_dir / "capsule.json"
+    declared = json.loads(profile_path.read_text(encoding="utf-8"))
+    packed = json.loads(capsule_path.read_text(encoding="utf-8"))
+    declared_modules = declared.get("modules")
+    packed_entries = packed.get("modules")
+    if not isinstance(declared_modules, list) or not all(isinstance(item, str) for item in declared_modules):
+        raise ValueError(f"profile-modules-invalid path={profile_path}")
+    if not isinstance(packed_entries, list):
+        raise ValueError(f"capsule-modules-invalid path={capsule_path}")
+    packed_modules = [entry.get("id") if isinstance(entry, dict) else None for entry in packed_entries]
+    if len(packed_modules) != len(declared_modules) or packed_modules != declared_modules:
+        raise ValueError(
+            "capsule-module-set-mismatch "
+            f"declared_count={len(declared_modules)} packed_count={len(packed_modules)} "
+            f"declared={declared_modules} packed={packed_modules}"
+        )
+    expected_ref = repo_ref(harmonia_root)
+    created_from = packed.get("created_from")
+    if expected_ref == "unknown" or len(expected_ref) != 40 or any(ch not in "0123456789abcdef" for ch in expected_ref.lower()):
+        raise ValueError(f"source-revision-unavailable root={harmonia_root}")
+    if created_from != expected_ref:
+        raise ValueError(f"capsule-created-from-mismatch expected={expected_ref} packed={created_from}")
+    return len(packed_modules)
+
+
 def seed_subscription_record(path: Path, capsule_manifest_path: Path, *, lane: str, source: str, ref: str, selected_profile: str) -> None:
     capsule = json.loads(capsule_manifest_path.read_text())
     if path.exists():
@@ -494,8 +528,8 @@ def repo_source() -> str:
     return completed.stdout.strip() if completed.returncode == 0 and completed.stdout.strip() else str(REPO_ROOT)
 
 
-def repo_ref() -> str:
-    completed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+def repo_ref(root: Path = REPO_ROOT) -> str:
+    completed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     return completed.stdout.strip() if completed.returncode == 0 and completed.stdout.strip() else "unknown"
 
 
