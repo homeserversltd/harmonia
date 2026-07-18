@@ -121,14 +121,16 @@ fn resolve_group_selections(
             Ok(LoadedModule::Ladder(manifest)) => manifest,
             Ok(LoadedModule::Sidecar(_)) | Err(_) => continue,
         };
-        validate_ladder(&module)
-            .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
-        if let Some(group) = &module.group {
-            groups
-                .entry(group.group_id.clone())
-                .or_default()
-                .push((module_id.clone(), module));
+        let Some(group_id) = module.group.as_ref().map(|group| group.group_id.clone()) else {
+            continue;
+        };
+        if validate_ladder(&module).is_err() {
+            continue;
         }
+        groups
+            .entry(group_id)
+            .or_default()
+            .push((module_id.clone(), module));
     }
 
     let mut selections = BTreeMap::new();
@@ -227,10 +229,6 @@ fn write_group_selection_receipt(
             "losers": selection.losers,
         }),
     )
-}
-
-pub(crate) fn profile_module_failure_is_terminal(module_id: &str) -> bool {
-    module_id == "harmonia-runtime"
 }
 
 pub(crate) fn run_profile_engine(
@@ -333,10 +331,6 @@ pub(crate) fn run_profile_engine_with_preflight(
                         module_version: None,
                     },
                 )?;
-                if profile_module_failure_is_terminal(module_id) {
-                    event(&mut events, "module-terminal-stop", false, module_id)?;
-                    break;
-                }
                 continue;
             }
         };
@@ -371,8 +365,6 @@ pub(crate) fn run_profile_engine_with_preflight(
                 execute_profile_module(sidecar, module_root, receipt_dir, apply, &harmonia_root)
             }
             LoadedModule::Ladder(manifest) => {
-                validate_ladder(manifest)
-                    .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
                 let module_dir = receipt_dir.join("modules").join(&manifest.id);
                 execute_ladder_manifest(
                     manifest,
@@ -404,10 +396,6 @@ pub(crate) fn run_profile_engine_with_preflight(
                         module_version: module.version(),
                     },
                 )?;
-                if profile_module_failure_is_terminal(module.id()) {
-                    event(&mut events, "module-terminal-stop", false, module.id())?;
-                    break;
-                }
                 continue;
             }
         };
@@ -445,10 +433,6 @@ pub(crate) fn run_profile_engine_with_preflight(
             execution.ok,
             &format!("{} operations={}", module.id(), execution.operation_count),
         )?;
-        if !execution.ok && profile_module_failure_is_terminal(module.id()) {
-            event(&mut events, "module-terminal-stop", false, module.id())?;
-            break;
-        }
     }
 
     write_engine_run_receipt(

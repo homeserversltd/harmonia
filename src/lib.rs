@@ -1833,6 +1833,139 @@ mod tests {
     }
 
     #[test]
+    fn spine_continues_past_failed_module_pro_flow_wall() {
+        fn write_command_module(module_root: &Path, module_id: &str, program: &str) {
+            let module_dir = module_root.join(module_id);
+            fs::create_dir_all(&module_dir).unwrap();
+            write_json(
+                &module_dir.join("manifest.json"),
+                &serde_json::json!({
+                    "schema": "harmonia.module.ladder.v1",
+                    "id": module_id,
+                    "version": "1.0.0",
+                    "description": format!("pro-flow wall fixture {module_id}"),
+                    "ladder": [{
+                        "step_id": "run",
+                        "tool": "command",
+                        "permutation": "capture",
+                        "args": { "program": program },
+                        "on_failure": "stop"
+                    }]
+                }),
+            )
+            .unwrap();
+        }
+
+        for (shape, failing_manifest, expected_signal) in [
+            (
+                "invalid-ladder",
+                serde_json::json!({
+                    "schema": "harmonia.module.ladder.v1",
+                    "id": "early-failure",
+                    "version": "1.0.0",
+                    "description": "invalid ladder pro-flow fixture",
+                    "ladder": [{
+                        "step_id": "fail",
+                        "tool": "not-a-registered-tool",
+                        "permutation": "capture",
+                        "args": {},
+                        "on_failure": "stop"
+                    }]
+                }),
+                "module-invalid step_id=fail defect=unknown-tool-not-a-registered-tool",
+            ),
+            (
+                "runtime-execution-failure",
+                serde_json::json!({
+                    "schema": "harmonia.module.ladder.v1",
+                    "id": "early-failure",
+                    "version": "1.0.0",
+                    "description": "runtime failure pro-flow fixture",
+                    "ladder": [{
+                        "step_id": "fail",
+                        "tool": "command",
+                        "permutation": "capture",
+                        "args": { "program": "/usr/bin/false" },
+                        "on_failure": "stop"
+                    }]
+                }),
+                "step_id=fail defect=tool-step-failed",
+            ),
+        ] {
+            let scratch = std::env::temp_dir()
+                .join(format!("harmonia-pro-flow-wall-{shape}-{}", process::id()));
+            let module_root = scratch.join("modules");
+            let receipts = scratch.join("receipts");
+            fs::create_dir_all(module_root.join("early-failure")).unwrap();
+            write_json(
+                &module_root.join("early-failure/manifest.json"),
+                &failing_manifest,
+            )
+            .unwrap();
+            write_command_module(&module_root, "later-one", "/usr/bin/true");
+            write_command_module(&module_root, "later-two", "/usr/bin/true");
+
+            let profile = Profile {
+                package_authority: None,
+                id: format!("pro-flow-{shape}"),
+                identity: "pro-flow-wall".into(),
+                modules: vec![
+                    "early-failure".into(),
+                    "later-one".into(),
+                    "later-two".into(),
+                ],
+            };
+            let result =
+                run_profile_engine_with_preflight(&profile, &module_root, &receipts, true, true);
+            assert_eq!(result, Err(expected_signal.to_string()), "shape={shape}");
+
+            let run: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(receipts.join("run.json")).unwrap())
+                    .unwrap();
+            assert_eq!(run["ok"], false, "shape={shape}");
+            assert_eq!(
+                run["first_missing_signal"], expected_signal,
+                "shape={shape}"
+            );
+
+            for later in ["later-one", "later-two"] {
+                assert!(
+                    receipts
+                        .join("modules")
+                        .join(later)
+                        .join("run.json")
+                        .exists(),
+                    "shape={shape}: {later} must execute after the early failure"
+                );
+            }
+
+            let ledger = fs::read_to_string(profile_ledger_path(&receipts, &profile)).unwrap();
+            let entries: Vec<serde_json::Value> = ledger
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(entries.len(), 3, "shape={shape}");
+            assert_eq!(entries[0]["module_id"], "early-failure", "shape={shape}");
+            assert_eq!(entries[0]["ok"], false, "shape={shape}");
+            assert_eq!(
+                entries[0]["first_missing_signal"], expected_signal,
+                "shape={shape}"
+            );
+            for later in ["later-one", "later-two"] {
+                assert!(
+                    entries
+                        .iter()
+                        .any(|entry| entry["module_id"] == later && entry["ok"] == true),
+                    "shape={shape}: {later} ledger entry must survive the early failure"
+                );
+            }
+            let events = fs::read_to_string(receipts.join("events.jsonl")).unwrap();
+            assert!(!events.contains("module-terminal-stop"), "shape={shape}");
+            let _ = fs::remove_dir_all(scratch);
+        }
+    }
+
+    #[test]
     fn tv_profile_has_no_harmonia_runtime_profile_artifact_before_downstream_modules() {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
