@@ -420,6 +420,39 @@ mod tests {
     }
 
     #[test]
+    fn plan_run_accepts_legacy_profile_without_package_authority() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-legacy-profile-plan-run-{}",
+            process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        let profile_path = scratch.join("index.json");
+        fs::create_dir_all(scratch.join("modules/identity")).unwrap();
+        fs::write(
+            &profile_path,
+            r#"{"id":"legacy","identity":"legacy","modules":["identity"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            scratch.join("modules/identity/sidecar.json"),
+            r#"{"id":"identity"}"#,
+        )
+        .unwrap();
+
+        run(vec![
+            "plan-run".into(),
+            profile_path.display().to_string(),
+            "--receipt-dir".into(),
+            scratch.join("receipts").display().to_string(),
+        ])
+        .unwrap();
+        let receipt = fs::read_to_string(scratch.join("receipts/run.json")).unwrap();
+        assert!(receipt.contains("\"ok\": true"));
+        assert!(receipt.contains("\"profile_id\": \"legacy\""));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
     fn empty_profile_spine_writes_false_run_receipt() {
         let scratch = std::env::temp_dir().join(format!("harmonia-empty-spine-{}", process::id()));
         let module_root = scratch.join("modules");
