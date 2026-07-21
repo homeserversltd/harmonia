@@ -57,17 +57,14 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
             format!("profile-parse-failed {}: {err}", path.display()),
         )
     })?;
-    profile
-        .package_authority
-        .as_ref()
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("profile-package-authority-missing {}", path.display()),
-            )
-        })?
-        .backend()
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    // Profiles evolve independently from the installed engine. Keep parsing
+    // backward-compatible; consumers that execute package work require
+    // package_authority at that operation boundary.
+    if let Some(package_authority) = profile.package_authority.as_ref() {
+        package_authority
+            .backend()
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    }
     Ok(profile)
 }
 
