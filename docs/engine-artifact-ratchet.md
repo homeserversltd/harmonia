@@ -37,6 +37,18 @@ A transport MISS is an unreachable repo, fetch failure, or artifact name absent 
 
 Existing singular `artifact_transport` configs remain valid and behave as a one-element chain. New configs use `artifact_transports`.
 
+## Owner-bearer Forgejo SSH transport
+
+`/etc/harmonia/engine.json` may declare `git_ssh_key_path` beside
+`git_bearer`. It is an absolute path to the named non-root bearer's Forgejo
+key; no default is inferred. Harmonia validates only that the declared path
+exists as a regular file, then starts Git with
+`GIT_SSH_COMMAND="ssh -i <declared-path> -o IdentitiesOnly=yes"`. When the
+engine parent is root, Git and its SSH child execute only after the existing
+`setgroups -> setgid -> setuid` drop to `git_bearer`; root never opens or
+uses that key for Git authentication. Omitting the field preserves ordinary
+Git SSH resolution for bodies with a correctly provisioned default key.
+
 ## Product surfaces
 
 The estate forge is the local blessing surface. The homeserversltd GitHub repo is the canonical global transport of last resort and product mirror. Forgejo releases remain a product release surface and may be minted with the same artifact and sha. None of these hosting surfaces replaces the lock or proof battery as the engine trust path.
