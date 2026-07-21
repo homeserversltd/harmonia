@@ -14,6 +14,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,6 +36,7 @@ pub struct Request {
     pub branch: String,
     pub remote: String,
     pub bearer: Option<String>,
+    pub ssh_key_path: Option<PathBuf>,
 }
 
 impl Request {
@@ -45,6 +47,7 @@ impl Request {
             branch,
             remote,
             bearer: None,
+            ssh_key_path: None,
         }
     }
 
@@ -52,13 +55,60 @@ impl Request {
         self.bearer = Some(bearer.into());
         self
     }
+
+    pub fn with_ssh_key_path(mut self, path: Option<PathBuf>) -> Self {
+        self.ssh_key_path = path;
+        self
+    }
 }
 
 fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
+    let env = match git_ssh_env(request.ssh_key_path.as_deref()) {
+        Ok(env) => env,
+        Err(stderr) => {
+            return CommandReceipt {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr,
+            };
+        }
+    };
     match request.bearer.as_deref() {
-        Some(bearer) => command::capture_with_cwd_as_bearer("/usr/bin/git", args, cwd, bearer),
-        None => command::capture_with_cwd("/usr/bin/git", args, cwd),
+        Some(bearer) => {
+            command::capture_with_cwd_as_bearer_and_env("/usr/bin/git", args, cwd, bearer, env)
+        }
+        None => command::capture_with_options(
+            "/usr/bin/git",
+            args,
+            command::CaptureOptions::new().cwd(cwd).env(env),
+        ),
     }
+}
+
+/// Validate only path identity and stage the SSH selector for the Git child.
+/// This deliberately never opens the key: `ssh` reads it only in the exec'd
+/// Git transport process, after a privileged parent has dropped to its bearer.
+fn git_ssh_env(path: Option<&Path>) -> Result<BTreeMap<String, String>, String> {
+    let Some(path) = path else {
+        return Ok(BTreeMap::new());
+    };
+    if !path.is_absolute() {
+        return Err(format!("git-ssh-key-path-not-absolute {}", path.display()));
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|err| format!("git-ssh-key-unavailable {}: {err}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("git-ssh-key-not-regular-file {}", path.display()));
+    }
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("git-ssh-key-path-non-utf8 {}", path.display()))?;
+    let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+    Ok(BTreeMap::from([(
+        "GIT_SSH_COMMAND".to_string(),
+        format!("ssh -i {quoted} -o IdentitiesOnly=yes"),
+    )]))
 }
 
 pub fn plan(request: &Request) -> Outcome {
@@ -327,6 +377,34 @@ mod tests {
         assert!(outcome.ok);
         assert!(!outcome.changed);
         assert!(outcome.command.stdout.contains("planned clone/update"));
+    }
+
+    #[test]
+    fn declared_ssh_key_path_is_absolute_regular_file_and_shell_quoted() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-git-artifact-ssh-key-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let key = root.join("forgejo owner's key");
+        fs::write(&key, "not-a-private-key\n").unwrap();
+        let env = git_ssh_env(Some(&key)).unwrap();
+        let expected = format!(
+            "ssh -i '{}' -o IdentitiesOnly=yes",
+            key.display().to_string().replace('\'', "'\\''")
+        );
+        assert_eq!(
+            env.get("GIT_SSH_COMMAND").map(String::as_str),
+            Some(expected.as_str())
+        );
+        assert!(git_ssh_env(Some(Path::new("relative-key")))
+            .unwrap_err()
+            .contains("git-ssh-key-path-not-absolute"));
+        assert!(git_ssh_env(Some(&root.join("absent-key")))
+            .unwrap_err()
+            .contains("git-ssh-key-unavailable"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

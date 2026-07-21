@@ -42,6 +42,10 @@ pub(crate) struct EnginePlaneConfig {
     pub enabled: bool,
     #[serde(default = "default_git_bearer")]
     pub git_bearer: String,
+    /// Absolute owner-readable private-key path for Forgejo SSH transport.
+    /// The parent validates path identity only; the dropped Git child owns use.
+    #[serde(default)]
+    pub git_ssh_key_path: Option<PathBuf>,
     #[serde(default = "default_remote")]
     pub remote: String,
     #[serde(default)]
@@ -774,7 +778,8 @@ pub(crate) fn run_engine_preflight(
                             transport.branch.clone(),
                             transport.remote.clone(),
                         )
-                        .with_bearer(config.git_bearer.clone());
+                        .with_bearer(config.git_bearer.clone())
+                        .with_ssh_key_path(config.git_ssh_key_path.clone());
                         let git_outcome = if apply {
                             tools::git_artifact::apply(&request)
                         } else {
@@ -972,7 +977,8 @@ pub(crate) fn run_engine_preflight(
             config.branch.clone(),
             config.remote.clone(),
         )
-        .with_bearer(config.git_bearer.clone());
+        .with_bearer(config.git_bearer.clone())
+        .with_ssh_key_path(config.git_ssh_key_path.clone());
         let git_outcome = if apply {
             tools::git_artifact::apply(&git_request)
         } else {

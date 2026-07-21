@@ -148,13 +148,29 @@ pub(crate) fn capture_with_cwd_as_bearer(
     cwd: Option<&str>,
     bearer: &str,
 ) -> CmdResult {
+    capture_with_cwd_as_bearer_and_env(program, args, cwd, bearer, BTreeMap::new())
+}
+
+/// Execute a filesystem-writing child with an explicitly scoped environment
+/// after the same bearer drop used by Git. Environment assembly is harmless
+/// parent-side setup; the child has not read credential material until it has
+/// completed setgroups -> setgid -> setuid in `pre_exec`.
+pub(crate) fn capture_with_cwd_as_bearer_and_env(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    bearer: &str,
+    env: BTreeMap<String, String>,
+) -> CmdResult {
     if unsafe { libc::geteuid() } != 0 {
-        return capture_with_cwd(program, args, cwd);
+        return capture_with_options(program, args, CaptureOptions::new().cwd(cwd).env(env));
     }
     match resolve_non_root_bearer(bearer) {
-        Ok(bearer) => {
-            capture_with_options(program, args, CaptureOptions::new().cwd(cwd).bearer(bearer))
-        }
+        Ok(bearer) => capture_with_options(
+            program,
+            args,
+            CaptureOptions::new().cwd(cwd).env(env).bearer(bearer),
+        ),
         Err(err) => CmdResult {
             ok: false,
             code: -1,
@@ -369,5 +385,33 @@ mod tests {
         let result = capture("sh", &["-c", "printf %s \"$PATH\""]);
         assert!(result.ok, "{}", result.stderr);
         assert_eq!(result.stdout, DEFAULT_SYSTEM_PATH);
+    }
+
+    #[test]
+    fn privileged_child_receives_git_ssh_command_only_after_bearer_drop() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let owner = resolve_non_root_bearer("owner").unwrap();
+        let mut env = BTreeMap::new();
+        env.insert(
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -i '/var/lib/harmonia/forgejo-owner' -o IdentitiesOnly=yes".to_string(),
+        );
+        let result = capture_with_cwd_as_bearer_and_env(
+            "/usr/bin/sh",
+            &["-c", "printf '%s|%s' \"$(id -u)\" \"$GIT_SSH_COMMAND\""],
+            None,
+            "owner",
+            env,
+        );
+        assert!(result.ok, "{}", result.stderr);
+        assert_eq!(
+            result.stdout,
+            format!(
+                "{}|ssh -i '/var/lib/harmonia/forgejo-owner' -o IdentitiesOnly=yes",
+                owner.uid
+            )
+        );
     }
 }
