@@ -34,6 +34,7 @@ pub struct Request {
     pub path: PathBuf,
     pub branch: String,
     pub remote: String,
+    pub bearer: Option<String>,
 }
 
 impl Request {
@@ -43,17 +44,26 @@ impl Request {
             path,
             branch,
             remote,
+            bearer: None,
         }
+    }
+
+    pub fn with_bearer(mut self, bearer: impl Into<String>) -> Self {
+        self.bearer = Some(bearer.into());
+        self
+    }
+}
+
+fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
+    match request.bearer.as_deref() {
+        Some(bearer) => command::capture_with_cwd_as_bearer("/usr/bin/git", args, cwd, bearer),
+        None => command::capture_with_cwd("/usr/bin/git", args, cwd),
     }
 }
 
 pub fn plan(request: &Request) -> Outcome {
     let command = if request.path.join(".git").exists() {
-        command::capture_with_cwd(
-            "/usr/bin/git",
-            &["status", "--short"],
-            request.path.to_str(),
-        )
+        capture_git(request, &["status", "--short"], request.path.to_str())
     } else {
         CommandReceipt {
             ok: true,
@@ -139,8 +149,8 @@ fn sync_repo(request: &Request) -> SyncResult {
                 }
             }
         }
-        let clone = command::capture(
-            "/usr/bin/git",
+        let clone = capture_git(
+            request,
             &[
                 "clone",
                 "--branch",
@@ -148,6 +158,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                 repo,
                 request.path.to_string_lossy().as_ref(),
             ],
+            None,
         );
         transcript.push(format!("clone exit={} ok={}", clone.code, clone.ok));
         if !clone.stdout.is_empty() {
@@ -179,15 +190,15 @@ fn sync_repo(request: &Request) -> SyncResult {
     }
 
     let cwd = request.path.to_str();
-    let before = command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    let before = capture_git(request, &["rev-parse", "HEAD"], cwd);
     if !before.ok {
         return SyncResult {
             command: before,
             changed: false,
         };
     }
-    let dirty = command::capture_with_cwd(
-        "/usr/bin/git",
+    let dirty = capture_git(
+        request,
         &["status", "--porcelain", "--", ".", ":(exclude).worktrees"],
         cwd,
     );
@@ -213,8 +224,8 @@ fn sync_repo(request: &Request) -> SyncResult {
         "+refs/heads/{}:refs/remotes/{}/{}",
         request.branch, request.remote, request.branch
     );
-    let fetch = command::capture_with_cwd(
-        "/usr/bin/git",
+    let fetch = capture_git(
+        request,
         &["fetch", &request.remote, &remote_tracking_refspec],
         cwd,
     );
@@ -230,7 +241,7 @@ fn sync_repo(request: &Request) -> SyncResult {
             changed: false,
         };
     }
-    let checkout = command::capture_with_cwd("/usr/bin/git", &["checkout", &request.branch], cwd);
+    let checkout = capture_git(request, &["checkout", &request.branch], cwd);
     transcript.push(format!(
         "checkout exit={} ok={}",
         checkout.code, checkout.ok
@@ -247,7 +258,7 @@ fn sync_repo(request: &Request) -> SyncResult {
         };
     }
     let pull_ref = format!("{}/{}", request.remote, request.branch);
-    let merge = command::capture_with_cwd("/usr/bin/git", &["merge", "--ff-only", &pull_ref], cwd);
+    let merge = capture_git(request, &["merge", "--ff-only", &pull_ref], cwd);
     transcript.push(format!("merge_ff exit={} ok={}", merge.code, merge.ok));
     if !merge.stdout.is_empty() {
         transcript.push(merge.stdout.clone());
@@ -263,7 +274,7 @@ fn sync_repo(request: &Request) -> SyncResult {
             changed: false,
         };
     }
-    let after = command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], cwd);
+    let after = capture_git(request, &["rev-parse", "HEAD"], cwd);
     if !after.ok {
         return SyncResult {
             command: after,
