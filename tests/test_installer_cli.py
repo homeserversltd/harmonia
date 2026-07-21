@@ -154,6 +154,7 @@ class InstallerCliTests(unittest.TestCase):
             self.assertEqual(payload["branch"], "main")
             self.assertEqual(payload["source_dir"], str(root / "opt" / "harmonia"))
             self.assertEqual(payload["install_bin"], str(root / "bin" / "harmonia"))
+            self.assertEqual(payload["git_bearer"], "owner")
             self.assertEqual(payload["ratchet_lock"], str(engine.parent / "engine-ratchet-lock.json"))
             self.assertTrue(payload["enabled"])
             self.assertNotIn("profiles", str(engine.relative_to(root)))
