@@ -2,6 +2,7 @@ use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::CmdResult;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -52,6 +53,15 @@ pub struct CaptureOptions<'a> {
     pub env: BTreeMap<String, String>,
     pub redact: BTreeSet<String>,
     pub timeout_secs: u64,
+    bearer: Option<Bearer>,
+}
+
+#[derive(Debug, Clone)]
+struct Bearer {
+    uid: u32,
+    gid: u32,
+    name: String,
+    home: String,
 }
 
 impl<'a> CaptureOptions<'a> {
@@ -61,6 +71,7 @@ impl<'a> CaptureOptions<'a> {
             env: BTreeMap::new(),
             redact: BTreeSet::new(),
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            bearer: None,
         }
     }
     pub fn cwd(mut self, cwd: Option<&'a str>) -> Self {
@@ -77,6 +88,11 @@ impl<'a> CaptureOptions<'a> {
     }
     pub fn redact(mut self, redact: BTreeSet<String>) -> Self {
         self.redact = redact;
+        self
+    }
+
+    fn bearer(mut self, bearer: Bearer) -> Self {
+        self.bearer = Some(bearer);
         self
     }
 }
@@ -115,6 +131,54 @@ pub(crate) fn capture_with_timeout(program: &str, args: &[&str], timeout_secs: u
 
 pub(crate) fn capture_with_cwd(program: &str, args: &[&str], cwd: Option<&str>) -> CmdResult {
     capture_with_options(program, args, CaptureOptions::new().cwd(cwd))
+}
+
+/// Execute a filesystem-writing child as the named non-root bearer when the
+/// Harmonia parent is privileged.  Root is retained for the parent-side
+/// service and file operations; it is never allowed to inherit Git/SSH
+/// credential custody into this child.
+pub(crate) fn capture_with_cwd_as_bearer(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    bearer: &str,
+) -> CmdResult {
+    if unsafe { libc::geteuid() } != 0 {
+        return capture_with_cwd(program, args, cwd);
+    }
+    match resolve_non_root_bearer(bearer) {
+        Ok(bearer) => {
+            capture_with_options(program, args, CaptureOptions::new().cwd(cwd).bearer(bearer))
+        }
+        Err(err) => CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: err,
+        },
+    }
+}
+
+fn resolve_non_root_bearer(bearer: &str) -> Result<Bearer, String> {
+    let name = std::ffi::CString::new(bearer).map_err(|_| "git-bearer-invalid-name".to_string())?;
+    let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
+    if passwd.is_null() {
+        return Err(format!("git-bearer-unknown {bearer}"));
+    }
+    let passwd = unsafe { &*passwd };
+    if passwd.pw_uid == 0 {
+        return Err(format!("git-bearer-root-refused {bearer}"));
+    }
+    let home = unsafe { std::ffi::CStr::from_ptr(passwd.pw_dir) }
+        .to_str()
+        .map_err(|_| format!("git-bearer-home-invalid {bearer}"))?
+        .to_string();
+    Ok(Bearer {
+        uid: passwd.pw_uid,
+        gid: passwd.pw_gid,
+        name: bearer.to_string(),
+        home,
+    })
 }
 
 #[allow(dead_code)]
@@ -161,6 +225,27 @@ pub(crate) fn capture_with_options(
     }
     for (key, value) in &options.env {
         cmd.env(key, value);
+    }
+    if let Some(bearer) = options.bearer.as_ref() {
+        cmd.env("HOME", &bearer.home)
+            .env("USER", &bearer.name)
+            .env("LOGNAME", &bearer.name);
+        let uid = bearer.uid;
+        let gid = bearer.gid;
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::setgroups(0, std::ptr::null()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::setgid(gid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::setuid(uid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     let command_label = format!("{} {}", program, args.join(" "));
     let mut child = match cmd.spawn() {
@@ -238,4 +323,36 @@ fn redact(text: &str, redactions: &BTreeSet<String>) -> String {
     redactions.iter().fold(text.to_string(), |acc, secret| {
         acc.replace(secret, "[REDACTED]")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_is_not_a_valid_git_bearer() {
+        assert_eq!(
+            resolve_non_root_bearer("root").unwrap_err(),
+            "git-bearer-root-refused root"
+        );
+    }
+
+    #[test]
+    fn unknown_git_bearer_fails_closed() {
+        assert_eq!(
+            resolve_non_root_bearer("harmonia-no-such-bearer").unwrap_err(),
+            "git-bearer-unknown harmonia-no-such-bearer"
+        );
+    }
+
+    #[test]
+    fn privileged_child_drops_to_owner_bearer() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let owner = resolve_non_root_bearer("owner").unwrap();
+        let result = capture_with_cwd_as_bearer("/usr/bin/id", &["-u"], None, "owner");
+        assert!(result.ok, "{}", result.stderr);
+        assert_eq!(result.stdout, owner.uid.to_string());
+    }
 }

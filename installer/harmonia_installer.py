@@ -493,6 +493,7 @@ def seed_engine_config(
         "source_dir": str(source_dir),
         "install_bin": str(install_bin),
         "enabled": enabled,
+        "git_bearer": "owner",
     }
     update["ratchet_lock"] = str(ratchet_lock or (path.parent / "engine-ratchet-lock.json"))
     base_cache = artifact_cache_dir or Path("/var/lib/harmonia/engine-artifacts")

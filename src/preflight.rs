@@ -40,6 +40,8 @@ pub(crate) struct EnginePlaneConfig {
     pub source_dir: PathBuf,
     pub install_bin: PathBuf,
     pub enabled: bool,
+    #[serde(default = "default_git_bearer")]
+    pub git_bearer: String,
     #[serde(default = "default_remote")]
     pub remote: String,
     #[serde(default)]
@@ -112,6 +114,10 @@ pub(crate) struct EngineRatchetArtifact {
 
 fn default_remote() -> String {
     "origin".to_string()
+}
+
+fn default_git_bearer() -> String {
+    "owner".to_string()
 }
 
 pub(crate) fn engine_config_path() -> PathBuf {
@@ -767,7 +773,8 @@ pub(crate) fn run_engine_preflight(
                             transport.cache_dir.clone(),
                             transport.branch.clone(),
                             transport.remote.clone(),
-                        );
+                        )
+                        .with_bearer(config.git_bearer.clone());
                         let git_outcome = if apply {
                             tools::git_artifact::apply(&request)
                         } else {
@@ -964,7 +971,8 @@ pub(crate) fn run_engine_preflight(
             config.source_dir.clone(),
             config.branch.clone(),
             config.remote.clone(),
-        );
+        )
+        .with_bearer(config.git_bearer.clone());
         let git_outcome = if apply {
             tools::git_artifact::apply(&git_request)
         } else {
