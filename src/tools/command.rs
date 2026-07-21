@@ -10,6 +10,11 @@ use std::time::{Duration, Instant};
 
 pub const NAME: &str = "command";
 pub const DESCRIPTION: &str = "Host command execution primitive with cwd/env/timeout/exit capture; every subprocess produces a command receipt.";
+/// The portable system command search path used for manifest programs that do
+/// not name an absolute executable.  Root-launched services do not reliably
+/// inherit the administrative sbin directories, even though tools such as
+/// util-linux's `runuser` are installed there on Debian.
+const DEFAULT_SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
     "capture",
     "capture a host command with optional args/cwd/timeout",
@@ -220,6 +225,9 @@ pub(crate) fn capture_with_options(
 ) -> CmdResult {
     let mut cmd = Command::new(program);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if !program.contains('/') && !options.env.contains_key("PATH") {
+        cmd.env("PATH", DEFAULT_SYSTEM_PATH);
+    }
     if let Some(cwd) = options.cwd {
         cmd.current_dir(Path::new(cwd));
     }
@@ -354,5 +362,12 @@ mod tests {
         let result = capture_with_cwd_as_bearer("/usr/bin/id", &["-u"], None, "owner");
         assert!(result.ok, "{}", result.stderr);
         assert_eq!(result.stdout, owner.uid.to_string());
+    }
+
+    #[test]
+    fn bare_programs_receive_the_portable_system_path() {
+        let result = capture("sh", &["-c", "printf %s \"$PATH\""]);
+        assert!(result.ok, "{}", result.stderr);
+        assert_eq!(result.stdout, DEFAULT_SYSTEM_PATH);
     }
 }
