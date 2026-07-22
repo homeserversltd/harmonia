@@ -26,10 +26,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub type CommandReceipt = crate::CmdResult;
 
 const OWNER_BEARER: &str = "owner";
-// This command-local helper runs only after the Git child has become the owner
-// bearer. It emits a credential only for the estate's HTTPS Forgejo origin and
-// never persists, exports, or receipts the token.
-const FORGEJO_OWNER_CREDENTIAL_HELPER: &str = "credential.helper=!f() { protocol= host= username= token=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${line#protocol=} ;; host=*) host=${line#host=} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = git.home.arpa ]; then while IFS= read -r line; do case \"$line\" in FORGEJO_USERNAME=*) username=${line#FORGEJO_USERNAME=} ;; FORGEJO_TOKEN=*) token=${line#FORGEJO_TOKEN=} ;; esac; done < /home/owner/.ssh/forgejo-token; if [ -n \"$username\" ] && [ -n \"$token\" ]; then printf \"username=%s\\npassword=%s\\n\" \"$username\" \"$token\"; fi; fi; }; f";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -46,6 +42,8 @@ pub struct Request {
     pub branch: String,
     pub remote: String,
     pub ssh_key_path: Option<PathBuf>,
+    pub git_https_credential_host: Option<String>,
+    pub git_https_credential_token_path: Option<PathBuf>,
 }
 
 impl Request {
@@ -56,6 +54,8 @@ impl Request {
             branch,
             remote,
             ssh_key_path: None,
+            git_https_credential_host: None,
+            git_https_credential_token_path: None,
         }
     }
 
@@ -66,6 +66,16 @@ impl Request {
 
     pub fn with_ssh_key_path(mut self, path: Option<PathBuf>) -> Self {
         self.ssh_key_path = path;
+        self
+    }
+
+    pub fn with_https_credentials(
+        mut self,
+        host: Option<String>,
+        token_path: Option<PathBuf>,
+    ) -> Self {
+        self.git_https_credential_host = host;
+        self.git_https_credential_token_path = token_path;
         self
     }
 }
@@ -82,19 +92,33 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
             };
         }
     };
-    let mut git_args = Vec::with_capacity(args.len() + 2);
-    if uses_owner_forgejo_https(request) {
-        git_args.extend(["-c", FORGEJO_OWNER_CREDENTIAL_HELPER]);
+    let credential_helper = owner_https_credential_helper(request);
+    let mut git_args =
+        Vec::with_capacity(args.len() + usize::from(credential_helper.is_some()) * 2);
+    if let Some(helper) = credential_helper.as_deref() {
+        git_args.extend(["-c", helper]);
     }
     git_args.extend_from_slice(args);
     command::capture_with_cwd_as_bearer_and_env("/usr/bin/git", &git_args, cwd, OWNER_BEARER, env)
 }
 
-fn uses_owner_forgejo_https(request: &Request) -> bool {
-    request
-        .repo
-        .as_deref()
-        .is_some_and(|repo| repo.starts_with("https://git.home.arpa/"))
+fn owner_https_credential_helper(request: &Request) -> Option<String> {
+    let host = request.git_https_credential_host.as_deref()?;
+    let token_path = request.git_https_credential_token_path.as_deref()?;
+    let repo = request.repo.as_deref()?;
+    if !repo.starts_with(&format!("https://{host}/")) {
+        return None;
+    }
+    let token_path = token_path.to_str()?;
+    Some(format!(
+        "credential.helper=!f() {{ protocol= host= username= token=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${{line#protocol=}} ;; host=*) host=${{line#host=}} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = {} ]; then while IFS= read -r line; do case \"$line\" in FORGEJO_USERNAME=*) username=${{line#FORGEJO_USERNAME=}} ;; FORGEJO_TOKEN=*) token=${{line#FORGEJO_TOKEN=}} ;; esac; done < {}; if [ -n \"$username\" ] && [ -n \"$token\" ]; then printf \"username=%s\\npassword=%s\\n\" \"$username\" \"$token\"; fi; fi; }}; f",
+        shell_quote(host),
+        shell_quote(token_path),
+    ))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Validate only path identity and stage the SSH selector for the Git child.
@@ -495,7 +519,7 @@ mod tests {
     #[test]
     fn plan_accepts_missing_repo_as_future_clone() {
         let request = Request::new(
-            Some("git@git.home.arpa:HOMESERVERSLTD/keyman.git".into()),
+            Some("https://github.com/homeserversltd/keyman.git".into()),
             PathBuf::from("/opt/keyman/source"),
             "main".into(),
             "origin".into(),

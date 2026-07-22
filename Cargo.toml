@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Rust update manager and appliance-profile execution engine"
 license = "AGPL-3.0-or-later"
-repository = "https://git.home.arpa/HOMESERVERSLTD/harmonia"
+repository = "https://github.com/homeserversltd/harmonia"
 
 [workspace]
 members = ["."]

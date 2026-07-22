@@ -46,6 +46,12 @@ pub(crate) struct EnginePlaneConfig {
     /// The parent validates path identity only; the dropped Git child owns use.
     #[serde(default)]
     pub git_ssh_key_path: Option<PathBuf>,
+    /// Optional HTTPS forge host that may receive the command-local credential helper.
+    #[serde(default)]
+    pub git_https_credential_host: Option<String>,
+    /// Optional owner-readable token file used only by the dropped Git child for that host.
+    #[serde(default)]
+    pub git_https_credential_token_path: Option<PathBuf>,
     #[serde(default = "default_remote")]
     pub remote: String,
     #[serde(default)]
@@ -779,7 +785,11 @@ pub(crate) fn run_engine_preflight(
                             transport.remote.clone(),
                         )
                         .with_bearer(config.git_bearer.clone())
-                        .with_ssh_key_path(config.git_ssh_key_path.clone());
+                        .with_ssh_key_path(config.git_ssh_key_path.clone())
+                        .with_https_credentials(
+                            config.git_https_credential_host.clone(),
+                            config.git_https_credential_token_path.clone(),
+                        );
                         let git_outcome = if apply {
                             tools::git_artifact::apply(&request)
                         } else {
@@ -978,7 +988,11 @@ pub(crate) fn run_engine_preflight(
             config.remote.clone(),
         )
         .with_bearer(config.git_bearer.clone())
-        .with_ssh_key_path(config.git_ssh_key_path.clone());
+        .with_ssh_key_path(config.git_ssh_key_path.clone())
+        .with_https_credentials(
+            config.git_https_credential_host.clone(),
+            config.git_https_credential_token_path.clone(),
+        );
         let git_outcome = if apply {
             tools::git_artifact::apply(&git_request)
         } else {

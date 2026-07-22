@@ -458,7 +458,7 @@ pub(crate) fn run_profile_engine_with_preflight(
     }
 }
 
-const DEFAULT_HARMONIA_SOURCE_REPO: &str = "https://git.home.arpa/HOMESERVERSLTD/harmonia.git";
+const DEFAULT_HARMONIA_SOURCE_REPO: &str = "https://github.com/homeserversltd/harmonia.git";
 const DEFAULT_HARMONIA_SOURCE_DIR: &str = "/opt/harmonia/source";
 const DEFAULT_HARMONIA_INSTALL_BIN: &str = "/usr/local/bin/harmonia";
 
