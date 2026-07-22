@@ -221,6 +221,17 @@ fn sync_repo(request: &Request) -> SyncResult {
                 }
             }
         }
+        if let Err(stderr) = prepare_owner_writable_path(request) {
+            return SyncResult {
+                command: CommandReceipt {
+                    ok: false,
+                    code: -1,
+                    stdout: transcript.join("\n"),
+                    stderr,
+                },
+                changed: false,
+            };
+        }
         let clone = capture_git(
             request,
             &[
