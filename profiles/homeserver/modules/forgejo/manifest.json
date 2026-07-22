@@ -17,16 +17,6 @@
   "constants": {},
   "ladder": [
     {
-      "step_id": "forgejo-package-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": [
-          "forgejo"
-        ]
-      }
-    },
-    {
       "step_id": "forgejo-service-enable",
       "tool": "systemd",
       "permutation": "enable-now",
