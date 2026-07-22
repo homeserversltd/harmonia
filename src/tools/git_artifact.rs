@@ -10,6 +10,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("path", ToolArgKind::String),
         ToolArg::optional("branch", ToolArgKind::String),
         ToolArg::optional("remote", ToolArgKind::String),
+        ToolArg::optional("bearer", ToolArgKind::String),
     ],
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
@@ -63,7 +64,7 @@ impl Request {
 }
 
 fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
-    let env = match git_ssh_env(request.ssh_key_path.as_deref()) {
+    let env = match git_environment(request) {
         Ok(env) => env,
         Err(stderr) => {
             return CommandReceipt {
@@ -84,6 +85,21 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
             command::CaptureOptions::new().cwd(cwd).env(env),
         ),
     }
+}
+
+fn git_environment(request: &Request) -> Result<BTreeMap<String, String>, String> {
+    let mut env = git_ssh_env(request.ssh_key_path.as_deref())?;
+    if request.bearer.as_deref() == Some("owner") {
+        let helper = "!f() { host=; while IFS= read -r line; do case \"$line\" in host=*) host=${line#host=} ;; esac; done; [ \"$host\" = git.home.arpa ] || exit 0; while IFS='=' read -r key value; do case \"$key\" in FORGEJO_USERNAME) printf 'username=%s\\n' \"$value\" ;; FORGEJO_TOKEN) printf 'password=%s\\n' \"$value\" ;; esac; done < \"$HOME/.ssh/forgejo-token\"; }; f";
+        env.insert("GIT_CONFIG_COUNT".to_string(), "1".to_string());
+        env.insert(
+            "GIT_CONFIG_KEY_0".to_string(),
+            "credential.helper".to_string(),
+        );
+        env.insert("GIT_CONFIG_VALUE_0".to_string(), helper.to_string());
+        env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
+    }
+    Ok(env)
 }
 
 /// Validate only path identity and stage the SSH selector for the Git child.
@@ -148,6 +164,51 @@ struct SyncResult {
 
 fn sync_repo(request: &Request) -> SyncResult {
     let mut transcript = Vec::new();
+    if let Some(bearer) = request.bearer.as_deref() {
+        if unsafe { libc::geteuid() } == 0 {
+            let parent = match request.path.parent() {
+                Some(parent) => parent,
+                None => {
+                    return SyncResult {
+                        command: CommandReceipt {
+                            ok: false,
+                            code: -1,
+                            stdout: String::new(),
+                            stderr: "git-bearer-source-parent-missing".to_string(),
+                        },
+                        changed: false,
+                    }
+                }
+            };
+            if let Err(err) = fs::create_dir_all(parent) {
+                return SyncResult {
+                    command: CommandReceipt {
+                        ok: false,
+                        code: -1,
+                        stdout: String::new(),
+                        stderr: format!("git-bearer-source-parent-create-failed: {err}"),
+                    },
+                    changed: false,
+                };
+            }
+            let owner = format!("{bearer}:{bearer}");
+            let custody = command::capture(
+                "/usr/bin/chown",
+                &["-R", &owner, parent.to_string_lossy().as_ref()],
+            );
+            if !custody.ok {
+                return SyncResult {
+                    command: CommandReceipt {
+                        ok: false,
+                        code: custody.code,
+                        stdout: custody.stdout,
+                        stderr: format!("git-bearer-source-custody-failed: {}", custody.stderr),
+                    },
+                    changed: false,
+                };
+            }
+        }
+    }
     if !request.path.join(".git").exists() {
         let Some(repo) = request.repo.as_deref() else {
             return SyncResult {

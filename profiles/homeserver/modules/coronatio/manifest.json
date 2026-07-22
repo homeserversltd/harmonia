@@ -13,6 +13,7 @@
         "module_id": "coronatio",
         "repo": "https://git.home.arpa/HOMESERVERSLTD/coronatio.git",
         "branch": "main",
+        "bearer": "owner",
         "source_dir": "/opt/coronatio/source",
         "install_bin": "/usr/local/bin/coronatio",
         "service": "coronatio.service",

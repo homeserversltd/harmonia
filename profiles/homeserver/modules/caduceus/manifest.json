@@ -13,6 +13,7 @@
         "module_id": "caduceus",
         "repo": "https://git.home.arpa/HOMESERVERSLTD/caduceus.git",
         "branch": "main",
+        "bearer": "owner",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
         "service": "caduceus.service",
