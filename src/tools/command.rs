@@ -247,9 +247,6 @@ pub(crate) fn capture_with_options(
     if let Some(cwd) = options.cwd {
         cmd.current_dir(Path::new(cwd));
     }
-    for (key, value) in &options.env {
-        cmd.env(key, value);
-    }
     if let Some(bearer) = options.bearer.as_ref() {
         cmd.env("HOME", &bearer.home)
             .env("USER", &bearer.name)
@@ -270,6 +267,11 @@ pub(crate) fn capture_with_options(
                 Ok(())
             });
         }
+    }
+    // The bearer establishes a truthful login baseline. Callers may narrowly
+    // add or override it (for example, a declared toolchain environment).
+    for (key, value) in &options.env {
+        cmd.env(key, value);
     }
     let command_label = format!("{} {}", program, args.join(" "));
     let mut child = match cmd.spawn() {
