@@ -33,7 +33,6 @@ fn set_test_engine_config_path(path: Option<PathBuf>) {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct EnginePlaneConfig {
     pub source_repo_url: String,
     pub branch: String,
