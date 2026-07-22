@@ -49,6 +49,22 @@ engine parent is root, Git and its SSH child execute only after the existing
 uses that key for Git authentication. Omitting the field preserves ordinary
 Git SSH resolution for bodies with a correctly provisioned default key.
 
+## Source HTTPS credentials
+
+The generated zero-configuration `/etc/harmonia/engine.json` uses
+`https://github.com/homeserversltd/harmonia.git` as `source_repo_url`. It uses
+anonymous HTTPS and never adds a credential helper.
+
+An estate that serves its source from a private HTTPS forge declares both
+`git_https_credential_host` and `git_https_credential_token_path` in that same
+engine configuration, alongside its private `source_repo_url`. The helper is
+constructed only when both settings are present and the requested repository
+uses `https://<git_https_credential_host>/`. It is passed to Git as a
+command-local setting after the Git child has dropped to `git_bearer`; the token
+path is never opened by the parent and no credential is written to Git config,
+environment, or receipts. A missing setting, a non-HTTPS repository, or a host
+mismatch leaves the helper disengaged.
+
 ## Product surfaces
 
 The estate forge is the local blessing surface. The homeserversltd GitHub repo is the canonical global transport of last resort and product mirror. Forgejo releases remain a product release surface and may be minted with the same artifact and sha. None of these hosting surfaces replaces the lock or proof battery as the engine trust path.
