@@ -8,6 +8,7 @@
     "source": "/etc/nginx/sites-available/harmonia-shared",
     "target": "/etc/nginx/sites-enabled/harmonia-shared"
   },
+  "files_root": "files_root",
   "ladder": [
     {
       "step_id": "nginx-package",
