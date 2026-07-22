@@ -972,6 +972,10 @@ fn git_artifact_step(
             .unwrap_or("origin")
             .to_string(),
     );
+    let request = match optional_string_arg(&step.args, "bearer") {
+        Some(bearer) => request.with_bearer(bearer),
+        None => request,
+    };
     let outcome = if apply {
         tools::git_artifact::apply(&request)
     } else {

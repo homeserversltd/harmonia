@@ -11,6 +11,7 @@
       "permutation": "sync",
       "args": {
         "repo": "https://git.home.arpa/HOMESERVERSLTD/keyman.git",
+        "bearer": "owner",
         "path": "/opt/keyman/source",
         "branch": "main",
         "remote": "origin"

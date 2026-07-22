@@ -15,6 +15,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("repo", ToolArgKind::String),
         ToolArg::optional("branch", ToolArgKind::String),
         ToolArg::optional("remote", ToolArgKind::String),
+        ToolArg::optional("bearer", ToolArgKind::String),
         ToolArg::required("source_dir", ToolArgKind::String),
         ToolArg::required("install_bin", ToolArgKind::String),
         ToolArg::required("service", ToolArgKind::String),
@@ -74,7 +75,13 @@ pub(crate) fn execute_ladder_step(
         binary_name: Box::leak(binary_name.into_boxed_str()),
     };
     let module = module_from_args(args, &spec)?;
-    execute(&module, receipt_dir, apply, &spec)
+    execute(
+        &module,
+        receipt_dir,
+        apply,
+        &spec,
+        args.get("bearer").and_then(Value::as_str),
+    )
 }
 
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
@@ -208,6 +215,7 @@ pub(crate) fn execute(
     receipt_dir: &Path,
     apply: bool,
     spec: &ServiceRuntimeSpec,
+    bearer: Option<&str>,
 ) -> Result<ModuleExecution, String> {
     validate(module)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -233,6 +241,10 @@ pub(crate) fn execute(
             .clone()
             .unwrap_or_else(|| "origin".to_string()),
     );
+    let git_request = match bearer {
+        Some(bearer) => git_request.with_bearer(bearer),
+        None => git_request,
+    };
     let git_outcome = if apply {
         tools::git_artifact::apply(&git_request)
     } else {
@@ -271,11 +283,19 @@ pub(crate) fn execute(
         ));
     }
 
-    let source_sha = tools::command::capture_with_cwd(
-        "/usr/bin/git",
-        &["rev-parse", "HEAD"],
-        source_dir.to_str(),
-    );
+    let source_sha = match bearer {
+        Some(bearer) => tools::command::capture_with_cwd_as_bearer(
+            "/usr/bin/git",
+            &["rev-parse", "HEAD"],
+            source_dir.to_str(),
+            bearer,
+        ),
+        None => tools::command::capture_with_cwd(
+            "/usr/bin/git",
+            &["rev-parse", "HEAD"],
+            source_dir.to_str(),
+        ),
+    };
     write_command_receipt(receipt_dir, spec.source_sha_op, &source_sha)?;
     let source_sha_value = source_sha.stdout.trim().to_string();
 
@@ -363,8 +383,19 @@ pub(crate) fn execute(
         ));
     }
 
-    let build =
-        tools::command::capture_with_cwd(cargo_bin(), &["build", "--release"], source_dir.to_str());
+    let build = match bearer {
+        Some(bearer) => tools::command::capture_with_cwd_as_bearer(
+            cargo_bin(),
+            &["build", "--release"],
+            source_dir.to_str(),
+            bearer,
+        ),
+        None => tools::command::capture_with_cwd(
+            cargo_bin(),
+            &["build", "--release"],
+            source_dir.to_str(),
+        ),
+    };
     write_command_receipt(receipt_dir, spec.build_op, &build)?;
     if !build.ok {
         write_run_receipt(
@@ -493,7 +524,6 @@ pub(crate) fn execute(
         &module.id,
     ))
 }
-
 
 fn effective_managed_files(
     module: &ModuleManifest,
