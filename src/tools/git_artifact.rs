@@ -292,6 +292,35 @@ fn sync_repo(request: &Request) -> SyncResult {
         };
     }
 
+    if let Some(repo) = request.repo.as_deref() {
+        let configured = capture_git(request, &["remote", "get-url", &request.remote], cwd);
+        if !configured.ok {
+            return SyncResult {
+                command: configured,
+                changed: false,
+            };
+        }
+        if configured.stdout.trim() != repo {
+            let reconcile =
+                capture_git(request, &["remote", "set-url", &request.remote, repo], cwd);
+            transcript.push(format!(
+                "remote_url_reconcile remote={} exit={} ok={}",
+                request.remote, reconcile.code, reconcile.ok
+            ));
+            if !reconcile.ok {
+                return SyncResult {
+                    command: CommandReceipt {
+                        ok: false,
+                        code: reconcile.code,
+                        stdout: transcript.join("\n"),
+                        stderr: reconcile.stderr,
+                    },
+                    changed: false,
+                };
+            }
+        }
+    }
+
     let remote_tracking_refspec = format!(
         "+refs/heads/{}:refs/remotes/{}/{}",
         request.branch, request.remote, request.branch
