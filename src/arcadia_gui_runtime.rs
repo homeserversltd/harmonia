@@ -389,12 +389,12 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
 
-    let git_request = tools::git_artifact::Request::new(
+    let git_request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
         Some(repo.to_string()),
         source_dir.to_path_buf(),
         branch.to_string(),
         "origin".to_string(),
-    );
+    ))?;
     let git_outcome = if apply {
         tools::git_artifact::apply(&git_request)
     } else {

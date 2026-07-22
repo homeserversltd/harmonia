@@ -962,7 +962,7 @@ fn git_artifact_step(
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let request = tools::git_artifact::Request::new(
+    let request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
         optional_string_arg(&step.args, "repo").map(ToString::to_string),
         PathBuf::from(string_arg(&step.args, "path")),
         optional_string_arg(&step.args, "branch")
@@ -971,7 +971,7 @@ fn git_artifact_step(
         optional_string_arg(&step.args, "remote")
             .unwrap_or("origin")
             .to_string(),
-    );
+    ))?;
     let request = match optional_string_arg(&step.args, "bearer") {
         Some(bearer) => request.with_bearer(bearer),
         None => request,

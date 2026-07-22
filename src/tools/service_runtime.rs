@@ -257,7 +257,7 @@ pub(crate) fn execute(
         "source_sha_file",
     )?);
 
-    let git_request = tools::git_artifact::Request::new(
+    let git_request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
         Some(repo.to_string()),
         source_dir.clone(),
         branch.to_string(),
@@ -265,7 +265,7 @@ pub(crate) fn execute(
             .remote
             .clone()
             .unwrap_or_else(|| "origin".to_string()),
-    );
+    ))?;
     let git_request = match bearer {
         Some(bearer) => git_request.with_bearer(bearer),
         None => git_request,
