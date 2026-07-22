@@ -223,7 +223,9 @@ pub(crate) fn git_artifact_tool(
     remote: String,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let request = tools::git_artifact::Request::new(repo, path, branch, remote);
+    let request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
+        repo, path, branch, remote,
+    ))?;
     let outcome = if apply {
         tools::git_artifact::apply(&request)
     } else {

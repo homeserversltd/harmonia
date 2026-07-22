@@ -78,6 +78,20 @@ impl EnginePlaneConfig {
     }
 }
 
+/// Apply the optional, engine-owned HTTPS credential selector to a module Git
+/// request.  A body without engine configuration remains credential-less.
+pub(crate) fn with_configured_https_credentials(
+    request: tools::git_artifact::Request,
+) -> Result<tools::git_artifact::Request, String> {
+    let Some(config) = load_engine_plane_config(&engine_config_path())? else {
+        return Ok(request);
+    };
+    Ok(request.with_https_credentials(
+        config.git_https_credential_host,
+        config.git_https_credential_token_path,
+    ))
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EngineArtifactTransport {
