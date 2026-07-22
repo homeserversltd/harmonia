@@ -23,6 +23,10 @@
         "op_prefix": "coronatio",
         "run_schema": "harmonia.homeserver.coronatio_runtime.v1",
         "managed_files_schema": "harmonia.homeserver.coronatio_managed_files.v1",
+        "build_environment": {
+          "RUSTUP_HOME": "/opt/rustup",
+          "CARGO_HOME": "/opt/cargo"
+        },
         "managed_files": [
           {
             "path": "/etc/systemd/system/coronatio.service",

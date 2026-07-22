@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 pub const NAME: &str = "service-runtime";
 pub const DESCRIPTION: &str = "Rust service runtime convergence primitive for source sync, managed files, build, install, systemd, and health proof.";
+const BUILD_ENV_ALLOWLIST: &[&str] = &["RUSTUP_HOME", "CARGO_HOME"];
 pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
     "converge",
     "converge a Rust service runtime from typed constants",
@@ -27,6 +28,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("managed_files_schema", ToolArgKind::String),
         ToolArg::optional("managed_files", ToolArgKind::Json),
         ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
+        ToolArg::optional("build_environment", ToolArgKind::Json),
     ],
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
@@ -39,11 +41,31 @@ fn string_arg(args: &BTreeMap<String, Value>, name: &str) -> Result<String, Stri
         .ok_or_else(|| format!("service-runtime-missing-{name}"))
 }
 
+fn build_environment(args: &BTreeMap<String, Value>) -> Result<BTreeMap<String, String>, String> {
+    let Some(Value::Object(values)) = args.get("build_environment") else {
+        return Ok(BTreeMap::new());
+    };
+    values
+        .iter()
+        .map(|(key, value)| {
+            if !BUILD_ENV_ALLOWLIST.contains(&key.as_str()) {
+                return Err(format!("service-runtime-build-environment-refused-{key}"));
+            }
+            let value = value
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("service-runtime-build-environment-invalid-{key}"))?;
+            Ok((key.clone(), value.to_string()))
+        })
+        .collect()
+}
+
 pub(crate) fn execute_ladder_step(
     args: &BTreeMap<String, Value>,
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<ModuleExecution, String> {
+    let build_environment = build_environment(args)?;
     let op_prefix = string_arg(args, "op_prefix")?;
     let source_op = format!("{op_prefix}-source-git-artifact");
     let source_sha_op = format!("{op_prefix}-source-sha");
@@ -81,10 +103,12 @@ pub(crate) fn execute_ladder_step(
         apply,
         &spec,
         args.get("bearer").and_then(Value::as_str),
+        build_environment,
     )
 }
 
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
+    build_environment(args)?;
     let op_prefix = string_arg(args, "op_prefix")?;
     let source_op = format!("{op_prefix}-source-git-artifact");
     let source_sha_op = format!("{op_prefix}-source-sha");
@@ -216,6 +240,7 @@ pub(crate) fn execute(
     apply: bool,
     spec: &ServiceRuntimeSpec,
     bearer: Option<&str>,
+    build_environment: BTreeMap<String, String>,
 ) -> Result<ModuleExecution, String> {
     validate(module)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -384,16 +409,19 @@ pub(crate) fn execute(
     }
 
     let build = match bearer {
-        Some(bearer) => tools::command::capture_with_cwd_as_bearer(
-            cargo_bin(),
+        Some(bearer) => tools::command::capture_with_cwd_as_bearer_and_env(
+            "cargo",
             &["build", "--release"],
             source_dir.to_str(),
             bearer,
+            build_environment,
         ),
-        None => tools::command::capture_with_cwd(
-            cargo_bin(),
+        None => tools::command::capture_with_options(
+            "cargo",
             &["build", "--release"],
-            source_dir.to_str(),
+            tools::command::CaptureOptions::new()
+                .cwd(source_dir.to_str())
+                .env(build_environment),
         ),
     };
     write_command_receipt(receipt_dir, spec.build_op, &build)?;
@@ -595,14 +623,6 @@ fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
 fn is_hex_sha(value: &str) -> bool {
     value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
-fn cargo_bin() -> &'static str {
-    if Path::new("/opt/cargo/bin/cargo").exists() {
-        "/opt/cargo/bin/cargo"
-    } else {
-        "/usr/bin/cargo"
-    }
-}
-
 fn install_binary(
     receipt_dir: &Path,
     spec: &ServiceRuntimeSpec,
