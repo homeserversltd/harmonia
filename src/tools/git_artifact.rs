@@ -10,6 +10,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("path", ToolArgKind::String),
         ToolArg::optional("branch", ToolArgKind::String),
         ToolArg::optional("remote", ToolArgKind::String),
+        // Compatibility input only: source Git always runs as the owner bearer.
         ToolArg::optional("bearer", ToolArgKind::String),
     ],
 )];
@@ -17,10 +18,18 @@ pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTAT
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type CommandReceipt = crate::CmdResult;
+
+const OWNER_BEARER: &str = "owner";
+// This command-local helper runs only after the Git child has become the owner
+// bearer. It emits a credential only for the estate's HTTPS Forgejo origin and
+// never persists, exports, or receipts the token.
+const FORGEJO_OWNER_CREDENTIAL_HELPER: &str = "credential.helper=!f() { protocol= host= username= token=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${line#protocol=} ;; host=*) host=${line#host=} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = git.home.arpa ]; then while IFS= read -r line; do case \"$line\" in FORGEJO_USERNAME=*) username=${line#FORGEJO_USERNAME=} ;; FORGEJO_TOKEN=*) token=${line#FORGEJO_TOKEN=} ;; esac; done < /home/owner/.ssh/forgejo-token; if [ -n \"$username\" ] && [ -n \"$token\" ]; then printf \"username=%s\\npassword=%s\\n\" \"$username\" \"$token\"; fi; fi; }; f";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -36,7 +45,6 @@ pub struct Request {
     pub path: PathBuf,
     pub branch: String,
     pub remote: String,
-    pub bearer: Option<String>,
     pub ssh_key_path: Option<PathBuf>,
 }
 
@@ -47,13 +55,12 @@ impl Request {
             path,
             branch,
             remote,
-            bearer: None,
             ssh_key_path: None,
         }
     }
 
-    pub fn with_bearer(mut self, bearer: impl Into<String>) -> Self {
-        self.bearer = Some(bearer.into());
+    pub fn with_bearer(self, bearer: impl Into<String>) -> Self {
+        let _ = bearer.into();
         self
     }
 
@@ -64,7 +71,7 @@ impl Request {
 }
 
 fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
-    let env = match git_environment(request) {
+    let env = match git_ssh_env(request.ssh_key_path.as_deref()) {
         Ok(env) => env,
         Err(stderr) => {
             return CommandReceipt {
@@ -75,31 +82,19 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
             };
         }
     };
-    match request.bearer.as_deref() {
-        Some(bearer) => {
-            command::capture_with_cwd_as_bearer_and_env("/usr/bin/git", args, cwd, bearer, env)
-        }
-        None => command::capture_with_options(
-            "/usr/bin/git",
-            args,
-            command::CaptureOptions::new().cwd(cwd).env(env),
-        ),
+    let mut git_args = Vec::with_capacity(args.len() + 2);
+    if uses_owner_forgejo_https(request) {
+        git_args.extend(["-c", FORGEJO_OWNER_CREDENTIAL_HELPER]);
     }
+    git_args.extend_from_slice(args);
+    command::capture_with_cwd_as_bearer_and_env("/usr/bin/git", &git_args, cwd, OWNER_BEARER, env)
 }
 
-fn git_environment(request: &Request) -> Result<BTreeMap<String, String>, String> {
-    let mut env = git_ssh_env(request.ssh_key_path.as_deref())?;
-    if request.bearer.as_deref() == Some("owner") {
-        let helper = "!f() { host=; while IFS= read -r line; do case \"$line\" in host=*) host=${line#host=} ;; esac; done; [ \"$host\" = git.home.arpa ] || exit 0; while IFS='=' read -r key value; do case \"$key\" in FORGEJO_USERNAME) printf 'username=%s\\n' \"$value\" ;; FORGEJO_TOKEN) printf 'password=%s\\n' \"$value\" ;; esac; done < \"$HOME/.ssh/forgejo-token\"; }; f";
-        env.insert("GIT_CONFIG_COUNT".to_string(), "1".to_string());
-        env.insert(
-            "GIT_CONFIG_KEY_0".to_string(),
-            "credential.helper".to_string(),
-        );
-        env.insert("GIT_CONFIG_VALUE_0".to_string(), helper.to_string());
-        env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
-    }
-    Ok(env)
+fn uses_owner_forgejo_https(request: &Request) -> bool {
+    request
+        .repo
+        .as_deref()
+        .is_some_and(|repo| repo.starts_with("https://git.home.arpa/"))
 }
 
 /// Validate only path identity and stage the SSH selector for the Git child.
@@ -163,52 +158,18 @@ struct SyncResult {
 }
 
 fn sync_repo(request: &Request) -> SyncResult {
-    let mut transcript = Vec::new();
-    if let Some(bearer) = request.bearer.as_deref() {
-        if unsafe { libc::geteuid() } == 0 {
-            let parent = match request.path.parent() {
-                Some(parent) => parent,
-                None => {
-                    return SyncResult {
-                        command: CommandReceipt {
-                            ok: false,
-                            code: -1,
-                            stdout: String::new(),
-                            stderr: "git-bearer-source-parent-missing".to_string(),
-                        },
-                        changed: false,
-                    }
-                }
-            };
-            if let Err(err) = fs::create_dir_all(parent) {
-                return SyncResult {
-                    command: CommandReceipt {
-                        ok: false,
-                        code: -1,
-                        stdout: String::new(),
-                        stderr: format!("git-bearer-source-parent-create-failed: {err}"),
-                    },
-                    changed: false,
-                };
-            }
-            let owner = format!("{bearer}:{bearer}");
-            let custody = command::capture(
-                "/usr/bin/chown",
-                &["-R", &owner, parent.to_string_lossy().as_ref()],
-            );
-            if !custody.ok {
-                return SyncResult {
-                    command: CommandReceipt {
-                        ok: false,
-                        code: custody.code,
-                        stdout: custody.stdout,
-                        stderr: format!("git-bearer-source-custody-failed: {}", custody.stderr),
-                    },
-                    changed: false,
-                };
-            }
-        }
+    if let Err(stderr) = prepare_owner_writable_path(request) {
+        return SyncResult {
+            command: CommandReceipt {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr,
+            },
+            changed: false,
+        };
     }
+    let mut transcript = Vec::new();
     if !request.path.join(".git").exists() {
         let Some(repo) = request.repo.as_deref() else {
             return SyncResult {
@@ -404,6 +365,71 @@ fn sync_repo(request: &Request) -> SyncResult {
         },
         changed,
     }
+}
+
+fn prepare_owner_writable_path(request: &Request) -> Result<(), String> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    let (uid, gid) = owner_ids()?;
+    fs::create_dir_all(&request.path).map_err(|err| {
+        format!(
+            "git-owner-source-path-create-failed {}: {err}",
+            request.path.display()
+        )
+    })?;
+    chown_tree_to_owner(&request.path, uid, gid)
+}
+
+fn owner_ids() -> Result<(u32, u32), String> {
+    let name =
+        std::ffi::CString::new(OWNER_BEARER).map_err(|_| "git-owner-bearer-invalid".to_string())?;
+    let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
+    if passwd.is_null() {
+        return Err("git-owner-bearer-unknown".to_string());
+    }
+    let passwd = unsafe { &*passwd };
+    if passwd.pw_uid == 0 || passwd.pw_gid == 0 {
+        return Err("git-owner-bearer-root-refused".to_string());
+    }
+    Ok((passwd.pw_uid, passwd.pw_gid))
+}
+
+fn chown_tree_to_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|err| {
+        format!(
+            "git-owner-source-path-stat-failed {}: {err}",
+            path.display()
+        )
+    })?;
+    if metadata.uid() != uid || metadata.gid() != gid {
+        let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| format!("git-owner-source-path-non-utf8 {}", path.display()))?;
+        if unsafe { libc::lchown(path_c.as_ptr(), uid, gid) } != 0 {
+            return Err(format!(
+                "git-owner-source-path-chown-failed {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    if metadata.file_type().is_dir() {
+        for entry in fs::read_dir(path).map_err(|err| {
+            format!(
+                "git-owner-source-path-read-failed {}: {err}",
+                path.display()
+            )
+        })? {
+            let entry = entry.map_err(|err| {
+                format!(
+                    "git-owner-source-path-entry-failed {}: {err}",
+                    path.display()
+                )
+            })?;
+            chown_tree_to_owner(&entry.path(), uid, gid)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn stdout_changed(stdout: &str) -> bool {
