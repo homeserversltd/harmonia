@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Harmonia convergence
+Documentation=file:/var/lib/harmonia/receipts/update-latest/run.json
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/harmonia update --apply --receipt-dir /var/lib/harmonia/receipts/update-latest
+Nice=10
+IOSchedulingClass=idle

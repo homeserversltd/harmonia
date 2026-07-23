@@ -1,7 +1,8 @@
 use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::{write_json, CmdResult, OperationOutcome};
 use serde_json::json;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub const NAME: &str = "systemd";
 pub const DESCRIPTION: &str =
@@ -15,6 +16,14 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
     ToolPermutation::new(
         "enable-now",
         "enable and start a system unit",
+        &[
+            ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    ),
+    ToolPermutation::new(
+        "disable-stop-remove",
+        "disable and stop a system unit, then remove its unit file",
         &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
@@ -108,7 +117,15 @@ pub(crate) fn run_action(
     apply: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
-    let mutating = matches!(action, "daemon-reload" | "enable-now" | "restart" | "stop");
+    let mutating = matches!(
+        action,
+        "daemon-reload" | "enable-now" | "disable-stop-remove" | "restart" | "stop"
+    );
+    let unit_file_before = if action == "disable-stop-remove" {
+        unit_file_path(service).is_some_and(|path| path.exists())
+    } else {
+        false
+    };
     let before_enabled = state("is-enabled", service, user, target_user, timeout_secs);
     let before_active = state("is-active", service, user, target_user, timeout_secs);
     let result = if mutating && !apply {
@@ -123,8 +140,9 @@ pub(crate) fn run_action(
     };
     let after_enabled = state("is-enabled", service, user, target_user, timeout_secs);
     let after_active = state("is-active", service, user, target_user, timeout_secs);
-    let changed =
-        mutating && result.ok && (before_enabled != after_enabled || before_active != after_active);
+    let changed = mutating
+        && result.ok
+        && (before_enabled != after_enabled || before_active != after_active || unit_file_before);
     write_systemd_receipt(
         receipt_dir,
         name,
@@ -169,6 +187,7 @@ fn systemctl(
                 service.to_string(),
             ]);
         }
+        "disable-stop-remove" => return disable_stop_remove(service, user, timeout_secs),
         "restart" | "stop" => {
             args.extend([action.to_string(), service.to_string()]);
         }
@@ -186,6 +205,70 @@ fn systemctl(
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs)
+}
+
+fn disable_stop_remove(service: &str, user: bool, timeout_secs: u64) -> CmdResult {
+    if user {
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: "systemd-action-unsupported-user-disable-stop-remove".to_string(),
+        };
+    }
+    let Some(unit_file) = unit_file_path(service) else {
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: format!("systemd-unit-name-invalid-{service}"),
+        };
+    };
+    if !unit_file.exists() {
+        return CmdResult {
+            ok: true,
+            code: 0,
+            stdout: format!("unit file absent: {}", unit_file.display()),
+            stderr: String::new(),
+        };
+    }
+
+    let args = ["disable", "--now", service];
+    let mut result =
+        crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &args, timeout_secs);
+    if !result.ok {
+        return result;
+    }
+    if let Err(err) = fs::remove_file(&unit_file) {
+        result.ok = false;
+        result.code = -1;
+        result.stderr = format!(
+            "{}{}systemd-unit-remove-failed {}: {err}",
+            result.stderr,
+            if result.stderr.is_empty() { "" } else { "\n" },
+            unit_file.display(),
+        );
+        return result;
+    }
+    if !result.stdout.is_empty() {
+        result.stdout.push('\n');
+    }
+    result
+        .stdout
+        .push_str(&format!("removed unit file: {}", unit_file.display()));
+    result
+}
+
+fn unit_file_path(service: &str) -> Option<PathBuf> {
+    let path = Path::new(service);
+    if service.is_empty()
+        || path.is_absolute()
+        || path.components().count() != 1
+        || path.file_name().is_none()
+    {
+        return None;
+    }
+    Some(PathBuf::from("/etc/systemd/system").join(path))
 }
 
 fn systemctl_scope_args(user: bool, target_user: Option<&str>) -> Vec<String> {
@@ -331,5 +414,46 @@ mod tests {
         assert_eq!(receipt["target_user"], "owner");
         assert_eq!(receipt["systemctl_transport"], "machine-user");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disable_stop_remove_is_declared_and_dry_run_is_a_clean_absent_unit_plan() {
+        assert!(PERMUTATIONS
+            .iter()
+            .any(|permutation| permutation.name == "disable-stop-remove"));
+        let root = temp_root("disable-stop-remove-plan");
+        fs::create_dir_all(&root).unwrap();
+        let outcome = run_action(
+            &root,
+            "retire-absent",
+            "disable-stop-remove",
+            Some("harmonia-never-installed-for-test.service"),
+            false,
+            None,
+            30,
+            false,
+        )
+        .unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.skipped);
+        assert!(!outcome.changed);
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("retire-absent.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["action"], "disable-stop-remove");
+        assert_eq!(receipt["ok"], true);
+        assert_eq!(receipt["apply"], false);
+        assert_eq!(receipt["changed"], false);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retire_unit_file_accepts_only_a_unit_basename() {
+        assert_eq!(
+            unit_file_path("harmonia.service"),
+            Some(PathBuf::from("/etc/systemd/system/harmonia.service"))
+        );
+        assert_eq!(unit_file_path("../harmonia.service"), None);
+        assert_eq!(unit_file_path("/etc/systemd/system/harmonia.service"), None);
     }
 }
