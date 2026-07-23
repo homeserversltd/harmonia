@@ -726,13 +726,13 @@ mod tests {
             step.step_id == "homeserver-update-timer-enable"
                 && step.tool == "systemd"
                 && step.permutation == "enable-now"
-                && step.args["service"].as_str() == Some("harmonia-homeserver.timer")
+                && step.args["service"].as_str() == Some("harmonia.timer")
         }));
         let timer = fs::read_to_string(root.join(
-            "profiles/homeserver/modules/homeserver-update-runtime/files_root/etc/systemd/system/harmonia-homeserver.timer",
+            "profiles/homeserver/modules/homeserver-update-runtime/files_root/etc/systemd/system/harmonia.timer",
         ))
         .unwrap();
-        assert!(timer.contains("harmonia-homeserver.service"));
+        assert!(timer.contains("harmonia.service"));
         validate_ladder(&manifest).unwrap();
     }
 
@@ -914,13 +914,13 @@ mod tests {
             step.step_id == "tv-update-timer-enable"
                 && step.tool == "systemd"
                 && step.permutation == "enable-now"
-                && step.args["service"].as_str() == Some("harmonia-tv.timer")
+                && step.args["service"].as_str() == Some("harmonia.timer")
         }));
         let timer = fs::read_to_string(root.join(
-            "profiles/tv/modules/tv-update-runtime/files_root/etc/systemd/system/harmonia-tv.timer",
+            "profiles/tv/modules/tv-update-runtime/files_root/etc/systemd/system/harmonia.timer",
         ))
         .unwrap();
-        assert!(timer.contains("harmonia-tv.service"));
+        assert!(timer.contains("harmonia.service"));
         validate_ladder(&manifest).unwrap();
     }
 
@@ -937,13 +937,13 @@ mod tests {
             step.step_id == "homeconsole-update-timer-enable"
                 && step.tool == "systemd"
                 && step.permutation == "enable-now"
-                && step.args["service"].as_str() == Some("harmonia-homeconsole.timer")
+                && step.args["service"].as_str() == Some("harmonia.timer")
         }));
         let timer = fs::read_to_string(root.join(
-            "profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia-homeconsole.timer",
+            "profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia.timer",
         ))
         .unwrap();
-        assert!(timer.contains("harmonia-homeconsole.service"));
+        assert!(timer.contains("harmonia.service"));
         validate_ladder(&manifest).unwrap();
     }
 
@@ -2135,7 +2135,7 @@ mod tests {
             .join("profiles/homeconsole/modules/pinned-artifacts-runtime/manifest.json")
             .exists());
         assert!(output
-            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia-homeconsole.timer")
+            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia.timer")
             .exists());
         assert!(output
             .join("locks/homeconsole/pinned-artifacts.json")
