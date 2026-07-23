@@ -6,6 +6,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/harmonia homeserver-update /etc/harmonia/profiles/homeserver/index.json --apply --receipt-dir /var/lib/harmonia/receipts/homeserver-update-latest
+ExecStart=/usr/local/bin/harmonia update --apply --receipt-dir /var/lib/harmonia/receipts/homeserver-update-latest
 Nice=10
 IOSchedulingClass=idle
