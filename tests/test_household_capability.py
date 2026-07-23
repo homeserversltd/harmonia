@@ -182,9 +182,9 @@ cp "{self.seed_file}" "{self.exchange}"
             by_path = {entry["path"]: entry for entry in managed}
             self.assertEqual(by_path["/usr/local/sbin/caduceus_staff/household_capability/index.py"]["content"], expected)
             self.assertEqual(by_path["/usr/local/sbin/caduceus-skeleton-sha"]["mode"], 493)
-            self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-sign-capability"]["mode"], 493)
-            self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-rotate-capability"]["mode"], 493)
             if path.name == "manifest.json" and "homeserver/modules/caduceus" in str(path):
+                self.assertNotIn("/usr/local/sbin/caduceus-keyman-sign-capability", by_path)
+                self.assertNotIn("/usr/local/sbin/caduceus-keyman-rotate-capability", by_path)
                 profile_source = runtime["args"]["caduceus_profile_source"]
                 self.assertEqual(profile_source["source"], "profiles/homeserver/index.yaml")
                 self.assertEqual(profile_source["path"], "/etc/caduceus/profile.yaml")
@@ -194,6 +194,34 @@ cp "{self.seed_file}" "{self.exchange}"
                 profile = by_path["/etc/caduceus/profile.yaml"]["content"]
                 self.assertIn("capability:\n  household_verifying_key:\n  default_ttl_seconds: 60", profile)
                 self.assertIn("- staff intent", profile)
+
+    def test_homeserver_runtime_projects_admitted_bind_staff_and_retires_legacy_launchers(self) -> None:
+        manifest = json.loads((ROOT / "profiles/homeserver/modules/caduceus/manifest.json").read_text())
+        runtime = next(step for step in manifest["ladder"] if step["tool"] == "service-runtime")
+        by_path = {entry["path"]: entry for entry in runtime["args"]["managed_files"]}
+        expected = {
+            "/usr/local/sbin/caduceus_staff/bind_derived.py": (SBIN / "caduceus_staff/bind_derived.py", 0o644),
+            "/usr/local/sbin/caduceus-bind": (SBIN / "caduceus-bind", 0o755),
+            "/usr/local/sbin/caduceus-verify": (SBIN / "caduceus-verify", 0o755),
+            "/usr/local/sbin/caduceus-atomic-change-pin": (SBIN / "caduceus-atomic-change-pin", 0o755),
+            "/etc/sudoers.d/caduceus-keyman": (ROOT / "profiles/homeserver/modules/caduceus/files_root/etc/sudoers.d/caduceus-keyman", 0o440),
+        }
+        for installed, (source, mode) in expected.items():
+            self.assertEqual(by_path[installed]["content"], source.read_text())
+            self.assertEqual(by_path[installed]["mode"], mode)
+        for launcher in ("caduceus-bind", "caduceus-verify", "caduceus-atomic-change-pin"):
+            text = (SBIN / launcher).read_text()
+            self.assertIn("export PYTHONPATH=/usr/local/sbin", text)
+            self.assertTrue((SBIN / launcher).stat().st_mode & stat.S_IXUSR)
+        self.assertIn("caduceus-bind", (ROOT / "profiles/homeserver/modules/caduceus/files_root/etc/sudoers.d/caduceus-keyman").read_text())
+        self.assertFalse((SBIN / "caduceus_staff/access_server.py").exists())
+        self.assertFalse((SBIN / "caduceus-keyman-sign-capability").exists())
+        self.assertFalse((SBIN / "caduceus-keyman-rotate-capability").exists())
+        self.assertNotIn("/usr/local/sbin/caduceus-keyman-sign-capability", by_path)
+        self.assertNotIn("/usr/local/sbin/caduceus-keyman-rotate-capability", by_path)
+        retire = next(step for step in manifest["ladder"] if step["step_id"] == "retire-caduceus-keyman-legacy-launchers")
+        self.assertEqual(retire["args"]["program"], "/usr/bin/rm")
+        self.assertEqual(retire["args"]["args"][0], "-f")
 
 
 if __name__ == "__main__":
