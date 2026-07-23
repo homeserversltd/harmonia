@@ -6,6 +6,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/harmonia tv-update /etc/harmonia/profiles/tv/index.json --apply --receipt-dir /var/lib/harmonia/receipts/tv-update-latest
+ExecStart=/usr/local/bin/harmonia update --apply --receipt-dir /var/lib/harmonia/receipts/tv-update-latest
 Nice=10
 IOSchedulingClass=idle
