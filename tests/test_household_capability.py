@@ -176,14 +176,16 @@ cp "{self.seed_file}" "{self.exchange}"
         ]
         expected = MODULE.read_text(encoding="utf-8")
         for path in manifests:
-            managed = json.loads(path.read_text(encoding="utf-8"))["ladder"][0]["args"]["managed_files"]
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            runtime = next(step for step in manifest["ladder"] if step["tool"] == "service-runtime")
+            managed = runtime["args"]["managed_files"]
             by_path = {entry["path"]: entry for entry in managed}
             self.assertEqual(by_path["/usr/local/sbin/caduceus_staff/household_capability/index.py"]["content"], expected)
             self.assertEqual(by_path["/usr/local/sbin/caduceus-skeleton-sha"]["mode"], 493)
             self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-sign-capability"]["mode"], 493)
             self.assertEqual(by_path["/usr/local/sbin/caduceus-keyman-rotate-capability"]["mode"], 493)
             if path.name == "manifest.json" and "homeserver/modules/caduceus" in str(path):
-                profile_source = json.loads(path.read_text(encoding="utf-8"))["ladder"][0]["args"]["caduceus_profile_source"]
+                profile_source = runtime["args"]["caduceus_profile_source"]
                 self.assertEqual(profile_source["source"], "profiles/homeserver/index.yaml")
                 self.assertEqual(profile_source["path"], "/etc/caduceus/profile.yaml")
                 self.assertIn("capability:\n  household_verifying_key:\n  default_ttl_seconds: 60", profile_source["insert_after_profile"])

@@ -202,44 +202,36 @@ class AccessServerTests(unittest.TestCase):
             stdin.buffer.readline.return_value = b"fixture-initial-pin\n"
             self.assertEqual(self.module.main(), 2)
 
-    def test_manifest_owns_private_runtime_and_keyman_dependency(self) -> None:
+    def test_manifest_owns_staff_venv_and_public_service(self) -> None:
         manifest = json.loads((ROOT / "profiles/homeserver/modules/caduceus/manifest.json").read_text())
-        managed = {item["path"]: item["content"] for item in manifest["ladder"][0]["args"]["managed_files"]}
-        unit = managed["/etc/systemd/system/caduceus-access.service"]
-        self.assertIn("keyman_caduceus_access.py", unit)
-        self.assertIn("keyman_caduceus_access.runtime.json", unit)
-        self.assertIn("keyman_installer/index.py verify", unit)
-        self.assertNotIn("keyman-runtime.service", unit)
-        self.assertIn("ProtectHome=tmpfs", unit)
-        self.assertIn("BindReadOnlyPaths=/opt/keyman/runtime/lib /root/key", unit)
-        self.assertNotIn("/root/key", unit.split("ReadWritePaths=", 1)[1].split("\n", 1)[0])
-        self.assertIn("/vault/.keys", unit.split("ReadWritePaths=", 1)[1].split("\n", 1)[0])
-        self.assertIn("/run/caduceus/access.sock", unit)
-        self.assertIn("Requires=caduceus-access.service", managed["/etc/systemd/system/caduceus.service"])
-        self.assertEqual(managed["/usr/local/sbin/caduceus_staff/access_server.py"], SOURCE.read_text())
-        profile = json.loads((ROOT / "profiles/homeserver/index.json").read_text())
-        self.assertLess(profile["modules"].index("keyman"), profile["modules"].index("caduceus"))
-        keyman = json.loads((ROOT / "profiles/homeserver/modules/keyman/manifest.json").read_text())
-        self.assertEqual(keyman["ladder"][0]["args"]["repo"], "https://git.home.arpa/HOMESERVERSLTD/keyman.git")
-        self.assertEqual(keyman["ladder"][0]["args"]["path"], "/opt/keyman/source")
-        install = keyman["ladder"][1]["args"]["args"]
-        self.assertIn("/opt/keyman/runtime", install)
-        self.assertIn("vault-only", install)
+        self.assertEqual(manifest["constants"]["staff_venv"], "/var/lib/caduceus/venv")
+        self.assertEqual(manifest["constants"]["staff_module_root"], "/usr/local/sbin")
+        self.assertEqual(manifest["ladder"][0]["step_id"], "caduceus-staff-venv")
+        self.assertEqual(manifest["ladder"][0]["args"]["args"], ["-m", "venv", "/var/lib/caduceus/venv"])
+        managed = {item["path"]: item["content"] for item in manifest["ladder"][1]["args"]["managed_files"]}
+        self.assertIn("/usr/local/sbin/caduceus_staff/__init__.py", managed)
+        self.assertIn("/usr/local/sbin/caduceus_staff/house_ca.py", managed)
+        self.assertIn("/etc/systemd/system/caduceus.service", managed)
+        self.assertNotIn("/etc/systemd/system/caduceus-access.service", managed)
+        self.assertNotIn("/etc/tmpfiles.d/caduceus-access.conf", managed)
+        service = managed["/etc/systemd/system/caduceus.service"]
+        self.assertIn("Environment=PYTHONPATH=/usr/local/sbin", service)
+        self.assertNotIn("caduceus-access.service", service)
+        self.assertNotIn("CADUCEUS_ACCESS_SOCKET", service)
+        self.assertNotIn("/opt/keyman/runtime", service)
+        permissions = json.loads((ROOT / "profiles/homeserver/modules/permissions/manifest.json").read_text())
+        consumer = permissions["constants"]["refresh_consumers"][0]
+        self.assertEqual(consumer, {"role": "caduceus", "source_artifact": "sudoers", "target": "/etc/sudoers.d"})
 
-    def test_systemd_sandbox_fixture_exposes_only_declared_skeleton_path(self) -> None:
+    def test_systemd_manifest_has_only_public_caduceus_service(self) -> None:
         manifest = json.loads((ROOT / "profiles/homeserver/modules/caduceus/manifest.json").read_text())
-        unit = next(item["content"] for item in manifest["ladder"][0]["args"]["managed_files"] if item["path"] == "/etc/systemd/system/caduceus-access.service")
-        self.assertIn("ProtectHome=tmpfs", unit)
-        self.assertIn("BindReadOnlyPaths=/opt/keyman/runtime/lib /root/key", unit)
-        self.assertNotIn("ReadWritePaths=/root/key", unit)
-        analyzer = shutil.which("systemd-analyze")
-        if analyzer:
-            with tempfile.TemporaryDirectory() as temporary:
-                path = Path(temporary) / "caduceus-access.service"
-                fixture = unit.replace("ExecStart=/var/lib/caduceus/venv/bin/python3 -m caduceus_staff.access_server", "ExecStart=/bin/true")
-                path.write_text(fixture, encoding="utf-8")
-                result = subprocess.run([analyzer, "verify", str(path)], text=True, capture_output=True)
-                self.assertNotIn("caduceus-access.service:", result.stderr)
+        managed = {item["path"]: item["content"] for item in manifest["ladder"][1]["args"]["managed_files"]}
+        self.assertEqual([path for path in managed if path.endswith(".service")], ["/etc/systemd/system/caduceus.service"])
+        unit = managed["/etc/systemd/system/caduceus.service"]
+        self.assertNotIn("access.sock", unit)
+        self.assertNotIn("caduceus-access", unit)
+        self.assertNotIn("BindReadOnlyPaths=", unit)
+        self.assertNotIn("ExecStartPre=", unit)
 
 
 if __name__ == "__main__":

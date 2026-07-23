@@ -1419,9 +1419,14 @@ mod tests {
                     .join("manifest.json"),
             )
             .unwrap();
-            assert_eq!(manifest.ladder[0].tool, "service-runtime");
+            let runtime = manifest
+                .ladder
+                .iter()
+                .find(|step| step.tool == "service-runtime")
+                .expect("{module} service-runtime step");
+            assert_eq!(runtime.tool, "service-runtime");
             assert!(
-                manifest.ladder[0].args["repo"]
+                runtime.args["repo"]
                     .as_str()
                     .unwrap_or("")
                     .starts_with("https://git.home.arpa/HOMESERVERSLTD/"),
@@ -1431,8 +1436,13 @@ mod tests {
         let caduceus =
             load_ladder_manifest(&root.join("profiles/homeserver/modules/caduceus/manifest.json"))
                 .unwrap();
+        let runtime = caduceus
+            .ladder
+            .iter()
+            .find(|step| step.tool == "service-runtime")
+            .expect("homeserver caduceus service-runtime step");
         let source_profile: CaduceusProfileSourceManifest = serde_json::from_value(
-            caduceus.ladder[0].args["caduceus_profile_source"].clone(),
+            runtime.args["caduceus_profile_source"].clone(),
         )
         .unwrap();
         assert_eq!(source_profile.source, "profiles/homeserver/index.yaml");
@@ -1474,7 +1484,7 @@ mod tests {
         assert!(source_profile.append.contains("/etc/harmonia/profiles/homeserver/index.json"));
         assert!(source_profile.append.contains("/var/lib/harmonia/receipts/homeserver-update-latest/run.json"));
         let managed_files: Vec<ManagedFileManifest> =
-            serde_json::from_value(caduceus.ladder[0].args["managed_files"].clone()).unwrap();
+            serde_json::from_value(runtime.args["managed_files"].clone()).unwrap();
         assert!(
             managed_files
                 .iter()
@@ -1500,24 +1510,16 @@ mod tests {
             );
         }
         assert!(
-            service_text.contains("LogsDirectory=hyalos"),
-            "homeserver Caduceus service must ask systemd to provision /var/log/hyalos"
+            !service_text.contains("caduceus-access"),
+            "homeserver public Caduceus unit must not depend on retired access service"
         );
         assert!(
-            service_text.contains("ExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/caduceus-hyalos.conf"),
-            "homeserver Caduceus service must re-seat Hyalos channel ownership before start"
+            !service_text.contains("access.sock"),
+            "homeserver public Caduceus unit must not expose retired socket path"
         );
-        let hyalos_tmpfiles = managed_files
-            .iter()
-            .find(|file| file.path == "/etc/tmpfiles.d/caduceus-hyalos.conf")
-            .expect("homeserver Caduceus module must install Hyalos tmpfiles ownership rule")
-            .content
-            .as_str();
-        assert!(hyalos_tmpfiles.contains("d /var/log/hyalos 0755 caduceus caduceus -"));
-        assert!(hyalos_tmpfiles.contains("z /var/log/hyalos/channel.jsonl 0644 caduceus caduceus -"));
         assert!(
-            !hyalos_tmpfiles.contains("/var/log/caduceus/channel"),
-            "Hyalos must remain one channel at /var/log/hyalos/channel.jsonl"
+            !service_text.contains("ExecStartPre="),
+            "homeserver public Caduceus unit must not retain retired tmpfiles preflight"
         );
         for installed in [
             "/usr/local/sbin/caduceus_staff/house_ca.py",
@@ -1696,13 +1698,14 @@ mod tests {
                 .join("files_root/etc/caduceus/identity.json")
                 .is_file()
         );
-        assert!(caduceus.ladder.iter().any(|step| {
-            step.tool == "service-runtime"
-                && step.permutation == "converge"
-                && step.args.get("managed_files").is_some()
-        }));
+        let runtime = caduceus
+            .ladder
+            .iter()
+            .find(|step| step.tool == "service-runtime")
+            .expect("tv caduceus service-runtime step");
+        assert!(runtime.args.get("managed_files").is_some());
         let managed_files: Vec<ManagedFileManifest> =
-            serde_json::from_value(caduceus.ladder[0].args["managed_files"].clone()).unwrap();
+            serde_json::from_value(runtime.args["managed_files"].clone()).unwrap();
         let service_text = managed_files
             .iter()
             .find(|file| file.path == "/etc/systemd/system/caduceus.service")
@@ -2338,7 +2341,7 @@ mod tests {
             (
                 "homeserver",
                 "caduceus",
-                vec![("service-runtime", "converge")],
+                vec![("command", "capture"), ("service-runtime", "converge")],
             ),
             (
                 "homeserver",

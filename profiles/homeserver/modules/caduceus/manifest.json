@@ -1,10 +1,23 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
-  "version": "1.2.0",
-  "description": "HOMESERVER Caduceus lever with Keyman-backed private caduceus_staff access socket; legacy household helper is retirement-pending until Coronatio cutover.",
-  "constants": {},
+  "version": "1.3.0",
+  "description": "HOMESERVER Caduceus public lever with a provisioned caduceus_staff Python environment and sudoers refresh consumer declaration.",
+  "constants": {
+    "staff_venv": "/var/lib/caduceus/venv",
+    "staff_module_root": "/usr/local/sbin",
+    "sudoers_refresh_consumer_role": "caduceus"
+  },
   "ladder": [
+    {
+      "step_id": "caduceus-staff-venv",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": ["-m", "venv", "/var/lib/caduceus/venv"]
+      }
+    },
     {
       "step_id": "caduceus-service-runtime",
       "tool": "service-runtime",
@@ -30,24 +43,9 @@
             "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"homeserver\",\n  \"profile\": \"homeserver\",\n  \"mode\": \"homeserver\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeserver/index.json\"\n}\n"
           },
           {
-            "path": "/etc/systemd/system/caduceus-access.service",
-            "mode": 420,
-            "content": "[Unit]\nDescription=Caduceus private Keyman access staff\nBefore=caduceus.service\n\n[Service]\nType=simple\nUser=root\nGroup=root\nUMask=0077\nRuntimeDirectory=caduceus\nRuntimeDirectoryMode=0700\nRuntimeDirectoryPreserve=yes\nEnvironment=PYTHONPATH=/opt/keyman/runtime/lib:/usr/local/sbin\nEnvironment=CADUCEUS_ACCESS_SOCKET=/run/caduceus/access.sock\nExecStartPre=/usr/bin/test -f /opt/keyman/runtime/lib/keyman_caduceus_access.py\nExecStartPre=/usr/bin/test -f /opt/keyman/runtime/lib/keyman_caduceus_access.runtime.json\nExecStartPre=/usr/bin/python3 /opt/keyman/runtime/lib/keyman_installer/index.py verify --runtime-dir /opt/keyman/runtime --key-dir /root/key --vault-dir /vault/.keys\nExecStart=/var/lib/caduceus/venv/bin/python3 -m caduceus_staff.access_server\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=tmpfs\nBindReadOnlyPaths=/opt/keyman/runtime/lib /root/key\nReadWritePaths=/run/caduceus /var/lib/caduceus /vault/.keys\n\n[Install]\nWantedBy=multi-user.target\n"
-          },
-          {
             "path": "/etc/systemd/system/caduceus.service",
             "mode": 420,
-            "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target caduceus-access.service\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nEnvironment=CADUCEUS_ACCESS_SOCKET=/run/caduceus/access.sock\nRestart=on-failure\nRestartSec=2\nExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/caduceus-hyalos.conf\nExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/caduceus-access.conf\nLogsDirectory=hyalos\n\n[Install]\nWantedBy=multi-user.target\n"
-          },
-          {
-            "path": "/etc/tmpfiles.d/caduceus-access.conf",
-            "mode": 420,
-            "content": "# Private Caduceus staff socket directory.\nd /run/caduceus 0700 root root -\nz /run/caduceus 0700 root root -\n"
-          },
-          {
-            "path": "/etc/tmpfiles.d/caduceus-hyalos.conf",
-            "mode": 420,
-            "content": "# Caduceus owns the sole Hyalos structured channel.\n# /var/log/caduceus is reserved for separate service-log concerns, not Hyalos authority.\nd /var/log/hyalos 0755 caduceus caduceus -\nf /var/log/hyalos/channel.jsonl 0644 caduceus caduceus -\nz /var/log/hyalos 0755 caduceus caduceus -\nz /var/log/hyalos/channel.jsonl 0644 caduceus caduceus -\n"
+            "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nEnvironment=PYTHONPATH=/usr/local/sbin\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
           },
           {
             "path": "/usr/local/sbin/caduceus-house-ca",
