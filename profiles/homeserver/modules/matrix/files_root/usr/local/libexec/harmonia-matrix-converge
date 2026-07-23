@@ -31,7 +31,7 @@ install -d -o root -g matrix-synapse -m 0750 /etc/matrix-synapse /etc/matrix-syn
 install -d -o matrix-synapse -g matrix-synapse -m 0750 /var/lib/matrix-synapse /var/lib/matrix-synapse/media
 install -d -o matrix-synapse -g adm -m 0750 /var/log/matrix-synapse
 install -d -o root -g root -m 0755 /usr/share/harmonia/matrix
-install -d -o root -g root -m 0755 /etc/homeserver
+[ -d /etc/homeserver ] || install -d -o root -g root -m 0755 /etc/homeserver
 
 # Birth-owned values are generated once. Harmonia owns only presence, owner, and mode;
 # it never renders or replaces this file.
@@ -115,6 +115,8 @@ ln -sfn /etc/nginx/sites-available/homeserver-element /etc/nginx/sites-enabled/h
 
 python3 - <<'PY'
 import json
+import os
+import stat
 from pathlib import Path
 
 path = Path('/etc/homeserver/config.json')
@@ -161,9 +163,14 @@ for index, item in enumerate(items):
 else:
     items.append(entry)
 tmp = path.with_suffix(path.suffix + '.harmonia-matrix-new')
-tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + '\n', encoding='utf-8')
-tmp.replace(path)
-path.chmod(0o644)
+serialized = json.dumps(data, indent=2, sort_keys=False) + '\n'
+if not path.exists() or path.read_text(encoding='utf-8') != serialized:
+    previous = path.stat() if path.exists() else None
+    tmp.write_text(serialized, encoding='utf-8')
+    if previous is not None:
+        os.chown(tmp, previous.st_uid, previous.st_gid)
+        tmp.chmod(stat.S_IMODE(previous.st_mode))
+    tmp.replace(path)
 PY
 
 nginx -t
