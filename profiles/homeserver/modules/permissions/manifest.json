@@ -8,7 +8,14 @@
     "install_target": "/etc/sudoers.d",
     "install_owner": "root:root",
     "install_mode": "0440",
-    "validation": "visudo"
+    "validation": "visudo",
+    "refresh_consumers": [
+      {
+        "role": "caduceus",
+        "source_artifact": "sudoers",
+        "target": "/etc/sudoers.d"
+      }
+    ]
   },
   "ladder": [
     {

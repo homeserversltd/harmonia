@@ -1,4 +1,4 @@
-"""Digest-only access to the fixed household skeleton identity."""
+"""Digest-only identity of the fixed household skeleton."""
 from __future__ import annotations
 
 import hashlib
