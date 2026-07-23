@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Harmonia HomeConsole profile convergence on schedule
+Description=Run Harmonia convergence on schedule
 
 [Timer]
 OnBootSec=2min
@@ -7,7 +7,7 @@ OnCalendar=*:0/10
 OnUnitActiveSec=10min
 AccuracySec=30s
 Persistent=true
-Unit=harmonia-homeconsole.service
+Unit=harmonia.service
 
 [Install]
 WantedBy=timers.target
