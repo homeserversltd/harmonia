@@ -20,11 +20,65 @@
       }
     },
     {
+      "step_id": "retire-harmonia-homeserver-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeserver.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeserver-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeserver.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeconsole-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeconsole.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeconsole-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeconsole.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-tv-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-tv.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-tv-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-tv.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
       "step_id": "homeconsole-update-timer-enable",
       "tool": "systemd",
       "permutation": "enable-now",
       "args": {
-        "service": "harmonia-homeconsole.timer",
+        "service": "harmonia.timer",
         "timeout_secs": 30
       }
     }

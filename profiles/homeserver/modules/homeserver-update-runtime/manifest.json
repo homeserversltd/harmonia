@@ -5,9 +5,83 @@
   "description": "HOMESERVER rolling-release convergence scheduler ladder: managed unit files, daemon reload, timer enable-now.",
   "constants": {},
   "ladder": [
-    {"step_id": "homeserver-update-managed-files", "tool": "files", "permutation": "managed-files", "args": {}},
-    {"step_id": "homeserver-update-daemon-reload", "tool": "systemd", "permutation": "daemon-reload", "args": {"timeout_secs": 30}},
-    {"step_id": "homeserver-update-timer-enable", "tool": "systemd", "permutation": "enable-now", "args": {"service": "harmonia-homeserver.timer", "timeout_secs": 30}}
+    {
+      "step_id": "homeserver-update-managed-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {}
+    },
+    {
+      "step_id": "homeserver-update-daemon-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeserver-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeserver.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeserver-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeserver.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeconsole-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeconsole.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeconsole-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeconsole.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-tv-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-tv.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-tv-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-tv.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "homeserver-update-timer-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "harmonia.timer",
+        "timeout_secs": 30
+      }
+    }
   ],
   "files_root": "files_root"
 }
