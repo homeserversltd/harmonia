@@ -2341,7 +2341,11 @@ mod tests {
             (
                 "homeserver",
                 "caduceus",
-                vec![("command", "capture"), ("service-runtime", "converge")],
+                vec![
+                    ("command", "capture"),
+                    ("service-runtime", "converge"),
+                    ("command", "capture"),
+                ],
             ),
             (
                 "homeserver",

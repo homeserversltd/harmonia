@@ -1,0 +1,4 @@
+# Caduceus Keyman successor policy: fixed root-owned launcher entry points only.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/caduceus-bind
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/caduceus-verify
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/caduceus-atomic-change-pin
