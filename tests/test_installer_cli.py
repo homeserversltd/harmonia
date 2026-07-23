@@ -170,6 +170,63 @@ class InstallerCliTests(unittest.TestCase):
             self.assertIn("Unit=harmonia-tv.service", timer)
             self.assertNotIn("homeconsole-update", service)
 
+    def test_systemd_units_can_express_calendar_only_cadence(self) -> None:
+        from installer.harmonia_installer import InstallPaths, TimerCadence, install_systemd_units
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = InstallPaths(
+                bin_path=root / "bin" / "harmonia",
+                config_dir=root / "etc" / "harmonia",
+                state_dir=root / "var" / "lib" / "harmonia",
+                log_dir=root / "var" / "log" / "harmonia",
+                receipt_dir=root / "var" / "lib" / "harmonia" / "receipts",
+                systemd_dir=root / "systemd",
+            )
+            install_systemd_units(
+                paths,
+                profile="hermes",
+                cadence=TimerCadence(
+                    on_boot_sec=None,
+                    on_calendar="*-*-* 05:30:00 UTC",
+                    on_unit_active_sec=None,
+                    accuracy_sec="5min",
+                ),
+            )
+            timer = (paths.systemd_dir / "harmonia-hermes.timer").read_text()
+            self.assertIn("OnCalendar=*-*-* 05:30:00 UTC", timer)
+            self.assertIn("AccuracySec=5min", timer)
+            self.assertNotIn("OnBootSec", timer)
+            self.assertNotIn("OnUnitActiveSec", timer)
+
+    def test_install_cli_renders_calendar_only_timer_plan(self) -> None:
+        result = run_cli(
+            "install",
+            "--profile", "hermes",
+            "--with-systemd",
+            "--enable-timer",
+            "--timer-on-boot-sec", "off",
+            "--timer-on-calendar", "*-*-* 05:30:00 UTC",
+            "--timer-on-unit-active-sec", "off",
+            "--timer-accuracy-sec", "5min",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("timer cadence -> OnCalendar=*-*-* 05:30:00 UTC, AccuracySec=5min", result.stdout)
+
+    def test_uninstall_systemd_plan_uses_selected_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_cli(
+                "uninstall",
+                "--profile", "tv",
+                "--with-systemd",
+                "--systemd-dir", str(root / "systemd"),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"plan=remove {root / 'systemd' / 'harmonia-tv.service'}", result.stdout)
+            self.assertIn(f"plan=remove {root / 'systemd' / 'harmonia-tv.timer'}", result.stdout)
+            self.assertNotIn("harmonia-homeconsole", result.stdout)
+
     def test_seed_engine_config_writes_kernel_owned_plane_outside_profile(self) -> None:
         from installer.harmonia_installer import seed_engine_config
 

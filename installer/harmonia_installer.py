@@ -43,6 +43,22 @@ class InstallPaths:
         )
 
 
+@dataclass(frozen=True)
+class TimerCadence:
+    on_boot_sec: str | None
+    on_calendar: str | None
+    on_unit_active_sec: str | None
+    accuracy_sec: str
+
+
+DEFAULT_TIMER_CADENCE = TimerCadence(
+    on_boot_sec="2min",
+    on_calendar="*:0/10",
+    on_unit_active_sec="10min",
+    accuracy_sec="30s",
+)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -113,8 +129,12 @@ Install contract:
     install_p.add_argument("--artifact-branch", default="main", help="Blessed artifact repo branch (default main).")
     install_p.add_argument("--artifact-cache-dir", default=None, help="Local cache dir for blessed engine artifacts. Defaults under state-dir.")
     install_p.add_argument("--ratchet-lock", default=None, help="Kernel-owned engine ratchet lock path. Defaults beside engine.json.")
-    install_p.add_argument("--with-systemd", action="store_true", help="Install harmonia-homeconsole service/timer units.")
-    install_p.add_argument("--enable-timer", action="store_true", help="Enable harmonia-homeconsole.timer after installing units; implies --with-systemd.")
+    install_p.add_argument("--with-systemd", action="store_true", help="Install harmonia-<profile> service/timer units.")
+    install_p.add_argument("--enable-timer", action="store_true", help="Enable harmonia-<profile>.timer after installing units; implies --with-systemd.")
+    install_p.add_argument("--timer-on-boot-sec", default=None, help="Override the timer OnBootSec value; pass 'off' to omit it.")
+    install_p.add_argument("--timer-on-calendar", default=None, help="Override the timer OnCalendar value; pass 'off' to omit it.")
+    install_p.add_argument("--timer-on-unit-active-sec", default=None, help="Override the timer OnUnitActiveSec value; pass 'off' to omit it.")
+    install_p.add_argument("--timer-accuracy-sec", default=None, help="Override the timer AccuracySec value.")
 
     uninstall_p = sub.add_parser("uninstall", help="Remove installed Harmonia surfaces.")
     add_common_path_args(uninstall_p)
@@ -123,6 +143,7 @@ Install contract:
     uninstall_p.add_argument("--keep-state", action="store_true", help=argparse.SUPPRESS)
     uninstall_p.add_argument("--keep-config", action="store_true", help="Preserve /etc/harmonia config.")
     uninstall_p.add_argument("--with-systemd", action="store_true", help="Remove harmonia service/timer units too.")
+    uninstall_p.add_argument("--profile", default="homeconsole", help="Profile whose systemd units are removed with --with-systemd.")
 
     status_p = sub.add_parser("status", help="Read the current installed shape.")
     add_common_path_args(status_p)
@@ -175,6 +196,7 @@ def install(args: argparse.Namespace) -> int:
     paths = InstallPaths.from_args(args)
     apply = bool(args.apply)
     with_systemd = bool(args.with_systemd or args.enable_timer)
+    cadence = timer_cadence_from_args(args)
     artifact = REPO_ROOT / "target" / ("debug" if getattr(args, "debug", False) else "release") / "harmonia"
     capsule_dir = paths.state_dir / "capsules" / args.profile
     plan = [
@@ -189,6 +211,7 @@ def install(args: argparse.Namespace) -> int:
         plan.append(
             f"install systemd units -> {paths.systemd_dir}/harmonia-{args.profile}.service and harmonia-{args.profile}.timer"
         )
+        plan.append("timer cadence -> " + describe_timer_cadence(cadence))
     emit_plan("harmonia.installer.install_plan.v1", apply, plan)
     if not apply:
         return 0
@@ -251,7 +274,7 @@ def install(args: argparse.Namespace) -> int:
         selected_profile=args.profile,
     )
     if with_systemd:
-        install_systemd_units(paths, profile=args.profile)
+        install_systemd_units(paths, profile=args.profile, cadence=cadence)
         daemon_reload = run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
         print(f"systemctl_daemon_reload_exit={daemon_reload}")
         if daemon_reload != 0:
@@ -284,8 +307,8 @@ def uninstall(args: argparse.Namespace) -> int:
     if args.with_systemd:
         targets.extend(
             [
-                paths.systemd_dir / "harmonia-homeconsole.service",
-                paths.systemd_dir / "harmonia-homeconsole.timer",
+                paths.systemd_dir / f"harmonia-{args.profile}.service",
+                paths.systemd_dir / f"harmonia-{args.profile}.timer",
             ]
         )
     if not args.keep_config:
@@ -298,7 +321,7 @@ def uninstall(args: argparse.Namespace) -> int:
         return 0
     if args.with_systemd:
         run_checked(
-            ["systemctl", "disable", "--now", "harmonia-homeconsole.timer"],
+            ["systemctl", "disable", "--now", f"harmonia-{args.profile}.timer"],
             cwd=REPO_ROOT,
             allow_missing=True,
         )
@@ -361,7 +384,41 @@ def copy_tree(src: Path, dst: Path) -> None:
             shutil.copy2(path, target)
 
 
-def install_systemd_units(paths: InstallPaths, profile: str) -> None:
+def timer_cadence_from_args(args: argparse.Namespace) -> TimerCadence:
+    def override(value: str | None, default: str | None, *, allow_off: bool) -> str | None:
+        if value is None:
+            return default
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("timer cadence values must not be blank")
+        if allow_off and normalized.lower() == "off":
+            return None
+        return normalized
+
+    accuracy = override(getattr(args, "timer_accuracy_sec", None), DEFAULT_TIMER_CADENCE.accuracy_sec, allow_off=False)
+    assert accuracy is not None
+    cadence = TimerCadence(
+        on_boot_sec=override(getattr(args, "timer_on_boot_sec", None), DEFAULT_TIMER_CADENCE.on_boot_sec, allow_off=True),
+        on_calendar=override(getattr(args, "timer_on_calendar", None), DEFAULT_TIMER_CADENCE.on_calendar, allow_off=True),
+        on_unit_active_sec=override(getattr(args, "timer_on_unit_active_sec", None), DEFAULT_TIMER_CADENCE.on_unit_active_sec, allow_off=True),
+        accuracy_sec=accuracy,
+    )
+    if not any((cadence.on_boot_sec, cadence.on_calendar, cadence.on_unit_active_sec)):
+        raise ValueError("timer cadence requires at least one trigger")
+    return cadence
+
+
+def describe_timer_cadence(cadence: TimerCadence) -> str:
+    fields = [
+        ("OnBootSec", cadence.on_boot_sec),
+        ("OnCalendar", cadence.on_calendar),
+        ("OnUnitActiveSec", cadence.on_unit_active_sec),
+        ("AccuracySec", cadence.accuracy_sec),
+    ]
+    return ", ".join(f"{name}={value}" for name, value in fields if value is not None)
+
+
+def install_systemd_units(paths: InstallPaths, profile: str, cadence: TimerCadence = DEFAULT_TIMER_CADENCE) -> None:
     receipt_latest = f"{paths.receipt_dir}/{profile}-update-latest"
     if profile == "homeconsole":
         run_command = f"{paths.bin_path} homeconsole-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
@@ -385,14 +442,21 @@ ExecStart={run_command}
 Nice=10
 IOSchedulingClass=idle
 """
+    cadence_lines = "\n".join(
+        f"{name}={value}"
+        for name, value in [
+            ("OnBootSec", cadence.on_boot_sec),
+            ("OnCalendar", cadence.on_calendar),
+            ("OnUnitActiveSec", cadence.on_unit_active_sec),
+            ("AccuracySec", cadence.accuracy_sec),
+        ]
+        if value is not None
+    )
     timer = f"""[Unit]
 Description=Run Harmonia {profile} profile convergence on schedule
 
 [Timer]
-OnBootSec=2min
-OnCalendar=*:0/10
-OnUnitActiveSec=10min
-AccuracySec=30s
+{cadence_lines}
 Persistent=true
 Unit={service_name}
 
