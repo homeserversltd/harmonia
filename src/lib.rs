@@ -268,6 +268,7 @@ pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 
 mod capsule;
 mod convergence_lock;
+mod device_profile;
 mod deployable_config;
 mod ladder;
 mod module_dispatch;
@@ -278,6 +279,7 @@ mod subscription;
 
 pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
+pub(crate) use device_profile::*;
 pub(crate) use deployable_config::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
@@ -2568,6 +2570,7 @@ mod tests {
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     match args.first().map(String::as_str) {
+        Some("update") => update_from_certificate(&args[1..]),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
         Some("validate-ladder") => {
@@ -2742,6 +2745,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeserver_update_receipt_latest);
             let apply = args.iter().any(|arg| arg == "--apply");
+            verify_asserted_profile("homeserver")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
             homeserver_update(&profile, &module_root, &receipt_dir, apply)
@@ -2753,6 +2757,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeconsole_update_receipt_latest);
             let apply = args.iter().any(|arg| arg == "--apply");
+            verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
             homeconsole_update(&profile, &module_root, &receipt_dir, apply)
@@ -2761,6 +2766,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let path = args.get(1).ok_or("tv-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
             let apply = args.iter().any(|arg| arg == "--apply");
+            verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
             tv_update(&profile, &module_root, &receipt_dir, apply)
@@ -2993,6 +2999,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia toolbelt");
     println!("  harmonia validate-ladder <manifest.json>");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
+    println!("  harmonia update [--apply] [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia subscription show");
     println!("  harmonia deployable-config export <profile-id> --out <path> [--harmonia-root <path>] [--mode copy|symlink] [--receipt-dir <path>]");
