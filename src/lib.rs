@@ -1521,21 +1521,32 @@ mod tests {
             !service_text.contains("ExecStartPre="),
             "homeserver public Caduceus unit must not retain retired tmpfiles preflight"
         );
-        for installed in [
-            "/usr/local/sbin/caduceus_staff/house_ca.py",
-            "/usr/local/sbin/caduceus-house-ca",
-        ] {
-            assert!(
-                managed_files.iter().any(|file| file.path == installed),
-                "homeserver Caduceus package missing {installed}"
-            );
-        }
+        assert!(
+            managed_files
+                .iter()
+                .all(|file| !file.path.starts_with("/usr/local/sbin/")),
+            "homeserver Caduceus staff shelf must come from its synced source tree, not managed files"
+        );
+        let staff_step = caduceus
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "caduceus-staff-shelf-from-synced-source")
+            .expect("homeserver Caduceus source-derived staff shelf step");
+        assert_eq!(staff_step.tool, "command");
+        assert_eq!(staff_step.permutation, "capture");
+        assert_eq!(staff_step.args["program"], "/usr/bin/sh");
+        let staff_args = staff_step.args["args"].as_array().unwrap();
+        assert!(staff_args.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|arg| arg.contains("/opt/caduceus/source/data/staff-actuators"))
+        }));
         assert!(root
-            .join("profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/caduceus_staff/house_ca.py")
+            .join("profiles/homeserver/modules/caduceus/files_root/etc/sudoers.d/caduceus-keyman")
             .is_file());
-        assert!(root
-            .join("profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/caduceus-house-ca")
-            .is_file());
+        assert!(!root
+            .join("profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/caduceus_staff")
+            .exists());
     }
 
     #[test]
@@ -2345,6 +2356,7 @@ mod tests {
                     ("command", "capture"),
                     ("service-runtime", "converge"),
                     ("command", "capture"),
+                    ("files", "managed-files"),
                 ],
             ),
             (
