@@ -105,6 +105,7 @@ impl ToolArgKind {
     }
 }
 
+pub mod ai_coding_harness;
 pub mod artifact_lock;
 pub mod aur;
 pub mod command;
@@ -119,6 +120,7 @@ pub mod systemd;
 pub(crate) mod validated_file_symlink;
 
 pub const TOOLBELT: &[ToolContract] = &[
+    ai_coding_harness::CONTRACT,
     artifact_lock::CONTRACT,
     aur::CONTRACT,
     command::CONTRACT,
@@ -219,6 +221,7 @@ mod tests {
     fn registered_tool_names_have_real_behavioral_entry_points() {
         let root = repo_root();
         let expected = BTreeSet::from([
+            "ai-coding-harness",
             "artifact-lock",
             "aur",
             "command",

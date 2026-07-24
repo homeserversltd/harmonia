@@ -447,6 +447,9 @@ fn execute_validated_step(
             command: None,
         }),
         ("git-artifact", "sync") => git_artifact_step(step, module_dir, apply),
+        ("ai-coding-harness", "reconcile") => {
+            ai_coding_harness_step(step, manifest, module_dir, apply)
+        }
         ("machine-id", "truncate") => machine_id_step(step, module_dir, apply),
         ("aur", "check") | ("aur", "build-pinned") => aur_step(step, manifest, module_dir, apply),
         ("package", "check")
@@ -955,6 +958,24 @@ fn aur_step(
         ),
         other => Err(format!("aur-permutation-unsupported-{other}")),
     }
+}
+
+fn ai_coding_harness_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let lock = resolve_ladder_path(manifest, string_arg(&step.args, "lock"));
+    tools::ai_coding_harness::reconcile(
+        &lock,
+        string_arg(&step.args, "owner"),
+        string_arg(&step.args, "claude_bin"),
+        string_arg(&step.args, "honcho_repo"),
+        integer_arg(&step.args, "timeout_secs", 900),
+        module_dir,
+        apply,
+    )
 }
 
 fn git_artifact_step(
