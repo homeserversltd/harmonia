@@ -10,7 +10,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("path", ToolArgKind::String),
         ToolArg::optional("branch", ToolArgKind::String),
         ToolArg::optional("remote", ToolArgKind::String),
-        // Compatibility input only: source Git always runs as the owner bearer.
+        // Source Git runs as the declared non-root bearer.
         ToolArg::optional("bearer", ToolArgKind::String),
     ],
 )];
@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type CommandReceipt = crate::CmdResult;
 
-const OWNER_BEARER: &str = "owner";
+const DEFAULT_BEARER: &str = "owner";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -41,6 +41,7 @@ pub struct Request {
     pub path: PathBuf,
     pub branch: String,
     pub remote: String,
+    pub bearer: String,
     pub ssh_key_path: Option<PathBuf>,
     pub git_https_credential_host: Option<String>,
     pub git_https_credential_token_path: Option<PathBuf>,
@@ -53,14 +54,15 @@ impl Request {
             path,
             branch,
             remote,
+            bearer: DEFAULT_BEARER.to_string(),
             ssh_key_path: None,
             git_https_credential_host: None,
             git_https_credential_token_path: None,
         }
     }
 
-    pub fn with_bearer(self, bearer: impl Into<String>) -> Self {
-        let _ = bearer.into();
+    pub fn with_bearer(mut self, bearer: impl Into<String>) -> Self {
+        self.bearer = bearer.into();
         self
     }
 
@@ -99,7 +101,13 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
         git_args.extend(["-c", helper]);
     }
     git_args.extend_from_slice(args);
-    command::capture_with_cwd_as_bearer_and_env("/usr/bin/git", &git_args, cwd, OWNER_BEARER, env)
+    command::capture_with_cwd_as_bearer_and_env(
+        "/usr/bin/git",
+        &git_args,
+        cwd,
+        &request.bearer,
+        env,
+    )
 }
 
 fn owner_https_credential_helper(request: &Request) -> Option<String> {
@@ -182,7 +190,7 @@ struct SyncResult {
 }
 
 fn sync_repo(request: &Request) -> SyncResult {
-    if let Err(stderr) = prepare_owner_writable_path(request) {
+    if let Err(stderr) = prepare_bearer_writable_path(request) {
         return SyncResult {
             command: CommandReceipt {
                 ok: false,
@@ -245,7 +253,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                 }
             }
         }
-        if let Err(stderr) = prepare_owner_writable_path(request) {
+        if let Err(stderr) = prepare_bearer_writable_path(request) {
             return SyncResult {
                 command: CommandReceipt {
                     ok: false,
@@ -431,11 +439,11 @@ fn sync_repo(request: &Request) -> SyncResult {
     }
 }
 
-fn prepare_owner_writable_path(request: &Request) -> Result<(), String> {
+fn prepare_bearer_writable_path(request: &Request) -> Result<(), String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(());
     }
-    let (uid, gid) = owner_ids()?;
+    let (uid, gid) = bearer_ids(&request.bearer)?;
     fs::create_dir_all(&request.path).map_err(|err| {
         format!(
             "git-owner-source-path-create-failed {}: {err}",
@@ -445,16 +453,15 @@ fn prepare_owner_writable_path(request: &Request) -> Result<(), String> {
     chown_tree_to_owner(&request.path, uid, gid)
 }
 
-fn owner_ids() -> Result<(u32, u32), String> {
-    let name =
-        std::ffi::CString::new(OWNER_BEARER).map_err(|_| "git-owner-bearer-invalid".to_string())?;
+fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
+    let name = std::ffi::CString::new(bearer).map_err(|_| "git-bearer-invalid-name".to_string())?;
     let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
     if passwd.is_null() {
-        return Err("git-owner-bearer-unknown".to_string());
+        return Err(format!("git-bearer-unknown {bearer}"));
     }
     let passwd = unsafe { &*passwd };
     if passwd.pw_uid == 0 || passwd.pw_gid == 0 {
-        return Err("git-owner-bearer-root-refused".to_string());
+        return Err(format!("git-bearer-root-refused {bearer}"));
     }
     Ok((passwd.pw_uid, passwd.pw_gid))
 }
