@@ -11,8 +11,16 @@ use std::path::{Path, PathBuf};
 
 pub const NAME: &str = "aur";
 pub const DESCRIPTION: &str =
-    "AUR ratchet primitive for pinned-state check and exact pinned build receipts.";
+    "AUR package primitive for regular installs and optional pinned-state receipts.";
 pub const PERMUTATIONS: &[ToolPermutation] = &[
+    ToolPermutation::new(
+        "install",
+        "build and install the current AUR package without a pin or upstream check cycle",
+        &[
+            ToolArg::required("package", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    ),
     ToolPermutation::new(
         "check",
         "compare a ratchet lock pin against observed AUR upstream state without mutation",
@@ -40,6 +48,7 @@ pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTAT
 
 const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 const DEFAULT_AUR_BASE_URL: &str = "https://aur.archlinux.org";
+const DEFAULT_BUILD_ROOT: &str = "/var/tmp/harmonia/aur";
 const HARMONIA_AUR_UPSTREAM_STATE_ENV: &str = "HARMONIA_AUR_UPSTREAM_STATE";
 
 #[cfg(test)]
@@ -291,6 +300,102 @@ fn version_changed(pinned: &str, available: &str) -> bool {
     pinned != available
 }
 
+pub(crate) fn install(
+    receipt_dir: &Path,
+    receipt_name: &str,
+    package: &str,
+    timeout_secs: u64,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let timeout_secs = bounded_timeout(timeout_secs);
+    let build_dir = Path::new(DEFAULT_BUILD_ROOT).join(package);
+    let builder = if unsafe { libc::geteuid() } == 0 {
+        "nobody"
+    } else {
+        "current-user"
+    };
+    let mut receipt = serde_json::json!({
+        "schema": "harmonia.aur.install.v1",
+        "package": package,
+        "build_dir": build_dir,
+        "timeout_policy": format!("bounded-timeout-seconds={timeout_secs}"),
+        "safety_posture": "current-aur-head;no-pin;no-upstream-check-cycle;unprivileged-makepkg",
+        "unprivileged_builder": builder,
+        "ok": false,
+        "changed": false,
+        "installed_converged": false,
+        "first_blocker": null,
+    });
+    if !apply {
+        receipt["ok"] = Value::Bool(true);
+        receipt["first_blocker"] = Value::String("planned-only".into());
+        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: format!("aur install planned {package}"),
+            command: None,
+        });
+    }
+    if installed_version(package).is_some() {
+        receipt["ok"] = Value::Bool(true);
+        receipt["installed_converged"] = Value::Bool(true);
+        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: format!("aur install idle {package}"),
+            command: None,
+        });
+    }
+    let outcome = prepare_current_build(package, &build_dir, builder, timeout_secs)?;
+    if !outcome.0.ok {
+        receipt["first_blocker"] = Value::String(first_blocker(&outcome.0));
+        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        return Ok(OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: false,
+            message: format!("aur install {package}"),
+            command: Some(outcome.0),
+        });
+    }
+    let Some(package_path) = outcome.1 else {
+        receipt["first_blocker"] = Value::String("aur-produced-package-missing".into());
+        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        return Ok(OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: false,
+            message: format!("aur install {package}"),
+            command: Some(outcome.0),
+        });
+    };
+    let install = install_built_package(&package_path, timeout_secs);
+    let verified = installed_version_command(package);
+    let ok = install.ok && verified.ok;
+    receipt["ok"] = Value::Bool(ok);
+    receipt["changed"] = Value::Bool(install.ok);
+    receipt["installed_converged"] = Value::Bool(ok);
+    if !ok {
+        receipt["first_blocker"] = Value::String(first_blocker(if !install.ok {
+            &install
+        } else {
+            &verified
+        }));
+    }
+    write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+    Ok(OperationOutcome {
+        ok,
+        changed: install.ok,
+        skipped: false,
+        message: format!("aur install {package}"),
+        command: Some(outcome.0),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pinned(
     receipt_dir: &Path,
@@ -527,6 +632,34 @@ fn prepare_and_build(
     Ok((makepkg, produced, pkgver_neutralized))
 }
 
+fn prepare_current_build(
+    package: &str,
+    build_dir: &Path,
+    builder: &str,
+    timeout_secs: u64,
+) -> Result<(CmdResult, Option<PathBuf>), String> {
+    if build_dir.exists() {
+        fs::remove_dir_all(build_dir).map_err(|e| format!("aur-build-dir-clean-failed: {e}"))?;
+    }
+    fs::create_dir_all(build_dir.parent().unwrap_or_else(|| Path::new(".")))
+        .map_err(|e| format!("aur-build-root-create-failed: {e}"))?;
+    let target = build_dir.to_string_lossy().to_string();
+    let url = format!("{DEFAULT_AUR_BASE_URL}/{package}.git");
+    let clone =
+        command::capture_with_timeout("/usr/bin/git", &["clone", &url, &target], timeout_secs);
+    if !clone.ok {
+        return Ok((clone, None));
+    }
+    prepare_build_dir_for_builder(build_dir, builder)?;
+    let makepkg = makepkg_command(builder, timeout_secs, build_dir)?;
+    let produced = if makepkg.ok {
+        current_pkg_tar(build_dir, package)?
+    } else {
+        None
+    };
+    Ok((makepkg, produced))
+}
+
 fn neutralize_pkgver_function(
     build_dir: &Path,
     builder: &str,
@@ -652,6 +785,29 @@ fn pinned_pkg_tar(
     }
 }
 
+fn current_pkg_tar(build_dir: &Path, package: &str) -> Result<Option<PathBuf>, String> {
+    let mut packages = Vec::new();
+    let expected_prefix = format!("{package}-");
+    let debug_prefix = format!("{package}-debug-");
+    for entry in fs::read_dir(build_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+        if name.starts_with(&expected_prefix)
+            && !name.starts_with(&debug_prefix)
+            && name.contains(".pkg.tar")
+        {
+            packages.push(path);
+        }
+    }
+    packages.sort();
+    match packages.len() {
+        0 => Ok(None),
+        1 => Ok(packages.pop()),
+        _ => Err(format!("aur-produced-package-ambiguous package={package}")),
+    }
+}
+
 fn prepare_build_dir_for_builder(build_dir: &Path, builder: &str) -> Result<(), String> {
     if unsafe { libc::geteuid() } != 0 || builder == "current-user" {
         return Ok(());
@@ -743,13 +899,15 @@ pub(crate) fn validate_ladder_args(
     if package.is_empty() {
         return Err("aur-package-empty".into());
     }
-    let lock = args
-        .get("lock")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if lock.is_empty() {
-        return Err("aur-lock-empty".into());
+    if permutation == "check" || permutation == "build-pinned" {
+        let lock = args
+            .get("lock")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if lock.is_empty() {
+            return Err("aur-lock-empty".into());
+        }
     }
     if permutation == "build-pinned" {
         let build_root = args
