@@ -196,6 +196,7 @@ class InstallerCliTests(unittest.TestCase):
             self.assertEqual(payload["source_repo_url"], "https://git.home.arpa/HOMESERVERSLTD/harmonia.git")
             self.assertEqual(payload["branch"], "main")
             self.assertEqual(payload["source_dir"], str(root / "opt" / "harmonia"))
+            self.assertEqual(payload["local_source_checkout"], str(root / "opt" / "harmonia"))
             self.assertEqual(payload["install_bin"], str(root / "bin" / "harmonia"))
             self.assertEqual(payload["git_bearer"], "owner")
             self.assertNotIn("git_ssh_key_path", payload)

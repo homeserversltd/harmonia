@@ -104,6 +104,7 @@ Install contract:
     install_p.add_argument("--profile", default="homeconsole", help="Profile to install under /etc/harmonia/profiles/<profile>.")
     install_p.add_argument("--lane", default="upstream", choices=("upstream", "owner"), help="Machine subscription lane to seed after apply.")
     install_p.add_argument("--source", default=None, help="Machine subscription source repo URL or capsule origin. Defaults to git origin or repo path.")
+    install_p.add_argument("--local-source-checkout", default=None, help="Owner-refreshed local checkout for root read/build/promotion; defaults to this checkout and disables root network fetch in preflight.")
     install_p.add_argument("--ref", default=None, help="Machine subscription ref. Defaults to this repo HEAD.")
     install_p.add_argument("--cargo", default="cargo", help="Cargo executable to use.")
     install_p.add_argument("--package", default="harmonia", help="Cargo package name.")
@@ -207,7 +208,8 @@ def install(args: argparse.Namespace) -> int:
         paths.config_dir / "engine.json",
         source=args.source or repo_source(),
         ref=args.ref or repo_ref(),
-        source_dir=REPO_ROOT,
+        source_dir=Path(args.local_source_checkout) if args.local_source_checkout else REPO_ROOT,
+        local_source_checkout=Path(args.local_source_checkout) if args.local_source_checkout else REPO_ROOT,
         install_bin=paths.bin_path,
         enabled=True,
         ratchet_lock=Path(args.ratchet_lock) if args.ratchet_lock else None,
@@ -478,6 +480,7 @@ def seed_engine_config(
     source_dir: Path,
     install_bin: Path,
     enabled: bool,
+    local_source_checkout: Path | None = None,
     ratchet_lock: Path | None = None,
     artifact_repo: str | None = None,
     artifact_github_repo: str | None = None,
@@ -497,6 +500,7 @@ def seed_engine_config(
         "source_repo_url": source,
         "branch": "main",
         "source_dir": str(source_dir),
+        "local_source_checkout": str(local_source_checkout or source_dir),
         "install_bin": str(install_bin),
         "enabled": enabled,
         "git_bearer": "owner",
