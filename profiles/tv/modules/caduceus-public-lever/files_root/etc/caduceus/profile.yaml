@@ -19,7 +19,7 @@ commands:
 - cert bundle create
 services:
   update:
-    timer: harmonia-tv.timer
+    timer: harmonia.timer
     latest_receipt: /var/lib/harmonia/receipts/tv-latest/run.json
 harmonia_routes:
   update_now:
