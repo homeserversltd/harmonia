@@ -142,8 +142,8 @@ class InstallerCliTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "capsule-created-from-mismatch"):
                     validate_packed_capsule(root, capsule, "demo")
 
-    def test_systemd_units_are_profile_correct(self) -> None:
-        from installer.harmonia_installer import InstallPaths, install_systemd_units
+    def test_systemd_units_are_profile_independent_and_retire_legacy_family(self) -> None:
+        from installer.harmonia_installer import InstallPaths, install_systemd_units, retire_profile_keyed_systemd_units
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -155,20 +155,28 @@ class InstallerCliTests(unittest.TestCase):
                 receipt_dir=root / "var" / "lib" / "harmonia" / "receipts",
                 systemd_dir=root / "systemd",
             )
-            install_systemd_units(paths, profile="homeserver")
-            homeserver_service = (paths.systemd_dir / "harmonia-homeserver.service").read_text()
-            self.assertIn("homeserver-update", homeserver_service)
-            self.assertNotIn("run-profile", homeserver_service)
-
-            install_systemd_units(paths, profile="tv")
-            service = (paths.systemd_dir / "harmonia-tv.service").read_text()
-            timer = (paths.systemd_dir / "harmonia-tv.timer").read_text()
-            self.assertIn("tv-update", service)
-            self.assertNotIn("run-profile", service)
-            self.assertIn("profiles/tv/index.json", service)
-            self.assertIn("tv-update-latest", service)
-            self.assertIn("Unit=harmonia-tv.service", timer)
-            self.assertNotIn("homeconsole-update", service)
+            paths.systemd_dir.mkdir()
+            (paths.systemd_dir / "harmonia-laptop-02.service").write_text("old service")
+            (paths.systemd_dir / "harmonia-laptop-02.timer").write_text("old timer")
+            install_systemd_units(paths)
+            service = (paths.systemd_dir / "harmonia.service").read_text()
+            timer = (paths.systemd_dir / "harmonia.timer").read_text()
+            self.assertIn("harmonia update --apply", service)
+            self.assertIn("receipts/update-latest", service)
+            self.assertNotIn("profiles/", service)
+            self.assertIn("Unit=harmonia.service", timer)
+            with patch("installer.harmonia_installer.run_checked", return_value=0) as run_checked:
+                retired = retire_profile_keyed_systemd_units(paths)
+            self.assertEqual(retired, ["harmonia-laptop-02.service", "harmonia-laptop-02.timer"])
+            self.assertFalse((paths.systemd_dir / "harmonia-laptop-02.service").exists())
+            self.assertFalse((paths.systemd_dir / "harmonia-laptop-02.timer").exists())
+            self.assertEqual(
+                [call.args[0] for call in run_checked.call_args_list],
+                [
+                    ["systemctl", "disable", "--now", "harmonia-laptop-02.service"],
+                    ["systemctl", "disable", "--now", "harmonia-laptop-02.timer"],
+                ],
+            )
 
     def test_seed_engine_config_writes_kernel_owned_plane_outside_profile(self) -> None:
         from installer.harmonia_installer import seed_engine_config

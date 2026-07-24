@@ -1482,7 +1482,7 @@ mod tests {
         assert!(source_profile.append.contains("update_now:"));
         assert!(source_profile.append.contains("homeserver-update"));
         assert!(source_profile.append.contains("/etc/harmonia/profiles/homeserver/index.json"));
-        assert!(source_profile.append.contains("/var/lib/harmonia/receipts/homeserver-update-latest/run.json"));
+        assert!(source_profile.append.contains("/var/lib/harmonia/receipts/update-latest/run.json"));
         let managed_files: Vec<ManagedFileManifest> =
             serde_json::from_value(runtime.args["managed_files"].clone()).unwrap();
         assert!(

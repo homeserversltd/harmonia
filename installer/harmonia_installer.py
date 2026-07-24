@@ -113,8 +113,8 @@ Install contract:
     install_p.add_argument("--artifact-branch", default="main", help="Blessed artifact repo branch (default main).")
     install_p.add_argument("--artifact-cache-dir", default=None, help="Local cache dir for blessed engine artifacts. Defaults under state-dir.")
     install_p.add_argument("--ratchet-lock", default=None, help="Kernel-owned engine ratchet lock path. Defaults beside engine.json.")
-    install_p.add_argument("--with-systemd", action="store_true", help="Install harmonia-homeconsole service/timer units.")
-    install_p.add_argument("--enable-timer", action="store_true", help="Enable harmonia-homeconsole.timer after installing units; implies --with-systemd.")
+    install_p.add_argument("--with-systemd", action="store_true", help="Install the profile-independent harmonia.service and harmonia.timer units.")
+    install_p.add_argument("--enable-timer", action="store_true", help="Enable harmonia.timer after installing units; implies --with-systemd.")
 
     uninstall_p = sub.add_parser("uninstall", help="Remove installed Harmonia surfaces.")
     add_common_path_args(uninstall_p)
@@ -157,8 +157,8 @@ def status(paths: InstallPaths) -> int:
         "state_dir": describe_path(paths.state_dir),
         "receipt_dir": describe_path(paths.receipt_dir),
         "log_dir": describe_path(paths.log_dir),
-        "systemd_service": describe_path(paths.systemd_dir / "harmonia-homeconsole.service"),
-        "systemd_timer": describe_path(paths.systemd_dir / "harmonia-homeconsole.timer"),
+        "systemd_service": describe_path(paths.systemd_dir / "harmonia.service"),
+        "systemd_timer": describe_path(paths.systemd_dir / "harmonia.timer"),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -187,7 +187,7 @@ def install(args: argparse.Namespace) -> int:
     ]
     if with_systemd:
         plan.append(
-            f"install systemd units -> {paths.systemd_dir}/harmonia-{args.profile}.service and harmonia-{args.profile}.timer"
+            f"install profile-independent systemd units -> {paths.systemd_dir}/harmonia.service and harmonia.timer"
         )
     emit_plan("harmonia.installer.install_plan.v1", apply, plan)
     if not apply:
@@ -251,15 +251,18 @@ def install(args: argparse.Namespace) -> int:
         selected_profile=args.profile,
     )
     if with_systemd:
-        install_systemd_units(paths, profile=args.profile)
+        install_systemd_units(paths)
+        retired = retire_profile_keyed_systemd_units(paths)
         daemon_reload = run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
         print(f"systemctl_daemon_reload_exit={daemon_reload}")
         if daemon_reload != 0:
             print("ok=false")
             return daemon_reload
+        if retired:
+            print("retired_profile_keyed_units=" + ",".join(retired))
         if args.enable_timer:
             enable_timer = run_checked(
-                ["systemctl", "enable", "--now", f"harmonia-{args.profile}.timer"],
+                ["systemctl", "enable", "--now", "harmonia.timer"],
                 cwd=REPO_ROOT,
                 allow_missing=True,
             )
@@ -284,8 +287,8 @@ def uninstall(args: argparse.Namespace) -> int:
     if args.with_systemd:
         targets.extend(
             [
-                paths.systemd_dir / "harmonia-homeconsole.service",
-                paths.systemd_dir / "harmonia-homeconsole.timer",
+                paths.systemd_dir / "harmonia.service",
+                paths.systemd_dir / "harmonia.timer",
             ]
         )
     if not args.keep_config:
@@ -298,7 +301,7 @@ def uninstall(args: argparse.Namespace) -> int:
         return 0
     if args.with_systemd:
         run_checked(
-            ["systemctl", "disable", "--now", "harmonia-homeconsole.timer"],
+            ["systemctl", "disable", "--now", "harmonia.timer"],
             cwd=REPO_ROOT,
             allow_missing=True,
         )
@@ -361,20 +364,13 @@ def copy_tree(src: Path, dst: Path) -> None:
             shutil.copy2(path, target)
 
 
-def install_systemd_units(paths: InstallPaths, profile: str) -> None:
-    receipt_latest = f"{paths.receipt_dir}/{profile}-update-latest"
-    if profile == "homeconsole":
-        run_command = f"{paths.bin_path} homeconsole-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
-    elif profile == "homeserver":
-        run_command = f"{paths.bin_path} homeserver-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
-    elif profile == "tv":
-        run_command = f"{paths.bin_path} tv-update {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
-    else:
-        run_command = f"{paths.bin_path} run-profile {paths.config_dir}/profiles/{profile}/index.json --apply --receipt-dir {receipt_latest}"
-    service_name = f"harmonia-{profile}.service"
-    timer_name = f"harmonia-{profile}.timer"
+def install_systemd_units(paths: InstallPaths) -> None:
+    receipt_latest = f"{paths.receipt_dir}/update-latest"
+    run_command = f"{paths.bin_path} update --apply --receipt-dir {receipt_latest}"
+    service_name = "harmonia.service"
+    timer_name = "harmonia.timer"
     service = f"""[Unit]
-Description=Run Harmonia {profile} profile convergence
+Description=Run Harmonia convergence for the selected profile
 Documentation=file:{receipt_latest}/run.json
 After=network-online.target
 Wants=network-online.target
@@ -386,7 +382,7 @@ Nice=10
 IOSchedulingClass=idle
 """
     timer = f"""[Unit]
-Description=Run Harmonia {profile} profile convergence on schedule
+Description=Run Harmonia selected-profile convergence on schedule
 
 [Timer]
 OnBootSec=2min
@@ -402,6 +398,16 @@ WantedBy=timers.target
     paths.systemd_dir.mkdir(parents=True, exist_ok=True)
     (paths.systemd_dir / service_name).write_text(service)
     (paths.systemd_dir / timer_name).write_text(timer)
+
+
+def retire_profile_keyed_systemd_units(paths: InstallPaths) -> list[str]:
+    """Retire the old scheduler family; identity belongs in installed profile data."""
+    retired: list[str] = []
+    for unit in sorted(paths.systemd_dir.glob("harmonia-*.service")) + sorted(paths.systemd_dir.glob("harmonia-*.timer")):
+        run_checked(["systemctl", "disable", "--now", unit.name], cwd=REPO_ROOT, allow_missing=True)
+        remove_path(unit)
+        retired.append(unit.name)
+    return retired
 
 
 def validate_packed_capsule(harmonia_root: Path, capsule_dir: Path, profile: str) -> int:

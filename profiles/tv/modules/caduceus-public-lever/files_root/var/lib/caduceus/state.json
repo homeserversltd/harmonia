@@ -3,7 +3,7 @@
   "services": {
     "update": {
       "enabled": true,
-      "timer": "harmonia-tv.timer"
+      "timer": "harmonia.timer"
     }
   }
 }
