@@ -151,6 +151,38 @@ pub(crate) fn capture_with_cwd_as_bearer(
     capture_with_cwd_as_bearer_and_env(program, args, cwd, bearer, BTreeMap::new())
 }
 
+pub(crate) fn capture_with_cwd_as_bearer_and_timeout(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    bearer: &str,
+    timeout_secs: u64,
+) -> CmdResult {
+    if unsafe { libc::geteuid() } != 0 {
+        return capture_with_options(
+            program,
+            args,
+            CaptureOptions::new().cwd(cwd).timeout_secs(timeout_secs),
+        );
+    }
+    match resolve_non_root_bearer(bearer) {
+        Ok(bearer) => capture_with_options(
+            program,
+            args,
+            CaptureOptions::new()
+                .cwd(cwd)
+                .timeout_secs(timeout_secs)
+                .bearer(bearer),
+        ),
+        Err(err) => CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: err,
+        },
+    }
+}
+
 /// Execute a filesystem-writing child with an explicitly scoped environment
 /// after the same bearer drop used by Git. Environment assembly is harmless
 /// parent-side setup; the child has not read credential material until it has
