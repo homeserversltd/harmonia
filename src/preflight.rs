@@ -571,7 +571,12 @@ fn local_source_checkout_possession(config: &EnginePlaneConfig) -> CmdResult {
         ("head", vec!["rev-parse", "--verify", "HEAD"]),
         ("branch", vec!["symbolic-ref", "--quiet", "--short", "HEAD"]),
     ] {
-        let result = tools::command::capture_with_cwd("/usr/bin/git", &args, Some(cwd));
+        let result = tools::command::capture_with_cwd_as_bearer(
+            "/usr/bin/git",
+            &args,
+            Some(cwd),
+            &config.git_bearer,
+        );
         transcript.push(format!("{label}: {}", result.stdout.trim()));
         if !result.ok {
             return CmdResult {
