@@ -37,6 +37,10 @@ pub(crate) struct EnginePlaneConfig {
     pub source_repo_url: String,
     pub branch: String,
     pub source_dir: PathBuf,
+    /// Owner-refreshed local checkout consumed read-only by the root engine lane.
+    /// When present, preflight never fetches `source_repo_url`.
+    #[serde(default)]
+    pub local_source_checkout: Option<PathBuf>,
     pub install_bin: PathBuf,
     pub enabled: bool,
     #[serde(default = "default_git_bearer")]
@@ -532,6 +536,76 @@ fn promote_staged_binary(
     })
 }
 
+fn local_source_checkout_possession(config: &EnginePlaneConfig) -> CmdResult {
+    let Some(checkout) = config.local_source_checkout.as_deref() else {
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: "local-source-checkout-unconfigured".to_string(),
+        };
+    };
+    if checkout != config.source_dir {
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: format!(
+                "local-source-checkout-must-equal-source-dir checkout={} source_dir={}",
+                checkout.display(),
+                config.source_dir.display()
+            ),
+        };
+    }
+    let Some(cwd) = checkout.to_str() else {
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: format!("local-source-checkout-non-utf8 {}", checkout.display()),
+        };
+    };
+    let mut transcript = Vec::new();
+    for (label, args) in [
+        ("work-tree", vec!["rev-parse", "--is-inside-work-tree"]),
+        ("head", vec!["rev-parse", "--verify", "HEAD"]),
+        ("branch", vec!["symbolic-ref", "--quiet", "--short", "HEAD"]),
+    ] {
+        let result = tools::command::capture_with_cwd("/usr/bin/git", &args, Some(cwd));
+        transcript.push(format!("{label}: {}", result.stdout.trim()));
+        if !result.ok {
+            return CmdResult {
+                ok: false,
+                code: result.code,
+                stdout: transcript.join("\n"),
+                stderr: result.stderr,
+            };
+        }
+        if label == "branch" && result.stdout.trim() != config.branch {
+            return CmdResult {
+                ok: false,
+                code: 1,
+                stdout: transcript.join("\n"),
+                stderr: format!(
+                    "local-source-checkout-branch-mismatch expected={} actual={}",
+                    config.branch,
+                    result.stdout.trim()
+                ),
+            };
+        }
+    }
+    CmdResult {
+        ok: true,
+        code: 0,
+        stdout: format!(
+            "local source checkout possessed read-only path={} owner_freshness_lane=external-owner-plane\n{}",
+            checkout.display(),
+            transcript.join("\n")
+        ),
+        stderr: String::new(),
+    }
+}
+
 fn emit_preflight_receipt(
     preflight_dir: &Path,
     ok: bool,
@@ -563,6 +637,8 @@ fn emit_preflight_receipt(
             "engine_config": config_path,
             "enabled": config.map(|c| c.enabled),
             "source_repo_url": config.map(|c| c.source_repo_url.as_str()),
+            "local_source_checkout": config.and_then(|c| c.local_source_checkout.as_deref()),
+            "source_possession_authority": if config.and_then(|c| c.local_source_checkout.as_ref()).is_some() { "declared-local-checkout-owner-plane-freshness" } else { "source-repository-fetch" },
             "branch": config.map(|c| c.branch.as_str()),
             "source_dir": config.map(|c| c.source_dir.as_path()),
             "install_bin": config.map(|c| c.install_bin.as_path()),
@@ -993,38 +1069,51 @@ pub(crate) fn run_engine_preflight(
         && staged_sha == install_before;
 
     if first_missing_signal == "none" && lane != "artifact" {
-        lane = "source-fallback".to_string();
-        let git_request = tools::git_artifact::Request::new(
-            Some(config.source_repo_url.clone()),
-            config.source_dir.clone(),
-            config.branch.clone(),
-            config.remote.clone(),
-        )
-        .with_bearer(config.git_bearer.clone())
-        .with_ssh_key_path(config.git_ssh_key_path.clone())
-        .with_https_credentials(
-            config.git_https_credential_host.clone(),
-            config.git_https_credential_token_path.clone(),
-        );
-        let git_outcome = if apply {
-            tools::git_artifact::apply(&git_request)
+        if config.local_source_checkout.is_some() {
+            lane = "local-checkout".to_string();
+            let git_cmd = local_source_checkout_possession(&config);
+            write_command_receipt(&preflight_dir, "source-possession", &git_cmd)?;
+            source_outcome = OperationOutcome {
+                ok: git_cmd.ok,
+                changed: false,
+                skipped: false,
+                message: "declared local source checkout read-only possession".into(),
+                command: Some(git_cmd),
+            };
         } else {
-            tools::git_artifact::plan(&git_request)
-        };
-        let git_cmd = CmdResult {
-            ok: git_outcome.command.ok,
-            code: git_outcome.command.code,
-            stdout: git_outcome.command.stdout.clone(),
-            stderr: git_outcome.command.stderr.clone(),
-        };
-        write_command_receipt(&preflight_dir, "source-possession", &git_cmd)?;
-        source_outcome = OperationOutcome {
-            ok: git_outcome.ok,
-            changed: git_outcome.changed,
-            skipped: false,
-            message: git_outcome.message,
-            command: Some(git_cmd),
-        };
+            lane = "source-fallback".to_string();
+            let git_request = tools::git_artifact::Request::new(
+                Some(config.source_repo_url.clone()),
+                config.source_dir.clone(),
+                config.branch.clone(),
+                config.remote.clone(),
+            )
+            .with_bearer(config.git_bearer.clone())
+            .with_ssh_key_path(config.git_ssh_key_path.clone())
+            .with_https_credentials(
+                config.git_https_credential_host.clone(),
+                config.git_https_credential_token_path.clone(),
+            );
+            let git_outcome = if apply {
+                tools::git_artifact::apply(&git_request)
+            } else {
+                tools::git_artifact::plan(&git_request)
+            };
+            let git_cmd = CmdResult {
+                ok: git_outcome.command.ok,
+                code: git_outcome.command.code,
+                stdout: git_outcome.command.stdout.clone(),
+                stderr: git_outcome.command.stderr.clone(),
+            };
+            write_command_receipt(&preflight_dir, "source-possession", &git_cmd)?;
+            source_outcome = OperationOutcome {
+                ok: git_outcome.ok,
+                changed: git_outcome.changed,
+                skipped: false,
+                message: git_outcome.message,
+                command: Some(git_cmd),
+            };
+        }
         operation_count += 1;
         changed |= source_outcome.changed;
         if !source_outcome.ok {
@@ -1044,7 +1133,9 @@ pub(crate) fn run_engine_preflight(
         operation_count += 1;
     }
 
-    if first_missing_signal == "none" && lane == "source-fallback" {
+    if first_missing_signal == "none"
+        && matches!(lane.as_str(), "source-fallback" | "local-checkout")
+    {
         let build_program = config.build_program.as_deref().unwrap_or("cargo");
         let build_args = config
             .build_args
@@ -1489,7 +1580,6 @@ mod tests {
         with_engine_env(&root, |config_path| {
             let (profile_index, module_root) = fixture_profile(&root);
             let repo = fixture_repo(&root);
-            let source_dir = root.join("source");
             let staged = root.join("staged/harmonia");
             let install_bin = root.join("bin/harmonia");
             fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
@@ -1506,13 +1596,17 @@ mod tests {
             );
             write_engine_config(
                 config_path,
-                &repo,
+                "https://git.home.arpa/HOMESERVERSLTD/harmonia.git",
                 &build,
                 &staged,
                 &install_bin,
                 &profile_index,
-                &source_dir,
+                Path::new(&repo),
             );
+            let mut engine: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+            engine["local_source_checkout"] = serde_json::json!(&repo);
+            fs::write(config_path, engine.to_string()).unwrap();
             let pacman = "#!/usr/bin/env sh\necho upgrading\nexit 0\n";
             let receipts = root.join("receipts");
             let execution = with_fake_bootstrap(&root, pacman, || {
@@ -1521,6 +1615,19 @@ mod tests {
             assert!(execution.ok, "{:?}", execution.first_missing_signal);
             assert_eq!(fs::read(&install_bin).unwrap(), fs::read(&staged).unwrap());
             let receipt = fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap();
+            assert!(
+                receipt.contains("\"lane\": \"local-checkout\""),
+                "{receipt}"
+            );
+            assert!(
+                receipt.contains("declared-local-checkout-owner-plane-freshness"),
+                "{receipt}"
+            );
+            let source_receipt =
+                fs::read_to_string(receipts.join("engine-preflight/source-possession.json"))
+                    .unwrap();
+            assert!(source_receipt.contains("owner_freshness_lane=external-owner-plane"));
+            assert!(!source_receipt.contains("Username for"));
             assert!(receipt.contains("old_engine_preserved"));
             assert!(receipt.contains("successor_promoted_only_after"));
             assert!(receipt.contains("retired_sidecar_gate"));

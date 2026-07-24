@@ -37,6 +37,21 @@ A transport MISS is an unreachable repo, fetch failure, or artifact name absent 
 
 Existing singular `artifact_transport` configs remain valid and behave as a one-element chain. New configs use `artifact_transports`.
 
+## Local source checkout possession
+
+A body may declare `local_source_checkout` in `/etc/harmonia/engine.json`. It
+must equal `source_dir` and name an owner-refreshed Git checkout. In this mode
+the root engine lane performs only local `git rev-parse`/branch readback, builds
+from that checkout, and promotes only after the usual proof battery. It does
+not clone, fetch, configure a credential helper, or open an SSH key for source
+possession. The owner-plane refresh lane owns source freshness; the engine
+receipt names that split as `declared-local-checkout-owner-plane-freshness`.
+
+The installer seeds this declaration from its checkout by default; a deployment
+that stages the source elsewhere passes `--local-source-checkout /opt/harmonia/source`.
+This is the lawful shape for a private Forgejo body whose root plane has no
+credential material.
+
 ## Owner-bearer Forgejo SSH transport
 
 `/etc/harmonia/engine.json` may declare `git_ssh_key_path` beside
