@@ -1,7 +1,8 @@
 use crate::*;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeployableConfigMode {
@@ -44,6 +45,7 @@ struct DeployableConfigReceipt {
     output_dir: String,
     mode: &'static str,
     artifacts: Vec<DeployableConfigArtifact>,
+    pruned_paths: Vec<String>,
     first_missing_signal: &'static str,
 }
 
@@ -73,6 +75,7 @@ pub(crate) fn export_deployable_config(
     }
 
     let mut artifacts = Vec::new();
+    let mut pruned_paths = Vec::new();
     export_one(
         &profile_path,
         &output_dir
@@ -113,6 +116,7 @@ pub(crate) fn export_deployable_config(
                     "module-ladder-files-root",
                     mode,
                     &mut artifacts,
+                    &mut pruned_paths,
                 )?;
             }
             export_module_sibling_files(
@@ -166,6 +170,7 @@ pub(crate) fn export_deployable_config(
         output_dir: output_dir.display().to_string(),
         mode: mode.as_str(),
         artifacts,
+        pruned_paths,
         first_missing_signal: "none",
     };
     let receipt_text = serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?;
@@ -180,6 +185,7 @@ pub(crate) fn export_deployable_config(
     println!("profile_id={}", profile.id);
     println!("identity={}", profile.identity);
     println!("artifact_count={}", receipt.artifacts.len());
+    println!("pruned_count={}", receipt.pruned_paths.len());
     println!("output_dir={}", output_dir.display());
     println!("receipt_dir={}", receipt_dir.display());
     println!("first_missing_signal=none");
@@ -285,6 +291,7 @@ fn export_tree(
     kind: &'static str,
     mode: DeployableConfigMode,
     artifacts: &mut Vec<DeployableConfigArtifact>,
+    pruned_paths: &mut Vec<String>,
 ) -> Result<(), String> {
     if !source_root.is_dir() {
         return Err(format!(
@@ -292,17 +299,81 @@ fn export_tree(
             source_root.display()
         ));
     }
+    prune_deleted_tree_paths(source_root, output_root, pruned_paths)?;
     for entry in fs::read_dir(source_root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let source = entry.path();
         let output = output_root.join(entry.file_name());
         if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            export_tree(&source, &output, kind, mode, artifacts)?;
+            export_tree(&source, &output, kind, mode, artifacts, pruned_paths)?;
         } else {
             export_one(&source, &output, kind, mode, artifacts)?;
         }
     }
     Ok(())
+}
+
+fn prune_deleted_tree_paths(
+    source_root: &Path,
+    output_root: &Path,
+    pruned_paths: &mut Vec<String>,
+) -> Result<(), String> {
+    if !output_root.is_dir() {
+        return Ok(());
+    }
+    let source_files = relative_files(source_root)?;
+    let output_files = relative_files(output_root)?;
+    for rel in output_files.difference(&source_files) {
+        let path = output_root.join(rel);
+        fs::remove_file(&path)
+            .map_err(|e| format!("deployable-config-prune-failed {}: {e}", path.display()))?;
+        pruned_paths.push(path.display().to_string());
+    }
+    prune_empty_dirs(output_root)?;
+    Ok(())
+}
+
+fn relative_files(root: &Path) -> Result<BTreeSet<PathBuf>, String> {
+    fn collect(root: &Path, current: &Path, files: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+        for entry in fs::read_dir(current).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                collect(root, &path, files)?;
+            } else {
+                files.insert(
+                    path.strip_prefix(root)
+                        .map_err(|e| e.to_string())?
+                        .to_path_buf(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = BTreeSet::new();
+    collect(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn prune_empty_dirs(root: &Path) -> Result<bool, String> {
+    let mut empty = true;
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            if prune_empty_dirs(&path)? {
+                fs::remove_dir(&path).map_err(|e| {
+                    format!("deployable-config-prune-dir-failed {}: {e}", path.display())
+                })?;
+            } else {
+                empty = false;
+            }
+        } else {
+            empty = false;
+        }
+    }
+    Ok(empty)
 }
 
 #[cfg(unix)]
