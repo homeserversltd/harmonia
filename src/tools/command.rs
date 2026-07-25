@@ -234,6 +234,18 @@ fn resolve_non_root_bearer(bearer: &str) -> Result<Bearer, String> {
     })
 }
 
+pub(crate) fn user_bus_env_for_bearer(bearer: &str) -> Result<BTreeMap<String, String>, String> {
+    let bearer = resolve_non_root_bearer(bearer)?;
+    let runtime_dir = format!("/run/user/{}", bearer.uid);
+    Ok(BTreeMap::from([
+        ("XDG_RUNTIME_DIR".to_string(), runtime_dir.clone()),
+        (
+            "DBUS_SESSION_BUS_ADDRESS".to_string(),
+            format!("unix:path={runtime_dir}/bus"),
+        ),
+    ]))
+}
+
 #[allow(dead_code)]
 pub(crate) fn capture_with_cwd_and_timeout(
     program: &str,
