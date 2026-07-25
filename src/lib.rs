@@ -268,7 +268,7 @@ pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 
 mod capsule;
 mod convergence_lock;
-mod device_profile;
+pub mod device_profile;
 mod deployable_config;
 mod ladder;
 mod module_dispatch;

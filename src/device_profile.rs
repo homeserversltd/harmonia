@@ -17,11 +17,57 @@ thread_local! {
 struct DeviceProfileCertificate {
     schema: String,
     kernel: DeviceProfileKernel,
+    #[serde(default)]
+    settings_authority: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct DeviceProfileKernel {
     profile: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsAuthority {
+    Customer,
+    Operator,
+}
+
+/// Resolves one module's authority from the body's device-profile certificate.
+///
+/// The comparison is deliberately case-sensitive: only the exact wire value
+/// `"operator"` selects operator authority. Every unreadable or malformed
+/// certificate and every other value fail safe to customer authority.
+pub fn resolve_settings_authority(module_name: &str) -> SettingsAuthority {
+    resolve_settings_authority_from_path(Path::new(DEVICE_PROFILE_CERTIFICATE), module_name)
+}
+
+/// Resolves authority from an explicit certificate path for bounded callers and
+/// fixture-based proof without reading or changing the live body certificate.
+pub fn resolve_settings_authority_from_path(
+    certificate_path: &Path,
+    module_name: &str,
+) -> SettingsAuthority {
+    let Ok(text) = fs::read_to_string(certificate_path) else {
+        return SettingsAuthority::Customer;
+    };
+    let Ok(certificate) = serde_json::from_str::<DeviceProfileCertificate>(&text) else {
+        return SettingsAuthority::Customer;
+    };
+    let Some(authority) = certificate
+        .settings_authority
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|settings_authority| settings_authority.get(module_name))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return SettingsAuthority::Customer;
+    };
+
+    if authority == "operator" {
+        SettingsAuthority::Operator
+    } else {
+        SettingsAuthority::Customer
+    }
 }
 
 pub(crate) fn run_identity_source() -> &'static str {
