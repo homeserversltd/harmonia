@@ -209,17 +209,27 @@ pub(crate) fn reconcile(
         changed |= sync.ok;
         commands.push(command_receipt(&planned.next().unwrap(), &sync));
 
-        let restart = run(
-            "systemctl",
-            &[
-                "--user",
-                "restart",
-                "honcho-api.service",
-                "honcho-deriver.service",
-            ],
-            None,
-            owner,
-            timeout_secs,
+        let restart = command::user_bus_env_for_bearer(owner).map_or_else(
+            |err| CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: err,
+            },
+            |env| {
+                command::capture_with_cwd_as_bearer_and_env(
+                    "systemctl",
+                    &[
+                        "--user",
+                        "restart",
+                        "honcho-api.service",
+                        "honcho-deriver.service",
+                    ],
+                    None,
+                    owner,
+                    env,
+                )
+            },
         );
         changed |= restart.ok;
         commands.push(command_receipt(&planned.next().unwrap(), &restart));

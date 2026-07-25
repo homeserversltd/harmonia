@@ -514,6 +514,7 @@ pub(crate) fn sync_profile_from_source(
     profile_id: &str,
     installed_module_root: &Path,
     receipt_dir: &Path,
+    git_bearer: &str,
 ) -> Result<(), String> {
     let installed_root = installed_module_root
         .parent()
@@ -545,7 +546,12 @@ pub(crate) fn sync_profile_from_source(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let head = command_capture_with_cwd("git", &["rev-parse", "HEAD"], source_root.to_str());
+    let head = tools::command::capture_with_cwd_as_bearer(
+        "git",
+        &["rev-parse", "HEAD"],
+        source_root.to_str(),
+        git_bearer,
+    );
     if !head.ok {
         return Err(format!("{profile_id}-source-head-failed {}", head.stderr));
     }
@@ -647,7 +653,12 @@ pub(crate) fn homeconsole_update(
         |effective_receipt_dir| {
             let engine = load_engine_plane_config(&engine_config_path())?
                 .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_homeconsole_profile(&engine.source_dir, module_root, effective_receipt_dir)
+            sync_homeconsole_profile_as_bearer(
+                &engine.source_dir,
+                module_root,
+                effective_receipt_dir,
+                &engine.git_bearer,
+            )
         },
     )
 }
@@ -725,7 +736,12 @@ pub(crate) fn homeserver_update(
         |effective_receipt_dir| {
             let engine = load_engine_plane_config(&engine_config_path())?
                 .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_homeserver_profile(&engine.source_dir, module_root, effective_receipt_dir)
+            sync_homeserver_profile_as_bearer(
+                &engine.source_dir,
+                module_root,
+                effective_receipt_dir,
+                &engine.git_bearer,
+            )
         },
     )
 }
@@ -754,7 +770,12 @@ pub(crate) fn tv_update(
         |effective_receipt_dir| {
             let engine = load_engine_plane_config(&engine_config_path())?
                 .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_tv_profile(&engine.source_dir, module_root, effective_receipt_dir)
+            sync_tv_profile_as_bearer(
+                &engine.source_dir,
+                module_root,
+                effective_receipt_dir,
+                &engine.git_bearer,
+            )
         },
     )
 }
@@ -768,7 +789,22 @@ pub(crate) fn sync_homeserver_profile(
     installed_module_root: &Path,
     receipt_dir: &Path,
 ) -> Result<(), String> {
-    sync_profile_from_source(source_root, "homeserver", installed_module_root, receipt_dir)
+    sync_homeserver_profile_as_bearer(source_root, installed_module_root, receipt_dir, "owner")
+}
+
+fn sync_homeserver_profile_as_bearer(
+    source_root: &Path,
+    installed_module_root: &Path,
+    receipt_dir: &Path,
+    git_bearer: &str,
+) -> Result<(), String> {
+    sync_profile_from_source(
+        source_root,
+        "homeserver",
+        installed_module_root,
+        receipt_dir,
+        git_bearer,
+    )
 }
 
 pub(crate) fn sync_homeconsole_profile(
@@ -776,7 +812,22 @@ pub(crate) fn sync_homeconsole_profile(
     installed_module_root: &Path,
     receipt_dir: &Path,
 ) -> Result<(), String> {
-    sync_profile_from_source(source_root, "homeconsole", installed_module_root, receipt_dir)
+    sync_homeconsole_profile_as_bearer(source_root, installed_module_root, receipt_dir, "owner")
+}
+
+fn sync_homeconsole_profile_as_bearer(
+    source_root: &Path,
+    installed_module_root: &Path,
+    receipt_dir: &Path,
+    git_bearer: &str,
+) -> Result<(), String> {
+    sync_profile_from_source(
+        source_root,
+        "homeconsole",
+        installed_module_root,
+        receipt_dir,
+        git_bearer,
+    )
 }
 
 pub(crate) fn sync_tv_profile(
@@ -784,7 +835,22 @@ pub(crate) fn sync_tv_profile(
     installed_module_root: &Path,
     receipt_dir: &Path,
 ) -> Result<(), String> {
-    sync_profile_from_source(source_root, "tv", installed_module_root, receipt_dir)
+    sync_tv_profile_as_bearer(source_root, installed_module_root, receipt_dir, "owner")
+}
+
+fn sync_tv_profile_as_bearer(
+    source_root: &Path,
+    installed_module_root: &Path,
+    receipt_dir: &Path,
+    git_bearer: &str,
+) -> Result<(), String> {
+    sync_profile_from_source(
+        source_root,
+        "tv",
+        installed_module_root,
+        receipt_dir,
+        git_bearer,
+    )
 }
 
 pub(crate) fn homeserver_module_root() -> PathBuf {
