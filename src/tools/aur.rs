@@ -352,15 +352,7 @@ pub(crate) fn install(
     }
     let outcome = prepare_current_build(package, &build_dir, builder, timeout_secs)?;
     if !outcome.0.ok {
-        receipt["first_blocker"] = Value::String(first_blocker(&outcome.0));
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
-        return Ok(OperationOutcome {
-            ok: false,
-            changed: false,
-            skipped: false,
-            message: format!("aur install {package}"),
-            command: Some(outcome.0),
-        });
+        return write_install_failure(receipt_dir, receipt_name, package, receipt, outcome.0);
     }
     let Some(package_path) = outcome.1 else {
         receipt["first_blocker"] = Value::String("aur-produced-package-missing".into());
@@ -393,6 +385,24 @@ pub(crate) fn install(
         skipped: false,
         message: format!("aur install {package}"),
         command: Some(outcome.0),
+    })
+}
+
+fn write_install_failure(
+    receipt_dir: &Path,
+    receipt_name: &str,
+    package: &str,
+    mut receipt: Value,
+    command: CmdResult,
+) -> Result<OperationOutcome, String> {
+    receipt["first_blocker"] = Value::String(meaningful_stderr_tail(&command));
+    write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+    Ok(OperationOutcome {
+        ok: false,
+        changed: false,
+        skipped: false,
+        message: format!("aur install {package}"),
+        command: Some(command),
     })
 }
 
@@ -854,6 +864,40 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn meaningful_stderr_tail(command: &CmdResult) -> String {
+    let mut tail: Vec<&str> = command
+        .stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_curl_progress_line(line))
+        .rev()
+        .take(3)
+        .collect();
+    tail.reverse();
+    if !tail.is_empty() {
+        return tail.join(" | ");
+    }
+    if let Some(line) = command
+        .stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    {
+        return line.to_string();
+    }
+    format!("aur-command-exit-{}", command.code)
+}
+
+fn is_curl_progress_line(line: &str) -> bool {
+    line.starts_with("% Total")
+        || (line.contains("Dload") && line.contains("Upload") && line.contains("Speed"))
+        || line.split_whitespace().all(|field| {
+            field
+                .chars()
+                .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '%' | '-' | ':'))
+        })
+}
+
 fn first_blocker(command: &CmdResult) -> String {
     if !command.stderr.trim().is_empty() {
         command
@@ -945,6 +989,45 @@ mod tests {
 
     fn sample_sha() -> String {
         "0123456789abcdef0123456789abcdef01234567".to_string()
+    }
+
+    #[test]
+    fn install_failure_receipt_keeps_meaningful_makepkg_stderr_tail() {
+        let root = temp_root("install-meaningful-blocker");
+        fs::create_dir_all(&root).unwrap();
+        let command = CmdResult {
+            ok: false,
+            code: 1,
+            stdout: String::new(),
+            stderr: concat!(
+                "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n",
+                "                                 Dload  Upload   Total   Spent    Left  Speed\n",
+                "  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0\n",
+                "curl: (22) The requested URL returned error: 404\n",
+                "==> ERROR: Failure while downloading https://example.invalid/oh-my-posh.tar.gz\n"
+            )
+            .into(),
+        };
+        let outcome = write_install_failure(
+            &root,
+            "aur-install",
+            "oh-my-posh",
+            serde_json::json!({
+                "schema": "harmonia.aur.install.v1",
+                "first_blocker": null
+            }),
+            command,
+        )
+        .unwrap();
+        assert!(!outcome.ok);
+        let receipt: Value =
+            serde_json::from_str(&fs::read_to_string(root.join("aur-install.json")).unwrap())
+                .unwrap();
+        let blocker = receipt["first_blocker"].as_str().unwrap();
+        assert!(blocker.contains("curl: (22)"));
+        assert!(blocker.contains("==> ERROR: Failure while downloading"));
+        assert!(!blocker.contains("% Total"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
