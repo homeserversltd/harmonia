@@ -1,0 +1,50 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "chromium-browser",
+  "version": "1.0.0",
+  "description": "TV Chromium CUSTOMER policy convergence: root-owned recommended defaults, retired mandatory-policy cleanup, and no package or flags ownership. OPERATOR policy-level translation is a declared debt until settings_authority reaches module declarations.",
+  "optional": false,
+  "ladder": [
+    {
+      "step_id": "chromium-policy-recommended-file",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {
+        "files": [
+          {
+            "path": "/etc/chromium/policies/recommended/harmonia-chromium-policy.json",
+            "mode": 420,
+            "content": "{\n  \"BrowserSignin\": 0,\n  \"PasswordManagerEnabled\": false,\n  \"RestoreOnStartup\": 1,\n  \"HighEfficiencyModeEnabled\": true\n}\n"
+          }
+        ],
+        "owner": "root",
+        "group": "root"
+      }
+    },
+    {
+      "step_id": "chromium-policy-retired-managed-remove",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/rm",
+        "args": [
+          "-f",
+          "/etc/chromium/policies/managed/arch-tv-chromium-policy.json"
+        ]
+      }
+    },
+    {
+      "step_id": "chromium-policy-retired-managed-absent",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "!",
+          "-e",
+          "/etc/chromium/policies/managed/arch-tv-chromium-policy.json"
+        ]
+      }
+    }
+  ]
+}
