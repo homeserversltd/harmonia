@@ -1,4 +1,5 @@
 [global]
+    follow = mouse
     icon_path = /home/owner/.config/dunst/icons
     fullscreen = show
     layer = overlay
