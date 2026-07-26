@@ -130,6 +130,7 @@ pub(crate) fn write_engine_run_receipt(
     operation_count: usize,
     first_missing_signal: &str,
     module_root: &Path,
+    suite_ok: bool,
 ) -> Result<(), String> {
     write_json(
         &receipt_dir.join("run.json"),
@@ -146,7 +147,7 @@ pub(crate) fn write_engine_run_receipt(
             "first_missing_signal": first_missing_signal,
             "module_spine_entered": module_root,
             "selected_profile": profile.id,
-            "suite_ok": ok,
+            "suite_ok": suite_ok,
         }),
     )
 }

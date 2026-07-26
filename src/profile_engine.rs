@@ -234,7 +234,7 @@ pub(crate) fn run_profile_engine(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<(), String> {
-    run_profile_engine_with_preflight(profile, module_root, receipt_dir, apply, false)
+    run_profile_engine_with_preflight(profile, module_root, receipt_dir, apply, false, None, None)
 }
 
 pub(crate) fn run_profile_engine_with_preflight(
@@ -243,6 +243,8 @@ pub(crate) fn run_profile_engine_with_preflight(
     receipt_dir: &Path,
     apply: bool,
     skip_preflight: bool,
+    completed_preflight: Option<ModuleExecution>,
+    suite_debt: Option<&str>,
 ) -> Result<(), String> {
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
@@ -254,12 +256,25 @@ pub(crate) fn run_profile_engine_with_preflight(
     )?;
     let run_id = run_id_from_stamp();
     let mut ok = true;
+    let mut suite_ok = true;
     let mut changed = false;
     let mut first_missing_signal = "none".to_string();
     let mut module_count = 0usize;
     let mut operation_count = 0usize;
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
+
+    if let Some(suite_debt) = suite_debt {
+        ok = false;
+        suite_ok = false;
+        first_missing_signal = suite_debt.to_string();
+        event(
+            &mut events,
+            "profile-suite-spine-debt",
+            false,
+            suite_debt,
+        )?;
+    }
 
     if skip_preflight {
         event(
@@ -268,6 +283,27 @@ pub(crate) fn run_profile_engine_with_preflight(
             true,
             "already completed by update suite",
         )?;
+        if let Some(preflight) = completed_preflight {
+            operation_count += preflight.operation_count;
+            if preflight.changed {
+                changed = true;
+            }
+            if !preflight.ok {
+                let preflight_signal = preflight
+                    .first_missing_signal
+                    .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
+                event(
+                    &mut events,
+                    "engine-preflight-honest-staleness",
+                    false,
+                    &preflight_signal,
+                )?;
+                ok = false;
+                if first_missing_signal == "none" {
+                    first_missing_signal = preflight_signal;
+                }
+            }
+        }
     } else {
         let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
         operation_count += preflight.operation_count;
@@ -442,6 +478,7 @@ pub(crate) fn run_profile_engine_with_preflight(
         operation_count,
         &first_missing_signal,
         module_root,
+        suite_ok,
     )?;
     println!("schema=harmonia.run_profile.v1");
     println!("ok={}", ok);
@@ -574,6 +611,7 @@ fn rolling_update_run<F>(
     module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
+    suite_debt: Option<String>,
     lock_path: PathBuf,
     materialize_receipt: fn(&Path, &str) -> Result<PathBuf, String>,
     try_acquire_lock: fn(&Path) -> Result<ConvergenceLockGuard, ConvergenceLockBusy>,
@@ -589,11 +627,6 @@ where
         ensure_engine_config_for_rolling()?;
         normalize_engine_branch_upstream()?;
         let preflight = run_engine_preflight(module_root, &effective_receipt_dir, apply)?;
-        if !preflight.ok {
-            return Err(preflight
-                .first_missing_signal
-                .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string()));
-        }
         prelude(&effective_receipt_dir)?;
         let profile_path = module_root
             .parent()
@@ -606,6 +639,8 @@ where
             &effective_receipt_dir,
             apply,
             true,
+            Some(preflight),
+            suite_debt.as_deref(),
         )
     };
     if apply {
@@ -641,12 +676,13 @@ pub(crate) fn homeconsole_update(
             profile.id, profile.identity
         ));
     }
-    enforce_homeconsole_update_suite(profile, module_root)?;
+    let suite_debt = enforce_homeconsole_update_suite(profile, module_root)?;
     rolling_update_run(
         profile,
         module_root,
         receipt_dir,
         apply,
+        suite_debt,
         homeconsole_update_lock_path(),
         materialize_homeconsole_receipt_dir,
         try_acquire_homeconsole_update_lock,
@@ -697,17 +733,17 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
 pub(crate) fn enforce_homeconsole_update_suite(
     profile: &Profile,
     module_root: &Path,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let expected = module_ids_from_profile_modules(module_root)?;
     if profile.modules == expected {
-        Ok(())
+        Ok(None)
     } else {
-        Err(format!(
+        Ok(Some(format!(
             "homeconsole-update-suite-spine-mismatch module_root={} expected={} got={}",
             module_root.display(),
             expected.join(","),
             profile.modules.join(",")
-        ))
+        )))
     }
 }
 
@@ -723,12 +759,13 @@ pub(crate) fn homeserver_update(
             profile.id, profile.identity
         ));
     }
-    enforce_homeserver_update_suite(profile, module_root)?;
+    let suite_debt = enforce_homeserver_update_suite(profile, module_root)?;
     rolling_update_run(
         profile,
         module_root,
         receipt_dir,
         apply,
+        suite_debt,
         homeserver_update_lock_path(),
         materialize_homeserver_receipt_dir,
         try_acquire_homeserver_update_lock,
@@ -757,12 +794,13 @@ pub(crate) fn tv_update(
             profile.id, profile.identity
         ));
     }
-    enforce_tv_update_suite(profile, module_root)?;
+    let suite_debt = enforce_tv_update_suite(profile, module_root)?;
     rolling_update_run(
         profile,
         module_root,
         receipt_dir,
         apply,
+        suite_debt,
         tv_update_lock_path(),
         materialize_tv_receipt_dir,
         try_acquire_tv_update_lock,
@@ -882,17 +920,17 @@ pub(crate) fn homeserver_module_ids_from_profile_modules(
 pub(crate) fn enforce_homeserver_update_suite(
     profile: &Profile,
     module_root: &Path,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let expected = homeserver_module_ids_from_profile_modules(module_root)?;
     if profile.modules == expected {
-        Ok(())
+        Ok(None)
     } else {
-        Err(format!(
+        Ok(Some(format!(
             "homeserver-update-suite-spine-mismatch module_root={} expected={} got={}",
             module_root.display(),
             expected.join(","),
             profile.modules.join(",")
-        ))
+        )))
     }
 }
 
@@ -934,17 +972,17 @@ pub(crate) fn tv_module_ids_from_profile_modules(
 pub(crate) fn enforce_tv_update_suite(
     profile: &Profile,
     module_root: &Path,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let expected = tv_module_ids_from_profile_modules(module_root)?;
     if profile.modules == expected {
-        Ok(())
+        Ok(None)
     } else {
-        Err(format!(
+        Ok(Some(format!(
             "tv-update-suite-spine-mismatch module_root={} expected={} got={}",
             module_root.display(),
             expected.join(","),
             profile.modules.join(",")
-        ))
+        )))
     }
 }
 
