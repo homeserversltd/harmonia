@@ -27,6 +27,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
+const TERMINATION_GRACE_SECS: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -347,10 +348,11 @@ pub(crate) fn capture_with_options(
                 };
             }
             Ok(None) if start.elapsed() >= Duration::from_secs(timeout_secs) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let termination = terminate_child(&mut child);
                 let (stdout, stderr) = read_child_pipes(&mut child);
-                let signal = format!("command-timeout-after-{timeout_secs}s: {command_label}");
+                let signal = format!(
+                    "command-timeout-after-{timeout_secs}s: {command_label}: {termination}"
+                );
                 let stderr = if stderr.trim().is_empty() {
                     signal
                 } else {
@@ -365,13 +367,39 @@ pub(crate) fn capture_with_options(
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(err) => {
-                let _ = child.kill();
+                let termination = terminate_child(&mut child);
                 return CmdResult {
                     ok: false,
                     code: -1,
                     stdout: String::new(),
-                    stderr: format!("command-wait-failed: {command_label}: {err}"),
+                    stderr: format!("command-wait-failed: {command_label}: {err}: {termination}"),
                 };
+            }
+        }
+    }
+}
+
+fn terminate_child(child: &mut std::process::Child) -> &'static str {
+    // This command primitive does not create a process group, so signal only
+    // the directly spawned child rather than guessing at ownership of its
+    // descendants.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let grace_start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return "terminated-on-sigterm-within-grace",
+            Ok(None) if grace_start.elapsed() >= Duration::from_secs(TERMINATION_GRACE_SECS) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return "killed-after-sigterm-grace-expired";
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return "killed-after-sigterm-grace-wait-failed";
             }
         }
     }
@@ -431,6 +459,38 @@ mod tests {
         let result = capture("sh", &["-c", "printf %s \"$PATH\""]);
         assert!(result.ok, "{}", result.stderr);
         assert_eq!(result.stdout, DEFAULT_SYSTEM_PATH);
+    }
+
+    #[test]
+    fn timed_out_child_that_exits_on_sigterm_stays_failed() {
+        let result = capture_with_timeout(
+            "/usr/bin/sh",
+            &["-c", "trap 'exit 0' TERM; while :; do :; done"],
+            1,
+        );
+        assert!(!result.ok);
+        assert!(result.stderr.contains("command-timeout-after-1s"));
+        assert!(
+            result.stderr.contains("terminated-on-sigterm-within-grace"),
+            "{}",
+            result.stderr
+        );
+    }
+
+    #[test]
+    fn timed_out_child_that_ignores_sigterm_is_killed_after_grace() {
+        let result = capture_with_timeout(
+            "/usr/bin/sh",
+            &["-c", "trap '' TERM; while :; do :; done"],
+            1,
+        );
+        assert!(!result.ok);
+        assert!(result.stderr.contains("command-timeout-after-1s"));
+        assert!(
+            result.stderr.contains("killed-after-sigterm-grace-expired"),
+            "{}",
+            result.stderr
+        );
     }
 
     #[test]
