@@ -1,9 +1,15 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "chromium",
-  "version": "1.0.0",
-  "description": "TV Chromium configuration module: it solely owns Chromium launch flags, recommended settings, and managed extensions. Module-off mandate retraction is kernel follow-on debt, not a ladder declaration.",
+  "version": "1.1.0",
+  "description": "TV Chromium configuration module: it solely owns Chromium launch flags, recommended settings, managed extensions, and retraction of its retired profile-named mandatory policy artifacts.",
   "optional": false,
+  "constants": {
+    "retired_mandatory_policy_paths": [
+      "etc/chromium/policies/managed/laptop-chromium-policy.json",
+      "etc/chromium/policies/managed/arch-tv-chromium-policy.json"
+    ]
+  },
   "files_root": "files_root",
   "ladder": [
     {
@@ -37,6 +43,15 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "chromium-policy-files"
+      }
+    },
+    {
+      "step_id": "retired-mandatory-policy-cleanup",
+      "tool": "files",
+      "permutation": "remove",
+      "args": {
+        "target_root": "/",
+        "paths": "$constants.retired_mandatory_policy_paths"
       }
     }
   ]

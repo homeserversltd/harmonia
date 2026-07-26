@@ -40,6 +40,14 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "remove",
+        "remove only declared regular files beneath a target root and receipt their prior and final state",
+        &[
+            ToolArg::required("target_root", ToolArgKind::String),
+            ToolArg::required("paths", ToolArgKind::StringArray),
+        ],
+    ),
+    ToolPermutation::new(
         "directory-sync",
         "verify or copy a source directory tree into a target directory",
         &[
@@ -151,6 +159,26 @@ pub struct FileConvergenceOutcome {
     pub backed_up: usize,
     pub missing: Vec<String>,
     pub entries: Vec<FileConvergenceEntry>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileRemovalEntry {
+    pub relative_path: String,
+    pub target: PathBuf,
+    pub found_before: String,
+    pub exists_after: bool,
+    pub result: String,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileRemovalOutcome {
+    pub ok: bool,
+    pub changed: bool,
+    pub checked: usize,
+    pub removed: usize,
+    pub entries: Vec<FileRemovalEntry>,
     pub message: String,
 }
 
@@ -613,6 +641,165 @@ pub fn converge_files(
         },
     };
     write_convergence_receipt(receipt_dir, request, &outcome, apply)?;
+    Ok(outcome)
+}
+
+pub fn remove_declared_files(
+    target_root: &Path,
+    paths: &[String],
+    receipt_dir: &Path,
+    receipt_name: &str,
+    apply: bool,
+) -> Result<FileRemovalOutcome, String> {
+    if paths.is_empty() {
+        return Err("files-remove-empty-request".to_string());
+    }
+    validate_receipt_name(receipt_name)?;
+    let specs: Vec<FileSpec> = paths
+        .iter()
+        .map(|path| FileSpec {
+            relative_path: PathBuf::from(path),
+            mode: None,
+        })
+        .collect();
+    validate_specs(&specs)?;
+
+    let mut entries = Vec::new();
+    let mut removed = 0usize;
+    let mut changed = false;
+    let mut failure = None;
+    for spec in specs {
+        let target = target_root.join(&spec.relative_path);
+        let metadata = match fs::symlink_metadata(&target) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                failure = Some(format!(
+                    "files-remove-metadata-failed {}: {error}",
+                    target.display()
+                ));
+                entries.push(FileRemovalEntry {
+                    relative_path: spec.relative_path.to_string_lossy().into_owned(),
+                    target,
+                    found_before: "unreadable".into(),
+                    exists_after: true,
+                    result: "unreadable".into(),
+                    changed: false,
+                });
+                break;
+            }
+        };
+        let relative_path = spec.relative_path.to_string_lossy().into_owned();
+        match metadata {
+            None => entries.push(FileRemovalEntry {
+                relative_path,
+                target,
+                found_before: "absent".into(),
+                exists_after: false,
+                result: "absent".into(),
+                changed: false,
+            }),
+            Some(metadata) if !metadata.file_type().is_file() => {
+                failure = Some(format!(
+                    "files-remove-target-not-regular-file {}",
+                    target.display()
+                ));
+                entries.push(FileRemovalEntry {
+                    relative_path,
+                    target,
+                    found_before: if metadata.file_type().is_symlink() {
+                        "symlink".into()
+                    } else {
+                        "non-regular".into()
+                    },
+                    exists_after: true,
+                    result: "refused-non-regular".into(),
+                    changed: false,
+                });
+                break;
+            }
+            Some(_) if apply => {
+                match fs::remove_file(&target) {
+                    Ok(()) => {
+                        let exists_after = fs::symlink_metadata(&target).is_ok();
+                        if exists_after {
+                            failure = Some(format!(
+                                "files-remove-post-remove-readback-failed {}",
+                                target.display()
+                            ));
+                        }
+                        removed += 1;
+                        changed = true;
+                        entries.push(FileRemovalEntry {
+                            relative_path,
+                            target,
+                            found_before: "regular-file".into(),
+                            exists_after,
+                            result: if exists_after {
+                                "remove-readback-failed".into()
+                            } else {
+                                "removed".into()
+                            },
+                            changed: true,
+                        });
+                    }
+                    Err(error) => {
+                        failure =
+                            Some(format!("files-remove-failed {}: {error}", target.display()));
+                        entries.push(FileRemovalEntry {
+                            relative_path,
+                            target,
+                            found_before: "regular-file".into(),
+                            exists_after: true,
+                            result: "remove-failed".into(),
+                            changed: false,
+                        });
+                    }
+                }
+                if failure.is_some() {
+                    break;
+                }
+            }
+            Some(_) => entries.push(FileRemovalEntry {
+                relative_path,
+                target,
+                found_before: "regular-file".into(),
+                exists_after: true,
+                result: "planned-removal".into(),
+                changed: true,
+            }),
+        }
+    }
+    let ok = failure.is_none();
+    let outcome = FileRemovalOutcome {
+        ok,
+        changed,
+        checked: paths.len(),
+        removed,
+        entries,
+        message: failure
+            .unwrap_or_else(|| format!("{} declared files removed or absent", paths.len())),
+    };
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let receipt = receipt_dir.join(if receipt_name.ends_with(".json") {
+        receipt_name.to_string()
+    } else {
+        format!("{receipt_name}.json")
+    });
+    crate::write_json(
+        &receipt,
+        &json!({
+            "schema": "harmonia.files.remove.v1",
+            "ok": outcome.ok,
+            "apply": apply,
+            "target_root": target_root,
+            "checked": outcome.checked,
+            "removed": outcome.removed,
+            "changed": outcome.changed,
+            "entries": outcome.entries,
+            "first_missing_signal": if outcome.ok { "none" } else { outcome.message.as_str() },
+        }),
+    )?;
     Ok(outcome)
 }
 

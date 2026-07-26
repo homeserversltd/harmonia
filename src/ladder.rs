@@ -429,6 +429,7 @@ fn execute_validated_step(
         ("files", "validated-file-symlink") => {
             validated_file_symlink_step(step, manifest, module_dir, apply)
         }
+        ("files", "remove") => files_remove_step(step, module_dir, apply),
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
@@ -696,6 +697,27 @@ fn validated_file_symlink_step(
             apply,
         },
     )
+}
+
+fn files_remove_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let outcome = crate::tools::files::remove_declared_files(
+        &PathBuf::from(string_arg(&step.args, "target_root")),
+        &string_array_arg(&step.args, "paths"),
+        module_dir,
+        &step.step_id,
+        apply,
+    )?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
 }
 
 fn files_converge_step(
