@@ -183,7 +183,7 @@ pub(crate) fn selector_is_safe(selector: &str) -> bool {
 /// named scopes remain unresolved so `acquire_source` produces its established
 /// hard-red receipt instead of falling back anonymously.
 pub(crate) fn bridge_acquisition_plan(
-    resolution: &SourcePlan,
+    resolution: &SourceResolution,
     destination: PathBuf,
     bearer: String,
     expected_commit: Option<String>,
@@ -385,43 +385,6 @@ pub(crate) fn resolve_source(
         None,
         Some(resolution),
     )
-}
-
-/// Lower certificate-selected source data into the one acquisition plan type.
-/// The resolver never sees credentials; a selector remains an opaque key until
-/// the engine supplies a scoped plan to the transport primitive.
-pub(crate) fn acquisition_plan(
-    resolution: &SourceResolution,
-    destination: PathBuf,
-    bearer: String,
-) -> Result<crate::tools::git_artifact::SourcePlan, String> {
-    let candidates = resolution
-        .candidates
-        .iter()
-        .map(|candidate| {
-            let kind = match candidate.kind.as_str() {
-                "git" => crate::tools::git_artifact::SourceCandidateKind::Git,
-                "local-checkout" => crate::tools::git_artifact::SourceCandidateKind::LocalCheckout,
-                other => return Err(format!("source-candidate-kind-unsupported kind={other}")),
-            };
-            Ok(crate::tools::git_artifact::SourceCandidate {
-                kind,
-                locator: candidate.locator.clone(),
-                credential_selector: candidate.credential_selector.clone(),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let expected_commit = (resolution.requested_ref.len() == 40
-        && resolution.requested_ref.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| resolution.requested_ref.clone());
-    Ok(crate::tools::git_artifact::SourcePlan {
-        candidates,
-        reference: resolution.requested_ref.clone(),
-        destination,
-        expected_commit,
-        bearer,
-        credentials: Default::default(),
-    })
 }
 
 /// Validate every declared source entry before any profile or module execution.
