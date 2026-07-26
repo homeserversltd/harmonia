@@ -22,6 +22,14 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "unit-present",
+        "assert that a system unit is loaded without enabling or starting it",
+        &[
+            ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    ),
+    ToolPermutation::new(
         "disable-stop-remove",
         "disable and stop a system unit, then remove its unit file",
         &[
@@ -128,7 +136,7 @@ pub(crate) fn run_action(
     };
     let before_enabled = state("is-enabled", service, user, target_user, timeout_secs);
     let before_active = state("is-active", service, user, target_user, timeout_secs);
-    let result = if mutating && !apply {
+    let mut result = if mutating && !apply {
         CmdResult {
             ok: true,
             code: 0,
@@ -138,6 +146,9 @@ pub(crate) fn run_action(
     } else {
         systemctl(action, service, user, target_user, timeout_secs)
     };
+    if action == "unit-present" {
+        result = unit_present_result(result, service);
+    }
     let after_enabled = state("is-enabled", service, user, target_user, timeout_secs);
     let after_active = state("is-active", service, user, target_user, timeout_secs);
     let changed = mutating
@@ -191,6 +202,14 @@ fn systemctl(
         "restart" | "stop" => {
             args.extend([action.to_string(), service.to_string()]);
         }
+        "unit-present" => {
+            args.extend([
+                "show".to_string(),
+                "--property=LoadState".to_string(),
+                "--value".to_string(),
+                service.to_string(),
+            ]);
+        }
         "is-active-probe" => {
             args.extend(["is-active".to_string(), service.to_string()]);
         }
@@ -205,6 +224,15 @@ fn systemctl(
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs)
+}
+
+fn unit_present_result(mut result: CmdResult, service: &str) -> CmdResult {
+    if result.ok && result.stdout.trim() == "not-found" {
+        result.ok = false;
+        result.code = 1;
+        result.stderr = format!("systemd-unit-missing-{service}");
+    }
+    result
 }
 
 fn disable_stop_remove(service: &str, user: bool, timeout_secs: u64) -> CmdResult {
@@ -414,6 +442,32 @@ mod tests {
         assert_eq!(receipt["target_user"], "owner");
         assert_eq!(receipt["systemctl_transport"], "machine-user");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unit_present_is_declared_as_a_non_mutating_assertion() {
+        let permutation = PERMUTATIONS
+            .iter()
+            .find(|permutation| permutation.name == "unit-present")
+            .expect("unit-present permutation");
+        assert_eq!(permutation.args[0].name, "service");
+        assert!(permutation.args[0].required);
+    }
+
+    #[test]
+    fn unit_present_names_an_absent_installer_unit() {
+        let result = unit_present_result(
+            CmdResult {
+                ok: true,
+                code: 0,
+                stdout: "not-found\n".to_string(),
+                stderr: String::new(),
+            },
+            "harmonia.timer",
+        );
+        assert!(!result.ok);
+        assert_eq!(result.code, 1);
+        assert_eq!(result.stderr, "systemd-unit-missing-harmonia.timer");
     }
 
     #[test]

@@ -670,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn homeserver_update_runtime_ladder_registers_convergence_timer() {
+    fn homeserver_update_runtime_ladder_asserts_installer_timer_presence() {
         let root = repo_root();
         let manifest = load_ladder_manifest(
             &root.join("profiles/homeserver/modules/homeserver-update-runtime/manifest.json"),
@@ -678,16 +678,12 @@ mod tests {
         .unwrap();
         assert_eq!(manifest.id, "homeserver-update-runtime");
         assert!(manifest.ladder.iter().any(|step| {
-            step.step_id == "homeserver-update-timer-enable"
+            step.step_id == "homeserver-update-installer-timer-present"
                 && step.tool == "systemd"
-                && step.permutation == "enable-now"
+                && step.permutation == "unit-present"
                 && step.args["service"].as_str() == Some("harmonia.timer")
         }));
-        let timer = fs::read_to_string(root.join(
-            "profiles/homeserver/modules/homeserver-update-runtime/files_root/etc/systemd/system/harmonia.timer",
-        ))
-        .unwrap();
-        assert!(timer.contains("harmonia.service"));
+        assert!(manifest.files_root.is_none());
         validate_ladder(&manifest).unwrap();
     }
 
@@ -857,48 +853,38 @@ mod tests {
     }
 
     #[test]
-    fn tv_update_runtime_ladder_registers_convergence_timer() {
+    fn tv_update_runtime_ladder_asserts_installer_timer_presence() {
         let root = repo_root();
         let manifest = load_ladder_manifest(
             &root.join("profiles/tv/modules/tv-update-runtime/manifest.json"),
         )
         .unwrap();
         assert_eq!(manifest.id, "tv-update-runtime");
-        assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
+        assert!(manifest.files_root.is_none());
         assert!(manifest.ladder.iter().any(|step| {
-            step.step_id == "tv-update-timer-enable"
+            step.step_id == "tv-update-installer-timer-present"
                 && step.tool == "systemd"
-                && step.permutation == "enable-now"
+                && step.permutation == "unit-present"
                 && step.args["service"].as_str() == Some("harmonia.timer")
         }));
-        let timer = fs::read_to_string(root.join(
-            "profiles/tv/modules/tv-update-runtime/files_root/etc/systemd/system/harmonia.timer",
-        ))
-        .unwrap();
-        assert!(timer.contains("harmonia.service"));
         validate_ladder(&manifest).unwrap();
     }
 
     #[test]
-    fn homeconsole_update_runtime_ladder_registers_convergence_timer() {
+    fn homeconsole_update_runtime_ladder_asserts_installer_timer_presence() {
         let root = repo_root();
         let manifest = load_ladder_manifest(
             &root.join("profiles/homeconsole/modules/homeconsole-update-runtime/manifest.json"),
         )
         .unwrap();
         assert_eq!(manifest.id, "homeconsole-update-runtime");
-        assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
+        assert!(manifest.files_root.is_none());
         assert!(manifest.ladder.iter().any(|step| {
-            step.step_id == "homeconsole-update-timer-enable"
+            step.step_id == "homeconsole-update-installer-timer-present"
                 && step.tool == "systemd"
-                && step.permutation == "enable-now"
+                && step.permutation == "unit-present"
                 && step.args["service"].as_str() == Some("harmonia.timer")
         }));
-        let timer = fs::read_to_string(root.join(
-            "profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia.timer",
-        ))
-        .unwrap();
-        assert!(timer.contains("harmonia.service"));
         validate_ladder(&manifest).unwrap();
     }
 
@@ -2114,8 +2100,8 @@ mod tests {
         assert!(output
             .join("profiles/homeconsole/modules/pinned-artifacts-runtime/manifest.json")
             .exists());
-        assert!(output
-            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia.timer")
+        assert!(!output
+            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root")
             .exists());
         assert!(output
             .join("locks/homeconsole/pinned-artifacts.json")
@@ -2125,7 +2111,6 @@ mod tests {
         assert!(receipt.contains("harmonia.deployable_config_export.v1"));
         assert!(receipt.contains("profile-index"));
         assert!(receipt.contains("module-ladder-manifest"));
-        assert!(receipt.contains("module-ladder-files-root"));
         assert!(receipt.contains("profile-lock"));
         assert!(
             !output
