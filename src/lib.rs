@@ -2575,7 +2575,9 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 );
                 return Err(blocker.clone());
             }
-            let plan = resolution.plan.ok_or("source-acquisition-plan-missing")?;
+            let plan = resolution
+                .resolution
+                .ok_or("source-acquisition-plan-missing")?;
             let config = load_engine_plane_config(&engine_config)?
                 .ok_or_else(|| format!("engine-config-missing {}", engine_config.display()))?;
             let bearer = value_arg_string(&args, "--bearer").unwrap_or(config.git_bearer.clone());

@@ -403,7 +403,24 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     let resolution = resolution
         .resolution
         .ok_or_else(|| "arcadia-source-resolution-plan-missing".to_string())?;
-    let source_plan = crate::acquisition_plan(&resolution, source_dir.to_path_buf(), "owner".to_string())?;
+    let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
+    let credentials = config
+        .as_ref()
+        .map(crate::credential_scopes)
+        .unwrap_or_default();
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    let source_plan = crate::bridge_acquisition_plan(
+        &resolution,
+        source_dir.to_path_buf(),
+        "owner".to_string(),
+        expected_commit,
+        credentials,
+    );
     let git_outcome = if apply {
         tools::git_artifact::acquire_source(&source_plan)
     } else {
