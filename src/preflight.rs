@@ -15,7 +15,8 @@ pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
 const ENGINE_CONFIG_ENV: &str = "HARMONIA_ENGINE_CONFIG_PATH";
 const DEFAULT_ENGINE_CONFIG: &str = "/etc/harmonia/engine.json";
-const BOOTSTRAP_ORDER: &str = "engine-possession->verify";
+const BOOTSTRAP_ORDER: &str = "keyring->transport->system-sync->engine-possession->verify";
+const TRANSPORT_PACKAGES: &[&str] = &["ca-certificates", "git", "curl", "pacman"];
 const ENGINE_RATCHET_LOCK_SCHEMA: &str = "harmonia.engine.ratchet_lock.v1";
 const DEFAULT_ENGINE_RATCHET_LOCK_NAME: &str = "engine-ratchet-lock.json";
 
@@ -800,8 +801,75 @@ pub(crate) fn run_engine_preflight(
     let mut artifact_transport_attempts: Vec<serde_json::Value> = Vec::new();
     let mut staged_sha: Option<String> = None;
     let install_before = install_bin_fingerprint(&config.install_bin);
-    let mut changed = false;
+    let keyring = tools::package::keyring_repair_tool(
+        &preflight_dir,
+        "keyring-trust",
+        "archlinux-keyring",
+        apply,
+        1800,
+    )?;
+    operation_count += 1;
+    let transport_packages: Vec<String> = TRANSPORT_PACKAGES
+        .iter()
+        .map(|v| (*v).to_string())
+        .collect();
+    let transport = if keyring.ok {
+        tools::package::package_tool(
+            &preflight_dir,
+            "transport-organs",
+            "install",
+            &transport_packages,
+            apply,
+        )?
+    } else {
+        OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: "transport organs skipped because keyring trust failed".into(),
+            command: None,
+        }
+    };
+    if !keyring.ok {
+        tools::package::write_package_receipt(
+            &preflight_dir,
+            "transport-organs",
+            "install",
+            &transport,
+        )?;
+    }
+    operation_count += 1;
+
+    let system_sync = if keyring.ok && transport.ok {
+        tools::package::package_tool(&preflight_dir, "system-sync", "upgrade", &[], apply)?
+    } else {
+        OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: "system sync skipped because bootstrap transport failed".into(),
+            command: None,
+        }
+    };
+    if !(keyring.ok && transport.ok) {
+        tools::package::write_package_receipt(
+            &preflight_dir,
+            "system-sync",
+            "upgrade",
+            &system_sync,
+        )?;
+    }
+    operation_count += 1;
+
+    let mut changed = keyring.changed || transport.changed || system_sync.changed;
     let mut first_missing_signal = "none".to_string();
+    if !keyring.ok {
+        first_missing_signal = stage_signal("keyring-trust");
+    } else if !transport.ok {
+        first_missing_signal = stage_signal("transport-organs");
+    } else if !system_sync.ok {
+        first_missing_signal = stage_signal("system-sync");
+    }
 
     let mut source_outcome = OperationOutcome {
         ok: false,
@@ -1221,6 +1289,9 @@ pub(crate) fn run_engine_preflight(
 
     let mut execution = ModuleExecution::from_operations(
         vec![
+            ("keyring-trust", keyring),
+            ("transport-organs", transport),
+            ("system-sync", system_sync),
             ("artifact-lane", artifact_outcome),
             ("source-possession", source_outcome),
             (
@@ -2050,6 +2121,46 @@ mod tests {
         fs::write(&lock, r#"{"schema":"harmonia.engine.ratchet_lock.v1","engine_version":"0.1.1","source_head_sha":"abc","artifacts":{"x86_64":{"name":"harmonia","sha256":"abc","extra":true}}}"#).unwrap();
         let err = load_ratchet_lock(&lock).unwrap_err();
         assert!(err.contains("engine-ratchet-lock-parse-failed"), "{err}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_failure_blocks_source_build_and_preserves_old_binary() {
+        let root = temp_root("sync-failure");
+        with_engine_env(&root, |config_path| {
+            let (profile_index, module_root) = fixture_profile(&root);
+            let repo = fixture_repo(&root);
+            let source_dir = root.join("source");
+            let staged = root.join("staged/harmonia");
+            let install_bin = root.join("bin/harmonia");
+            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
+            fs::write(&install_bin, "old-engine\n").unwrap();
+            let build = root.join("build-should-not-run.sh");
+            fake_tool(&build, "#!/usr/bin/env sh\necho build-ran >&2\nexit 9\n");
+            write_engine_config(
+                config_path,
+                &repo,
+                &build,
+                &staged,
+                &install_bin,
+                &profile_index,
+                &source_dir,
+            );
+            let pacman = "#!/usr/bin/env sh\nif [ \"$1\" = \"-Syu\" ]; then echo sync failed >&2; exit 42; fi\necho ok\nexit 0\n";
+            let receipts = root.join("receipts");
+            let execution = with_fake_bootstrap(&root, pacman, || {
+                run_engine_preflight(&module_root, &receipts, true).unwrap()
+            });
+            assert!(!execution.ok);
+            assert_eq!(
+                execution.first_missing_signal.as_deref(),
+                Some("engine-system-sync-failed")
+            );
+            assert_eq!(fs::read_to_string(&install_bin).unwrap(), "old-engine\n");
+            let build_receipt =
+                fs::read_to_string(receipts.join("engine-preflight/staged-build.json")).unwrap();
+            assert!(build_receipt.contains("skipped before successful source possession"));
+        });
         let _ = fs::remove_dir_all(root);
     }
 
