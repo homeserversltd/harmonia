@@ -248,6 +248,7 @@ pub fn main_entry() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::module_steps::{artifact_promote_tool, command_tool, set_test_pacman_path};
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
