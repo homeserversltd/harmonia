@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) const SOURCE_PLAN_SCHEMA: &str = "harmonia.engine.source_plan.v1";
 pub(crate) const SOURCE_RECEIPT_SCHEMA: &str = "harmonia.engine.source_resolution.v1";
@@ -162,7 +162,7 @@ fn locator_is_safe(locator: &str) -> bool {
     !authority.contains('@')
 }
 
-fn selector_is_safe(selector: &str) -> bool {
+pub(crate) fn selector_is_safe(selector: &str) -> bool {
     let selector = selector.trim();
     !selector.is_empty()
         && selector.chars().enumerate().all(|(index, ch)| match index {
@@ -175,6 +175,42 @@ fn selector_is_safe(selector: &str) -> bool {
         && !["token", "secret", "password", "private", "key-path"]
             .iter()
             .any(|forbidden| selector.to_ascii_lowercase().contains(forbidden))
+}
+
+/// Bridge certificate policy and body-local material without merging their
+/// authorities. The certificate supplies candidates and opaque selectors; the
+/// supplied map supplies only selector-keyed CredentialScope material. Missing
+/// named scopes remain unresolved so `acquire_source` produces its established
+/// hard-red receipt instead of falling back anonymously.
+pub(crate) fn bridge_acquisition_plan(
+    resolution: &SourcePlan,
+    destination: PathBuf,
+    bearer: String,
+    expected_commit: Option<String>,
+    credentials: BTreeMap<String, crate::tools::git_artifact::CredentialScope>,
+) -> crate::tools::git_artifact::SourcePlan {
+    crate::tools::git_artifact::SourcePlan {
+        candidates: resolution
+            .candidates
+            .iter()
+            .map(|candidate| crate::tools::git_artifact::SourceCandidate {
+                kind: match candidate.kind.as_str() {
+                    "git" => crate::tools::git_artifact::SourceCandidateKind::Git,
+                    "local-checkout" => {
+                        crate::tools::git_artifact::SourceCandidateKind::LocalCheckout
+                    }
+                    _ => unreachable!("source resolution admits only supported candidate kinds"),
+                },
+                locator: candidate.locator.clone(),
+                credential_selector: candidate.credential_selector.clone(),
+            })
+            .collect(),
+        reference: resolution.requested_ref.clone(),
+        destination,
+        expected_commit,
+        bearer,
+        credentials,
+    }
 }
 
 fn candidate_plan(
