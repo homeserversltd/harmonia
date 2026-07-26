@@ -3,7 +3,9 @@ use crate::{write_json, CmdResult, OperationOutcome, PackageBackend};
 #[cfg(test)]
 use std::cell::RefCell;
 use std::env;
-use std::path::Path;
+use std::fs;
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
 
 pub const NAME: &str = "package";
 pub const DESCRIPTION: &str = "System package manager primitive for pacman check, install, upgrade, and keyring repair permutations.";
@@ -42,6 +44,7 @@ pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTAT
 const HARMONIA_PACMAN_PATH_ENV: &str = "HARMONIA_PACMAN_PATH";
 const HARMONIA_PACMAN_KEY_PATH_ENV: &str = "HARMONIA_PACMAN_KEY_PATH";
 const DEFAULT_PACKAGE_TIMEOUT_SECS: u64 = 1800;
+const PACMAN_DATABASE_LOCK_RELATIVE_PATH: &str = "var/lib/pacman/db.lck";
 
 #[cfg(test)]
 thread_local! {
@@ -78,6 +81,107 @@ pub(crate) fn pacman_key_program() -> String {
 
 pub(crate) fn pacman_available(program: &str) -> bool {
     Path::new(program).exists()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PacmanLockDecision {
+    lock_present: bool,
+    live_holder_found: bool,
+    reclaim: bool,
+}
+
+fn pacman_lock_decision(lock_present: bool, live_holder_found: bool) -> PacmanLockDecision {
+    PacmanLockDecision {
+        lock_present,
+        live_holder_found,
+        reclaim: lock_present && !live_holder_found,
+    }
+}
+
+fn resolved_pacman_program(program: &str) -> PathBuf {
+    fs::canonicalize(program).unwrap_or_else(|_| PathBuf::from(program))
+}
+
+fn pacman_database_lock_path(program: &str) -> PathBuf {
+    let resolved = resolved_pacman_program(program);
+    let root = resolved
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("/"));
+    root.join(PACMAN_DATABASE_LOCK_RELATIVE_PATH)
+}
+
+fn live_pacman_process_exists(program: &Path) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        })
+        .any(|entry| {
+            let process = entry.path();
+            let executable = fs::read_link(process.join("exe"))
+                .ok()
+                .and_then(|path| fs::canonicalize(&path).ok().or(Some(path)));
+            if executable.as_deref() == Some(program) {
+                return true;
+            }
+            fs::read(process.join("cmdline"))
+                .ok()
+                .and_then(|cmdline| {
+                    cmdline.split(|byte| *byte == 0).next().map(|argument| {
+                        PathBuf::from(std::ffi::OsString::from_vec(argument.to_vec()))
+                    })
+                })
+                .and_then(|path| fs::canonicalize(&path).ok().or(Some(path)))
+                .as_deref()
+                == Some(program)
+        })
+}
+
+fn reclaim_pacman_database_lock(
+    receipt_dir: &Path,
+    program: &str,
+    apply: bool,
+) -> Result<(), String> {
+    let resolved_program = resolved_pacman_program(program);
+    let lock_path = pacman_database_lock_path(program);
+    let lock_present = lock_path.exists();
+    let live_holder_found = lock_present && live_pacman_process_exists(&resolved_program);
+    let decision = pacman_lock_decision(lock_present, live_holder_found);
+    let removal_error = if decision.reclaim && apply {
+        fs::remove_file(&lock_path).err()
+    } else {
+        None
+    };
+    let reclaimed = decision.reclaim && apply && removal_error.is_none();
+    write_json(
+        &receipt_dir.join("pacman-database-lock-reclaim.json"),
+        &serde_json::json!({
+            "schema": "harmonia.pacman_lock_reclaim.v1",
+            "name": "pacman-database-lock-reclaim",
+            "tool": NAME,
+            "pacman_program": resolved_program,
+            "lock_path": lock_path,
+            "lock_present": decision.lock_present,
+            "live_holder_found": decision.live_holder_found,
+            "reclaimed": reclaimed,
+            "planned_reclamation": decision.reclaim && !apply,
+            "apply": apply,
+            "first_missing_signal": removal_error.as_ref().map_or("none", |_| "pacman-lock-reclaim-failed"),
+        }),
+    )?;
+    if let Some(error) = removal_error {
+        return Err(format!("pacman-lock-reclaim-failed:{error}"));
+    }
+    Ok(())
 }
 
 pub(crate) fn pacman_conflict_signal(result: &CmdResult) -> Option<String> {
@@ -120,18 +224,31 @@ pub(crate) fn overwrite_allowed_args<'a>(
 }
 
 #[allow(dead_code)]
-pub(crate) fn pacman_mutate_packages(sync: bool, packages: &[String]) -> CmdResult {
-    pacman_mutate_packages_with_options(sync, packages, None, &[], DEFAULT_PACKAGE_TIMEOUT_SECS)
+pub(crate) fn pacman_mutate_packages(
+    receipt_dir: &Path,
+    sync: bool,
+    packages: &[String],
+) -> Result<CmdResult, String> {
+    pacman_mutate_packages_with_options(
+        receipt_dir,
+        sync,
+        packages,
+        None,
+        &[],
+        DEFAULT_PACKAGE_TIMEOUT_SECS,
+    )
 }
 
 #[allow(dead_code)]
 pub(crate) fn pacman_mutate_packages_with_conflict_policy(
+    receipt_dir: &Path,
     sync: bool,
     packages: &[String],
     conflict_policy: Option<&str>,
     conflict_paths: &[String],
-) -> CmdResult {
+) -> Result<CmdResult, String> {
     pacman_mutate_packages_with_options(
+        receipt_dir,
         sync,
         packages,
         conflict_policy,
@@ -140,7 +257,26 @@ pub(crate) fn pacman_mutate_packages_with_conflict_policy(
     )
 }
 
-pub(crate) fn pacman_mutate_packages_with_options(
+fn pacman_mutate_packages_with_options(
+    receipt_dir: &Path,
+    sync: bool,
+    packages: &[String],
+    conflict_policy: Option<&str>,
+    conflict_paths: &[String],
+    timeout_secs: u64,
+) -> Result<CmdResult, String> {
+    let program = pacman_program();
+    reclaim_pacman_database_lock(receipt_dir, &program, true)?;
+    Ok(pacman_mutate_packages_without_lock_reclaim(
+        sync,
+        packages,
+        conflict_policy,
+        conflict_paths,
+        timeout_secs,
+    ))
+}
+
+fn pacman_mutate_packages_without_lock_reclaim(
     sync: bool,
     packages: &[String],
     conflict_policy: Option<&str>,
@@ -261,7 +397,9 @@ pub(crate) fn package_tool_with_policy_for_backend(
             conflict_paths,
             timeout_secs,
         ),
-        PackageBackend::Apt => apt_package_tool(receipt_dir, name, action, packages, apply, timeout_secs),
+        PackageBackend::Apt => {
+            apt_package_tool(receipt_dir, name, action, packages, apply, timeout_secs)
+        }
     }
 }
 
@@ -360,17 +498,25 @@ pub(crate) fn package_tool_with_policy(
     }
     let result = match action {
         "upgrade" | "update" if apply => {
+            reclaim_pacman_database_lock(receipt_dir, &pacman, true)?;
             command::capture_with_timeout(&pacman, &["-Syu", "--noconfirm"], timeout_secs)
         }
-        "upgrade" | "update" | "check" => command::capture(&pacman, &["-Qu"]),
+        "upgrade" | "update" | "check" => {
+            reclaim_pacman_database_lock(receipt_dir, &pacman, false)?;
+            command::capture(&pacman, &["-Qu"])
+        }
         "install" if apply => pacman_mutate_packages_with_options(
+            receipt_dir,
             false,
             packages,
             conflict_policy,
             conflict_paths,
             timeout_secs,
-        ),
-        "install" => command::capture(&pacman, &["-Q"]),
+        )?,
+        "install" => {
+            reclaim_pacman_database_lock(receipt_dir, &pacman, false)?;
+            command::capture(&pacman, &["-Q"])
+        }
         other => {
             let outcome = OperationOutcome {
                 ok: false,
@@ -433,6 +579,9 @@ pub(crate) fn keyring_repair_tool(
         )?;
         return Ok(outcome);
     }
+    if !apply {
+        reclaim_pacman_database_lock(receipt_dir, &pacman, false)?;
+    }
     let mut commands = Vec::new();
     commands.push((
         "pacman-key-version",
@@ -454,12 +603,13 @@ pub(crate) fn keyring_repair_tool(
         commands.push((
             "archlinux-keyring-refresh",
             pacman_mutate_packages_with_options(
+                receipt_dir,
                 false,
                 &[package_name.to_string()],
                 None,
                 &[],
                 timeout_secs,
-            ),
+            )?,
         ));
         commands.push((
             "pacman-key-updatedb",
@@ -573,6 +723,34 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn pacman_lock_decision_distinguishes_absent_live_and_orphaned_locks() {
+        assert_eq!(
+            pacman_lock_decision(false, false),
+            PacmanLockDecision {
+                lock_present: false,
+                live_holder_found: false,
+                reclaim: false,
+            }
+        );
+        assert_eq!(
+            pacman_lock_decision(true, true),
+            PacmanLockDecision {
+                lock_present: true,
+                live_holder_found: true,
+                reclaim: false,
+            }
+        );
+        assert_eq!(
+            pacman_lock_decision(true, false),
+            PacmanLockDecision {
+                lock_present: true,
+                live_holder_found: false,
+                reclaim: true,
+            }
+        );
     }
 
     #[test]
