@@ -35,6 +35,8 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("backup_existing", ToolArgKind::Bool),
             ToolArg::optional("receipt_name", ToolArgKind::String),
             ToolArg::optional("summary_receipt", ToolArgKind::Json),
+            ToolArg::optional("owner", ToolArgKind::String),
+            ToolArg::optional("group", ToolArgKind::String),
         ],
     ),
     ToolPermutation::new(
@@ -116,6 +118,8 @@ pub struct FileConvergenceRequest {
     pub files: Vec<FileSpec>,
     pub backup_existing: bool,
     pub receipt_name: String,
+    pub owner: Option<String>,
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -133,6 +137,9 @@ pub struct FileConvergenceEntry {
     pub changed: bool,
     pub backed_up_to: Option<PathBuf>,
     pub final_mode: Option<u32>,
+    pub ownership_source: String,
+    pub observed_uid: Option<u32>,
+    pub observed_gid: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -399,6 +406,13 @@ pub fn converge_files(
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
+    let desired_uid = request.owner.as_deref().map(resolve_uid).transpose()?;
+    let desired_gid = request.group.as_deref().map(resolve_gid).transpose()?;
+    let ownership_source = if desired_uid.is_some() || desired_gid.is_some() {
+        "declared"
+    } else {
+        "ambient"
+    };
 
     let mut entries = Vec::new();
     let mut missing = Vec::new();
@@ -427,6 +441,9 @@ pub fn converge_files(
                 changed: false,
                 backed_up_to: None,
                 final_mode: spec.mode,
+                ownership_source: ownership_source.to_string(),
+                observed_uid: None,
+                observed_gid: None,
             });
             continue;
         }
@@ -478,12 +495,7 @@ pub fn converge_files(
 
         if apply && entry_changed {
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    format!(
-                        "files-converge-target-parent-create-failed {}: {e}",
-                        parent.display()
-                    )
-                })?;
+                create_parent_dirs(parent, desired_uid, desired_gid)?;
             }
             if target_exists_before && request.backup_existing {
                 let backup = backup_target(&target, receipt_dir, &spec.relative_path)?;
@@ -504,6 +516,7 @@ pub fn converge_files(
                 )?;
                 return Err(signal);
             }
+            set_ownership(&target, desired_uid, desired_gid)?;
             written += 1;
         }
 
@@ -518,6 +531,7 @@ pub fn converge_files(
         } else {
             false
         };
+        let (observed_uid, observed_gid) = observed_ownership(&target)?;
         if apply && (!target_exists_after || !content_equal_after || !mode_equal_after) {
             let signal = format!(
                 "files-converge-post-write-readback-failed {}",
@@ -538,6 +552,9 @@ pub fn converge_files(
                 changed: entry_changed,
                 backed_up_to: backed_up_to.clone(),
                 final_mode,
+                ownership_source: ownership_source.to_string(),
+                observed_uid,
+                observed_gid,
             });
             write_partial_failure_receipt(
                 receipt_dir,
@@ -567,6 +584,9 @@ pub fn converge_files(
             changed: entry_changed,
             backed_up_to,
             final_mode,
+            ownership_source: ownership_source.to_string(),
+            observed_uid,
+            observed_gid,
         });
     }
 
@@ -655,6 +675,63 @@ fn target_mode(path: &Path) -> Result<Option<u32>, String> {
     } else {
         Ok(None)
     }
+}
+
+#[cfg(unix)]
+fn observed_ownership(path: &Path) -> Result<(Option<u32>, Option<u32>), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok((Some(metadata.uid()), Some(metadata.gid()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((None, None)),
+        Err(error) => Err(format!(
+            "files-owner-metadata-failed {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(not(unix))]
+fn observed_ownership(_path: &Path) -> Result<(Option<u32>, Option<u32>), String> {
+    Ok((None, None))
+}
+
+fn create_parent_dirs(
+    parent: &Path,
+    desired_uid: Option<u32>,
+    desired_gid: Option<u32>,
+) -> Result<(), String> {
+    if desired_uid.is_none() && desired_gid.is_none() {
+        return fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "files-converge-target-parent-create-failed {}: {error}",
+                parent.display()
+            )
+        });
+    }
+
+    let mut missing = Vec::new();
+    let mut cursor = parent;
+    while !cursor.exists() {
+        missing.push(cursor.to_path_buf());
+        cursor = cursor.parent().ok_or_else(|| {
+            format!(
+                "files-converge-target-parent-create-failed {}",
+                parent.display()
+            )
+        })?;
+    }
+    for directory in missing.iter().rev() {
+        match fs::create_dir(directory) {
+            Ok(()) => set_ownership(directory, desired_uid, desired_gid)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "files-converge-target-parent-create-failed {}: {error}",
+                    directory.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -795,6 +872,8 @@ fn write_convergence_receipt(
         "source_root": request.source_root,
         "target_root": request.target_root,
         "backup_existing": request.backup_existing,
+        "owner": request.owner,
+        "group": request.group,
         "checked": outcome.checked,
         "written": outcome.written,
         "backed_up": outcome.backed_up,
@@ -1049,6 +1128,53 @@ mod managed_ownership_tests {
         let victim_metadata = fs::metadata(&victim).unwrap();
         assert_eq!(victim_metadata.uid(), 0);
         assert_eq!(victim_metadata.gid(), 0);
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn converge_applies_declared_ownership_and_receipts_observed_metadata() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-files-declared-owner-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        let source = scratch.join("source");
+        let target = scratch.join("target");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested/payload"), "desired\n").unwrap();
+        let owner = unsafe { libc::geteuid() }.to_string();
+        let group = unsafe { libc::getegid() }.to_string();
+        let request = FileConvergenceRequest {
+            source_root: source,
+            target_root: target.clone(),
+            files: vec![FileSpec {
+                relative_path: PathBuf::from("nested/payload"),
+                mode: Some(0o640),
+            }],
+            backup_existing: false,
+            receipt_name: "declared-owner".to_string(),
+            owner: Some(owner.clone()),
+            group: Some(group.clone()),
+        };
+
+        let outcome = converge_files(&request, &receipts, true).unwrap();
+        assert!(outcome.ok);
+        assert_eq!(outcome.written, 1);
+        let payload = target.join("nested/payload");
+        let metadata = fs::metadata(&payload).unwrap();
+        let parent_metadata = fs::metadata(target.join("nested")).unwrap();
+        assert_eq!(metadata.uid().to_string(), owner);
+        assert_eq!(metadata.gid().to_string(), group);
+        assert_eq!(parent_metadata.uid(), metadata.uid());
+        assert_eq!(parent_metadata.gid(), metadata.gid());
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("declared-owner.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["entries"][0]["ownership_source"], "declared");
+        assert_eq!(receipt["entries"][0]["observed_uid"], metadata.uid());
+        assert_eq!(receipt["entries"][0]["observed_gid"], metadata.gid());
         let _ = fs::remove_dir_all(&scratch);
     }
 }

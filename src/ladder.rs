@@ -761,6 +761,8 @@ fn files_converge_step(
         receipt_name: optional_string_arg(&step.args, "receipt_name")
             .unwrap_or(&step.step_id)
             .to_string(),
+        owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
+        group: optional_string_arg(&step.args, "group").map(ToString::to_string),
     };
     let outcome = crate::tools::files::converge_files(&request, module_dir, apply)?;
     if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
