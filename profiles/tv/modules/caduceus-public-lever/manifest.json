@@ -12,7 +12,7 @@
       "permutation": "converge",
       "args": {
         "module_id": "caduceus-public-lever",
-        "repo": "git@git.home.arpa:HOMESERVERSLTD/caduceus.git",
+        "repo": "https://github.com/homeserversltd/caduceus.git",
         "branch": "main",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
