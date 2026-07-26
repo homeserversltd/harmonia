@@ -532,6 +532,370 @@ fn preserved_non_git_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.non-git-preserved-{stamp}"))
 }
 
+/// A resolved source plan.  This intentionally contains candidates, not policy
+/// certificates or component names: policy selection belongs to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePlan {
+    pub candidates: Vec<SourceCandidate>,
+    pub reference: String,
+    pub destination: PathBuf,
+    pub expected_commit: Option<String>,
+    pub bearer: String,
+    pub credentials: BTreeMap<String, CredentialScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCandidate {
+    pub kind: SourceCandidateKind,
+    pub locator: String,
+    /// Opaque plan-local key.  A missing selector is deliberately anonymous.
+    pub credential_selector: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCandidateKind {
+    Git,
+    LocalCheckout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialScope {
+    pub ssh_key_path: Option<PathBuf>,
+    pub https_host: Option<String>,
+    pub https_token_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceAttemptReceipt {
+    pub index: usize,
+    pub kind: SourceCandidateKind,
+    pub locator: String,
+    pub credential_selector: Option<String>,
+    pub disposition: String,
+    pub resolved_commit: Option<String>,
+    pub external_freshness: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceReceipt {
+    pub attempts: Vec<SourceAttemptReceipt>,
+    pub served_index: Option<usize>,
+    pub resolved_commit: Option<String>,
+    pub promotion: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOutcome {
+    pub ok: bool,
+    pub changed: bool,
+    pub receipt: SourceReceipt,
+}
+
+/// Acquire one candidate into a fresh sibling staging tree, verify it, then
+/// promote it.  No existing checkout remote participates in this operation.
+///
+/// Promotion uses same-filesystem renames.  It prevents blends, but Unix does
+/// not offer an atomic replacement of a non-empty directory: a power loss
+/// between moving the old tree aside and installing the new tree can leave the
+/// old tree at the named backup path.  The receipt states that limit plainly.
+pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
+    let mut attempts = Vec::new();
+    let parent = match plan.destination.parent() {
+        Some(parent) => parent,
+        None => return source_failure(attempts, "destination-has-no-parent"),
+    };
+    let stem = plan
+        .destination
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("source");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|v| v.as_nanos())
+        .unwrap_or(0);
+
+    for (offset, candidate) in plan.candidates.iter().enumerate() {
+        let index = offset + 1;
+        if let Some(selector) = candidate.credential_selector.as_deref() {
+            if !plan.credentials.contains_key(selector) {
+                attempts.push(source_attempt(
+                    index,
+                    candidate,
+                    "hard-red-credential",
+                    None,
+                    false,
+                    "credential-selector-unresolved".into(),
+                ));
+                return source_hard_red(attempts);
+            }
+        }
+        match candidate.kind {
+            SourceCandidateKind::LocalCheckout => {
+                let request = scoped_request(plan, candidate, PathBuf::from(&candidate.locator));
+                let head = capture_git(
+                    &request,
+                    &["rev-parse", "HEAD^{commit}"],
+                    Some(&candidate.locator),
+                );
+                if !head.ok {
+                    attempts.push(source_attempt(
+                        index,
+                        candidate,
+                        "unavailable",
+                        None,
+                        true,
+                        head.stderr,
+                    ));
+                    continue;
+                }
+                let commit = head.stdout.trim().to_string();
+                if let Some(expected) = plan.expected_commit.as_deref() {
+                    if commit != expected {
+                        attempts.push(source_attempt(
+                            index,
+                            candidate,
+                            "hard-red-identity",
+                            Some(commit),
+                            true,
+                            "expected-commit-mismatch".into(),
+                        ));
+                        return source_hard_red(attempts);
+                    }
+                }
+                attempts.push(source_attempt(
+                    index,
+                    candidate,
+                    "served-external",
+                    Some(commit.clone()),
+                    true,
+                    "head-observed; freshness-is-external".into(),
+                ));
+                return SourceOutcome {
+                    ok: true,
+                    changed: false,
+                    receipt: SourceReceipt {
+                        attempts,
+                        served_index: Some(index),
+                        resolved_commit: Some(commit),
+                        promotion: "local-checkout-observed; external freshness authority".into(),
+                    },
+                };
+            }
+            SourceCandidateKind::Git => {}
+        }
+        let stage = parent.join(format!(
+            ".{stem}.source-acquire-{}-{nonce}-candidate-{index}",
+            std::process::id()
+        ));
+        let _guard = SourceStagingGuard(stage.clone());
+        let request = scoped_request(plan, candidate, stage.clone());
+        let clone = capture_git(
+            &request,
+            &[
+                "clone",
+                "--no-checkout",
+                &candidate.locator,
+                stage.to_string_lossy().as_ref(),
+            ],
+            None,
+        );
+        if !clone.ok {
+            let _ = fs::remove_dir_all(&stage);
+            attempts.push(source_attempt(
+                index,
+                candidate,
+                "unavailable",
+                None,
+                false,
+                clone.stderr,
+            ));
+            continue;
+        }
+        let fetch = capture_git(
+            &request,
+            &["fetch", "--no-tags", "origin", &plan.reference],
+            stage.to_str(),
+        );
+        if !fetch.ok {
+            let _ = fs::remove_dir_all(&stage);
+            attempts.push(source_attempt(
+                index,
+                candidate,
+                "unavailable",
+                None,
+                false,
+                fetch.stderr,
+            ));
+            continue;
+        }
+        let checkout = capture_git(
+            &request,
+            &["checkout", "--detach", "FETCH_HEAD"],
+            stage.to_str(),
+        );
+        let head = if checkout.ok {
+            capture_git(&request, &["rev-parse", "HEAD^{commit}"], stage.to_str())
+        } else {
+            checkout
+        };
+        if !head.ok {
+            attempts.push(source_attempt(
+                index,
+                candidate,
+                "hard-red-identity",
+                None,
+                false,
+                head.stderr,
+            ));
+            return source_hard_red(attempts);
+        }
+        let commit = head.stdout.trim().to_string();
+        if let Some(expected) = plan.expected_commit.as_deref() {
+            if commit != expected {
+                attempts.push(source_attempt(
+                    index,
+                    candidate,
+                    "hard-red-identity",
+                    Some(commit),
+                    false,
+                    "expected-commit-mismatch".into(),
+                ));
+                return source_hard_red(attempts);
+            }
+        }
+        match promote_staged_source(&stage, &plan.destination) {
+            Ok(()) => {
+                attempts.push(source_attempt(
+                    index,
+                    candidate,
+                    "served",
+                    Some(commit.clone()),
+                    false,
+                    "verified and promoted".into(),
+                ));
+                return SourceOutcome { ok: true, changed: true, receipt: SourceReceipt { attempts, served_index: Some(index), resolved_commit: Some(commit), promotion: "same-filesystem rename; no blended tree; power-loss may require selecting sibling backup".into() } };
+            }
+            Err(detail) => {
+                attempts.push(source_attempt(
+                    index,
+                    candidate,
+                    "hard-red-promotion",
+                    Some(commit),
+                    false,
+                    detail,
+                ));
+                return source_hard_red(attempts);
+            }
+        }
+    }
+    source_failure(attempts, "all-candidates-unavailable")
+}
+
+struct SourceStagingGuard(PathBuf);
+impl Drop for SourceStagingGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scoped_request(plan: &SourcePlan, candidate: &SourceCandidate, path: PathBuf) -> Request {
+    let mut request = Request::new(
+        Some(candidate.locator.clone()),
+        path,
+        plan.reference.clone(),
+        "origin".into(),
+    )
+    .with_bearer(plan.bearer.clone());
+    // No selector means no SSH key and no HTTPS helper, even after a private attempt.
+    if let Some(selector) = candidate.credential_selector.as_deref() {
+        if let Some(scope) = plan.credentials.get(selector) {
+            request = request
+                .with_ssh_key_path(scope.ssh_key_path.clone())
+                .with_https_credentials(scope.https_host.clone(), scope.https_token_path.clone());
+        }
+    }
+    request
+}
+
+fn promote_staged_source(stage: &Path, destination: &Path) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "destination-has-no-parent".to_string())?;
+    if stage.parent() != Some(parent) {
+        return Err("unsafe-cross-filesystem-promotion-refused".into());
+    }
+    if !destination.exists() {
+        return fs::rename(stage, destination)
+            .map_err(|err| format!("promotion-install-failed: {err}"));
+    }
+    let backup = destination.with_file_name(format!(
+        "{}.source-backup-{}",
+        destination
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("source"),
+        std::process::id()
+    ));
+    fs::rename(destination, &backup).map_err(|err| format!("promotion-backup-failed: {err}"))?;
+    match fs::rename(stage, destination) {
+        Ok(()) => {
+            let _ = fs::remove_dir_all(backup);
+            Ok(())
+        }
+        Err(err) => {
+            let restore = fs::rename(&backup, destination);
+            Err(format!(
+                "promotion-install-failed: {err}; restore={restore:?}"
+            ))
+        }
+    }
+}
+
+fn source_attempt(
+    index: usize,
+    candidate: &SourceCandidate,
+    disposition: &str,
+    resolved_commit: Option<String>,
+    external_freshness: bool,
+    detail: String,
+) -> SourceAttemptReceipt {
+    SourceAttemptReceipt {
+        index,
+        kind: candidate.kind,
+        locator: candidate.locator.clone(),
+        credential_selector: candidate.credential_selector.clone(),
+        disposition: disposition.into(),
+        resolved_commit,
+        external_freshness,
+        detail,
+    }
+}
+fn source_failure(attempts: Vec<SourceAttemptReceipt>, detail: &str) -> SourceOutcome {
+    SourceOutcome {
+        ok: false,
+        changed: false,
+        receipt: SourceReceipt {
+            attempts,
+            served_index: None,
+            resolved_commit: None,
+            promotion: detail.into(),
+        },
+    }
+}
+fn source_hard_red(attempts: Vec<SourceAttemptReceipt>) -> SourceOutcome {
+    SourceOutcome {
+        ok: false,
+        changed: false,
+        receipt: SourceReceipt {
+            attempts,
+            served_index: None,
+            resolved_commit: None,
+            promotion: "hard-red; destination-preserved; no-next-candidate".into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
