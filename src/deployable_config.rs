@@ -45,6 +45,7 @@ struct DeployableConfigReceipt {
     output_dir: String,
     mode: &'static str,
     artifacts: Vec<DeployableConfigArtifact>,
+    pruned_modules: Vec<String>,
     pruned_paths: Vec<String>,
     first_missing_signal: &'static str,
 }
@@ -160,6 +161,12 @@ pub(crate) fn export_deployable_config(
         )?;
     }
 
+    let output_module_root = output_dir
+        .join("profiles")
+        .join(&profile.id)
+        .join("modules");
+    let pruned_modules = prune_retired_module_dirs(&output_module_root, &profile.modules)?;
+
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let receipt = DeployableConfigReceipt {
         schema: "harmonia.deployable_config_export.v1",
@@ -170,6 +177,7 @@ pub(crate) fn export_deployable_config(
         output_dir: output_dir.display().to_string(),
         mode: mode.as_str(),
         artifacts,
+        pruned_modules,
         pruned_paths,
         first_missing_signal: "none",
     };
@@ -186,10 +194,62 @@ pub(crate) fn export_deployable_config(
     println!("identity={}", profile.identity);
     println!("artifact_count={}", receipt.artifacts.len());
     println!("pruned_count={}", receipt.pruned_paths.len());
+    println!("pruned_module_count={}", receipt.pruned_modules.len());
+    println!("pruned_modules={}", receipt.pruned_modules.join(","));
     println!("output_dir={}", output_dir.display());
     println!("receipt_dir={}", receipt_dir.display());
     println!("first_missing_signal=none");
     Ok(())
+}
+
+fn prune_retired_module_dirs(
+    output_module_root: &Path,
+    declared_modules: &[String],
+) -> Result<Vec<String>, String> {
+    let root_metadata = match fs::symlink_metadata(output_module_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Ok(Vec::new());
+    }
+
+    let declared_modules: BTreeSet<&str> = declared_modules.iter().map(String::as_str).collect();
+    let mut pruned_modules = Vec::new();
+    for entry in fs::read_dir(output_module_root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        let module_name = entry.file_name().to_string_lossy().into_owned();
+        let module_path = entry.path();
+        if !file_type.is_dir()
+            || file_type.is_symlink()
+            || declared_modules.contains(module_name.as_str())
+            || !is_staged_module_dir(&module_path)?
+        {
+            continue;
+        }
+        fs::remove_dir_all(&module_path).map_err(|e| {
+            format!(
+                "deployable-config-prune-module-dir-failed {}: {e}",
+                module_path.display()
+            )
+        })?;
+        pruned_modules.push(module_name);
+    }
+    Ok(pruned_modules)
+}
+
+fn is_staged_module_dir(path: &Path) -> Result<bool, String> {
+    for metadata_path in [path.join("manifest.json"), path.join("sidecar.json")] {
+        match fs::symlink_metadata(metadata_path) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                return Ok(true)
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    Ok(false)
 }
 
 fn validate_harmonia_config_root(harmonia_root: &Path) -> Result<(), String> {
