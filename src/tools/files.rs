@@ -57,6 +57,8 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("backup_existing", ToolArgKind::Bool),
             ToolArg::optional("receipt_name", ToolArgKind::String),
             ToolArg::optional("allow_same_root", ToolArgKind::Bool),
+            ToolArg::optional("owner", ToolArgKind::String),
+            ToolArg::optional("group", ToolArgKind::String),
         ],
     ),
     ToolPermutation::new(
@@ -146,6 +148,11 @@ pub struct FileConvergenceEntry {
     pub backed_up_to: Option<PathBuf>,
     pub final_mode: Option<u32>,
     pub ownership_source: String,
+    pub observed_uid_before: Option<u32>,
+    pub observed_gid_before: Option<u32>,
+    pub observed_uid_after: Option<u32>,
+    pub observed_gid_after: Option<u32>,
+    pub ownership_changed: bool,
     pub observed_uid: Option<u32>,
     pub observed_gid: Option<u32>,
 }
@@ -154,6 +161,7 @@ pub struct FileConvergenceEntry {
 pub struct FileConvergenceOutcome {
     pub ok: bool,
     pub changed: bool,
+    pub ownership_changed: bool,
     pub checked: usize,
     pub written: usize,
     pub backed_up: usize,
@@ -434,8 +442,18 @@ pub fn converge_files(
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
-    let desired_uid = request.owner.as_deref().map(resolve_uid).transpose()?;
-    let desired_gid = request.group.as_deref().map(resolve_gid).transpose()?;
+    let desired_uid = request
+        .owner
+        .as_deref()
+        .map(resolve_uid)
+        .transpose()
+        .map_err(|error| format!("files-converge-owner-resolution-failed: {error}"))?;
+    let desired_gid = request
+        .group
+        .as_deref()
+        .map(resolve_gid)
+        .transpose()
+        .map_err(|error| format!("files-converge-group-resolution-failed: {error}"))?;
     let ownership_source = if desired_uid.is_some() || desired_gid.is_some() {
         "declared"
     } else {
@@ -470,6 +488,11 @@ pub fn converge_files(
                 backed_up_to: None,
                 final_mode: spec.mode,
                 ownership_source: ownership_source.to_string(),
+                observed_uid_before: None,
+                observed_gid_before: None,
+                observed_uid_after: None,
+                observed_gid_after: None,
+                ownership_changed: false,
                 observed_uid: None,
                 observed_gid: None,
             });
@@ -518,19 +541,31 @@ pub fn converge_files(
         } else {
             false
         };
-        let entry_changed = !target_exists_before || !content_equal_before || !mode_equal_before;
+        let (observed_uid_before, observed_gid_before) = observed_ownership(&target)?;
+        let ownership_changed = desired_uid
+            .map(|uid| observed_uid_before != Some(uid))
+            .unwrap_or(false)
+            || desired_gid
+                .map(|gid| observed_gid_before != Some(gid))
+                .unwrap_or(false);
+        let content_changed = !target_exists_before || !content_equal_before || !mode_equal_before;
+        let entry_changed = content_changed || ownership_changed;
         let mut backed_up_to = None;
 
         if apply && entry_changed {
             if let Some(parent) = target.parent() {
                 create_parent_dirs(parent, desired_uid, desired_gid)?;
             }
-            if target_exists_before && request.backup_existing {
+            if target_exists_before && content_changed && request.backup_existing {
                 let backup = backup_target(&target, receipt_dir, &spec.relative_path)?;
                 backed_up_to = Some(backup);
                 backed_up += 1;
             }
-            if let Err(signal) = atomic_copy(&source, &target, final_mode) {
+            if let Err(signal) = if content_changed {
+                atomic_copy(&source, &target, final_mode, desired_uid, desired_gid)
+            } else {
+                set_ownership(&target, desired_uid, desired_gid)
+            } {
                 write_partial_failure_receipt(
                     receipt_dir,
                     request,
@@ -544,8 +579,9 @@ pub fn converge_files(
                 )?;
                 return Err(signal);
             }
-            set_ownership(&target, desired_uid, desired_gid)?;
-            written += 1;
+            if content_changed {
+                written += 1;
+            }
         }
 
         let target_exists_after = target.exists();
@@ -559,8 +595,19 @@ pub fn converge_files(
         } else {
             false
         };
-        let (observed_uid, observed_gid) = observed_ownership(&target)?;
-        if apply && (!target_exists_after || !content_equal_after || !mode_equal_after) {
+        let (observed_uid_after, observed_gid_after) = observed_ownership(&target)?;
+        let ownership_equal_after = desired_uid
+            .map(|uid| observed_uid_after == Some(uid))
+            .unwrap_or(true)
+            && desired_gid
+                .map(|gid| observed_gid_after == Some(gid))
+                .unwrap_or(true);
+        if apply
+            && (!target_exists_after
+                || !content_equal_after
+                || !mode_equal_after
+                || !ownership_equal_after)
+        {
             let signal = format!(
                 "files-converge-post-write-readback-failed {}",
                 target.display()
@@ -581,8 +628,13 @@ pub fn converge_files(
                 backed_up_to: backed_up_to.clone(),
                 final_mode,
                 ownership_source: ownership_source.to_string(),
-                observed_uid,
-                observed_gid,
+                observed_uid_before,
+                observed_gid_before,
+                observed_uid_after,
+                observed_gid_after,
+                ownership_changed,
+                observed_uid: observed_uid_after,
+                observed_gid: observed_gid_after,
             });
             write_partial_failure_receipt(
                 receipt_dir,
@@ -613,16 +665,23 @@ pub fn converge_files(
             backed_up_to,
             final_mode,
             ownership_source: ownership_source.to_string(),
-            observed_uid,
-            observed_gid,
+            observed_uid_before,
+            observed_gid_before,
+            observed_uid_after,
+            observed_gid_after,
+            ownership_changed,
+            observed_uid: observed_uid_after,
+            observed_gid: observed_gid_after,
         });
     }
 
     let ok = missing.is_empty();
     let changed = entries.iter().any(|entry| entry.changed);
+    let ownership_changed = entries.iter().any(|entry| entry.ownership_changed);
     let outcome = FileConvergenceOutcome {
         ok,
         changed,
+        ownership_changed,
         checked: request.files.len(),
         written,
         backed_up,
@@ -968,6 +1027,16 @@ pub(crate) fn atomic_write_bytes(
     bytes: &[u8],
     mode: Option<u32>,
 ) -> Result<(), String> {
+    atomic_write_bytes_with_ownership(target, bytes, mode, None, None)
+}
+
+fn atomic_write_bytes_with_ownership(
+    target: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<(), String> {
     let parent = target
         .parent()
         .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
@@ -990,6 +1059,7 @@ pub(crate) fn atomic_write_bytes(
     if let Some(mode) = mode {
         set_mode(&temp, mode)?;
     }
+    set_ownership(&temp, uid, gid)?;
     fs::rename(&temp, target).map_err(|e| {
         format!(
             "files-atomic-promote-failed {} -> {}: {e}",
@@ -1000,10 +1070,16 @@ pub(crate) fn atomic_write_bytes(
     Ok(())
 }
 
-fn atomic_copy(source: &Path, target: &Path, mode: Option<u32>) -> Result<(), String> {
+fn atomic_copy(
+    source: &Path,
+    target: &Path,
+    mode: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<(), String> {
     let bytes = fs::read(source)
         .map_err(|e| format!("files-source-read-failed {}: {e}", source.display()))?;
-    atomic_write_bytes(target, &bytes, mode)
+    atomic_write_bytes_with_ownership(target, &bytes, mode, uid, gid)
 }
 
 #[cfg(unix)]
@@ -1035,6 +1111,7 @@ fn write_partial_failure_receipt(
     let outcome = FileConvergenceOutcome {
         ok: false,
         changed: entries.iter().any(|entry| entry.changed) || written > 0 || backed_up > 0,
+        ownership_changed: entries.iter().any(|entry| entry.ownership_changed),
         checked,
         written,
         backed_up,
@@ -1065,6 +1142,7 @@ fn write_convergence_receipt(
         "written": outcome.written,
         "backed_up": outcome.backed_up,
         "changed": outcome.changed,
+        "ownership_changed": outcome.ownership_changed,
         "missing": outcome.missing,
         "entries": outcome.entries,
         "first_missing_signal": if outcome.ok { "none" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },

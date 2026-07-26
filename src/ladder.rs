@@ -730,6 +730,8 @@ fn files_converge_step(
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
     if step.permutation == "directory-sync"
         && source_root == target_root
+        && !step.args.contains_key("owner")
+        && !step.args.contains_key("group")
         && step
             .args
             .get("allow_same_root")
