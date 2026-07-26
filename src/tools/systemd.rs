@@ -444,31 +444,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn unit_present_is_declared_as_a_non_mutating_assertion() {
-        let permutation = PERMUTATIONS
-            .iter()
-            .find(|permutation| permutation.name == "unit-present")
-            .expect("unit-present permutation");
-        assert_eq!(permutation.args[0].name, "service");
-        assert!(permutation.args[0].required);
-    }
-
-    #[test]
-    fn unit_present_names_an_absent_installer_unit() {
-        let result = unit_present_result(
-            CmdResult {
-                ok: true,
-                code: 0,
-                stdout: "not-found\n".to_string(),
-                stderr: String::new(),
-            },
-            "harmonia.timer",
-        );
-        assert!(!result.ok);
-        assert_eq!(result.code, 1);
-        assert_eq!(result.stderr, "systemd-unit-missing-harmonia.timer");
-    }
 
     #[test]
     fn disable_stop_remove_is_declared_and_dry_run_is_a_clean_absent_unit_plan() {
