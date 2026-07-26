@@ -1,0 +1,51 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "chromium",
+  "version": "1.0.0",
+  "description": "TV Chromium configuration module: it solely owns Chromium launch flags, recommended settings, and managed extensions. Module-off mandate retraction is kernel follow-on debt, not a ladder declaration.",
+  "optional": false,
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "chromium-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "home/owner/.config/chromium-flags.conf",
+          "etc/chromium/policies/recommended/harmonia-chromium-policy.json",
+          "etc/chromium/policies/managed/harmonia-chromium-extensions.json"
+        ],
+        "backup_existing": true,
+        "receipt_name": "chromium-files"
+      }
+    },
+    {
+      "step_id": "chromium-flags-ownership",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/chown",
+        "args": [
+          "owner:owner",
+          "/home/owner/.config/chromium-flags.conf"
+        ]
+      }
+    },
+    {
+      "step_id": "chromium-policy-ownership",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/chown",
+        "args": [
+          "root:root",
+          "/etc/chromium/policies/recommended/harmonia-chromium-policy.json",
+          "/etc/chromium/policies/managed/harmonia-chromium-extensions.json"
+        ]
+      }
+    }
+  ]
+}
