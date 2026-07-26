@@ -1802,8 +1802,15 @@ mod tests {
                     "later-two".into(),
                 ],
             };
-            let result =
-                run_profile_engine_with_preflight(&profile, &module_root, &receipts, true, true);
+            let result = run_profile_engine_with_preflight(
+                &profile,
+                &module_root,
+                &receipts,
+                true,
+                true,
+                None,
+                None,
+            );
             assert_eq!(result, Err(expected_signal.to_string()), "shape={shape}");
 
             let run: serde_json::Value =
@@ -1850,6 +1857,71 @@ mod tests {
             assert!(!events.contains("module-terminal-stop"), "shape={shape}");
             let _ = fs::remove_dir_all(scratch);
         }
+    }
+
+    #[test]
+    fn suite_spine_debt_runs_the_profile_modules() {
+        fn write_command_module(module_root: &Path, module_id: &str) {
+            let module_dir = module_root.join(module_id);
+            fs::create_dir_all(&module_dir).unwrap();
+            write_json(
+                &module_dir.join("manifest.json"),
+                &serde_json::json!({
+                    "schema": "harmonia.module.ladder.v1",
+                    "id": module_id,
+                    "version": "1.0.0",
+                    "description": format!("suite-debt fixture {module_id}"),
+                    "ladder": [{
+                        "step_id": "run",
+                        "tool": "command",
+                        "permutation": "capture",
+                        "args": { "program": "/usr/bin/true" },
+                        "on_failure": "stop"
+                    }]
+                }),
+            )
+            .unwrap();
+        }
+
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-suite-spine-debt-{}",
+            process::id()
+        ));
+        let module_root = scratch.join("modules");
+        let receipts = scratch.join("receipts");
+        write_command_module(&module_root, "first");
+        write_command_module(&module_root, "second");
+        let profile = Profile {
+            package_authority: None,
+            id: "homeconsole".into(),
+            identity: "homeconsole".into(),
+            modules: vec!["first".into(), "second".into()],
+        };
+        let suite_debt = enforce_homeconsole_update_suite(&profile, &module_root)
+            .unwrap()
+            .expect("divergent spine is recorded as debt");
+        let result = run_profile_engine_with_preflight(
+            &profile,
+            &module_root,
+            &receipts,
+            true,
+            true,
+            None,
+            Some(&suite_debt),
+        );
+        assert_eq!(result, Err(suite_debt.clone()));
+
+        let run: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(receipts.join("run.json")).unwrap()).unwrap();
+        assert_eq!(run["ok"], false);
+        assert_eq!(run["suite_ok"], false);
+        assert_eq!(run["first_missing_signal"], suite_debt);
+        assert_eq!(run["module_count"], 2);
+        assert_eq!(run["operation_count"], 2);
+        for module in ["first", "second"] {
+            assert!(receipts.join("modules").join(module).join("run.json").exists());
+        }
+        let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]
@@ -2756,6 +2828,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 execution.operation_count,
                 execution.first_missing_signal.as_deref().unwrap_or("none"),
                 &module_root,
+                execution.ok,
             )?;
             println!("schema=harmonia.local_ai_runtime.v1");
             println!("ok={}", execution.ok);
