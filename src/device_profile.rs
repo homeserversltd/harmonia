@@ -129,6 +129,23 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
     }
     let receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
+    if let Err(reason) = validate_declared_sources(Path::new(DEVICE_PROFILE_CERTIFICATE)) {
+        write_json(
+            &receipt_dir.join("run.json"),
+            &json!({
+                "schema": "harmonia.run_profile.v1",
+                "ok": false,
+                "mutation": args.iter().any(|arg| arg == "--apply"),
+                "profile_id": serde_json::Value::Null,
+                "identity": serde_json::Value::Null,
+                "identity_source": "certificate",
+                "source_validation": "blocked-before-module-mutation",
+                "first_missing_signal": reason,
+            }),
+        )
+        .map_err(|err| format!("{reason}; source-validation-refusal-receipt-failed: {err}"))?;
+        return Err(reason);
+    }
     let (profile, profile_path) = match resolve_certificate_profile() {
         Ok(resolved) => resolved,
         Err(reason) => {

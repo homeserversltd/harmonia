@@ -275,6 +275,7 @@ mod module_dispatch;
 mod preflight;
 mod profile_engine;
 mod receipts;
+mod source_resolver;
 mod subscription;
 
 pub(crate) use capsule::*;
@@ -286,6 +287,7 @@ pub(crate) use module_dispatch::*;
 pub(crate) use preflight::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
+pub(crate) use source_resolver::*;
 pub(crate) use subscription::*;
 
 pub fn main_entry() {
@@ -2630,6 +2632,37 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 }
             }
         }
+        Some("resolve-source") => {
+            let component = args
+                .get(1)
+                .ok_or("resolve-source requires <component> --certificate <path>")?;
+            let certificate = value_arg(&args, "--certificate")
+                .ok_or("resolve-source requires <component> --certificate <path>")?;
+            let owning_module = value_arg(&args, "--owner-module")
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "engine-plane".to_string());
+            let step_id = value_arg(&args, "--step-id")
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "source-resolution".to_string());
+            let receipt = resolve_source_json(
+                &certificate,
+                component,
+                &owning_module,
+                &step_id,
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&receipt)
+                    .map_err(|err| format!("source-receipt-serialize-failed: {err}"))?
+            );
+            if receipt["ok"] == false {
+                return Err(receipt["blocker"]
+                    .as_str()
+                    .unwrap_or("source-resolution-failed")
+                    .to_string());
+            }
+            Ok(())
+        }
         Some("inspect-profile") => {
             let path = args
                 .get(1)
@@ -3030,6 +3063,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
     println!("  harmonia validate-ladder <manifest.json>");
+    println!("  harmonia resolve-source <component> --certificate <path> [--owner-module <id>] [--step-id <id>]");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia update [--apply] [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
