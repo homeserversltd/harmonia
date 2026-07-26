@@ -9,7 +9,6 @@
     "target_dir": "/home/owner",
     "expected_files": [
       ".aliases",
-      ".config/chromium-flags.conf",
       ".config/dunst/dunstrc",
       ".config/gtk-3.0/settings.ini",
       ".config/gtk-4.0/settings.ini",
@@ -119,7 +118,6 @@
         "source_root": "files_root/browser",
         "target_root": "$constants.target_dir",
         "files": [
-          ".config/chromium-flags.conf",
           "firefox/distribution/policies.json"
         ],
         "backup_existing": true,
