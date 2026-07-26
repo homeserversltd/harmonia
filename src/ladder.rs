@@ -223,7 +223,7 @@ pub(crate) fn execute_group_live_probe(
     let step = validate_group(group, &manifest.constants)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    execute_validated_step(&step, manifest, receipt_dir, true, None)
+    execute_validated_step(&step, manifest, receipt_dir, true, None, false)
 }
 
 fn resolve_args(
@@ -311,6 +311,12 @@ fn validate_tool_semantics(
     args: &BTreeMap<String, Value>,
 ) -> Result<(), LadderValidationError> {
     match (tool, permutation) {
+        ("systemd", "restart") | ("systemd", "user-restart") => {
+            tools::systemd::validate_restart_policy(args).map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            })
+        }
         ("service-runtime", "converge") => tools::service_runtime::validate_ladder_args(args)
             .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -352,8 +358,14 @@ pub(crate) fn execute_ladder_manifest(
     let mut operation_count = 0usize;
     for step in steps {
         operation_count += 1;
-        let outcome =
-            execute_validated_step(&step, manifest, module_dir, apply, package_authority)?;
+        let outcome = execute_validated_step(
+            &step,
+            manifest,
+            module_dir,
+            apply,
+            package_authority,
+            changed,
+        )?;
         if outcome.changed {
             changed = true;
         }
@@ -419,6 +431,7 @@ fn execute_validated_step(
     module_dir: &Path,
     apply: bool,
     package_authority: Option<&crate::PackageAuthority>,
+    module_changed_before_step: bool,
 ) -> Result<OperationOutcome, String> {
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("command", "capture") => command_capture_step(step, module_dir, apply),
@@ -433,7 +446,7 @@ fn execute_validated_step(
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
-        ("systemd", _) => systemd_step(step, module_dir, apply),
+        ("systemd", _) => systemd_step(step, module_dir, apply, module_changed_before_step),
         ("service-runtime", "converge") => tools::service_runtime::execute_ladder_step(
             &step.args, module_dir, apply,
         )
@@ -866,6 +879,7 @@ fn systemd_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
+    module_changed_before_step: bool,
 ) -> Result<OperationOutcome, String> {
     tools::systemd::run_permutation(
         module_dir,
@@ -875,6 +889,9 @@ fn systemd_step(
         optional_string_arg(&step.args, "user"),
         integer_arg(&step.args, "timeout_secs", 30),
         apply,
+        module_changed_before_step,
+        std::env::var_os("HARMONIA_FORCE_SERVICE_RESTARTS").is_some(),
+        optional_string_arg(&step.args, "restart_policy"),
     )
 }
 

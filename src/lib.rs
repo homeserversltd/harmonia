@@ -2418,6 +2418,11 @@ mod tests {
 }
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
+    if args.iter().any(|arg| arg == "--force-service-restarts") {
+        std::env::set_var("HARMONIA_FORCE_SERVICE_RESTARTS", "1");
+    } else {
+        std::env::remove_var("HARMONIA_FORCE_SERVICE_RESTARTS");
+    }
     match args.first().map(String::as_str) {
         Some("update") => update_from_certificate(&args[1..]),
         Some("explain") => explain(),
@@ -2916,6 +2921,7 @@ pub(crate) fn explain() -> Result<(), String> {
 pub(crate) fn usage() -> Result<(), String> {
     println!("harmonia {}", VERSION);
     println!("usage:");
+    println!("  append --force-service-restarts to any update or run-profile command to force declared restart steps");
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
