@@ -182,26 +182,6 @@ pub(crate) fn write_artifact_receipt(
     )
 }
 
-pub(crate) fn write_redacted_command_receipt(
-    receipt_dir: &Path,
-    name: &str,
-    result: &CmdResult,
-) -> Result<(), String> {
-    write_json(
-        &receipt_dir.join(format!("{}.json", name)),
-        &json!({
-            "schema": "harmonia.command_receipt.v1",
-            "name": name,
-            "ok": result.ok,
-            "exit_code": result.code,
-            "stdout_redacted": true,
-            "stderr_redacted": true,
-            "stdout_bytes": result.stdout.len(),
-            "stderr_bytes": result.stderr.len(),
-        }),
-    )
-}
-
 fn command_first_missing_signal(result: &CmdResult) -> &'static str {
     if result.ok {
         "none"
@@ -315,8 +295,21 @@ pub(crate) fn write_plan_receipts(
         )?;
     }
     for module in &profile.modules {
-        let module_path = module_root.join(module).join("sidecar.json");
-        match load_module(&module_path) {
+        let module_dir = module_root.join(module);
+        let manifest_path = module_dir.join("manifest.json");
+        let planned = if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
+            load_ladder_manifest(&manifest_path).and_then(|manifest| {
+                if manifest.id != *module {
+                    return Err(format!("module-id-mismatch expected={module} got={}", manifest.id));
+                }
+                validate_ladder(&manifest)
+                    .map(|_| ())
+                    .map_err(|err| err.first_missing_signal())
+            })
+        } else {
+            load_module(&module_dir.join("sidecar.json")).map(|_| ())
+        };
+        match planned {
             Ok(_) => {
                 writeln!(
                     events,
