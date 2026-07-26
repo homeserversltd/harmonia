@@ -7,44 +7,36 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "chromium-files",
+      "step_id": "chromium-flags-file",
       "tool": "files",
       "permutation": "converge",
       "args": {
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "home/owner/.config/chromium-flags.conf",
+          "home/owner/.config/chromium-flags.conf"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "chromium-flags-file"
+      }
+    },
+    {
+      "step_id": "chromium-policy-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
           "etc/chromium/policies/recommended/harmonia-chromium-policy.json",
           "etc/chromium/policies/managed/harmonia-chromium-extensions.json"
         ],
         "backup_existing": true,
-        "receipt_name": "chromium-files"
-      }
-    },
-    {
-      "step_id": "chromium-flags-ownership",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/chown",
-        "args": [
-          "owner:owner",
-          "/home/owner/.config/chromium-flags.conf"
-        ]
-      }
-    },
-    {
-      "step_id": "chromium-policy-ownership",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/chown",
-        "args": [
-          "root:root",
-          "/etc/chromium/policies/recommended/harmonia-chromium-policy.json",
-          "/etc/chromium/policies/managed/harmonia-chromium-extensions.json"
-        ]
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "chromium-policy-files"
       }
     }
   ]
