@@ -178,7 +178,7 @@ pub fn apply(request: &Request) -> Outcome {
     let sync = sync_repo(request);
     Outcome {
         ok: sync.command.ok,
-        changed: sync.command.ok && sync.changed,
+        changed: sync.changed,
         message: format!("git-artifact sync {}", request.path.display()),
         command: sync.command,
     }
@@ -190,23 +190,49 @@ struct SyncResult {
     changed: bool,
 }
 
-fn sync_repo(request: &Request) -> SyncResult {
-    if let Err(stderr) = prepare_bearer_writable_path(request) {
-        return SyncResult {
-            command: CommandReceipt {
-                ok: false,
-                code: -1,
-                stdout: String::new(),
-                stderr,
-            },
-            changed: false,
+#[derive(Debug, Default)]
+struct BearerPathPreparation {
+    changed: bool,
+    transcript: Vec<String>,
+}
+
+fn ownership_prepared_result(
+    mut command: CommandReceipt,
+    changed: bool,
+    transcript: &[String],
+) -> SyncResult {
+    if !transcript.is_empty() {
+        let preparation = transcript.join("\n");
+        command.stdout = if command.stdout.is_empty() {
+            preparation
+        } else {
+            format!("{preparation}\n{}", command.stdout)
         };
     }
-    let mut transcript = Vec::new();
-    if !request.path.join(".git").exists() {
-        let Some(repo) = request.repo.as_deref() else {
+    SyncResult { command, changed }
+}
+
+fn sync_repo(request: &Request) -> SyncResult {
+    let preparation = match prepare_bearer_writable_path(request) {
+        Ok(preparation) => preparation,
+        Err(stderr) => {
             return SyncResult {
                 command: CommandReceipt {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr,
+                },
+                changed: false,
+            };
+        }
+    };
+    let ownership_changed = preparation.changed;
+    let mut transcript = preparation.transcript;
+    if !request.path.join(".git").exists() {
+        let Some(repo) = request.repo.as_deref() else {
+            return ownership_prepared_result(
+                CommandReceipt {
                     ok: false,
                     code: 2,
                     stdout: String::new(),
@@ -215,20 +241,22 @@ fn sync_repo(request: &Request) -> SyncResult {
                         request.path.display()
                     ),
                 },
-                changed: false,
-            };
+                ownership_changed,
+                &transcript,
+            );
         };
         if let Some(parent) = request.path.parent() {
             if let Err(err) = fs::create_dir_all(parent) {
-                return SyncResult {
-                    command: CommandReceipt {
+                return ownership_prepared_result(
+                    CommandReceipt {
                         ok: false,
                         code: 2,
                         stdout: String::new(),
                         stderr: format!("create parent failed {}: {err}", parent.display()),
                     },
-                    changed: false,
-                };
+                    ownership_changed,
+                    &transcript,
+                );
             }
         }
         if request.path.exists() {
@@ -249,22 +277,26 @@ fn sync_repo(request: &Request) -> SyncResult {
                                 request.path.display()
                             ),
                         },
-                        changed: false,
+                        changed: ownership_changed,
                     };
                 }
             }
         }
-        if let Err(stderr) = prepare_bearer_writable_path(request) {
-            return SyncResult {
-                command: CommandReceipt {
-                    ok: false,
-                    code: -1,
-                    stdout: transcript.join("\n"),
-                    stderr,
-                },
-                changed: false,
-            };
-        }
+        let preparation = match prepare_bearer_writable_path(request) {
+            Ok(preparation) => preparation,
+            Err(stderr) => {
+                return SyncResult {
+                    command: CommandReceipt {
+                        ok: false,
+                        code: -1,
+                        stdout: transcript.join("\n"),
+                        stderr,
+                    },
+                    changed: ownership_changed,
+                };
+            }
+        };
+        transcript.extend(preparation.transcript);
         let clone = capture_git(
             request,
             &[
@@ -291,7 +323,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                     stdout: transcript.join("\n"),
                     stderr: clone.stderr,
                 },
-                changed: false,
+                changed: ownership_changed,
             };
         }
         return SyncResult {
@@ -308,10 +340,7 @@ fn sync_repo(request: &Request) -> SyncResult {
     let cwd = request.path.to_str();
     let before = capture_git(request, &["rev-parse", "HEAD"], cwd);
     if !before.ok {
-        return SyncResult {
-            command: before,
-            changed: false,
-        };
+        return ownership_prepared_result(before, ownership_changed, &transcript);
     }
     let dirty = capture_git(
         request,
@@ -319,30 +348,25 @@ fn sync_repo(request: &Request) -> SyncResult {
         cwd,
     );
     if !dirty.ok {
-        return SyncResult {
-            command: dirty,
-            changed: false,
-        };
+        return ownership_prepared_result(dirty, ownership_changed, &transcript);
     }
     if !dirty.stdout.trim().is_empty() {
-        return SyncResult {
-            command: CommandReceipt {
+        return ownership_prepared_result(
+            CommandReceipt {
                 ok: false,
                 code: 3,
                 stdout: dirty.stdout,
                 stderr: "working tree has local modifications; refusing repo sync".to_string(),
             },
-            changed: false,
-        };
+            ownership_changed,
+            &transcript,
+        );
     }
 
     if let Some(repo) = request.repo.as_deref() {
         let configured = capture_git(request, &["remote", "get-url", &request.remote], cwd);
         if !configured.ok {
-            return SyncResult {
-                command: configured,
-                changed: false,
-            };
+            return ownership_prepared_result(configured, ownership_changed, &transcript);
         }
         if configured.stdout.trim() != repo {
             let reconcile =
@@ -359,7 +383,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                         stdout: transcript.join("\n"),
                         stderr: reconcile.stderr,
                     },
-                    changed: false,
+                    changed: ownership_changed,
                 };
             }
         }
@@ -383,7 +407,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                 stdout: transcript.join("\n"),
                 stderr: fetch.stderr,
             },
-            changed: false,
+            changed: ownership_changed,
         };
     }
     let checkout = capture_git(request, &["checkout", &request.branch], cwd);
@@ -399,7 +423,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                 stdout: transcript.join("\n"),
                 stderr: checkout.stderr,
             },
-            changed: false,
+            changed: ownership_changed,
         };
     }
     let pull_ref = format!("{}/{}", request.remote, request.branch);
@@ -416,17 +440,14 @@ fn sync_repo(request: &Request) -> SyncResult {
                 stdout: transcript.join("\n"),
                 stderr: merge.stderr,
             },
-            changed: false,
+            changed: ownership_changed,
         };
     }
     let after = capture_git(request, &["rev-parse", "HEAD"], cwd);
     if !after.ok {
-        return SyncResult {
-            command: after,
-            changed: false,
-        };
+        return ownership_prepared_result(after, ownership_changed, &transcript);
     }
-    let changed = before.stdout.trim() != after.stdout.trim();
+    let changed = ownership_changed || before.stdout.trim() != after.stdout.trim();
     transcript.push(format!("before={}", before.stdout.trim()));
     transcript.push(format!("after={}", after.stdout.trim()));
     SyncResult {
@@ -440,13 +461,13 @@ fn sync_repo(request: &Request) -> SyncResult {
     }
 }
 
-fn prepare_bearer_writable_path(request: &Request) -> Result<(), String> {
+fn prepare_bearer_writable_path(request: &Request) -> Result<BearerPathPreparation, String> {
     if unsafe { libc::geteuid() } != 0 {
-        return Ok(());
+        return Ok(BearerPathPreparation::default());
     }
     let (uid, gid) = bearer_ids(&request.bearer)?;
     if request.path.exists() {
-        return verify_tree_owned_by_bearer(&request.path, uid, gid);
+        return repair_tree_owned_by_bearer(&request.path, uid, gid);
     }
     fs::create_dir_all(&request.path).map_err(|err| {
         format!(
@@ -454,7 +475,12 @@ fn prepare_bearer_writable_path(request: &Request) -> Result<(), String> {
             request.path.display()
         )
     })?;
-    chown_new_bearer_path(&request.path, uid, gid)
+    let mut preparation = BearerPathPreparation::default();
+    if let Some(transcript) = chown_new_bearer_path(&request.path, uid, gid)? {
+        preparation.changed = true;
+        preparation.transcript.push(transcript);
+    }
+    Ok(preparation)
 }
 
 fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
@@ -470,20 +496,21 @@ fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
     Ok((passwd.pw_uid, passwd.pw_gid))
 }
 
-fn verify_tree_owned_by_bearer(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+fn repair_tree_owned_by_bearer(
+    path: &Path,
+    uid: u32,
+    gid: u32,
+) -> Result<BearerPathPreparation, String> {
     let metadata = fs::symlink_metadata(path).map_err(|err| {
         format!(
             "git-owner-source-path-stat-failed {}: {err}",
             path.display()
         )
     })?;
-    if metadata.uid() != uid || metadata.gid() != gid {
-        return Err(format!(
-            "git-owner-source-path-bearer-mismatch {} expected_uid={uid} expected_gid={gid} actual_uid={} actual_gid={}",
-            path.display(),
-            metadata.uid(),
-            metadata.gid(),
-        ));
+    let mut preparation = BearerPathPreparation::default();
+    if let Some(transcript) = chown_new_bearer_path(path, uid, gid)? {
+        preparation.changed = true;
+        preparation.transcript.push(transcript);
     }
     if metadata.file_type().is_dir() {
         for entry in fs::read_dir(path).map_err(|err| {
@@ -498,13 +525,26 @@ fn verify_tree_owned_by_bearer(path: &Path, uid: u32, gid: u32) -> Result<(), St
                     path.display()
                 )
             })?;
-            verify_tree_owned_by_bearer(&entry.path(), uid, gid)?;
+            let child = repair_tree_owned_by_bearer(&entry.path(), uid, gid)?;
+            preparation.changed |= child.changed;
+            preparation.transcript.extend(child.transcript);
         }
     }
-    Ok(())
+    Ok(preparation)
 }
 
-fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<Option<String>, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|err| {
+        format!(
+            "git-owner-source-path-stat-failed {}: {err}",
+            path.display()
+        )
+    })?;
+    let previous_uid = metadata.uid();
+    let previous_gid = metadata.gid();
+    if previous_uid == uid && previous_gid == gid {
+        return Ok(None);
+    }
     let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| format!("git-owner-source-path-non-utf8 {}", path.display()))?;
     if unsafe { libc::lchown(path_c.as_ptr(), uid, gid) } != 0 {
@@ -514,7 +554,10 @@ fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<(), String> 
             std::io::Error::last_os_error()
         ));
     }
-    Ok(())
+    Ok(Some(format!(
+        "git-owner-source-path-ownership-repaired path={} before={previous_uid}:{previous_gid} after={uid}:{gid}",
+        path.display()
+    )))
 }
 
 pub fn stdout_changed(stdout: &str) -> bool {
