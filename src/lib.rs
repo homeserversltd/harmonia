@@ -202,6 +202,7 @@ struct OperationOutcome {
     command: Option<CmdResult>,
 }
 
+pub mod application_presets;
 mod arcadia_gui_runtime;
 mod keyman_runtime;
 mod pinned_artifacts_runtime;
