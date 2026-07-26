@@ -2977,9 +2977,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("homeconsole-arcadia-gui-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args)
                 .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/arcadia-gui-latest"));
-            let repo = value_arg_string(&args, "--repo")
-                .unwrap_or_else(|| "https://git.home.arpa/HOMESERVERSLTD/arcadia.git".to_string());
-            let branch = value_arg_string(&args, "--branch").unwrap_or_else(|| "main".to_string());
+            let component = value_arg_string(&args, "--component")
+                .unwrap_or_else(|| "arcadia".to_string());
             let source_dir = value_arg(&args, "--source-dir")
                 .unwrap_or_else(|| PathBuf::from("/opt/arcadia/source"));
             let install_bin = value_arg(&args, "--install-bin")
@@ -2994,8 +2993,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             homeconsole_arcadia_gui_update(
                 &profile,
                 &receipt_dir,
-                &repo,
-                &branch,
+                &component,
                 &source_dir,
                 &install_bin,
                 &service,

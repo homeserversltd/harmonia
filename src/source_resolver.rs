@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) const SOURCE_PLAN_SCHEMA: &str = "harmonia.engine.source_plan.v1";
 pub(crate) const SOURCE_RECEIPT_SCHEMA: &str = "harmonia.engine.source_resolution.v1";
@@ -23,7 +23,7 @@ pub(crate) struct SourceCandidatePlan {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SourcePlan {
+pub(crate) struct SourceResolution {
     pub schema: &'static str,
     pub component: String,
     pub requested_ref: String,
@@ -45,7 +45,7 @@ pub(crate) struct SourceResolutionReceipt {
     pub ordered_candidate_identities: Vec<String>,
     pub credential_selectors: Vec<String>,
     pub blocker: Option<String>,
-    pub plan: Option<SourcePlan>,
+    pub resolution: Option<SourceResolution>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,7 +85,7 @@ fn receipt(
     candidates: Vec<String>,
     selectors: Vec<String>,
     blocker: Option<String>,
-    plan: Option<SourcePlan>,
+    resolution: Option<SourceResolution>,
 ) -> SourceResolutionReceipt {
     SourceResolutionReceipt {
         schema: SOURCE_RECEIPT_SCHEMA,
@@ -101,7 +101,7 @@ fn receipt(
         ordered_candidate_identities: candidates,
         credential_selectors: selectors,
         blocker,
-        plan,
+        resolution,
     }
 }
 
@@ -331,7 +331,7 @@ pub(crate) fn resolve_source(
             }
         }
     }
-    let plan = SourcePlan {
+    let resolution = SourceResolution {
         schema: SOURCE_PLAN_SCHEMA,
         component: component.to_string(),
         requested_ref: requested_ref.to_string(),
@@ -347,8 +347,45 @@ pub(crate) fn resolve_source(
         identities,
         selectors,
         None,
-        Some(plan),
+        Some(resolution),
     )
+}
+
+/// Lower certificate-selected source data into the one acquisition plan type.
+/// The resolver never sees credentials; a selector remains an opaque key until
+/// the engine supplies a scoped plan to the transport primitive.
+pub(crate) fn acquisition_plan(
+    resolution: &SourceResolution,
+    destination: PathBuf,
+    bearer: String,
+) -> Result<crate::tools::git_artifact::SourcePlan, String> {
+    let candidates = resolution
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let kind = match candidate.kind.as_str() {
+                "git" => crate::tools::git_artifact::SourceCandidateKind::Git,
+                "local-checkout" => crate::tools::git_artifact::SourceCandidateKind::LocalCheckout,
+                other => return Err(format!("source-candidate-kind-unsupported kind={other}")),
+            };
+            Ok(crate::tools::git_artifact::SourceCandidate {
+                kind,
+                locator: candidate.locator.clone(),
+                credential_selector: candidate.credential_selector.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution.requested_ref.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    Ok(crate::tools::git_artifact::SourcePlan {
+        candidates,
+        reference: resolution.requested_ref.clone(),
+        destination,
+        expected_commit,
+        bearer,
+        credentials: Default::default(),
+    })
 }
 
 /// Validate every declared source entry before any profile or module execution.
