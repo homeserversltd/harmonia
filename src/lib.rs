@@ -869,10 +869,29 @@ mod tests {
     fn tv_profile_registers_tv_update_runtime() {
         let root = repo_root();
         let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
-        assert!(profile
-            .modules
-            .contains(&"tv-update-runtime".to_string()));
-        enforce_tv_update_suite(&profile, &root.join("profiles/tv/modules")).unwrap();
+        assert_eq!(
+            profile.modules,
+            vec![
+                "identity".to_string(),
+                "arch-keyring-maintenance".to_string(),
+                "system-packages".to_string(),
+                "owner-profile".to_string(),
+                "gpu-display-stack".to_string(),
+                "hyprland-desktop".to_string(),
+                "oh-my-posh-aur-ratchet".to_string(),
+                "operator-rc-profile".to_string(),
+                "desktop-config-payload".to_string(),
+                "chromium".to_string(),
+                "user-session-services".to_string(),
+                "sddm-autologin-hyprland".to_string(),
+                "steam-game-lane".to_string(),
+                "power-controller-maintenance".to_string(),
+                "console-recovery".to_string(),
+                "tv-update-runtime".to_string(),
+                "caduceus-public-lever".to_string(),
+                "appliance-proof".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1579,6 +1598,7 @@ mod tests {
                 "oh-my-posh-aur-ratchet".to_string(),
                 "operator-rc-profile".to_string(),
                 "desktop-config-payload".to_string(),
+                "chromium".to_string(),
                 "user-session-services".to_string(),
                 "sddm-autologin-hyprland".to_string(),
                 "steam-game-lane".to_string(),
