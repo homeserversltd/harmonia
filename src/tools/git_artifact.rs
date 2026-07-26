@@ -444,13 +444,16 @@ fn prepare_bearer_writable_path(request: &Request) -> Result<(), String> {
         return Ok(());
     }
     let (uid, gid) = bearer_ids(&request.bearer)?;
+    if request.path.exists() {
+        return verify_tree_owned_by_bearer(&request.path, uid, gid);
+    }
     fs::create_dir_all(&request.path).map_err(|err| {
         format!(
             "git-owner-source-path-create-failed {}: {err}",
             request.path.display()
         )
     })?;
-    chown_tree_to_owner(&request.path, uid, gid)
+    chown_new_bearer_path(&request.path, uid, gid)
 }
 
 fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
@@ -466,7 +469,7 @@ fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
     Ok((passwd.pw_uid, passwd.pw_gid))
 }
 
-fn chown_tree_to_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+fn verify_tree_owned_by_bearer(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|err| {
         format!(
             "git-owner-source-path-stat-failed {}: {err}",
@@ -474,15 +477,12 @@ fn chown_tree_to_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
         )
     })?;
     if metadata.uid() != uid || metadata.gid() != gid {
-        let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| format!("git-owner-source-path-non-utf8 {}", path.display()))?;
-        if unsafe { libc::lchown(path_c.as_ptr(), uid, gid) } != 0 {
-            return Err(format!(
-                "git-owner-source-path-chown-failed {}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
-            ));
-        }
+        return Err(format!(
+            "git-owner-source-path-bearer-mismatch {} expected_uid={uid} expected_gid={gid} actual_uid={} actual_gid={}",
+            path.display(),
+            metadata.uid(),
+            metadata.gid(),
+        ));
     }
     if metadata.file_type().is_dir() {
         for entry in fs::read_dir(path).map_err(|err| {
@@ -497,8 +497,21 @@ fn chown_tree_to_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
                     path.display()
                 )
             })?;
-            chown_tree_to_owner(&entry.path(), uid, gid)?;
+            verify_tree_owned_by_bearer(&entry.path(), uid, gid)?;
         }
+    }
+    Ok(())
+}
+
+fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+    let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("git-owner-source-path-non-utf8 {}", path.display()))?;
+    if unsafe { libc::lchown(path_c.as_ptr(), uid, gid) } != 0 {
+        return Err(format!(
+            "git-owner-source-path-chown-failed {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(())
 }

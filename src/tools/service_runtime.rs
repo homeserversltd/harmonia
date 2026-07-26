@@ -270,6 +270,9 @@ pub(crate) fn execute(
         Some(bearer) => git_request.with_bearer(bearer),
         None => git_request,
     };
+    // The request resolves the bearer, including git-artifact's default. Every
+    // source-directory operation below follows this one identity.
+    let source_bearer = git_request.bearer.clone();
     let git_outcome = if apply {
         tools::git_artifact::apply(&git_request)
     } else {
@@ -308,20 +311,13 @@ pub(crate) fn execute(
         ));
     }
 
-    let source_sha = match bearer {
-        Some(bearer) => tools::command::capture_with_cwd_as_bearer(
-            "/usr/bin/git",
-            &["rev-parse", "HEAD"],
-            source_dir.to_str(),
-            bearer,
-        ),
-        None => tools::command::capture_with_cwd(
-            "/usr/bin/git",
-            &["rev-parse", "HEAD"],
-            source_dir.to_str(),
-        ),
-    };
-    write_command_receipt(receipt_dir, spec.source_sha_op, &source_sha)?;
+    let source_sha = tools::command::capture_with_cwd_as_bearer(
+        "/usr/bin/git",
+        &["rev-parse", "HEAD"],
+        source_dir.to_str(),
+        &source_bearer,
+    );
+    write_source_sha_receipt(receipt_dir, spec.source_sha_op, &source_sha, &source_bearer)?;
     let source_sha_value = source_sha.stdout.trim().to_string();
 
     let managed_files = effective_managed_files(module, &source_dir)?;
@@ -408,22 +404,13 @@ pub(crate) fn execute(
         ));
     }
 
-    let build = match bearer {
-        Some(bearer) => tools::command::capture_with_cwd_as_bearer_and_env(
-            "cargo",
-            &["build", "--release"],
-            source_dir.to_str(),
-            bearer,
-            build_environment,
-        ),
-        None => tools::command::capture_with_options(
-            "cargo",
-            &["build", "--release"],
-            tools::command::CaptureOptions::new()
-                .cwd(source_dir.to_str())
-                .env(build_environment),
-        ),
-    };
+    let build = tools::command::capture_with_cwd_as_bearer_and_env(
+        "cargo",
+        &["build", "--release"],
+        source_dir.to_str(),
+        &source_bearer,
+        build_environment,
+    );
     write_command_receipt(receipt_dir, spec.build_op, &build)?;
     if !build.ok {
         write_run_receipt(
@@ -618,6 +605,27 @@ fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
         stdout: result.stdout.clone(),
         stderr: result.stderr.clone(),
     }
+}
+
+fn write_source_sha_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    result: &CmdResult,
+    bearer: &str,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{name}.json")),
+        &json!({
+            "schema": "harmonia.command_receipt.v1",
+            "name": name,
+            "ok": result.ok,
+            "exit_code": result.code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "first_missing_signal": if result.ok { "none" } else { "command-failed" },
+            "bearer": bearer,
+        }),
+    )
 }
 
 fn is_hex_sha(value: &str) -> bool {
