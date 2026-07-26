@@ -676,6 +676,8 @@ mod tests {
             ],
             backup_existing: false,
             receipt_name: "partial".to_string(),
+            owner: None,
+            group: None,
         };
         let err = tools::files::converge_files(&request, &receipts, true).unwrap_err();
         assert!(err.contains("files-converge-target-not-file"));
@@ -1055,6 +1057,8 @@ mod tests {
             }],
             backup_existing: true,
             receipt_name: "plan".to_string(),
+            owner: None,
+            group: None,
         };
         let outcome = tools::files::converge_files(&request, &receipts, false).unwrap();
         assert!(outcome.ok);
@@ -1088,6 +1092,8 @@ mod tests {
             }],
             backup_existing: true,
             receipt_name: "apply".to_string(),
+            owner: None,
+            group: None,
         };
         let outcome = tools::files::converge_files(&request, &receipts, true).unwrap();
         assert!(outcome.ok);
@@ -1128,6 +1134,8 @@ mod tests {
             }],
             backup_existing: true,
             receipt_name: "idem".to_string(),
+            owner: None,
+            group: None,
         };
         tools::files::converge_files(&request, &receipts, true).unwrap();
         let second = tools::files::converge_files(&request, &receipts, true).unwrap();
@@ -1150,6 +1158,8 @@ mod tests {
                 }],
                 backup_existing: true,
                 receipt_name: "reject".to_string(),
+                owner: None,
+                group: None,
             };
             let err = tools::files::converge_files(&request, &PathBuf::from("receipts"), false)
                 .unwrap_err();
@@ -1168,6 +1178,8 @@ mod tests {
             }],
             backup_existing: true,
             receipt_name: "../escape".to_string(),
+            owner: None,
+            group: None,
         };
         let err =
             tools::files::converge_files(&base, &PathBuf::from("receipts"), false).unwrap_err();
