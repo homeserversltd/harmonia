@@ -1579,6 +1579,7 @@ mod tests {
                 "oh-my-posh-aur-ratchet".to_string(),
                 "operator-rc-profile".to_string(),
                 "desktop-config-payload".to_string(),
+                "chromium".to_string(),
                 "user-session-services".to_string(),
                 "sddm-autologin-hyprland".to_string(),
                 "steam-game-lane".to_string(),
