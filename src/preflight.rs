@@ -4,6 +4,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -55,6 +56,10 @@ pub(crate) struct EnginePlaneConfig {
     /// Optional owner-readable token file used only by the dropped Git child for that host.
     #[serde(default)]
     pub git_https_credential_token_path: Option<PathBuf>,
+    /// Body-local opaque selector custody. This map names material only; the
+    /// certificate remains the sole source of ordered candidate locators.
+    #[serde(default)]
+    pub credential_scopes: BTreeMap<String, tools::git_artifact::CredentialScope>,
     #[serde(default = "default_remote")]
     pub remote: String,
     #[serde(default)]
@@ -165,7 +170,62 @@ pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlane
         .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
     let config: EnginePlaneConfig = serde_json::from_str(&text)
         .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
+    validate_credential_scopes(&config.credential_scopes)?;
     Ok(Some(config))
+}
+
+/// Return only named body-local credential material for source acquisition.
+/// This function never opens a key or token; Git's dropped bearer child is the
+/// sole reader of those files.
+pub(crate) fn credential_scopes(
+    config: &EnginePlaneConfig,
+) -> BTreeMap<String, tools::git_artifact::CredentialScope> {
+    config.credential_scopes.clone()
+}
+
+fn validate_credential_scopes(
+    scopes: &BTreeMap<String, tools::git_artifact::CredentialScope>,
+) -> Result<(), String> {
+    for (selector, scope) in scopes {
+        if !source_resolver::selector_is_safe(selector) {
+            return Err(format!(
+                "engine-credential-scope-selector-invalid selector={selector}"
+            ));
+        }
+        for path in [&scope.ssh_key_path, &scope.https_token_path]
+            .into_iter()
+            .flatten()
+        {
+            if !path.is_absolute() {
+                return Err(format!(
+                    "engine-credential-scope-path-not-absolute selector={selector} path={}",
+                    path.display()
+                ));
+            }
+            if path.to_string_lossy().contains("://") {
+                return Err(format!(
+                    "engine-credential-scope-url-forbidden selector={selector}"
+                ));
+            }
+        }
+        if let Some(host) = scope.https_host.as_deref() {
+            if !credential_host_is_safe(host) {
+                return Err(format!(
+                    "engine-credential-scope-host-invalid selector={selector}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn credential_host_is_safe(host: &str) -> bool {
+    !host.is_empty()
+        && !host.contains("://")
+        && !host.contains('/')
+        && !host.contains('\\')
+        && !host.contains('@')
+        && !host.chars().any(char::is_whitespace)
 }
 
 pub(crate) fn install_bin_fingerprint(path: &Path) -> Option<String> {

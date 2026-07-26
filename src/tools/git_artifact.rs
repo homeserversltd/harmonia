@@ -16,6 +16,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -558,7 +559,8 @@ pub enum SourceCandidateKind {
     LocalCheckout,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialScope {
     pub ssh_key_path: Option<PathBuf>,
     pub https_host: Option<String>,
