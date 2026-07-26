@@ -181,3 +181,4 @@ Harmonia is intentionally small at the boundary:
 6. exit clearly.
 
 That is the product: reliable appliance updates with visible proof.
+
