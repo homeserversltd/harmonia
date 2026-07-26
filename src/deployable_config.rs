@@ -193,7 +193,8 @@ pub(crate) fn export_deployable_config(
     println!("profile_id={}", profile.id);
     println!("identity={}", profile.identity);
     println!("artifact_count={}", receipt.artifacts.len());
-    println!("pruned_count={}", receipt.pruned_modules.len());
+    println!("pruned_count={}", receipt.pruned_paths.len());
+    println!("pruned_module_count={}", receipt.pruned_modules.len());
     println!("pruned_modules={}", receipt.pruned_modules.join(","));
     println!("output_dir={}", output_dir.display());
     println!("receipt_dir={}", receipt_dir.display());
