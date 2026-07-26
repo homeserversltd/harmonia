@@ -224,6 +224,49 @@ fn command_from_config(
     tools::command::capture_with_cwd(program, &arg_refs, cwd.and_then(Path::to_str))
 }
 
+/// Run a command whose working directory is the declared source checkout as
+/// its resolved Git bearer.  The privileged parent retains only the later
+/// promotion of the already-built staged binary.
+fn command_from_config_as_bearer(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    bearer: &str,
+    apply: bool,
+) -> CmdResult {
+    if !apply {
+        return CmdResult {
+            ok: true,
+            code: 0,
+            stdout: format!("planned as {bearer}: {} {}", program, args.join(" ")),
+            stderr: String::new(),
+        };
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    tools::command::capture_with_cwd_as_bearer(program, &arg_refs, cwd.to_str(), bearer)
+}
+
+fn write_bearer_command_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    result: &CmdResult,
+    bearer: &str,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{name}.json")),
+        &json!({
+            "schema": "harmonia.command_receipt.v1",
+            "name": name,
+            "ok": result.ok,
+            "exit_code": result.code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "first_missing_signal": if result.ok { "none" } else { "command-failed" },
+            "bearer": bearer,
+        }),
+    )
+}
+
 fn default_build_args(_config: &EnginePlaneConfig) -> Vec<String> {
     vec![
         "build".into(),
@@ -1146,8 +1189,14 @@ pub(crate) fn run_engine_preflight(
             .build_args
             .clone()
             .unwrap_or_else(|| default_build_args(&config));
-        build = command_from_config(build_program, &build_args, Some(&config.source_dir), apply);
-        write_command_receipt(&preflight_dir, "staged-build", &build)?;
+        build = command_from_config_as_bearer(
+            build_program,
+            &build_args,
+            &config.source_dir,
+            &config.git_bearer,
+            apply,
+        );
+        write_bearer_command_receipt(&preflight_dir, "staged-build", &build, &config.git_bearer)?;
         operation_count += 1;
         if !build.ok {
             first_missing_signal = stage_signal("staged-build");
