@@ -1112,11 +1112,24 @@ fn source_plan_for_step(
     let resolution = resolution
         .resolution
         .ok_or_else(|| format!("source-resolution-plan-missing module={} step_id={} component={component}", manifest.id, step.step_id))?;
-    crate::acquisition_plan(
+    let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
+    let credentials = config
+        .as_ref()
+        .map(crate::credential_scopes)
+        .unwrap_or_default();
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    Ok(crate::bridge_acquisition_plan(
         &resolution,
         PathBuf::from(destination),
         optional_string_arg(&step.args, "bearer").unwrap_or("owner").to_string(),
-    )
+        expected_commit,
+        credentials,
+    ))
 }
 
 fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
