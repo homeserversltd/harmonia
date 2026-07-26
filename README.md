@@ -53,6 +53,12 @@ Each module answers the same questions:
 
 For managed files, Harmonia renders desired module-owned files, compares them to installed targets, writes only when the bytes or declared metadata differ, performs the domain reconcile step, and records receipts. UDEV modules reload UDEV rules. Systemd modules run daemon-reload and reconcile unit enablement or activity. Service modules own their runtime, configuration, health checks, and currentness receipts.
 
+### Change-driven service restarts
+
+`systemd` `restart` and `user-restart` are engine primitives, not module conventions. By default a restart runs only when an earlier step in the same module reported `changed=true`; that includes managed files and ownership/mode convergence, unit files or drop-ins, packages or binaries, and every other tool that truthfully reports mutation. An active unchanged unit is explicitly skipped.
+
+A unit whose observed active state is anything other than `active` (including `inactive`, `failed`, absent state, and first convergence) is restarted so restraint never leaves it dead. Operators can pass `--force-service-restarts` to a Harmonia invocation. A module that must restart unconditionally must declare `"restart_policy": "always"` on that restart step; the receipt records that exception. Restart receipts always include `restart_decision`, `restart_reason`, `module_changed_before_step`, `force_service_restarts`, and `restart_policy`.
+
 ## Core concepts
 
 ### Profile
