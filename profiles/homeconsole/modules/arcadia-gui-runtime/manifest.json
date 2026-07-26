@@ -11,8 +11,7 @@
       "permutation": "converge",
       "args": {
         "module_id": "arcadia-gui-runtime",
-        "repo": "git@git.home.arpa:HOMESERVERSLTD/arcadia.git",
-        "branch": "main",
+        "component": "arcadia",
         "source_dir": "/opt/arcadia/source",
         "install_bin": "/usr/local/bin/arcadia",
         "service": "arcadia.service",

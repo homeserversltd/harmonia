@@ -3,8 +3,7 @@
   "id": "permissions",
   "pack": {
     "kind": "source_artifact",
-    "repo": "https://github.com/homeserversltd/permissions.git",
-    "ref": "main",
+    "component": "permissions",
     "artifact_id": "sudoers",
     "auth_posture": "none",
     "strip_git": true
