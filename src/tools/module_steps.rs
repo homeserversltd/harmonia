@@ -2,7 +2,7 @@ use crate::*;
 use sha2::{Digest, Sha256};
 use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(test)]
 pub(crate) use crate::tools::package::set_test_pacman_path;
@@ -212,39 +212,6 @@ fn write_systemd_command_receipt(
             "changed": changed,
         }),
     )
-}
-
-pub(crate) fn git_artifact_tool(
-    receipt_dir: &Path,
-    name: &str,
-    repo: Option<String>,
-    path: PathBuf,
-    branch: String,
-    remote: String,
-    apply: bool,
-) -> Result<OperationOutcome, String> {
-    let request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
-        repo, path, branch, remote,
-    ))?;
-    let outcome = if apply {
-        tools::git_artifact::apply(&request)
-    } else {
-        tools::git_artifact::plan(&request)
-    };
-    let command = CmdResult {
-        ok: outcome.command.ok,
-        code: outcome.command.code,
-        stdout: outcome.command.stdout,
-        stderr: outcome.command.stderr,
-    };
-    write_command_receipt(receipt_dir, name, &command)?;
-    Ok(OperationOutcome {
-        ok: outcome.ok,
-        changed: outcome.changed,
-        skipped: false,
-        message: outcome.message,
-        command: Some(command),
-    })
 }
 
 #[allow(dead_code)]

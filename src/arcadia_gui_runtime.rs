@@ -15,12 +15,12 @@ const ARCADIA_CONTROL_DROPIN_PATH: &str =
     "/etc/systemd/system/arcadia.service.d/10-control-surface-authority.conf";
 const ARCADIA_CONTROL_DROPIN_CONTENT: &str = "[Service]\nUser=\nGroup=\nNoNewPrivileges=false\n";
 
-fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
+fn source_outcome_cmd(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
     CmdResult {
-        ok: result.ok,
-        code: result.code,
-        stdout: result.stdout.clone(),
-        stderr: result.stderr.clone(),
+        ok: outcome.ok,
+        code: if outcome.ok { 0 } else { 1 },
+        stdout: outcome.receipt.promotion.clone(),
+        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
     }
 }
 
@@ -373,8 +373,7 @@ pub(crate) fn homeconsole_arcadia_update(
 pub(crate) fn homeconsole_arcadia_gui_update(
     profile: &Profile,
     receipt_dir: &Path,
-    repo: &str,
-    branch: &str,
+    component: &str,
     source_dir: &Path,
     install_bin: &Path,
     service: &str,
@@ -389,18 +388,56 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
 
-    let git_request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
-        Some(repo.to_string()),
+    let certificate = std::env::var_os("HARMONIA_DEVICE_PROFILE_CERTIFICATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/etc/profile.json"));
+    let resolution = crate::resolve_source(
+        &certificate,
+        component,
+        "arcadia-gui-runtime",
+        "arcadia-source-git-artifact",
+    );
+    if let Some(blocker) = resolution.blocker {
+        return Err(format!("arcadia-source-resolution-blocked component={component} blocker={blocker}"));
+    }
+    let resolution = resolution
+        .resolution
+        .ok_or_else(|| "arcadia-source-resolution-plan-missing".to_string())?;
+    let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
+    let credentials = config
+        .as_ref()
+        .map(crate::credential_scopes)
+        .unwrap_or_default();
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    let source_plan = crate::bridge_acquisition_plan(
+        &resolution,
         source_dir.to_path_buf(),
-        branch.to_string(),
-        "origin".to_string(),
-    ))?;
+        "owner".to_string(),
+        expected_commit,
+        credentials,
+    );
     let git_outcome = if apply {
-        tools::git_artifact::apply(&git_request)
+        tools::git_artifact::acquire_source(&source_plan)
     } else {
-        tools::git_artifact::plan(&git_request)
+        tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: "planned source acquisition".to_string(),
+            },
+        }
     };
-    let git_cmd = git_artifact_cmd(&git_outcome.command);
+    let repo = component;
+    let branch = source_plan.reference.as_str();
+    let git_cmd = source_outcome_cmd(&git_outcome);
     write_command_receipt(receipt_dir, "arcadia-source-git-artifact", &git_cmd)?;
     if !git_outcome.ok {
         write_arcadia_gui_run_receipt(

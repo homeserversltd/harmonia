@@ -23,7 +23,7 @@ pub(crate) struct SourceCandidatePlan {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SourcePlan {
+pub(crate) struct SourceResolution {
     pub schema: &'static str,
     pub component: String,
     pub requested_ref: String,
@@ -45,7 +45,7 @@ pub(crate) struct SourceResolutionReceipt {
     pub ordered_candidate_identities: Vec<String>,
     pub credential_selectors: Vec<String>,
     pub blocker: Option<String>,
-    pub plan: Option<SourcePlan>,
+    pub resolution: Option<SourceResolution>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,7 +85,7 @@ fn receipt(
     candidates: Vec<String>,
     selectors: Vec<String>,
     blocker: Option<String>,
-    plan: Option<SourcePlan>,
+    resolution: Option<SourceResolution>,
 ) -> SourceResolutionReceipt {
     SourceResolutionReceipt {
         schema: SOURCE_RECEIPT_SCHEMA,
@@ -101,7 +101,7 @@ fn receipt(
         ordered_candidate_identities: candidates,
         credential_selectors: selectors,
         blocker,
-        plan,
+        resolution,
     }
 }
 
@@ -183,7 +183,7 @@ pub(crate) fn selector_is_safe(selector: &str) -> bool {
 /// named scopes remain unresolved so `acquire_source` produces its established
 /// hard-red receipt instead of falling back anonymously.
 pub(crate) fn bridge_acquisition_plan(
-    resolution: &SourcePlan,
+    resolution: &SourceResolution,
     destination: PathBuf,
     bearer: String,
     expected_commit: Option<String>,
@@ -367,7 +367,7 @@ pub(crate) fn resolve_source(
             }
         }
     }
-    let plan = SourcePlan {
+    let resolution = SourceResolution {
         schema: SOURCE_PLAN_SCHEMA,
         component: component.to_string(),
         requested_ref: requested_ref.to_string(),
@@ -383,7 +383,7 @@ pub(crate) fn resolve_source(
         identities,
         selectors,
         None,
-        Some(plan),
+        Some(resolution),
     )
 }
 

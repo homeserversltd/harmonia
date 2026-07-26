@@ -155,6 +155,20 @@ pub(crate) fn validate_ladder(
                 defect,
             }
         })?;
+        if resolved.contains_key("repo") {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: "legacy-repo-forbidden".into(),
+            });
+        }
+        if matches!(step.tool.as_str(), "git-artifact" | "service-runtime")
+            && (resolved.contains_key("branch") || resolved.contains_key("ref"))
+        {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: "legacy-source-ref-forbidden".into(),
+            });
+        }
         validate_args(&step.step_id, permutation, &resolved)?;
         validate_tool_semantics(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validated.push(ValidatedStep {
@@ -447,9 +461,15 @@ fn execute_validated_step(
             files_converge_step(step, manifest, module_dir, apply)
         }
         ("systemd", _) => systemd_step(step, module_dir, apply, module_changed_before_step),
-        ("service-runtime", "converge") => tools::service_runtime::execute_ladder_step(
-            &step.args, module_dir, apply,
-        )
+        ("service-runtime", "converge") => {
+            let source_plan = source_plan_for_step(step, manifest)?;
+            tools::service_runtime::execute_ladder_step(
+                &step.args,
+                module_dir,
+                apply,
+                &source_plan,
+            )
+        }
         .map(|execution| OperationOutcome {
             ok: execution.ok,
             changed: execution.changed,
@@ -460,7 +480,7 @@ fn execute_validated_step(
             ),
             command: None,
         }),
-        ("git-artifact", "sync") => git_artifact_step(step, module_dir, apply),
+        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, apply),
         ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, apply),
         ("machine-id", "truncate") => machine_id_step(step, module_dir, apply),
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
@@ -1028,28 +1048,26 @@ fn ai_coding_harness_step(
 
 fn git_artifact_step(
     step: &ValidatedStep,
+    manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
-        optional_string_arg(&step.args, "repo").map(ToString::to_string),
-        PathBuf::from(string_arg(&step.args, "path")),
-        optional_string_arg(&step.args, "branch")
-            .unwrap_or("main")
-            .to_string(),
-        optional_string_arg(&step.args, "remote")
-            .unwrap_or("origin")
-            .to_string(),
-    ))?;
-    let request = match optional_string_arg(&step.args, "bearer") {
-        Some(bearer) => request.with_bearer(bearer),
-        None => request,
-    };
+    let source_plan = source_plan_for_step(step, manifest)?;
     let outcome = if apply {
-        tools::git_artifact::apply(&request)
+        tools::git_artifact::acquire_source(&source_plan)
     } else {
-        tools::git_artifact::plan(&request)
+        tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: "planned source acquisition".to_string(),
+            },
+        }
     };
+    let command = source_outcome_command(&outcome);
     crate::write_tool_receipt(
         module_dir,
         &step.step_id,
@@ -1059,17 +1077,68 @@ fn git_artifact_step(
             ok: outcome.ok,
             changed: outcome.changed,
             skipped: !apply,
-            message: outcome.message.clone(),
-            command: Some(outcome.command.clone()),
+            message: outcome.receipt.promotion.clone(),
+            command: Some(command.clone()),
         },
     )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
         skipped: !apply,
-        message: outcome.message,
-        command: Some(outcome.command),
+        message: outcome.receipt.promotion,
+        command: Some(command),
     })
+}
+
+fn source_plan_for_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+) -> Result<tools::git_artifact::SourcePlan, String> {
+    let component = string_arg(&step.args, "component");
+    if component.trim().is_empty() {
+        return Err(format!("source-component-missing module={} step_id={}", manifest.id, step.step_id));
+    }
+    let destination = optional_string_arg(&step.args, "path")
+        .or_else(|| optional_string_arg(&step.args, "source_dir"))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("source-destination-missing module={} step_id={}", manifest.id, step.step_id))?;
+    let certificate = std::env::var_os("HARMONIA_DEVICE_PROFILE_CERTIFICATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/etc/profile.json"));
+    let resolution = crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
+    if let Some(blocker) = resolution.blocker {
+        return Err(format!("source-resolution-blocked module={} step_id={} component={} blocker={blocker}", manifest.id, step.step_id, component));
+    }
+    let resolution = resolution
+        .resolution
+        .ok_or_else(|| format!("source-resolution-plan-missing module={} step_id={} component={component}", manifest.id, step.step_id))?;
+    let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
+    let credentials = config
+        .as_ref()
+        .map(crate::credential_scopes)
+        .unwrap_or_default();
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    Ok(crate::bridge_acquisition_plan(
+        &resolution,
+        PathBuf::from(destination),
+        optional_string_arg(&step.args, "bearer").unwrap_or("owner").to_string(),
+        expected_commit,
+        credentials,
+    ))
+}
+
+fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
+    CmdResult {
+        ok: outcome.ok,
+        code: if outcome.ok { 0 } else { 1 },
+        stdout: outcome.receipt.promotion.clone(),
+        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
+    }
 }
 
 #[cfg(test)]
