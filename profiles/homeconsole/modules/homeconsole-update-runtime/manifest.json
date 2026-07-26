@@ -2,23 +2,10 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "homeconsole-update-runtime",
   "version": "3.6.0",
-  "description": "HomeConsole convergence scheduler ladder: managed unit files, daemon reload, timer enable-now.",
+  "description": "HomeConsole convergence scheduler ladder: retire profile-named units and assert the installer-owned timer is present.",
   "constants": {},
   "ladder": [
-    {
-      "step_id": "homeconsole-update-managed-files",
-      "tool": "files",
-      "permutation": "managed-files",
-      "args": {}
-    },
-    {
-      "step_id": "homeconsole-update-daemon-reload",
-      "tool": "systemd",
-      "permutation": "daemon-reload",
-      "args": {
-        "timeout_secs": 30
-      }
-    },
+
     {
       "step_id": "retire-harmonia-homeserver-service",
       "tool": "systemd",
@@ -74,14 +61,13 @@
       }
     },
     {
-      "step_id": "homeconsole-update-timer-enable",
+      "step_id": "homeconsole-update-installer-timer-present",
       "tool": "systemd",
-      "permutation": "enable-now",
+      "permutation": "unit-present",
       "args": {
         "service": "harmonia.timer",
         "timeout_secs": 30
       }
     }
-  ],
-  "files_root": "files_root"
+  ]
 }

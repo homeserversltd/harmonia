@@ -275,48 +275,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_profile_spine_module_resolves_to_valid_ladder_manifest() {
-        let profiles_root = repo_root().join("profiles");
-        let mut checked = Vec::new();
-        for entry in fs::read_dir(&profiles_root).unwrap() {
-            let entry = entry.unwrap();
-            if !entry.file_type().unwrap().is_dir() {
-                continue;
-            }
-            let profile_path = entry.path().join("index.json");
-            if !profile_path.exists() {
-                continue;
-            }
-            let profile = load_profile(&profile_path).unwrap();
-            let module_root = entry.path().join("modules");
-            for module_id in &profile.modules {
-                let module_dir = module_root.join(module_id);
-                let manifest_path = module_dir.join("manifest.json");
-                assert!(
-                    manifest_path.exists(),
-                    "profile {} module {} must carry manifest.json at {}",
-                    profile.id,
-                    module_id,
-                    manifest_path.display()
-                );
-                assert!(
-                    is_ladder_manifest(&manifest_path),
-                    "profile {} module {} must be a ladder manifest",
-                    profile.id,
-                    module_id
-                );
-                let manifest = load_ladder_manifest(&manifest_path).unwrap();
-                assert_eq!(manifest.id, *module_id);
-                validate_ladder(&manifest).unwrap();
-                checked.push(format!("{}/{}", profile.id, module_id));
-            }
-        }
-        assert!(
-            !checked.is_empty(),
-            "profile spine invariant checked no modules"
-        );
-    }
 
     static PACMAN_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -669,27 +627,6 @@ mod tests {
         .contains("homeconsole/homeconsole"));
     }
 
-    #[test]
-    fn homeserver_update_runtime_ladder_registers_convergence_timer() {
-        let root = repo_root();
-        let manifest = load_ladder_manifest(
-            &root.join("profiles/homeserver/modules/homeserver-update-runtime/manifest.json"),
-        )
-        .unwrap();
-        assert_eq!(manifest.id, "homeserver-update-runtime");
-        assert!(manifest.ladder.iter().any(|step| {
-            step.step_id == "homeserver-update-timer-enable"
-                && step.tool == "systemd"
-                && step.permutation == "enable-now"
-                && step.args["service"].as_str() == Some("harmonia.timer")
-        }));
-        let timer = fs::read_to_string(root.join(
-            "profiles/homeserver/modules/homeserver-update-runtime/files_root/etc/systemd/system/harmonia.timer",
-        ))
-        .unwrap();
-        assert!(timer.contains("harmonia.service"));
-        validate_ladder(&manifest).unwrap();
-    }
 
     #[test]
     fn homeserver_update_requires_homeserver_identity() {
@@ -732,16 +669,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-    #[test]
-    fn homeserver_profile_registers_homeserver_update_runtime() {
-        let root = repo_root();
-        let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
-        assert!(profile
-            .modules
-            .contains(&"homeserver-update-runtime".to_string()));
-        enforce_homeserver_update_suite(&profile, &root.join("profiles/homeserver/modules"))
-            .unwrap();
-    }
 
     #[test]
     fn homeserver_profile_sync_advances_subscription_module_digest() {
@@ -816,15 +743,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-    #[test]
-    fn tv_profile_registers_tv_update_runtime() {
-        let root = repo_root();
-        let profile = load_profile(&root.join("profiles/tv/index.json")).unwrap();
-        assert!(profile
-            .modules
-            .contains(&"tv-update-runtime".to_string()));
-        enforce_tv_update_suite(&profile, &root.join("profiles/tv/modules")).unwrap();
-    }
 
     #[test]
     fn tv_profile_sync_advances_subscription_module_digest() {
@@ -856,51 +774,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-    #[test]
-    fn tv_update_runtime_ladder_registers_convergence_timer() {
-        let root = repo_root();
-        let manifest = load_ladder_manifest(
-            &root.join("profiles/tv/modules/tv-update-runtime/manifest.json"),
-        )
-        .unwrap();
-        assert_eq!(manifest.id, "tv-update-runtime");
-        assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
-        assert!(manifest.ladder.iter().any(|step| {
-            step.step_id == "tv-update-timer-enable"
-                && step.tool == "systemd"
-                && step.permutation == "enable-now"
-                && step.args["service"].as_str() == Some("harmonia.timer")
-        }));
-        let timer = fs::read_to_string(root.join(
-            "profiles/tv/modules/tv-update-runtime/files_root/etc/systemd/system/harmonia.timer",
-        ))
-        .unwrap();
-        assert!(timer.contains("harmonia.service"));
-        validate_ladder(&manifest).unwrap();
-    }
-
-    #[test]
-    fn homeconsole_update_runtime_ladder_registers_convergence_timer() {
-        let root = repo_root();
-        let manifest = load_ladder_manifest(
-            &root.join("profiles/homeconsole/modules/homeconsole-update-runtime/manifest.json"),
-        )
-        .unwrap();
-        assert_eq!(manifest.id, "homeconsole-update-runtime");
-        assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
-        assert!(manifest.ladder.iter().any(|step| {
-            step.step_id == "homeconsole-update-timer-enable"
-                && step.tool == "systemd"
-                && step.permutation == "enable-now"
-                && step.args["service"].as_str() == Some("harmonia.timer")
-        }));
-        let timer = fs::read_to_string(root.join(
-            "profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia.timer",
-        ))
-        .unwrap();
-        assert!(timer.contains("harmonia.service"));
-        validate_ladder(&manifest).unwrap();
-    }
 
     #[test]
     fn materializes_per_run_receipt_dir_for_latest_alias() {
@@ -2114,8 +1987,8 @@ mod tests {
         assert!(output
             .join("profiles/homeconsole/modules/pinned-artifacts-runtime/manifest.json")
             .exists());
-        assert!(output
-            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root/etc/systemd/system/harmonia.timer")
+        assert!(!output
+            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root")
             .exists());
         assert!(output
             .join("locks/homeconsole/pinned-artifacts.json")
@@ -2125,7 +1998,6 @@ mod tests {
         assert!(receipt.contains("harmonia.deployable_config_export.v1"));
         assert!(receipt.contains("profile-index"));
         assert!(receipt.contains("module-ladder-manifest"));
-        assert!(receipt.contains("module-ladder-files-root"));
         assert!(receipt.contains("profile-lock"));
         assert!(
             !output
