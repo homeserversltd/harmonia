@@ -1,5 +1,4 @@
 pub mod tools;
-pub(crate) use tools::module_steps::*;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -193,56 +192,6 @@ struct PinnedArtifactStatus {
     policy: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct SyncModuleConfig {
-    id: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default = "default_sync_adapter_command")]
-    adapter_command: String,
-    #[serde(default)]
-    adapter_args: Vec<String>,
-    #[serde(default = "default_sync_provider_env")]
-    provider_env: String,
-    #[serde(default)]
-    providers: Vec<SyncProviderConfig>,
-    #[serde(default)]
-    shortcut_lanes: Vec<String>,
-    #[serde(default)]
-    artwork_lanes: Vec<String>,
-    #[serde(default = "default_sync_restart_policy")]
-    restart_policy: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct SyncProviderConfig {
-    name: String,
-    #[serde(default)]
-    env_keys: Vec<String>,
-    #[serde(default)]
-    required: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SyncProviderReceipt {
-    name: String,
-    configured: bool,
-    required: bool,
-    env_keys: Vec<String>,
-    missing_env_keys: Vec<String>,
-}
-
-fn default_sync_adapter_command() -> String {
-    "/usr/local/bin/arch-game-sync".to_string()
-}
-
-fn default_sync_provider_env() -> String {
-    "/etc/arch-game-sync/providers.env".to_string()
-}
-
-fn default_sync_restart_policy() -> String {
-    "adapter-owned".to_string()
-}
 
 #[derive(Debug, Clone)]
 struct OperationOutcome {
@@ -254,14 +203,12 @@ struct OperationOutcome {
 }
 
 mod arcadia_gui_runtime;
-mod homeconsole_sync_runtime;
 mod keyman_runtime;
 mod pinned_artifacts_runtime;
 
 pub(crate) use arcadia_gui_runtime::{
     homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
 };
-pub(crate) use homeconsole_sync_runtime::homeconsole_sync;
 pub(crate) use keyman_runtime::homeconsole_keyman_update;
 #[cfg(test)]
 pub(crate) use keyman_runtime::{redact_secret_text, sync_directory};
@@ -2236,26 +2183,25 @@ mod tests {
     }
 
     #[test]
-    fn homeconsole_runtime_modules_require_git_checkout_authority() {
+    fn keyman_runtime_module_requires_git_checkout_authority() {
         let root = repo_root();
         assert!(!root
             .join("profiles/homeconsole/modules/harmonia-runtime")
             .exists());
-        for module in ["keyman-runtime", "homeconsole-sync-runtime"] {
-            let manifest = load_ladder_manifest(
-                &root
-                    .join("profiles/homeconsole/modules")
-                    .join(module)
-                    .join("manifest.json"),
-            )
-            .unwrap();
-            assert_eq!(manifest.id, module);
-            assert!(manifest
-                .ladder
-                .iter()
-                .any(|step| step.tool == "git-artifact"));
-            validate_ladder(&manifest).unwrap();
-        }
+        let module = "keyman-runtime";
+        let manifest = load_ladder_manifest(
+            &root
+                .join("profiles/homeconsole/modules")
+                .join(module)
+                .join("manifest.json"),
+        )
+        .unwrap();
+        assert_eq!(manifest.id, module);
+        assert!(manifest
+            .ladder
+            .iter()
+            .any(|step| step.tool == "git-artifact"));
+        validate_ladder(&manifest).unwrap();
     }
 
     #[test]
@@ -2445,11 +2391,6 @@ mod tests {
         assert!(tools::get("health").is_some());
         assert!(tools::get("files").is_some());
         assert!(tools::get("package").is_some());
-        let manifest: ModuleManifest = serde_json::from_value(serde_json::json!({
-            "id": "homeconsole-sync-runtime"
-        }))
-        .unwrap();
-        assert!(homeconsole_sync_runtime_validate_for_test(&manifest).is_ok());
     }
 
     #[test]
@@ -2846,31 +2787,6 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 value_arg(&args, "--lock").unwrap_or_else(|| default_pinned_lock_path(&profile));
             pinned_artifacts_command(action, &profile, &lock_path, &receipt_dir, &args)
         }
-        Some("homeconsole-sync") => {
-            let path = args
-                .get(1)
-                .ok_or("homeconsole-sync requires <profile-index-json>")?;
-            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
-                PathBuf::from("/var/lib/harmonia/receipts/homeconsole-sync-latest")
-            });
-            let apply = args.iter().any(|arg| arg == "--apply");
-            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            let module_path = value_arg(&args, "--module").unwrap_or_else(|| {
-                default_module_root(Path::new(path))
-                    .join("sync")
-                    .join("index.json")
-            });
-            let provider_env_override = value_arg(&args, "--provider-env");
-            let adapter_override = value_arg_string(&args, "--adapter-command");
-            homeconsole_sync(
-                &profile,
-                &receipt_dir,
-                &module_path,
-                provider_env_override.as_deref(),
-                adapter_override.as_deref(),
-                apply,
-            )
-        }
         Some("homeserver-update") => {
             let path = args
                 .get(1)
@@ -3144,7 +3060,6 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia homeserver-update <profiles/homeserver/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia tv-update <profiles/tv/index.json> [--apply] [--receipt-dir <path>]");
-    println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> [--module <profiles/homeconsole/modules/sync/sidecar.json>] [--provider-env <path>] [--adapter-command <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-local-ai-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");

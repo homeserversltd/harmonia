@@ -100,10 +100,3 @@ pub(crate) fn require_packages(module: &ModuleManifest) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-pub(crate) fn homeconsole_sync_runtime_validate_for_test(
-    _module: &ModuleManifest,
-) -> Result<(), String> {
-    Ok(())
-}

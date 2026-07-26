@@ -679,7 +679,6 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
         "arch-keyring-maintenance",
         "system-packages",
         "keyman-runtime",
-        "homeconsole-sync-runtime",
         "rust-build-toolchain",
         "arcadia-gui-runtime",
         "local-ai-runtime",

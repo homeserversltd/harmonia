@@ -130,7 +130,6 @@ identity                  prove the machine context
 system-packages           check/update Arch packages
 harmonia-runtime          prove the installed Harmonia binary and profile are possessed
 keyman-runtime            refresh the Keyman git checkout and install its runtime payload
-homeconsole-sync-runtime  refresh the standalone sync git checkout and run its installer
 rust-build-toolchain      maintain the Rust toolchain needed for source-built runtimes
 arcadia-gui-runtime       sync, build, promote, restart, and health-prove Arcadia GUI
 pinned-artifacts-runtime  check blessed known-good artifacts against the lock
@@ -176,7 +175,3 @@ Harmonia is intentionally small at the boundary:
 6. exit clearly.
 
 That is the product: reliable appliance updates with visible proof.
-
-## HomeConsole Sync Runtime
-
-Harmonia keeps `git@git.home.arpa:HOMESERVERSLTD/homeconsole-sync.git` current at `/opt/homeconsole-sync/source` and installs `/usr/local/bin/homeconsole-sync`; the `homeconsole-sync` transition invokes that runtime and records redacted receipts.

@@ -261,15 +261,6 @@ pub(crate) fn capture_with_cwd_and_timeout(
     )
 }
 
-pub(crate) fn capture_with_env(
-    program: &str,
-    args: &[&str],
-    env: &[(String, String)],
-) -> CmdResult {
-    let env = env.iter().cloned().collect();
-    capture_with_options(program, args, CaptureOptions::new().env(env))
-}
-
 pub(crate) fn capture_redacted(program: &str, args: &[&str], redactions: &[String]) -> CmdResult {
     let redact = redactions
         .iter()
