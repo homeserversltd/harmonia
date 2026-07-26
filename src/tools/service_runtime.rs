@@ -13,9 +13,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
     "converge a Rust service runtime from typed constants",
     &[
         ToolArg::optional("module_id", ToolArgKind::String),
-        ToolArg::required("repo", ToolArgKind::String),
-        ToolArg::optional("branch", ToolArgKind::String),
-        ToolArg::optional("remote", ToolArgKind::String),
+        ToolArg::required("component", ToolArgKind::String),
         ToolArg::optional("bearer", ToolArgKind::String),
         ToolArg::required("source_dir", ToolArgKind::String),
         ToolArg::required("install_bin", ToolArgKind::String),
@@ -64,6 +62,7 @@ pub(crate) fn execute_ladder_step(
     args: &BTreeMap<String, Value>,
     receipt_dir: &Path,
     apply: bool,
+    source_plan: &tools::git_artifact::SourcePlan,
 ) -> Result<ModuleExecution, String> {
     let build_environment = build_environment(args)?;
     let op_prefix = string_arg(args, "op_prefix")?;
@@ -104,6 +103,7 @@ pub(crate) fn execute_ladder_step(
         &spec,
         args.get("bearer").and_then(Value::as_str),
         build_environment,
+        source_plan,
     )
 }
 
@@ -170,16 +170,10 @@ fn module_from_args(
         install_bin: Some(string_arg(args, "install_bin")?),
         url: Some(string_arg(args, "url")?),
         expected_contains: None,
-        repo: Some(string_arg(args, "repo")?),
+        repo: None,
         path: None,
-        branch: args
-            .get("branch")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        remote: args
-            .get("remote")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
+        branch: None,
+        remote: None,
         lock: None,
         source_dir: Some(string_arg(args, "source_dir")?),
         install_profile: None,
@@ -225,7 +219,6 @@ pub(crate) struct ServiceRuntimeSpec {
 
 pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     reject_executable_sidecar(module)?;
-    require_path(module, &module.repo, "repo")?;
     require_path(module, &module.source_dir, "source_dir")?;
     require_path(module, &module.install_bin, "install_bin")?;
     require_path(module, &module.service, "service")?;
@@ -241,12 +234,11 @@ pub(crate) fn execute(
     spec: &ServiceRuntimeSpec,
     bearer: Option<&str>,
     build_environment: BTreeMap<String, String>,
+    source_plan: &tools::git_artifact::SourcePlan,
 ) -> Result<ModuleExecution, String> {
     validate(module)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
 
-    let repo = require_path(module, &module.repo, "repo")?;
-    let branch = module.branch.as_deref().unwrap_or("main");
     let source_dir = PathBuf::from(require_path(module, &module.source_dir, "source_dir")?);
     let install_bin = PathBuf::from(require_path(module, &module.install_bin, "install_bin")?);
     let service = require_path(module, &module.service, "service")?;
@@ -257,32 +249,27 @@ pub(crate) fn execute(
         "source_sha_file",
     )?);
 
-    let git_request = crate::with_configured_https_credentials(tools::git_artifact::Request::new(
-        Some(repo.to_string()),
-        source_dir.clone(),
-        branch.to_string(),
-        module
-            .remote
-            .clone()
-            .unwrap_or_else(|| "origin".to_string()),
-    ))?;
-    let git_request = match bearer {
-        Some(bearer) => git_request.with_bearer(bearer),
-        None => git_request,
-    };
-    // The request resolves the bearer, including git-artifact's default. Every
-    // source-directory operation below follows this one identity.
-    let source_bearer = git_request.bearer.clone();
+    let mut source_plan = source_plan.clone();
+    if let Some(bearer) = bearer {
+        source_plan.bearer = bearer.to_string();
+    }
+    let source_bearer = source_plan.bearer.clone();
     let git_outcome = if apply {
-        tools::git_artifact::apply(&git_request)
+        tools::git_artifact::acquire_source(&source_plan)
     } else {
-        tools::git_artifact::plan(&git_request)
+        tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: "planned source acquisition".to_string(),
+            },
+        }
     };
-    write_command_receipt(
-        receipt_dir,
-        spec.source_op,
-        &git_artifact_cmd(&git_outcome.command),
-    )?;
+    let source_command = source_outcome_cmd(&git_outcome);
+    write_command_receipt(receipt_dir, spec.source_op, &source_command)?;
     if !git_outcome.ok {
         write_run_receipt(
             receipt_dir,
@@ -291,8 +278,8 @@ pub(crate) fn execute(
             false,
             git_outcome.changed,
             &format!("{}-source-git-artifact-failed", spec.op_prefix),
-            repo,
-            branch,
+            &source_plan.reference,
+            &source_plan.reference,
             &source_dir,
             None,
         )?;
@@ -349,8 +336,8 @@ pub(crate) fn execute(
             managed.ok,
             git_outcome.changed || managed.changed,
             first_missing,
-            repo,
-            branch,
+            &source_plan.reference,
+            &source_plan.reference,
             &source_dir,
             if is_hex_sha(&source_sha_value) {
                 Some(source_sha_value.as_str())
@@ -384,8 +371,8 @@ pub(crate) fn execute(
             false,
             true,
             &format!("{}-source-sha-missing", spec.op_prefix),
-            repo,
-            branch,
+            &source_plan.reference,
+            &source_plan.reference,
             &source_dir,
             None,
         )?;
@@ -420,8 +407,8 @@ pub(crate) fn execute(
             false,
             true,
             &format!("{}-cargo-build-failed", spec.op_prefix),
-            repo,
-            branch,
+            &source_plan.reference,
+            &source_plan.reference,
             &source_dir,
             Some(&source_sha_value),
         )?;
@@ -450,8 +437,8 @@ pub(crate) fn execute(
             false,
             install.changed,
             &format!("{}-binary-install-failed", spec.op_prefix),
-            repo,
-            branch,
+            &source_plan.reference,
+            &source_plan.reference,
             &source_dir,
             Some(&source_sha_value),
         )?;
@@ -492,8 +479,8 @@ pub(crate) fn execute(
         ok,
         changed,
         &first_missing_signal,
-        repo,
-        branch,
+        &source_plan.reference,
+        &source_plan.reference,
         &source_dir,
         Some(&source_sha_value),
     )?;
@@ -598,12 +585,19 @@ fn render_caduceus_profile_source(
     })
 }
 
-fn git_artifact_cmd(result: &tools::git_artifact::CommandReceipt) -> CmdResult {
+fn source_outcome_cmd(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
+    let detail = outcome
+        .receipt
+        .attempts
+        .iter()
+        .map(|attempt| format!("candidate={} disposition={} detail={}", attempt.index, attempt.disposition, attempt.detail))
+        .collect::<Vec<_>>()
+        .join("\n");
     CmdResult {
-        ok: result.ok,
-        code: result.code,
-        stdout: result.stdout.clone(),
-        stderr: result.stderr.clone(),
+        ok: outcome.ok,
+        code: if outcome.ok { 0 } else { 1 },
+        stdout: format!("promotion={}\n{}", outcome.receipt.promotion, detail),
+        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
     }
 }
 

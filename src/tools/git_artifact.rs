@@ -6,10 +6,8 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
     "sync",
     "clone or fast-forward a repository artifact",
     &[
-        ToolArg::optional("repo", ToolArgKind::String),
+        ToolArg::required("component", ToolArgKind::String),
         ToolArg::required("path", ToolArgKind::String),
-        ToolArg::optional("branch", ToolArgKind::String),
-        ToolArg::optional("remote", ToolArgKind::String),
         // Source Git runs as the declared non-root bearer.
         ToolArg::optional("bearer", ToolArgKind::String),
     ],

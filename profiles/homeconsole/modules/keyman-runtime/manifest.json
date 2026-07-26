@@ -10,10 +10,8 @@
       "tool": "git-artifact",
       "permutation": "sync",
       "args": {
-        "repo": "git@git.home.arpa:HOMESERVERSLTD/keyman.git",
-        "path": "/opt/keyman/source",
-        "branch": "main",
-        "remote": "origin"
+        "component": "keyman",
+        "path": "/opt/keyman/source"
       }
     },
     {
