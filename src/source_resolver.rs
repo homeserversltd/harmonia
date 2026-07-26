@@ -387,43 +387,6 @@ pub(crate) fn resolve_source(
     )
 }
 
-/// Lower certificate-selected source data into the one acquisition plan type.
-/// The resolver never sees credentials; a selector remains an opaque key until
-/// the engine supplies a scoped plan to the transport primitive.
-pub(crate) fn acquisition_plan(
-    resolution: &SourceResolution,
-    destination: PathBuf,
-    bearer: String,
-) -> Result<crate::tools::git_artifact::SourcePlan, String> {
-    let candidates = resolution
-        .candidates
-        .iter()
-        .map(|candidate| {
-            let kind = match candidate.kind.as_str() {
-                "git" => crate::tools::git_artifact::SourceCandidateKind::Git,
-                "local-checkout" => crate::tools::git_artifact::SourceCandidateKind::LocalCheckout,
-                other => return Err(format!("source-candidate-kind-unsupported kind={other}")),
-            };
-            Ok(crate::tools::git_artifact::SourceCandidate {
-                kind,
-                locator: candidate.locator.clone(),
-                credential_selector: candidate.credential_selector.clone(),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let expected_commit = (resolution.requested_ref.len() == 40
-        && resolution.requested_ref.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| resolution.requested_ref.clone());
-    Ok(crate::tools::git_artifact::SourcePlan {
-        candidates,
-        reference: resolution.requested_ref.clone(),
-        destination,
-        expected_commit,
-        bearer,
-        credentials: Default::default(),
-    })
-}
-
 /// Validate every declared source entry before any profile or module execution.
 /// An omitted `sources` object is deliberately an empty declaration set, allowing
 /// slice-1 certificates to remain valid until a later slice names consumers.
