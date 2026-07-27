@@ -22,6 +22,14 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "enable-first-present-now",
+        "select the first present system unit from an ordered typed candidate list, then enable and start it",
+        &[
+            ToolArg::required("candidate_units", ToolArgKind::StringArray),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    ),
+    ToolPermutation::new(
         "unit-present",
         "assert that a system unit is loaded without enabling or starting it",
         &[
@@ -106,11 +114,32 @@ pub(crate) fn validate_restart_policy(
     }
 }
 
+pub(crate) fn validate_candidate_units(
+    args: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    let Some(units) = args.get("candidate_units").and_then(serde_json::Value::as_array) else {
+        return Err("systemd-candidate-units-missing".to_string());
+    };
+    if units.is_empty() {
+        return Err("systemd-candidate-units-empty".to_string());
+    }
+    for value in units {
+        let Some(unit) = value.as_str() else {
+            return Err("systemd-candidate-unit-not-string".to_string());
+        };
+        if !is_unit_basename(unit) {
+            return Err(format!("systemd-candidate-unit-invalid-{unit}"));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_permutation(
     receipt_dir: &Path,
     name: &str,
     permutation: &str,
     service: Option<&str>,
+    candidate_units: &[String],
     target_user: Option<&str>,
     timeout_secs: u64,
     apply: bool,
@@ -118,6 +147,9 @@ pub(crate) fn run_permutation(
     force_service_restarts: bool,
     restart_policy: Option<&str>,
 ) -> Result<OperationOutcome, String> {
+    if permutation == "enable-first-present-now" {
+        return run_enable_first_present_now(receipt_dir, name, candidate_units, timeout_secs, apply);
+    }
     let user = permutation.starts_with("user-");
     let action = permutation.strip_prefix("user-").unwrap_or(permutation);
     if action == "restart" {
@@ -144,6 +176,84 @@ pub(crate) fn run_permutation(
         timeout_secs,
         apply,
     )
+}
+
+fn run_enable_first_present_now(
+    receipt_dir: &Path,
+    name: &str,
+    candidate_units: &[String],
+    timeout_secs: u64,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let service = select_first_present_unit(candidate_units, timeout_secs)?;
+    let outcome = run_action(
+        receipt_dir,
+        name,
+        "enable-now",
+        Some(&service),
+        false,
+        None,
+        timeout_secs,
+        apply,
+    )?;
+    annotate_candidate_selection(receipt_dir, name, candidate_units, &service)?;
+    Ok(OperationOutcome {
+        message: format!("systemd enable-first-present-now {service}"),
+        ..outcome
+    })
+}
+
+fn select_first_present_unit(candidate_units: &[String], timeout_secs: u64) -> Result<String, String> {
+    first_present_candidate(candidate_units, |unit| {
+        let result = systemctl("unit-present", unit, false, None, timeout_secs);
+        if result.ok && result.stdout.trim() != "not-found" {
+            return Ok(true);
+        }
+        if result.ok || result.stdout.trim() == "not-found" {
+            return Ok(false);
+        }
+        Err(format!("systemd-candidate-probe-failed-{unit}: {}", result.stderr))
+    })
+}
+
+fn first_present_candidate<F>(candidate_units: &[String], mut is_present: F) -> Result<String, String>
+where
+    F: FnMut(&str) -> Result<bool, String>,
+{
+    for unit in candidate_units {
+        if is_present(unit)? {
+            return Ok(unit.clone());
+        }
+    }
+    Err("systemd-candidate-units-none-present".to_string())
+}
+
+fn annotate_candidate_selection(
+    receipt_dir: &Path,
+    name: &str,
+    candidate_units: &[String],
+    selected_service: &str,
+) -> Result<(), String> {
+    let path = receipt_dir.join(format!("{name}.json"));
+    let mut receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let object = receipt
+        .as_object_mut()
+        .ok_or_else(|| "systemd-receipt-object-invalid".to_string())?;
+    object.insert("candidate_units".to_string(), json!(candidate_units));
+    object.insert("selected_service".to_string(), json!(selected_service));
+    write_json(&path, &receipt)
+}
+
+fn is_unit_basename(unit: &str) -> bool {
+    let path = Path::new(unit);
+    !unit.is_empty()
+        && unit.ends_with(".service")
+        && !path.is_absolute()
+        && path.components().count() == 1
+        && path.file_name().is_some()
+        && !unit.chars().any(char::is_whitespace)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -776,5 +886,28 @@ mod tests {
         assert!(always.execute);
         assert_eq!(always.reason, "manifest-restart-policy-always");
         assert!(decide_restart(false, Some("active"), false, Some("ambient")).is_err());
+    }
+
+    #[test]
+    fn enable_first_present_now_selects_the_first_available_candidate_in_order() {
+        let candidates = vec![
+            "systemd-timesyncd.service".to_string(),
+            "chronyd.service".to_string(),
+            "ntpd.service".to_string(),
+        ];
+        let mut probed = Vec::new();
+        let selected = first_present_candidate(&candidates, |unit| {
+            probed.push(unit.to_string());
+            Ok(unit == "chronyd.service")
+        })
+        .unwrap();
+        assert_eq!(selected, "chronyd.service");
+        assert_eq!(
+            probed,
+            vec![
+                "systemd-timesyncd.service".to_string(),
+                "chronyd.service".to_string(),
+            ]
+        );
     }
 }
