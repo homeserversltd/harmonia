@@ -46,6 +46,14 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "disable-stop",
+        "disable and stop a system unit while preserving its unit file",
+        &[
+            ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    ),
+    ToolPermutation::new(
         "restart",
         "restart a system unit only when its module changed, unless the unit is inactive, --force-service-restarts is set, or restart_policy=always is declared",
         &[
@@ -411,7 +419,7 @@ pub(crate) fn run_action(
     let service = service.unwrap_or("");
     let mutating = matches!(
         action,
-        "daemon-reload" | "enable-now" | "disable-stop-remove" | "restart" | "stop"
+        "daemon-reload" | "enable-now" | "disable-stop" | "disable-stop-remove" | "restart" | "stop"
     );
     let unit_file_before = if action == "disable-stop-remove" {
         unit_file_path(service).is_some_and(|path| path.exists())
@@ -486,6 +494,7 @@ fn systemctl(
                 service.to_string(),
             ]);
         }
+        "disable-stop" => return disable_stop(service, user, timeout_secs),
         "disable-stop-remove" => return disable_stop_remove(service, user, timeout_secs),
         "restart" | "stop" => {
             args.extend([action.to_string(), service.to_string()]);
@@ -549,9 +558,7 @@ fn disable_stop_remove(service: &str, user: bool, timeout_secs: u64) -> CmdResul
         };
     }
 
-    let args = ["disable", "--now", service];
-    let mut result =
-        crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &args, timeout_secs);
+    let mut result = disable_stop(service, user, timeout_secs);
     if !result.ok {
         return result;
     }
@@ -573,6 +580,19 @@ fn disable_stop_remove(service: &str, user: bool, timeout_secs: u64) -> CmdResul
         .stdout
         .push_str(&format!("removed unit file: {}", unit_file.display()));
     result
+}
+
+fn disable_stop(service: &str, user: bool, timeout_secs: u64) -> CmdResult {
+    if user {
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: "systemd-action-unsupported-user-disable-stop".to_string(),
+        };
+    }
+    let args = ["disable", "--now", service];
+    crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &args, timeout_secs)
 }
 
 fn unit_file_path(service: &str) -> Option<PathBuf> {
