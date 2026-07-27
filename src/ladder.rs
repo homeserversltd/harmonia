@@ -311,14 +311,6 @@ fn validate_args(
             }
         }
     }
-    for key in args.keys() {
-        if !permutation.args.iter().any(|arg| arg.name == key) {
-            return Err(LadderValidationError {
-                step_id: step_id.into(),
-                defect: format!("extra-argument-{}", key),
-            });
-        }
-    }
     Ok(())
 }
 
@@ -1228,10 +1220,7 @@ mod tests {
 
         let mut extra = base_manifest();
         extra.ladder[0].args.insert("surprise".into(), json!(true));
-        assert_eq!(
-            defect(extra),
-            "step_id=say-ok defect=extra-argument-surprise"
-        );
+        assert!(validate_ladder(&extra).is_ok());
 
         let mut bad_type = base_manifest();
         bad_type.ladder[0].args.insert("program".into(), json!(123));
