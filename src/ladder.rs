@@ -15,6 +15,8 @@ pub(crate) struct LadderManifest {
     pub version: String,
     pub description: String,
     #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
     pub optional: bool,
     #[serde(default)]
     pub optional_warning: Option<String>,
@@ -22,6 +24,8 @@ pub(crate) struct LadderManifest {
     pub group: Option<LadderGroup>,
     #[serde(default)]
     pub constants: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub caduceus_commands: Vec<String>,
     #[serde(default)]
     pub files_root: Option<String>,
     pub ladder: Vec<LadderStep>,
@@ -1166,10 +1170,12 @@ mod tests {
             id: "synthetic-ladder".into(),
             version: "1.2.3".into(),
             description: "synthetic ladder".into(),
+            role: None,
             optional: false,
             optional_warning: None,
             group: None,
             constants: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
             files_root: None,
             base_dir: PathBuf::new(),
             ladder: vec![LadderStep {
@@ -1445,6 +1451,7 @@ mod tests {
             id: id.into(),
             version: "1.0.0".into(),
             description: format!("{id} fixture"),
+            role: None,
             optional: false,
             optional_warning: None,
             group: Some(LadderGroup {
@@ -1460,6 +1467,7 @@ mod tests {
                 },
             }),
             constants: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
             files_root: None,
             base_dir: PathBuf::new(),
             ladder: vec![LadderStep {

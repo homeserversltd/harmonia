@@ -203,6 +203,46 @@ fn group_loser_winners(selections: &BTreeMap<String, GroupSelection>) -> BTreeMa
     losers
 }
 
+fn caduceus_commands_for_profile(
+    profile: &Profile,
+    module_root: &Path,
+) -> Result<Vec<String>, String> {
+    let mut commands = Vec::new();
+    for module_id in &profile.modules {
+        let Ok(LoadedModule::Ladder(module)) = load_profile_module(module_root, module_id) else {
+            continue;
+        };
+        for command in module.caduceus_commands {
+            if !commands.contains(&command) {
+                commands.push(command);
+            }
+        }
+    }
+    Ok(commands)
+}
+
+fn compose_caduceus_commands(
+    profile: &Profile,
+    module_root: &Path,
+    manifest: &mut LadderManifest,
+) -> Result<(), String> {
+    let is_caduceus = manifest.ladder.iter().any(|step| {
+        step.tool == "service-runtime"
+            && step.args.get("component").and_then(|value| value.as_str()) == Some("caduceus")
+    });
+    if !is_caduceus {
+        return Ok(());
+    }
+    let commands = caduceus_commands_for_profile(profile, module_root)?;
+    for step in &mut manifest.ladder {
+        if step.tool == "service-runtime" && step.permutation == "converge" {
+            step.args
+                .insert("caduceus_commands".to_string(), json!(commands));
+        }
+    }
+    Ok(())
+}
+
 fn write_group_selection_receipt(
     receipt_dir: &Path,
     selection: &GroupSelection,
@@ -399,8 +439,10 @@ pub(crate) fn run_profile_engine_with_preflight(
             }
             LoadedModule::Ladder(manifest) => {
                 let module_dir = receipt_dir.join("modules").join(&manifest.id);
+                let mut manifest = manifest.clone();
+                compose_caduceus_commands(profile, module_root, &mut manifest)?;
                 execute_ladder_manifest(
-                    manifest,
+                    &manifest,
                     &module_dir,
                     apply,
                     profile.package_authority.as_ref(),
@@ -720,6 +762,7 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
         "local-ai-runtime",
         "pinned-artifacts-runtime",
         "homeconsole-update-runtime",
+        "household-time",
         "homeconsole-caduceus-public-lever",
     ] {
         let module_dir = module_root.join(module_id);
@@ -903,6 +946,7 @@ pub(crate) fn homeserver_module_ids_from_profile_modules(
         "nginx",
         "coronatio",
         "keyman",
+        "household-time",
         "caduceus",
         "forgejo",
         "gogs",
@@ -959,6 +1003,7 @@ pub(crate) fn tv_module_ids_from_profile_modules(
         "power-controller-maintenance",
         "console-recovery",
         "tv-update-runtime",
+        "household-time",
         "caduceus-public-lever",
         "appliance-proof",
     ] {
