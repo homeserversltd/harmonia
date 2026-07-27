@@ -4,6 +4,7 @@
   "version": "2.0.0",
   "optional": false,
   "description": "Household time watched consumer: applies only a fresh valid resolver fact and proves NTP through systemd.",
+  "caduceus_commands": ["time set-timezone"],
   "constants": {"resolver_time_state_url":"http://homeserver.home.arpa:3014/time/state"},
   "ladder": [
     {"step_id":"household-time-peer-state","tool":"household-time","permutation":"watch-and-set","args":{"backend":"caduceus","state_url":"$constants.resolver_time_state_url","timeout_secs":10}},
