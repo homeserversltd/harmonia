@@ -112,6 +112,7 @@ pub mod command;
 pub mod files;
 pub mod git_artifact;
 pub mod health;
+pub mod household_time;
 pub mod machine_id;
 pub(crate) mod module_steps;
 pub mod package;
@@ -127,6 +128,7 @@ pub const TOOLBELT: &[ToolContract] = &[
     files::CONTRACT,
     git_artifact::CONTRACT,
     health::CONTRACT,
+    household_time::CONTRACT,
     machine_id::CONTRACT,
     package::CONTRACT,
     service_runtime::CONTRACT,
@@ -228,6 +230,7 @@ mod tests {
             "files",
             "git-artifact",
             "health",
+            "household-time",
             "machine-id",
             "package",
             "service-runtime",

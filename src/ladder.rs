@@ -321,6 +321,12 @@ fn validate_tool_semantics(
     args: &BTreeMap<String, Value>,
 ) -> Result<(), LadderValidationError> {
     match (tool, permutation) {
+        ("systemd", "enable-first-present-now") => {
+            tools::systemd::validate_candidate_units(args).map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            })
+        }
         ("systemd", "restart") | ("systemd", "user-restart") => {
             tools::systemd::validate_restart_policy(args).map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -334,12 +340,11 @@ fn validate_tool_semantics(
             }),
         ("aur", permutation) => {
             tools::aur::validate_ladder_args(permutation, args).map_err(|defect| {
-                LadderValidationError {
-                    step_id: step_id.into(),
-                    defect,
-                }
+                LadderValidationError { step_id: step_id.into(), defect }
             })
         }
+        ("household-time", permutation) => tools::household_time::validate_ladder_args(permutation, args)
+            .map_err(|defect| LadderValidationError { step_id: step_id.into(), defect }),
         _ => Ok(()),
     }
 }
@@ -447,6 +452,7 @@ fn execute_validated_step(
         ("command", "capture") => command_capture_step(step, module_dir, apply),
         ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, apply),
         ("health", "probe") => health_probe_step(step, module_dir, apply),
+        ("household-time", _) => household_time_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
         ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
         ("files", "validated-file-symlink") => {
@@ -574,6 +580,14 @@ fn command_capture_step(
         message: format!("command capture {}", program),
         command: Some(result),
     })
+}
+
+fn household_time_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    tools::household_time::execute(module_dir, &step.step_id, &step.permutation, &step.args, apply)
 }
 
 fn health_probe_step(
@@ -902,6 +916,7 @@ fn systemd_step(
         &step.step_id,
         &step.permutation,
         optional_string_arg(&step.args, "service"),
+        &string_array_arg(&step.args, "candidate_units"),
         optional_string_arg(&step.args, "user"),
         integer_arg(&step.args, "timeout_secs", 30),
         apply,

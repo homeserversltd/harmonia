@@ -1,44 +1,12 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "household-time",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "optional": false,
-  "description": "Household time watched-consumer: reads the resolver at the conventional home gateway, applies only a fresh valid timezone, and always ensures NTP.",
-  "role": "watched-consumer",
-  "constants": {
-    "resolver_peer": "homeserver.home.arpa",
-    "resolver_time_state_url": "http://homeserver.home.arpa:3014/time/state"
-  },
-  "caduceus_commands": [
-    "time ensure-ntp",
-    "time set-timezone"
-  ],
+  "description": "Household time watched consumer: applies only a fresh valid resolver fact and proves NTP through systemd.",
+  "constants": {"resolver_time_state_url":"http://homeserver.home.arpa:3014/time/state"},
   "ladder": [
-    {
-      "step_id": "household-time-peer-state",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/sh",
-        "args": [
-          "-ceu",
-          "state=$(/usr/bin/curl -fsS --connect-timeout 3 --max-time 5 http://homeserver.home.arpa:3014/time/state 2>/dev/null || true)\nzone=$(printf '%s' \"$state\" | /usr/bin/python3 -c 'import datetime,json,sys\ntry:\n d=json.load(sys.stdin); s=d.get(\"state\",d); z=s.get(\"timezone\"); v=s.get(\"valid_until\"); now=datetime.datetime.now(datetime.timezone.utc); valid=datetime.datetime.fromisoformat(v.replace(\"Z\",\"+00:00\")) if isinstance(v,str) else None; print(z if isinstance(z,str) and valid and valid>now else \"\")\nexcept Exception: pass')\nif [ -n \"$zone\" ]; then\n  /usr/local/bin/caduceus time set-timezone \"$zone\"\nelse\n  printf '%s\\n' 'household-time-peer-state-unavailable-or-stale' >&2\nfi"
-        ],
-        "timeout_secs": 10
-      }
-    },
-    {
-      "step_id": "household-time-ensure-ntp",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/local/bin/caduceus",
-        "args": [
-          "time",
-          "ensure-ntp"
-        ],
-        "timeout_secs": 15
-      }
-    }
+    {"step_id":"household-time-peer-state","tool":"household-time","permutation":"watch-and-set","args":{"backend":"caduceus","state_url":"$constants.resolver_time_state_url","timeout_secs":10}},
+    {"step_id":"household-time-ensure-ntp","tool":"systemd","permutation":"enable-first-present-now","args":{"candidate_units":["systemd-timesyncd.service","chronyd.service","ntpd.service"],"timeout_secs":15}}
   ]
 }
