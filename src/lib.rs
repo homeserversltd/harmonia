@@ -141,6 +141,8 @@ struct ModuleManifest {
     #[serde(default)]
     caduceus_profile_source: Option<CaduceusProfileSourceManifest>,
     #[serde(default)]
+    caduceus_commands: Vec<String>,
+    #[serde(default)]
     template_files: Vec<TemplateFileManifest>,
     #[serde(default)]
     variables: HashMap<String, String>,
@@ -1141,6 +1143,7 @@ mod tests {
             groups: vec![],
             managed_files: vec![],
             caduceus_profile_source: None,
+            caduceus_commands: vec![],
             template_files: vec![],
             variables: HashMap::new(),
             optional: false,
@@ -1411,6 +1414,7 @@ mod tests {
                 "power-controller-maintenance".to_string(),
                 "console-recovery".to_string(),
                 "tv-update-runtime".to_string(),
+                "household-time".to_string(),
                 "caduceus-public-lever".to_string(),
                 "appliance-proof".to_string()
             ]

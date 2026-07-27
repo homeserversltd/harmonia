@@ -26,6 +26,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("managed_files_schema", ToolArgKind::String),
         ToolArg::optional("managed_files", ToolArgKind::Json),
         ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
+        ToolArg::optional("caduceus_commands", ToolArgKind::Json),
         ToolArg::optional("build_environment", ToolArgKind::Json),
     ],
 )];
@@ -160,6 +161,13 @@ fn module_from_args(
         .map(serde_json::from_value)
         .transpose()
         .map_err(|e| format!("service-runtime-caduceus-profile-source-invalid: {e}"))?;
+    let caduceus_commands: Vec<String> = args
+        .get("caduceus_commands")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("service-runtime-caduceus-commands-invalid: {e}"))?
+        .unwrap_or_default();
     Ok(ModuleManifest {
         id: string_arg(args, "module_id").unwrap_or_else(|_| spec.op_prefix.to_string()),
         description: String::new(),
@@ -189,6 +197,7 @@ fn module_from_args(
         groups: vec![],
         managed_files,
         caduceus_profile_source,
+        caduceus_commands,
         template_files: vec![],
         variables: std::collections::HashMap::new(),
         optional: false,
@@ -535,7 +544,54 @@ fn effective_managed_files(
     if let Some(profile_source) = &module.caduceus_profile_source {
         files.push(render_caduceus_profile_source(profile_source, source_dir)?);
     }
+    if !module.caduceus_commands.is_empty() {
+        for file in &mut files {
+            if file.path.ends_with("/profile.json") {
+                let mut value: Value = serde_json::from_str(&file.content).map_err(|e| {
+                    format!("service-runtime-caduceus-profile-json-invalid {}: {e}", file.path)
+                })?;
+                let commands = value
+                    .get_mut("commands")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| {
+                        format!("service-runtime-caduceus-profile-json-commands-missing {}", file.path)
+                    })?;
+                for command in &module.caduceus_commands {
+                    let value = Value::String(command.clone());
+                    if !commands.contains(&value) {
+                        commands.push(value);
+                    }
+                }
+                file.content = serde_json::to_string_pretty(&value)
+                    .map_err(|e| format!("service-runtime-caduceus-profile-json-render-failed: {e}"))?
+                    + "\n";
+            } else if file.path.ends_with("/profile.yaml") {
+                file.content = append_caduceus_yaml_commands(&file.content, &module.caduceus_commands)?;
+            }
+        }
+    }
     Ok(files)
+}
+
+fn append_caduceus_yaml_commands(content: &str, additions: &[String]) -> Result<String, String> {
+    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+    let services = lines
+        .iter()
+        .position(|line| line == "services:")
+        .ok_or_else(|| "service-runtime-caduceus-profile-yaml-services-missing".to_string())?;
+    let existing: std::collections::BTreeSet<String> = lines
+        .iter()
+        .filter_map(|line| line.strip_prefix("- "))
+        .map(ToString::to_string)
+        .collect();
+    let mut insert_at = services;
+    for command in additions {
+        if !existing.contains(command) {
+            lines.insert(insert_at, format!("- {command}"));
+            insert_at += 1;
+        }
+    }
+    Ok(lines.join("\n") + "\n")
 }
 
 fn render_caduceus_profile_source(
@@ -880,7 +936,15 @@ mod tests {
         let receipt_dir = root.join("receipts");
         let args = base_args(&root);
 
-        let execution = execute_ladder_step(&args, &receipt_dir, false).unwrap();
+        let source_plan = tools::git_artifact::SourcePlan {
+            candidates: Vec::new(),
+            reference: "main".into(),
+            destination: source_dir,
+            expected_commit: None,
+            bearer: "owner".into(),
+            credentials: std::collections::BTreeMap::new(),
+        };
+        let execution = execute_ladder_step(&args, &receipt_dir, false, &source_plan).unwrap();
         assert!(execution.ok);
         assert!(!execution.changed);
 

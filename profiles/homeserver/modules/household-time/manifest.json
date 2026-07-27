@@ -1,0 +1,28 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "household-time",
+  "version": "1.0.0",
+  "optional": false,
+  "description": "Household time resolver: resolve and retain the household timezone fact during ordinary convergence.",
+  "role": "resolver",
+  "caduceus_commands": [
+    "time state",
+    "time ensure-ntp",
+    "time set-timezone"
+  ],
+  "ladder": [
+    {
+      "step_id": "household-time-resolve",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/local/bin/caduceus",
+        "args": [
+          "time",
+          "resolve"
+        ],
+        "timeout_secs": 15
+      }
+    }
+  ]
+}
