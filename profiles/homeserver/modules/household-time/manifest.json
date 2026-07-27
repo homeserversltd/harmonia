@@ -4,6 +4,7 @@
   "version": "2.0.0",
   "optional": false,
   "description": "Household time resolver: resolve and retain the household timezone fact, then prove NTP through systemd.",
+  "caduceus_commands": ["time resolve", "time state"],
   "ladder": [
     {"step_id":"household-time-resolve","tool":"household-time","permutation":"resolve","args":{"backend":"caduceus","timeout_secs":15}},
     {"step_id":"household-time-ensure-ntp","tool":"systemd","permutation":"enable-first-present-now","args":{"candidate_units":["systemd-timesyncd.service","chronyd.service","ntpd.service"],"timeout_secs":15}}
