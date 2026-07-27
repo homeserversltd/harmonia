@@ -23,6 +23,19 @@
         ],
         "timeout_secs": 15
       }
+    },
+    {
+      "step_id": "household-time-ensure-ntp",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/local/bin/caduceus",
+        "args": [
+          "time",
+          "ensure-ntp"
+        ],
+        "timeout_secs": 15
+      }
     }
   ]
 }
