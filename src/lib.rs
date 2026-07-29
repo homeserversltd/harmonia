@@ -2337,6 +2337,7 @@ mod tests {
                 "homeserver",
                 "caduceus",
                 vec![
+                    ("files", "managed-directories"),
                     ("command", "capture"),
                     ("service-runtime", "converge"),
                     ("command", "capture"),

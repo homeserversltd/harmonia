@@ -56,6 +56,16 @@ fn invoke(backend: &str, operation: &str, timezone: Option<&str>, state_path: Op
     if !apply { return planned(operation); }
     match backend {
         "caduceus" => {
+            if operation == "resolve" {
+                let state = tools::command::capture_with_timeout(
+                    "/usr/local/bin/caduceus",
+                    &["time", "state"],
+                    timeout,
+                );
+                if state.ok && fresh_timezone(&state.stdout).is_some() {
+                    return state;
+                }
+            }
             let mut args = vec!["time", operation];
             if let Some(zone) = timezone { args.push(zone); }
             tools::command::capture_with_timeout("/usr/local/bin/caduceus", &args, timeout)
