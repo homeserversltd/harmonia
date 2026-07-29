@@ -86,6 +86,15 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "executable-present",
+        "prove one declared executable is runnable in a kernel-owned fixed search scope",
+        &[
+            ToolArg::required("executable", ToolArgKind::String),
+            ToolArg::optional("search_scope", ToolArgKind::String),
+            ToolArg::optional("receipt_label", ToolArgKind::String),
+        ],
+    ),
+    ToolPermutation::new(
         "validated-symlink",
         "validate a candidate symlink before atomically promoting declared link ownership",
         &[
@@ -211,6 +220,84 @@ pub struct FileRemovalOutcome {
     pub checked: usize,
     pub removed: usize,
     pub entries: Vec<FileRemovalEntry>,
+    pub message: String,
+}
+
+pub const SYSTEM_EXECUTABLE_PATHS: &[&str] = &[
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutableSearchScope {
+    System,
+}
+
+impl ExecutableSearchScope {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.unwrap_or("system") {
+            "system" => Ok(Self::System),
+            other => Err(format!("executable-search-scope-unsupported {other}")),
+        }
+    }
+
+    fn paths(self) -> Vec<PathBuf> {
+        match self {
+            Self::System => SYSTEM_EXECUTABLE_PATHS.iter().map(PathBuf::from).collect(),
+        }
+    }
+}
+
+pub(crate) fn validate_executable_present_args(
+    args: &BTreeMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    let executable = args
+        .get("executable")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    validate_executable_name(executable)?;
+    ExecutableSearchScope::parse(args.get("search_scope").and_then(serde_json::Value::as_str))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutablePresentRequest {
+    pub executable: String,
+    pub search_scope: ExecutableSearchScope,
+    pub receipt_name: String,
+    pub receipt_label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutableMetadata {
+    pub candidate_path: PathBuf,
+    pub resolved_path: Option<PathBuf>,
+    pub path_kind: String,
+    pub target_kind: String,
+    pub symlink_target: Option<PathBuf>,
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub size: Option<u64>,
+    pub executable_for_effective_context: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutablePresentOutcome {
+    pub ok: bool,
+    pub changed: bool,
+    pub executable: String,
+    pub search_scope: ExecutableSearchScope,
+    pub search_order: Vec<PathBuf>,
+    pub resolved_path: Option<PathBuf>,
+    pub metadata: Option<ExecutableMetadata>,
+    pub inspected: Vec<ExecutableMetadata>,
+    pub first_blocker: String,
     pub message: String,
 }
 
@@ -2184,6 +2271,224 @@ fn source_shelf_sweep_with_fault(
     Ok(outcome)
 }
 
+fn validate_executable_name(executable: &str) -> Result<(), String> {
+    let path = Path::new(executable);
+    if executable.is_empty()
+        || executable.contains('/')
+        || executable.contains('\\')
+        || path.components().count() != 1
+        || matches!(executable, "." | "..")
+    {
+        return Err(format!("executable-name-rejected {executable:?}"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn executable_for_effective_context(path: &Path) -> Result<bool, String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("executable-path-invalid {}", path.display()))?;
+    let result = unsafe {
+        libc::faccessat(
+            libc::AT_FDCWD,
+            c_path.as_ptr(),
+            libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EACCES) | Some(libc::ENOENT) | Some(libc::ENOTDIR)
+    ) {
+        Ok(false)
+    } else {
+        Err(format!(
+            "executable-access-check-failed {}: {error}",
+            path.display()
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+fn executable_for_effective_context(_path: &Path) -> Result<bool, String> {
+    Err("executable-effective-context-check-unsupported".into())
+}
+
+fn executable_metadata(candidate: &Path) -> Result<ExecutableMetadata, String> {
+    let link_metadata = fs::symlink_metadata(candidate).map_err(|error| {
+        format!(
+            "executable-candidate-metadata-failed {}: {error}",
+            candidate.display()
+        )
+    })?;
+    let is_symlink = link_metadata.file_type().is_symlink();
+    let symlink_target = if is_symlink {
+        Some(fs::read_link(candidate).map_err(|error| {
+            format!(
+                "executable-symlink-read-failed {}: {error}",
+                candidate.display()
+            )
+        })?)
+    } else {
+        None
+    };
+    let resolved_path = candidate.canonicalize().ok();
+    let target_metadata = resolved_path
+        .as_deref()
+        .and_then(|path| fs::metadata(path).ok());
+    let target_regular = target_metadata
+        .as_ref()
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false);
+    let executable = if target_regular {
+        executable_for_effective_context(candidate)?
+    } else {
+        false
+    };
+    #[cfg(unix)]
+    let (mode, uid, gid) = target_metadata
+        .as_ref()
+        .map(|metadata| {
+            (
+                Some(metadata.permissions().mode() & 0o777),
+                Some(metadata.uid()),
+                Some(metadata.gid()),
+            )
+        })
+        .unwrap_or((None, None, None));
+    #[cfg(not(unix))]
+    let (mode, uid, gid) = (None, None, None);
+    Ok(ExecutableMetadata {
+        candidate_path: candidate.to_path_buf(),
+        resolved_path,
+        path_kind: if is_symlink {
+            "symlink"
+        } else if link_metadata.file_type().is_file() {
+            "regular-file"
+        } else {
+            "non-regular"
+        }
+        .into(),
+        target_kind: if target_regular {
+            "regular-file"
+        } else if target_metadata.is_some() {
+            "non-regular"
+        } else {
+            "unresolved"
+        }
+        .into(),
+        symlink_target,
+        mode,
+        uid,
+        gid,
+        size: target_metadata.as_ref().map(|metadata| metadata.len()),
+        executable_for_effective_context: executable,
+    })
+}
+
+fn executable_present_in_paths(
+    request: &ExecutablePresentRequest,
+    search_order: Vec<PathBuf>,
+    receipt_dir: &Path,
+) -> Result<ExecutablePresentOutcome, String> {
+    validate_executable_name(&request.executable)?;
+    validate_receipt_name(&request.receipt_name)?;
+    let mut inspected = Vec::new();
+    let mut selected = None;
+    for root in &search_order {
+        if !root.is_absolute() {
+            return Err(format!(
+                "executable-search-root-not-absolute {}",
+                root.display()
+            ));
+        }
+        let candidate = root.join(&request.executable);
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => {
+                let metadata = executable_metadata(&candidate)?;
+                if metadata.target_kind == "regular-file"
+                    && metadata.executable_for_effective_context
+                {
+                    selected = Some(metadata.clone());
+                    inspected.push(metadata);
+                    break;
+                }
+                inspected.push(metadata);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "executable-candidate-metadata-failed {}: {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+    let first_blocker = if selected.is_some() {
+        "none"
+    } else if inspected.is_empty() {
+        "executable-not-found"
+    } else {
+        "executable-not-runnable"
+    }
+    .to_string();
+    let outcome = ExecutablePresentOutcome {
+        ok: selected.is_some(),
+        changed: false,
+        executable: request.executable.clone(),
+        search_scope: request.search_scope,
+        search_order,
+        resolved_path: selected
+            .as_ref()
+            .and_then(|metadata| metadata.resolved_path.clone()),
+        metadata: selected,
+        inspected,
+        first_blocker: first_blocker.clone(),
+        message: if first_blocker == "none" {
+            format!("executable {} is runnable", request.executable)
+        } else {
+            format!("{first_blocker} {}", request.executable)
+        },
+    };
+    fs::create_dir_all(receipt_dir).map_err(|error| error.to_string())?;
+    let receipt_name = if request.receipt_name.ends_with(".json") {
+        request.receipt_name.clone()
+    } else {
+        format!("{}.json", request.receipt_name)
+    };
+    crate::write_json(
+        &receipt_dir.join(receipt_name),
+        &json!({
+            "schema": "harmonia.files.executable_present.v1",
+            "ok": outcome.ok,
+            "changed": false,
+            "evidence_only": true,
+            "executable": outcome.executable,
+            "search_scope": outcome.search_scope,
+            "search_order": outcome.search_order,
+            "receipt_label": request.receipt_label,
+            "resolved_path": outcome.resolved_path,
+            "metadata": outcome.metadata,
+            "inspected": outcome.inspected,
+            "first_missing_signal": outcome.first_blocker,
+        }),
+    )?;
+    Ok(outcome)
+}
+
+pub fn executable_present(
+    request: &ExecutablePresentRequest,
+    receipt_dir: &Path,
+) -> Result<ExecutablePresentOutcome, String> {
+    executable_present_in_paths(request, request.search_scope.paths(), receipt_dir)
+}
+
 pub fn remove_declared_files(
     target_root: &Path,
     paths: &[String],
@@ -2985,6 +3290,118 @@ mod managed_ownership_tests {
         assert_eq!(receipt["entries"][0]["ownership_source"], "declared");
         assert_eq!(receipt["entries"][0]["observed_uid"], metadata.uid());
         assert_eq!(receipt["entries"][0]["observed_gid"], metadata.gid());
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_present_accepts_regular_file_and_symlink_with_effective_metadata() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-executable-present-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        let first = scratch.join("first");
+        let second = scratch.join("second");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("fixture-tool"), b"not runnable\n").unwrap();
+        set_mode(&first.join("fixture-tool"), 0o644).unwrap();
+        fs::write(second.join("fixture-target"), b"#!/bin/sh\nexit 0\n").unwrap();
+        set_mode(&second.join("fixture-target"), 0o755).unwrap();
+        std::os::unix::fs::symlink("fixture-target", second.join("fixture-tool")).unwrap();
+        let request = ExecutablePresentRequest {
+            executable: "fixture-tool".into(),
+            search_scope: ExecutableSearchScope::System,
+            receipt_name: "present".into(),
+            receipt_label: Some("fixture present".into()),
+        };
+
+        let outcome =
+            executable_present_in_paths(&request, vec![first.clone(), second.clone()], &receipts)
+                .unwrap();
+
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.first_blocker, "none");
+        assert_eq!(outcome.inspected.len(), 2);
+        assert_eq!(outcome.metadata.as_ref().unwrap().path_kind, "symlink");
+        assert_eq!(
+            outcome.resolved_path,
+            Some(second.join("fixture-target").canonicalize().unwrap())
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("present.json")).unwrap()).unwrap();
+        assert_eq!(receipt["schema"], "harmonia.files.executable_present.v1");
+        assert_eq!(receipt["evidence_only"], true);
+        assert_eq!(receipt["receipt_label"], "fixture present");
+        assert_eq!(receipt["first_missing_signal"], "none");
+        assert_eq!(receipt["metadata"]["target_kind"], "regular-file");
+        assert_eq!(receipt["metadata"]["mode"], 0o755);
+
+        fs::write(first.join("direct-tool"), b"#!/bin/sh\nexit 0\n").unwrap();
+        set_mode(&first.join("direct-tool"), 0o751).unwrap();
+        let direct = executable_present_in_paths(
+            &ExecutablePresentRequest {
+                executable: "direct-tool".into(),
+                search_scope: ExecutableSearchScope::System,
+                receipt_name: "direct".into(),
+                receipt_label: None,
+            },
+            vec![first],
+            &receipts,
+        )
+        .unwrap();
+        assert!(direct.ok);
+        assert_eq!(direct.metadata.as_ref().unwrap().path_kind, "regular-file");
+        assert_eq!(direct.metadata.as_ref().unwrap().mode, Some(0o751));
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_present_returns_typed_not_found_and_not_runnable_blockers() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-executable-blockers-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        let search = scratch.join("search");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&search).unwrap();
+        let request = |name: &str| ExecutablePresentRequest {
+            executable: name.into(),
+            search_scope: ExecutableSearchScope::System,
+            receipt_name: name.into(),
+            receipt_label: None,
+        };
+
+        let absent =
+            executable_present_in_paths(&request("absent-tool"), vec![search.clone()], &receipts)
+                .unwrap();
+        assert!(!absent.ok);
+        assert_eq!(absent.first_blocker, "executable-not-found");
+
+        fs::write(search.join("blocked-tool"), b"not runnable\n").unwrap();
+        set_mode(&search.join("blocked-tool"), 0o644).unwrap();
+        let blocked =
+            executable_present_in_paths(&request("blocked-tool"), vec![search], &receipts).unwrap();
+        assert!(!blocked.ok);
+        assert_eq!(blocked.first_blocker, "executable-not-runnable");
+        assert_eq!(blocked.inspected[0].mode, Some(0o644));
+        for (name, blocker) in [
+            ("absent-tool", "executable-not-found"),
+            ("blocked-tool", "executable-not-runnable"),
+        ] {
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&fs::read(receipts.join(format!("{name}.json"))).unwrap())
+                    .unwrap();
+            assert_eq!(receipt["first_missing_signal"], blocker);
+            assert_eq!(receipt["changed"], false);
+        }
+        assert!(ExecutableSearchScope::parse(Some("manifest-path")).is_err());
+        assert!(validate_executable_name("/usr/bin/sh").is_err());
         let _ = fs::remove_dir_all(&scratch);
     }
 

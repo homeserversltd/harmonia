@@ -58,31 +58,19 @@
     },
     {
       "step_id": "binary-gamescope",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v gamescope >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "gamescope"
       },
       "on_failure": "continue-optional"
     },
     {
       "step_id": "binary-steam",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v steam >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "steam"
       },
       "on_failure": "continue-optional"
     },

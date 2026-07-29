@@ -339,6 +339,11 @@ fn validate_tool_semantics(
         }
         ("household-time", permutation) => tools::household_time::validate_ladder_args(permutation, args)
             .map_err(|defect| LadderValidationError { step_id: step_id.into(), defect }),
+        ("files", "executable-present") => tools::files::validate_executable_present_args(args)
+            .map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            }),
         _ => Ok(()),
     }
 }
@@ -381,8 +386,16 @@ pub(crate) fn execute_ladder_manifest(
         if !outcome.ok {
             ok = false;
             if first_missing_signal.is_none() {
-                first_missing_signal =
-                    Some(format!("step_id={} defect=tool-step-failed", step.step_id));
+                let defect = if step.tool == "files" && step.permutation == "executable-present" {
+                    outcome
+                        .message
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("tool-step-failed")
+                } else {
+                    "tool-step-failed"
+                };
+                first_missing_signal = Some(format!("step_id={} defect={defect}", step.step_id));
             }
             if step.on_failure == OnFailure::Stop {
                 break;
@@ -454,6 +467,7 @@ fn execute_validated_step(
             validated_file_symlink_step(step, manifest, module_dir, apply)
         }
         ("files", "remove") => files_remove_step(step, module_dir, apply),
+        ("files", "executable-present") => files_executable_present_step(step, module_dir),
         ("files", "source-shelf-sweep") => {
             files_source_shelf_sweep_step(step, manifest, module_dir, apply)
         }
@@ -771,6 +785,33 @@ fn files_remove_step(
         ok: outcome.ok,
         changed: outcome.changed,
         skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+
+fn files_executable_present_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+) -> Result<OperationOutcome, String> {
+    let search_scope = crate::tools::files::ExecutableSearchScope::parse(optional_string_arg(
+        &step.args,
+        "search_scope",
+    ))?;
+    let outcome = crate::tools::files::executable_present(
+        &crate::tools::files::ExecutablePresentRequest {
+            executable: string_arg(&step.args, "executable").to_string(),
+            search_scope,
+            receipt_name: step.step_id.clone(),
+            receipt_label: optional_string_arg(&step.args, "receipt_label")
+                .map(ToString::to_string),
+        },
+        module_dir,
+    )?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: false,
+        skipped: false,
         message: outcome.message,
         command: None,
     })

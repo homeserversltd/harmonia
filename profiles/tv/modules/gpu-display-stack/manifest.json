@@ -31,16 +31,10 @@
     },
     {
       "step_id": "binary-vulkaninfo",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v vulkaninfo >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "vulkaninfo"
       }
     }
   ]

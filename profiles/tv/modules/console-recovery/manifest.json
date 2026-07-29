@@ -40,86 +40,50 @@
     },
     {
       "step_id": "binary-ssh",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v ssh >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "ssh"
       }
     },
     {
       "step_id": "binary-git",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v git >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "git"
       }
     },
     {
       "step_id": "binary-tmux",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v tmux >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "tmux"
       }
     },
     {
       "step_id": "binary-kitty",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v kitty >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "kitty"
       }
     },
     {
       "step_id": "binary-curl",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v curl >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "curl"
       }
     },
     {
       "step_id": "binary-jq",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v jq >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "jq"
       }
     },
     {
