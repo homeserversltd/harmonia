@@ -2236,24 +2236,23 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(manifest.id, "homeconsole-caduceus-public-lever");
-        assert_eq!(manifest.ladder[0].tool, "service-runtime");
-        assert!(
-            manifest.ladder[0].args["repo"]
-                .as_str()
-                .unwrap_or("")
-                .contains("caduceus"),
-            "caduceus module must sync caduceus source"
-        );
+        let runtime = manifest
+            .ladder
+            .iter()
+            .find(|step| step.tool == "service-runtime")
+            .expect("homeconsole caduceus service-runtime step");
+        assert_eq!(runtime.args["component"].as_str(), Some("caduceus"));
         assert_eq!(
-            manifest.ladder[0].args["service"].as_str(),
-            Some("caduceus.service")
+            runtime.args["source_dir"].as_str(),
+            Some("/opt/caduceus/source")
         );
+        assert_eq!(runtime.args["service"].as_str(), Some("caduceus.service"));
         assert_eq!(
-            manifest.ladder[0].args["url"].as_str(),
+            runtime.args["url"].as_str(),
             Some("http://127.0.0.1:8787/health")
         );
         let managed_files: Vec<ManagedFileManifest> =
-            serde_json::from_value(manifest.ladder[0].args["managed_files"].clone()).unwrap();
+            serde_json::from_value(runtime.args["managed_files"].clone()).unwrap();
         assert!(
             managed_files
                 .iter()
@@ -2352,7 +2351,11 @@ mod tests {
             (
                 "homeconsole",
                 "homeconsole-caduceus-public-lever",
-                vec![("service-runtime", "converge")],
+                vec![
+                    ("command", "capture"),
+                    ("service-runtime", "converge"),
+                    ("command", "capture"),
+                ],
             ),
             ("rebis", "rebis-waybar-config", vec![("files", "converge")]),
         ];

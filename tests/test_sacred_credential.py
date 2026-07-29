@@ -6,30 +6,54 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "profiles/homeserver/modules/caduceus"
+CADUCEUS_MODULES = (
+    MODULE,
+    ROOT / "profiles/tv/modules/caduceus-public-lever",
+    ROOT / "profiles/homeconsole/modules/homeconsole-caduceus-public-lever",
+)
 
 
 class CaduceusStaffShelfManifestTests(unittest.TestCase):
     def test_staff_shelf_and_launchers_are_installed_from_the_synced_source_tree(self) -> None:
-        manifest = json.loads((MODULE / "manifest.json").read_text(encoding="utf-8"))
-        ladder = manifest["ladder"]
-        runtime_index = next(
-            index for index, step in enumerate(ladder) if step["tool"] == "service-runtime"
-        )
-        staff_index = next(
-            index
-            for index, step in enumerate(ladder)
-            if step["step_id"] == "caduceus-staff-shelf-from-synced-source"
-        )
-        staff = ladder[staff_index]
+        for module in CADUCEUS_MODULES:
+            with self.subTest(module=module):
+                manifest = json.loads((module / "manifest.json").read_text(encoding="utf-8"))
+                ladder = manifest["ladder"]
+                runtime_index = next(
+                    index for index, step in enumerate(ladder) if step["tool"] == "service-runtime"
+                )
+                staff_index = next(
+                    index
+                    for index, step in enumerate(ladder)
+                    if step["step_id"] == "caduceus-staff-shelf-from-synced-source"
+                )
+                staff = ladder[staff_index]
 
-        self.assertGreater(staff_index, runtime_index)
-        self.assertEqual(staff["tool"], "command")
-        self.assertEqual(staff["args"]["program"], "/usr/bin/sh")
-        rendered = "\n".join(staff["args"]["args"])
-        self.assertIn("/opt/caduceus/source/data/staff-actuators", rendered)
-        self.assertIn("caduceus_staff", rendered)
-        self.assertIn('find "$source_root" -maxdepth 1 -type f -name "caduceus-*"', rendered)
-        self.assertIn("/usr/local/sbin", rendered)
+                self.assertGreater(staff_index, runtime_index)
+                self.assertEqual(staff["tool"], "command")
+                self.assertEqual(staff["args"]["program"], "/usr/bin/sh")
+                rendered = "\n".join(staff["args"]["args"])
+                self.assertIn("/opt/caduceus/source/data/staff-actuators", rendered)
+                self.assertIn("caduceus_staff", rendered)
+                self.assertIn('find "$source_root" -maxdepth 1 -type f -name "caduceus-*"', rendered)
+                self.assertIn("/usr/local/sbin", rendered)
+
+    def test_manifests_do_not_embed_caduceus_staff_programs(self) -> None:
+        for module in CADUCEUS_MODULES:
+            with self.subTest(module=module):
+                manifest = json.loads((module / "manifest.json").read_text(encoding="utf-8"))
+                runtime = next(step for step in manifest["ladder"] if step["tool"] == "service-runtime")
+                managed = runtime["args"]["managed_files"]
+                self.assertFalse(
+                    any(entry["path"].startswith("/usr/local/sbin/") for entry in managed)
+                )
+                self.assertFalse(
+                    any(
+                        marker in entry.get("content", "")
+                        for entry in managed
+                        for marker in ("def ", "import ", "#!")
+                    )
+                )
 
     def test_files_root_retains_only_the_sudoers_policy_not_staff_python(self) -> None:
         manifest = json.loads((MODULE / "manifest.json").read_text(encoding="utf-8"))
