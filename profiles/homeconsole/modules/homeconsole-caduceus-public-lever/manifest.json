@@ -6,6 +6,19 @@
   "constants": {},
   "ladder": [
     {
+      "step_id": "caduceus-staff-venv",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": [
+          "-m",
+          "venv",
+          "/var/lib/caduceus/venv"
+        ]
+      }
+    },
+    {
       "step_id": "caduceus-service-runtime",
       "tool": "service-runtime",
       "permutation": "converge",
@@ -47,6 +60,18 @@
             "mode": 420,
             "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n"
           }
+        ]
+      }
+    },
+    {
+      "step_id": "caduceus-staff-shelf-from-synced-source",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/sh",
+        "args": [
+          "-ceu",
+          "source_root=/opt/caduceus/source/data/staff-actuators; staff_shelf=/usr/local/sbin/caduceus_staff; [ -d \"$source_root/caduceus_staff\" ]; /usr/bin/rm -rf \"$staff_shelf\"; /usr/bin/install -d -m 0755 \"$staff_shelf\"; /bin/cp -a \"$source_root/caduceus_staff/.\" \"$staff_shelf/\"; /usr/bin/find /usr/local/sbin -maxdepth 1 -type f -name \"caduceus-*\" -delete; /usr/bin/find \"$source_root\" -maxdepth 1 -type f -name \"caduceus-*\" -exec /usr/bin/install -m 0755 {} /usr/local/sbin/ \\;"
         ]
       }
     }
