@@ -644,9 +644,12 @@ pub struct SourceOutcome {
 /// old tree at the named backup path.  The receipt states that limit plainly.
 pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
     let mut attempts = Vec::new();
+    let mut precondition = Vec::new();
+    let mut precondition_changed = false;
+    let mut candidate_parent_prepared = false;
     let parent = match plan.destination.parent() {
         Some(parent) => parent,
-        None => return source_failure(attempts, "destination-has-no-parent"),
+        None => return source_failure(attempts, "destination-has-no-parent", false),
     };
     let stem = plan
         .destination
@@ -670,7 +673,7 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                     false,
                     "credential-selector-unresolved".into(),
                 ));
-                return source_hard_red(attempts);
+                return source_hard_red(attempts, precondition_changed);
             }
         }
         match candidate.kind {
@@ -703,7 +706,7 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                             true,
                             "expected-commit-mismatch".into(),
                         ));
-                        return source_hard_red(attempts);
+                        return source_hard_red(attempts, precondition_changed);
                     }
                 }
                 attempts.push(source_attempt(
@@ -726,6 +729,25 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                 };
             }
             SourceCandidateKind::Git => {}
+        }
+        if !candidate_parent_prepared {
+            let preparation = match prepare_source_acquisition_parent(plan) {
+                Ok(preparation) => preparation,
+                Err(detail) => {
+                    attempts.push(source_attempt(
+                        index,
+                        candidate,
+                        "hard-red-precondition",
+                        None,
+                        false,
+                        detail,
+                    ));
+                    return source_hard_red(attempts, precondition_changed);
+                }
+            };
+            precondition_changed |= preparation.changed;
+            precondition.extend(preparation.transcript);
+            candidate_parent_prepared = true;
         }
         let stage = parent.join(format!(
             ".{stem}.source-acquire-{}-{nonce}-candidate-{index}",
@@ -751,7 +773,7 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                 "unavailable",
                 None,
                 false,
-                clone.stderr,
+                source_acquisition_detail(&precondition, &clone.stderr),
             ));
             continue;
         }
@@ -768,7 +790,7 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                 "unavailable",
                 None,
                 false,
-                fetch.stderr,
+                source_acquisition_detail(&precondition, &fetch.stderr),
             ));
             continue;
         }
@@ -789,9 +811,9 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                 "hard-red-identity",
                 None,
                 false,
-                head.stderr,
+                source_acquisition_detail(&precondition, &head.stderr),
             ));
-            return source_hard_red(attempts);
+            return source_hard_red(attempts, precondition_changed);
         }
         let commit = head.stdout.trim().to_string();
         if let Some(expected) = plan.expected_commit.as_deref() {
@@ -802,9 +824,9 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                     "hard-red-identity",
                     Some(commit),
                     false,
-                    "expected-commit-mismatch".into(),
+                    source_acquisition_detail(&precondition, "expected-commit-mismatch"),
                 ));
-                return source_hard_red(attempts);
+                return source_hard_red(attempts, precondition_changed);
             }
         }
         match promote_staged_source(&stage, &plan.destination) {
@@ -815,7 +837,7 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                     "served",
                     Some(commit.clone()),
                     false,
-                    "verified and promoted".into(),
+                    source_acquisition_detail(&precondition, "verified and promoted"),
                 ));
                 return SourceOutcome { ok: true, changed: true, receipt: SourceReceipt { attempts, served_index: Some(index), resolved_commit: Some(commit), promotion: "same-filesystem rename; no blended tree; power-loss may require selecting sibling backup".into() } };
             }
@@ -826,13 +848,54 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                     "hard-red-promotion",
                     Some(commit),
                     false,
-                    detail,
+                    source_acquisition_detail(&precondition, &detail),
                 ));
-                return source_hard_red(attempts);
+                return source_hard_red(attempts, precondition_changed);
             }
         }
     }
-    source_failure(attempts, "all-candidates-unavailable")
+    source_failure(attempts, "all-candidates-unavailable", precondition_changed)
+}
+
+fn prepare_source_acquisition_parent(plan: &SourcePlan) -> Result<BearerPathPreparation, String> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(BearerPathPreparation::default());
+    }
+    let parent = plan
+        .destination
+        .parent()
+        .ok_or_else(|| "destination-has-no-parent".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "source-acquire-candidate-parent-create-failed {}: {err}",
+            parent.display()
+        )
+    })?;
+    let (uid, gid) = bearer_ids(&plan.bearer)?;
+    let mut preparation = BearerPathPreparation::default();
+    match chown_new_bearer_path(parent, uid, gid)? {
+        Some(change) => {
+            preparation.changed = true;
+            preparation.transcript.push(format!(
+                "source-acquire-precondition role=candidate-parent bearer={} {}",
+                plan.bearer, change
+            ));
+        }
+        None => preparation.transcript.push(format!(
+            "source-acquire-precondition role=candidate-parent bearer={} path={} owner={uid}:{gid} state=satisfied",
+            plan.bearer,
+            parent.display()
+        )),
+    }
+    Ok(preparation)
+}
+
+fn source_acquisition_detail(precondition: &[String], detail: &str) -> String {
+    if precondition.is_empty() {
+        detail.to_string()
+    } else {
+        format!("{}; {detail}", precondition.join("; "))
+    }
 }
 
 struct SourceStagingGuard(PathBuf);
@@ -914,10 +977,14 @@ fn source_attempt(
         detail,
     }
 }
-fn source_failure(attempts: Vec<SourceAttemptReceipt>, detail: &str) -> SourceOutcome {
+fn source_failure(
+    attempts: Vec<SourceAttemptReceipt>,
+    detail: &str,
+    changed: bool,
+) -> SourceOutcome {
     SourceOutcome {
         ok: false,
-        changed: false,
+        changed,
         receipt: SourceReceipt {
             attempts,
             served_index: None,
@@ -926,10 +993,10 @@ fn source_failure(attempts: Vec<SourceAttemptReceipt>, detail: &str) -> SourceOu
         },
     }
 }
-fn source_hard_red(attempts: Vec<SourceAttemptReceipt>) -> SourceOutcome {
+fn source_hard_red(attempts: Vec<SourceAttemptReceipt>, changed: bool) -> SourceOutcome {
     SourceOutcome {
         ok: false,
-        changed: false,
+        changed,
         receipt: SourceReceipt {
             attempts,
             served_index: None,
