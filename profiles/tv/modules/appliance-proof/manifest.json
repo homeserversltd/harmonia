@@ -27,58 +27,34 @@
   "ladder": [
     {
       "step_id": "binary-hyprland",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v Hyprland >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "Hyprland"
       }
     },
     {
       "step_id": "binary-waybar",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v waybar >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "waybar"
       }
     },
     {
       "step_id": "binary-dunst",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v dunst >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "dunst"
       }
     },
     {
       "step_id": "binary-chromium",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "command -v chromium >/dev/null"
-        ],
-        "timeout_secs": 30
+        "executable": "chromium"
       }
     },
     {

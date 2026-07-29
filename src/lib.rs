@@ -1528,7 +1528,16 @@ mod tests {
             .collect();
         assert!(
             steps.contains(&("command", "capture")),
-            "steam optional checks use command probes"
+            "steam retains command probes for package and declared-file checks"
+        );
+        assert_eq!(
+            steam
+                .ladder
+                .iter()
+                .filter(|step| step.tool == "files" && step.permutation == "executable-present")
+                .count(),
+            2,
+            "steam executable probes use files/executable-present"
         );
         assert!(
             steps.contains(&("files", "managed-files")),
@@ -2544,8 +2553,17 @@ mod tests {
             vec![
                 ("aur", "check"),
                 ("aur", "build-pinned"),
-                ("command", "capture")
+                ("files", "executable-present")
             ]
+        );
+        let executable_step = ratchet
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "binary-oh-my-posh")
+            .unwrap();
+        assert_eq!(
+            executable_step.args["executable"].as_str(),
+            Some("oh-my-posh")
         );
         validate_ladder(&ratchet).unwrap();
 
