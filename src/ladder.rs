@@ -327,12 +327,6 @@ fn validate_tool_semantics(
                 defect,
             })
         }
-        ("systemd", "restart") | ("systemd", "user-restart") => {
-            tools::systemd::validate_restart_policy(args).map_err(|defect| LadderValidationError {
-                step_id: step_id.into(),
-                defect,
-            })
-        }
         ("service-runtime", "converge") => tools::service_runtime::validate_ladder_args(args)
             .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -921,8 +915,6 @@ fn systemd_step(
         integer_arg(&step.args, "timeout_secs", 30),
         apply,
         module_changed_before_step,
-        std::env::var_os("HARMONIA_FORCE_SERVICE_RESTARTS").is_some(),
-        optional_string_arg(&step.args, "restart_policy"),
     )
 }
 

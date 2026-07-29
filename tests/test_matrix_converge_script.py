@@ -52,10 +52,11 @@ class MatrixConvergeScriptTests(unittest.TestCase):
         text = self.script_text()
         self.assertIn("ensure_unbound_conf_d_include()", text)
         self.assertIn('include=\'include-toplevel: "/etc/unbound/unbound.conf.d/*.conf"\'', text)
-        self.assertIn("systemctl reload unbound.service", text)
+        unbound_reload = "reload_when_material_changed unbound unbound.service"
+        self.assertIn(unbound_reload, text)
         self.assertNotIn("systemctl restart unbound.service", text)
         self.assertLess(text.index("ensure_unbound_conf_d_include"), text.index("unbound-checkconf"))
-        self.assertLess(text.index("unbound-checkconf"), text.index("systemctl reload unbound.service"))
+        self.assertLess(text.index("unbound-checkconf"), text.index(unbound_reload))
 
     def test_matrix_portal_uses_the_directory_seated_new_stack_config(self) -> None:
         text = self.script_text()

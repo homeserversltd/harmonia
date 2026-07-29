@@ -247,38 +247,37 @@ pub(crate) fn homeconsole_arcadia_update(
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let before_sha = sha256_file(install_bin).ok();
-        let stop = command_capture("/usr/bin/systemctl", &["stop", service]);
-        write_command_receipt(receipt_dir, "arcadia-service-stop", &stop)?;
-        if !stop.ok {
+        let binary_changed = before_sha.as_deref() != Some(artifact_sha.as_str());
+        if binary_changed {
+            let tmp_install = install_bin.with_extension("harmonia-new");
+            fs::copy(artifact, &tmp_install)
+                .map_err(|e| format!("artifact-copy-failed: {e}"))?;
+            let mut perms = fs::metadata(&tmp_install)
+                .map_err(|e| e.to_string())?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&tmp_install, perms).map_err(|e| e.to_string())?;
+            fs::rename(&tmp_install, install_bin)
+                .map_err(|e| format!("artifact-promote-failed: {e}"))?;
+            changed = true;
             event(
                 &mut events,
-                "service-stop-warning",
-                false,
-                "Arcadia service stop returned nonzero",
+                "artifact-installed",
+                true,
+                "Arcadia artifact installed",
             )?;
+        } else {
+            event(&mut events, "artifact-current", true, "converged-quiet")?;
         }
-        let tmp_install = install_bin.with_extension("harmonia-new");
-        fs::copy(artifact, &tmp_install).map_err(|e| format!("artifact-copy-failed: {e}"))?;
-        let mut perms = fs::metadata(&tmp_install)
-            .map_err(|e| e.to_string())?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&tmp_install, perms).map_err(|e| e.to_string())?;
-        fs::rename(&tmp_install, install_bin)
-            .map_err(|e| format!("artifact-promote-failed: {e}"))?;
-        changed = before_sha.as_deref() != Some(artifact_sha.as_str());
-        event(
-            &mut events,
-            "artifact-installed",
-            true,
-            "Arcadia artifact installed",
-        )?;
         if let Some(source_sha) = source_sha {
-            if let Some(parent) = source_sha_file.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            let desired = format!("{}\n", source_sha.trim());
+            if fs::read_to_string(source_sha_file).ok().as_deref() != Some(desired.as_str()) {
+                if let Some(parent) = source_sha_file.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                fs::write(source_sha_file, desired)
+                    .map_err(|e| format!("source-sha-write-failed: {e}"))?;
             }
-            fs::write(source_sha_file, format!("{}\n", source_sha.trim()))
-                .map_err(|e| format!("source-sha-write-failed: {e}"))?;
             event(
                 &mut events,
                 "source-sha-recorded",
@@ -294,19 +293,25 @@ pub(crate) fn homeconsole_arcadia_update(
             true,
             "Arcadia control-surface authority installed",
         )?;
-        let daemon_reload = command_capture("/usr/bin/systemctl", &["daemon-reload"]);
-        write_command_receipt(receipt_dir, "arcadia-daemon-reload", &daemon_reload)?;
-        if !daemon_reload.ok {
-            ok = false;
-            first_missing_signal = "systemd-daemon-reload-failed".to_string();
-        }
-        let restart = command_capture("/usr/bin/systemctl", &["restart", service]);
-        write_command_receipt(receipt_dir, "arcadia-service-restart", &restart)?;
-        if !restart.ok {
-            ok = false;
-            if first_missing_signal == "none" {
-                first_missing_signal = "arcadia-service-restart-failed".to_string();
+        if authority_changed {
+            let daemon_reload = command_capture("/usr/bin/systemctl", &["daemon-reload"]);
+            write_command_receipt(receipt_dir, "arcadia-daemon-reload", &daemon_reload)?;
+            if !daemon_reload.ok {
+                ok = false;
+                first_missing_signal = "systemd-daemon-reload-failed".to_string();
             }
+        }
+        if changed {
+            let restart = command_capture("/usr/bin/systemctl", &["restart", service]);
+            write_command_receipt(receipt_dir, "arcadia-service-restart", &restart)?;
+            if !restart.ok {
+                ok = false;
+                if first_missing_signal == "none" {
+                    first_missing_signal = "arcadia-service-restart-failed".to_string();
+                }
+            }
+        } else {
+            event(&mut events, "service", true, "converged-quiet")?;
         }
     }
     if !apply {

@@ -10,7 +10,7 @@ pub const DESCRIPTION: &str =
 pub const PERMUTATIONS: &[ToolPermutation] = &[
     ToolPermutation::new(
         "daemon-reload",
-        "reload the system systemd manager",
+        "reload the system systemd manager only when this module changed managed material",
         &[ToolArg::optional("timeout_secs", ToolArgKind::Integer)],
     ),
     ToolPermutation::new(
@@ -55,11 +55,10 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
     ),
     ToolPermutation::new(
         "restart",
-        "restart a system unit only when its module changed, unless the unit is inactive, --force-service-restarts is set, or restart_policy=always is declared",
+        "restart a system unit only when this module changed managed material",
         &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-            ToolArg::optional("restart_policy", ToolArgKind::String),
         ],
     ),
     ToolPermutation::new(
@@ -72,7 +71,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
     ),
     ToolPermutation::new(
         "user-daemon-reload",
-        "reload the user systemd manager",
+        "reload the user systemd manager only when this module changed managed material",
         &[
             ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
@@ -89,12 +88,11 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
     ),
     ToolPermutation::new(
         "user-restart",
-        "restart a user unit only when its module changed, unless the unit is inactive, --force-service-restarts is set, or restart_policy=always is declared",
+        "restart a user unit only when this module changed managed material",
         &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-            ToolArg::optional("restart_policy", ToolArgKind::String),
         ],
     ),
     ToolPermutation::new(
@@ -109,18 +107,6 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
-pub(crate) fn validate_restart_policy(
-    args: &std::collections::BTreeMap<String, serde_json::Value>,
-) -> Result<(), String> {
-    match args
-        .get("restart_policy")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("on-change")
-    {
-        "on-change" | "always" => Ok(()),
-        value => Err(format!("systemd-restart-policy-invalid-{value}")),
-    }
-}
 
 pub(crate) fn validate_candidate_units(
     args: &std::collections::BTreeMap<String, serde_json::Value>,
@@ -152,8 +138,6 @@ pub(crate) fn run_permutation(
     timeout_secs: u64,
     apply: bool,
     module_changed_before_step: bool,
-    force_service_restarts: bool,
-    restart_policy: Option<&str>,
 ) -> Result<OperationOutcome, String> {
     if permutation == "enable-first-present-now" {
         return run_enable_first_present_now(receipt_dir, name, candidate_units, timeout_secs, apply);
@@ -170,8 +154,6 @@ pub(crate) fn run_permutation(
             timeout_secs,
             apply,
             module_changed_before_step,
-            force_service_restarts,
-            restart_policy,
         );
     }
     run_action(
@@ -183,6 +165,7 @@ pub(crate) fn run_permutation(
         target_user,
         timeout_secs,
         apply,
+        module_changed_before_step,
     )
 }
 
@@ -203,6 +186,7 @@ fn run_enable_first_present_now(
         None,
         timeout_secs,
         apply,
+        false,
     )?;
     annotate_candidate_selection(receipt_dir, name, candidate_units, &service)?;
     Ok(OperationOutcome {
@@ -270,44 +254,18 @@ struct RestartDecision {
     reason: &'static str,
 }
 
-fn decide_restart(
-    module_changed: bool,
-    active_before: Option<&str>,
-    force_service_restarts: bool,
-    restart_policy: Option<&str>,
-) -> Result<RestartDecision, String> {
-    match restart_policy.unwrap_or("on-change") {
-        "on-change" => {}
-        "always" => {
-            return Ok(RestartDecision {
-                execute: true,
-                reason: "manifest-restart-policy-always",
-            });
+fn decide_restart(service_material_changed: bool) -> RestartDecision {
+    if service_material_changed {
+        RestartDecision {
+            execute: true,
+            reason: "service-material-changed",
         }
-        value => return Err(format!("systemd-restart-policy-invalid-{value}")),
+    } else {
+        RestartDecision {
+            execute: false,
+            reason: "service-material-unchanged",
+        }
     }
-    if force_service_restarts {
-        return Ok(RestartDecision {
-            execute: true,
-            reason: "operator-force-service-restarts",
-        });
-    }
-    if active_before != Some("active") {
-        return Ok(RestartDecision {
-            execute: true,
-            reason: "unit-not-active",
-        });
-    }
-    if module_changed {
-        return Ok(RestartDecision {
-            execute: true,
-            reason: "module-changed",
-        });
-    }
-    Ok(RestartDecision {
-        execute: false,
-        reason: "module-unchanged-unit-active",
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -319,23 +277,16 @@ fn run_restart(
     target_user: Option<&str>,
     timeout_secs: u64,
     apply: bool,
-    module_changed: bool,
-    force_service_restarts: bool,
-    restart_policy: Option<&str>,
+    service_material_changed: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     let active_before = state("is-active", service, user, target_user, timeout_secs);
-    let decision = decide_restart(
-        module_changed,
-        active_before.as_deref(),
-        force_service_restarts,
-        restart_policy,
-    )?;
+    let decision = decide_restart(service_material_changed);
     if !decision.execute {
         let result = CmdResult {
             ok: true,
             code: 0,
-            stdout: "restart skipped by change-driven policy".to_string(),
+            stdout: "restart skipped: converged-quiet".to_string(),
             stderr: String::new(),
         };
         write_systemd_receipt(
@@ -353,15 +304,13 @@ fn run_restart(
             false,
             target_user,
             Some(decision),
-            module_changed,
-            force_service_restarts,
-            restart_policy,
+            service_material_changed,
         )?;
         return Ok(OperationOutcome {
             ok: true,
             changed: false,
             skipped: true,
-            message: decision.reason.to_string(),
+            message: "converged-quiet".to_string(),
             command: Some(result),
         });
     }
@@ -376,8 +325,7 @@ fn run_restart(
         }
     };
     let active_after = state("is-active", service, user, target_user, timeout_secs);
-    let changed =
-        result.ok && (active_before != active_after || module_changed || force_service_restarts);
+    let changed = result.ok && apply && service_material_changed;
     write_systemd_receipt(
         receipt_dir,
         name,
@@ -393,9 +341,7 @@ fn run_restart(
         changed,
         target_user,
         Some(decision),
-        module_changed,
-        force_service_restarts,
-        restart_policy,
+        service_material_changed,
     )?;
     Ok(OperationOutcome {
         ok: result.ok,
@@ -415,6 +361,7 @@ pub(crate) fn run_action(
     target_user: Option<&str>,
     timeout_secs: u64,
     apply: bool,
+    service_material_changed: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     let mutating = matches!(
@@ -428,11 +375,28 @@ pub(crate) fn run_action(
     };
     let before_enabled = state("is-enabled", service, user, target_user, timeout_secs);
     let before_active = state("is-active", service, user, target_user, timeout_secs);
-    let mut result = if mutating && !apply {
+    let action_needed = match action {
+        "daemon-reload" | "restart" | "stop" => service_material_changed,
+        "enable-now" => {
+            before_enabled.as_deref() != Some("enabled")
+                || before_active.as_deref() != Some("active")
+        }
+        "disable-stop" => {
+            before_enabled.as_deref() != Some("disabled")
+                || before_active.as_deref() == Some("active")
+        }
+        "disable-stop-remove" => unit_file_before,
+        _ => true,
+    };
+    let mut result = if mutating && (!apply || !action_needed) {
         CmdResult {
             ok: true,
             code: 0,
-            stdout: format!("planned systemd {action} {service}"),
+            stdout: if !apply {
+                format!("planned systemd {action} {service}")
+            } else {
+                format!("systemd {action} skipped: converged-quiet")
+            },
             stderr: String::new(),
         }
     } else {
@@ -444,6 +408,8 @@ pub(crate) fn run_action(
     let after_enabled = state("is-enabled", service, user, target_user, timeout_secs);
     let after_active = state("is-active", service, user, target_user, timeout_secs);
     let changed = mutating
+        && action_needed
+        && apply
         && result.ok
         && (before_enabled != after_enabled || before_active != after_active || unit_file_before);
     write_systemd_receipt(
@@ -461,18 +427,20 @@ pub(crate) fn run_action(
         changed,
         target_user,
         None,
-        false,
-        false,
-        None,
+        service_material_changed,
     )?;
     Ok(OperationOutcome {
         ok: result.ok,
         changed,
-        skipped: mutating && !apply,
-        message: format!(
-            "systemd{} {action} {service}",
-            if user { " --user" } else { "" }
-        ),
+        skipped: mutating && (!apply || !action_needed),
+        message: if mutating && apply && !action_needed {
+            "converged-quiet".to_string()
+        } else {
+            format!(
+                "systemd{} {action} {service}",
+                if user { " --user" } else { "" }
+            )
+        },
         command: Some(result),
     })
 }
@@ -656,9 +624,7 @@ fn write_systemd_receipt(
     changed: bool,
     target_user: Option<&str>,
     restart_decision: Option<RestartDecision>,
-    module_changed: bool,
-    force_service_restarts: bool,
-    restart_policy: Option<&str>,
+    service_material_changed: bool,
 ) -> Result<(), String> {
     write_json(
         &receipt_dir.join(format!("{}.json", name)),
@@ -680,11 +646,9 @@ fn write_systemd_receipt(
             "enabled_after": enabled_after,
             "active_after": active_after,
             "changed": changed,
+            "service_material_changed": service_material_changed,
             "restart_decision": restart_decision.map(|decision| if decision.execute { "restarted" } else { "skipped" }),
             "restart_reason": restart_decision.map(|decision| decision.reason),
-            "module_changed_before_step": module_changed,
-            "force_service_restarts": force_service_restarts,
-            "restart_policy": restart_policy.unwrap_or("on-change"),
         }),
     )
 }
@@ -749,6 +713,7 @@ mod tests {
             Some("owner"),
             30,
             false,
+            false,
         )
         .unwrap();
         let receipt: serde_json::Value = serde_json::from_str(
@@ -777,6 +742,7 @@ mod tests {
             None,
             30,
             false,
+            false,
         )
         .unwrap();
         assert!(outcome.ok);
@@ -803,10 +769,10 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_active_module_skips_restart_and_receipts_the_restraint() {
-        let decision = decide_restart(false, Some("active"), false, None).unwrap();
+    fn unchanged_service_material_skips_restart_and_receipts_the_restraint() {
+        let decision = decide_restart(false);
         assert!(!decision.execute);
-        assert_eq!(decision.reason, "module-unchanged-unit-active");
+        assert_eq!(decision.reason, "service-material-unchanged");
 
         let root = temp_root("restart-skip");
         fs::create_dir_all(&root).unwrap();
@@ -832,24 +798,22 @@ mod tests {
             None,
             Some(decision),
             false,
-            false,
-            None,
         )
         .unwrap();
         let receipt: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(root.join("service-restart.json")).unwrap())
                 .unwrap();
         assert_eq!(receipt["restart_decision"], "skipped");
-        assert_eq!(receipt["restart_reason"], "module-unchanged-unit-active");
-        assert_eq!(receipt["module_changed_before_step"], false);
+        assert_eq!(receipt["restart_reason"], "service-material-unchanged");
+        assert_eq!(receipt["service_material_changed"], false);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn changed_module_restarts_and_receipts_the_change_reason() {
-        let decision = decide_restart(true, Some("active"), false, None).unwrap();
+    fn changed_service_material_restarts_and_receipts_the_change_reason() {
+        let decision = decide_restart(true);
         assert!(decision.execute);
-        assert_eq!(decision.reason, "module-changed");
+        assert_eq!(decision.reason, "service-material-changed");
 
         let root = temp_root("restart-change");
         fs::create_dir_all(&root).unwrap();
@@ -875,37 +839,28 @@ mod tests {
             None,
             Some(decision),
             true,
-            false,
-            None,
         )
         .unwrap();
         let receipt: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(root.join("service-restart.json")).unwrap())
                 .unwrap();
         assert_eq!(receipt["restart_decision"], "restarted");
-        assert_eq!(receipt["restart_reason"], "module-changed");
-        assert_eq!(receipt["module_changed_before_step"], true);
+        assert_eq!(receipt["restart_reason"], "service-material-changed");
+        assert_eq!(receipt["service_material_changed"], true);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn stopped_or_failed_units_converge_without_module_change() {
-        for state in [Some("inactive"), Some("failed"), None] {
-            let decision = decide_restart(false, state, false, None).unwrap();
-            assert!(decision.execute, "state={state:?}");
-            assert_eq!(decision.reason, "unit-not-active");
-        }
+    fn unit_state_never_bypasses_the_material_change_gate() {
+        let decision = decide_restart(false);
+        assert!(!decision.execute);
+        assert_eq!(decision.reason, "service-material-unchanged");
     }
 
     #[test]
-    fn force_and_manifest_always_are_explicit_restart_exceptions() {
-        let force = decide_restart(false, Some("active"), true, None).unwrap();
-        assert!(force.execute);
-        assert_eq!(force.reason, "operator-force-service-restarts");
-        let always = decide_restart(false, Some("active"), false, Some("always")).unwrap();
-        assert!(always.execute);
-        assert_eq!(always.reason, "manifest-restart-policy-always");
-        assert!(decide_restart(false, Some("active"), false, Some("ambient")).is_err());
+    fn material_change_is_the_only_restart_gate() {
+        assert!(!decide_restart(false).execute);
+        assert!(decide_restart(true).execute);
     }
 
     #[test]
