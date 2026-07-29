@@ -996,6 +996,7 @@ pub(crate) fn tv_module_ids_from_profile_modules(
         "oh-my-posh-aur-ratchet",
         "operator-rc-profile",
         "desktop-config-payload",
+        "xdg-user-settings",
         "chromium",
         "user-session-services",
         "sddm-autologin-hyprland",
