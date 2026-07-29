@@ -37,73 +37,6 @@ pub(crate) fn command_tool(
 }
 
 #[allow(dead_code)]
-pub(crate) fn systemd_tool(
-    receipt_dir: &Path,
-    name: &str,
-    action: &str,
-    service: &str,
-    apply: bool,
-) -> Result<OperationOutcome, String> {
-    let mutating = matches!(
-        action,
-        "start" | "stop" | "restart" | "enable" | "disable" | "daemon-reload"
-    );
-    if mutating && !apply {
-        let outcome = OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: format!("systemd {action} planned"),
-            command: None,
-        };
-        write_tool_receipt(receipt_dir, name, "systemd", action, &outcome)?;
-        return Ok(outcome);
-    }
-    let before_enabled = systemctl_state("is-enabled", service);
-    let before_active = systemctl_state("is-active", service);
-    let result = match action {
-        "daemon-reload" => command_capture("/usr/bin/systemctl", &["daemon-reload"]),
-        "active" | "is-active" => command_capture("/usr/bin/systemctl", &["is-active", service]),
-        "status" => command_capture("/usr/bin/systemctl", &["status", service, "--no-pager"]),
-        "start" | "stop" | "restart" | "enable" | "disable" => {
-            command_capture("/usr/bin/systemctl", &[action, service])
-        }
-        other => {
-            let outcome = OperationOutcome {
-                ok: false,
-                changed: false,
-                skipped: false,
-                message: format!("unsupported systemd action {other}"),
-                command: None,
-            };
-            write_tool_receipt(receipt_dir, name, "systemd", action, &outcome)?;
-            return Ok(outcome);
-        }
-    };
-    let after_enabled = systemctl_state("is-enabled", service);
-    let after_active = systemctl_state("is-active", service);
-    let changed =
-        mutating && result.ok && (before_enabled != after_enabled || before_active != after_active);
-    write_systemd_command_receipt(
-        receipt_dir,
-        name,
-        &result,
-        before_enabled.as_deref(),
-        before_active.as_deref(),
-        after_enabled.as_deref(),
-        after_active.as_deref(),
-        changed,
-    )?;
-    Ok(OperationOutcome {
-        ok: result.ok,
-        changed,
-        skipped: false,
-        message: format!("systemd {action} {service}"),
-        command: Some(result),
-    })
-}
-
-#[allow(dead_code)]
 pub(crate) fn artifact_promote_tool(
     receipt_dir: &Path,
     name: &str,
@@ -156,15 +89,6 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn systemctl_state(kind: &str, service: &str) -> Option<String> {
-    let result = command_capture("/usr/bin/systemctl", &[kind, service]);
-    if result.code == -1 {
-        None
-    } else {
-        Some(result.stdout.trim().to_string())
-    }
-}
-
 fn write_command_receipt_with_change_observed(
     receipt_dir: &Path,
     name: &str,
@@ -181,35 +105,6 @@ fn write_command_receipt_with_change_observed(
             "stdout": result.stdout,
             "stderr": result.stderr,
             "change_observed": change_observed,
-        }),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn write_systemd_command_receipt(
-    receipt_dir: &Path,
-    name: &str,
-    result: &CmdResult,
-    enabled_before: Option<&str>,
-    active_before: Option<&str>,
-    enabled_after: Option<&str>,
-    active_after: Option<&str>,
-    changed: bool,
-) -> Result<(), String> {
-    write_json(
-        &receipt_dir.join(format!("{}.json", name)),
-        &serde_json::json!({
-            "schema": "harmonia.command_receipt.v1",
-            "name": name,
-            "ok": result.ok,
-            "exit_code": result.code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "enabled_before": enabled_before,
-            "active_before": active_before,
-            "enabled_after": enabled_after,
-            "active_after": active_after,
-            "changed": changed,
         }),
     )
 }

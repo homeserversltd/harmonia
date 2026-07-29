@@ -4,6 +4,7 @@ use crate::*;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::{BufReader, Read};
 
 pub const NAME: &str = "service-runtime";
 pub const DESCRIPTION: &str = "Rust service runtime convergence primitive for source sync, managed files, build, install, systemd, and health proof.";
@@ -72,7 +73,6 @@ pub(crate) fn execute_ladder_step(
     let managed_files_op = format!("{op_prefix}-managed-files");
     let build_op = format!("{op_prefix}-cargo-build");
     let binary_install_op = format!("{op_prefix}-binary-install");
-    let service_stop_op = format!("{op_prefix}-service-stop");
     let daemon_reload_op = format!("{op_prefix}-daemon-reload");
     let service_enable_op = format!("{op_prefix}-service-enable");
     let service_active_op = format!("{op_prefix}-service-active");
@@ -88,7 +88,6 @@ pub(crate) fn execute_ladder_step(
         managed_files_op: Box::leak(managed_files_op.into_boxed_str()),
         build_op: Box::leak(build_op.into_boxed_str()),
         binary_install_op: Box::leak(binary_install_op.into_boxed_str()),
-        service_stop_op: Box::leak(service_stop_op.into_boxed_str()),
         daemon_reload_op: Box::leak(daemon_reload_op.into_boxed_str()),
         service_enable_op: Box::leak(service_enable_op.into_boxed_str()),
         service_active_op: Box::leak(service_active_op.into_boxed_str()),
@@ -110,13 +109,13 @@ pub(crate) fn execute_ladder_step(
 
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
     build_environment(args)?;
+    string_arg(args, "component")?;
     let op_prefix = string_arg(args, "op_prefix")?;
     let source_op = format!("{op_prefix}-source-git-artifact");
     let source_sha_op = format!("{op_prefix}-source-sha");
     let managed_files_op = format!("{op_prefix}-managed-files");
     let build_op = format!("{op_prefix}-cargo-build");
     let binary_install_op = format!("{op_prefix}-binary-install");
-    let service_stop_op = format!("{op_prefix}-service-stop");
     let daemon_reload_op = format!("{op_prefix}-daemon-reload");
     let service_enable_op = format!("{op_prefix}-service-enable");
     let service_active_op = format!("{op_prefix}-service-active");
@@ -132,7 +131,6 @@ pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(),
         managed_files_op: Box::leak(managed_files_op.into_boxed_str()),
         build_op: Box::leak(build_op.into_boxed_str()),
         binary_install_op: Box::leak(binary_install_op.into_boxed_str()),
-        service_stop_op: Box::leak(service_stop_op.into_boxed_str()),
         daemon_reload_op: Box::leak(daemon_reload_op.into_boxed_str()),
         service_enable_op: Box::leak(service_enable_op.into_boxed_str()),
         service_active_op: Box::leak(service_active_op.into_boxed_str()),
@@ -217,7 +215,6 @@ pub(crate) struct ServiceRuntimeSpec {
     pub managed_files_op: &'static str,
     pub build_op: &'static str,
     pub binary_install_op: &'static str,
-    pub service_stop_op: &'static str,
     pub daemon_reload_op: &'static str,
     pub service_enable_op: &'static str,
     pub service_active_op: &'static str,
@@ -437,7 +434,7 @@ pub(crate) fn execute(
     }
 
     let artifact = source_dir.join("target/release").join(spec.binary_name);
-    let install = install_binary(receipt_dir, spec, &artifact, &install_bin, service, apply)?;
+    let install = install_binary(receipt_dir, spec, &artifact, &install_bin, apply)?;
     if !install.ok {
         write_run_receipt(
             receipt_dir,
@@ -457,13 +454,22 @@ pub(crate) fn execute(
         ));
     }
 
-    if let Some(parent) = source_sha_file.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    if apply {
+        write_text_if_changed(
+            &source_sha_file,
+            &format!("{source_sha_value}\n"),
+            &format!("{}-source-sha", spec.op_prefix),
+        )?;
     }
-    fs::write(&source_sha_file, format!("{source_sha_value}\n"))
-        .map_err(|e| format!("{}-source-sha-write-failed: {e}", spec.op_prefix))?;
 
-    let service_outcome = ensure_service_active(receipt_dir, spec, service, apply)?;
+    let service_outcome = ensure_service_active(
+        receipt_dir,
+        spec,
+        service,
+        apply,
+        managed.changed,
+        install.changed,
+    )?;
     let health = tools::health::curl_probe(&tools::health::ProbeRequest::new(health_url));
     write_command_receipt(receipt_dir, spec.health_op, &health)?;
 
@@ -686,13 +692,31 @@ fn install_binary(
     spec: &ServiceRuntimeSpec,
     artifact: &Path,
     install_bin: &Path,
-    service: &str,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    if !apply {
-        let exists = fs::metadata(install_bin).is_ok() && fs::metadata(artifact).is_ok();
+    if !artifact.is_file() {
         return Ok(OperationOutcome {
-            ok: exists,
+            ok: false,
+            changed: false,
+            skipped: false,
+            message: format!("{} build artifact missing", spec.op_prefix),
+            command: None,
+        });
+    }
+    if files_equal(artifact, install_bin)? {
+        write_binary_install_receipt(receipt_dir, spec, artifact, install_bin, apply, false)?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "converged-quiet".to_string(),
+            command: None,
+        });
+    }
+    if !apply {
+        write_binary_install_receipt(receipt_dir, spec, artifact, install_bin, apply, false)?;
+        return Ok(OperationOutcome {
+            ok: true,
             changed: false,
             skipped: true,
             message: format!("{} binary install planned", spec.op_prefix),
@@ -702,17 +726,6 @@ fn install_binary(
     if let Some(parent) = install_bin.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let before_len = fs::metadata(install_bin).map(|m| m.len()).ok();
-    let _stop = tools::systemd::run_action(
-        receipt_dir,
-        spec.service_stop_op,
-        "stop",
-        Some(service),
-        false,
-        None,
-        30,
-        apply,
-    )?;
     let tmp_install = install_bin.with_extension("harmonia-new");
     fs::copy(artifact, &tmp_install)
         .map_err(|e| format!("{}-artifact-copy-failed: {e}", spec.op_prefix))?;
@@ -727,10 +740,10 @@ fn install_binary(
     }
     fs::rename(&tmp_install, install_bin)
         .map_err(|e| format!("{}-artifact-promote-failed: {e}", spec.op_prefix))?;
-    let artifact_len = fs::metadata(artifact).map_err(|e| e.to_string())?.len();
+    write_binary_install_receipt(receipt_dir, spec, artifact, install_bin, apply, true)?;
     Ok(OperationOutcome {
         ok: true,
-        changed: before_len != Some(artifact_len),
+        changed: true,
         skipped: false,
         message: format!("{} binary installed", spec.op_prefix),
         command: None,
@@ -742,6 +755,8 @@ fn ensure_service_active(
     spec: &ServiceRuntimeSpec,
     service: &str,
     apply: bool,
+    managed_files_changed: bool,
+    binary_changed: bool,
 ) -> Result<OperationOutcome, String> {
     if !apply {
         let active = tools::command::capture("/usr/bin/systemctl", &["is-active", service]);
@@ -753,24 +768,49 @@ fn ensure_service_active(
             command: None,
         });
     }
-    let daemon_reload = tools::systemd::run_action(
-        receipt_dir,
-        spec.daemon_reload_op,
-        "daemon-reload",
-        Some(service),
-        false,
-        None,
-        30,
-        apply,
-    )?;
-    if !daemon_reload.ok {
+    let service_material_changed = managed_files_changed || binary_changed;
+    let active_before = tools::command::capture("/usr/bin/systemctl", &["is-active", service]);
+    if !service_material_changed {
+        let active = tools::systemd::run_action(
+            receipt_dir,
+            spec.service_active_op,
+            "is-active-probe",
+            Some(service),
+            false,
+            None,
+            30,
+            apply,
+            false,
+        )?;
         return Ok(OperationOutcome {
-            ok: false,
+            ok: active.ok,
             changed: false,
-            skipped: false,
-            message: format!("{} systemd daemon-reload failed", spec.op_prefix),
+            skipped: true,
+            message: "converged-quiet".to_string(),
             command: None,
         });
+    }
+    if managed_files_changed {
+        let daemon_reload = tools::systemd::run_action(
+            receipt_dir,
+            spec.daemon_reload_op,
+            "daemon-reload",
+            Some(service),
+            false,
+            None,
+            30,
+            apply,
+            true,
+        )?;
+        if !daemon_reload.ok {
+            return Ok(OperationOutcome {
+                ok: false,
+                changed: false,
+                skipped: false,
+                message: format!("{} systemd daemon-reload failed", spec.op_prefix),
+                command: None,
+            });
+        }
     }
     let enable = tools::systemd::run_action(
         receipt_dir,
@@ -781,7 +821,23 @@ fn ensure_service_active(
         None,
         30,
         apply,
+        service_material_changed,
     )?;
+    let restart = if active_before.ok {
+        Some(tools::systemd::run_permutation(
+            receipt_dir,
+            spec.service_op,
+            "restart",
+            Some(service),
+            &[],
+            None,
+            30,
+            apply,
+            service_material_changed,
+        )?)
+    } else {
+        None
+    };
     let active = tools::systemd::run_action(
         receipt_dir,
         spec.service_active_op,
@@ -791,14 +847,74 @@ fn ensure_service_active(
         None,
         30,
         apply,
+        service_material_changed,
     )?;
     Ok(OperationOutcome {
-        ok: enable.ok && active.ok,
-        changed: enable.ok,
+        ok: enable.ok && restart.as_ref().is_none_or(|outcome| outcome.ok) && active.ok,
+        changed: enable.changed || restart.as_ref().is_some_and(|outcome| outcome.changed),
         skipped: false,
-        message: format!("{} service enabled", spec.op_prefix),
+        message: format!("{} service material reconciled", spec.op_prefix),
         command: None,
     })
+}
+
+fn files_equal(left: &Path, right: &Path) -> Result<bool, String> {
+    let Ok(left_meta) = fs::metadata(left) else {
+        return Ok(false);
+    };
+    let Ok(right_meta) = fs::metadata(right) else {
+        return Ok(false);
+    };
+    if left_meta.len() != right_meta.len() {
+        return Ok(false);
+    }
+    let mut left = BufReader::new(fs::File::open(left).map_err(|e| e.to_string())?);
+    let mut right = BufReader::new(fs::File::open(right).map_err(|e| e.to_string())?);
+    let mut left_buf = [0_u8; 64 * 1024];
+    let mut right_buf = [0_u8; 64 * 1024];
+    loop {
+        let left_read = left.read(&mut left_buf).map_err(|e| e.to_string())?;
+        let right_read = right.read(&mut right_buf).map_err(|e| e.to_string())?;
+        if left_read != right_read || left_buf[..left_read] != right_buf[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn write_text_if_changed(path: &Path, desired: &str, label: &str) -> Result<bool, String> {
+    if fs::read_to_string(path).ok().as_deref() == Some(desired) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(path, desired).map_err(|e| format!("{label}-write-failed: {e}"))?;
+    Ok(true)
+}
+
+fn write_binary_install_receipt(
+    receipt_dir: &Path,
+    spec: &ServiceRuntimeSpec,
+    artifact: &Path,
+    install_bin: &Path,
+    apply: bool,
+    changed: bool,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{}.json", spec.binary_install_op)),
+        &json!({
+            "schema": "harmonia.service-runtime.binary-install.v1",
+            "artifact": artifact,
+            "install_bin": install_bin,
+            "apply": apply,
+            "ok": true,
+            "changed": changed,
+            "state": if changed { "binary-swapped" } else { "converged-quiet" },
+        }),
+    )
 }
 
 fn write_run_receipt(
@@ -855,6 +971,7 @@ mod tests {
                 "module_id".to_string(),
                 json!("empty-managed-files-runtime"),
             ),
+            ("component".to_string(), json!("test-service")),
             ("repo".to_string(), json!(source_dir.display().to_string())),
             ("branch".to_string(), json!("main")),
             ("remote".to_string(), json!("origin")),
@@ -920,10 +1037,10 @@ mod tests {
         let root = scratch("validate");
         let mut args = base_args(&root);
         validate_ladder_args(&args).unwrap();
-        args.remove("repo");
+        args.remove("component");
         assert_eq!(
             validate_ladder_args(&args).unwrap_err(),
-            "service-runtime-missing-repo"
+            "service-runtime-missing-component"
         );
         let _ = fs::remove_dir_all(root);
     }

@@ -163,14 +163,11 @@ pub(crate) fn reconcile(
 
     let before = read_state(owner, claude_bin, repo, timeout_secs);
     let mut commands = Vec::new();
-    let mut changed = false;
-    let mut next_session_required = false;
 
     if apply {
         let mut planned = upstream_command_names(remote, branch).into_iter();
         let claude_update = run(claude_bin, &["update"], None, owner, timeout_secs);
-        changed |= claude_update.ok;
-        next_session_required |= claude_update.ok;
+
         commands.push(command_receipt(&planned.next().unwrap(), &claude_update));
 
         let plugin_update = run(
@@ -180,8 +177,7 @@ pub(crate) fn reconcile(
             owner,
             timeout_secs,
         );
-        changed |= plugin_update.ok;
-        next_session_required |= plugin_update.ok;
+
         commands.push(command_receipt(&planned.next().unwrap(), &plugin_update));
 
         let fetch = run(
@@ -191,7 +187,7 @@ pub(crate) fn reconcile(
             owner,
             timeout_secs,
         );
-        changed |= fetch.ok;
+
         commands.push(command_receipt(&planned.next().unwrap(), &fetch));
 
         let merge_ref = format!("{remote}/{branch}");
@@ -202,40 +198,54 @@ pub(crate) fn reconcile(
             owner,
             timeout_secs,
         );
-        changed |= merge.ok;
+
         commands.push(command_receipt(&planned.next().unwrap(), &merge));
 
         let sync = run("uv", &["sync"], Some(repo), owner, timeout_secs);
-        changed |= sync.ok;
+
         commands.push(command_receipt(&planned.next().unwrap(), &sync));
 
-        let restart = command::user_bus_env_for_bearer(owner).map_or_else(
-            |err| CmdResult {
-                ok: false,
-                code: -1,
-                stdout: String::new(),
-                stderr: err,
-            },
-            |env| {
-                command::capture_with_cwd_as_bearer_and_env(
-                    "systemctl",
-                    &[
-                        "--user",
-                        "restart",
-                        "honcho-api.service",
-                        "honcho-deriver.service",
-                    ],
-                    None,
-                    owner,
-                    env,
-                )
-            },
-        );
-        changed |= restart.ok;
+        let updated = read_state(owner, claude_bin, repo, timeout_secs);
+        let service_material_changed = before.head != updated.head;
+        let restart = if service_material_changed {
+            command::user_bus_env_for_bearer(owner).map_or_else(
+                |err| CmdResult {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: err,
+                },
+                |env| {
+                    command::capture_with_cwd_as_bearer_and_env(
+                        "systemctl",
+                        &[
+                            "--user",
+                            "restart",
+                            "honcho-api.service",
+                            "honcho-deriver.service",
+                        ],
+                        None,
+                        owner,
+                        env,
+                    )
+                },
+            )
+        } else {
+            CmdResult {
+                ok: true,
+                code: 0,
+                stdout: "converged-quiet: service material unchanged".into(),
+                stderr: String::new(),
+            }
+        };
         commands.push(command_receipt(&planned.next().unwrap(), &restart));
     }
 
     let after = read_state(owner, claude_bin, repo, timeout_secs);
+    let changed = before.claude != after.claude
+        || before.plugin != after.plugin
+        || before.head != after.head;
+    let next_session_required = before.claude != after.claude || before.plugin != after.plugin;
     let ok = commands
         .iter()
         .all(|command| command["result"]["ok"] == Value::Bool(true));
@@ -287,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_runs_every_upstream_command_without_a_gate() {
+    fn upstream_command_inventory_keeps_restart_as_the_final_gated_action() {
         assert_eq!(
             upstream_command_names("origin", "main"),
             vec![

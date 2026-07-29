@@ -18,6 +18,39 @@ assert_floor_file() {
     fi
 }
 
+material_fingerprint() {
+    for path in "$@"; do
+        if [ -L "$path" ]; then
+            printf 'link %s %s\n' "$path" "$(readlink "$path")"
+        elif [ -f "$path" ]; then
+            sha256sum "$path"
+        else
+            printf 'absent %s\n' "$path"
+        fi
+    done | sha256sum | cut -d' ' -f1
+}
+
+reload_when_material_changed() {
+    name="$1"
+    service="$2"
+    state_file="/var/lib/harmonia/state/matrix-${name}-material.sha256"
+    shift 2
+    current="$(material_fingerprint "$@")"
+    previous="$(cat "$state_file" 2>/dev/null || true)"
+    if [ "$current" = "$previous" ]; then
+        printf '%s\n' "${service}: converged-quiet"
+        return 0
+    fi
+    if systemctl is-active --quiet "$service"; then
+        systemctl reload "$service"
+    fi
+    install -d -o root -g root -m 0755 /var/lib/harmonia/state
+    tmp="${state_file}.new.$$"
+    printf '%s\n' "$current" >"$tmp"
+    chmod 0644 "$tmp"
+    mv "$tmp" "$state_file"
+}
+
 for package in matrix-synapse-py3 nginx postgresql-client logrotate openssl unbound ca-certificates curl tar python3; do
     assert_dpkg_package "$package"
 done
@@ -177,9 +210,11 @@ nginx -t
 unbound-checkconf
 logrotate --debug /etc/logrotate.d/matrix-synapse >/dev/null
 
-if systemctl is-active --quiet nginx.service; then
-    systemctl reload nginx.service
-fi
-if systemctl is-active --quiet unbound.service; then
-    systemctl reload unbound.service
-fi
+reload_when_material_changed nginx nginx.service \
+    /etc/nginx/sites-available/homeserver-matrix \
+    /etc/nginx/sites-available/homeserver-element \
+    /etc/nginx/sites-enabled/homeserver-matrix \
+    /etc/nginx/sites-enabled/homeserver-element
+reload_when_material_changed unbound unbound.service \
+    /etc/unbound/unbound.conf \
+    /etc/unbound/unbound.conf.d/matrix.conf

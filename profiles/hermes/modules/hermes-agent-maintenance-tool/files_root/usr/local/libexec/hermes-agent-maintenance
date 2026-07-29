@@ -267,6 +267,13 @@ def main() -> int:
                 "updated-no-gateway" if update_available else "current-no-gateway",
             )
 
+        if not update_available:
+            receipt["update_available"] = False
+            receipt["updated"] = False
+            receipt["changed"] = False
+            receipt["gateway_restart_attempted"] = False
+            return finish(receipt_path, receipt, True, "current-gateway-converged-quiet")
+
         unit = receipt["gateway_unit"]
         assert isinstance(unit, str)
         restart = command_result([systemctl_bin, "--user", "restart", unit], 120)
