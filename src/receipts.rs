@@ -3,16 +3,56 @@ use serde_json::json;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+static RECEIPT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("receipt-parent-missing {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("receipt-parent-create-failed {}: {error}", parent.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("receipt-name-invalid {}", path.display()))?;
+    let sequence = RECEIPT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{name}.harmonia-receipt-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| format!("receipt-temp-create-failed {}: {error}", temp.display()))?;
+        serde_json::to_writer_pretty(&mut file, value).map_err(|error| {
+            format!("receipt-temp-serialize-failed {}: {error}", temp.display())
+        })?;
+        writeln!(file)
+            .map_err(|error| format!("receipt-temp-write-failed {}: {error}", temp.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("receipt-temp-sync-failed {}: {error}", temp.display()))?;
+        drop(file);
+        fs::rename(&temp, path).map_err(|error| {
+            format!(
+                "receipt-atomic-promote-failed {} -> {}: {error}",
+                temp.display(),
+                path.display()
+            )
+        })?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("receipt-parent-sync-failed {}: {error}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
     }
-    let mut f = File::create(path).map_err(|e| e.to_string())?;
-    serde_json::to_writer_pretty(&mut f, value).map_err(|e| e.to_string())?;
-    writeln!(f).map_err(|e| e.to_string())?;
-    Ok(())
+    result
 }
 
 pub(crate) fn run_id_from_stamp() -> String {
@@ -301,7 +341,10 @@ pub(crate) fn write_plan_receipts(
         let planned = if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
             load_ladder_manifest(&manifest_path).and_then(|manifest| {
                 if manifest.id != *module {
-                    return Err(format!("module-id-mismatch expected={module} got={}", manifest.id));
+                    return Err(format!(
+                        "module-id-mismatch expected={module} got={}",
+                        manifest.id
+                    ));
                 }
                 validate_ladder(&manifest)
                     .map(|_| ())

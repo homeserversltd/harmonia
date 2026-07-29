@@ -65,14 +65,21 @@
     },
     {
       "step_id": "caduceus-staff-shelf-from-synced-source",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "source-shelf-sweep",
       "args": {
-        "program": "/usr/bin/sh",
-        "args": [
-          "-ceu",
-          "source_root=/opt/caduceus/source/data/staff-actuators; staff_shelf=/usr/local/sbin/caduceus_staff; [ -d \"$source_root/caduceus_staff\" ]; /usr/bin/rm -rf \"$staff_shelf\"; /usr/bin/install -d -m 0755 \"$staff_shelf\"; /bin/cp -a \"$source_root/caduceus_staff/.\" \"$staff_shelf/\"; /usr/bin/find /usr/local/sbin -maxdepth 1 -type f -name \"caduceus-*\" -delete; /usr/bin/find \"$source_root\" -maxdepth 1 -type f -name \"caduceus-*\" -exec /usr/bin/install -m 0755 {} /usr/local/sbin/ \\;"
-        ]
+        "source_root": "/opt/caduceus/source/data/staff-actuators",
+        "shelf_source": "caduceus_staff",
+        "target_shelf": "/usr/local/sbin/caduceus_staff",
+        "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
+        "launcher_target_root": "/usr/local/sbin",
+        "launcher_pattern": "caduceus-*",
+        "shelf_owner": "root",
+        "shelf_group": "root",
+        "shelf_directory_mode": 493,
+        "shelf_file_mode": 420,
+        "launcher_mode": 493,
+        "prune": true
       }
     }
   ]

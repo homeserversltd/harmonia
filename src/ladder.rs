@@ -453,6 +453,9 @@ fn execute_validated_step(
             validated_file_symlink_step(step, manifest, module_dir, apply)
         }
         ("files", "remove") => files_remove_step(step, module_dir, apply),
+        ("files", "source-shelf-sweep") => {
+            files_source_shelf_sweep_step(step, manifest, module_dir, apply)
+        }
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
@@ -748,6 +751,44 @@ fn files_remove_step(
         &step.step_id,
         apply,
     )?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+
+fn files_source_shelf_sweep_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let request = crate::tools::files::SourceShelfSweepRequest {
+        source_root: resolve_ladder_path(manifest, string_arg(&step.args, "source_root")),
+        shelf_source: PathBuf::from(string_arg(&step.args, "shelf_source")),
+        target_shelf: PathBuf::from(string_arg(&step.args, "target_shelf")),
+        launcher_source_root: resolve_ladder_path(
+            manifest,
+            string_arg(&step.args, "launcher_source_root"),
+        ),
+        launcher_target_root: PathBuf::from(string_arg(&step.args, "launcher_target_root")),
+        launcher_pattern: string_arg(&step.args, "launcher_pattern").to_string(),
+        shelf_owner: string_arg(&step.args, "shelf_owner").to_string(),
+        shelf_group: string_arg(&step.args, "shelf_group").to_string(),
+        shelf_directory_mode: integer_arg(&step.args, "shelf_directory_mode", 0) as u32,
+        shelf_file_mode: integer_arg(&step.args, "shelf_file_mode", 0) as u32,
+        launcher_mode: integer_arg(&step.args, "launcher_mode", 0) as u32,
+        prune: step
+            .args
+            .get("prune")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        receipt_name: step.step_id.clone(),
+    };
+    let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply)?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,

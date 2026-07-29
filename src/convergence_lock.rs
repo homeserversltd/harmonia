@@ -13,8 +13,7 @@ pub(crate) const HOME_SERVER_UPDATE_LOCK_PATH: &str = "/run/harmonia/homeserver-
 pub(crate) const HOME_SERVER_UPDATE_RECEIPT_LATEST: &str =
     "/var/lib/harmonia/receipts/homeserver-update-latest";
 pub(crate) const TV_UPDATE_LOCK_PATH: &str = "/run/harmonia/tv-update.lock";
-pub(crate) const TV_UPDATE_RECEIPT_LATEST: &str =
-    "/var/lib/harmonia/receipts/tv-update-latest";
+pub(crate) const TV_UPDATE_RECEIPT_LATEST: &str = "/var/lib/harmonia/receipts/tv-update-latest";
 pub(crate) const TV_UPDATE_RECEIPT_LEGACY: &str = "/var/lib/harmonia/receipts/tv-latest";
 
 pub(crate) fn homeconsole_update_receipt_latest() -> PathBuf {

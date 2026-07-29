@@ -20,7 +20,11 @@ fn source_outcome_cmd(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { 1 },
         stdout: outcome.receipt.promotion.clone(),
-        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
+        stderr: if outcome.ok {
+            String::new()
+        } else {
+            outcome.receipt.promotion.clone()
+        },
     }
 }
 
@@ -403,7 +407,9 @@ pub(crate) fn homeconsole_arcadia_gui_update(
         "arcadia-source-git-artifact",
     );
     if let Some(blocker) = resolution.blocker {
-        return Err(format!("arcadia-source-resolution-blocked component={component} blocker={blocker}"));
+        return Err(format!(
+            "arcadia-source-resolution-blocked component={component} blocker={blocker}"
+        ));
     }
     let resolution = resolution
         .resolution
