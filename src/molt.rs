@@ -5,17 +5,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeployableConfigMode {
+pub(crate) enum MoltMode {
     Copy,
     Symlink,
 }
 
-impl DeployableConfigMode {
+impl MoltMode {
     pub(crate) fn parse(value: Option<String>) -> Result<Self, String> {
         match value.as_deref().unwrap_or("copy") {
             "copy" => Ok(Self::Copy),
             "symlink" | "link" => Ok(Self::Symlink),
-            other => Err(format!("deployable-config-mode-unsupported-{other}")),
+            other => Err(format!("molt-mode-unsupported-{other}")),
         }
     }
 
@@ -28,7 +28,7 @@ impl DeployableConfigMode {
 }
 
 #[derive(Debug, Serialize)]
-struct DeployableConfigArtifact {
+struct MoltArtifact {
     kind: &'static str,
     source: String,
     output: String,
@@ -36,7 +36,7 @@ struct DeployableConfigArtifact {
 }
 
 #[derive(Debug, Serialize)]
-struct DeployableConfigReceipt {
+struct MoltReceipt {
     schema: &'static str,
     ok: bool,
     profile_id: String,
@@ -44,39 +44,78 @@ struct DeployableConfigReceipt {
     harmonia_root: String,
     output_dir: String,
     mode: &'static str,
-    artifacts: Vec<DeployableConfigArtifact>,
+    artifacts: Vec<MoltArtifact>,
+    untouched_modules: Vec<String>,
     pruned_modules: Vec<String>,
     pruned_paths: Vec<String>,
+    subscription_path: String,
+    subscription_modules: Vec<SubscriptionModuleStatus>,
+    subscription_updated: bool,
     first_missing_signal: &'static str,
 }
 
-pub(crate) fn export_deployable_config(
+pub(crate) fn molt(
     harmonia_root: &Path,
     profile_id: &str,
     output_dir: &Path,
     receipt_dir: &Path,
-    mode: DeployableConfigMode,
+    mode: MoltMode,
+) -> Result<(), String> {
+    molt_at_subscription_path(
+        harmonia_root,
+        profile_id,
+        output_dir,
+        receipt_dir,
+        &subscription_path(),
+        mode,
+    )
+}
+
+pub(crate) fn molt_at_subscription_path(
+    harmonia_root: &Path,
+    profile_id: &str,
+    output_dir: &Path,
+    receipt_dir: &Path,
+    subscription_path: &Path,
+    mode: MoltMode,
 ) -> Result<(), String> {
     validate_harmonia_config_root(harmonia_root)?;
     let profile_path = harmonia_root
         .join("profiles")
         .join(profile_id)
         .join("index.json");
-    let profile = load_profile(&profile_path).map_err(|e| {
-        format!(
-            "deployable-config-profile-read-failed {}: {e}",
-            profile_path.display()
-        )
-    })?;
+    let profile = load_profile(&profile_path)
+        .map_err(|e| format!("molt-profile-read-failed {}: {e}", profile_path.display()))?;
     if profile.id != profile_id {
         return Err(format!(
-            "deployable-config-profile-id-mismatch expected={} got={}",
+            "molt-profile-id-mismatch expected={} got={}",
             profile_id, profile.id
         ));
     }
 
+    let subscription_modules = profile
+        .modules
+        .iter()
+        .map(|id| {
+            let module_dir = harmonia_root
+                .join("profiles")
+                .join(&profile.id)
+                .join("modules")
+                .join(id);
+            Ok(SubscriptionModuleUpdate {
+                id: id.clone(),
+                version: installed_module_version(&module_dir)
+                    .unwrap_or_else(|| "sidecar".to_string()),
+                tree_sha256: module_tree_sha256(&module_dir)?,
+                received_at_run_id: run_id_from_stamp(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let subscription_statuses =
+        diff_subscription_modules(&subscription_path, &subscription_modules)?;
     let mut artifacts = Vec::new();
     let mut pruned_paths = Vec::new();
+    let mut untouched_modules = Vec::new();
     export_one(
         &profile_path,
         &output_dir
@@ -101,6 +140,18 @@ pub(crate) fn export_deployable_config(
             .join(&profile.id)
             .join("modules")
             .join(module);
+        let source_version =
+            installed_module_version(&module_dir).unwrap_or_else(|| "sidecar".to_string());
+        let source_tree_sha256 = module_tree_sha256(&module_dir)?;
+        let installed_clean = module_output_dir.is_dir()
+            && installed_module_version(&module_output_dir)
+                .unwrap_or_else(|| "sidecar".to_string())
+                == source_version
+            && module_tree_sha256(&module_output_dir)? == source_tree_sha256;
+        if installed_clean {
+            untouched_modules.push(module.clone());
+            continue;
+        }
         if manifest.exists() && is_ladder_manifest(&manifest) {
             let ladder = load_ladder_manifest(&manifest)?;
             export_one(
@@ -138,7 +189,7 @@ pub(crate) fn export_deployable_config(
             )?;
         } else {
             return Err(format!(
-                "deployable-config-module-manifest-missing {}",
+                "molt-module-manifest-missing {}",
                 module_dir.display()
             ));
         }
@@ -167,9 +218,22 @@ pub(crate) fn export_deployable_config(
         .join("modules");
     let pruned_modules = prune_retired_module_dirs(&output_module_root, &profile.modules)?;
 
+    let lane = preserve_existing_lane_or_default(&subscription_path);
+    update_subscription_record(
+        &subscription_path,
+        SubscriptionUpdate {
+            lane,
+            source: format!("molt:{}", harmonia_root.display()),
+            ref_name: "molt".to_string(),
+            selected_profile: profile.id.clone(),
+            engine_version_received: VERSION.to_string(),
+            modules: subscription_modules,
+        },
+    )?;
+
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    let receipt = DeployableConfigReceipt {
-        schema: "harmonia.deployable_config_export.v1",
+    let receipt = MoltReceipt {
+        schema: "harmonia.molt.v1",
         ok: true,
         profile_id: profile.id.clone(),
         identity: profile.identity.clone(),
@@ -177,28 +241,31 @@ pub(crate) fn export_deployable_config(
         output_dir: output_dir.display().to_string(),
         mode: mode.as_str(),
         artifacts,
+        untouched_modules,
         pruned_modules,
         pruned_paths,
-        first_missing_signal: "none",
+        subscription_path: subscription_path.display().to_string(),
+        subscription_modules: subscription_statuses,
+        subscription_updated: true,
+        first_missing_signal: "molt-none",
     };
     let receipt_text = serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?;
-    fs::write(
-        receipt_dir.join("deployable-config-export.json"),
-        receipt_text,
-    )
-    .map_err(|e| e.to_string())?;
+    fs::write(receipt_dir.join("molt.json"), receipt_text).map_err(|e| e.to_string())?;
 
-    println!("schema=harmonia.deployable_config_export.v1");
+    println!("schema=harmonia.molt.v1");
     println!("ok=true");
     println!("profile_id={}", profile.id);
     println!("identity={}", profile.identity);
     println!("artifact_count={}", receipt.artifacts.len());
+    println!("untouched_modules={}", receipt.untouched_modules.join(","));
     println!("pruned_count={}", receipt.pruned_paths.len());
     println!("pruned_module_count={}", receipt.pruned_modules.len());
     println!("pruned_modules={}", receipt.pruned_modules.join(","));
     println!("output_dir={}", output_dir.display());
     println!("receipt_dir={}", receipt_dir.display());
-    println!("first_missing_signal=none");
+    println!("subscription_path={}", receipt.subscription_path);
+    println!("subscription_updated={}", receipt.subscription_updated);
+    println!("first_missing_signal=molt-none");
     Ok(())
 }
 
@@ -231,7 +298,7 @@ fn prune_retired_module_dirs(
         }
         fs::remove_dir_all(&module_path).map_err(|e| {
             format!(
-                "deployable-config-prune-module-dir-failed {}: {e}",
+                "molt-prune-module-dir-failed {}: {e}",
                 module_path.display()
             )
         })?;
@@ -255,19 +322,19 @@ fn is_staged_module_dir(path: &Path) -> Result<bool, String> {
 fn validate_harmonia_config_root(harmonia_root: &Path) -> Result<(), String> {
     if !harmonia_root.join("Cargo.toml").exists() {
         return Err(format!(
-            "deployable-config-harmonia-root-rejected missing=Cargo.toml root={}",
+            "molt-harmonia-root-rejected missing=Cargo.toml root={}",
             harmonia_root.display()
         ));
     }
     if !harmonia_root.join("src/tools").is_dir() {
         return Err(format!(
-            "deployable-config-harmonia-root-rejected missing=src/tools root={}",
+            "molt-harmonia-root-rejected missing=src/tools root={}",
             harmonia_root.display()
         ));
     }
     if !harmonia_root.join("profiles").is_dir() {
         return Err(format!(
-            "deployable-config-harmonia-root-rejected missing=profiles root={}",
+            "molt-harmonia-root-rejected missing=profiles root={}",
             harmonia_root.display()
         ));
     }
@@ -278,8 +345,8 @@ fn export_one(
     source: &Path,
     output: &Path,
     kind: &'static str,
-    mode: DeployableConfigMode,
-    artifacts: &mut Vec<DeployableConfigArtifact>,
+    mode: MoltMode,
+    artifacts: &mut Vec<MoltArtifact>,
 ) -> Result<(), String> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -293,18 +360,18 @@ fn export_one(
         }
     }
     match mode {
-        DeployableConfigMode::Copy => {
+        MoltMode::Copy => {
             fs::copy(source, output).map_err(|e| {
                 format!(
-                    "deployable-config-copy-failed {} -> {}: {e}",
+                    "molt-copy-failed {} -> {}: {e}",
                     source.display(),
                     output.display()
                 )
             })?;
         }
-        DeployableConfigMode::Symlink => symlink_file(source, output)?,
+        MoltMode::Symlink => symlink_file(source, output)?,
     }
-    artifacts.push(DeployableConfigArtifact {
+    artifacts.push(MoltArtifact {
         kind,
         source: source.display().to_string(),
         output: output.display().to_string(),
@@ -317,8 +384,8 @@ fn export_module_sibling_files(
     module_dir: &Path,
     module_output_dir: &Path,
     files_root: Option<&str>,
-    mode: DeployableConfigMode,
-    artifacts: &mut Vec<DeployableConfigArtifact>,
+    mode: MoltMode,
+    artifacts: &mut Vec<MoltArtifact>,
 ) -> Result<(), String> {
     for entry in fs::read_dir(module_dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -349,15 +416,12 @@ fn export_tree(
     source_root: &Path,
     output_root: &Path,
     kind: &'static str,
-    mode: DeployableConfigMode,
-    artifacts: &mut Vec<DeployableConfigArtifact>,
+    mode: MoltMode,
+    artifacts: &mut Vec<MoltArtifact>,
     pruned_paths: &mut Vec<String>,
 ) -> Result<(), String> {
     if !source_root.is_dir() {
-        return Err(format!(
-            "deployable-config-files-root-missing {}",
-            source_root.display()
-        ));
+        return Err(format!("molt-files-root-missing {}", source_root.display()));
     }
     prune_deleted_tree_paths(source_root, output_root, pruned_paths)?;
     for entry in fs::read_dir(source_root).map_err(|e| e.to_string())? {
@@ -385,8 +449,7 @@ fn prune_deleted_tree_paths(
     let output_files = relative_files(output_root)?;
     for rel in output_files.difference(&source_files) {
         let path = output_root.join(rel);
-        fs::remove_file(&path)
-            .map_err(|e| format!("deployable-config-prune-failed {}: {e}", path.display()))?;
+        fs::remove_file(&path).map_err(|e| format!("molt-prune-failed {}: {e}", path.display()))?;
         pruned_paths.push(path.display().to_string());
     }
     prune_empty_dirs(output_root)?;
@@ -423,9 +486,8 @@ fn prune_empty_dirs(root: &Path) -> Result<bool, String> {
         let path = entry.path();
         if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
             if prune_empty_dirs(&path)? {
-                fs::remove_dir(&path).map_err(|e| {
-                    format!("deployable-config-prune-dir-failed {}: {e}", path.display())
-                })?;
+                fs::remove_dir(&path)
+                    .map_err(|e| format!("molt-prune-dir-failed {}: {e}", path.display()))?;
             } else {
                 empty = false;
             }
@@ -440,7 +502,7 @@ fn prune_empty_dirs(root: &Path) -> Result<bool, String> {
 fn symlink_file(source: &Path, output: &Path) -> Result<(), String> {
     std::os::unix::fs::symlink(source, output).map_err(|e| {
         format!(
-            "deployable-config-symlink-failed {} -> {}: {e}",
+            "molt-symlink-failed {} -> {}: {e}",
             source.display(),
             output.display()
         )
@@ -449,5 +511,5 @@ fn symlink_file(source: &Path, output: &Path) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn symlink_file(_source: &Path, _output: &Path) -> Result<(), String> {
-    Err("deployable-config-symlink-unsupported".to_string())
+    Err("molt-symlink-unsupported".to_string())
 }

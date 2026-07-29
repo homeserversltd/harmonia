@@ -194,7 +194,6 @@ struct PinnedArtifactStatus {
     policy: String,
 }
 
-
 #[derive(Debug, Clone)]
 struct OperationOutcome {
     ok: bool,
@@ -220,9 +219,9 @@ pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 mod capsule;
 mod convergence_lock;
 pub mod device_profile;
-mod deployable_config;
 mod ladder;
 mod module_dispatch;
+mod molt;
 mod preflight;
 mod profile_engine;
 mod receipts;
@@ -232,9 +231,9 @@ mod subscription;
 pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
 pub(crate) use device_profile::*;
-pub(crate) use deployable_config::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
+pub(crate) use molt::*;
 pub(crate) use preflight::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
@@ -277,7 +276,6 @@ mod tests {
             validate_ladder(&manifest).unwrap();
         }
     }
-
 
     static PACMAN_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -630,7 +628,6 @@ mod tests {
         .contains("homeconsole/homeconsole"));
     }
 
-
     #[test]
     fn homeserver_update_requires_homeserver_identity() {
         let profile = Profile {
@@ -672,7 +669,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-
     #[test]
     fn homeserver_profile_sync_advances_subscription_module_digest() {
         let root = repo_root();
@@ -708,7 +704,10 @@ mod tests {
     #[test]
     fn tv_update_requires_tv_identity() {
         let profile = Profile {
-            package_authority: Some(PackageAuthority { os_family: "arch".into(), package_manager: "pacman".into() }),
+            package_authority: Some(PackageAuthority {
+                os_family: "arch".into(),
+                package_manager: "pacman".into(),
+            }),
             id: "tv".into(),
             identity: "homeconsole".into(),
             modules: tv_module_ids_from_profile_modules(&tv_module_root()).unwrap(),
@@ -746,7 +745,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-
     #[test]
     fn tv_profile_sync_advances_subscription_module_digest() {
         let root = repo_root();
@@ -776,7 +774,6 @@ mod tests {
         );
         let _ = fs::remove_dir_all(scratch);
     }
-
 
     #[test]
     fn materializes_per_run_receipt_dir_for_latest_alias() {
@@ -1281,10 +1278,8 @@ mod tests {
             .iter()
             .find(|step| step.tool == "service-runtime")
             .expect("homeserver caduceus service-runtime step");
-        let source_profile: CaduceusProfileSourceManifest = serde_json::from_value(
-            runtime.args["caduceus_profile_source"].clone(),
-        )
-        .unwrap();
+        let source_profile: CaduceusProfileSourceManifest =
+            serde_json::from_value(runtime.args["caduceus_profile_source"].clone()).unwrap();
         assert_eq!(source_profile.source, "profiles/homeserver/index.yaml");
         assert_eq!(source_profile.path, "/etc/caduceus/profile.yaml");
         for required in [
@@ -1321,8 +1316,12 @@ mod tests {
         assert!(source_profile.append.contains("harmonia_routes:"));
         assert!(source_profile.append.contains("update_now:"));
         assert!(source_profile.append.contains("homeserver-update"));
-        assert!(source_profile.append.contains("/etc/harmonia/profiles/homeserver/index.json"));
-        assert!(source_profile.append.contains("/var/lib/harmonia/receipts/update-latest/run.json"));
+        assert!(source_profile
+            .append
+            .contains("/etc/harmonia/profiles/homeserver/index.json"));
+        assert!(source_profile
+            .append
+            .contains("/var/lib/harmonia/receipts/update-latest/run.json"));
         let managed_files: Vec<ManagedFileManifest> =
             serde_json::from_value(runtime.args["managed_files"].clone()).unwrap();
         assert!(
@@ -1532,25 +1531,20 @@ mod tests {
         let steam_dir = root.join("profiles/tv/modules/steam-game-lane");
         let steam = load_ladder_manifest(&steam_dir.join("manifest.json")).unwrap();
         assert_eq!(steam.files_root.as_deref(), Some("files_root"));
-        assert!(
-            steam_dir
-                .join("files_root/usr/local/bin/arch-tv-steam-game-lane")
-                .is_file()
-        );
+        assert!(steam_dir
+            .join("files_root/usr/local/bin/arch-tv-steam-game-lane")
+            .is_file());
         assert!(steam
             .ladder
             .iter()
             .any(|step| step.tool == "files" && step.permutation == "managed-files"));
 
         let caduceus_dir = root.join("profiles/tv/modules/caduceus-public-lever");
-        let caduceus =
-            load_ladder_manifest(&caduceus_dir.join("manifest.json")).unwrap();
+        let caduceus = load_ladder_manifest(&caduceus_dir.join("manifest.json")).unwrap();
         assert_eq!(caduceus.files_root.as_deref(), Some("files_root"));
-        assert!(
-            caduceus_dir
-                .join("files_root/etc/caduceus/identity.json")
-                .is_file()
-        );
+        assert!(caduceus_dir
+            .join("files_root/etc/caduceus/identity.json")
+            .is_file());
         let runtime = caduceus
             .ladder
             .iter()
@@ -1710,7 +1704,10 @@ mod tests {
         .unwrap();
         let receipts = scratch.join("receipts");
         let profile = Profile {
-            package_authority: Some(PackageAuthority { os_family: "arch".into(), package_manager: "pacman".into() }),
+            package_authority: Some(PackageAuthority {
+                os_family: "arch".into(),
+                package_manager: "pacman".into(),
+            }),
             id: "tv".into(),
             identity: "arch-tv".into(),
             modules: vec!["identity".into(), "system-packages".into()],
@@ -1887,10 +1884,8 @@ mod tests {
             .unwrap();
         }
 
-        let scratch = std::env::temp_dir().join(format!(
-            "harmonia-suite-spine-debt-{}",
-            process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-suite-spine-debt-{}", process::id()));
         let module_root = scratch.join("modules");
         let receipts = scratch.join("receipts");
         write_command_module(&module_root, "first");
@@ -1923,7 +1918,11 @@ mod tests {
         assert_eq!(run["module_count"], 2);
         assert_eq!(run["operation_count"], 2);
         for module in ["first", "second"] {
-            assert!(receipts.join("modules").join(module).join("run.json").exists());
+            assert!(receipts
+                .join("modules")
+                .join(module)
+                .join("run.json")
+                .exists());
         }
         let _ = fs::remove_dir_all(scratch);
     }
@@ -2040,21 +2039,32 @@ mod tests {
         let _ = fs::remove_dir_all(receipts);
     }
 
+    fn write_molt_fixture(root: &Path) {
+        fs::create_dir_all(root.join("src/tools")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
+        fs::create_dir_all(root.join("profiles/fixture/modules")).unwrap();
+        fs::write(root.join("profiles/fixture/index.json"), r#"{"schema":"harmonia.profile.v1","id":"fixture","identity":"fixture","modules":["alpha","beta"]}"#).unwrap();
+        for module in ["alpha", "beta"] {
+            let module_root = root.join("profiles/fixture/modules").join(module);
+            fs::create_dir_all(module_root.join("files_root")).unwrap();
+            fs::write(module_root.join("manifest.json"), format!(r#"{{"schema":"harmonia.module.ladder.v1","id":"{module}","version":"1.0.0","description":"fixture","files_root":"files_root","ladder":[]}}"#)).unwrap();
+            fs::write(module_root.join("files_root/payload.txt"), module).unwrap();
+        }
+    }
+
     #[test]
-    fn deployable_config_export_comes_from_harmonia_profile_tree() {
+    fn molt_comes_from_harmonia_profile_tree() {
         let root = repo_root();
-        let scratch = std::env::temp_dir().join(format!(
-            "harmonia-deployable-config-export-{}",
-            process::id()
-        ));
+        let scratch = std::env::temp_dir().join(format!("harmonia-molt-{}", process::id()));
         let output = scratch.join("payload");
         let receipts = scratch.join("receipts");
-        export_deployable_config(
+        molt_at_subscription_path(
             &root,
             "homeconsole",
             &output,
             &receipts,
-            DeployableConfigMode::Copy,
+            &scratch.join("subscription.json"),
+            MoltMode::Copy,
         )
         .unwrap();
         assert!(output.join("profiles/homeconsole/index.json").exists());
@@ -2070,9 +2080,9 @@ mod tests {
         assert!(output
             .join("locks/homeconsole/pinned-artifacts.json")
             .exists());
-        assert!(receipts.join("deployable-config-export.json").exists());
-        let receipt = fs::read_to_string(receipts.join("deployable-config-export.json")).unwrap();
-        assert!(receipt.contains("harmonia.deployable_config_export.v1"));
+        assert!(receipts.join("molt.json").exists());
+        let receipt = fs::read_to_string(receipts.join("molt.json")).unwrap();
+        assert!(receipt.contains("harmonia.molt.v1"));
         assert!(receipt.contains("profile-index"));
         assert!(receipt.contains("module-ladder-manifest"));
         assert!(receipt.contains("profile-lock"));
@@ -2080,55 +2090,116 @@ mod tests {
             !output
                 .join("profiles/homeconsole/modules/arcadia-gui-runtime/index.rs")
                 .exists(),
-            "deployable config export carries constants, not module code"
+            "molt carries constants, not module code"
         );
         let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]
-    fn deployable_config_export_carries_ladder_module_sibling_files() {
+    fn molt_skips_unchanged_modules_and_recopies_only_changed_module() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-molt-stale-{}", process::id()));
+        let root = scratch.join("root");
+        let output = scratch.join("output");
+        let receipts = scratch.join("receipts");
+        let subscription = scratch.join("subscription.json");
+        write_molt_fixture(&root);
+        for _ in 0..2 {
+            molt_at_subscription_path(
+                &root,
+                "fixture",
+                &output,
+                &receipts,
+                &subscription,
+                MoltMode::Copy,
+            )
+            .unwrap();
+        }
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(receipts.join("molt.json")).unwrap()).unwrap();
+        assert_eq!(receipt["untouched_modules"], json!(["alpha", "beta"]));
+        assert!(receipt["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| !a["source"].as_str().unwrap().contains("/modules/")));
+
+        fs::write(
+            root.join("profiles/fixture/modules/alpha/files_root/payload.txt"),
+            "alpha changed",
+        )
+        .unwrap();
+        molt_at_subscription_path(
+            &root,
+            "fixture",
+            &output,
+            &receipts,
+            &subscription,
+            MoltMode::Copy,
+        )
+        .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(receipts.join("molt.json")).unwrap()).unwrap();
+        assert_eq!(receipt["untouched_modules"], json!(["beta"]));
+        assert!(receipt["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["source"].as_str().unwrap().contains("/modules/alpha/")));
+        assert!(receipt["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| !a["source"].as_str().unwrap().contains("/modules/beta/")));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn molt_carries_ladder_module_sibling_files() {
         let root = repo_root();
-        let scratch = std::env::temp_dir().join(format!(
-            "harmonia-deployable-config-tv-ratchet-{}",
-            process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-molt-tv-ratchet-{}", process::id()));
         let output = scratch.join("payload");
         let receipts = scratch.join("receipts");
-        export_deployable_config(&root, "tv", &output, &receipts, DeployableConfigMode::Copy)
-            .unwrap();
+        molt_at_subscription_path(
+            &root,
+            "tv",
+            &output,
+            &receipts,
+            &scratch.join("subscription.json"),
+            MoltMode::Copy,
+        )
+        .unwrap();
         assert!(output
             .join("profiles/tv/modules/oh-my-posh-aur-ratchet/manifest.json")
             .exists());
         assert!(output
             .join("profiles/tv/modules/oh-my-posh-aur-ratchet/ratchet-lock.json")
             .exists());
-        let receipt = fs::read_to_string(receipts.join("deployable-config-export.json")).unwrap();
+        let receipt = fs::read_to_string(receipts.join("molt.json")).unwrap();
         assert!(receipt.contains("module-ladder-sibling-file"));
         assert!(receipt.contains("ratchet-lock.json"));
         let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]
-    fn deployable_config_export_rejects_non_harmonia_authority_root() {
-        let scratch = std::env::temp_dir().join(format!(
-            "harmonia-deployable-config-reject-{}",
-            process::id()
-        ));
+    fn molt_rejects_non_harmonia_authority_root() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-molt-reject-{}", process::id()));
         fs::create_dir_all(scratch.join("profiles/homeconsole")).unwrap();
         fs::write(
             scratch.join("profiles/homeconsole/index.json"),
             r#"{"schema":"harmonia.profile.v1","id":"homeconsole","identity":"homeconsole","modules":[]}"#,
         )
         .unwrap();
-        let err = export_deployable_config(
+        let err = molt_at_subscription_path(
             &scratch,
             "homeconsole",
             &scratch.join("payload"),
             &scratch.join("receipts"),
-            DeployableConfigMode::Copy,
+            &scratch.join("subscription.json"),
+            MoltMode::Copy,
         )
         .unwrap_err();
-        assert!(err.contains("deployable-config-harmonia-root-rejected"));
+        assert!(err.contains("molt-harmonia-root-rejected"));
         let _ = fs::remove_dir_all(scratch);
     }
 
@@ -2541,12 +2612,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let step_id = value_arg(&args, "--step-id")
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "source-resolution".to_string());
-            let receipt = resolve_source_json(
-                &certificate,
-                component,
-                &owning_module,
-                &step_id,
-            );
+            let receipt = resolve_source_json(&certificate, component, &owning_module, &step_id);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&receipt)
@@ -2712,23 +2778,14 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 other => Err(format!("subscription-action-unsupported-{other}")),
             }
         }
-        Some("deployable-config") => {
-            let action = args
-                .get(1)
-                .ok_or("deployable-config requires export <profile-id>")?;
-            if action != "export" {
-                return Err(format!("deployable-config-action-unsupported-{action}"));
-            }
-            let profile_id = args
-                .get(2)
-                .ok_or("deployable-config export requires <profile-id>")?;
-            let output_dir = value_arg(&args, "--out")
-                .ok_or("deployable-config export requires --out <path>")?;
+        Some("molt") => {
+            let profile_id = args.get(1).ok_or("molt requires <profile-id>")?;
+            let output_dir = value_arg(&args, "--out").ok_or("molt requires --out <path>")?;
             let harmonia_root =
                 value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from("."));
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| output_dir.join("receipts"));
-            let mode = DeployableConfigMode::parse(value_arg_string(&args, "--mode"))?;
-            export_deployable_config(&harmonia_root, profile_id, &output_dir, &receipt_dir, mode)
+            let mode = MoltMode::parse(value_arg_string(&args, "--mode"))?;
+            molt(&harmonia_root, profile_id, &output_dir, &receipt_dir, mode)
         }
         Some("pinned-artifacts") => {
             let action = args
@@ -2769,7 +2826,9 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             homeconsole_update(&profile, &module_root, &receipt_dir, apply)
         }
         Some("tv-update") => {
-            let path = args.get(1).ok_or("tv-update requires <profile-index-json>")?;
+            let path = args
+                .get(1)
+                .ok_or("tv-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
             let apply = args.iter().any(|arg| arg == "--apply");
             verify_asserted_profile("tv")?;
@@ -2919,8 +2978,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("homeconsole-arcadia-gui-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args)
                 .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/arcadia-gui-latest"));
-            let component = value_arg_string(&args, "--component")
-                .unwrap_or_else(|| "arcadia".to_string());
+            let component =
+                value_arg_string(&args, "--component").unwrap_or_else(|| "arcadia".to_string());
             let source_dir = value_arg(&args, "--source-dir")
                 .unwrap_or_else(|| PathBuf::from("/opt/arcadia/source"));
             let install_bin = value_arg(&args, "--install-bin")
@@ -3010,7 +3069,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia update [--apply] [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia subscription show");
-    println!("  harmonia deployable-config export <profile-id> --out <path> [--harmonia-root <path>] [--mode copy|symlink] [--receipt-dir <path>]");
+    println!("  harmonia molt <profile-id> --out <path> [--harmonia-root <path>] [--mode copy|symlink] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts check <profiles/<id>/index.json> [--lock <path>] [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts nudge <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--receipt-dir <path>]");
     println!("  harmonia pinned-artifacts bless <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--install-path <path>] [--apply] [--receipt-dir <path>]");
