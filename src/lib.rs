@@ -2348,6 +2348,7 @@ mod tests {
                 "homeserver",
                 "caduceus",
                 vec![
+                    ("files", "managed-directories"),
                     ("command", "capture"),
                     ("command", "capture"),
                     ("command", "capture"),

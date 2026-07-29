@@ -1,5 +1,5 @@
 use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +25,11 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("owner", ToolArgKind::String),
             ToolArg::optional("group", ToolArgKind::String),
         ],
+    ),
+    ToolPermutation::new(
+        "managed-directories",
+        "converge managed directory declarations with mode and ownership readback",
+        &[ToolArg::required("directories", ToolArgKind::Json)],
     ),
     ToolPermutation::new(
         "converge",
@@ -237,6 +242,116 @@ pub(crate) struct ManagedFilesRequest<'a> {
     pub receipt_name: &'a str,
     pub schema: &'a str,
     pub first_missing_signal: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManagedDirectorySpec {
+    pub path: String,
+    pub mode: u32,
+    pub owner: String,
+    pub group: String,
+}
+
+pub(crate) fn converge_managed_directories(
+    directories: &[ManagedDirectorySpec],
+    receipt_dir: &Path,
+    receipt_name: &str,
+    apply: bool,
+) -> Result<crate::OperationOutcome, String> {
+    validate_receipt_name(receipt_name)?;
+    if directories.is_empty() {
+        return Err("managed-directories-empty-request".to_string());
+    }
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let mut changed = false;
+    let mut entries = Vec::new();
+    for directory in directories {
+        let path = PathBuf::from(&directory.path);
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+            || directory.mode > 0o777
+        {
+            return Err(format!(
+                "managed-directory-declaration-invalid {}",
+                directory.path
+            ));
+        }
+        reject_ssh_path(&path)?;
+        let desired_uid = resolve_uid(&directory.owner)?;
+        let desired_gid = resolve_gid(&directory.group)?;
+        let metadata = fs::symlink_metadata(&path).ok();
+        if metadata
+            .as_ref()
+            .is_some_and(|value| !value.file_type().is_dir())
+        {
+            return Err(format!(
+                "managed-directory-not-directory {}",
+                path.display()
+            ));
+        }
+        let existed_before = metadata.is_some();
+        let mode_equal_before = existed_before && target_mode(&path)? == Some(directory.mode);
+        let (owner_equal_before, group_equal_before) =
+            ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
+        let entry_changed =
+            !existed_before || !mode_equal_before || !owner_equal_before || !group_equal_before;
+        if apply && entry_changed {
+            fs::create_dir_all(&path)
+                .map_err(|e| format!("managed-directory-create-failed {}: {e}", path.display()))?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(directory.mode)).map_err(
+                |e| format!("managed-directory-mode-set-failed {}: {e}", path.display()),
+            )?;
+            set_ownership(&path, Some(desired_uid), Some(desired_gid))?;
+            if target_mode(&path)? != Some(directory.mode) {
+                return Err(format!(
+                    "managed-directory-mode-readback-failed {}",
+                    path.display()
+                ));
+            }
+            let (owner_equal_after, group_equal_after) =
+                ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
+            if !owner_equal_after || !group_equal_after {
+                return Err(format!(
+                    "managed-directory-owner-readback-failed {}",
+                    path.display()
+                ));
+            }
+            changed = true;
+        }
+        entries.push(json!({
+            "path": directory.path,
+            "mode": directory.mode,
+            "owner": directory.owner,
+            "group": directory.group,
+            "existed_before": existed_before,
+            "mode_equal_before": mode_equal_before,
+            "owner_equal_before": owner_equal_before,
+            "group_equal_before": group_equal_before,
+            "changed": entry_changed,
+            "applied": apply && entry_changed,
+        }));
+    }
+    crate::write_json(
+        &receipt_dir.join(format!("{receipt_name}.json")),
+        &json!({
+            "schema": "harmonia.files.managed_directories.v1",
+            "ok": true,
+            "apply": apply,
+            "changed": changed,
+            "entries": entries,
+            "first_missing_signal": "none",
+        }),
+    )?;
+    Ok(crate::OperationOutcome {
+        ok: true,
+        changed,
+        skipped: !apply,
+        message: format!("{} managed directories checked", directories.len()),
+        command: None,
+    })
 }
 
 pub(crate) fn converge_managed_files(

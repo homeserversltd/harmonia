@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "HOMESERVER Caduceus public lever with a provisioned caduceus_staff Python environment and sudoers refresh consumer declaration.",
   "constants": {
     "staff_venv": "/var/lib/caduceus/venv",
@@ -9,6 +9,21 @@
     "sudoers_refresh_consumer_role": "caduceus"
   },
   "ladder": [
+    {
+      "step_id": "caduceus-household-time-state-directory",
+      "tool": "files",
+      "permutation": "managed-directories",
+      "args": {
+        "directories": [
+          {
+            "path": "/var/lib/caduceus/household-time",
+            "mode": 493,
+            "owner": "owner",
+            "group": "owner"
+          }
+        ]
+      }
+    },
     {
       "step_id": "caduceus-staff-venv",
       "tool": "command",

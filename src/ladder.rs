@@ -448,6 +448,7 @@ fn execute_validated_step(
         ("health", "probe") => health_probe_step(step, module_dir, apply),
         ("household-time", _) => household_time_step(step, module_dir, apply),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
+        ("files", "managed-directories") => managed_directories_step(step, module_dir, apply),
         ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
         ("files", "validated-file-symlink") => {
             validated_file_symlink_step(step, manifest, module_dir, apply)
@@ -644,6 +645,21 @@ fn managed_files_step(
         module_dir,
         apply,
     )
+}
+
+fn managed_directories_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let directories: Vec<tools::files::ManagedDirectorySpec> = serde_json::from_value(
+        step.args
+            .get("directories")
+            .cloned()
+            .ok_or("managed-directories-args-missing")?,
+    )
+    .map_err(|e| format!("managed-directories-args-invalid: {e}"))?;
+    tools::files::converge_managed_directories(&directories, module_dir, &step.step_id, apply)
 }
 
 fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileManifest>, String> {
