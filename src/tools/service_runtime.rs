@@ -554,13 +554,19 @@ fn effective_managed_files(
         for file in &mut files {
             if file.path.ends_with("/profile.json") {
                 let mut value: Value = serde_json::from_str(&file.content).map_err(|e| {
-                    format!("service-runtime-caduceus-profile-json-invalid {}: {e}", file.path)
+                    format!(
+                        "service-runtime-caduceus-profile-json-invalid {}: {e}",
+                        file.path
+                    )
                 })?;
                 let commands = value
                     .get_mut("commands")
                     .and_then(Value::as_array_mut)
                     .ok_or_else(|| {
-                        format!("service-runtime-caduceus-profile-json-commands-missing {}", file.path)
+                        format!(
+                            "service-runtime-caduceus-profile-json-commands-missing {}",
+                            file.path
+                        )
                     })?;
                 for command in &module.caduceus_commands {
                     let value = Value::String(command.clone());
@@ -568,11 +574,12 @@ fn effective_managed_files(
                         commands.push(value);
                     }
                 }
-                file.content = serde_json::to_string_pretty(&value)
-                    .map_err(|e| format!("service-runtime-caduceus-profile-json-render-failed: {e}"))?
-                    + "\n";
+                file.content = serde_json::to_string_pretty(&value).map_err(|e| {
+                    format!("service-runtime-caduceus-profile-json-render-failed: {e}")
+                })? + "\n";
             } else if file.path.ends_with("/profile.yaml") {
-                file.content = append_caduceus_yaml_commands(&file.content, &module.caduceus_commands)?;
+                file.content =
+                    append_caduceus_yaml_commands(&file.content, &module.caduceus_commands)?;
             }
         }
     }
@@ -652,14 +659,23 @@ fn source_outcome_cmd(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult
         .receipt
         .attempts
         .iter()
-        .map(|attempt| format!("candidate={} disposition={} detail={}", attempt.index, attempt.disposition, attempt.detail))
+        .map(|attempt| {
+            format!(
+                "candidate={} disposition={} detail={}",
+                attempt.index, attempt.disposition, attempt.detail
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     CmdResult {
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { 1 },
         stdout: format!("promotion={}\n{}", outcome.receipt.promotion, detail),
-        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
+        stderr: if outcome.ok {
+            String::new()
+        } else {
+            outcome.receipt.promotion.clone()
+        },
     }
 }
 

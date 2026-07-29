@@ -1371,15 +1371,23 @@ mod tests {
             .iter()
             .find(|step| step.step_id == "caduceus-staff-shelf-from-synced-source")
             .expect("homeserver Caduceus source-derived staff shelf step");
-        assert_eq!(staff_step.tool, "command");
-        assert_eq!(staff_step.permutation, "capture");
-        assert_eq!(staff_step.args["program"], "/usr/bin/sh");
-        let staff_args = staff_step.args["args"].as_array().unwrap();
-        assert!(staff_args.iter().any(|value| {
-            value
-                .as_str()
-                .is_some_and(|arg| arg.contains("/opt/caduceus/source/data/staff-actuators"))
-        }));
+        assert_eq!(staff_step.tool, "files");
+        assert_eq!(staff_step.permutation, "source-shelf-sweep");
+        assert_eq!(
+            staff_step.args["source_root"],
+            "/opt/caduceus/source/data/staff-actuators"
+        );
+        assert_eq!(staff_step.args["shelf_source"], "caduceus_staff");
+        assert_eq!(
+            staff_step.args["target_shelf"],
+            "/usr/local/sbin/caduceus_staff"
+        );
+        assert_eq!(staff_step.args["launcher_pattern"], "caduceus-*");
+        assert_eq!(staff_step.args["shelf_directory_mode"], 0o755);
+        assert_eq!(staff_step.args["shelf_file_mode"], 0o644);
+        assert_eq!(staff_step.args["launcher_mode"], 0o755);
+        assert_eq!(staff_step.args["prune"], true);
+        assert!(!staff_step.args.contains_key("program"));
         assert!(root
             .join("profiles/homeserver/modules/caduceus/files_root/etc/sudoers.d/caduceus-keyman")
             .is_file());
@@ -1435,7 +1443,9 @@ mod tests {
             .join("waybar/.config/waybar/waybar.conf")
             .is_file());
         assert!(root
-            .join("profiles/tv/modules/xdg-user-settings/files_root/launcher-bin/bin/tv-launcher.sh")
+            .join(
+                "profiles/tv/modules/xdg-user-settings/files_root/launcher-bin/bin/tv-launcher.sh"
+            )
             .is_file());
 
         for module in &profile.modules {
@@ -1586,7 +1596,9 @@ mod tests {
             .join("profiles/tv/modules/desktop-config-payload/files_root/waybar/.config/waybar/waybar.conf")
             .is_file());
         assert!(root
-            .join("profiles/tv/modules/xdg-user-settings/files_root/launcher-bin/bin/tv-launcher.sh")
+            .join(
+                "profiles/tv/modules/xdg-user-settings/files_root/launcher-bin/bin/tv-launcher.sh"
+            )
             .is_file());
         assert!(manifest
             .ladder
@@ -1627,10 +1639,9 @@ mod tests {
         assert!(refresh.contains("kbuildsycoca6"));
         assert!(refresh.contains("wofi-drun-cache"));
 
-        let desktop = load_ladder_manifest(
-            &root.join("profiles/tv/modules/xdg-user-settings/manifest.json"),
-        )
-        .unwrap();
+        let desktop =
+            load_ladder_manifest(&root.join("profiles/tv/modules/xdg-user-settings/manifest.json"))
+                .unwrap();
         let expected = desktop.constants["expected_files"].as_array().unwrap();
         assert!(expected
             .iter()
@@ -2338,8 +2349,10 @@ mod tests {
                 "caduceus",
                 vec![
                     ("command", "capture"),
-                    ("service-runtime", "converge"),
                     ("command", "capture"),
+                    ("command", "capture"),
+                    ("service-runtime", "converge"),
+                    ("files", "source-shelf-sweep"),
                     ("files", "managed-files"),
                 ],
             ),
@@ -2354,7 +2367,7 @@ mod tests {
                 vec![
                     ("command", "capture"),
                     ("service-runtime", "converge"),
-                    ("command", "capture"),
+                    ("files", "source-shelf-sweep"),
                 ],
             ),
             ("rebis", "rebis-waybar-config", vec![("files", "converge")]),

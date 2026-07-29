@@ -1,7 +1,8 @@
 use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use serde::Serialize;
 use serde_json::json;
-use std::collections::BTreeSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
@@ -59,6 +60,24 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("allow_same_root", ToolArgKind::Bool),
             ToolArg::optional("owner", ToolArgKind::String),
             ToolArg::optional("group", ToolArgKind::String),
+        ],
+    ),
+    ToolPermutation::new(
+        "source-shelf-sweep",
+        "converge one source shelf plus pattern-selected flat launchers with per-path atomic, all-or-restored semantics",
+        &[
+            ToolArg::required("source_root", ToolArgKind::String),
+            ToolArg::required("shelf_source", ToolArgKind::String),
+            ToolArg::required("target_shelf", ToolArgKind::String),
+            ToolArg::required("launcher_source_root", ToolArgKind::String),
+            ToolArg::required("launcher_target_root", ToolArgKind::String),
+            ToolArg::required("launcher_pattern", ToolArgKind::String),
+            ToolArg::required("shelf_owner", ToolArgKind::String),
+            ToolArg::required("shelf_group", ToolArgKind::String),
+            ToolArg::required("shelf_directory_mode", ToolArgKind::Integer),
+            ToolArg::required("shelf_file_mode", ToolArgKind::Integer),
+            ToolArg::required("launcher_mode", ToolArgKind::Integer),
+            ToolArg::required("prune", ToolArgKind::Bool),
         ],
     ),
     ToolPermutation::new(
@@ -709,6 +728,1347 @@ pub fn converge_files(
     Ok(outcome)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceShelfSweepRequest {
+    pub source_root: PathBuf,
+    pub shelf_source: PathBuf,
+    pub target_shelf: PathBuf,
+    pub launcher_source_root: PathBuf,
+    pub launcher_target_root: PathBuf,
+    pub launcher_pattern: String,
+    pub shelf_owner: String,
+    pub shelf_group: String,
+    pub shelf_directory_mode: u32,
+    pub shelf_file_mode: u32,
+    pub launcher_mode: u32,
+    pub prune: bool,
+    pub receipt_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceShelfSweepEntry {
+    pub kind: String,
+    pub relative_path: String,
+    pub source: Option<PathBuf>,
+    pub target: PathBuf,
+    pub source_digest: Option<String>,
+    pub before_digest: Option<String>,
+    pub after_digest: Option<String>,
+    pub desired_mode: u32,
+    pub before_mode: Option<u32>,
+    pub after_mode: Option<u32>,
+    pub desired_uid: u32,
+    pub desired_gid: u32,
+    pub before_uid: Option<u32>,
+    pub before_gid: Option<u32>,
+    pub after_uid: Option<u32>,
+    pub after_gid: Option<u32>,
+    pub action: String,
+    pub changed: bool,
+    pub readback_ok: bool,
+    pub rollback_action: String,
+    pub rollback_readback_ok: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceShelfSweepOutcome {
+    pub ok: bool,
+    pub changed: bool,
+    pub current: bool,
+    pub source_inventory_count: usize,
+    pub target_inventory_count_before: usize,
+    pub target_inventory_count_after: usize,
+    pub promoted_count: usize,
+    pub removed_count: usize,
+    pub transaction_state: String,
+    pub rollback_state: String,
+    pub first_blocker: String,
+    pub entries: Vec<SourceShelfSweepEntry>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SourceShelfSweepFault {
+    fail_setup_after_stage: bool,
+    fail_after_promotions: Option<usize>,
+    fail_cleanup: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SweepTreeEntry {
+    relative_path: PathBuf,
+    is_dir: bool,
+}
+
+fn sweep_nonce() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{nanos}", std::process::id())
+}
+
+fn validate_mode(label: &str, mode: u32) -> Result<(), String> {
+    if mode & !0o777 != 0 {
+        return Err(format!("source-shelf-sweep-{label}-mode-rejected {mode:o}"));
+    }
+    Ok(())
+}
+
+fn validate_launcher_pattern(pattern: &str) -> Result<(), String> {
+    if pattern.is_empty()
+        || pattern.contains('/')
+        || pattern.contains('\\')
+        || pattern == "."
+        || pattern == ".."
+    {
+        return Err(format!(
+            "source-shelf-sweep-launcher-pattern-rejected {pattern:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn reject_symlink_components(path: &Path) -> Result<(), String> {
+    let mut cursor = PathBuf::new();
+    for component in path.components() {
+        cursor.push(component.as_os_str());
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "source-shelf-sweep-target-symlink-component-rejected {}",
+                    cursor.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "source-shelf-sweep-target-component-metadata-failed {}: {error}",
+                    cursor.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn basename_pattern_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut previous = vec![false; value.len() + 1];
+    previous[0] = true;
+    for token in pattern {
+        let mut current = vec![false; value.len() + 1];
+        match token {
+            b'*' => {
+                current[0] = previous[0];
+                for index in 1..=value.len() {
+                    current[index] = previous[index] || current[index - 1];
+                }
+            }
+            b'?' => {
+                for index in 1..=value.len() {
+                    current[index] = previous[index - 1];
+                }
+            }
+            literal => {
+                for index in 1..=value.len() {
+                    current[index] = previous[index - 1] && *literal == value[index - 1];
+                }
+            }
+        }
+        previous = current;
+    }
+    previous[value.len()]
+}
+
+fn inventory_sweep_tree(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
+    let metadata = fs::symlink_metadata(root).map_err(|error| {
+        format!(
+            "source-shelf-sweep-tree-metadata-failed {}: {error}",
+            root.display()
+        )
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(format!(
+            "source-shelf-sweep-tree-not-directory {}",
+            root.display()
+        ));
+    }
+    let mut entries = vec![SweepTreeEntry {
+        relative_path: PathBuf::from("."),
+        is_dir: true,
+    }];
+    fn walk(root: &Path, path: &Path, entries: &mut Vec<SweepTreeEntry>) -> Result<(), String> {
+        let mut children = fs::read_dir(path)
+            .map_err(|error| {
+                format!(
+                    "source-shelf-sweep-tree-read-failed {}: {error}",
+                    path.display()
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let child_path = child.path();
+            let relative_path = child_path
+                .strip_prefix(root)
+                .map_err(|error| error.to_string())?
+                .to_path_buf();
+            validate_relative_path(&relative_path)?;
+            let kind = child
+                .file_type()
+                .map_err(|error| format!("source-shelf-sweep-entry-type-failed: {error}"))?;
+            if kind.is_symlink() || (!kind.is_dir() && !kind.is_file()) {
+                return Err(format!(
+                    "source-shelf-sweep-entry-kind-rejected {}",
+                    child_path.display()
+                ));
+            }
+            entries.push(SweepTreeEntry {
+                relative_path: relative_path.clone(),
+                is_dir: kind.is_dir(),
+            });
+            if kind.is_dir() {
+                walk(root, &child_path, entries)?;
+            }
+        }
+        Ok(())
+    }
+    walk(root, root, &mut entries)?;
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(entries)
+}
+
+fn inventory_sweep_tree_if_present(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
+    match fs::symlink_metadata(root) {
+        Ok(_) => inventory_sweep_tree(root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!(
+            "source-shelf-sweep-target-metadata-failed {}: {error}",
+            root.display()
+        )),
+    }
+}
+
+fn digest_file(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| {
+        format!(
+            "source-shelf-sweep-file-read-failed {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn sync_directory(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "source-shelf-sweep-directory-sync-failed {}: {error}",
+                path.display()
+            )
+        })
+}
+
+fn stage_sweep_tree(
+    source: &Path,
+    stage: &Path,
+    entries: &[SweepTreeEntry],
+    directory_mode: u32,
+    file_mode: u32,
+    uid: u32,
+    gid: u32,
+) -> Result<(), String> {
+    fs::create_dir(stage).map_err(|error| {
+        format!(
+            "source-shelf-sweep-stage-create-failed {}: {error}",
+            stage.display()
+        )
+    })?;
+    set_mode(stage, directory_mode)?;
+    set_ownership(stage, Some(uid), Some(gid))?;
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.relative_path != Path::new("."))
+    {
+        let source_path = source.join(&entry.relative_path);
+        let target_path = stage.join(&entry.relative_path);
+        if entry.is_dir {
+            fs::create_dir(&target_path).map_err(|error| {
+                format!(
+                    "source-shelf-sweep-stage-directory-failed {}: {error}",
+                    target_path.display()
+                )
+            })?;
+            set_mode(&target_path, directory_mode)?;
+            set_ownership(&target_path, Some(uid), Some(gid))?;
+        } else {
+            let parent = target_path.parent().ok_or_else(|| {
+                format!(
+                    "source-shelf-sweep-stage-parent-missing {}",
+                    target_path.display()
+                )
+            })?;
+            atomic_copy(
+                &source_path,
+                &target_path,
+                Some(file_mode),
+                Some(uid),
+                Some(gid),
+            )?;
+            sync_directory(parent)?;
+        }
+    }
+    let mut directories: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.is_dir)
+        .map(|entry| {
+            if entry.relative_path == Path::new(".") {
+                stage.to_path_buf()
+            } else {
+                stage.join(&entry.relative_path)
+            }
+        })
+        .collect();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        sync_directory(&directory)?;
+    }
+    Ok(())
+}
+
+fn sweep_path_state(
+    path: &Path,
+    is_dir: bool,
+) -> Result<(Option<String>, Option<u32>, Option<u32>, Option<u32>), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink()
+                || (is_dir && !metadata.file_type().is_dir())
+                || (!is_dir && !metadata.file_type().is_file())
+            {
+                return Ok((None, None, None, None));
+            }
+            let digest = if is_dir {
+                None
+            } else {
+                Some(digest_file(path)?)
+            };
+            #[cfg(unix)]
+            let ownership = (Some(metadata.uid()), Some(metadata.gid()));
+            #[cfg(not(unix))]
+            let ownership = (None, None);
+            Ok((digest, Some(file_mode(path)?), ownership.0, ownership.1))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((None, None, None, None)),
+        Err(error) => Err(format!(
+            "source-shelf-sweep-path-metadata-failed {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn shelf_is_current(
+    source: &Path,
+    target: &Path,
+    source_entries: &[SweepTreeEntry],
+    directory_mode: u32,
+    file_mode: u32,
+    uid: u32,
+    gid: u32,
+) -> Result<bool, String> {
+    let target_entries = inventory_sweep_tree_if_present(target)?;
+    if source_entries != target_entries {
+        return Ok(false);
+    }
+    for entry in source_entries {
+        let source_path = if entry.relative_path == Path::new(".") {
+            source.to_path_buf()
+        } else {
+            source.join(&entry.relative_path)
+        };
+        let target_path = if entry.relative_path == Path::new(".") {
+            target.to_path_buf()
+        } else {
+            target.join(&entry.relative_path)
+        };
+        let (target_digest, target_mode, target_uid, target_gid) =
+            sweep_path_state(&target_path, entry.is_dir)?;
+        let desired_mode = if entry.is_dir {
+            directory_mode
+        } else {
+            file_mode
+        };
+        if target_mode != Some(desired_mode)
+            || target_uid != Some(uid)
+            || target_gid != Some(gid)
+            || (!entry.is_dir && target_digest != Some(digest_file(&source_path)?))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn source_launchers(
+    source_root: &Path,
+    pattern: &str,
+) -> Result<BTreeMap<String, PathBuf>, String> {
+    let mut launchers = BTreeMap::new();
+    for entry in fs::read_dir(source_root).map_err(|error| {
+        format!(
+            "source-shelf-sweep-launcher-source-read-failed {}: {error}",
+            source_root.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !basename_pattern_matches(pattern, &name) {
+            continue;
+        }
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|error| error.to_string())?;
+        if !kind.is_file() || kind.is_symlink() {
+            return Err(format!(
+                "source-shelf-sweep-launcher-source-kind-rejected {}",
+                path.display()
+            ));
+        }
+        if path.parent() != Some(source_root) {
+            return Err(format!(
+                "source-shelf-sweep-launcher-match-outside-root {}",
+                path.display()
+            ));
+        }
+        launchers.insert(name, path);
+    }
+    if launchers.is_empty() {
+        return Err(format!(
+            "source-shelf-sweep-launcher-pattern-empty {pattern:?}"
+        ));
+    }
+    Ok(launchers)
+}
+
+fn target_pattern_files(target_root: &Path, pattern: &str) -> Result<BTreeSet<String>, String> {
+    if !target_root.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let mut names = BTreeSet::new();
+    for entry in fs::read_dir(target_root).map_err(|error| {
+        format!(
+            "source-shelf-sweep-launcher-target-read-failed {}: {error}",
+            target_root.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !basename_pattern_matches(pattern, &name) {
+            continue;
+        }
+        let kind = entry.file_type().map_err(|error| error.to_string())?;
+        if !kind.is_file() || kind.is_symlink() {
+            return Err(format!(
+                "source-shelf-sweep-launcher-target-kind-rejected {}",
+                entry.path().display()
+            ));
+        }
+        names.insert(name);
+    }
+    Ok(names)
+}
+
+fn launcher_is_current(
+    source: &Path,
+    target: &Path,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+) -> Result<bool, String> {
+    let (digest, target_mode, target_uid, target_gid) = sweep_path_state(target, false)?;
+    Ok(digest == Some(digest_file(source)?)
+        && target_mode == Some(mode)
+        && target_uid == Some(uid)
+        && target_gid == Some(gid))
+}
+
+fn build_sweep_entries(
+    request: &SourceShelfSweepRequest,
+    shelf_source: &Path,
+    source_entries: &[SweepTreeEntry],
+    launchers: &BTreeMap<String, PathBuf>,
+    stale: &BTreeSet<String>,
+    uid: u32,
+    gid: u32,
+    after: bool,
+) -> Result<Vec<SourceShelfSweepEntry>, String> {
+    let mut entries = Vec::new();
+    for entry in source_entries {
+        let source = if entry.relative_path == Path::new(".") {
+            shelf_source.to_path_buf()
+        } else {
+            shelf_source.join(&entry.relative_path)
+        };
+        let target = if entry.relative_path == Path::new(".") {
+            request.target_shelf.clone()
+        } else {
+            request.target_shelf.join(&entry.relative_path)
+        };
+        let (before_digest, before_mode, before_uid, before_gid) =
+            sweep_path_state(&target, entry.is_dir)?;
+        let source_digest = if entry.is_dir {
+            None
+        } else {
+            Some(digest_file(&source)?)
+        };
+        let desired_mode = if entry.is_dir {
+            request.shelf_directory_mode
+        } else {
+            request.shelf_file_mode
+        };
+        let current = before_mode == Some(desired_mode)
+            && before_uid == Some(uid)
+            && before_gid == Some(gid)
+            && (entry.is_dir || before_digest == source_digest);
+        entries.push(SourceShelfSweepEntry {
+            kind: if entry.is_dir {
+                "shelf-directory"
+            } else {
+                "shelf-file"
+            }
+            .into(),
+            relative_path: entry.relative_path.to_string_lossy().into_owned(),
+            source: Some(source),
+            target,
+            source_digest: source_digest.clone(),
+            before_digest: if after {
+                source_digest.clone()
+            } else {
+                before_digest.clone()
+            },
+            after_digest: if after { source_digest } else { before_digest },
+            desired_mode,
+            before_mode: if after {
+                Some(desired_mode)
+            } else {
+                before_mode
+            },
+            after_mode: if after {
+                Some(desired_mode)
+            } else {
+                before_mode
+            },
+            desired_uid: uid,
+            desired_gid: gid,
+            before_uid: if after { Some(uid) } else { before_uid },
+            before_gid: if after { Some(gid) } else { before_gid },
+            after_uid: if after { Some(uid) } else { before_uid },
+            after_gid: if after { Some(gid) } else { before_gid },
+            action: if current {
+                "unchanged"
+            } else if after {
+                "promoted"
+            } else {
+                "planned"
+            }
+            .into(),
+            changed: !current,
+            readback_ok: after || current,
+            rollback_action: "not-needed".into(),
+            rollback_readback_ok: None,
+        });
+    }
+    for (name, source) in launchers {
+        let target = request.launcher_target_root.join(name);
+        let (before_digest, before_mode, before_uid, before_gid) =
+            sweep_path_state(&target, false)?;
+        let source_digest = Some(digest_file(source)?);
+        let current = before_digest == source_digest
+            && before_mode == Some(request.launcher_mode)
+            && before_uid == Some(uid)
+            && before_gid == Some(gid);
+        entries.push(SourceShelfSweepEntry {
+            kind: "launcher".into(),
+            relative_path: name.clone(),
+            source: Some(source.clone()),
+            target,
+            source_digest: source_digest.clone(),
+            before_digest: if after {
+                source_digest.clone()
+            } else {
+                before_digest.clone()
+            },
+            after_digest: if after { source_digest } else { before_digest },
+            desired_mode: request.launcher_mode,
+            before_mode: if after {
+                Some(request.launcher_mode)
+            } else {
+                before_mode
+            },
+            after_mode: if after {
+                Some(request.launcher_mode)
+            } else {
+                before_mode
+            },
+            desired_uid: uid,
+            desired_gid: gid,
+            before_uid: if after { Some(uid) } else { before_uid },
+            before_gid: if after { Some(gid) } else { before_gid },
+            after_uid: if after { Some(uid) } else { before_uid },
+            after_gid: if after { Some(gid) } else { before_gid },
+            action: if current {
+                "unchanged"
+            } else if after {
+                "promoted"
+            } else {
+                "planned"
+            }
+            .into(),
+            changed: !current,
+            readback_ok: after || current,
+            rollback_action: "not-needed".into(),
+            rollback_readback_ok: None,
+        });
+    }
+    for name in stale {
+        let target = request.launcher_target_root.join(name);
+        let (digest, mode, observed_uid, observed_gid) = sweep_path_state(&target, false)?;
+        entries.push(SourceShelfSweepEntry {
+            kind: "stale-launcher".into(),
+            relative_path: name.clone(),
+            source: None,
+            target,
+            source_digest: None,
+            before_digest: if after { None } else { digest.clone() },
+            after_digest: if after { None } else { digest },
+            desired_mode: request.launcher_mode,
+            before_mode: if after { None } else { mode },
+            after_mode: if after { None } else { mode },
+            desired_uid: uid,
+            desired_gid: gid,
+            before_uid: if after { None } else { observed_uid },
+            before_gid: if after { None } else { observed_gid },
+            after_uid: if after { None } else { observed_uid },
+            after_gid: if after { None } else { observed_gid },
+            action: if request.prune {
+                if after {
+                    "removed"
+                } else {
+                    "planned-removal"
+                }
+            } else {
+                "preserved"
+            }
+            .into(),
+            changed: request.prune,
+            readback_ok: after || !request.prune,
+            rollback_action: "not-needed".into(),
+            rollback_readback_ok: None,
+        });
+    }
+    Ok(entries)
+}
+
+fn readback_sweep_entries(
+    mut entries: Vec<SourceShelfSweepEntry>,
+) -> Result<Vec<SourceShelfSweepEntry>, String> {
+    for entry in &mut entries {
+        let stale = entry.kind == "stale-launcher";
+        let is_dir = entry.kind == "shelf-directory";
+        let (digest, mode, uid, gid) = sweep_path_state(&entry.target, is_dir)?;
+        entry.after_digest = digest.clone();
+        entry.after_mode = mode;
+        entry.after_uid = uid;
+        entry.after_gid = gid;
+        if stale {
+            entry.readback_ok =
+                digest.is_none() && mode.is_none() && uid.is_none() && gid.is_none();
+            entry.action = if entry.readback_ok {
+                "removed"
+            } else {
+                "remove-failed"
+            }
+            .into();
+        } else {
+            entry.readback_ok = mode == Some(entry.desired_mode)
+                && uid == Some(entry.desired_uid)
+                && gid == Some(entry.desired_gid)
+                && (is_dir || digest == entry.source_digest);
+            entry.action = if !entry.changed {
+                "unchanged"
+            } else if entry.readback_ok {
+                "promoted"
+            } else {
+                "readback-failed"
+            }
+            .into();
+        }
+    }
+    Ok(entries)
+}
+
+fn readback_rollback_entries(
+    mut entries: Vec<SourceShelfSweepEntry>,
+) -> Result<Vec<SourceShelfSweepEntry>, String> {
+    for entry in &mut entries {
+        let is_dir = entry.kind == "shelf-directory";
+        let (digest, mode, uid, gid) = sweep_path_state(&entry.target, is_dir)?;
+        entry.after_digest = digest.clone();
+        entry.after_mode = mode;
+        entry.after_uid = uid;
+        entry.after_gid = gid;
+        let restored = digest == entry.before_digest
+            && mode == entry.before_mode
+            && uid == entry.before_uid
+            && gid == entry.before_gid;
+        entry.rollback_action = if entry.changed {
+            "restored"
+        } else {
+            "preserved"
+        }
+        .into();
+        entry.rollback_readback_ok = Some(restored);
+        entry.readback_ok = restored;
+        entry.action = "rolled-back".into();
+    }
+    Ok(entries)
+}
+
+fn write_sweep_receipts(
+    receipt_dir: &Path,
+    request: &SourceShelfSweepRequest,
+    outcome: &SourceShelfSweepOutcome,
+    apply: bool,
+) -> Result<(), String> {
+    fs::create_dir_all(receipt_dir).map_err(|error| error.to_string())?;
+    let base = request.receipt_name.trim_end_matches(".json");
+    for (index, entry) in outcome.entries.iter().enumerate() {
+        let safe = entry
+            .relative_path
+            .replace(['/', '\\'], "_")
+            .trim_matches('_')
+            .to_string();
+        crate::write_json(
+            &receipt_dir.join(format!("{base}-file-{index:04}-{safe}.json")),
+            &json!({
+                "schema": "harmonia.files.source_shelf_sweep.file.v1",
+                "ok": outcome.ok && entry.readback_ok,
+                "apply": apply,
+                "atomicity": "per-path atomic",
+                "transaction": "all-or-restored",
+                "receipt_write_contract": "same-directory temp write, file fsync, atomic rename, parent-directory fsync",
+                "entry": entry,
+                "first_blocker": if entry.readback_ok { "none" } else { outcome.first_blocker.as_str() },
+            }),
+        )?;
+    }
+    let receipt_name = if request.receipt_name.ends_with(".json") {
+        request.receipt_name.clone()
+    } else {
+        format!("{}.json", request.receipt_name)
+    };
+    crate::write_json(
+        &receipt_dir.join(receipt_name),
+        &json!({
+            "schema": "harmonia.files.source_shelf_sweep.transaction.v1",
+            "ok": outcome.ok,
+            "apply": apply,
+            "changed": outcome.changed,
+            "current": outcome.current,
+            "atomicity": "per-path atomic",
+            "transaction_contract": "all-or-restored",
+            "whole_set_atomic": false,
+            "receipt_write_contract": "same-directory temp write, file fsync, atomic rename, parent-directory fsync",
+            "source_root": request.source_root,
+            "shelf_source": request.shelf_source,
+            "target_shelf": request.target_shelf,
+            "launcher_source_root": request.launcher_source_root,
+            "launcher_target_root": request.launcher_target_root,
+            "launcher_pattern": request.launcher_pattern,
+            "shelf_owner": request.shelf_owner,
+            "shelf_group": request.shelf_group,
+            "shelf_directory_mode": request.shelf_directory_mode,
+            "shelf_file_mode": request.shelf_file_mode,
+            "launcher_mode": request.launcher_mode,
+            "prune": request.prune,
+            "source_inventory_count": outcome.source_inventory_count,
+            "target_inventory_count_before": outcome.target_inventory_count_before,
+            "target_inventory_count_after": outcome.target_inventory_count_after,
+            "promoted_count": outcome.promoted_count,
+            "removed_count": outcome.removed_count,
+            "transaction_state": outcome.transaction_state,
+            "rollback_state": outcome.rollback_state,
+            "first_blocker": outcome.first_blocker,
+            "entries": outcome.entries,
+        }),
+    )
+}
+
+pub fn source_shelf_sweep(
+    request: &SourceShelfSweepRequest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<SourceShelfSweepOutcome, String> {
+    match source_shelf_sweep_with_fault(
+        request,
+        receipt_dir,
+        apply,
+        SourceShelfSweepFault::default(),
+    ) {
+        Ok(outcome) => Ok(outcome),
+        Err(blocker) => {
+            if validate_receipt_name(&request.receipt_name).is_ok() {
+                let receipt_name = if request.receipt_name.ends_with(".json") {
+                    request.receipt_name.clone()
+                } else {
+                    format!("{}.json", request.receipt_name)
+                };
+                if !receipt_dir.join(receipt_name).exists() {
+                    let outcome = SourceShelfSweepOutcome {
+                        ok: false,
+                        changed: false,
+                        current: false,
+                        source_inventory_count: 0,
+                        target_inventory_count_before: 0,
+                        target_inventory_count_after: 0,
+                        promoted_count: 0,
+                        removed_count: 0,
+                        transaction_state: "refused".into(),
+                        rollback_state: "not-needed".into(),
+                        first_blocker: blocker.clone(),
+                        entries: Vec::new(),
+                        message: blocker.clone(),
+                    };
+                    if let Err(receipt_error) =
+                        write_sweep_receipts(receipt_dir, request, &outcome, apply)
+                    {
+                        return Err(format!("{blocker}; receipt-write-failed: {receipt_error}"));
+                    }
+                }
+            }
+            Err(blocker)
+        }
+    }
+}
+
+fn source_shelf_sweep_with_fault(
+    request: &SourceShelfSweepRequest,
+    receipt_dir: &Path,
+    apply: bool,
+    fault: SourceShelfSweepFault,
+) -> Result<SourceShelfSweepOutcome, String> {
+    validate_receipt_name(&request.receipt_name)?;
+    validate_relative_path(&request.shelf_source)?;
+    validate_launcher_pattern(&request.launcher_pattern)?;
+    validate_mode("shelf-directory", request.shelf_directory_mode)?;
+    validate_mode("shelf-file", request.shelf_file_mode)?;
+    validate_mode("launcher", request.launcher_mode)?;
+    reject_ssh_path(&request.target_shelf)?;
+    reject_ssh_path(&request.launcher_target_root)?;
+    if !request.target_shelf.is_absolute() || !request.launcher_target_root.is_absolute() {
+        return Err("source-shelf-sweep-target-path-must-be-absolute".into());
+    }
+    let declared_shelf_parent = request
+        .target_shelf
+        .parent()
+        .ok_or_else(|| "source-shelf-sweep-target-shelf-parent-missing".to_string())?;
+    if !declared_shelf_parent.is_dir() {
+        return Err(format!(
+            "source-shelf-sweep-target-shelf-parent-missing {}",
+            declared_shelf_parent.display()
+        ));
+    }
+    if !request.launcher_target_root.is_dir() {
+        return Err(format!(
+            "source-shelf-sweep-launcher-target-root-missing {}",
+            request.launcher_target_root.display()
+        ));
+    }
+    reject_symlink_components(declared_shelf_parent)?;
+    reject_symlink_components(&request.launcher_target_root)?;
+    let source_root = request.source_root.canonicalize().map_err(|error| {
+        format!(
+            "source-shelf-sweep-source-root-invalid {}: {error}",
+            request.source_root.display()
+        )
+    })?;
+    if !source_root.is_dir() {
+        return Err(format!(
+            "source-shelf-sweep-source-root-not-directory {}",
+            source_root.display()
+        ));
+    }
+    let shelf_source = source_root
+        .join(&request.shelf_source)
+        .canonicalize()
+        .map_err(|error| {
+            format!(
+                "source-shelf-sweep-shelf-source-invalid {}: {error}",
+                request.shelf_source.display()
+            )
+        })?;
+    shelf_source.strip_prefix(&source_root).map_err(|_| {
+        format!(
+            "source-shelf-sweep-shelf-source-outside-root {}",
+            shelf_source.display()
+        )
+    })?;
+    let launcher_source_root = request
+        .launcher_source_root
+        .canonicalize()
+        .map_err(|error| {
+            format!(
+                "source-shelf-sweep-launcher-source-root-invalid {}: {error}",
+                request.launcher_source_root.display()
+            )
+        })?;
+    launcher_source_root
+        .strip_prefix(&source_root)
+        .map_err(|_| {
+            format!(
+                "source-shelf-sweep-launcher-source-root-outside-root {}",
+                launcher_source_root.display()
+            )
+        })?;
+    let uid = resolve_uid(&request.shelf_owner)
+        .map_err(|error| format!("source-shelf-sweep-owner-resolution-failed: {error}"))?;
+    let gid = resolve_gid(&request.shelf_group)
+        .map_err(|error| format!("source-shelf-sweep-group-resolution-failed: {error}"))?;
+    let source_entries = inventory_sweep_tree(&shelf_source)?;
+    let target_before = inventory_sweep_tree_if_present(&request.target_shelf)?;
+    let launchers = source_launchers(&launcher_source_root, &request.launcher_pattern)?;
+    let target_launchers =
+        target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
+    let stale: BTreeSet<_> = target_launchers
+        .difference(&launchers.keys().cloned().collect())
+        .cloned()
+        .collect();
+    let shelf_current = shelf_is_current(
+        &shelf_source,
+        &request.target_shelf,
+        &source_entries,
+        request.shelf_directory_mode,
+        request.shelf_file_mode,
+        uid,
+        gid,
+    )?;
+    let mut launcher_drift = BTreeSet::new();
+    for (name, source) in &launchers {
+        if !launcher_is_current(
+            source,
+            &request.launcher_target_root.join(name),
+            request.launcher_mode,
+            uid,
+            gid,
+        )? {
+            launcher_drift.insert(name.clone());
+        }
+    }
+    let drift =
+        !shelf_current || !launcher_drift.is_empty() || (request.prune && !stale.is_empty());
+    let planned_entries = build_sweep_entries(
+        request,
+        &shelf_source,
+        &source_entries,
+        &launchers,
+        &stale,
+        uid,
+        gid,
+        false,
+    )?;
+    if !drift || !apply {
+        let outcome = SourceShelfSweepOutcome {
+            ok: true,
+            changed: false,
+            current: !drift,
+            source_inventory_count: source_entries.len() + launchers.len(),
+            target_inventory_count_before: target_before.len() + target_launchers.len(),
+            target_inventory_count_after: target_before.len() + target_launchers.len(),
+            promoted_count: 0,
+            removed_count: 0,
+            transaction_state: if drift { "planned" } else { "unchanged" }.into(),
+            rollback_state: "not-needed".into(),
+            first_blocker: "none".into(),
+            entries: planned_entries,
+            message: if drift {
+                "source shelf sweep planned".into()
+            } else {
+                "source shelf and launchers current".into()
+            },
+        };
+        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        return Ok(outcome);
+    }
+
+    let shelf_parent = request.target_shelf.parent().ok_or_else(|| {
+        format!(
+            "source-shelf-sweep-target-shelf-parent-missing {}",
+            request.target_shelf.display()
+        )
+    })?;
+    let nonce = sweep_nonce();
+    let shelf_name = request
+        .target_shelf
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "source-shelf-sweep-target-shelf-name-invalid".to_string())?;
+    let stage = shelf_parent.join(format!(".{shelf_name}.harmonia-stage-{nonce}"));
+    let shelf_backup = shelf_parent.join(format!(".{shelf_name}.harmonia-prior-{nonce}"));
+    let quarantine = request
+        .launcher_target_root
+        .join(format!(".harmonia-source-shelf-sweep-{nonce}"));
+    let stage_existed_before = stage.exists();
+    let quarantine_existed_before = quarantine.exists();
+    let setup = (|| -> Result<(), String> {
+        stage_sweep_tree(
+            &shelf_source,
+            &stage,
+            &source_entries,
+            request.shelf_directory_mode,
+            request.shelf_file_mode,
+            uid,
+            gid,
+        )?;
+        if fault.fail_setup_after_stage {
+            return Err("source-shelf-sweep-injected-setup-failure".into());
+        }
+        fs::create_dir(&quarantine).map_err(|error| {
+            format!(
+                "source-shelf-sweep-quarantine-create-failed {}: {error}",
+                quarantine.display()
+            )
+        })?;
+        sync_directory(&request.launcher_target_root)?;
+        Ok(())
+    })();
+    if let Err(blocker) = setup {
+        let mut cleanup_errors = Vec::new();
+        for (path, existed_before) in [
+            (&stage, stage_existed_before),
+            (&quarantine, quarantine_existed_before),
+        ] {
+            if existed_before {
+                continue;
+            }
+            if let Err(error) = fs::remove_dir_all(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    cleanup_errors.push(format!("remove setup path {}: {error}", path.display()));
+                }
+            }
+        }
+        for parent in [shelf_parent, request.launcher_target_root.as_path()] {
+            if let Err(error) = sync_directory(parent) {
+                cleanup_errors.push(error);
+            }
+        }
+        let cleanup_complete = cleanup_errors.is_empty();
+        let outcome = SourceShelfSweepOutcome {
+            ok: false,
+            changed: !cleanup_complete,
+            current: false,
+            source_inventory_count: source_entries.len() + launchers.len(),
+            target_inventory_count_before: target_before.len() + target_launchers.len(),
+            target_inventory_count_after: target_before.len() + target_launchers.len(),
+            promoted_count: 0,
+            removed_count: 0,
+            transaction_state: if cleanup_complete {
+                "setup-failed-cleaned"
+            } else {
+                "setup-cleanup-incomplete"
+            }
+            .into(),
+            rollback_state: if cleanup_complete {
+                "restored"
+            } else {
+                "incomplete"
+            }
+            .into(),
+            first_blocker: blocker.clone(),
+            entries: planned_entries.clone(),
+            message: if cleanup_complete {
+                format!("{blocker}; staging and quarantine setup residue removed")
+            } else {
+                format!(
+                    "{blocker}; setup cleanup errors: {}",
+                    cleanup_errors.join("; ")
+                )
+            },
+        };
+        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        return Err(outcome.message);
+    }
+
+    let shelf_had_prior = request.target_shelf.exists();
+    let mut shelf_promoted = false;
+    let mut launcher_backups: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut new_launchers: Vec<PathBuf> = Vec::new();
+    let mut promoted_count = 0usize;
+    let mut removed_count = 0usize;
+    let transaction = (|| -> Result<(), String> {
+        if !shelf_current {
+            if shelf_had_prior {
+                fs::rename(&request.target_shelf, &shelf_backup).map_err(|error| {
+                    format!("source-shelf-sweep-shelf-quarantine-failed: {error}")
+                })?;
+            }
+            fs::rename(&stage, &request.target_shelf)
+                .map_err(|error| format!("source-shelf-sweep-shelf-promote-failed: {error}"))?;
+            sync_directory(shelf_parent)?;
+            shelf_promoted = true;
+            promoted_count += 1;
+            if fault
+                .fail_after_promotions
+                .is_some_and(|limit| promoted_count >= limit)
+            {
+                return Err("source-shelf-sweep-injected-promotion-failure".into());
+            }
+        }
+        for name in &launcher_drift {
+            let source = launchers
+                .get(name)
+                .expect("launcher drift names come from inventory");
+            let target = request.launcher_target_root.join(name);
+            if target.exists() {
+                let backup = quarantine.join(name);
+                fs::rename(&target, &backup).map_err(|error| {
+                    format!(
+                        "source-shelf-sweep-launcher-quarantine-failed {}: {error}",
+                        target.display()
+                    )
+                })?;
+                launcher_backups.push((target.clone(), backup));
+            } else {
+                new_launchers.push(target.clone());
+            }
+            atomic_copy(
+                source,
+                &target,
+                Some(request.launcher_mode),
+                Some(uid),
+                Some(gid),
+            )?;
+            sync_directory(&request.launcher_target_root)?;
+            promoted_count += 1;
+            if fault
+                .fail_after_promotions
+                .is_some_and(|limit| promoted_count >= limit)
+            {
+                return Err("source-shelf-sweep-injected-promotion-failure".into());
+            }
+        }
+        if request.prune {
+            for name in &stale {
+                let target = request.launcher_target_root.join(name);
+                let backup = quarantine.join(name);
+                fs::rename(&target, &backup).map_err(|error| {
+                    format!(
+                        "source-shelf-sweep-stale-launcher-quarantine-failed {}: {error}",
+                        target.display()
+                    )
+                })?;
+                launcher_backups.push((target, backup));
+                removed_count += 1;
+            }
+            sync_directory(&request.launcher_target_root)?;
+        }
+        if !shelf_is_current(
+            &shelf_source,
+            &request.target_shelf,
+            &source_entries,
+            request.shelf_directory_mode,
+            request.shelf_file_mode,
+            uid,
+            gid,
+        )? {
+            return Err("source-shelf-sweep-shelf-readback-failed".into());
+        }
+        for (name, source) in &launchers {
+            if !launcher_is_current(
+                source,
+                &request.launcher_target_root.join(name),
+                request.launcher_mode,
+                uid,
+                gid,
+            )? {
+                return Err(format!(
+                    "source-shelf-sweep-launcher-readback-failed {name}"
+                ));
+            }
+        }
+        if request.prune {
+            for name in &stale {
+                if request.launcher_target_root.join(name).exists() {
+                    return Err(format!(
+                        "source-shelf-sweep-stale-launcher-readback-failed {name}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    })();
+
+    let mut committed_outcome = None;
+    let transaction = transaction.and_then(|_| {
+        let target_after = inventory_sweep_tree_if_present(&request.target_shelf)?;
+        let target_launchers_after =
+            target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
+        let entries = readback_sweep_entries(planned_entries.clone())?;
+        if entries.iter().any(|entry| !entry.readback_ok) {
+            return Err("source-shelf-sweep-entry-readback-failed".into());
+        }
+        let outcome = SourceShelfSweepOutcome {
+            ok: true,
+            changed: true,
+            current: true,
+            source_inventory_count: source_entries.len() + launchers.len(),
+            target_inventory_count_before: target_before.len() + target_launchers.len(),
+            target_inventory_count_after: target_after.len() + target_launchers_after.len(),
+            promoted_count,
+            removed_count,
+            transaction_state: "committed".into(),
+            rollback_state: "not-needed".into(),
+            first_blocker: "none".into(),
+            entries,
+            message: "source shelf and launchers converged".into(),
+        };
+        committed_outcome = Some(outcome);
+        Ok(())
+    });
+
+    if let Err(blocker) = transaction {
+        let mut rollback_errors = Vec::new();
+        for target in new_launchers.iter().rev() {
+            if let Err(error) = fs::remove_file(target) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    rollback_errors.push(format!("remove {}: {error}", target.display()));
+                }
+            }
+        }
+        for (target, backup) in launcher_backups.iter().rev() {
+            let _ = fs::remove_file(target);
+            if let Err(error) = fs::rename(backup, target) {
+                rollback_errors.push(format!(
+                    "restore {} -> {}: {error}",
+                    backup.display(),
+                    target.display()
+                ));
+            }
+        }
+        if shelf_promoted {
+            if let Err(error) = fs::remove_dir_all(&request.target_shelf) {
+                rollback_errors.push(format!(
+                    "remove promoted shelf {}: {error}",
+                    request.target_shelf.display()
+                ));
+            }
+            if shelf_had_prior {
+                if let Err(error) = fs::rename(&shelf_backup, &request.target_shelf) {
+                    rollback_errors.push(format!(
+                        "restore shelf {} -> {}: {error}",
+                        shelf_backup.display(),
+                        request.target_shelf.display()
+                    ));
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&stage);
+        let _ = fs::remove_dir_all(&quarantine);
+        let rollback_entries = match readback_rollback_entries(planned_entries) {
+            Ok(entries) => {
+                if entries
+                    .iter()
+                    .any(|entry| entry.rollback_readback_ok != Some(true))
+                {
+                    rollback_errors.push("rollback-readback-mismatch".into());
+                }
+                entries
+            }
+            Err(error) => {
+                rollback_errors.push(format!("rollback-readback-failed: {error}"));
+                Vec::new()
+            }
+        };
+        let rollback_state = if rollback_errors.is_empty() {
+            "restored"
+        } else {
+            "incomplete"
+        };
+        let outcome = SourceShelfSweepOutcome {
+            ok: false,
+            changed: !rollback_errors.is_empty(),
+            current: false,
+            source_inventory_count: source_entries.len() + launchers.len(),
+            target_inventory_count_before: target_before.len() + target_launchers.len(),
+            target_inventory_count_after: inventory_sweep_tree_if_present(&request.target_shelf)
+                .map(|entries| entries.len())
+                .unwrap_or_default()
+                + target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)
+                    .map(|entries| entries.len())
+                    .unwrap_or_default(),
+            promoted_count,
+            removed_count,
+            transaction_state: if rollback_errors.is_empty() {
+                "rolled-back"
+            } else {
+                "rollback-incomplete"
+            }
+            .into(),
+            rollback_state: rollback_state.into(),
+            first_blocker: blocker.clone(),
+            entries: rollback_entries,
+            message: if rollback_errors.is_empty() {
+                format!("{blocker}; prior state restored")
+            } else {
+                format!("{blocker}; rollback errors: {}", rollback_errors.join("; "))
+            },
+        };
+        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        return Err(outcome.message);
+    }
+
+    let mut outcome = committed_outcome
+        .ok_or_else(|| "source-shelf-sweep-committed-outcome-missing".to_string())?;
+    let cleanup = (|| -> Result<(), String> {
+        if fault.fail_cleanup {
+            return Err("source-shelf-sweep-injected-cleanup-failure".into());
+        }
+        fs::remove_dir_all(&quarantine).map_err(|error| {
+            format!(
+                "source-shelf-sweep-quarantine-remove-failed {}: {error}",
+                quarantine.display()
+            )
+        })?;
+        if shelf_had_prior && shelf_promoted {
+            fs::remove_dir_all(&shelf_backup).map_err(|error| {
+                format!(
+                    "source-shelf-sweep-prior-shelf-remove-failed {}: {error}",
+                    shelf_backup.display()
+                )
+            })?;
+        }
+        let _ = fs::remove_dir_all(&stage);
+        sync_directory(shelf_parent)?;
+        sync_directory(&request.launcher_target_root)?;
+        Ok(())
+    })();
+    if let Err(blocker) = cleanup {
+        outcome.ok = false;
+        outcome.transaction_state = "committed-cleanup-debt".into();
+        outcome.first_blocker = blocker.clone();
+        outcome.message = format!("source shelf and launchers converged; cleanup debt: {blocker}");
+        write_sweep_receipts(receipt_dir, request, &outcome, apply).map_err(|receipt_error| {
+            format!("{}; receipt-write-failed: {receipt_error}", outcome.message)
+        })?;
+        return Err(outcome.message);
+    }
+    write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+    Ok(outcome)
+}
+
 pub fn remove_declared_files(
     target_root: &Path,
     paths: &[String],
@@ -1065,28 +2425,38 @@ fn atomic_write_bytes_with_ownership(
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("file"),
-        std::process::id()
+        sweep_nonce()
     ));
-    {
-        let mut file = File::create(&temp)
+    let result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)
             .map_err(|e| format!("files-temp-create-failed {}: {e}", temp.display()))?;
         file.write_all(bytes)
             .map_err(|e| format!("files-temp-write-failed {}: {e}", temp.display()))?;
         file.sync_all()
             .map_err(|e| format!("files-temp-sync-failed {}: {e}", temp.display()))?;
+        drop(file);
+        if let Some(mode) = mode {
+            set_mode(&temp, mode)?;
+        }
+        set_ownership(&temp, uid, gid)?;
+        fs::rename(&temp, target).map_err(|e| {
+            format!(
+                "files-atomic-promote-failed {} -> {}: {e}",
+                temp.display(),
+                target.display()
+            )
+        })?;
+        sync_directory(parent)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+        let _ = sync_directory(parent);
     }
-    if let Some(mode) = mode {
-        set_mode(&temp, mode)?;
-    }
-    set_ownership(&temp, uid, gid)?;
-    fs::rename(&temp, target).map_err(|e| {
-        format!(
-            "files-atomic-promote-failed {} -> {}: {e}",
-            temp.display(),
-            target.display()
-        )
-    })?;
-    Ok(())
+    result
 }
 
 fn atomic_copy(
@@ -1500,6 +2870,250 @@ mod managed_ownership_tests {
         assert_eq!(receipt["entries"][0]["ownership_source"], "declared");
         assert_eq!(receipt["entries"][0]["observed_uid"], metadata.uid());
         assert_eq!(receipt["entries"][0]["observed_gid"], metadata.gid());
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    fn sweep_test_request(scratch: &Path) -> SourceShelfSweepRequest {
+        SourceShelfSweepRequest {
+            source_root: scratch.join("source"),
+            shelf_source: PathBuf::from("caduceus_staff"),
+            target_shelf: scratch.join("target/caduceus_staff"),
+            launcher_source_root: scratch.join("source"),
+            launcher_target_root: scratch.join("target"),
+            launcher_pattern: "caduceus-*".into(),
+            shelf_owner: unsafe { libc::geteuid() }.to_string(),
+            shelf_group: unsafe { libc::getegid() }.to_string(),
+            shelf_directory_mode: 0o755,
+            shelf_file_mode: 0o644,
+            launcher_mode: 0o755,
+            prune: true,
+            receipt_name: "source-shelf-sweep".into(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_shelf_sweep_converges_prunes_receipts_and_then_returns_unchanged() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-source-shelf-sweep-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(scratch.join("source/caduceus_staff/nested")).unwrap();
+        fs::create_dir_all(scratch.join("target/caduceus_staff")).unwrap();
+        fs::write(
+            scratch.join("source/caduceus_staff/nested/module.py"),
+            b"desired\n",
+        )
+        .unwrap();
+        fs::write(scratch.join("source/caduceus-current"), b"new launcher\n").unwrap();
+        fs::write(scratch.join("target/caduceus_staff/old.py"), b"old shelf\n").unwrap();
+        fs::write(scratch.join("target/caduceus-current"), b"old launcher\n").unwrap();
+        fs::write(scratch.join("target/caduceus-stale"), b"stale launcher\n").unwrap();
+        fs::write(scratch.join("target/not-owned"), b"preserve\n").unwrap();
+        let request = sweep_test_request(&scratch);
+        let receipts = scratch.join("receipts");
+
+        let applied = source_shelf_sweep(&request, &receipts, true).unwrap();
+        assert!(applied.ok);
+        assert!(applied.changed);
+        assert_eq!(applied.transaction_state, "committed");
+        assert_eq!(applied.rollback_state, "not-needed");
+        assert_eq!(applied.first_blocker, "none");
+        assert_eq!(applied.removed_count, 1);
+        assert_eq!(
+            fs::read(scratch.join("target/caduceus_staff/nested/module.py")).unwrap(),
+            b"desired\n"
+        );
+        assert_eq!(
+            fs::read(scratch.join("target/caduceus-current")).unwrap(),
+            b"new launcher\n"
+        );
+        assert!(!scratch.join("target/caduceus-stale").exists());
+        assert_eq!(
+            fs::read(scratch.join("target/not-owned")).unwrap(),
+            b"preserve\n"
+        );
+        assert_eq!(
+            file_mode(&scratch.join("target/caduceus-current")).unwrap(),
+            0o755
+        );
+        assert_eq!(
+            file_mode(&scratch.join("target/caduceus_staff/nested/module.py")).unwrap(),
+            0o644
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("source-shelf-sweep.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["atomicity"], "per-path atomic");
+        assert_eq!(receipt["transaction_contract"], "all-or-restored");
+        assert_eq!(receipt["whole_set_atomic"], false);
+        assert_eq!(
+            receipt["receipt_write_contract"],
+            "same-directory temp write, file fsync, atomic rename, parent-directory fsync"
+        );
+        assert!(receipt["entries"].as_array().unwrap().len() >= 4);
+
+        let unchanged = source_shelf_sweep(&request, &receipts, true).unwrap();
+        assert!(unchanged.ok);
+        assert!(!unchanged.changed);
+        assert_eq!(unchanged.transaction_state, "unchanged");
+        assert_eq!(unchanged.promoted_count, 0);
+        assert_eq!(unchanged.removed_count, 0);
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_shelf_sweep_rejects_traversal_and_out_of_root_launcher_source() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-source-shelf-sweep-reject-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(scratch.join("source/caduceus_staff")).unwrap();
+        fs::create_dir_all(scratch.join("outside")).unwrap();
+        fs::create_dir_all(scratch.join("target")).unwrap();
+        fs::write(scratch.join("source/caduceus-one"), b"one\n").unwrap();
+        let mut request = sweep_test_request(&scratch);
+        request.shelf_source = PathBuf::from("../outside");
+        assert!(
+            source_shelf_sweep(&request, &scratch.join("receipts"), false)
+                .unwrap_err()
+                .contains("relative-path-rejected")
+        );
+        request = sweep_test_request(&scratch);
+        request.launcher_source_root = scratch.join("outside");
+        assert!(
+            source_shelf_sweep(&request, &scratch.join("receipts"), false)
+                .unwrap_err()
+                .contains("launcher-source-root-outside-root")
+        );
+        request = sweep_test_request(&scratch);
+        request.launcher_pattern = "../caduceus-*".into();
+        assert!(
+            source_shelf_sweep(&request, &scratch.join("receipts"), false)
+                .unwrap_err()
+                .contains("launcher-pattern-rejected")
+        );
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_shelf_sweep_restores_prior_state_after_promotion_failure() {
+        let scratch = std::env::temp_dir().join(format!(
+            "harmonia-source-shelf-sweep-rollback-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(scratch.join("source/caduceus_staff")).unwrap();
+        fs::create_dir_all(scratch.join("target/caduceus_staff")).unwrap();
+        fs::write(
+            scratch.join("source/caduceus_staff/module.py"),
+            b"new shelf\n",
+        )
+        .unwrap();
+        fs::write(scratch.join("source/caduceus-current"), b"new launcher\n").unwrap();
+        fs::write(
+            scratch.join("target/caduceus_staff/module.py"),
+            b"old shelf\n",
+        )
+        .unwrap();
+        fs::write(scratch.join("target/caduceus-current"), b"old launcher\n").unwrap();
+        fs::write(scratch.join("target/caduceus-stale"), b"stale launcher\n").unwrap();
+        let request = sweep_test_request(&scratch);
+        let receipts = scratch.join("receipts");
+
+        let setup_error = source_shelf_sweep_with_fault(
+            &request,
+            &receipts,
+            true,
+            SourceShelfSweepFault {
+                fail_setup_after_stage: true,
+                ..SourceShelfSweepFault::default()
+            },
+        )
+        .unwrap_err();
+        assert!(setup_error.contains("injected-setup-failure"));
+        assert!(setup_error.contains("setup residue removed"));
+        let setup_receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("source-shelf-sweep.json")).unwrap())
+                .unwrap();
+        assert_eq!(setup_receipt["transaction_state"], "setup-failed-cleaned");
+        assert_eq!(setup_receipt["rollback_state"], "restored");
+        assert!(fs::read_dir(scratch.join("target")).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            !name.contains("harmonia-stage") && !name.starts_with(".harmonia-source-shelf-sweep-")
+        }));
+
+        let error = source_shelf_sweep_with_fault(
+            &request,
+            &receipts,
+            true,
+            SourceShelfSweepFault {
+                fail_after_promotions: Some(1),
+                ..SourceShelfSweepFault::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("injected-promotion-failure"));
+        assert!(error.contains("prior state restored"));
+        assert_eq!(
+            fs::read(scratch.join("target/caduceus_staff/module.py")).unwrap(),
+            b"old shelf\n"
+        );
+        assert_eq!(
+            fs::read(scratch.join("target/caduceus-current")).unwrap(),
+            b"old launcher\n"
+        );
+        assert_eq!(
+            fs::read(scratch.join("target/caduceus-stale")).unwrap(),
+            b"stale launcher\n"
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("source-shelf-sweep.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["transaction_state"], "rolled-back");
+        assert_eq!(receipt["rollback_state"], "restored");
+        assert_eq!(
+            receipt["first_blocker"],
+            "source-shelf-sweep-injected-promotion-failure"
+        );
+
+        let cleanup_error = source_shelf_sweep_with_fault(
+            &request,
+            &receipts,
+            true,
+            SourceShelfSweepFault {
+                fail_cleanup: true,
+                ..SourceShelfSweepFault::default()
+            },
+        )
+        .unwrap_err();
+        assert!(cleanup_error.contains("cleanup debt"));
+        let cleanup_receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("source-shelf-sweep.json")).unwrap())
+                .unwrap();
+        assert_eq!(cleanup_receipt["ok"], false);
+        assert_eq!(cleanup_receipt["current"], true);
+        assert_eq!(
+            cleanup_receipt["transaction_state"],
+            "committed-cleanup-debt"
+        );
+        assert_eq!(
+            cleanup_receipt["first_blocker"],
+            "source-shelf-sweep-injected-cleanup-failure"
+        );
+        assert_eq!(
+            cleanup_receipt["receipt_write_contract"],
+            "same-directory temp write, file fsync, atomic rename, parent-directory fsync"
+        );
+        assert_eq!(
+            fs::read(scratch.join("target/caduceus_staff/module.py")).unwrap(),
+            b"new shelf\n"
+        );
         let _ = fs::remove_dir_all(&scratch);
     }
 }

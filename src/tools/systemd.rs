@@ -111,7 +111,10 @@ pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTAT
 pub(crate) fn validate_candidate_units(
     args: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let Some(units) = args.get("candidate_units").and_then(serde_json::Value::as_array) else {
+    let Some(units) = args
+        .get("candidate_units")
+        .and_then(serde_json::Value::as_array)
+    else {
         return Err("systemd-candidate-units-missing".to_string());
     };
     if units.is_empty() {
@@ -140,7 +143,13 @@ pub(crate) fn run_permutation(
     module_changed_before_step: bool,
 ) -> Result<OperationOutcome, String> {
     if permutation == "enable-first-present-now" {
-        return run_enable_first_present_now(receipt_dir, name, candidate_units, timeout_secs, apply);
+        return run_enable_first_present_now(
+            receipt_dir,
+            name,
+            candidate_units,
+            timeout_secs,
+            apply,
+        );
     }
     let user = permutation.starts_with("user-");
     let action = permutation.strip_prefix("user-").unwrap_or(permutation);
@@ -195,7 +204,10 @@ fn run_enable_first_present_now(
     })
 }
 
-fn select_first_present_unit(candidate_units: &[String], timeout_secs: u64) -> Result<String, String> {
+fn select_first_present_unit(
+    candidate_units: &[String],
+    timeout_secs: u64,
+) -> Result<String, String> {
     first_present_candidate(candidate_units, |unit| {
         let result = systemctl("unit-present", unit, false, None, timeout_secs);
         if result.ok && result.stdout.trim() != "not-found" {
@@ -204,11 +216,17 @@ fn select_first_present_unit(candidate_units: &[String], timeout_secs: u64) -> R
         if result.ok || result.stdout.trim() == "not-found" {
             return Ok(false);
         }
-        Err(format!("systemd-candidate-probe-failed-{unit}: {}", result.stderr))
+        Err(format!(
+            "systemd-candidate-probe-failed-{unit}: {}",
+            result.stderr
+        ))
     })
 }
 
-fn first_present_candidate<F>(candidate_units: &[String], mut is_present: F) -> Result<String, String>
+fn first_present_candidate<F>(
+    candidate_units: &[String],
+    mut is_present: F,
+) -> Result<String, String>
 where
     F: FnMut(&str) -> Result<bool, String>,
 {
@@ -366,7 +384,12 @@ pub(crate) fn run_action(
     let service = service.unwrap_or("");
     let mutating = matches!(
         action,
-        "daemon-reload" | "enable-now" | "disable-stop" | "disable-stop-remove" | "restart" | "stop"
+        "daemon-reload"
+            | "enable-now"
+            | "disable-stop"
+            | "disable-stop-remove"
+            | "restart"
+            | "stop"
     );
     let unit_file_before = if action == "disable-stop-remove" {
         unit_file_path(service).is_some_and(|path| path.exists())

@@ -30,13 +30,27 @@ class CaduceusStaffShelfManifestTests(unittest.TestCase):
                 staff = ladder[staff_index]
 
                 self.assertGreater(staff_index, runtime_index)
-                self.assertEqual(staff["tool"], "command")
-                self.assertEqual(staff["args"]["program"], "/usr/bin/sh")
-                rendered = "\n".join(staff["args"]["args"])
-                self.assertIn("/opt/caduceus/source/data/staff-actuators", rendered)
-                self.assertIn("caduceus_staff", rendered)
-                self.assertIn('find "$source_root" -maxdepth 1 -type f -name "caduceus-*"', rendered)
-                self.assertIn("/usr/local/sbin", rendered)
+                self.assertEqual(staff["tool"], "files")
+                self.assertEqual(staff["permutation"], "source-shelf-sweep")
+                self.assertEqual(
+                    staff["args"],
+                    {
+                        "source_root": "/opt/caduceus/source/data/staff-actuators",
+                        "shelf_source": "caduceus_staff",
+                        "target_shelf": "/usr/local/sbin/caduceus_staff",
+                        "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
+                        "launcher_target_root": "/usr/local/sbin",
+                        "launcher_pattern": "caduceus-*",
+                        "shelf_owner": "root",
+                        "shelf_group": "root",
+                        "shelf_directory_mode": 0o755,
+                        "shelf_file_mode": 0o644,
+                        "launcher_mode": 0o755,
+                        "prune": True,
+                    },
+                )
+                self.assertNotIn("program", staff["args"])
+                self.assertNotIn("args", staff["args"])
 
     def test_manifests_do_not_embed_caduceus_staff_programs(self) -> None:
         for module in CADUCEUS_MODULES:

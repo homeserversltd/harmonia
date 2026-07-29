@@ -308,12 +308,7 @@ pub(crate) fn run_profile_engine_with_preflight(
         ok = false;
         suite_ok = false;
         first_missing_signal = suite_debt.to_string();
-        event(
-            &mut events,
-            "profile-suite-spine-debt",
-            false,
-            suite_debt,
-        )?;
+        event(&mut events, "profile-suite-spine-debt", false, suite_debt)?;
     }
 
     if skip_preflight {
