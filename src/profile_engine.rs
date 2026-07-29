@@ -600,12 +600,12 @@ pub(crate) fn sync_profile_from_source(
         .and_then(Path::parent)
         .and_then(Path::parent)
         .ok_or_else(|| format!("{profile_id}-config-root-missing"))?;
-    export_deployable_config(
+    molt(
         source_root,
         profile_id,
         installed_root,
         receipt_dir,
-        DeployableConfigMode::Copy,
+        MoltMode::Copy,
     )?;
     let profile = load_profile(&source_root.join(format!("profiles/{profile_id}/index.json")))
         .map_err(|e| format!("{profile_id}-profile-source-read-failed: {e}"))?;
