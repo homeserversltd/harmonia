@@ -19,6 +19,7 @@
     "oh-my-posh-aur-ratchet",
     "operator-rc-profile",
     "desktop-config-payload",
+    "xdg-user-settings",
     "chromium",
     "user-session-services",
     "sddm-autologin-hyprland",

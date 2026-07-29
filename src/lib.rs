@@ -1406,6 +1406,7 @@ mod tests {
                 "oh-my-posh-aur-ratchet".to_string(),
                 "operator-rc-profile".to_string(),
                 "desktop-config-payload".to_string(),
+                "xdg-user-settings".to_string(),
                 "chromium".to_string(),
                 "user-session-services".to_string(),
                 "sddm-autologin-hyprland".to_string(),
@@ -1433,8 +1434,8 @@ mod tests {
         assert!(config_root
             .join("waybar/.config/waybar/waybar.conf")
             .is_file());
-        assert!(config_root
-            .join("launcher-bin/bin/tv-launcher.sh")
+        assert!(root
+            .join("profiles/tv/modules/xdg-user-settings/files_root/launcher-bin/bin/tv-launcher.sh")
             .is_file());
 
         for module in &profile.modules {
@@ -1585,7 +1586,7 @@ mod tests {
             .join("profiles/tv/modules/desktop-config-payload/files_root/waybar/.config/waybar/waybar.conf")
             .is_file());
         assert!(root
-            .join("profiles/tv/modules/desktop-config-payload/files_root/launcher-bin/bin/tv-launcher.sh")
+            .join("profiles/tv/modules/xdg-user-settings/files_root/launcher-bin/bin/tv-launcher.sh")
             .is_file());
         assert!(manifest
             .ladder
@@ -1618,15 +1619,16 @@ mod tests {
             fs::read_to_string(config_root.join("hyprland/.config/hypr/bindings.conf")).unwrap();
         assert!(bindings.contains("bind = SUPER, K, exec, kcalc"));
 
+        let xdg_root = root.join("profiles/tv/modules/xdg-user-settings/files_root");
         let refresh =
-            fs::read_to_string(config_root.join("launcher-bin/bin/refresh-launcher-cache.sh"))
+            fs::read_to_string(xdg_root.join("launcher-bin/bin/refresh-launcher-cache.sh"))
                 .unwrap();
         assert!(refresh.contains("update-desktop-database"));
         assert!(refresh.contains("kbuildsycoca6"));
         assert!(refresh.contains("wofi-drun-cache"));
 
         let desktop = load_ladder_manifest(
-            &root.join("profiles/tv/modules/desktop-config-payload/manifest.json"),
+            &root.join("profiles/tv/modules/xdg-user-settings/manifest.json"),
         )
         .unwrap();
         let expected = desktop.constants["expected_files"].as_array().unwrap();
