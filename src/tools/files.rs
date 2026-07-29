@@ -95,6 +95,18 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "symlink-converge",
+        "converge one declared symlink from a validated source without program-bearing arguments",
+        &[
+            ToolArg::required("source", ToolArgKind::String),
+            ToolArg::required("target", ToolArgKind::String),
+            ToolArg::required("required_source_kind", ToolArgKind::String),
+            ToolArg::optional("conflict_policy", ToolArgKind::String),
+            ToolArg::optional("owner", ToolArgKind::String),
+            ToolArg::optional("group", ToolArgKind::String),
+        ],
+    ),
+    ToolPermutation::new(
         "validated-symlink",
         "validate a candidate symlink before atomically promoting declared link ownership",
         &[
@@ -221,6 +233,127 @@ pub struct FileRemovalOutcome {
     pub removed: usize,
     pub entries: Vec<FileRemovalEntry>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SymlinkSourceKind {
+    RegularExecutable,
+}
+
+impl SymlinkSourceKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "regular-executable" => Ok(Self::RegularExecutable),
+            other => Err(format!("symlink-converge-source-kind-unsupported {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SymlinkConflictPolicy {
+    RefuseNonSymlink,
+    ReplaceRegularFile,
+    ReplaceEmptyDirectory,
+}
+
+impl SymlinkConflictPolicy {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.unwrap_or("refuse-non-symlink") {
+            "refuse-non-symlink" => Ok(Self::RefuseNonSymlink),
+            "replace-regular-file" => Ok(Self::ReplaceRegularFile),
+            "replace-empty-directory" => Ok(Self::ReplaceEmptyDirectory),
+            other => Err(format!(
+                "symlink-converge-conflict-policy-unsupported {other}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymlinkConvergeRequest {
+    pub source: PathBuf,
+    pub target: PathBuf,
+    pub required_source_kind: SymlinkSourceKind,
+    pub conflict_policy: SymlinkConflictPolicy,
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub receipt_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SymlinkPathIdentity {
+    pub kind: String,
+    pub link_target: Option<PathBuf>,
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub device: Option<u64>,
+    pub inode: Option<u64>,
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SymlinkSourceIdentity {
+    pub kind: String,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub device: u64,
+    pub inode: u64,
+    pub size: u64,
+    pub modified_seconds: i64,
+    pub modified_nanoseconds: i64,
+    pub change_seconds: i64,
+    pub change_nanoseconds: i64,
+}
+
+pub(crate) fn validate_symlink_converge_args(
+    args: &BTreeMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    let source = Path::new(
+        args.get("source")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(""),
+    );
+    let target = Path::new(
+        args.get("target")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(""),
+    );
+    for (label, path) in [("source", source), ("target", target)] {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(format!("symlink-converge-{label}-path-invalid"));
+        }
+    }
+    if source == target {
+        return Err("symlink-converge-source-target-identical".to_string());
+    }
+    for field in ["owner", "group"] {
+        if args
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(format!("symlink-converge-{field}-empty"));
+        }
+    }
+    reject_ssh_path(target)?;
+    SymlinkSourceKind::parse(
+        args.get("required_source_kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(""),
+    )?;
+    SymlinkConflictPolicy::parse(
+        args.get("conflict_policy")
+            .and_then(serde_json::Value::as_str),
+    )?;
+    Ok(())
 }
 
 pub const SYSTEM_EXECUTABLE_PATHS: &[&str] = &[
@@ -2971,6 +3104,596 @@ fn write_convergence_receipt(
     Ok(())
 }
 
+#[cfg(unix)]
+fn observe_symlink_path(path: &Path) -> Result<SymlinkPathIdentity, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            let kind = if file_type.is_symlink() {
+                "symlink"
+            } else if file_type.is_file() {
+                "regular-file"
+            } else if file_type.is_dir() {
+                "directory"
+            } else {
+                "other"
+            };
+            let link_target = if file_type.is_symlink() {
+                Some(fs::read_link(path).map_err(|error| {
+                    format!(
+                        "symlink-converge-readlink-failed {}: {error}",
+                        path.display()
+                    )
+                })?)
+            } else {
+                None
+            };
+            Ok(SymlinkPathIdentity {
+                kind: kind.to_string(),
+                link_target,
+                mode: Some(metadata.permissions().mode() & 0o7777),
+                uid: Some(metadata.uid()),
+                gid: Some(metadata.gid()),
+                device: Some(metadata.dev()),
+                inode: Some(metadata.ino()),
+                size: Some(metadata.size()),
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SymlinkPathIdentity {
+            kind: "absent".to_string(),
+            link_target: None,
+            mode: None,
+            uid: None,
+            gid: None,
+            device: None,
+            inode: None,
+            size: None,
+        }),
+        Err(error) => Err(format!(
+            "symlink-converge-target-observation-failed {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(not(unix))]
+fn observe_symlink_path(_path: &Path) -> Result<SymlinkPathIdentity, String> {
+    Err("symlink-converge-unsupported".to_string())
+}
+
+#[cfg(unix)]
+fn read_symlink_source(
+    path: &Path,
+    required_kind: SymlinkSourceKind,
+) -> Result<SymlinkSourceIdentity, String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "symlink-converge-source-open-failed {}: {error}",
+                path.display()
+            )
+        })?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "symlink-converge-source-readback-failed {}: {error}",
+            path.display()
+        )
+    })?;
+    match required_kind {
+        SymlinkSourceKind::RegularExecutable => {
+            if !metadata.file_type().is_file() {
+                return Err(format!(
+                    "symlink-converge-source-kind-mismatch {} expected=regular-executable",
+                    path.display()
+                ));
+            }
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err(format!(
+                    "symlink-converge-source-not-executable {}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(SymlinkSourceIdentity {
+        kind: "regular-executable".to_string(),
+        mode: metadata.permissions().mode() & 0o7777,
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.size(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        change_seconds: metadata.ctime(),
+        change_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(not(unix))]
+fn read_symlink_source(
+    _path: &Path,
+    _required_kind: SymlinkSourceKind,
+) -> Result<SymlinkSourceIdentity, String> {
+    Err("symlink-converge-unsupported".to_string())
+}
+
+#[cfg(unix)]
+fn set_symlink_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
+    if uid.is_none() && gid.is_none() {
+        return Ok(());
+    }
+    let path_c = CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| format!("symlink-converge-owner-path-invalid {}", path.display()))?;
+    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
+    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
+    if unsafe { libc::lchown(path_c.as_ptr(), uid, gid) } != 0 {
+        return Err(format!(
+            "symlink-converge-owner-set-failed {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_symlink_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> {
+    Err("symlink-converge-unsupported".to_string())
+}
+
+#[cfg(unix)]
+fn stage_symlink(
+    source: &Path,
+    target: &Path,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<PathBuf, String> {
+    let parent = target.parent().ok_or_else(|| {
+        format!(
+            "symlink-converge-target-parent-missing {}",
+            target.display()
+        )
+    })?;
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("link");
+    for attempt in 0..100u32 {
+        let candidate = parent.join(format!(
+            ".{name}.harmonia-symlink-converge-{}-{attempt}",
+            std::process::id()
+        ));
+        match std::os::unix::fs::symlink(source, &candidate) {
+            Ok(()) => {
+                if let Err(error) = set_symlink_ownership(&candidate, uid, gid) {
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error);
+                }
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "symlink-converge-stage-failed {}: {error}",
+                    candidate.display()
+                ))
+            }
+        }
+    }
+    Err("symlink-converge-stage-name-exhausted".to_string())
+}
+
+#[cfg(not(unix))]
+fn stage_symlink(
+    _source: &Path,
+    _target: &Path,
+    _uid: Option<u32>,
+    _gid: Option<u32>,
+) -> Result<PathBuf, String> {
+    Err("symlink-converge-unsupported".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn renameat2_paths(left: &Path, right: &Path, flags: libc::c_uint) -> Result<(), String> {
+    let left_c = CString::new(left.as_os_str().as_encoded_bytes())
+        .map_err(|_| format!("symlink-converge-rename-path-invalid {}", left.display()))?;
+    let right_c = CString::new(right.as_os_str().as_encoded_bytes())
+        .map_err(|_| format!("symlink-converge-rename-path-invalid {}", right.display()))?;
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            left_c.as_ptr(),
+            libc::AT_FDCWD,
+            right_c.as_ptr(),
+            flags,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn exchange_paths(left: &Path, right: &Path) -> Result<(), String> {
+    renameat2_paths(left, right, libc::RENAME_EXCHANGE).map_err(|error| {
+        format!(
+            "symlink-converge-exchange-failed {}: {error}",
+            right.display()
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn rename_noreplace(left: &Path, right: &Path) -> Result<(), String> {
+    renameat2_paths(left, right, libc::RENAME_NOREPLACE)
+        .map_err(|error| format!("symlink-converge-create-raced {}: {error}", right.display()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exchange_paths(_left: &Path, _right: &Path) -> Result<(), String> {
+    Err("symlink-converge-exchange-unsupported".to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_noreplace(_left: &Path, _right: &Path) -> Result<(), String> {
+    Err("symlink-converge-noreplace-unsupported".to_string())
+}
+
+fn promote_staged_symlink(
+    candidate: &Path,
+    target: &Path,
+    before: &SymlinkPathIdentity,
+) -> Result<(), String> {
+    if before.kind == "absent" {
+        if let Err(error) = rename_noreplace(candidate, target) {
+            let _ = fs::remove_file(candidate);
+            return Err(error);
+        }
+        return Ok(());
+    }
+
+    if let Err(error) = exchange_paths(candidate, target) {
+        let _ = fs::remove_file(candidate);
+        return Err(error);
+    }
+    let exchanged = observe_symlink_path(candidate);
+    let prior_matches = exchanged.as_ref().is_ok_and(|identity| identity == before);
+    let directory_still_empty = before.kind != "directory"
+        || fs::read_dir(candidate)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+    if !prior_matches || !directory_still_empty {
+        let rollback = exchange_paths(candidate, target);
+        if rollback.is_ok() {
+            let _ = fs::remove_file(candidate);
+        }
+        return Err(format!(
+            "symlink-converge-target-raced prior_matches={prior_matches} directory_still_empty={directory_still_empty} rollback={}",
+            if rollback.is_ok() { "ok" } else { "failed" }
+        ));
+    }
+
+    let cleanup = if before.kind == "directory" {
+        fs::remove_dir(candidate)
+    } else {
+        fs::remove_file(candidate)
+    };
+    cleanup.map_err(|error| {
+        format!(
+            "symlink-converge-prior-cleanup-failed {}: {error}",
+            candidate.display()
+        )
+    })
+}
+
+pub(crate) fn symlink_converge(
+    request: &SymlinkConvergeRequest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<crate::OperationOutcome, String> {
+    validate_receipt_name(&request.receipt_name)?;
+    let mut declared_args = BTreeMap::new();
+    declared_args.insert("source".to_string(), json!(request.source));
+    declared_args.insert("target".to_string(), json!(request.target));
+    declared_args.insert(
+        "required_source_kind".to_string(),
+        json!(request.required_source_kind),
+    );
+    declared_args.insert(
+        "conflict_policy".to_string(),
+        json!(request.conflict_policy),
+    );
+    if let Some(owner) = &request.owner {
+        declared_args.insert("owner".to_string(), json!(owner));
+    }
+    if let Some(group) = &request.group {
+        declared_args.insert("group".to_string(), json!(group));
+    }
+    validate_symlink_converge_args(&declared_args)?;
+
+    let before = observe_symlink_path(&request.target)?;
+    let source_before = read_symlink_source(&request.source, request.required_source_kind);
+    let source_before_receipt = source_before.as_ref().ok().cloned();
+    let desired_uid = request
+        .owner
+        .as_deref()
+        .map(resolve_uid)
+        .transpose()
+        .map_err(|error| format!("symlink-converge-owner-resolution-failed: {error}"))?;
+    let desired_gid = request
+        .group
+        .as_deref()
+        .map(resolve_gid)
+        .transpose()
+        .map_err(|error| format!("symlink-converge-group-resolution-failed: {error}"))?;
+
+    let finish = |ok: bool,
+                  changed: bool,
+                  would_change: bool,
+                  blocker: &str,
+                  after: &SymlinkPathIdentity,
+                  source_after: Option<&SymlinkSourceIdentity>|
+     -> Result<crate::OperationOutcome, String> {
+        fs::create_dir_all(receipt_dir).map_err(|error| {
+            format!(
+                "symlink-converge-receipt-dir-failed {}: {error}",
+                receipt_dir.display()
+            )
+        })?;
+        crate::write_json(
+            &receipt_dir.join(format!("{}.json", request.receipt_name)),
+            &json!({
+                "schema": "harmonia.files.symlink_converge.v1",
+                "ok": ok,
+                "apply": apply,
+                "changed": changed,
+                "would_change": would_change,
+                "source": request.source,
+                "target": request.target,
+                "required_source_kind": request.required_source_kind,
+                "conflict_policy": request.conflict_policy,
+                "owner": request.owner,
+                "group": request.group,
+                "desired_uid": desired_uid,
+                "desired_gid": desired_gid,
+                "source_before": source_before_receipt.as_ref(),
+                "source_after": source_after,
+                "source_identity_stable": source_before_receipt.as_ref().zip(source_after).map(|(a, b)| a == b).unwrap_or(false),
+                "before": before,
+                "after": after,
+                "final_readlink": after.link_target,
+                "first_missing_signal": blocker,
+            }),
+        )?;
+        Ok(crate::OperationOutcome {
+            ok,
+            changed,
+            skipped: !apply,
+            message: format!(
+                "{blocker} source={} target={}",
+                request.source.display(),
+                request.target.display()
+            ),
+            command: None,
+        })
+    };
+
+    let source_before = match source_before {
+        Ok(identity) => identity,
+        Err(blocker) => {
+            let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+            return finish(false, false, false, &blocker, &after, None);
+        }
+    };
+    let ownership_current = desired_uid.map_or(true, |uid| before.uid == Some(uid))
+        && desired_gid.map_or(true, |gid| before.gid == Some(gid));
+    let exact_link = before.kind == "symlink"
+        && before.link_target.as_deref() == Some(request.source.as_path())
+        && ownership_current;
+    if exact_link {
+        let source_after = match read_symlink_source(&request.source, request.required_source_kind)
+        {
+            Ok(identity) => identity,
+            Err(blocker) => {
+                let after =
+                    observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+                return finish(false, false, false, &blocker, &after, None);
+            }
+        };
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        let target_stable = after.kind == "symlink"
+            && after.link_target.as_deref() == Some(request.source.as_path())
+            && desired_uid.map_or(true, |uid| after.uid == Some(uid))
+            && desired_gid.map_or(true, |gid| after.gid == Some(gid));
+        let source_stable = source_before == source_after;
+        let stable = target_stable && source_stable;
+        return finish(
+            stable,
+            false,
+            false,
+            if stable {
+                "none"
+            } else if !source_stable {
+                "symlink-converge-source-changed-during-readback"
+            } else {
+                "symlink-converge-target-changed-during-readback"
+            },
+            &after,
+            Some(&source_after),
+        );
+    }
+
+    let conflict_blocker = match before.kind.as_str() {
+        "regular-file" if request.conflict_policy != SymlinkConflictPolicy::ReplaceRegularFile => {
+            Some("symlink-converge-target-regular-file-refused")
+        }
+        "directory" if request.conflict_policy != SymlinkConflictPolicy::ReplaceEmptyDirectory => {
+            Some("symlink-converge-target-directory-refused")
+        }
+        "other" => Some("symlink-converge-target-kind-refused"),
+        _ => None,
+    };
+    if let Some(blocker) = conflict_blocker {
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        let source_after = read_symlink_source(&request.source, request.required_source_kind).ok();
+        return finish(false, false, true, blocker, &after, source_after.as_ref());
+    }
+    if before.kind == "directory"
+        && fs::read_dir(&request.target)
+            .map_err(|error| {
+                format!(
+                    "symlink-converge-target-directory-read-failed {}: {error}",
+                    request.target.display()
+                )
+            })?
+            .next()
+            .is_some()
+    {
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        let source_after = read_symlink_source(&request.source, request.required_source_kind).ok();
+        return finish(
+            false,
+            false,
+            true,
+            "symlink-converge-target-directory-not-empty-refused",
+            &after,
+            source_after.as_ref(),
+        );
+    }
+    if !apply {
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        let source_after = read_symlink_source(&request.source, request.required_source_kind)?;
+        let stable = source_before == source_after;
+        return finish(
+            stable,
+            false,
+            true,
+            if stable {
+                "none"
+            } else {
+                "symlink-converge-source-changed-during-readback"
+            },
+            &after,
+            Some(&source_after),
+        );
+    }
+
+    let parent = request.target.parent().ok_or_else(|| {
+        format!(
+            "symlink-converge-target-parent-missing {}",
+            request.target.display()
+        )
+    })?;
+    if !parent.is_dir() {
+        return finish(
+            false,
+            false,
+            true,
+            "symlink-converge-target-parent-missing",
+            &before,
+            Some(&source_before),
+        );
+    }
+    let source_pre_stage = match read_symlink_source(&request.source, request.required_source_kind)
+    {
+        Ok(identity) => identity,
+        Err(blocker) => {
+            let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+            return finish(false, false, true, &blocker, &after, None);
+        }
+    };
+    if source_pre_stage != source_before {
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        return finish(
+            false,
+            false,
+            true,
+            "symlink-converge-source-changed-before-stage",
+            &after,
+            Some(&source_pre_stage),
+        );
+    }
+    let candidate = match stage_symlink(&request.source, &request.target, desired_uid, desired_gid)
+    {
+        Ok(candidate) => candidate,
+        Err(blocker) => return finish(false, false, true, &blocker, &before, Some(&source_before)),
+    };
+    let source_pre_promote =
+        match read_symlink_source(&request.source, request.required_source_kind) {
+            Ok(identity) => identity,
+            Err(blocker) => {
+                let _ = fs::remove_file(&candidate);
+                let after =
+                    observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+                return finish(false, false, true, &blocker, &after, None);
+            }
+        };
+    if source_pre_promote != source_before {
+        let _ = fs::remove_file(&candidate);
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        return finish(
+            false,
+            false,
+            true,
+            "symlink-converge-source-changed-before-promote",
+            &after,
+            Some(&source_pre_promote),
+        );
+    }
+    if let Err(blocker) = promote_staged_symlink(&candidate, &request.target, &before) {
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        return finish(
+            false,
+            after != before,
+            true,
+            &blocker,
+            &after,
+            Some(&source_before),
+        );
+    }
+    if let Err(error) = sync_directory(parent) {
+        let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
+        return finish(
+            false,
+            true,
+            true,
+            &format!("symlink-converge-parent-sync-failed: {error}"),
+            &after,
+            Some(&source_before),
+        );
+    }
+    let after = match observe_symlink_path(&request.target) {
+        Ok(identity) => identity,
+        Err(blocker) => return finish(false, true, true, &blocker, &before, Some(&source_before)),
+    };
+    let source_after = match read_symlink_source(&request.source, request.required_source_kind) {
+        Ok(identity) => identity,
+        Err(blocker) => return finish(false, true, true, &blocker, &after, None),
+    };
+    let final_ok = after.kind == "symlink"
+        && after.link_target.as_deref() == Some(request.source.as_path())
+        && desired_uid.map_or(true, |uid| after.uid == Some(uid))
+        && desired_gid.map_or(true, |gid| after.gid == Some(gid))
+        && source_before == source_after;
+    finish(
+        final_ok,
+        true,
+        true,
+        if final_ok {
+            "none"
+        } else {
+            "symlink-converge-final-readback-failed"
+        },
+        &after,
+        Some(&source_after),
+    )
+}
+
 pub(crate) fn validated_symlink(
     receipt_dir: &Path,
     name: &str,
@@ -3402,6 +4125,116 @@ mod managed_ownership_tests {
         }
         assert!(ExecutableSearchScope::parse(Some("manifest-path")).is_err());
         assert!(validate_executable_name("/usr/bin/sh").is_err());
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_converge_creates_noops_repairs_dangling_and_refuses_regular_file() {
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-symlink-converge-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        let bin = scratch.join("bin");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(&bin).unwrap();
+        let source = bin.join("source");
+        let target = bin.join("target");
+        fs::write(&source, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_mode(&source, 0o755).unwrap();
+        let source_metadata = fs::metadata(&source).unwrap();
+        let owner = source_metadata.uid().to_string();
+        let group = source_metadata.gid().to_string();
+        let request = |receipt_name: &str| SymlinkConvergeRequest {
+            source: source.clone(),
+            target: target.clone(),
+            required_source_kind: SymlinkSourceKind::RegularExecutable,
+            conflict_policy: SymlinkConflictPolicy::RefuseNonSymlink,
+            owner: Some(owner.clone()),
+            group: Some(group.clone()),
+            receipt_name: receipt_name.to_string(),
+        };
+
+        let created = symlink_converge(&request("fresh"), &receipts, true).unwrap();
+        assert!(created.ok);
+        assert!(created.changed);
+        assert_eq!(fs::read_link(&target).unwrap(), source);
+        let fresh: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("fresh.json")).unwrap()).unwrap();
+        assert_eq!(fresh["before"]["kind"], "absent");
+        assert_eq!(fresh["after"]["kind"], "symlink");
+        assert_eq!(fresh["final_readlink"], source.to_string_lossy().as_ref());
+        assert_eq!(fresh["source_identity_stable"], true);
+
+        let inode = fs::symlink_metadata(&target).unwrap().ino();
+        let unchanged = symlink_converge(&request("unchanged"), &receipts, true).unwrap();
+        assert!(unchanged.ok);
+        assert!(!unchanged.changed);
+        assert_eq!(fs::symlink_metadata(&target).unwrap().ino(), inode);
+        let unchanged_receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("unchanged.json")).unwrap()).unwrap();
+        assert_eq!(unchanged_receipt["before"], unchanged_receipt["after"]);
+
+        fs::remove_file(&target).unwrap();
+        std::os::unix::fs::symlink(bin.join("missing"), &target).unwrap();
+        assert!(!target.exists());
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let repaired = symlink_converge(&request("dangling"), &receipts, true).unwrap();
+        assert!(repaired.ok);
+        assert!(repaired.changed);
+        assert_eq!(fs::read_link(&target).unwrap(), source);
+        let dangling: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("dangling.json")).unwrap()).unwrap();
+        assert_eq!(dangling["before"]["kind"], "symlink");
+        assert_eq!(
+            dangling["after"]["link_target"],
+            source.to_string_lossy().as_ref()
+        );
+
+        fs::remove_file(&target).unwrap();
+        fs::write(&target, b"preserve\n").unwrap();
+        let refused = symlink_converge(&request("regular-refused"), &receipts, true).unwrap();
+        assert!(!refused.ok);
+        assert!(!refused.changed);
+        assert_eq!(fs::read(&target).unwrap(), b"preserve\n");
+        let refusal: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("regular-refused.json")).unwrap())
+                .unwrap();
+        assert_eq!(refusal["before"]["kind"], "regular-file");
+        assert_eq!(refusal["after"]["kind"], "regular-file");
+        assert_eq!(
+            refusal["first_missing_signal"],
+            "symlink-converge-target-regular-file-refused"
+        );
+        assert_eq!(refusal["changed"], false);
+
+        let mut replace_regular = request("regular-replaced");
+        replace_regular.conflict_policy = SymlinkConflictPolicy::ReplaceRegularFile;
+        let replaced = symlink_converge(&replace_regular, &receipts, true).unwrap();
+        assert!(replaced.ok);
+        assert!(replaced.changed);
+        assert_eq!(fs::read_link(&target).unwrap(), source);
+
+        fs::remove_file(&target).unwrap();
+        fs::create_dir(&target).unwrap();
+        let mut replace_directory = request("empty-directory-replaced");
+        replace_directory.conflict_policy = SymlinkConflictPolicy::ReplaceEmptyDirectory;
+        let directory_replaced = symlink_converge(&replace_directory, &receipts, true).unwrap();
+        assert!(directory_replaced.ok);
+        assert!(directory_replaced.changed);
+        assert_eq!(fs::read_link(&target).unwrap(), source);
+
+        fs::remove_file(&target).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("preserve"), b"preserve\n").unwrap();
+        let mut replace_nonempty = request("nonempty-directory-refused");
+        replace_nonempty.conflict_policy = SymlinkConflictPolicy::ReplaceEmptyDirectory;
+        let nonempty_refused = symlink_converge(&replace_nonempty, &receipts, true).unwrap();
+        assert!(!nonempty_refused.ok);
+        assert!(!nonempty_refused.changed);
+        assert_eq!(fs::read(target.join("preserve")).unwrap(), b"preserve\n");
         let _ = fs::remove_dir_all(&scratch);
     }
 

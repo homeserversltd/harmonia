@@ -344,6 +344,11 @@ fn validate_tool_semantics(
                 step_id: step_id.into(),
                 defect,
             }),
+        ("files", "symlink-converge") => tools::files::validate_symlink_converge_args(args)
+            .map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            }),
         _ => Ok(()),
     }
 }
@@ -463,6 +468,7 @@ fn execute_validated_step(
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
         ("files", "managed-directories") => managed_directories_step(step, module_dir, apply),
         ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
+        ("files", "symlink-converge") => symlink_converge_step(step, module_dir, apply),
         ("files", "validated-file-symlink") => {
             validated_file_symlink_step(step, manifest, module_dir, apply)
         }
@@ -737,6 +743,44 @@ fn validated_symlink_step(
         optional_string_arg(&step.args, "reload_program"),
         &string_array_arg(&step.args, "reload_args"),
         integer_arg(&step.args, "timeout_secs", 30),
+        apply,
+    )
+}
+
+fn symlink_converge_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let required_source_kind = match string_arg(&step.args, "required_source_kind") {
+        "regular-executable" => crate::tools::files::SymlinkSourceKind::RegularExecutable,
+        other => return Err(format!("symlink-converge-source-kind-unsupported {other}")),
+    };
+    let conflict_policy = match optional_string_arg(&step.args, "conflict_policy")
+        .unwrap_or("refuse-non-symlink")
+    {
+        "refuse-non-symlink" => crate::tools::files::SymlinkConflictPolicy::RefuseNonSymlink,
+        "replace-regular-file" => crate::tools::files::SymlinkConflictPolicy::ReplaceRegularFile,
+        "replace-empty-directory" => {
+            crate::tools::files::SymlinkConflictPolicy::ReplaceEmptyDirectory
+        }
+        other => {
+            return Err(format!(
+                "symlink-converge-conflict-policy-unsupported {other}"
+            ))
+        }
+    };
+    crate::tools::files::symlink_converge(
+        &crate::tools::files::SymlinkConvergeRequest {
+            source: PathBuf::from(string_arg(&step.args, "source")),
+            target: PathBuf::from(string_arg(&step.args, "target")),
+            required_source_kind,
+            conflict_policy,
+            owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
+            group: optional_string_arg(&step.args, "group").map(ToString::to_string),
+            receipt_name: step.step_id.clone(),
+        },
+        module_dir,
         apply,
     )
 }

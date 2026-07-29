@@ -2380,6 +2380,18 @@ mod tests {
                     ("files", "source-shelf-sweep"),
                 ],
             ),
+            (
+                "homeconsole",
+                "local-ai-runtime",
+                vec![
+                    ("package", "install"),
+                    ("command", "capture"),
+                    ("files", "symlink-converge"),
+                    ("files", "symlink-converge"),
+                    ("command", "capture"),
+                    ("systemd", "is-active-probe"),
+                ],
+            ),
             ("rebis", "rebis-waybar-config", vec![("files", "converge")]),
         ];
         for (profile, module, expected) in cases {
@@ -2408,6 +2420,38 @@ mod tests {
                 .map(|step| (step.tool.as_str(), step.permutation.as_str()))
                 .collect();
             assert_eq!(steps, expected, "{profile}/{module} ladder steps");
+        }
+
+        let local_ai = load_ladder_manifest(
+            &root.join("profiles/homeconsole/modules/local-ai-runtime/manifest.json"),
+        )
+        .unwrap();
+        for (step_id, source, target) in [
+            (
+                "local-ai-server-link",
+                "/usr/bin/llama-server",
+                "/usr/local/bin/llama-server",
+            ),
+            (
+                "local-ai-cli-link",
+                "/usr/bin/llama-cli",
+                "/usr/local/bin/llama-cli",
+            ),
+        ] {
+            let step = local_ai
+                .ladder
+                .iter()
+                .find(|step| step.step_id == step_id)
+                .unwrap();
+            assert_eq!(step.tool, "files");
+            assert_eq!(step.permutation, "symlink-converge");
+            assert_eq!(step.args["source"], source);
+            assert_eq!(step.args["target"], target);
+            assert_eq!(step.args["required_source_kind"], "regular-executable");
+            assert_eq!(step.args["owner"], "root");
+            assert_eq!(step.args["group"], "root");
+            assert!(!step.args.contains_key("program"));
+            assert!(!step.args.contains_key("args"));
         }
     }
 
