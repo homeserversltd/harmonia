@@ -107,7 +107,6 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
-
 pub(crate) fn validate_candidate_units(
     args: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Result<(), String> {
@@ -398,20 +397,36 @@ pub(crate) fn run_action(
     };
     let before_enabled = state("is-enabled", service, user, target_user, timeout_secs);
     let before_active = state("is-active", service, user, target_user, timeout_secs);
+    let unit_absent_already_satisfied =
+        if matches!(action, "disable-stop" | "disable-stop-remove" | "stop") {
+            let presence = systemctl("unit-present", service, user, target_user, timeout_secs);
+            presence.ok && presence.stdout.trim() == "not-found"
+        } else {
+            false
+        };
     let action_needed = match action {
-        "daemon-reload" | "restart" | "stop" => service_material_changed,
+        "daemon-reload" | "restart" => service_material_changed,
+        "stop" => service_material_changed && !unit_absent_already_satisfied,
         "enable-now" => {
             before_enabled.as_deref() != Some("enabled")
                 || before_active.as_deref() != Some("active")
         }
         "disable-stop" => {
-            before_enabled.as_deref() != Some("disabled")
-                || before_active.as_deref() == Some("active")
+            !unit_absent_already_satisfied
+                && (before_enabled.as_deref() != Some("disabled")
+                    || before_active.as_deref() == Some("active"))
         }
-        "disable-stop-remove" => unit_file_before,
+        "disable-stop-remove" => unit_file_before && !unit_absent_already_satisfied,
         _ => true,
     };
-    let mut result = if mutating && (!apply || !action_needed) {
+    let mut result = if apply && unit_absent_already_satisfied {
+        CmdResult {
+            ok: true,
+            code: 0,
+            stdout: "unit-absent-already-satisfied".to_string(),
+            stderr: String::new(),
+        }
+    } else if mutating && (!apply || !action_needed) {
         CmdResult {
             ok: true,
             code: 0,
@@ -456,7 +471,9 @@ pub(crate) fn run_action(
         ok: result.ok,
         changed,
         skipped: mutating && (!apply || !action_needed),
-        message: if mutating && apply && !action_needed {
+        message: if apply && unit_absent_already_satisfied {
+            "unit-absent-already-satisfied".to_string()
+        } else if mutating && apply && !action_needed {
             "converged-quiet".to_string()
         } else {
             format!(
