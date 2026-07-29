@@ -32,28 +32,26 @@
     },
     {
       "step_id": "local-ai-server-link",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "symlink-converge",
       "args": {
-        "program": "/usr/bin/sh",
-        "args": [
-          "-c",
-          "if [ -e /usr/local/bin/llama-server ]; then exit 0; fi; ln -s /usr/bin/llama-server /usr/local/bin/llama-server"
-        ],
-        "timeout_secs": 60
+        "source": "/usr/bin/llama-server",
+        "target": "/usr/local/bin/llama-server",
+        "required_source_kind": "regular-executable",
+        "owner": "root",
+        "group": "root"
       }
     },
     {
       "step_id": "local-ai-cli-link",
-      "tool": "command",
-      "permutation": "capture",
+      "tool": "files",
+      "permutation": "symlink-converge",
       "args": {
-        "program": "/usr/bin/sh",
-        "args": [
-          "-c",
-          "if [ -e /usr/local/bin/llama-cli ]; then exit 0; fi; ln -s /usr/bin/llama-cli /usr/local/bin/llama-cli"
-        ],
-        "timeout_secs": 60
+        "source": "/usr/bin/llama-cli",
+        "target": "/usr/local/bin/llama-cli",
+        "required_source_kind": "regular-executable",
+        "owner": "root",
+        "group": "root"
       }
     },
     {
