@@ -226,6 +226,9 @@ pub(crate) fn converge_managed_files(
     apply: bool,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(request.receipt_name)?;
+    for file in request.files {
+        reject_ssh_path(Path::new(&file.path))?;
+    }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let mut missing = Vec::new();
     let mut written = Vec::new();
@@ -442,6 +445,9 @@ pub fn converge_files(
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
+    for spec in &request.files {
+        reject_ssh_path(&request.target_root.join(&spec.relative_path))?;
+    }
     let desired_uid = request
         .owner
         .as_deref()
@@ -875,6 +881,19 @@ pub(crate) fn validate_relative_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn reject_ssh_path(path: &Path) -> Result<(), String> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::Normal(value) if value == ".ssh"))
+    {
+        return Err(format!(
+            "credential-boundary-refused: {} is under .ssh, Harmonia never writes SSH/credential material",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn validate_specs(specs: &[FileSpec]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     for spec in specs {
@@ -1255,6 +1274,47 @@ pub(crate) fn validated_symlink(
 #[cfg(test)]
 mod managed_ownership_tests {
     use super::*;
+
+    #[test]
+    fn managed_files_refuse_ssh_paths_in_plan_and_apply_without_writing() {
+        assert!(reject_ssh_path(Path::new(".ssh/config")).is_err());
+        assert!(reject_ssh_path(Path::new("myssh-notes/config")).is_ok());
+        for apply in [false, true] {
+            let scratch = std::env::temp_dir().join(format!(
+                "harmonia-managed-ssh-refusal-{}-{apply}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&scratch);
+            let target = scratch.join(".ssh/known_hosts");
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(&target, b"preserved\n").unwrap();
+            let files = vec![crate::ManagedFileManifest {
+                path: target.to_string_lossy().into_owned(),
+                content: "replacement\n".to_string(),
+                mode: Some(0o600),
+            }];
+
+            let error = converge_managed_files(
+                &ManagedFilesRequest {
+                    module_id: "test",
+                    files: &files,
+                    owner: None,
+                    group: None,
+                    receipt_name: "ssh-refusal",
+                    schema: "harmonia.test.ssh.v1",
+                    first_missing_signal: "credential-boundary-refused",
+                },
+                &scratch.join("receipts"),
+                apply,
+            )
+            .unwrap_err();
+
+            assert!(error.contains("credential-boundary-refused"));
+            assert!(error.contains(&target.display().to_string()));
+            assert_eq!(fs::read(&target).unwrap(), b"preserved\n");
+            let _ = fs::remove_dir_all(&scratch);
+        }
+    }
 
     #[cfg(unix)]
     #[test]
