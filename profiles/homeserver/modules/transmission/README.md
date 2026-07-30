@@ -1,25 +1,18 @@
 # Transmission
 
-## Role
+This module carries the HOMESERVER product Transmission desired state lifted from the private initialization quarry. Harmonia maintains configuration and service flags on an already-born appliance; it does not install Transmission, create users or directories, acquire VPN credentials, or own download and runtime data.
 
-Download Service.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided `transmission-daemon` and `/vault/scripts/transmission.py` launcher exist;
+- requires the installed `settings.json` to be non-empty and valid JSON but never overwrites it;
+- converges the quarry network buffer policy and Transmission VPN namespace unit with backups of replaced files;
+- validates the installed unit with `systemd-analyze verify`;
+- reloads systemd and restarts `transmissionPIA.service` only when this module changed managed material;
+- enables the service when needed and proves it is active.
 
-Transmission provides managed download service operation for HOMESERVER. Its runtime must stay coordinated with service policy and network controls.
+The public `settings.json` is a user-editable birth seed, not a maintenance overwrite. The quarry installer substitutions are applied exactly: `${PORT}` becomes the root `config.json` product port `9091`, `${ADMIN_USER}` becomes `admin`, and `${ADMIN_PASSWORD}` remains an unfilled birth-owned placeholder. The carried unit and sysctl policy otherwise preserve quarry text, apart from adding final newlines for repository-safe module form.
 
-## Harmonia maintenance contract
+The unit is Transmission-owned namespace wiring even though the quarry stores it in the shared systemd file pack: it starts the external `/vault/scripts/transmission.py` launcher that creates the VPN path used by the nginx concern at `192.168.2.2:9091`. The launcher, VPN provider credentials, `/vault`, nginx virtual host and certificates remain owned by other concerns and are not absorbed here.
 
-This module represents package/runtime currentness, service health, integration with network policy, and safe configuration boundaries. Public source does not contain private tracker, VPN, or credential values.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+Mutable Transmission state under `/var/lib/transmission-daemon`, logs and runtime namespace/process state are instance artifacts and are not carried. Downloads under `/mnt/nas/downloads/{complete,incomplete,objectives}` cross into the NAS concern. The service account, group memberships, base-directory permissions, package, launcher dependencies and VPN credentials remain birth-owned.
