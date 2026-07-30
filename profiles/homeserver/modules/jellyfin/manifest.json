@@ -1,37 +1,77 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "jellyfin",
-  "version": "1.0.0",
-  "description": "Generic Jellyfin media service maintenance: package currentness, jellyfin.service convergence, and default localhost health proof.",
+  "version": "1.1.0",
+  "description": "Quarry-lifted HOMESERVER Jellyfin configuration: assert the birth-provided binary, converge the product-owned unit with backup, preserve user-editable system.xml, and restart only after this module changed managed material.",
   "constants": {},
+  "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "jellyfin-package-install",
-      "tool": "package",
-      "permutation": "install",
+      "step_id": "jellyfin-binary-present",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "packages": [
-          "jellyfin"
-        ]
-      }
+        "executable": "jellyfin",
+        "search_scope": "system",
+        "receipt_label": "birth-provided Jellyfin binary"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "jellyfin-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/systemd/system/jellyfin.service"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "jellyfin-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "jellyfin-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "jellyfin-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "jellyfin.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
     },
     {
       "step_id": "jellyfin-service-enable",
       "tool": "systemd",
       "permutation": "enable-now",
       "args": {
-        "service": "jellyfin.service"
-      }
+        "service": "jellyfin.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
     },
     {
-      "step_id": "jellyfin-health",
-      "tool": "health",
-      "permutation": "probe",
+      "step_id": "jellyfin-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
       "args": {
-        "url": "http://127.0.0.1:8096/health",
-        "timeout_secs": 3,
-        "retries": 1
-      }
+        "service": "jellyfin.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
     }
   ]
 }

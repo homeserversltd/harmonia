@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ServerConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <EnableUPnP>false</EnableUPnP>
+  <PublicPort>8096</PublicPort>
+  <HttpServerPortNumber>8096</HttpServerPortNumber>
+  <IsPortAuthorized>true</IsPortAuthorized>
+  <EnableRemoteAccess>true</EnableRemoteAccess>
+  <EnableHttps>false</EnableHttps>
+  <RequireHttps>false</RequireHttps>
+  <EnableCaseSensitiveItemIds>true</EnableCaseSensitiveItemIds>
+  <PreferredMetadataLanguage>en</PreferredMetadataLanguage>
+  <MetadataCountryCode>US</MetadataCountryCode>
+  <IsStartupWizardComplete>false</IsStartupWizardComplete>
+</ServerConfiguration>
