@@ -49,6 +49,7 @@
     "rust-build-toolchain",
     "nginx",
     "coronatio",
+    "firewall",
     "keyman",
     "household-time",
     "caduceus",
