@@ -64,6 +64,7 @@
     "mkdocs",
     "yarr",
     "navidrome",
+    "samba",
     "vaultwarden",
     "matrix",
     "homeserver-update-runtime"

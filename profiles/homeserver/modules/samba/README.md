@@ -1,25 +1,18 @@
 # Samba
 
-## Role
+This module carries the HOMESERVER product Samba and LAN discovery desired state lifted from the private initialization quarry. Harmonia maintains configuration and service flags on an already-born appliance; it does not install Samba, Avahi, or WSDD, create Samba users, set passwords, or own NAS mounts and data.
 
-LAN File Sharing.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided `smbd`, `nmbd`, `testparm`, `avahi-daemon`, and `wsdd2` executables exist;
+- requires the installed `/etc/samba/smb.conf` and `/etc/hosts` to be non-empty but never overwrites them;
+- validates the installed Samba configuration with `testparm`;
+- converges the quarry Avahi host map and Samba discovery service with backups of replaced files;
+- restarts Avahi only when this module changed those managed Avahi files;
+- enables the four declared services when needed and proves each is active.
 
-Samba provides LAN file sharing for selected HOMESERVER paths. It is part of the appliance access layer and must remain explicit about what is shared.
+The public `smb.conf` and `hosts` copies are user-editable birth seeds, not maintenance overwrites. The Samba seed resolves the quarry `${ADMIN_USER}` placeholder to root `config.json`'s product administrator `owner`. The literal `192.168.123.1`, `home`, `home.local`, and `home.arpa` values are the quarry product values. All four carried files otherwise preserve quarry text; the public copies only remove trailing spaces and add final newlines for repository-safe module form. This is the conservative candidate policy pending operator verdict on the per-file table in publication.
 
-## Harmonia maintenance contract
+The quarry `install.py` is birth logic, not desired configuration. Its package installation remains a deployable birth debt. Its `/etc/nsswitch.conf` rewrite crosses into system name resolution, `/mnt/nas` ownership crosses into the storage/mount concern, and its service activation crosses into systemd. The module carries only the Samba tree's own four configuration files and does not absorb configuration from those concerns.
 
-This module represents package currentness, share policy, service state, and safe exposure boundaries. Public source describes reusable sharing intent; local share paths and credentials remain runtime configuration.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+The installer reads `/root/key/skeleton.key` and writes Samba's private password database for `owner` and `root`. Those filled secrets and generated instance records are excluded. Samba databases, locks, PID files, caches, logs, NAS contents, and Avahi/WSDD runtime state are also excluded.

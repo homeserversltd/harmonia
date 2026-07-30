@@ -1,0 +1,9 @@
+# Static IP address mappings for Avahi mDNS
+# Hostnames must end in .local for Avahi
+
+192.168.123.1 home.local
+192.168.123.1 home.arpa
+
+# Avahi host entries for local network discovery
+# Format: IP_ADDRESS HOSTNAME
+# This file is used by Avahi for local hostname resolution
