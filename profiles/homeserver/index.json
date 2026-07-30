@@ -51,6 +51,7 @@
     "postgres",
     "coronatio",
     "firewall",
+    "tailscale",
     "keyman",
     "household-time",
     "caduceus",

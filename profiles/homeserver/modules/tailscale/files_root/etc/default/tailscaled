@@ -1,0 +1,77 @@
+# Tailscale daemon configuration
+# See https://tailscale.com/kb/1080/cli/#daemon-configuration
+
+# Required Settings
+TS_NO_DNS_CONFIGURE=1           # Prevent Tailscale from managing DNS
+
+# State directory must exist
+TS_STATE_DIR=/var/lib/tailscale
+
+# Default port for tailscale
+PORT=41641
+
+# Optional Settings (uncomment and modify as needed)
+# Enable DNS proxy debugging
+#TS_DEBUG_DNS_PROXY=1
+
+# Logging verbosity (0-2)
+#TS_VERBOSE=1
+
+# Networking Settings
+# Override IP address for incoming connections
+#TS_DEST_IP=
+
+# Additional subnet routes
+#TS_EXTRA_ROUTES=
+
+# Disable netfilter
+#TS_NETFILTER_MODE=off
+
+# Don't accept DNS from peers
+#TS_ACCEPT_DNS=false
+
+# Advertise additional routes to network
+#TS_ROUTES=
+
+# Security Settings
+# Only authorize once, no reauth needed
+#TS_AUTH_ONCE=1
+
+# Enable SNAT for subnet routes
+#TS_SNAT_SUBNET_ROUTES=1
+
+# Run in userspace mode
+#TS_USERSPACE=1
+
+# Disable support bundling
+#TS_NO_LOGS_NO_SUPPORT=1
+
+# Exit Node Configuration
+# Set default exit node
+#TS_EXIT_NODE=
+
+# Allow this node to be an exit node
+#TS_EXIT_NODE_ALLOW=1
+
+# Subnet Routing
+# Advertise local subnet routes
+#TS_SUBNET_ROUTES=
+
+# Advertise routes to specific hosts
+#TS_HOST_ROUTES=
+
+# Advanced Features
+# Override reported hostname
+#TS_HOSTNAME=
+
+# Don't accept advertised routes
+#TS_ACCEPT_ROUTES=false
+
+# Advertise ACL tags
+#TS_ADVERTISE_TAGS=
+
+# Advertise specific routes
+#TS_ADVERTISE_ROUTES=
+
+# Enable additional security features
+#TS_SHIELD_MODE=1
