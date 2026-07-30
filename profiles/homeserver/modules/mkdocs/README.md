@@ -1,25 +1,16 @@
 # MkDocs
 
-## Role
+This module carries the HOMESERVER product MkDocs configuration lifted from the private initialization quarry. Harmonia maintains configuration on an already-born appliance; it does not install Python, create the virtual environment, install MkDocs packages, or acquire documentation source.
 
-Documentation Publishing.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided `/opt/docs/venv/bin/mkdocs` executable exists;
+- fails closed unless birth supplied the documentation tree at `/opt/docs/docs`;
+- converges the quarry `mkdocs.yml` and systemd unit with backups of replaced files;
+- validates the installed unit with `systemd-analyze verify`;
+- reloads systemd and restarts MkDocs only when this module changed managed material;
+- enables the service and proves it is active.
 
-MkDocs publishes HOMESERVER documentation as a maintained service surface. Documentation publication is part of the appliance product, not a manual afterthought.
+The documentation source is a separately owned gitlink in the quarry (`HOMESERVERSLTD/documentation`, pinned there at `5fad1e1068aedb159be06442e873f8fb3a88b2f2`). Its Markdown content is not absorbed into this configuration module. Birth must place that content under `/opt/docs/docs`; absence stops convergence.
 
-## Harmonia maintenance contract
-
-This module represents source/build/promote behavior, service readiness, and receipt-backed proof. Harmonia will use it to keep documentation current through the same profile mechanism as other services.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+Generated site output under `/opt/docs/site`, the virtual environment under `/opt/docs/venv`, logs under `/var/log/mkdocs`, and runtime systemd state are instance artifacts and are not carried. The nginx reverse proxy, its certificate paths, and its `homeserver-mkdocs` virtual host remain owned by the nginx concern.
