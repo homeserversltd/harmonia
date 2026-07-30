@@ -1,0 +1,16 @@
+[Unit]
+Description=MkDocs Documentation Server
+
+
+[Service]
+Type=simple
+User=owner
+Group=owner
+WorkingDirectory=/opt/docs
+Environment=PATH=/opt/docs/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=VIRTUAL_ENV=/opt/docs/venv
+ExecStart=/opt/docs/venv/bin/mkdocs serve --dev-addr 127.0.0.1:8005
+
+
+[Install]
+WantedBy=multi-user.target 

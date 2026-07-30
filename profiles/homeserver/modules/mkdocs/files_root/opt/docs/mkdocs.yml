@@ -1,0 +1,118 @@
+site_name: Home Server Documentation
+
+nav:
+  - Home: index.md
+  - Resources:
+      - Known Good Tabs: resources/known-good-tabs.md
+  - System Administration:
+      - Getting Started:
+          - Physical Setup: setup/setup-physical.md
+          - Network Access: setup/setup-network.md
+          - Admin Authentication: setup/setup-admin.md
+          - Security Configuration: setup/setup-security.md
+          - System Verification: setup/setup-verification.md
+          - Ongoing Management: setup/setup-management.md
+      - Network Management:
+          - Basic SSH Commands: admin/basic-ssh-commands.md
+          - Firewall Configuration: admin/firewall-config.md
+          - Network Troubleshooting: admin/network-troubleshooting.md
+          - VPN Setup: admin/vpn-setup.md
+          - Printer Setup: admin/printer-setup.md
+      - Storage & Drives:
+          - Drive Management: admin/drive-management.md
+          - NAS Configuration: admin/nas-config.md
+          - Backup Strategies: admin/backup-strategies.md
+          - Encryption Setup: admin/encryption-setup.md
+      - System Maintenance:
+          - Updates & Upgrades: admin/updates-upgrades.md
+          - Log Analysis: admin/log-analysis.md
+          - Performance Monitoring: admin/performance-monitoring.md
+          - Disaster Recovery: admin/disaster-recovery.md
+  - Service Documentation:
+      - Media Services:
+          - Jellyfin: services/jellyfin.md
+          - Navidrome: services/navidrome.md
+          - Piwigo: services/piwigo.md
+      - Productivity:
+          - Vaultwarden: services/vaultwarden.md
+          - Gogs: services/gogs.md
+          - File Browser: services/filebrowser.md
+          - Calibre Web: services/calibreweb.md
+      - Network Services:
+          - Tailscale: services/tailscale.md
+          - Transmission: services/transmission.md
+          - Yarr: services/yarr.md
+  - Development:
+      - Platform Overview: developers/index.md
+      - Configuration: developers/homeserver.json.md
+      - Development Workflow: developers/smb-development.md
+      - API Reference: developers/api-reference.md
+      - Customization: developers/customization.md
+  - Security & Certificates:
+      - Certificate Overview: certificates/index.md
+      - Certificate Renewal: certificates/renewal.md
+      - Installation & Troubleshooting: certificates/troubleshooting.md
+      - Security Best Practices: certificates/security-best-practices.md
+  - Troubleshooting:
+      - Common Issues: troubleshooting/common-issues.md
+      - Service-Specific Problems: troubleshooting/service-issues.md
+      - Network Problems: troubleshooting/network-issues.md
+      - Performance Issues: troubleshooting/performance-issues.md
+  - Reference:
+      - DVD Ripping Guide: reference/dvd-ripping.md
+      - Command Reference: reference/commands.md
+      - Configuration Files: reference/config-files.md
+      - Port Mappings: reference/ports.md
+      - File Locations: reference/file-locations.md
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.expand
+    - navigation.prune
+    - navigation.footer
+copyright: "Licensed under GPL v3.0 (GNU General Public License version 3.0)"
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/homeserversltd/updates
+      name: GitHub
+    - icon: fontawesome/solid/globe
+      link: https://arpaservers.com
+      name: Website
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - footnotes
+  - toc:
+      permalink: true
+
+# Development server settings
+dev_addr: 127.0.0.1:8005 
