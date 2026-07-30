@@ -1,0 +1,18 @@
+[Unit]
+Description=File Browser
+After=network.target
+
+[Service]
+Type=simple
+User=filebrowser
+Group=filebrowser
+ExecStartPre=/usr/bin/test -d /mnt/nas
+ExecStart=/usr/local/bin/filebrowser -d /etc/filebrowser/filebrowser.db
+WorkingDirectory=/etc/filebrowser
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60s
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target
