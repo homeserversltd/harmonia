@@ -1,0 +1,32 @@
+[Unit]
+Description=Vaultwarden Password Manager
+Wants=network.target
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=vaultwarden
+Group=vaultwarden
+EnvironmentFile=/etc/vaultwarden.env
+WorkingDirectory=/opt/vaultwarden
+ExecStart=/opt/vaultwarden/vaultwarden
+
+# Security hardening
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vaultwarden
+ReadWritePaths=/var/log/vaultwarden
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

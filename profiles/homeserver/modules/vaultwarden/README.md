@@ -1,25 +1,16 @@
 # Vaultwarden
 
-## Role
+This module carries the HOMESERVER product Vaultwarden desired state lifted from the private initialization quarry. Harmonia maintains configuration and service flags on an already-born appliance; it does not install or build Vaultwarden, install Rust or other dependencies, create accounts or directories, initialize PostgreSQL, download the web vault, or own vault data.
 
-Password Vault Service.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided Vaultwarden executable exists;
+- requires the installed secret-bearing `/etc/vaultwarden.env` to be non-empty but never overwrites it;
+- converges the quarry `vaultwarden.service` unit with a backup of any replaced file;
+- validates the installed unit with `systemd-analyze verify`;
+- reloads systemd and restarts Vaultwarden only when this module changed managed material;
+- enables the service when needed and proves it is active.
 
-Vaultwarden provides a self-hosted vault service. It is treated as a security-sensitive runtime with strict boundaries around configuration, data, and service health.
+The public environment file is a user-editable birth template, not a maintenance overwrite. Its quarry `${ROCKET_PORT}` placeholder is resolved to the product port `8200`; `${ADMIN_TOKEN}` and `${DB_PASSWORD}` remain unfilled birth-owned placeholders. The installer hashes and fills the administrator token and database password during birth. Both carried files otherwise preserve quarry text; the public copies only remove trailing spaces and add final newlines for repository-safe module form.
 
-## Harmonia maintenance contract
-
-This module represents runtime currentness, service readiness, data persistence, and safe public configuration. Public source never contains vault data, tokens, passwords, or deployment secrets.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+Vault database, attachments, icon cache, and log files under `/var/lib/vaultwarden` and `/var/log/vaultwarden` are instance material and are not carried. The unit crosses into the birth-owned binary and web vault under `/opt/vaultwarden`, the PostgreSQL concern through `postgresql.service` and the database URL, and the network concern through `network.target`. The nginx concern owns the `vault.home.arpa` reverse proxy. The quarry installer also names `/mnt/nas/vaultwarden`, but its `NAS_PATH` replacement has no matching environment-template placeholder and does not feed either carried file. This module does not absorb any of those concerns.
