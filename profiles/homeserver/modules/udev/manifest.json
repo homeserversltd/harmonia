@@ -1,0 +1,81 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "udev",
+  "version": "1.0.0",
+  "description": "Quarry-lifted HOMESERVER udev configuration: assert the birth-provided udev administrator, converge the product-owned static rule with backups, validate it, and reload and trigger udev only after this module changed the managed rule.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "udevadm-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "udevadm",
+        "search_scope": "system",
+        "receipt_label": "birth-provided udev administrator"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "udev-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/udev/rules.d/99-rapl-permissions.rules"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "udev-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "udev-rule-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/udevadm",
+        "args": [
+          "verify",
+          "/etc/udev/rules.d/99-rapl-permissions.rules"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "udev-rules-reload-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "systemd-udevd.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "udev-trigger-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "systemd-udev-trigger.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "udev-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "systemd-udevd.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
