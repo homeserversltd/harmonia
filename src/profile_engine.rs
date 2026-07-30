@@ -94,8 +94,43 @@ pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {
     serde_json::from_value(raw).map_err(|e| format!("module-parse-failed {}: {e}", path.display()))
 }
 
+pub(crate) fn shared_module_root(module_root: &Path) -> Option<PathBuf> {
+    let profile_dir = module_root.parent()?;
+    let profiles_dir = profile_dir.parent()?;
+    if profiles_dir.file_name().and_then(|name| name.to_str()) != Some("profiles") {
+        return None;
+    }
+    profiles_dir.parent().map(|root| root.join("modules"))
+}
+
+pub(crate) fn resolve_module_dir(module_root: &Path, module_id: &str) -> Result<PathBuf, String> {
+    let local = module_root.join(module_id);
+    let shared = shared_module_root(module_root).map(|root| root.join(module_id));
+    let local_exists = lawful_module_manifest_exists(&local);
+    let shared_exists = shared
+        .as_ref()
+        .is_some_and(|path| lawful_module_manifest_exists(path));
+    match (local_exists, shared_exists) {
+        (true, true) => Err(format!(
+            "module-seat-ambiguous id={} local={} shared={}",
+            module_id,
+            local.display(),
+            shared.as_ref().expect("shared path").display()
+        )),
+        (true, false) => Ok(local),
+        (false, true) => Ok(shared.expect("shared path")),
+        (false, false) => Ok(local),
+    }
+}
+
+pub(crate) fn module_uses_shared_seat(module_root: &Path, module_dir: &Path) -> bool {
+    shared_module_root(module_root)
+        .as_ref()
+        .is_some_and(|root| module_dir.parent() == Some(root.as_path()))
+}
+
 fn load_profile_module(module_root: &Path, module_id: &str) -> Result<LoadedModule, String> {
-    let module_dir = module_root.join(module_id);
+    let module_dir = resolve_module_dir(module_root, module_id)?;
     let manifest_path = module_dir.join("manifest.json");
     if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
         return load_ladder_manifest(&manifest_path).map(LoadedModule::Ladder);
@@ -430,7 +465,11 @@ pub(crate) fn run_profile_engine_with_preflight(
         }
         let execution_result = match &module {
             LoadedModule::Sidecar(sidecar) => {
-                execute_profile_module(sidecar, module_root, receipt_dir, apply, &harmonia_root)
+                let resolved_dir = resolve_module_dir(module_root, module.id())?;
+                let resolved_root = resolved_dir
+                    .parent()
+                    .ok_or_else(|| format!("module-root-missing-{}", module.id()))?;
+                execute_profile_module(sidecar, resolved_root, receipt_dir, apply, &harmonia_root)
             }
             LoadedModule::Ladder(manifest) => {
                 let module_dir = receipt_dir.join("modules").join(&manifest.id);
@@ -608,9 +647,8 @@ pub(crate) fn sync_profile_from_source(
         .modules
         .iter()
         .map(|id| {
-            let module_dir = source_root
-                .join(format!("profiles/{profile_id}/modules"))
-                .join(id);
+            let source_module_root = source_root.join(format!("profiles/{profile_id}/modules"));
+            let module_dir = resolve_module_dir(&source_module_root, id)?;
             Ok(SubscriptionModuleUpdate {
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
@@ -760,7 +798,7 @@ pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<
         "household-time",
         "homeconsole-caduceus-public-lever",
     ] {
-        let module_dir = module_root.join(module_id);
+        let module_dir = resolve_module_dir(module_root, module_id)?;
         if lawful_module_manifest_exists(&module_dir) {
             found.push(module_id.to_string());
         }
@@ -950,7 +988,7 @@ pub(crate) fn homeserver_module_ids_from_profile_modules(
         "matrix",
         "homeserver-update-runtime",
     ] {
-        if lawful_module_manifest_exists(&module_root.join(module_id)) {
+        if lawful_module_manifest_exists(&resolve_module_dir(module_root, module_id)?) {
             found.push(module_id.to_string());
         }
     }
@@ -1004,7 +1042,7 @@ pub(crate) fn tv_module_ids_from_profile_modules(
         "caduceus-public-lever",
         "appliance-proof",
     ] {
-        if lawful_module_manifest_exists(&module_root.join(module_id)) {
+        if lawful_module_manifest_exists(&resolve_module_dir(module_root, module_id)?) {
             found.push(module_id.to_string());
         }
     }

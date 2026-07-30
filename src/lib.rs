@@ -2775,13 +2775,39 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let path = args
                 .get(1)
                 .ok_or("inspect-profile requires <profile-index-json>")?;
-            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            let profile_path = Path::new(path);
+            let profile = load_profile(profile_path).map_err(|e| e.to_string())?;
+            let module_root = default_module_root(profile_path);
+            let module_seats = profile
+                .modules
+                .iter()
+                .map(|module_id| {
+                    let module_dir = resolve_module_dir(&module_root, module_id)?;
+                    if !lawful_module_manifest_exists(&module_dir) {
+                        return Err(format!(
+                            "module-missing id={} local_root={} shared_root={}",
+                            module_id,
+                            module_root.display(),
+                            shared_module_root(&module_root)
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_else(|| "none".to_string())
+                        ));
+                    }
+                    let seat = if module_uses_shared_seat(&module_root, &module_dir) {
+                        "shared"
+                    } else {
+                        "profile"
+                    };
+                    Ok(format!("{module_id}:{seat}"))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             println!("schema=harmonia.profile.inspect.v1");
             println!("ok=true");
             println!("profile_id={}", profile.id);
             println!("identity={}", profile.identity);
             println!("module_count={}", profile.modules.len());
             println!("modules={}", profile.modules.join(","));
+            println!("module_seats={}", module_seats.join(","));
             Ok(())
         }
         Some("plan-run") => {

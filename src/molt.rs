@@ -97,11 +97,11 @@ pub(crate) fn molt_at_subscription_path(
         .modules
         .iter()
         .map(|id| {
-            let module_dir = harmonia_root
+            let module_root = harmonia_root
                 .join("profiles")
                 .join(&profile.id)
-                .join("modules")
-                .join(id);
+                .join("modules");
+            let module_dir = resolve_module_dir(&module_root, id)?;
             Ok(SubscriptionModuleUpdate {
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
@@ -132,14 +132,29 @@ pub(crate) fn molt_at_subscription_path(
         .join(&profile.id)
         .join("modules");
     for module in &profile.modules {
-        let module_dir = module_root.join(module);
+        let module_dir = resolve_module_dir(&module_root, module)?;
+        let shared = module_uses_shared_seat(&module_root, &module_dir);
         let sidecar = module_dir.join("sidecar.json");
         let manifest = module_dir.join("manifest.json");
-        let module_output_dir = output_dir
+        let profile_module_output_dir = output_dir
             .join("profiles")
             .join(&profile.id)
             .join("modules")
             .join(module);
+        let module_output_dir = if shared {
+            output_dir.join("modules").join(module)
+        } else {
+            profile_module_output_dir.clone()
+        };
+        if shared && profile_module_output_dir.exists() {
+            fs::remove_dir_all(&profile_module_output_dir).map_err(|e| {
+                format!(
+                    "molt-shared-module-shadow-prune-failed {}: {e}",
+                    profile_module_output_dir.display()
+                )
+            })?;
+            pruned_paths.push(profile_module_output_dir.display().to_string());
+        }
         let source_version =
             installed_module_version(&module_dir).unwrap_or_else(|| "sidecar".to_string());
         let source_tree_sha256 = module_tree_sha256(&module_dir)?;
