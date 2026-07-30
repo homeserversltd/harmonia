@@ -1,0 +1,15 @@
+[Unit]
+Description=Navidrome Music Server
+After=network.target
+After=vault.mount
+[Service]
+Type=simple
+User=navidrome
+Group=navidrome
+ExecStart=/opt/navidrome/navidrome --configfile /etc/navidrome/navidrome.toml
+WorkingDirectory=/opt/navidrome
+KillMode=process
+
+
+[Install]
+WantedBy=multi-user.target

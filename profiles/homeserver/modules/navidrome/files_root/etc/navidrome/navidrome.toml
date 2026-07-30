@@ -1,0 +1,14 @@
+MusicFolder = "/mnt/nas/music"
+DataFolder = "/var/lib/navidrome"
+Port = 4533
+Address = "0.0.0.0"
+ScanSchedule = "@daily"
+EnableUserEditing = true
+EnableDownloads = true
+EnableTranscodingConfig = true
+EnableSharing = true
+TranscodingCacheSize = "1GB"
+TranscodingCachePath = "/var/cache/navidrome"
+AutoTranscodingEnabled = true
+DefaultTheme = "Dark"
+DevAutoCreateAdminPassword = "${ADMIN_PASSWORD}"

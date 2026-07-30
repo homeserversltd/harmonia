@@ -60,6 +60,7 @@
     "filebrowser",
     "jellyfin",
     "yarr",
+    "navidrome",
     "matrix",
     "homeserver-update-runtime"
   ],
