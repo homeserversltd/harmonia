@@ -48,6 +48,7 @@
     "work-lane-root-provisioning",
     "rust-build-toolchain",
     "nginx",
+    "postgres",
     "coronatio",
     "keyman",
     "household-time",
