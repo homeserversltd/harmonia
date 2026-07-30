@@ -1,34 +1,235 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "nginx",
-  "version": "1.0.0",
-  "description": "Public HomeServer Nginx shared floor: package, owned safe link, validation-before-promotion, reload, and service readiness.",
+  "version": "1.1.0",
+  "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration, and restart only after this module changed managed material.",
   "constants": {
-    "nginx_package": ["nginx"],
-    "source": "/etc/nginx/sites-available/harmonia-shared",
-    "target": "/etc/nginx/sites-enabled/harmonia-shared"
+    "sites": [
+      "homeserver-calibre-web",
+      "homeserver-filebrowser",
+      "homeserver-forgejo",
+      "homeserver-jellyfin",
+      "homeserver-main",
+      "homeserver-mkdocs",
+      "homeserver-navidrome",
+      "homeserver-piwigo",
+      "homeserver-transmission",
+      "homeserver-vaultwarden",
+      "homeserver-yarr"
+    ]
   },
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "nginx-package",
-      "tool": "package",
-      "permutation": "install",
-      "args": {"packages": "$constants.nginx_package"},
+      "step_id": "nginx-binary-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "nginx",
+        "search_scope": "system",
+        "receipt_label": "birth-provided nginx binary"
+      },
       "on_failure": "stop"
     },
     {
-      "step_id": "nginx-shared-transaction",
+      "step_id": "nginx-product-config",
       "tool": "files",
-      "permutation": "validated-file-symlink",
+      "permutation": "converge",
       "args": {
-        "desired_source": "files_root/etc/nginx/sites-available/harmonia-shared",
-        "source": "$constants.source",
-        "target": "$constants.target",
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/nginx/nginx.conf",
+          "etc/nginx/ssl_params.conf",
+          "etc/nginx/sites-available/homeserver-calibre-web",
+          "etc/nginx/sites-available/homeserver-filebrowser",
+          "etc/nginx/sites-available/homeserver-forgejo",
+          "etc/nginx/sites-available/homeserver-jellyfin",
+          "etc/nginx/sites-available/homeserver-main",
+          "etc/nginx/sites-available/homeserver-mkdocs",
+          "etc/nginx/sites-available/homeserver-navidrome",
+          "etc/nginx/sites-available/homeserver-piwigo",
+          "etc/nginx/sites-available/homeserver-transmission",
+          "etc/nginx/sites-available/homeserver-vaultwarden",
+          "etc/nginx/sites-available/homeserver-yarr",
+          "etc/systemd/system/nginx.service"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "nginx-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-calibre-web",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-calibre-web",
+        "target": "/etc/nginx/sites-enabled/homeserver-calibre-web",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
-        "reload_program": "/usr/bin/systemctl",
-        "reload_args": ["reload", "nginx"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-filebrowser",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-filebrowser",
+        "target": "/etc/nginx/sites-enabled/homeserver-filebrowser",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-forgejo",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-forgejo",
+        "target": "/etc/nginx/sites-enabled/homeserver-forgejo",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-jellyfin",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-jellyfin",
+        "target": "/etc/nginx/sites-enabled/homeserver-jellyfin",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-main",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-main",
+        "target": "/etc/nginx/sites-enabled/homeserver-main",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-mkdocs",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-mkdocs",
+        "target": "/etc/nginx/sites-enabled/homeserver-mkdocs",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-navidrome",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-navidrome",
+        "target": "/etc/nginx/sites-enabled/homeserver-navidrome",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-piwigo",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-piwigo",
+        "target": "/etc/nginx/sites-enabled/homeserver-piwigo",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-transmission",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-transmission",
+        "target": "/etc/nginx/sites-enabled/homeserver-transmission",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-vaultwarden",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-vaultwarden",
+        "target": "/etc/nginx/sites-enabled/homeserver-vaultwarden",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-yarr",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-yarr",
+        "target": "/etc/nginx/sites-enabled/homeserver-yarr",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nginx-config-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/sbin/nginx",
+        "args": ["-t"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nginx-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nginx-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "nginx.service",
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -37,7 +238,10 @@
       "step_id": "nginx-service-ready",
       "tool": "systemd",
       "permutation": "is-active-probe",
-      "args": {"service": "nginx"},
+      "args": {
+        "service": "nginx.service",
+        "timeout_secs": 30
+      },
       "on_failure": "stop"
     }
   ]

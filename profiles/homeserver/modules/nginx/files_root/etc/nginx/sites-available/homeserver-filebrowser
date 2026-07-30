@@ -1,0 +1,53 @@
+# FileBrowser File Management Configuration
+# Local access: https://files.home.arpa
+# Tailscale access: https://[tailscale-ip]:18081 (8081 + 1 prefix = 18081)
+
+# Local access server block
+server {
+    listen 443 ssl;
+    server_name files.home.arpa;
+
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+    include /etc/nginx/ssl_params.conf;
+
+    location / {
+        proxy_pass http://localhost:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # For file uploads
+        client_max_body_size 100G;
+        proxy_request_buffering off;
+        proxy_connect_timeout 7200;
+        proxy_send_timeout 7200;
+        proxy_read_timeout 7200;
+    }
+}
+
+# Tailscale direct access server block
+server {
+    listen *:18081 ssl;
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+
+    # Disable SSL verification for self-signed cert
+    ssl_verify_client off;
+
+    location / {
+        proxy_pass http://localhost:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # For file uploads
+        client_max_body_size 100G;
+        proxy_request_buffering off;
+        proxy_connect_timeout 7200;
+        proxy_send_timeout 7200;
+        proxy_read_timeout 7200;
+    }
+}
