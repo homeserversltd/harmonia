@@ -1,0 +1,17 @@
+[Unit]
+Description=Jellyfin Media Server
+
+[Service]
+Type=simple
+User=jellyfin
+Group=jellyfin
+Environment=JELLYFIN_DATA_DIR=/var/lib/jellyfin
+Environment=JELLYFIN_CACHE_DIR=/var/cache/jellyfin
+Environment=JELLYFIN_CONFIG_DIR=/etc/jellyfin
+Environment=JELLYFIN_LOG_DIR=/var/log/jellyfin
+Environment=JELLYFIN_MEDIA_DIR=/mnt/nas/media
+Environment=JELLYFIN_WEB_DIR=/usr/share/jellyfin/web
+ExecStart=/usr/bin/jellyfin
+
+[Install]
+WantedBy=multi-user.target

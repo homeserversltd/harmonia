@@ -1,25 +1,15 @@
 # Jellyfin
 
-## Role
+This module carries the HOMESERVER product Jellyfin desired state lifted from the private initialization quarry. Harmonia maintains configuration on an already-born appliance; it does not install Jellyfin, add package repositories, create users or directories, or own media and runtime data.
 
-Media Streaming Service.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided `jellyfin` executable exists;
+- converges the quarry `jellyfin.service` unit with a backup of any replaced file;
+- preserves `system.xml` as a user-editable birth seed and never overwrites the appliance copy;
+- reloads systemd and restarts Jellyfin only when this module changed managed material;
+- enables the service when needed and proves it is active.
 
-Jellyfin provides HOMESERVER media streaming. It is a first-class appliance service with package/runtime currentness, library boundaries, and web health requirements.
+The public payload contains no credentials or filled secrets. The quarry `${PORT}` installer placeholder in the user-editable `system.xml` seed is resolved to the product port `8096` from root `config.json`.
 
-## Harmonia maintenance contract
-
-This module represents installation, service state, media path boundaries, readiness checks, and receipts. Public source carries the service maintenance concern without media payloads or private access values.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+Jellyfin owns mutable state under `/var/lib/jellyfin`, `/var/cache/jellyfin`, and `/var/log/jellyfin`; those instance artifacts are not carried. Media under `/mnt/nas/media` crosses into the NAS concern, and web assets under `/usr/share/jellyfin/web` cross into the birth-provided Jellyfin package. This module does not absorb either surface.
