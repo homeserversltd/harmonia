@@ -1,25 +1,15 @@
 # Calibre-Web
 
-## Role
+This module carries the HOMESERVER product Calibre-Web systemd desired state lifted from the private initialization quarry. Harmonia maintains configuration and service flags on an already-born appliance; it does not install Calibre-Web or Calibre, create the `calibre` account or directories, seed a library, or own application and library state.
 
-Ebook Library Service.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided Calibre-Web Python environment, watcher script, `inotifywait`, and `calibredb` executables exist;
+- converges the quarry `calibre-web.service` and `calibre-simple-watch.service` units with backups of replaced files;
+- validates both installed units with `systemd-analyze verify`;
+- reloads systemd and restarts both concern services only when this module changed managed material;
+- enables both services when needed and proves both are active.
 
-Calibre-Web provides a web interface for an ebook library. In HOMESERVER it is treated as a maintained product service with runtime, data, and web health boundaries.
+No filled secret exists in the quarry Calibre-Web configuration and none is carried. The quarry installer and `calibreSimpleWatcher.sh` are birth-owned software, not Harmonia configuration; their program text is not embedded in this manifest.
 
-## Harmonia maintenance contract
-
-This module represents service currentness, data path ownership, web reachability, and receipt-backed readiness. Harmonia will use the concern to keep the ebook service current without embedding library contents in public source.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+The units cross into birth-owned application and package paths under `/opt/calibre-web`, `/usr/local/sbin`, and the system executable search path. They also cross into instance-owned configuration, database, and log paths under `/etc/calibre-web`, `/var/lib/calibre-web`, and `/var/log/calibre-web`, and into NAS-owned library state under `/mnt/nas/books`. The nginx concern owns the `books.home.arpa` reverse proxy. This module does not absorb any of those concerns or their data.
