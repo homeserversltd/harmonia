@@ -1,25 +1,16 @@
 # Forgejo
 
-## Role
+This module carries the HOMESERVER product Forgejo desired state lifted from the private initialization quarry. Harmonia maintains configuration and service flags on an already-born appliance; it does not download Forgejo, create users or directories, initialize PostgreSQL, create an administrator, manage SSH credentials, or own repository data.
 
-Self-Hosted Git Service.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided `/opt/forgejo/forgejo` executable exists;
+- requires the installed birth-owned `/opt/forgejo/custom/conf/app.ini` to be non-empty but never overwrites it;
+- converges the quarry `forgejo.service` unit with a backup of any replaced file;
+- validates the installed unit with `systemd-analyze verify`;
+- reloads systemd and restarts Forgejo only when this module changed managed material;
+- enables the service when needed, proves it is active, and probes its loopback HTTP endpoint.
 
-Forgejo provides the HOMESERVER Git service. It is maintained as durable collaboration infrastructure with repository data, service health, and web access boundaries.
+The public `app.ini` is a user-editable birth seed, not a maintenance overwrite. `${PG_PASS}` and `${SECRET_KEY}` remain unfilled birth-owned placeholders; first birth replaces them and Forgejo may add instance-generated secret keys. The carried template and unit otherwise preserve quarry bytes, with only a final newline retained for repository-safe module form. The alternate `manual_deploy.py` adds a `[webhook]` private-host allowance that the primary quarry installer does not add; this lift does not silently choose that divergent manual-deploy adaptation.
 
-## Harmonia maintenance contract
-
-This module represents runtime currentness, service installation, repository data boundaries, backup implications, and readiness proof. Public source describes the service concern without private repositories or tokens.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+Forgejo repositories under `/opt/forgejo/repositories`, application data under `/opt/forgejo/data`, logs under `/var/log/forgejo`, generated session files, and runtime state are instance artifacts and are not carried. The unit crosses into the PostgreSQL concern through `postgresql.service` and the configured database, and into the network concern through `network.target`. The nginx concern owns the `git.home.arpa` reverse proxy and certificates. Birth owns the `git` user and group, directory creation and permissions, database role/schema/extension, administrator creation, SSH `AuthorizedKeysCommand` policy, and any authorized-keys file. Migration and administration scripts remain quarry tools and are not absorbed.

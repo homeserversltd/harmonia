@@ -1,8 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "forgejo",
-  "version": "1.0.0",
-  "description": "Generic Forgejo git host maintenance: package currentness, forgejo.service convergence, and default localhost web health proof.",
+  "version": "1.1.0",
+  "description": "Quarry-lifted HOMESERVER Forgejo configuration: assert the birth-provided binary and birth-owned app configuration, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "group": {
     "group_id": "git-host",
     "group_order": 1,
@@ -14,15 +14,96 @@
       }
     }
   },
-  "constants": {},
+  "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "forgejo-binary-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-x", "/opt/forgejo/forgejo"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "forgejo-user-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-s", "/opt/forgejo/custom/conf/app.ini"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "forgejo-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/systemd/system/forgejo.service"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "forgejo-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "forgejo-unit-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": ["verify", "/etc/systemd/system/forgejo.service"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "forgejo-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "forgejo-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "forgejo.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "forgejo-service-enable",
       "tool": "systemd",
       "permutation": "enable-now",
       "args": {
-        "service": "forgejo.service"
-      }
+        "service": "forgejo.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "forgejo-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "forgejo.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
     },
     {
       "step_id": "forgejo-health",
@@ -32,7 +113,8 @@
         "url": "http://127.0.0.1:3000/",
         "timeout_secs": 3,
         "retries": 1
-      }
+      },
+      "on_failure": "stop"
     }
   ]
 }

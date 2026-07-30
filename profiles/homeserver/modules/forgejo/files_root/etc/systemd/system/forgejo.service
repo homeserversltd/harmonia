@@ -1,0 +1,15 @@
+[Unit]
+Description=Forgejo Git Server
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=git
+Group=git
+WorkingDirectory=/opt/forgejo
+ExecStart=/opt/forgejo/forgejo web --config /opt/forgejo/custom/conf/app.ini
+Restart=always
+Environment=USER=git HOME=/home/git FORGEJO_WORK_DIR=/opt/forgejo
+
+[Install]
+WantedBy=multi-user.target
