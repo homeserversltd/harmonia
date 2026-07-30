@@ -62,6 +62,7 @@
     "mkdocs",
     "yarr",
     "navidrome",
+    "vaultwarden",
     "matrix",
     "homeserver-update-runtime"
   ],
