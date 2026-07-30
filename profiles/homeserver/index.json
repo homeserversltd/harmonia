@@ -39,11 +39,13 @@
       "searx",
       "rust-build-toolchain",
       "permissions",
-      "matrix"
+      "matrix",
+      "work-lane-root-provisioning"
     ]
   },
   "identity": "homeserver",
   "modules": [
+    "work-lane-root-provisioning",
     "rust-build-toolchain",
     "nginx",
     "coronatio",

@@ -937,6 +937,7 @@ pub(crate) fn homeserver_module_ids_from_profile_modules(
 ) -> Result<Vec<String>, String> {
     let mut found = Vec::new();
     for module_id in [
+        "work-lane-root-provisioning",
         "rust-build-toolchain",
         "nginx",
         "coronatio",
