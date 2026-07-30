@@ -1,0 +1,156 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "calibreweb",
+  "version": "1.0.0",
+  "description": "Quarry-lifted HOMESERVER Calibre-Web service configuration: assert birth-provided application and watcher executables, converge product-owned units with backups, validate both units, and restart only after this module changed managed material.",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "calibreweb-application-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-x", "/opt/calibre-web/venv/bin/python3"],
+        "timeout_secs": 10
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-watcher-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-x", "/usr/local/sbin/calibreSimpleWatcher.sh"],
+        "timeout_secs": 10
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-inotifywait-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "inotifywait",
+        "search_scope": "system",
+        "receipt_label": "birth-provided watcher dependency"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-calibredb-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "calibredb",
+        "search_scope": "system",
+        "receipt_label": "birth-provided Calibre library CLI"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/systemd/system/calibre-web.service",
+          "etc/systemd/system/calibre-simple-watch.service"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "calibreweb-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-units-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": [
+          "verify",
+          "/etc/systemd/system/calibre-web.service",
+          "/etc/systemd/system/calibre-simple-watch.service"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "calibre-web.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-watcher-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "calibre-simple-watch.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "calibre-web.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-watcher-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "calibre-simple-watch.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "calibre-web.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "calibreweb-watcher-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "calibre-simple-watch.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
