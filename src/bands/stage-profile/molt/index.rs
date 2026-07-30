@@ -122,7 +122,11 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         .modules
         .iter()
         .map(|id| {
-            let module_dir = super::source_module_path(harmonia_root, &profile.id, id);
+            let module_root = harmonia_root
+                .join("profiles")
+                .join(&profile.id)
+                .join("modules");
+            let module_dir = super::resolve_module_dir(&module_root, id)?;
             Ok(SubscriptionModuleUpdate {
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
@@ -159,7 +163,26 @@ pub(crate) fn molt_at_subscription_path_for_modules(
     )?;
 
     for module in &profile.modules {
-        let module_dir = super::source_module_path(harmonia_root, &profile.id, module);
+        let module_root = harmonia_root
+            .join("profiles")
+            .join(&profile.id)
+            .join("modules");
+        let module_dir = super::resolve_module_dir(&module_root, module)?;
+        let shared = super::module_uses_shared_seat(&module_root, &module_dir);
+        let shadow = output_dir
+            .join("profiles")
+            .join(&profile.id)
+            .join("modules")
+            .join(module);
+        if shared && shadow.exists() {
+            fs::remove_dir_all(&shadow).map_err(|e| {
+                format!(
+                    "molt-shared-module-shadow-prune-failed {}: {e}",
+                    shadow.display()
+                )
+            })?;
+            pruned_paths.push(shadow.display().to_string());
+        }
         let sidecar = module_dir.join("sidecar.json");
         let manifest = module_dir.join("manifest.json");
         let module_output_dir = output_dir.join("modules").join(module);

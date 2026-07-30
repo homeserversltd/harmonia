@@ -23,23 +23,81 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
     enter(Band::StageProfile)
 }
 
+pub(crate) fn shared_module_root(module_root: &Path) -> Option<std::path::PathBuf> {
+    let profile_dir = module_root.parent()?;
+    let profiles_dir = profile_dir.parent()?;
+    if profiles_dir.file_name().and_then(|name| name.to_str()) != Some("profiles") {
+        return None;
+    }
+    profiles_dir.parent().map(|root| root.join("modules"))
+}
+
+fn profiles_shared_module_root(module_root: &Path) -> Option<std::path::PathBuf> {
+    let profile_dir = module_root.parent()?;
+    let profiles_dir = profile_dir.parent()?;
+    if profiles_dir.file_name().and_then(|name| name.to_str()) != Some("profiles") {
+        return None;
+    }
+    Some(profiles_dir.join("shared").join("modules"))
+}
+
+pub(crate) fn resolve_module_dir(
+    module_root: &Path,
+    module_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    let local = module_root.join(module_id);
+    let mut seats = Vec::new();
+    if lawful_module_manifest_exists(&local) {
+        seats.push(local.clone());
+    }
+    if let Some(root) = profiles_shared_module_root(module_root) {
+        let path = root.join(module_id);
+        if lawful_module_manifest_exists(&path) {
+            seats.push(path);
+        }
+    }
+    if let Some(root) = shared_module_root(module_root) {
+        let path = root.join(module_id);
+        if lawful_module_manifest_exists(&path) {
+            seats.push(path);
+        }
+    }
+    if seats.len() > 1 {
+        let rendered = seats
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        return Err(format!(
+            "module-seat-ambiguous id={module_id} seats={rendered}"
+        ));
+    }
+    Ok(seats.into_iter().next().unwrap_or_else(|| {
+        profiles_shared_module_root(module_root)
+            .map(|root| root.join(module_id))
+            .unwrap_or(local)
+    }))
+}
+
+pub(crate) fn module_uses_shared_seat(module_root: &Path, module_dir: &Path) -> bool {
+    profiles_shared_module_root(module_root)
+        .as_ref()
+        .is_some_and(|root| module_dir.parent() == Some(root.as_path()))
+        || shared_module_root(module_root)
+            .as_ref()
+            .is_some_and(|root| module_dir.parent() == Some(root.as_path()))
+}
+
 pub(crate) fn source_module_path(
     harmonia_root: &Path,
     profile_id: &str,
     module_id: &str,
-) -> std::path::PathBuf {
-    let profile_path = harmonia_root
+) -> Result<std::path::PathBuf, String> {
+    let module_root = harmonia_root
         .join("profiles")
         .join(profile_id)
-        .join("modules")
-        .join(module_id);
-    if profile_path.exists() {
-        profile_path
-    } else {
-        harmonia_root
-            .join("profiles/shared/modules")
-            .join(module_id)
-    }
+        .join("modules");
+    resolve_module_dir(&module_root, module_id)
 }
 
 pub(crate) fn materialize(
@@ -129,7 +187,7 @@ pub(crate) fn materialize(
             source_root,
             &refreshed.id,
             id,
-        ))?;
+        )?)?;
         let installed_hash =
             crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
         if source_hash != installed_hash {
@@ -155,7 +213,7 @@ pub(crate) fn materialize(
             source_root,
             &refreshed.id,
             id,
-        ))?;
+        )?)?;
         let installed_hash =
             crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
         if source_hash != installed_hash {
@@ -183,7 +241,7 @@ pub(crate) fn materialize(
         .modules
         .iter()
         .map(|id| {
-            let module_dir = source_module_path(source_root, &refreshed.id, id);
+            let module_dir = source_module_path(source_root, &refreshed.id, id)?;
             Ok(SubscriptionModuleUpdate {
                 id: id.clone(),
                 version: installed_module_version(&module_dir)

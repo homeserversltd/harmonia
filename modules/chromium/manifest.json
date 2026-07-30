@@ -3,7 +3,7 @@
   "id": "chromium",
   "category": "known-good",
   "version": "1.1.0",
-  "description": "TV Chromium configuration module: it solely owns Chromium launch flags, recommended settings, managed extensions, and retraction of its retired profile-named mandatory policy artifacts.",
+  "description": "Shared Chromium configuration module: it solely owns Chromium launch flags, recommended settings, managed extensions, and retraction of its retired profile-named mandatory policy artifacts.",
   "optional": false,
   "constants": {
     "retired_mandatory_policy_paths": [

@@ -129,7 +129,7 @@ pub(crate) fn load_profile_module(
     module_root: &Path,
     module_id: &str,
 ) -> Result<LoadedModule, String> {
-    let module_dir = module_root.join(module_id);
+    let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, module_id)?;
     let manifest_path = module_dir.join("manifest.json");
     if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
         return load_ladder_manifest(&manifest_path).and_then(|manifest| {

@@ -267,14 +267,12 @@ pub(crate) use bands::{
 };
 pub(crate) use device_profile::*;
 pub(crate) use interactables::*;
-pub(crate) use tools::ladder::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use receipts::*;
 pub(crate) use subscription::*;
 pub(crate) use tools::command::harmonia_root_from_module_root;
-pub(crate) use tools::command::{
-    command_capture, command_capture_with_timeout,
-};
+pub(crate) use tools::command::{command_capture, command_capture_with_timeout};
+pub(crate) use tools::ladder::*;
 
 /// The outer invocation is the sole owner of both optional invocation state
 /// values. The run context deliberately does not own or clone the key.
@@ -490,7 +488,32 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let path = args
                 .get(1)
                 .ok_or("inspect-profile requires <profile-index-json>")?;
-            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            let profile_path = Path::new(path);
+            let profile = load_profile(profile_path).map_err(|e| e.to_string())?;
+            let module_root = default_module_root(profile_path);
+            let module_seats = profile
+                .modules
+                .iter()
+                .map(|module_id| {
+                    let module_dir = crate::bands::stage_profile::resolve_module_dir(&module_root, module_id)?;
+                    if !lawful_module_manifest_exists(&module_dir) {
+                        return Err(format!(
+                            "module-missing id={} local_root={} shared_root={}",
+                            module_id,
+                            module_root.display(),
+                            crate::bands::stage_profile::shared_module_root(&module_root)
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_else(|| "none".to_string())
+                        ));
+                    }
+                    let seat = if crate::bands::stage_profile::module_uses_shared_seat(&module_root, &module_dir) {
+                        "shared"
+                    } else {
+                        "profile"
+                    };
+                    Ok(format!("{module_id}:{seat}"))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             println!("schema=harmonia.profile.inspect.v1");
             hyalos::forward_receipt(
                 "schema=harmonia.profile.inspect.v1",
@@ -503,6 +526,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             println!("identity={}", profile.identity);
             println!("module_count={}", profile.modules.len());
             println!("modules={}", profile.modules.join(","));
+            println!("module_seats={}", module_seats.join(","));
             Ok(())
         }
         Some("plan-run") => {
