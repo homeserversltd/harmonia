@@ -14,7 +14,6 @@ COPIED home:.config/kdeglobals -> .config/kdeglobals
 COPIED home:.config/gtk-3.0/settings.ini -> .config/gtk-3.0/settings.ini
 COPIED home:.config/gtk-4.0/settings.ini -> .config/gtk-4.0/settings.ini
 COPIED home:.zshrc -> .zshrc
-COPIED home:.zshrc.arch-install -> .zshrc.arch-install
 COPIED home:.aliases -> .aliases
 COPIED home:.functions -> .functions
 COPIED home:.inputrc -> .inputrc
@@ -64,7 +63,7 @@ drwxr-xr-x 8 .config/systemd
 -rw-r--r-- 194 .config/gtk-4.0/settings.ini
 -rw-r--r-- 2037 .config/waybar/style.css
 -rw-r--r-- 2028 MANIFEST.txt
--rw-r--r-- 215 .zshrc
+-rw-r--r-- 9115 .zshrc
 -rw-r--r-- 2247 .config/kde-mimeapps.list
 -rw-r--r-- 2247 .local/share/applications/mimeapps.list
 -rw-r--r-- 247 .config/hypr/windows.conf
@@ -80,7 +79,6 @@ drwxr-xr-x 8 .config/systemd
 -rw-r--r-- 4086 .config/waybar/waybar.conf
 -rw-r--r-- 70 .config/hypr/monitors.conf
 -rw-r--r-- 706 .nanorc
--rw-r--r-- 7893 .zshrc.arch-install
 -rw-r--r-- 891 .config/hypr/hyprland.conf
 -rw-r--r-- 913 .inputrc
 -rwxr-xr-x 1177 bin/dynamic-waybar.sh

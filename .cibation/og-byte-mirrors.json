@@ -1,0 +1,8 @@
+{
+  "og_byte_mirrors": [
+    "profiles/homeserver/modules/desktop-config-payload/files_root/shell-rc/.aliases",
+    "profiles/homeserver/modules/desktop-config-payload/files_root/shell-rc/.functions",
+    "profiles/homeserver/modules/desktop-config-payload/files_root/shell-rc/.profile",
+    "profiles/homeserver/modules/desktop-config-payload/files_root/shell-rc/.zshrc"
+  ]
+}

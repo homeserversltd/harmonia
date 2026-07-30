@@ -1,0 +1,51 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "desktop-config-payload",
+  "version": "1.0.0",
+  "description": "Canonical Debian backend operator dotfiles. Harmonia converges one identical homeserver pool to /home/owner.",
+  "optional": false,
+  "constants": {
+    "source_dir": "files_root",
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".aliases",
+      ".functions",
+      ".profile",
+      ".zshrc"
+    ],
+    "file_locality": "module-owned shell-rc pool for Debian backend bodies only",
+    "intent_folders": [
+      "shell-rc"
+    ],
+    "receipt_schema": "harmonia.homeserver.desktop_config_payload.v1",
+    "meaning": "The canonical Debian backend dotfile pool is converged into the owner home"
+  },
+  "ladder": [
+    {
+      "step_id": "files-shell-rc",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/shell-rc",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".aliases",
+          ".functions",
+          ".profile",
+          ".zshrc"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "homeserver-desktop-config-shell-rc",
+        "summary_receipt": {
+          "name": "homeserver-desktop-config-shell-rc-summary",
+          "schema": "harmonia.homeserver.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "homeserver-desktop-config-files-incomplete"
+        }
+      }
+    }
+  ],
+  "files_root": "files_root"
+}

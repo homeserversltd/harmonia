@@ -54,7 +54,6 @@
       ".nanorc",
       ".profile",
       ".zshrc",
-      ".zshrc.arch-install",
       "MANIFEST.captured.txt",
       "SANITIZATION.md",
       "firefox/distribution/policies.json",
@@ -309,8 +308,7 @@
           ".inputrc",
           ".nanorc",
           ".profile",
-          ".zshrc",
-          ".zshrc.arch-install"
+          ".zshrc"
         ],
         "backup_existing": true,
         "owner": "owner",

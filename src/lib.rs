@@ -1617,6 +1617,70 @@ mod tests {
     }
 
     #[test]
+    fn canonical_dotfile_pools_are_complete_credential_free_and_backup_first() {
+        let root = repo_root();
+        let hook = "[ -f ~/.zshrc.secrets ] && source ~/.zshrc.secrets";
+        let forbidden = [
+            ["sk-", "or-"].concat(),
+            ["ey", "J"].concat(),
+            ["TO", "KEN="].concat(),
+            ["API", "_KEY"].concat(),
+        ];
+
+        let tv_module = root.join("profiles/tv/modules/desktop-config-payload");
+        let tv_manifest = load_ladder_manifest(&tv_module.join("manifest.json")).unwrap();
+        let tv_zshrc = fs::read_to_string(tv_module.join("files_root/shell-rc/.zshrc")).unwrap();
+        assert!(tv_zshrc.lines().count() >= 250);
+        assert_eq!(tv_zshrc.matches(hook).count(), 1);
+
+        let homeserver_module = root.join("profiles/homeserver/modules/desktop-config-payload");
+        let homeserver_manifest =
+            load_ladder_manifest(&homeserver_module.join("manifest.json")).unwrap();
+        assert_eq!(
+            homeserver_manifest.files_root.as_deref(),
+            Some("files_root")
+        );
+        assert_eq!(
+            homeserver_manifest.constants["target_dir"].as_str(),
+            Some("/home/owner")
+        );
+        let homeserver_files = [".zshrc", ".aliases", ".functions", ".profile"];
+        for name in homeserver_files {
+            assert!(homeserver_module
+                .join("files_root/shell-rc")
+                .join(name)
+                .is_file());
+        }
+
+        for manifest in [&tv_manifest, &homeserver_manifest] {
+            for step in &manifest.ladder {
+                if step.tool == "files" && step.permutation == "converge" {
+                    assert_eq!(step.args["backup_existing"].as_bool(), Some(true));
+                }
+            }
+            validate_ladder(manifest).unwrap();
+        }
+
+        let mut payload_files = vec![tv_module.join("files_root/shell-rc/.zshrc")];
+        payload_files.extend(
+            homeserver_files
+                .iter()
+                .map(|name| homeserver_module.join("files_root/shell-rc").join(name)),
+        );
+        for entry in payload_files {
+            let bytes = fs::read(&entry).unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            for pattern in &forbidden {
+                assert!(
+                    !text.contains(pattern.as_str()),
+                    "credential pattern {pattern} found in {}",
+                    entry.display()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn tv_hyprland_desktop_includes_kcalc_and_launcher_refresh_surface() {
         let root = repo_root();
         let hyprland =

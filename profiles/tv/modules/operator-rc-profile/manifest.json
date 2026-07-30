@@ -15,7 +15,6 @@
     "target_dir": "/home/owner",
     "expected_files": [
       ".zshrc",
-      ".zshrc.arch-install",
       ".aliases",
       ".functions",
       "omp.json",
@@ -46,19 +45,6 @@
         "args": [
           "-e",
           "/home/owner/.zshrc"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-zshrc-arch-install",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.zshrc.arch-install"
         ],
         "timeout_secs": 30
       }

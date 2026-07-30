@@ -39,12 +39,14 @@
       "searx",
       "rust-build-toolchain",
       "permissions",
-      "matrix"
+      "matrix",
+      "desktop-config-payload"
     ]
   },
   "identity": "homeserver",
   "modules": [
     "rust-build-toolchain",
+    "desktop-config-payload",
     "nginx",
     "coronatio",
     "keyman",
