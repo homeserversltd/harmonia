@@ -67,6 +67,7 @@
     "navidrome",
     "samba",
     "vaultwarden",
+    "udev",
     "matrix",
     "homeserver-update-runtime"
   ],
