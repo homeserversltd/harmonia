@@ -1,0 +1,20 @@
+# HOMESERVER-managed PHP-FPM: paths via /opt/homeserver/php-fpm/current (symlink).
+# Portal config: services ["php-fpm"] — no PHP version numbers in homeserver.json.
+# Installer disables the distro phpX.Y-fpm unit so only this master runs (all pools in pool.d).
+[Unit]
+Description=HOMESERVER PHP-FPM (flat /opt/homeserver/php-fpm/current)
+Documentation=man:php-fpm8.4(8)
+After=network.target
+
+[Service]
+Type=notify
+RuntimeDirectory=php
+RuntimeDirectoryMode=0755
+ExecStart=/opt/homeserver/php-fpm/bin/php-fpm --nodaemonize --fpm-config /opt/homeserver/php-fpm/current/fpm/php-fpm.conf
+ExecStartPost=-/usr/lib/php/php-fpm-socket-helper install /run/php/php-fpm.sock /opt/homeserver/php-fpm/current/fpm/pool.d/www.conf 84
+ExecStopPost=-/usr/lib/php/php-fpm-socket-helper remove /run/php/php-fpm.sock /opt/homeserver/php-fpm/current/fpm/pool.d/www.conf 84
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

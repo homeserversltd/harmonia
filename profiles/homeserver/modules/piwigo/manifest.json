@@ -1,0 +1,147 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "piwigo",
+  "version": "1.0.0",
+  "description": "Quarry-lifted HOMESERVER Piwigo configuration: assert birth-provided PHP-FPM and application material, preserve the birth-filled database configuration, converge product-owned PHP-FPM configuration and unit bytes with backups, validate them, and restart only after this module changed managed material.",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "piwigo-php-fpm-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-x", "/opt/homeserver/php-fpm/bin/php-fpm"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-application-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-f", "/opt/piwigo/piwigo/index.php"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-gallery-storage-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-d", "/mnt/nas/photos"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-user-database-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-s", "/opt/piwigo/piwigo/local/config/database.inc.php"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "opt/homeserver/php-fpm/current/fpm/pool.d/piwigo.conf",
+          "opt/homeserver/php-fpm/current/mods-available/piwigo.ini",
+          "etc/systemd/system/php-fpm.service"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "piwigo-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-php-modules-enable",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/opt/homeserver/php-fpm/current/mods-available/piwigo.ini",
+        "target": "/opt/homeserver/php-fpm/current/fpm/conf.d/20-piwigo.ini",
+        "validator_program": "/opt/homeserver/php-fpm/bin/php-fpm",
+        "validator_args": ["-t", "--fpm-config", "/opt/homeserver/php-fpm/current/fpm/php-fpm.conf"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-php-fpm-config-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/opt/homeserver/php-fpm/bin/php-fpm",
+        "args": ["-t", "--fpm-config", "/opt/homeserver/php-fpm/current/fpm/php-fpm.conf"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-php-fpm-unit-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": ["verify", "/etc/systemd/system/php-fpm.service"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-php-fpm-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "php-fpm.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-php-fpm-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "php-fpm.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "piwigo-php-fpm-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "php-fpm.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
