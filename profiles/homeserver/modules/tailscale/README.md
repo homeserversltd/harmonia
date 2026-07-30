@@ -1,25 +1,17 @@
 # Tailscale
 
-## Role
+This module carries the HOMESERVER product Tailscale daemon defaults lifted byte-for-byte from the private initialization quarry. Harmonia maintains configuration and service flags on an already-born appliance; it does not add package repositories, install Tailscale, create daemon state directories, authenticate a node, or join a tailnet.
 
-Private Network Access.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided `tailscaled` executable exists;
+- converges `/etc/default/tailscaled` with a backup of any replaced file;
+- preserves the quarry ownership (`owner:owner`) and file mode (`0644` through the files convergence primitive);
+- restarts `tailscaled.service` only when this module changed the managed defaults;
+- enables the service and proves it is active.
 
-Tailscale provides private network reachability for administration and selected service access. It lets an appliance participate in a managed private network without publishing private identity material.
+The quarry has no dedicated validator for `/etc/default/tailscaled`, so the ladder does not invent one. Harmonia's `validate-ladder` checks the module schema and tool/permutation contract; it does not prove that a live daemon accepts these defaults.
 
-## Harmonia maintenance contract
+The config references `/var/lib/tailscale`, which holds node identity and persistent daemon state, and `/run/tailscale`, which is runtime state created outside this module. Neither directory nor its contents are carried. Auth keys, node identity, tailnet policy, route approval, and daemon preferences written by `tailscale up` remain birth/operator-owned.
 
-This module represents package currentness, service status, identity presence, and safe readback. Public documentation names the capability; runtime auth and tailnet-specific values remain external.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+The quarry continuity note declares `192.168.123.0/24` subnet advertisement as desired operating posture but explicitly keeps it out of installer-managed configuration. This lift therefore does not turn that preference into a manifest command. The root `config.json` lists Tailscale-facing ports for Jellyfin, Transmission, Piwigo, MkDocs, Vaultwarden, Forgejo, Navidrome, FileBrowser, Calibre-Web, and Yarr; those service/proxy crossings are not consumed by the daemon defaults and remain owned by their respective concerns.

@@ -1,0 +1,67 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "tailscale",
+  "version": "1.0.0",
+  "description": "Quarry-lifted HOMESERVER Tailscale daemon configuration: assert the birth-provided binary, converge the product-owned daemon defaults with backup, and restart only after this module changed managed material.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "tailscale-binary-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "tailscaled",
+        "search_scope": "system",
+        "receipt_label": "birth-provided Tailscale daemon"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "tailscale-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/default/tailscaled"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tailscale-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "tailscale-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "tailscaled.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "tailscale-service-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "tailscaled.service",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "tailscale-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "tailscaled.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
