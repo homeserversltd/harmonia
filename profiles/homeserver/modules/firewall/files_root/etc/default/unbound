@@ -1,0 +1,3 @@
+# HOMESERVER firewall module: Debian unbound.service reads EnvironmentFile=-/etc/default/unbound
+# and ExecStart uses $DAEMON_OPTS. Without this file, systemd warns about an unset variable.
+DAEMON_OPTS=""

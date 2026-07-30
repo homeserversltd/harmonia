@@ -1,0 +1,14 @@
+[Match]
+Name=lan0
+
+[Link]
+ActivationPolicy=always-up
+
+[Network]
+Address=192.168.123.1/24
+IPForward=yes
+ConfigureWithoutCarrier=yes
+IgnoreCarrierLoss=yes
+
+[Route]
+Metric=20
