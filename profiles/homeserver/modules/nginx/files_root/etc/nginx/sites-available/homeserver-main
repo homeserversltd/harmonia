@@ -1,0 +1,165 @@
+# HOMESERVER Main React App Configuration
+# This file contains only the core React application and Tailscale subpath access
+# Individual services are now modularized in separate homeserver-[service] files
+
+# HTTP redirect to HTTPS for all subdomains
+server {
+    listen 80;
+    server_name .home.arpa;
+    return 301 https://$host$request_uri;
+}
+
+# Main HTTPS server (Flask application)
+server {
+    listen 443 ssl;
+    server_name home.arpa;
+
+    # SSL configuration
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+
+    # SSL parameters
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(),midi=(),sync-xhr=(),microphone=(),camera=(),magnetometer=(),gyroscope=(),fullscreen=(self),payment=()";
+
+    client_max_body_size 0;
+
+    # Proxy API requests to Flask
+    location /api/ {
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.tail13aff.ts.net' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'Authorization,Content-Type,X-Requested-With,Origin' always;
+            add_header 'Access-Control-Allow-Credentials' 'true' always;
+            add_header 'Access-Control-Max-Age' 86400 always;
+            return 204;
+        }
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        add_header 'Vary' 'Origin' always;
+        proxy_pass http://unix:/mnt/ramdisk/homeserver.sock:;
+
+        # Handle backend errors by serving fallback
+        error_page 502 503 504 = @fallback;
+        proxy_intercept_errors on;
+    }
+    # Proxy WebSocket requests to Flask
+    location /socket.io/ {
+        proxy_pass http://unix:/mnt/ramdisk/homeserver.sock:;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        add_header 'Vary' 'Origin' always;
+
+        # Handle backend errors by serving fallback
+        error_page 502 503 504 = @fallback;
+        proxy_intercept_errors on;
+    }
+
+    # Fallback error handler
+    location @fallback {
+        root /var/www/homeserver/build;
+        try_files /fallback.html =503;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
+    }
+
+    # SPA fallback: serve index.html for all other routes
+    location / {
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.tail13aff.ts.net' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'Authorization,Content-Type,X-Requested-With,Origin' always;
+            add_header 'Access-Control-Allow-Credentials' 'true' always;
+            add_header 'Access-Control-Max-Age' 86400 always;
+            return 204;
+        }
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        add_header 'Vary' 'Origin' always;
+        root /var/www/homeserver/build;
+        try_files $uri /index.html @fallback;
+
+        # Handle backend errors by serving fallback
+        error_page 502 503 504 = @fallback;
+        proxy_intercept_errors on;
+    }
+
+    # Error pages - now using our custom fallback
+    error_page 404 = @fallback;
+    error_page 500 502 503 504 = @fallback;
+}
+
+# Tailscale React app server (remote access via home.tail13aff.ts.net)
+# Note: Individual services now use direct port access (e.g., https://[tailscale-ip]:18096)
+server {
+    listen 443 ssl;
+    server_name home.tail13aff.ts.net;
+
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+    include /etc/nginx/ssl_params.conf;
+
+    client_max_body_size 0;
+
+    # Proxy API requests to Flask
+    location /api/ {
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.tail13aff.ts.net' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'Authorization,Content-Type,X-Requested-With,Origin' always;
+            add_header 'Access-Control-Allow-Credentials' 'true' always;
+            add_header 'Access-Control-Max-Age' 86400 always;
+            return 204;
+        }
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        add_header 'Vary' 'Origin' always;
+        proxy_pass http://unix:/mnt/ramdisk/homeserver.sock:;
+    }
+    # Proxy WebSocket requests to Flask
+    location /socket.io/ {
+        proxy_pass http://unix:/mnt/ramdisk/homeserver.sock:;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        add_header 'Vary' 'Origin' always;
+
+        # Handle backend errors by serving fallback
+        error_page 502 503 504 = @fallback_tailscale;
+        proxy_intercept_errors on;
+    }
+        # Fallback error handler for Tailscale server
+    location @fallback_tailscale {
+            root /var/www/homeserver/build;
+            try_files /fallback.html =503;
+            add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+            add_header Pragma "no-cache" always;
+            add_header Expires "0" always;
+    }
+
+    # IMPORTANT: This catch-all location MUST be last!
+    # Fallback: serve the React app (SPA) for all other routes
+    location / {
+        root /var/www/homeserver/build;
+        try_files $uri /index.html @fallback_tailscale;
+
+        # Handle backend errors by serving fallback
+        error_page 502 503 504 = @fallback_tailscale;
+        proxy_intercept_errors on;
+    }
+}

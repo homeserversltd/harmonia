@@ -1,0 +1,90 @@
+# Navidrome Music Server Configuration
+# Local access: https://music.home.arpa
+# Tailscale access: https://[tailscale-ip]:14533 (4533 + 1 prefix = 14533)
+
+# Local access server block
+server {
+    listen 443 ssl;
+    server_name music.home.arpa;
+
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+    include /etc/nginx/ssl_params.conf;
+
+    # Subsonic API endpoints - direct access for clients
+    location /rest/ {
+        proxy_pass http://localhost:4533/rest/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Remove any authentication headers for API access
+        proxy_set_header Authorization "";
+    }
+
+    # Share endpoints for public access
+    location /share/ {
+        proxy_pass http://localhost:4533/share/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass http://localhost:4533;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+
+# Tailscale direct access server block
+server {
+    listen *:14533 ssl;
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+
+    # Disable SSL verification for self-signed cert
+    ssl_verify_client off;
+
+    # Subsonic API endpoints - direct access for clients
+    location /rest/ {
+        proxy_pass http://localhost:4533/rest/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Remove any authentication headers for API access
+        proxy_set_header Authorization "";
+    }
+
+    # Share endpoints for public access
+    location /share/ {
+        proxy_pass http://localhost:4533/share/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass http://localhost:4533;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}

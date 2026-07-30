@@ -1,0 +1,38 @@
+# MkDocs Documentation Configuration
+# Local access: https://docs.home.arpa
+# Tailscale access: https://[tailscale-ip]:18005 (8005 + 1 prefix = 18005)
+
+# Local access server block
+server {
+    listen 443 ssl;
+    server_name docs.home.arpa;
+
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+    include /etc/nginx/ssl_params.conf;
+
+    location / {
+        proxy_pass http://localhost:8005;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+
+# Tailscale direct access server block
+server {
+    listen *:18005 ssl;
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+
+    # Disable SSL verification for self-signed cert
+    ssl_verify_client off;
+
+    location / {
+        proxy_pass http://localhost:8005;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
