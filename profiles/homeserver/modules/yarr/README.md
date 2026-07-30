@@ -1,25 +1,17 @@
 # Yarr
 
-## Role
+This module carries the HOMESERVER product Yarr desired state lifted from the private initialization quarry. Harmonia maintains configuration on an already-born appliance; it does not install packages or Go, clone or build Yarr, create users or directories, or own feed data.
 
-Feed Reader Service.
+The ladder:
 
-## Product purpose
+- fails closed unless the birth-provided Go runtime and Yarr source tree exist;
+- converges the quarry `yarr.service` unit with a backup of any replaced file;
+- validates the installed unit;
+- reloads systemd and restarts Yarr only when this module changed managed material;
+- enables the service when needed and proves it is active.
 
-Yarr provides feed reading for the appliance. It is a lightweight service that still needs runtime currentness, persistence, and health proof.
+The unit is carried byte-for-byte. Root `config.json` confirms Yarr's product port is `7070`; the unit relies on Yarr's matching default and requires no substituted value.
 
-## Harmonia maintenance contract
+The public payload contains no credentials or filled secrets. `/var/lib/yarr/yarr.db` contains instance feed and application state and is not carried. `/home/yarr/.cache`, build output, temporary downloads, and logs are generated runtime or birth artifacts and are also excluded.
 
-This module represents package/runtime state, service health, data persistence, and web reachability. Public source carries reusable maintenance intent without private feed lists.
-
-## Public boundary
-
-This public module describes reusable HOMESERVER product behavior. It does not contain credentials, tokens, passwords, private hostnames, private topology, or customer data. Runtime-specific values are supplied by installation and operations surfaces outside public source.
-
-## Proof shape
-
-A mature module proves its work with Harmonia receipts: selected profile, module id, operation count, changed state, health or readiness evidence, and `first_missing_signal=none` when the concern is current.
-
-## Product readiness
-
-This README describes the product surface expected from the module. As implementation grows, the module should preserve this public contract while adding concrete Rust execution, sidecar constants, focused tests, and receipt checks. A module is complete only when the public concern is represented clearly and the update run can prove its current state.
+Yarr's source tree under `/opt/yarr`, the Go runtime under `/usr/local/go`, the `yarr` account and directories, and SQLite/package dependencies belong to birth. The `yarr.home.arpa` virtual host belongs to the nginx concern. This module references those surfaces but does not absorb them.

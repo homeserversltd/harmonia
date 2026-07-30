@@ -57,6 +57,7 @@
     "forgejo",
     "gogs",
     "jellyfin",
+    "yarr",
     "matrix",
     "homeserver-update-runtime"
   ],
