@@ -1,0 +1,16 @@
+[Unit]
+Description=NAS Mount Status
+ConditionPathExists=/vault/scripts/init.sh
+ConditionPathIsMountPoint=/vault
+Requires=vault.mount
+After=vault.mount
+
+[Service]
+Type=oneshot
+ExecStart=/vault/scripts/init.sh
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

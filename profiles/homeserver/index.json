@@ -67,6 +67,7 @@
     "samba",
     "vaultwarden",
     "udev",
+    "systemd",
     "matrix",
     "homeserver-update-runtime"
   ],

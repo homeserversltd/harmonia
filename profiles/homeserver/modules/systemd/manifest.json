@@ -1,0 +1,144 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "systemd",
+  "version": "1.0.0",
+  "description": "Quarry-lifted residual HOMESERVER systemd wiring: assert birth-provided systemd and vault prerequisites, converge product-owned units with backups, validate them, and restart only after this module changed managed material.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "systemd-analyze-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "systemd-analyze",
+        "search_scope": "system",
+        "receipt_label": "birth-provided systemd validator"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-vault-mapper-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-e", "/dev/mapper/vault"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-vault-init-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-x", "/vault/scripts/init.sh"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/systemd/system/mountNas.service",
+          "etc/systemd/system/vault.mount"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "systemd-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-units-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": [
+          "verify",
+          "/etc/systemd/system/vault.mount",
+          "/etc/systemd/system/mountNas.service"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-daemon-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-vault-mount-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "vault.mount",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-nas-mount-restart-on-change",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "mountNas.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-vault-mount-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "vault.mount",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-nas-mount-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "mountNas.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-vault-mount-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "vault.mount",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "systemd-nas-mount-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "mountNas.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
