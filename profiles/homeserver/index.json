@@ -16,6 +16,7 @@
   "folder_groups": {
     "modules": [
       "caduceus",
+      "desktop-config-payload",
       "nginx",
       "coronatio",
       "firewall",
@@ -53,6 +54,7 @@
     "tailscale",
     "keyman",
     "household-time",
+    "desktop-config-payload",
     "caduceus",
     "forgejo",
     "gogs",
@@ -74,6 +76,7 @@
   "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Matrix/Element service modules, and the permissions source-artifact scaffold; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
+    "desktop-config-payload",
     "nginx",
     "coronatio",
     "firewall",

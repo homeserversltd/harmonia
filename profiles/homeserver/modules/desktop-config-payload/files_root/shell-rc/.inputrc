@@ -1,0 +1,12 @@
+bindkey "^[[1;5C" forward-word
+bindkey "^[[1;5D" backward-word
+
+# Make the delete key behave sanely
+bindkey '^\[\[3~' delete-char
+# Make the backspace key behave sanely and more resilient
+bindkey '^?' backward-delete-char
+bindkey '^H' backward-delete-char
+
+# Home/End keys
+bindkey "^[[1~" beginning-of-line
+bindkey "^[[4~" end-of-line
