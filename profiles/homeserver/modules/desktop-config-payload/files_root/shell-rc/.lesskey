@@ -1,0 +1,15 @@
+# Enhanced less configuration for moar-like behavior
+#env
+LESS = -RXISMFg --incsearch --mouse --wheel-lines=10
+LESSHISTFILE = /home/owner/.cache/less_history
+
+#command
+# Better search navigation
+n repeat-search
+N reverse-search
+# Page navigation improvements
+^F forw-screen
+^B back-screen
+# Quit improvements
+q quit
+Q quit

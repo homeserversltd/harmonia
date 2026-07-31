@@ -1,0 +1,131 @@
+#!/usr/bin/env zsh
+#editor
+alias nano='nano --smarthome --multibuffer --const --autoindent'
+
+alias fastfetch='fastfetch -c neofetch.jsonc'
+alias neofetch='fastfetch'
+alias fetch='fastfetch'
+
+# Edit this .rc file
+alias editrc='edit ~/.zshrc'
+alias refresh='source ~/.zshrc'
+alias rr='refresh'
+
+#msc
+alias clear='clear; fastfetch'
+alias cls='clear'
+alias c='clear'
+#installation tech
+alias reboot='sudo reboot'
+alias remove='purge'
+alias uninstall='purge'
+alias delete='purge'
+alias install='procure'
+alias get='procure'
+#calculator
+alias calc='bc'
+alias calculator='bc'
+#pager
+alias moar="less -RN --mouse --wheel-lines=10"
+alias more='less'
+# Note: 'less' will use enhanced configuration from environment variables
+#update
+alias update='sudo /usr/local/lib/updates/updateManager.sh' 
+
+#logs
+alias errors.boot='sudo journalctl -b -p err | $PAGER'
+alias errors.driver='sudo dmesg | grep -i error | $PAGER'
+alias errors.update='sudo grep -i error /var/log/pacman.log | $PAGER'
+alias logs.updates='sudo journalctl -b | grep pacman | $PAGER'
+alias logs.bluetooth='sudo journalctl -b | grep bluetooth | $PAGER'
+alias logs.wifi='sudo journalctl -b | grep wpa_supplicant | $PAGER'
+alias logs.networkmanager='sudo journalctl -u NetworkManager | $PAGER'
+alias logs.usb='sudo journalctl -b | grep usb | $PAGER'
+alias logs.boot='sudo journalctl -b | $PAGER'
+
+if [[ -x "$(command -v bat)" ]]; then
+	alias bat='bat --paging=never --style=header,grid --theme=Visual Studio Dark+'
+	alias cat='bat'
+fi
+
+if command -v eza >/dev/null 2>&1; then
+	alias ls='eza --icons --sort=modified --oneline --hyperlink'
+	alias la='eza --icons --sort=modified --all --reverse --classify=auto --across'
+	alias laa='eza --icons --sort=name --all --classify=auto --long'
+fi
+
+#Navigation
+alias home='cd ~'
+alias cd..='cd ..'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias .....='cd ../../../..'
+
+#display
+alias tree='tree -CAhF --dirsfirst'
+alias treed='tree -CAFd'
+
+# Clear the screen with both clear and cls shorthand
+if [[ -x "$(command -v btop)" ]]; then
+	alias top='btop'
+elif [[ -x "$(command -v bpytop)" ]]; then
+	alias top='bpytop'
+elif [[ -x "$(command -v bashtop)" ]]; then
+	alias top='bashtop'
+elif [[ -x "$(command -v nmon)" ]]; then
+	alias top='nmon'
+elif [[ -x "$(command -v glances)" ]]; then
+	alias top='glances'
+elif [[ -x "$(command -v ytop)" ]]; then
+	alias top='ytop'
+elif [[ -x "$(command -v gtop)" ]]; then
+	alias top='gtop'
+elif [[ -x "$(command -v htop)" ]]; then
+	alias top='htop'
+fi
+
+# Show a list of available aliases and functions
+alias alias.list='_listcommands | $PAGER'
+alias list.aliases='alias.list'
+#networking
+# Stop pinging after sending 5 ECHO_REQUEST packets
+alias ping='ping -c 5'
+alias ping.fast='ping -c 50 -i.2'
+alias ping.short='ping -c 5 -i.2'
+alias ping.dns='ping -c 5 -i 0.2 1.1.1.1 && ping -c 5 -i 0.2 8.8.8.8 && ping -c 5 -i 0.2 9.9.9.9 && ping -c 5 -i 0.2 208.67.222.222'
+alias ping.tracert='traceroute 8.8.4.4'
+
+# Show open ports
+alias ports='netstat -tulanp'
+
+#Hard drives
+alias df='df --human-readable --print-type --block-size=1K --exclude type=squashfs'
+alias ds='df --exclude-type=tmpfs'
+
+# CPU, MEMORY, AND PROCESSES
+# Free and used memory
+alias free='free -h'
+# All processes in tree view
+alias ps='ps auxf'
+# Top ten processes
+alias cpu='ps aux | sort -r -nk +4 | head | $PAGER'
+# CPU information
+alias cpuinfo='lscpu | $PAGER'
+# USB device tree
+if [[ -x "$(command -v lsusb)" ]]; then alias usb='lsusb -t'; fi
+# PCI device tree
+if [[ -x "$(command -v lspci)" ]]; then alias pci='lspci -tv'; fi
+
+# Aliases for systemd
+alias services='systemctl list-units --type=service --state=running,failed'
+alias service.all='systemctl list-units --type=service'
+alias service.failed='systemctl --failed'
+alias service.status='sudo systemctl status'
+alias service.start='sudo systemctl start'
+alias service.stop='sudo systemctl stop'
+alias service.kill='sudo systemctl kill'
+alias service.restart='sudo systemctl restart' # Stop and start
+alias service.reload='sudo systemctl reload'   # Reload configuration
+alias service.enable='sudo systemctl enable'
+alias service.disable='sudo systemctl disable'
