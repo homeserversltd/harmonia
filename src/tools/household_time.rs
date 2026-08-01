@@ -195,7 +195,7 @@ fn invoke(
             let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
             let mut env = BTreeMap::from([(
                 "PYTHONPATH".into(),
-                "/usr/local/lib/harmonia-household-time".into(),
+                "/usr/local/sbin:/usr/local/lib/harmonia-household-time".into(),
             )]);
             if let Some(path) = state_path {
                 env.insert(

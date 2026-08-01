@@ -9,6 +9,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -395,7 +397,6 @@ pub(crate) fn capsule_install(
         let src = source_profile_dir.join("modules").join(&module.id);
         let dst = target_profile_dir.join("modules").join(&module.id);
         let installed_clean = dst.is_dir()
-            && installed_module_version(&dst).as_deref() == Some(module.version.as_str())
             && module_tree_sha256(&dst).ok().as_deref() == Some(module.tree_sha256.as_str());
         if installed_clean {
             untouched_modules.push(module.id.clone());
@@ -534,6 +535,10 @@ pub(crate) fn module_tree_sha256(module_dir: &Path) -> Result<String, String> {
         let file_hash = file_sha256(&module_dir.join(&rel))?;
         chain.update(rels.as_bytes());
         chain.update([0]);
+        if let Some(mode) = file_mode(&module_dir.join(&rel))? {
+            chain.update(format!("{mode:o}").as_bytes());
+        }
+        chain.update([0]);
         chain.update(file_hash.as_bytes());
         chain.update([0]);
     }
@@ -636,11 +641,16 @@ fn converge_file(
     changes: &mut Vec<InstallChange>,
     module_id: Option<&str>,
 ) -> Result<(), String> {
-    let same = dst.exists()
-        && fs::read(src).map_err(|e| e.to_string())? == fs::read(dst).map_err(|e| e.to_string())?;
+    let source_bytes = fs::read(src).map_err(|e| e.to_string())?;
+    let content_same = dst.exists() && source_bytes == fs::read(dst).map_err(|e| e.to_string())?;
+    let source_mode = file_mode(src)?;
+    let mode_same = source_mode.is_none() || (dst.exists() && file_mode(dst)? == source_mode);
+    let same = content_same && mode_same;
     if !same {
         changes.push(InstallChange {
-            kind: if dst.exists() {
+            kind: if content_same {
+                "set-file-mode"
+            } else if dst.exists() {
                 "write-file"
             } else {
                 "create-file"
@@ -680,7 +690,7 @@ fn copy_module_sibling_files(
 
 fn copy_file_atomic(src: &Path, dst: &Path) -> Result<(), String> {
     let bytes = fs::read(src).map_err(|e| format!("copy-read-failed {}: {e}", src.display()))?;
-    write_bytes_atomic(dst, &bytes)
+    write_bytes_atomic_with_mode(dst, &bytes, file_mode(src)?)
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -689,11 +699,24 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
 }
 
 fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_bytes_atomic_with_mode(path, bytes, None)
+}
+
+fn write_bytes_atomic_with_mode(
+    path: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("harmonia-new");
     fs::write(&tmp, bytes).map_err(|e| format!("write-failed {}: {e}", tmp.display()))?;
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))
+            .map_err(|e| format!("write-mode-failed {} mode={mode:o}: {e}", tmp.display()))?;
+    }
     fs::rename(&tmp, path).map_err(|e| {
         format!(
             "promote-failed {} -> {}: {e}",
@@ -701,6 +724,22 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             path.display()
         )
     })
+}
+
+#[cfg(unix)]
+fn file_mode(path: &Path) -> Result<Option<u32>, String> {
+    Ok(Some(
+        fs::metadata(path)
+            .map_err(|e| format!("file-mode-read-failed {}: {e}", path.display()))?
+            .permissions()
+            .mode()
+            & 0o777,
+    ))
+}
+
+#[cfg(not(unix))]
+fn file_mode(_path: &Path) -> Result<Option<u32>, String> {
+    Ok(None)
 }
 
 fn prune_empty_dirs(
