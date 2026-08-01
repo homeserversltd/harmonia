@@ -20,6 +20,10 @@ const BOOTSTRAP_ORDER: &str = "keyring->transport->system-sync->engine-possessio
 const TRANSPORT_PACKAGES: &[&str] = &["ca-certificates", "git", "curl", "pacman"];
 const ENGINE_RATCHET_LOCK_SCHEMA: &str = "harmonia.engine.ratchet_lock.v1";
 const DEFAULT_ENGINE_RATCHET_LOCK_NAME: &str = "engine-ratchet-lock.json";
+const LEGACY_ROOT_GITCONFIG: &str = "/root/.gitconfig";
+const LEGACY_ROOT_FORGEJO_INCLUDE: &str = "/root/.gitconfig.d/forgejo-credentials.inc";
+const LEGACY_ROOT_FORGEJO_STORE: &str = "/root/.git-credentials-forgejo";
+const LEGACY_OWNER_FORGEJO_STORE: &str = "/home/owner/.git-credentials-forgejo";
 
 #[cfg(test)]
 thread_local! {
@@ -264,6 +268,120 @@ pub(crate) fn should_self_update_reexec(
 
 fn stage_signal(stage: &str) -> String {
     format!("engine-{stage}-failed")
+}
+
+fn retire_root_git_credential_wiring(apply: bool) -> OperationOutcome {
+    let paths = [
+        Path::new(LEGACY_ROOT_FORGEJO_INCLUDE),
+        Path::new(LEGACY_ROOT_FORGEJO_STORE),
+        Path::new(LEGACY_OWNER_FORGEJO_STORE),
+    ];
+    if !apply {
+        return OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: format!(
+                "planned removal of legacy root Forgejo credential wiring: {}, {}, include from {}",
+                paths[0].display(),
+                paths[1].display(),
+                LEGACY_ROOT_GITCONFIG
+            ),
+            command: None,
+        };
+    }
+
+    let mut changed = false;
+    let mut actions = Vec::new();
+    for path in paths {
+        if path.exists() {
+            if let Err(err) = fs::remove_file(path) {
+                return OperationOutcome {
+                    ok: false,
+                    changed,
+                    skipped: false,
+                    message: format!("legacy root Forgejo credential removal failed: {err}"),
+                    command: None,
+                };
+            }
+            changed = true;
+            actions.push(format!("removed={}", path.display()));
+        }
+    }
+
+    let root_config = Path::new(LEGACY_ROOT_GITCONFIG);
+    if root_config.exists() {
+        let text = match fs::read_to_string(root_config) {
+            Ok(text) => text,
+            Err(err) => {
+                return OperationOutcome {
+                    ok: false,
+                    changed,
+                    skipped: false,
+                    message: format!("legacy root Git config read failed: {err}"),
+                    command: None,
+                };
+            }
+        };
+        let mut removed_include = false;
+        let mut retained = Vec::new();
+        for line in text.lines() {
+            let normalized = line.trim().replace('\t', " ");
+            let legacy_include = normalized.split_once('=').is_some_and(|(key, value)| {
+                key.trim() == "path" && value.trim() == LEGACY_ROOT_FORGEJO_INCLUDE
+            });
+            if legacy_include {
+                removed_include = true;
+            } else {
+                retained.push(line);
+            }
+        }
+        if removed_include {
+            while retained
+                .last()
+                .is_some_and(|line| line.trim().is_empty() || line.trim() == "[include]")
+            {
+                retained.pop();
+            }
+            if retained.iter().all(|line| line.trim().is_empty()) {
+                if let Err(err) = fs::remove_file(root_config) {
+                    return OperationOutcome {
+                        ok: false,
+                        changed,
+                        skipped: false,
+                        message: format!("legacy root Git config removal failed: {err}"),
+                        command: None,
+                    };
+                }
+                actions.push(format!("removed={}", root_config.display()));
+            } else {
+                let replacement = format!("{}\n", retained.join("\n"));
+                if let Err(err) = fs::write(root_config, replacement) {
+                    return OperationOutcome {
+                        ok: false,
+                        changed,
+                        skipped: false,
+                        message: format!("legacy root Git config rewrite failed: {err}"),
+                        command: None,
+                    };
+                }
+                actions.push(format!("retired_include_from={}", root_config.display()));
+            }
+            changed = true;
+        }
+    }
+
+    OperationOutcome {
+        ok: true,
+        changed,
+        skipped: false,
+        message: if actions.is_empty() {
+            "legacy root Forgejo credential wiring absent".to_string()
+        } else {
+            actions.join(" ")
+        },
+        command: None,
+    }
 }
 
 fn command_from_config(
@@ -853,6 +971,20 @@ pub(crate) fn run_engine_preflight(
     )?;
 
     let mut operation_count = 0usize;
+    let root_git_credential_retirement = retire_root_git_credential_wiring(apply);
+    write_json(
+        &preflight_dir.join("root-git-credential-retirement.json"),
+        &json!({
+            "schema": "harmonia.root_git_credential_retirement.v1",
+            "ok": root_git_credential_retirement.ok,
+            "apply": apply,
+            "changed": root_git_credential_retirement.changed,
+            "message": root_git_credential_retirement.message,
+            "forbidden_paths": [LEGACY_ROOT_FORGEJO_INCLUDE, LEGACY_ROOT_FORGEJO_STORE, LEGACY_OWNER_FORGEJO_STORE],
+            "root_gitconfig": LEGACY_ROOT_GITCONFIG,
+        }),
+    )?;
+    operation_count += 1;
     let lock_path = ratchet_lock_path(&config_path, &config);
     let lock_sha = sha256_file(&lock_path).ok();
     let ratchet_lock = load_ratchet_lock(&lock_path)?;
@@ -861,13 +993,23 @@ pub(crate) fn run_engine_preflight(
     let mut artifact_transport_attempts: Vec<serde_json::Value> = Vec::new();
     let mut staged_sha: Option<String> = None;
     let install_before = install_bin_fingerprint(&config.install_bin);
-    let keyring = tools::package::keyring_repair_tool(
-        &preflight_dir,
-        "keyring-trust",
-        "archlinux-keyring",
-        apply,
-        1800,
-    )?;
+    let keyring = if root_git_credential_retirement.ok {
+        tools::package::keyring_repair_tool(
+            &preflight_dir,
+            "keyring-trust",
+            "archlinux-keyring",
+            apply,
+            1800,
+        )?
+    } else {
+        OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: "keyring trust skipped because root Git credential retirement failed".into(),
+            command: None,
+        }
+    };
     operation_count += 1;
     let transport_packages: Vec<String> = TRANSPORT_PACKAGES
         .iter()
@@ -921,9 +1063,14 @@ pub(crate) fn run_engine_preflight(
     }
     operation_count += 1;
 
-    let mut changed = keyring.changed || transport.changed || system_sync.changed;
+    let mut changed = root_git_credential_retirement.changed
+        || keyring.changed
+        || transport.changed
+        || system_sync.changed;
     let mut first_missing_signal = "none".to_string();
-    if !keyring.ok {
+    if !root_git_credential_retirement.ok {
+        first_missing_signal = stage_signal("root-git-credential-retirement");
+    } else if !keyring.ok {
         first_missing_signal = stage_signal("keyring-trust");
     } else if !transport.ok {
         first_missing_signal = stage_signal("transport-organs");
@@ -1349,6 +1496,10 @@ pub(crate) fn run_engine_preflight(
 
     let mut execution = ModuleExecution::from_operations(
         vec![
+            (
+                "root-git-credential-retirement",
+                root_git_credential_retirement,
+            ),
             ("keyring-trust", keyring),
             ("transport-organs", transport),
             ("system-sync", system_sync),
