@@ -286,7 +286,13 @@ pub(crate) fn capture_with_options(
     if let Some(bearer) = options.bearer.as_ref() {
         cmd.env("HOME", &bearer.home)
             .env("USER", &bearer.name)
-            .env("LOGNAME", &bearer.name);
+            .env("LOGNAME", &bearer.name)
+            .env("XDG_CONFIG_HOME", Path::new(&bearer.home).join(".config"))
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .env_remove("GIT_CONFIG_SYSTEM")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env_remove("GIT_ASKPASS")
+            .env_remove("SSH_ASKPASS");
         let uid = bearer.uid;
         let gid = bearer.gid;
         unsafe {

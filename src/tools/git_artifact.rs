@@ -25,6 +25,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub type CommandReceipt = crate::CmdResult;
 
 const DEFAULT_BEARER: &str = "owner";
+const ESTATE_FORGEJO_PREFIX: &str = "https://git.home.arpa/";
+const ESTATE_FORGEJO_HELPER: &str = "credential.helper=/usr/local/bin/forgejo-credential-helper";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -94,9 +96,15 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
         }
     };
     let credential_helper = owner_https_credential_helper(request);
-    let mut git_args =
-        Vec::with_capacity(args.len() + usize::from(credential_helper.is_some()) * 2);
-    if let Some(helper) = credential_helper.as_deref() {
+    let estate_single_source = request
+        .repo
+        .as_deref()
+        .is_some_and(|repo| repo.starts_with(ESTATE_FORGEJO_PREFIX));
+    let mut git_args = Vec::with_capacity(args.len() + 4);
+    if estate_single_source {
+        git_args.extend(["-c", "credential.helper=", "-c", ESTATE_FORGEJO_HELPER]);
+    } else if let Some(helper) = credential_helper.as_deref() {
+        git_args.extend(["-c", "credential.helper="]);
         git_args.extend(["-c", helper]);
     }
     git_args.extend_from_slice(args);
@@ -226,6 +234,7 @@ fn sync_repo(request: &Request) -> SyncResult {
         }
     };
     let ownership_changed = preparation.changed;
+    let mut repository_config_changed = false;
     let mut transcript = preparation.transcript;
     if !request.path.join(".git").exists() {
         let Some(repo) = request.repo.as_deref() else {
@@ -387,6 +396,29 @@ fn sync_repo(request: &Request) -> SyncResult {
         }
     }
 
+    let local_helpers = capture_git(
+        request,
+        &["config", "--local", "--get-all", "credential.helper"],
+        cwd,
+    );
+    if local_helpers.ok && !local_helpers.stdout.trim().is_empty() {
+        let clear = capture_git(
+            request,
+            &["config", "--local", "--unset-all", "credential.helper"],
+            cwd,
+        );
+        transcript.push(format!(
+            "local_credential_helpers_retired exit={} ok={}",
+            clear.code, clear.ok
+        ));
+        if !clear.ok {
+            return ownership_prepared_result(clear, ownership_changed, &transcript);
+        }
+        repository_config_changed = true;
+    } else if !local_helpers.ok && local_helpers.code != 1 {
+        return ownership_prepared_result(local_helpers, ownership_changed, &transcript);
+    }
+
     let remote_tracking_refspec = format!(
         "+refs/heads/{}:refs/remotes/{}/{}",
         request.branch, request.remote, request.branch
@@ -445,7 +477,9 @@ fn sync_repo(request: &Request) -> SyncResult {
     if !after.ok {
         return ownership_prepared_result(after, ownership_changed, &transcript);
     }
-    let changed = ownership_changed || before.stdout.trim() != after.stdout.trim();
+    let changed = ownership_changed
+        || repository_config_changed
+        || before.stdout.trim() != after.stdout.trim();
     transcript.push(format!("before={}", before.stdout.trim()));
     transcript.push(format!("after={}", after.stdout.trim()));
     SyncResult {

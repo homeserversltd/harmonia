@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import shutil
 import stat
 import subprocess
@@ -169,7 +170,7 @@ def build(args: argparse.Namespace) -> int:
     cmd = [args.cargo, "build", "-p", args.package]
     if not getattr(args, "debug", False):
         cmd.append("--release")
-    return run_checked(cmd, cwd=REPO_ROOT)
+    return run_checked_as_source_owner(cmd, cwd=REPO_ROOT)
 
 
 def install(args: argparse.Namespace) -> int:
@@ -341,6 +342,46 @@ def run_checked(cmd: Sequence[str], cwd: Path, allow_missing: bool = False) -> i
         return 0
     print("run=" + " ".join(cmd))
     completed = subprocess.run(cmd, cwd=str(cwd), check=False)
+    return completed.returncode
+
+
+def run_checked_as_source_owner(cmd: Sequence[str], cwd: Path) -> int:
+    """Keep privileged enrollment builds in the checkout owner's filesystem plane."""
+    if os.geteuid() != 0:
+        return run_checked(cmd, cwd=cwd)
+    source = cwd.stat()
+    if source.st_uid == 0 or source.st_gid == 0:
+        print(f"root-owned-source-build-refused={cwd}", file=sys.stderr)
+        return 1
+    account = pwd.getpwuid(source.st_uid)
+    target = cwd / "target"
+    target.mkdir(parents=True, exist_ok=True)
+    for path in [target, *target.rglob("*")]:
+        metadata = path.lstat()
+        if metadata.st_uid != source.st_uid or metadata.st_gid != source.st_gid:
+            os.chown(path, source.st_uid, source.st_gid, follow_symlinks=False)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": account.pw_dir,
+            "USER": account.pw_name,
+            "LOGNAME": account.pw_name,
+            "XDG_CONFIG_HOME": str(Path(account.pw_dir) / ".config"),
+        }
+    )
+    for name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_ASKPASS", "SSH_ASKPASS"):
+        env.pop(name, None)
+    print("run_as_source_owner=" + account.pw_name)
+    print("run=" + " ".join(cmd))
+    completed = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        check=False,
+        env=env,
+        user=source.st_uid,
+        group=source.st_gid,
+        extra_groups=[],
+    )
     return completed.returncode
 
 
