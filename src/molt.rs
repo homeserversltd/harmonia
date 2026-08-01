@@ -140,13 +140,8 @@ pub(crate) fn molt_at_subscription_path(
             .join(&profile.id)
             .join("modules")
             .join(module);
-        let source_version =
-            installed_module_version(&module_dir).unwrap_or_else(|| "sidecar".to_string());
         let source_tree_sha256 = module_tree_sha256(&module_dir)?;
         let installed_clean = module_output_dir.is_dir()
-            && installed_module_version(&module_output_dir)
-                .unwrap_or_else(|| "sidecar".to_string())
-                == source_version
             && module_tree_sha256(&module_output_dir)? == source_tree_sha256;
         if installed_clean {
             untouched_modules.push(module.clone());

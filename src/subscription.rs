@@ -105,12 +105,7 @@ pub(crate) fn diff_subscription_modules(
             .and_then(|record| record.modules.get(&module.id));
         let status = match existing {
             None => "new",
-            Some(existing)
-                if existing.version == module.version
-                    && existing.tree_sha256 == module.tree_sha256 =>
-            {
-                "current"
-            }
+            Some(existing) if existing.tree_sha256 == module.tree_sha256 => "current",
             Some(_) => "stale",
         };
         statuses.push(SubscriptionModuleStatus {
