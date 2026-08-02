@@ -712,7 +712,19 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
         }
         match candidate.kind {
             SourceCandidateKind::LocalCheckout => {
-                let request = scoped_request(plan, candidate, PathBuf::from(&candidate.locator));
+                let source = PathBuf::from(&candidate.locator);
+                if let Err(detail) = local_checkout_source_preflight(&source) {
+                    attempts.push(source_attempt(
+                        index,
+                        candidate,
+                        "unavailable",
+                        None,
+                        true,
+                        detail,
+                    ));
+                    continue;
+                }
+                let request = scoped_request(plan, candidate, source.clone());
                 let head = capture_git(
                     &request,
                     &["rev-parse", "HEAD^{commit}"],
@@ -743,24 +755,68 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                         return source_hard_red(attempts, precondition_changed);
                     }
                 }
-                attempts.push(source_attempt(
-                    index,
-                    candidate,
-                    "served-external",
-                    Some(commit.clone()),
-                    true,
-                    "head-observed; freshness-is-external".into(),
-                ));
-                return SourceOutcome {
-                    ok: true,
-                    changed: false,
-                    receipt: SourceReceipt {
-                        attempts,
-                        served_index: Some(index),
-                        resolved_commit: Some(commit),
-                        promotion: "local-checkout-observed; external freshness authority".into(),
-                    },
-                };
+                if !candidate_parent_prepared {
+                    let preparation = match prepare_source_acquisition_parent(plan) {
+                        Ok(preparation) => preparation,
+                        Err(detail) => {
+                            attempts.push(source_attempt(
+                                index,
+                                candidate,
+                                "hard-red-precondition",
+                                Some(commit),
+                                true,
+                                detail,
+                            ));
+                            return source_hard_red(attempts, precondition_changed);
+                        }
+                    };
+                    precondition_changed |= preparation.changed;
+                    precondition.extend(preparation.transcript);
+                }
+                match project_local_checkout(&request, &source, &plan.destination, &commit) {
+                    Ok(changed) => {
+                        attempts.push(source_attempt(
+                            index,
+                            candidate,
+                            "served-external-projected",
+                            Some(commit.clone()),
+                            true,
+                            source_acquisition_detail(
+                                &precondition,
+                                if changed {
+                                    "head-observed; freshness-is-external; destination-projected"
+                                } else {
+                                    "head-observed; freshness-is-external; destination-already-projects-observed-head"
+                                },
+                            ),
+                        ));
+                        return SourceOutcome {
+                            ok: true,
+                            changed: precondition_changed || changed,
+                            receipt: SourceReceipt {
+                                attempts,
+                                served_index: Some(index),
+                                resolved_commit: Some(commit),
+                                promotion: if changed {
+                                    "local-checkout-observed; external freshness authority; destination-projected".into()
+                                } else {
+                                    "local-checkout-observed; external freshness authority; destination-already-projects-observed-head".into()
+                                },
+                            },
+                        };
+                    }
+                    Err(detail) => {
+                        attempts.push(source_attempt(
+                            index,
+                            candidate,
+                            "hard-red-projection",
+                            Some(commit),
+                            true,
+                            source_acquisition_detail(&precondition, &detail),
+                        ));
+                        return source_hard_red(attempts, precondition_changed);
+                    }
+                }
             }
             SourceCandidateKind::Git => {}
         }
@@ -889,6 +945,148 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
         }
     }
     source_failure(attempts, "all-candidates-unavailable", precondition_changed)
+}
+
+fn local_checkout_source_preflight(source: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|err| {
+        format!(
+            "local-checkout-source-stat-failed {}: {err}",
+            source.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "local-checkout-source-symlink-refused {}",
+            source.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "local-checkout-source-not-directory {}",
+            source.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Clone a local source into a same-parent staging directory, attest that its
+/// immutable commit equals the observed external head, then atomically install
+/// it at the declared destination. The source is never used as a destination,
+/// never fetched, and never checked out.
+fn project_local_checkout(
+    request: &Request,
+    source: &Path,
+    destination: &Path,
+    observed_commit: &str,
+) -> Result<bool, String> {
+    let destination_state = match fs::symlink_metadata(destination) {
+        Ok(metadata) => Some(metadata),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(format!(
+                "local-checkout-destination-stat-failed {}: {err}",
+                destination.display()
+            ));
+        }
+    };
+    if let Some(metadata) = destination_state {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "local-checkout-destination-symlink-refused {}",
+                destination.display()
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "local-checkout-destination-not-directory-refused {}",
+                destination.display()
+            ));
+        }
+        let destination_head = capture_git(
+            request,
+            &["rev-parse", "HEAD^{commit}"],
+            destination.to_str(),
+        );
+        if !destination_head.ok {
+            return Err(format!(
+                "local-checkout-destination-not-git-refused {}: {}",
+                destination.display(),
+                destination_head.stderr
+            ));
+        }
+        let dirty = capture_git(
+            request,
+            &["status", "--porcelain", "--", ".", ":(exclude).worktrees"],
+            destination.to_str(),
+        );
+        if !dirty.ok {
+            return Err(format!(
+                "local-checkout-destination-status-failed {}: {}",
+                destination.display(),
+                dirty.stderr
+            ));
+        }
+        if !dirty.stdout.trim().is_empty() {
+            return Err(format!(
+                "local-checkout-destination-dirty-refused {}",
+                destination.display()
+            ));
+        }
+        if destination_head.stdout.trim() == observed_commit {
+            return Ok(false);
+        }
+        return Err(format!(
+            "local-checkout-destination-divergent-refused {}",
+            destination.display()
+        ));
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "destination-has-no-parent".to_string())?;
+    let stem = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("source");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let stage = parent.join(format!(
+        ".{stem}.local-checkout-projection-{}-{nonce}",
+        std::process::id()
+    ));
+    let _guard = SourceStagingGuard(stage.clone());
+    let clone = capture_git(
+        request,
+        &[
+            "clone",
+            "--no-local",
+            "--no-hardlinks",
+            source.to_string_lossy().as_ref(),
+            stage.to_string_lossy().as_ref(),
+        ],
+        None,
+    );
+    if !clone.ok {
+        return Err(format!(
+            "local-checkout-projection-clone-failed: {}",
+            clone.stderr
+        ));
+    }
+    let projected_head = capture_git(request, &["rev-parse", "HEAD^{commit}"], stage.to_str());
+    if !projected_head.ok {
+        return Err(format!(
+            "local-checkout-projection-head-failed: {}",
+            projected_head.stderr
+        ));
+    }
+    if projected_head.stdout.trim() != observed_commit {
+        return Err("local-checkout-projection-identity-mismatch".into());
+    }
+    promote_staged_source(&stage, destination)
+        .map_err(|detail| format!("local-checkout-projection-promote-failed: {detail}"))?;
+    Ok(true)
 }
 
 fn prepare_source_acquisition_parent(plan: &SourcePlan) -> Result<BearerPathPreparation, String> {
@@ -1266,6 +1464,96 @@ mod tests {
             .command
             .stderr
             .contains("working tree has local modifications"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_checkout_projects_external_checkout_into_absent_destination_without_mutating_source() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-git-artifact-local-projection-{}",
+            std::process::id()
+        ));
+        let source = root.join("external-owner-checkout");
+        let destination = root.join("declared-destination");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&source).unwrap();
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.email", "harmonia@example.invalid"],
+            &["config", "user.name", "Harmonia Test"],
+        ] {
+            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
+            assert!(receipt.ok, "{}", receipt.stderr);
+        }
+        fs::write(source.join("payload"), "external owner bytes\n").unwrap();
+        for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
+            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
+            assert!(receipt.ok, "{}", receipt.stderr);
+        }
+        let source_head = command::capture_with_cwd(
+            "/usr/bin/git",
+            &["rev-parse", "HEAD^{commit}"],
+            source.to_str(),
+        );
+        let source_status =
+            command::capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], source.to_str());
+        let plan = SourcePlan {
+            candidates: vec![SourceCandidate {
+                kind: SourceCandidateKind::LocalCheckout,
+                locator: source.display().to_string(),
+                credential_selector: None,
+            }],
+            reference: "main".into(),
+            destination: destination.clone(),
+            expected_commit: None,
+            bearer: DEFAULT_BEARER.into(),
+            credentials: BTreeMap::new(),
+        };
+
+        let outcome = acquire_source(&plan);
+
+        assert!(outcome.ok, "{:?}", outcome.receipt);
+        assert!(destination.join(".git").exists());
+        let destination_head = command::capture_with_cwd(
+            "/usr/bin/git",
+            &["rev-parse", "HEAD^{commit}"],
+            destination.to_str(),
+        );
+        assert!(destination_head.ok, "{}", destination_head.stderr);
+        assert_eq!(destination_head.stdout.trim(), source_head.stdout.trim());
+        assert!(outcome
+            .receipt
+            .promotion
+            .contains("external freshness authority"));
+        assert_eq!(
+            outcome.receipt.attempts[0].disposition,
+            "served-external-projected"
+        );
+        assert!(outcome.receipt.attempts[0].external_freshness);
+        let second = acquire_source(&plan);
+        assert!(second.ok, "{:?}", second.receipt);
+        assert!(!second.changed);
+        assert!(second
+            .receipt
+            .promotion
+            .contains("destination-already-projects-observed-head"));
+        fs::write(destination.join("local-change"), "must be preserved\n").unwrap();
+        let refused = acquire_source(&plan);
+        assert!(!refused.ok);
+        assert!(refused
+            .receipt
+            .promotion
+            .contains("hard-red; destination-preserved"));
+        assert!(destination.join("local-change").exists());
+        let source_head_final = command::capture_with_cwd(
+            "/usr/bin/git",
+            &["rev-parse", "HEAD^{commit}"],
+            source.to_str(),
+        );
+        let source_status_final =
+            command::capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], source.to_str());
+        assert_eq!(source_head_final.stdout, source_head.stdout);
+        assert_eq!(source_status_final.stdout, source_status.stdout);
         let _ = fs::remove_dir_all(root);
     }
 
