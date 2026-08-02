@@ -46,6 +46,8 @@ pub struct Request {
     pub ssh_key_path: Option<PathBuf>,
     pub git_https_credential_host: Option<String>,
     pub git_https_credential_token_path: Option<PathBuf>,
+    /// Exact declared checkout paths trusted only for this Git child.
+    pub safe_directories: Vec<PathBuf>,
 }
 
 impl Request {
@@ -59,6 +61,7 @@ impl Request {
             ssh_key_path: None,
             git_https_credential_host: None,
             git_https_credential_token_path: None,
+            safe_directories: Vec::new(),
         }
     }
 
@@ -81,6 +84,11 @@ impl Request {
         self.git_https_credential_token_path = token_path;
         self
     }
+
+    pub fn with_safe_directory(mut self, path: impl Into<PathBuf>) -> Self {
+        self.safe_directories.push(path.into());
+        self
+    }
 }
 
 fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
@@ -100,7 +108,25 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
         .repo
         .as_deref()
         .is_some_and(|repo| repo.starts_with(ESTATE_FORGEJO_PREFIX));
-    let mut git_args = Vec::with_capacity(args.len() + 4);
+    let mut safe_configs = Vec::with_capacity(request.safe_directories.len());
+    for path in &request.safe_directories {
+        let path = match path.to_str() {
+            Some(path) => path,
+            None => {
+                return CommandReceipt {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: format!("git-safe-directory-non-utf8 {}", path.display()),
+                };
+            }
+        };
+        safe_configs.push(format!("safe.directory={path}"));
+    }
+    let mut git_args = Vec::with_capacity(args.len() + 4 + safe_configs.len() * 2);
+    for config in &safe_configs {
+        git_args.extend(["-c", config.as_str()]);
+    }
     if estate_single_source {
         git_args.extend(["-c", "credential.helper=", "-c", ESTATE_FORGEJO_HELPER]);
     } else if let Some(helper) = credential_helper.as_deref() {
@@ -1140,11 +1166,14 @@ impl Drop for SourceStagingGuard {
 fn scoped_request(plan: &SourcePlan, candidate: &SourceCandidate, path: PathBuf) -> Request {
     let mut request = Request::new(
         Some(candidate.locator.clone()),
-        path,
+        path.clone(),
         plan.reference.clone(),
         "origin".into(),
     )
     .with_bearer(plan.bearer.clone());
+    if candidate.kind == SourceCandidateKind::LocalCheckout {
+        request = request.with_safe_directory(path);
+    }
     // No selector means no SSH key and no HTTPS helper, even after a private attempt.
     if let Some(selector) = candidate.credential_selector.as_deref() {
         if let Some(scope) = plan.credentials.get(selector) {
@@ -1154,6 +1183,16 @@ fn scoped_request(plan: &SourcePlan, candidate: &SourceCandidate, path: PathBuf)
         }
     }
     request
+}
+
+/// Read an acquired source head through the same command-local checkout trust
+/// membrane used for local-source acquisition. The declaration is supplied only
+/// to this child process; it never changes global or checkout configuration.
+pub fn source_head(path: &Path, bearer: &str) -> CommandReceipt {
+    let request = Request::new(None, path.to_path_buf(), String::new(), String::new())
+        .with_bearer(bearer)
+        .with_safe_directory(path);
+    capture_git(&request, &["rev-parse", "HEAD"], path.to_str())
 }
 
 fn promote_staged_source(stage: &Path, destination: &Path) -> Result<(), String> {
@@ -1554,6 +1593,55 @@ mod tests {
             command::capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], source.to_str());
         assert_eq!(source_head_final.stdout, source_head.stdout);
         assert_eq!(source_status_final.stdout, source_status.stdout);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn owner_borne_existing_checkout_source_acquisition_is_command_local_and_quiet() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-git-artifact-owner-borne-source-{}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&source).unwrap();
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.email", "harmonia@example.invalid"],
+            &["config", "user.name", "Harmonia Test"],
+        ] {
+            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
+            assert!(receipt.ok, "{}", receipt.stderr);
+        }
+        fs::write(source.join("payload"), "owner-borne bytes\n").unwrap();
+        for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
+            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
+            assert!(receipt.ok, "{}", receipt.stderr);
+        }
+        let plan = SourcePlan {
+            candidates: vec![SourceCandidate {
+                kind: SourceCandidateKind::LocalCheckout,
+                locator: source.display().to_string(),
+                credential_selector: None,
+            }],
+            reference: "main".into(),
+            destination: source.clone(),
+            expected_commit: None,
+            bearer: DEFAULT_BEARER.into(),
+            credentials: BTreeMap::new(),
+        };
+
+        let outcome = acquire_source(&plan);
+
+        assert!(outcome.ok, "{:?}", outcome.receipt);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.receipt.served_index, Some(1));
+        assert_eq!(
+            outcome.receipt.attempts[0].disposition,
+            "served-external-projected"
+        );
+        let head = source_head(&source, DEFAULT_BEARER);
+        assert!(head.ok, "{}", head.stderr);
         let _ = fs::remove_dir_all(root);
     }
 
