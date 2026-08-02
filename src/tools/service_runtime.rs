@@ -29,6 +29,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
         ToolArg::optional("caduceus_commands", ToolArgKind::Json),
         ToolArg::optional("build_environment", ToolArgKind::Json),
+        ToolArg::optional("identity_environment", ToolArgKind::Json),
     ],
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
@@ -41,23 +42,73 @@ fn string_arg(args: &BTreeMap<String, Value>, name: &str) -> Result<String, Stri
         .ok_or_else(|| format!("service-runtime-missing-{name}"))
 }
 
-fn build_environment(args: &BTreeMap<String, Value>) -> Result<BTreeMap<String, String>, String> {
-    let Some(Value::Object(values)) = args.get("build_environment") else {
-        return Ok(BTreeMap::new());
+fn identity_environment(args: &BTreeMap<String, Value>) -> Result<Vec<String>, String> {
+    let Some(value) = args.get("identity_environment") else {
+        return Ok(Vec::new());
     };
-    values
-        .iter()
-        .map(|(key, value)| {
-            if !BUILD_ENV_ALLOWLIST.contains(&key.as_str()) {
-                return Err(format!("service-runtime-build-environment-refused-{key}"));
+    let values = value
+        .as_array()
+        .ok_or_else(|| "service-runtime-identity-environment-invalid".to_string())?;
+    let mut declared = Vec::with_capacity(values.len());
+    for value in values {
+        let name = value
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "service-runtime-identity-environment-invalid".to_string())?;
+        let safe_identity_name = name
+            .strip_suffix("_SOURCE_SHA")
+            .or_else(|| name.strip_suffix("_BUILD_SHA"))
+            .is_some_and(|prefix| {
+                !prefix.is_empty()
+                    && prefix
+                        .chars()
+                        .all(|character| character.is_ascii_uppercase() || character == '_')
+            });
+        if !safe_identity_name {
+            return Err(format!(
+                "service-runtime-identity-environment-refused-{name}"
+            ));
+        }
+        if declared.iter().any(|declared_name| declared_name == name) {
+            return Err(format!(
+                "service-runtime-identity-environment-duplicate-{name}"
+            ));
+        }
+        declared.push(name.to_string());
+    }
+    Ok(declared)
+}
+
+fn build_environment(
+    args: &BTreeMap<String, Value>,
+    acquired_source_sha: Option<&str>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut environment = match args.get("build_environment") {
+        None => BTreeMap::new(),
+        Some(Value::Object(values)) => values
+            .iter()
+            .map(|(key, value)| {
+                if !BUILD_ENV_ALLOWLIST.contains(&key.as_str()) {
+                    return Err(format!("service-runtime-build-environment-refused-{key}"));
+                }
+                let value = value
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| format!("service-runtime-build-environment-invalid-{key}"))?;
+                Ok((key.clone(), value.to_string()))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?,
+        Some(_) => return Err("service-runtime-build-environment-invalid".to_string()),
+    };
+    for name in identity_environment(args)? {
+        if let Some(source_sha) = acquired_source_sha {
+            if !is_hex_sha(source_sha) {
+                return Err("service-runtime-identity-source-sha-invalid".to_string());
             }
-            let value = value
-                .as_str()
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| format!("service-runtime-build-environment-invalid-{key}"))?;
-            Ok((key.clone(), value.to_string()))
-        })
-        .collect()
+            environment.insert(name, source_sha.to_string());
+        }
+    }
+    Ok(environment)
 }
 
 pub(crate) fn execute_ladder_step(
@@ -66,7 +117,7 @@ pub(crate) fn execute_ladder_step(
     apply: bool,
     source_plan: &tools::git_artifact::SourcePlan,
 ) -> Result<ModuleExecution, String> {
-    let build_environment = build_environment(args)?;
+    build_environment(args, None)?;
     let op_prefix = string_arg(args, "op_prefix")?;
     let source_op = format!("{op_prefix}-source-git-artifact");
     let source_sha_op = format!("{op_prefix}-source-sha");
@@ -102,13 +153,13 @@ pub(crate) fn execute_ladder_step(
         apply,
         &spec,
         args.get("bearer").and_then(Value::as_str),
-        build_environment,
+        args,
         source_plan,
     )
 }
 
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
-    build_environment(args)?;
+    build_environment(args, None)?;
     string_arg(args, "component")?;
     let op_prefix = string_arg(args, "op_prefix")?;
     let source_op = format!("{op_prefix}-source-git-artifact");
@@ -239,7 +290,7 @@ pub(crate) fn execute(
     apply: bool,
     spec: &ServiceRuntimeSpec,
     bearer: Option<&str>,
-    build_environment: BTreeMap<String, String>,
+    args: &BTreeMap<String, Value>,
     source_plan: &tools::git_artifact::SourcePlan,
 ) -> Result<ModuleExecution, String> {
     validate(module)?;
@@ -391,6 +442,8 @@ pub(crate) fn execute(
             &module.id,
         ));
     }
+
+    let build_environment = build_environment(args, Some(&source_sha_value))?;
 
     let build = tools::command::capture_with_cwd_as_bearer_and_env(
         "cargo",
@@ -696,7 +749,10 @@ fn write_source_sha_receipt(
 }
 
 fn is_hex_sha(value: &str) -> bool {
-    value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 fn install_binary(
     receipt_dir: &Path,
@@ -1052,6 +1108,67 @@ mod tests {
         assert_eq!(
             validate_ladder_args(&args).unwrap_err(),
             "service-runtime-missing-component"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn declared_identity_environment_supplies_exact_acquired_sha_to_cargo_build() {
+        let root = scratch("identity-environment");
+        let mut args = base_args(&root);
+        args.insert(
+            "build_environment".to_string(),
+            json!({
+                "RUSTUP_HOME": "/opt/rustup",
+                "CARGO_HOME": "/opt/cargo"
+            }),
+        );
+        args.insert(
+            "identity_environment".to_string(),
+            json!(["CORONATIO_SOURCE_SHA", "CORONATIO_BUILD_SHA"]),
+        );
+        let acquired_sha = "a5c8cd44e139db3d949b3c601fff9337cc6f3c80";
+
+        let environment = build_environment(&args, Some(acquired_sha)).unwrap();
+
+        assert_eq!(
+            environment.get("CORONATIO_SOURCE_SHA").map(String::as_str),
+            Some(acquired_sha),
+            "cargo build lacks the exact acquired source identity environment"
+        );
+        assert_eq!(
+            environment.get("CORONATIO_BUILD_SHA").map(String::as_str),
+            Some(acquired_sha),
+            "cargo build lacks the exact acquired build identity environment"
+        );
+        assert_eq!(
+            environment.get("RUSTUP_HOME").map(String::as_str),
+            Some("/opt/rustup")
+        );
+        assert_eq!(
+            environment.get("CARGO_HOME").map(String::as_str),
+            Some("/opt/cargo")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_identity_environment_is_refused_by_ladder_validation() {
+        let root = scratch("identity-environment-invalid");
+        let mut args = base_args(&root);
+        args.insert("identity_environment".to_string(), json!(["RUSTFLAGS"]));
+
+        assert_eq!(
+            validate_ladder_args(&args).unwrap_err(),
+            "service-runtime-identity-environment-refused-RUSTFLAGS"
+        );
+        args.insert(
+            "identity_environment".to_string(),
+            json!(["CORONATIO_SOURCE_SHA"]),
+        );
+        assert_eq!(
+            build_environment(&args, Some("g5c8cd44e139db3d949b3c601fff9337cc6f3c80")).unwrap_err(),
+            "service-runtime-identity-source-sha-invalid"
         );
         let _ = fs::remove_dir_all(root);
     }

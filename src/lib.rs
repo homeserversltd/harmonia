@@ -2475,7 +2475,14 @@ mod tests {
             (
                 "homeserver",
                 "coronatio",
-                vec![("service-runtime", "converge")],
+                vec![
+                    ("service-runtime", "converge"),
+                    ("files", "executable-present"),
+                    ("command", "capture"),
+                    ("command", "capture"),
+                    ("files", "converge"),
+                    ("command", "capture"),
+                ],
             ),
             (
                 "homeconsole",
@@ -2527,6 +2534,19 @@ mod tests {
                 .collect();
             assert_eq!(steps, expected, "{profile}/{module} ladder steps");
         }
+
+        let coronatio =
+            load_ladder_manifest(&root.join("profiles/homeserver/modules/coronatio/manifest.json"))
+                .unwrap();
+        let coronatio_runtime = coronatio
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "coronatio-service-runtime")
+            .unwrap();
+        assert_eq!(
+            coronatio_runtime.args["identity_environment"],
+            json!(["CORONATIO_SOURCE_SHA", "CORONATIO_BUILD_SHA"])
+        );
 
         let local_ai = load_ladder_manifest(
             &root.join("profiles/homeconsole/modules/local-ai-runtime/manifest.json"),
