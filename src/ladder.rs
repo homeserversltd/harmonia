@@ -477,6 +477,7 @@ fn execute_validated_step(
         ("files", "source-shelf-sweep") => {
             files_source_shelf_sweep_step(step, manifest, module_dir, apply)
         }
+        ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, apply),
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, apply)
         }
@@ -997,6 +998,43 @@ fn files_converge_step(
             }),
         )?;
     }
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+
+fn files_ensure_present_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let files = string_array_arg(&step.args, "files")
+        .into_iter()
+        .map(|relative_path| crate::tools::files::FileSpec {
+            mode: Some(0o644),
+            relative_path: PathBuf::from(relative_path),
+        })
+        .collect();
+    let outcome = crate::tools::files::ensure_files_present(
+        &crate::tools::files::FileConvergenceRequest {
+            source_root: resolve_ladder_path(manifest, string_arg(&step.args, "source_root")),
+            target_root: PathBuf::from(string_arg(&step.args, "target_root")),
+            files,
+            backup_existing: false,
+            receipt_name: optional_string_arg(&step.args, "receipt_name")
+                .unwrap_or(&step.step_id)
+                .to_string(),
+            owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
+            group: optional_string_arg(&step.args, "group").map(ToString::to_string),
+        },
+        module_dir,
+        apply,
+    )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,

@@ -255,6 +255,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::{Mutex, OnceLock};
 
     fn repo_root() -> PathBuf {
@@ -1503,6 +1504,111 @@ mod tests {
                 .join("profiles/tv/modules/tv-runtime-support.rs")
                 .exists(),
             "shared TV runtime support helper retired when last includer converted"
+        );
+    }
+
+    #[test]
+    fn homeserver_firewall_carries_terminated_caduceus_child_filter_without_package_or_quiet_restart_drift(
+    ) {
+        let root = repo_root();
+        let module = root.join("profiles/homeserver/modules/firewall");
+        let manifest = load_ladder_manifest(&module.join("manifest.json")).unwrap();
+        validate_ladder(&manifest).unwrap();
+        let baseline = fs::read_to_string(module.join("files_root/etc/nftables.conf")).unwrap();
+        let include = "include \"/etc/nftables.d/caduceus-child-filter.nft\"";
+        assert!(
+            baseline.ends_with('\n'),
+            "nftables candidate must end with a newline"
+        );
+        assert_eq!(baseline.lines().last(), Some(include));
+        assert!(module
+            .join("files_root/etc/nftables.d/caduceus-child-filter.nft")
+            .is_file());
+        let seed = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "caduceus-child-filter-seed-present")
+            .unwrap();
+        assert_eq!(
+            (seed.tool.as_str(), seed.permutation.as_str()),
+            ("files", "ensure-present")
+        );
+        assert_eq!(
+            seed.args["files"],
+            serde_json::json!(["etc/nftables.d/caduceus-child-filter.nft"])
+        );
+        let validation = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "nftables-config-valid")
+            .unwrap();
+        assert_eq!(
+            validation.args["args"],
+            serde_json::json!(["-c", "-f", "/etc/nftables.conf"])
+        );
+        assert!(manifest.ladder.iter().all(|step| step.tool != "package"));
+        let seed_index = manifest
+            .ladder
+            .iter()
+            .position(|step| step.step_id == seed.step_id)
+            .unwrap();
+        let validation_index = manifest
+            .ladder
+            .iter()
+            .position(|step| step.step_id == validation.step_id)
+            .unwrap();
+        let restart_index = manifest
+            .ladder
+            .iter()
+            .position(|step| step.step_id == "nftables-restart-on-change")
+            .unwrap();
+        assert!(seed_index < validation_index && validation_index < restart_index);
+
+        let nft = ["/usr/sbin/nft", "nft"]
+            .into_iter()
+            .find(|candidate| Path::new(candidate).is_file());
+        let Some(nft) = nft else {
+            eprintln!("nft-parser-proof-unavailable: no nft executable found; structural termination wall retained");
+            return;
+        };
+        let scratch = std::env::temp_dir().join(format!("harmonia-nft-proof-{}", process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        let child = scratch.join("nftables.d/caduceus-child-filter.nft");
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
+        fs::copy(
+            module.join("files_root/etc/nftables.d/caduceus-child-filter.nft"),
+            &child,
+        )
+        .unwrap();
+        let rendered = baseline
+            .replace(
+                "flush ruleset",
+                "# flush ruleset omitted in isolated parser proof",
+            )
+            .replace("define lan_if = lan0", "define lan_if = lo")
+            .replace("define wan_if = wan0", "define wan_if = lo")
+            .replace(
+                "/etc/nftables.d/caduceus-child-filter.nft",
+                &child.display().to_string(),
+            );
+        let candidate = scratch.join("nftables.conf");
+        fs::write(&candidate, rendered).unwrap();
+        let output = Command::new(nft)
+            .args(["-c", "-f"])
+            .arg(&candidate)
+            .output()
+            .unwrap();
+        let _ = fs::remove_dir_all(&scratch);
+        if !output.status.success()
+            && String::from_utf8_lossy(&output.stderr).contains("Operation not permitted")
+        {
+            eprintln!("nft-parser-proof-unavailable: isolated parser lacks netlink permission; structural termination wall retained");
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "nft parser rejected isolated candidate: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
