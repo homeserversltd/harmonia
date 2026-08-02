@@ -304,12 +304,7 @@ pub(crate) fn execute(
         ));
     }
 
-    let source_sha = tools::command::capture_with_cwd_as_bearer(
-        "/usr/bin/git",
-        &["rev-parse", "HEAD"],
-        source_dir.to_str(),
-        &source_bearer,
-    );
+    let source_sha = tools::git_artifact::source_head(&source_dir, &source_bearer);
     write_source_sha_receipt(receipt_dir, spec.source_sha_op, &source_sha, &source_bearer)?;
     let source_sha_value = source_sha.stdout.trim().to_string();
 
