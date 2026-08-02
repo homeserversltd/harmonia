@@ -2489,8 +2489,9 @@ mod tests {
                 "homeconsole-caduceus-public-lever",
                 vec![
                     ("command", "capture"),
-                    ("service-runtime", "converge"),
+                    ("git-artifact", "sync"),
                     ("files", "source-shelf-sweep"),
+                    ("service-runtime", "converge"),
                 ],
             ),
             (
