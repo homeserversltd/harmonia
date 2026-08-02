@@ -52,6 +52,49 @@ class CaduceusStaffShelfManifestTests(unittest.TestCase):
                 self.assertNotIn("program", staff["args"])
                 self.assertNotIn("args", staff["args"])
 
+    def test_homeconsole_lifts_the_canonical_console_profile_without_a_command_fork(self) -> None:
+        module = ROOT / "profiles/homeconsole/modules/homeconsole-caduceus-public-lever"
+        manifest = json.loads((module / "manifest.json").read_text(encoding="utf-8"))
+        runtime = next(step for step in manifest["ladder"] if step["tool"] == "service-runtime")
+        source_profile = runtime["args"]["caduceus_profile_source"]
+
+        self.assertEqual(source_profile["source"], "profiles/console/index.yaml")
+        self.assertEqual(source_profile["path"], "/etc/caduceus/profile.yaml")
+        self.assertEqual(source_profile["mode"], 0o644)
+        self.assertEqual(source_profile["append"], "")
+        self.assertFalse(
+            any(
+                entry["path"] in {"/etc/caduceus/profile.json", "/etc/caduceus/policies/update.json"}
+                for entry in runtime["args"]["managed_files"]
+            )
+        )
+        service = next(
+            entry["content"]
+            for entry in runtime["args"]["managed_files"]
+            if entry["path"] == "/etc/systemd/system/caduceus.service"
+        )
+        self.assertIn("Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin", service)
+        self.assertIn("Environment=PYTHONPATH=/usr/local/sbin", service)
+
+    def test_homeconsole_carriage_contains_no_certificate_material_or_handler(self) -> None:
+        module = ROOT / "profiles/homeconsole/modules/homeconsole-caduceus-public-lever"
+        text = (module / "manifest.json").read_text(encoding="utf-8").lower()
+        for forbidden in (
+            "begin certificate",
+            "private key",
+            "ca.pem",
+            "cert.pem",
+            "openssl",
+            "cryptography",
+            "sslkey.sh",
+            "createcertbundle",
+            "certificate parsing",
+            "certificate installation",
+            "csr",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
+
     def test_manifests_do_not_embed_caduceus_staff_programs(self) -> None:
         for module in CADUCEUS_MODULES:
             with self.subTest(module=module):
