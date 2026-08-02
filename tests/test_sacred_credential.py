@@ -29,7 +29,29 @@ class CaduceusStaffShelfManifestTests(unittest.TestCase):
                 )
                 staff = ladder[staff_index]
 
-                self.assertGreater(staff_index, runtime_index)
+                if module.name == "homeconsole-caduceus-public-lever":
+                    bootstrap_source_index = next(
+                        index
+                        for index, step in enumerate(ladder)
+                        if step["step_id"] == "caduceus-bootstrap-source-from-declared-profile"
+                    )
+                    bootstrap_source = ladder[bootstrap_source_index]
+                    self.assertLess(bootstrap_source_index, staff_index)
+                    self.assertLess(staff_index, runtime_index)
+                    self.assertEqual(
+                        (bootstrap_source["tool"], bootstrap_source["permutation"]),
+                        ("git-artifact", "sync"),
+                    )
+                    self.assertEqual(
+                        bootstrap_source["args"],
+                        {
+                            "component": "caduceus",
+                            "path": "/opt/caduceus/source",
+                            "source_dir": "/opt/caduceus/source",
+                        },
+                    )
+                else:
+                    self.assertGreater(staff_index, runtime_index)
                 self.assertEqual(staff["tool"], "files")
                 self.assertEqual(staff["permutation"], "source-shelf-sweep")
                 self.assertEqual(
@@ -94,6 +116,35 @@ class CaduceusStaffShelfManifestTests(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
+
+    def test_homeconsole_bootstrap_has_no_protected_action_or_secret_carrier(self) -> None:
+        module = ROOT / "profiles/homeconsole/modules/homeconsole-caduceus-public-lever"
+        manifest = json.loads((module / "manifest.json").read_text(encoding="utf-8"))
+        bootstrap_steps = manifest["ladder"][1:3]
+        self.assertEqual(
+            [step["step_id"] for step in bootstrap_steps],
+            [
+                "caduceus-bootstrap-source-from-declared-profile",
+                "caduceus-staff-shelf-from-synced-source",
+            ],
+        )
+        bootstrap_bytes = json.dumps(bootstrap_steps, sort_keys=True).lower()
+        for forbidden in (
+            "update now",
+            "trust-install",
+            "private key",
+            "signing seed",
+            "skeleton",
+            "pin",
+            "bearer",
+            "cookie",
+            "authorization",
+            "certificate",
+            "csr",
+            "openssl",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, bootstrap_bytes)
 
     def test_manifests_do_not_embed_caduceus_staff_programs(self) -> None:
         for module in CADUCEUS_MODULES:
