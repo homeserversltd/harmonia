@@ -1507,6 +1507,27 @@ mod tests {
     }
 
     #[test]
+    fn homeserver_firewall_carries_caduceus_child_filter_without_package_or_quiet_restart_drift() {
+        let root = repo_root();
+        let module = root.join("profiles/homeserver/modules/firewall");
+        let manifest = load_ladder_manifest(&module.join("manifest.json")).unwrap();
+        validate_ladder(&manifest).unwrap();
+        let baseline = fs::read_to_string(module.join("files_root/etc/nftables.conf")).unwrap();
+        assert!(baseline.contains("include \"/etc/nftables.d/caduceus-child-filter.nft\""));
+        assert!(module.join("files_root/etc/nftables.d/caduceus-child-filter.nft").is_file());
+        let seed = manifest.ladder.iter().find(|step| step.step_id == "caduceus-child-filter-seed-present").unwrap();
+        assert_eq!((seed.tool.as_str(), seed.permutation.as_str()), ("files", "ensure-present"));
+        assert_eq!(seed.args["files"], serde_json::json!(["etc/nftables.d/caduceus-child-filter.nft"]));
+        let validation = manifest.ladder.iter().find(|step| step.step_id == "nftables-config-valid").unwrap();
+        assert_eq!(validation.args["args"], serde_json::json!(["-c", "-f", "/etc/nftables.conf"]));
+        assert!(manifest.ladder.iter().all(|step| step.tool != "package"));
+        let seed_index = manifest.ladder.iter().position(|step| step.step_id == seed.step_id).unwrap();
+        let validation_index = manifest.ladder.iter().position(|step| step.step_id == validation.step_id).unwrap();
+        let restart_index = manifest.ladder.iter().position(|step| step.step_id == "nftables-restart-on-change").unwrap();
+        assert!(seed_index < validation_index && validation_index < restart_index);
+    }
+
+    #[test]
     fn tv_steam_ladder_preserves_optional_continue_semantics() {
         let root = repo_root();
         let steam =

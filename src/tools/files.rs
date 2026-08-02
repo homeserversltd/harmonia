@@ -46,6 +46,18 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "ensure-present",
+        "create declared seed files only when absent; preserve existing regular-file bytes and ownership",
+        &[
+            ToolArg::required("source_root", ToolArgKind::String),
+            ToolArg::required("target_root", ToolArgKind::String),
+            ToolArg::required("files", ToolArgKind::StringArray),
+            ToolArg::optional("receipt_name", ToolArgKind::String),
+            ToolArg::optional("owner", ToolArgKind::String),
+            ToolArg::optional("group", ToolArgKind::String),
+        ],
+    ),
+    ToolPermutation::new(
         "remove",
         "remove only declared regular files beneath a target root and receipt their prior and final state",
         &[
@@ -1061,6 +1073,61 @@ pub fn converge_files(
     };
     write_convergence_receipt(receipt_dir, request, &outcome, apply)?;
     Ok(outcome)
+}
+
+/// Seed files are a one-way ownership boundary: the declared source is used
+/// only to create an absent regular file. Later bytes, mode, and ownership
+/// belong to the external writer and are deliberately not reconverged.
+pub fn ensure_files_present(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<FileConvergenceOutcome, String> {
+    if request.files.is_empty() {
+        return Err("files-ensure-present-empty-request".to_string());
+    }
+    validate_receipt_name(&request.receipt_name)?;
+    validate_specs(&request.files)?;
+    let mut absent = Vec::new();
+    for spec in &request.files {
+        let source = request.source_root.join(&spec.relative_path);
+        if !source.is_file() {
+            return Err(format!("files-ensure-present-source-missing {}", source.display()));
+        }
+        let target = request.target_root.join(&spec.relative_path);
+        reject_ssh_path(&target)?;
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => return Err(format!("files-ensure-present-target-not-regular-file {}", target.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => absent.push(spec.clone()),
+            Err(error) => return Err(format!("files-ensure-present-target-metadata-failed {}: {error}", target.display())),
+        }
+    }
+    if absent.is_empty() {
+        let outcome = FileConvergenceOutcome {
+            ok: true,
+            changed: false,
+            ownership_changed: false,
+            checked: request.files.len(),
+            written: 0,
+            backed_up: 0,
+            missing: Vec::new(),
+            entries: Vec::new(),
+            message: format!("{} seed files already present and preserved", request.files.len()),
+        };
+        write_convergence_receipt(receipt_dir, request, &outcome, apply)?;
+        return Ok(outcome);
+    }
+    let create_request = FileConvergenceRequest {
+        source_root: request.source_root.clone(),
+        target_root: request.target_root.clone(),
+        files: absent,
+        backup_existing: false,
+        receipt_name: request.receipt_name.clone(),
+        owner: request.owner.clone(),
+        group: request.group.clone(),
+    };
+    converge_files(&create_request, receipt_dir, apply)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4013,6 +4080,39 @@ mod managed_ownership_tests {
         assert_eq!(receipt["entries"][0]["ownership_source"], "declared");
         assert_eq!(receipt["entries"][0]["observed_uid"], metadata.uid());
         assert_eq!(receipt["entries"][0]["observed_gid"], metadata.gid());
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_present_creates_seed_once_and_preserves_caduceus_bytes_on_quiet_convergence() {
+        let scratch = std::env::temp_dir().join(format!("harmonia-ensure-present-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        let source = scratch.join("source");
+        let target = scratch.join("target");
+        let receipts = scratch.join("receipts");
+        fs::create_dir_all(source.join("etc/nftables.d")).unwrap();
+        fs::write(source.join("etc/nftables.d/caduceus-child-filter.nft"), b"# inert\n").unwrap();
+        let request = FileConvergenceRequest {
+            source_root: source,
+            target_root: target.clone(),
+            files: vec![FileSpec { relative_path: PathBuf::from("etc/nftables.d/caduceus-child-filter.nft"), mode: Some(0o640) }],
+            backup_existing: true,
+            receipt_name: "child-filter".into(),
+            owner: None,
+            group: None,
+        };
+        let created = ensure_files_present(&request, &receipts, true).unwrap();
+        assert!(created.changed);
+        let child = target.join("etc/nftables.d/caduceus-child-filter.nft");
+        assert_eq!(fs::read(&child).unwrap(), b"# inert\n");
+        fs::write(&child, b"add rule inet filter forward counter accept\n").unwrap();
+        set_mode(&child, 0o600).unwrap();
+        let preserved = ensure_files_present(&request, &receipts, true).unwrap();
+        assert!(preserved.ok);
+        assert!(!preserved.changed);
+        assert_eq!(fs::read(&child).unwrap(), b"add rule inet filter forward counter accept\n");
+        assert_eq!(file_mode(&child).unwrap(), 0o600);
         let _ = fs::remove_dir_all(&scratch);
     }
 
