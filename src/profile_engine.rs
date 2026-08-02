@@ -1063,6 +1063,51 @@ mod profile_authority_tests {
     use super::*;
 
     #[test]
+    fn homeserver_caduceus_runtime_composes_firewall_commands_exactly_once() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
+        let module_root = root.join("profiles/homeserver/modules");
+        let existing = caduceus_commands_for_profile(&profile, &module_root).unwrap();
+        let mut caduceus =
+            load_ladder_manifest(&module_root.join("caduceus/manifest.json")).unwrap();
+
+        compose_caduceus_commands(&profile, &module_root, &mut caduceus).unwrap();
+
+        let runtime = caduceus
+            .ladder
+            .iter()
+            .find(|step| step.tool == "service-runtime" && step.permutation == "converge")
+            .expect("homeserver caduceus service-runtime step");
+        let commands = runtime.args["caduceus_commands"]
+            .as_array()
+            .expect("composed caduceus commands array");
+        for command in [
+            "caduceus.network.firewall.read",
+            "caduceus.network.firewall.put",
+            "caduceus.network.firewall.delete",
+        ] {
+            assert_eq!(
+                commands
+                    .iter()
+                    .filter(|value| value.as_str() == Some(command))
+                    .count(),
+                1,
+                "{command} must appear exactly once in service-runtime args"
+            );
+        }
+        for command in existing {
+            assert_eq!(
+                commands
+                    .iter()
+                    .filter(|value| value.as_str() == Some(command.as_str()))
+                    .count(),
+                1,
+                "existing composed command {command} must remain exactly once"
+            );
+        }
+    }
+
+    #[test]
     fn module_root_yields_absolute_installed_harmonia_root() {
         assert_eq!(
             harmonia_root_from_module_root(Path::new("/etc/harmonia/profiles/tv/modules")),

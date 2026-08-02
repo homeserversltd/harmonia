@@ -3,6 +3,11 @@
   "id": "firewall",
   "version": "1.1.0",
   "description": "Quarry-lifted HOMESERVER network spine: assert birth-provided executables and host-owned network inputs, converge product-owned firewall/DNS/unit policy with backups, validate service configurations, and restart only after this module changed managed material.",
+  "caduceus_commands": [
+    "caduceus.network.firewall.read",
+    "caduceus.network.firewall.put",
+    "caduceus.network.firewall.delete"
+  ],
   "constants": {
     "user_editable_files": [
       "/etc/systemd/network/10-wan0.network",
