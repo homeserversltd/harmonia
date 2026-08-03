@@ -1,0 +1,68 @@
+/* Windows 11-ish Start menu styling for Wofi */
+* {
+    font-family: "Segoe UI", "Noto Sans", "MesloLGS Nerd Font", sans-serif;
+    font-size: 14px;
+    color: #f3f3f3;
+}
+
+#window {
+    background: rgba(31, 31, 31, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 14px;
+}
+
+#outer-box {
+    padding: 16px;
+    background: transparent;
+}
+
+#input {
+    min-height: 42px;
+    margin: 0 0 14px 0;
+    padding: 0 16px;
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-bottom: 2px solid #4cc2ff;
+    border-radius: 8px;
+    box-shadow: none;
+}
+
+#input:focus {
+    border-bottom-color: #60cdff;
+}
+
+#scroll {
+    background: transparent;
+    border: none;
+}
+
+#inner-box {
+    background: transparent;
+    padding: 2px;
+}
+
+#entry {
+    min-height: 42px;
+    padding: 6px 10px;
+    margin: 2px 0;
+    background: transparent;
+    border-radius: 7px;
+}
+
+#entry:selected {
+    background: rgba(255, 255, 255, 0.13);
+    outline: none;
+}
+
+#img {
+    margin-right: 12px;
+}
+
+#text {
+    color: #f3f3f3;
+}
+
+#entry:selected #text {
+    color: #ffffff;
+}

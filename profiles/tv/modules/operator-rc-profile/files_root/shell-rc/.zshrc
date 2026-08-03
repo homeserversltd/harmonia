@@ -4,7 +4,6 @@
 export STARTUP_TIMER="true"
 export EDITOR=micro
 
-if alias n >/dev/null 2>&1; then unalias n; fi
 if [ -f ~/.functions ]; then
     source ~/.functions
 fi
@@ -14,15 +13,20 @@ fi
 if [ -f ~/.profile ]; then
     source ~/.profile
 fi
-if [ -f ~/.inputrc ]; then
-    source ~/.inputrc
+if [ -f ~/.zshrc.secrets ]; then
+    source ~/.zshrc.secrets
 fi
-if [ -f ~/usr/share/doc/pkgfile/command-not-found.zsh ]; then
-source ~/usr/share/doc/pkgfile/command-not-found.zsh
+# Readline programs load ~/.inputrc themselves. Do not source it in zsh:
+# readline "set" lines mutate zsh positional parameters instead of shell options.
+if [ -f /usr/share/doc/pkgfile/command-not-found.zsh ]; then
+    source /usr/share/doc/pkgfile/command-not-found.zsh
 fi
 export TERM=xterm-256color
 export LOCAL_IP=$(ip route get 1 | awk '{print $7}')
-export PATH="$HOME/bin:$HOME/.local/bin:/sbin:/usr/sbin:/opt/android-studio/bin:/usr/local/sbin:$HOME/.atuin/bin:$PATH"
+export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/sbin:/usr/sbin:/opt/android-studio/bin:$HOME/.atuin/bin:$PATH"
+# Fulcrum front door native on PATH — cli.py exposed everywhere; `cli.py pali ...` etc.
+# Appended at END so repo scripts do not shadow system commands (operator ruling 2026-07-13).
+export PATH="$PATH:/fulcrum"
 # Check for 'moar' first; if not found, check for 'less'; if neither, default to 'more'
 if command -v moar &> /dev/null; then
     alias moar="moar -colors auto -wrap -mousemode auto"
@@ -34,6 +38,9 @@ elif command -v less &> /dev/null; then
 elif command -v more &> /dev/null; then
     export PAGER=more
 fi
+export WOODPECKER_SERVER='https://ci.home.arpa'
+
+
 setopt CORRECT
 
 #############################################
@@ -69,7 +76,7 @@ export SAVEHIST=10000  # Optional, for in-session buffer
 if [ -f ~/bin/nnn_opener.sh ]; then
 export NNN_OPENER=~/bin/nnn_opener.sh
 fi
-#/home/owner/.config/nnn/plugins/nuke
+#/home/anon/.config/nnn/plugins/nuke
 export NNN_PAGER="$PAGER"
 export NNN_PLUG="p:preview-tui;f:fzcd"
 export NNN_FCOLORS='c1e2B32e006033f7c6d6abc4'
@@ -203,7 +210,7 @@ eval "$(atuin init zsh)"  # Atuin initialization - made unconditional
 #RAN EVERY REFRESH
 #############################################
 
-fastfetch
+#fastfetch
 
 if [[ "$STARTUP_TIMER" == "true" ]]; then
     # End measuring time
@@ -223,7 +230,31 @@ fi
 export ANDROID_HOME=/opt/android-sdk
 export ANDROID_SDK_ROOT=/opt/android-sdk
 
-if [ -f "$HOME/.atuin/bin/env" ]; then
-    . "$HOME/.atuin/bin/env"
-fi
 export _ZO_DOCTOR=0
+
+# pnpm
+export PNPM_HOME="/home/owner/.local/share/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
+# pnpm end
+
+
+
+# zsh key bindings formerly mixed into ~/.inputrc. Keep readline config and zsh config separate.
+bindkey "^[[1;5C" forward-word
+bindkey "^[[1;5D" backward-word
+bindkey "^[[3~" delete-char
+bindkey "^H" backward-delete-char
+bindkey "^?" backward-delete-char
+bindkey "^[[H" beginning-of-line
+bindkey "^[[1~" beginning-of-line
+bindkey "^[[F" end-of-line
+bindkey "^[[4~" end-of-line
+bindkey "^[[5~" up-line-or-history
+bindkey "^[[6~" down-line-or-history
+bindkey "^[[2~" overwrite-mode
+
+# Keep PATH first-hit order, but remove duplicates introduced by installers.
+typeset -U path PATH

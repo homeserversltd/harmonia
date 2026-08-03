@@ -2,12 +2,11 @@
 alias nano='nano --smarthome --multibuffer --const --autoindent'
 alias add='chezmoi add'
 alias edit="$EDITOR"
-alias gitpush='git push'
-
+alias gitpush='/home/anon/bin/gitpush.sh'
 alias fastfetch='fastfetch -c neofetch.jsonc'
 alias neofetch='fastfetch'
 alias fetch='fastfetch'
-
+alias emacs='emacs --init-directory=~/.config/emacs'
 # Edit this .rc file
 alias editrc='edit ~/.zshrc'
 alias refresh='source ~/.zshrc'
@@ -152,16 +151,17 @@ alias hscp='scp homeserver:'
 alias hsmount='sudo mount -t cifs //192.168.123.1/webroot /mnt/temp -o username=root,vers=3.0'
 alias hsumount='sudo umount /mnt/temp'
 
-# Homeserver service management
-alias hsrestart='ssh homeserver "systemctl restart gunicorn.service"'
+# Homeserver service management ('ssh homeserver' lands as owner since 2026-07-10;
+# sudo carries the root-scoped remote commands, dedicated root lane is 'homeserver-root')
+alias hsrestart='ssh homeserver "sudo systemctl restart gunicorn.service"'
 alias hsstatus='ssh homeserver "systemctl status gunicorn.service"'
-alias hslogs='ssh homeserver "journalctl -u gunicorn.service -f"'
+alias hslogs='ssh -t homeserver "sudo journalctl -u gunicorn.service -f"'
 
 # Homeserver development workflow
-alias hsbuild='ssh homeserver "cd /var/www/homeserver && npm run build"'
-alias hsinstall='ssh homeserver "cd /var/www/homeserver && npm install"'
-alias hstabs='ssh homeserver "python3 /var/www/homeserver/premium/installer.py --installed"'
-alias hsreinstall='ssh homeserver "python3 /var/www/homeserver/premium/installer.py reinstall"'
+alias hsbuild='ssh homeserver "cd /var/www/homeserver && sudo npm run build"'
+alias hsinstall='ssh homeserver "cd /var/www/homeserver && sudo npm install"'
+alias hstabs='ssh homeserver "sudo python3 /var/www/homeserver/premium/installer.py --installed"'
+alias hsreinstall='ssh homeserver "sudo python3 /var/www/homeserver/premium/installer.py reinstall"'
 alias git-check="check_authorship"
 
 # piper-tts prompt script
