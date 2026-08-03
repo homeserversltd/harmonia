@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 enum LoadedModule {
     Sidecar(ModuleManifest),
@@ -327,6 +328,7 @@ pub(crate) fn run_profile_engine_with_preflight_selected(
     completed_preflight: Option<ModuleExecution>,
     suite_debt: Option<&str>,
 ) -> Result<(), String> {
+    let run_started = Instant::now();
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
     event(
@@ -553,7 +555,7 @@ pub(crate) fn run_profile_engine_with_preflight_selected(
         )?;
     }
 
-    write_engine_run_receipt(
+    write_engine_run_receipt_with_duration(
         receipt_dir,
         profile,
         apply,
@@ -565,6 +567,7 @@ pub(crate) fn run_profile_engine_with_preflight_selected(
         &first_missing_signal,
         module_root,
         suite_ok,
+        run_started.elapsed().as_millis(),
     )?;
     println!("schema=harmonia.run_profile.v1");
     println!("ok={}", ok);
