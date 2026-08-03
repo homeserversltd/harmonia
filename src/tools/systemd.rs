@@ -398,7 +398,9 @@ struct MaskConvergence {
 }
 
 fn mask_state(result: &CmdResult) -> Option<String> {
-    (result.code != -1).then(|| result.stdout.trim().to_string())
+    (result.code != -1)
+        .then(|| result.stdout.trim().to_string())
+        .filter(|state| !state.is_empty())
 }
 
 fn converge_mask_with<F>(service: &str, apply: bool, mut systemctl: F) -> MaskConvergence
@@ -1221,6 +1223,59 @@ mod tests {
         assert_eq!(result.enabled_before.as_deref(), Some("disabled"));
         assert_eq!(result.enabled_after.as_deref(), Some("disabled"));
         assert!(calls.iter().all(|args| args[0] != "mask"));
+    }
+
+    fn failed_blank_mask_state() -> CmdResult {
+        CmdResult {
+            ok: false,
+            code: 1,
+            stdout: " \n\t ".into(),
+            stderr: "Failed to connect to bus".into(),
+        }
+    }
+
+    #[test]
+    fn failed_blank_initial_mask_state_refuses_apply_without_mutation() {
+        let mut calls = Vec::new();
+        let result = converge_mask_with("postgresql@.service", true, |args| {
+            calls.push(args.to_vec());
+            match args[0].as_str() {
+                "is-enabled" => failed_blank_mask_state(),
+                "mask" => fake_ok("created persistent mask"),
+                other => panic!("unexpected systemctl action {other}"),
+            }
+        });
+        assert!(!result.ok);
+        assert!(!result.changed);
+        assert!(result.skipped);
+        assert_eq!(result.message, "systemd-mask-state-read-failed");
+        assert_eq!(
+            calls.iter().filter(|args| args[0] == "is-enabled").count(),
+            1
+        );
+        assert_eq!(calls.iter().filter(|args| args[0] == "mask").count(), 0);
+    }
+
+    #[test]
+    fn failed_blank_initial_mask_state_refuses_dry_run_plan() {
+        let mut calls = Vec::new();
+        let result = converge_mask_with("postgresql@.service", false, |args| {
+            calls.push(args.to_vec());
+            match args[0].as_str() {
+                "is-enabled" => failed_blank_mask_state(),
+                "mask" => fake_ok("created persistent mask"),
+                other => panic!("unexpected systemctl action {other}"),
+            }
+        });
+        assert!(!result.ok);
+        assert!(!result.changed);
+        assert!(result.skipped);
+        assert_eq!(result.message, "systemd-mask-state-read-failed");
+        assert_eq!(
+            calls.iter().filter(|args| args[0] == "is-enabled").count(),
+            1
+        );
+        assert_eq!(calls.iter().filter(|args| args[0] == "mask").count(), 0);
     }
 
     #[test]
