@@ -39,13 +39,9 @@
     },
     {
       "step_id": "postgres-distro-instance-mask",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemctl",
-        "args": ["mask", "--now", "postgresql@.service"],
-        "timeout_secs": 60
-      },
+      "tool": "systemd",
+      "permutation": "mask",
+      "args": {"service": "postgresql@.service", "timeout_secs": 60},
       "on_failure": "stop"
     },
     {

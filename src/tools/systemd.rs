@@ -38,6 +38,14 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "mask",
+        "converge a persistent system unit mask without touching its active state",
+        &[
+            ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    ),
+    ToolPermutation::new(
         "disable-stop-remove",
         "disable and stop a system unit, then remove its unit file",
         &[
@@ -146,6 +154,15 @@ pub(crate) fn run_permutation(
             receipt_dir,
             name,
             candidate_units,
+            timeout_secs,
+            apply,
+        );
+    }
+    if permutation == "mask" {
+        return run_mask(
+            receipt_dir,
+            name,
+            service.unwrap_or(""),
             timeout_secs,
             apply,
         );
@@ -366,6 +383,153 @@ fn run_restart(
         skipped: !apply,
         message: decision.reason.to_string(),
         command: Some(result),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct MaskConvergence {
+    ok: bool,
+    changed: bool,
+    skipped: bool,
+    message: String,
+    command: CmdResult,
+    enabled_before: Option<String>,
+    enabled_after: Option<String>,
+}
+
+fn mask_state(result: &CmdResult) -> Option<String> {
+    (result.code != -1).then(|| result.stdout.trim().to_string())
+}
+
+fn converge_mask_with<F>(service: &str, apply: bool, mut systemctl: F) -> MaskConvergence
+where
+    F: FnMut(&[String]) -> CmdResult,
+{
+    let before_args = vec!["is-enabled".to_string(), service.to_string()];
+    let before_result = systemctl(&before_args);
+    let enabled_before = mask_state(&before_result);
+    let Some(before) = enabled_before.as_deref() else {
+        return MaskConvergence {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: "systemd-mask-state-read-failed".to_string(),
+            command: before_result,
+            enabled_before,
+            enabled_after: None,
+        };
+    };
+    if before == "masked" {
+        return MaskConvergence {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "converged-quiet".to_string(),
+            command: before_result,
+            enabled_before: Some(before.to_string()),
+            enabled_after: Some(before.to_string()),
+        };
+    }
+    if !apply {
+        return MaskConvergence {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: format!("planned systemd mask {service}"),
+            command: CmdResult {
+                ok: true,
+                code: 0,
+                stdout: format!("planned systemd mask {service}"),
+                stderr: String::new(),
+            },
+            enabled_before: Some(before.to_string()),
+            enabled_after: Some(before.to_string()),
+        };
+    }
+
+    let mask_args = vec!["mask".to_string(), service.to_string()];
+    let command = systemctl(&mask_args);
+    let after_args = vec!["is-enabled".to_string(), service.to_string()];
+    let after_result = systemctl(&after_args);
+    let enabled_after = mask_state(&after_result);
+    let persisted = enabled_after.as_deref() == Some("masked");
+    let ok = command.ok && persisted;
+    MaskConvergence {
+        ok,
+        changed: ok && enabled_before != enabled_after,
+        skipped: false,
+        message: if !command.ok {
+            "systemd-mask-command-failed".to_string()
+        } else if !persisted {
+            "systemd-mask-post-readback-not-persistently-masked".to_string()
+        } else {
+            format!("systemd mask {service}")
+        },
+        command,
+        enabled_before,
+        enabled_after,
+    }
+}
+
+fn write_mask_convergence_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    service: &str,
+    apply: bool,
+    convergence: &MaskConvergence,
+) -> Result<(), String> {
+    let mut receipt_command = convergence.command.clone();
+    receipt_command.ok = convergence.ok;
+    if !convergence.ok && receipt_command.stderr.is_empty() {
+        receipt_command.stderr = convergence.message.clone();
+    }
+    write_systemd_receipt(
+        receipt_dir,
+        name,
+        "mask",
+        service,
+        false,
+        apply,
+        &receipt_command,
+        convergence.enabled_before.as_deref(),
+        None,
+        convergence.enabled_after.as_deref(),
+        None,
+        convergence.changed,
+        None,
+        None,
+        false,
+    )?;
+    let path = receipt_dir.join(format!("{name}.json"));
+    let mut receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).map_err(|err| err.to_string())?)
+            .map_err(|err| err.to_string())?;
+    let receipt_object = receipt
+        .as_object_mut()
+        .ok_or_else(|| "systemd-mask-receipt-object-invalid".to_string())?;
+    receipt_object.insert("skipped".to_string(), json!(convergence.skipped));
+    receipt_object.insert("message".to_string(), json!(convergence.message));
+    write_json(&path, &receipt)
+}
+
+fn run_mask(
+    receipt_dir: &Path,
+    name: &str,
+    service: &str,
+    timeout_secs: u64,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let convergence = converge_mask_with(service, apply, |args| {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &refs, timeout_secs)
+    });
+    write_mask_convergence_receipt(receipt_dir, name, service, apply, &convergence)?;
+    Ok(OperationOutcome {
+        ok: convergence.ok,
+        changed: convergence.changed,
+        skipped: convergence.skipped,
+        message: convergence.message,
+        command: Some(convergence.command),
     })
 }
 
@@ -924,5 +1088,187 @@ mod tests {
                 "chronyd.service".to_string(),
             ]
         );
+    }
+
+    fn fake_ok(stdout: &str) -> CmdResult {
+        CmdResult {
+            ok: true,
+            code: 0,
+            stdout: stdout.into(),
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn persistently_masked_unit_converges_quietly_without_mutation() {
+        let mut calls = Vec::new();
+        let result = converge_mask_with("postgresql@.service", true, |args| {
+            calls.push(args.to_vec());
+            fake_ok("masked\n")
+        });
+        assert!(result.ok);
+        assert!(!result.changed);
+        assert!(result.skipped);
+        assert_eq!(result.message, "converged-quiet");
+        assert_eq!(result.enabled_before.as_deref(), Some("masked"));
+        assert_eq!(result.enabled_after.as_deref(), Some("masked"));
+        assert_eq!(
+            calls,
+            vec![vec![
+                String::from("is-enabled"),
+                String::from("postgresql@.service")
+            ]]
+        );
+    }
+
+    #[test]
+    fn persistently_masked_receipt_preserves_state_and_converged_quiet_outcome() {
+        let root = temp_root("mask-receipt");
+        fs::create_dir_all(&root).unwrap();
+        let convergence = converge_mask_with("postgresql@.service", true, |_| fake_ok("masked"));
+        write_mask_convergence_receipt(
+            &root,
+            "postgres-distro-instance-mask",
+            "postgresql@.service",
+            true,
+            &convergence,
+        )
+        .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("postgres-distro-instance-mask.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["ok"], true);
+        assert_eq!(receipt["changed"], false);
+        assert_eq!(receipt["skipped"], true);
+        assert_eq!(receipt["message"], "converged-quiet");
+        assert_eq!(receipt["enabled_before"], "masked");
+        assert_eq!(receipt["enabled_after"], "masked");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unmasked_unit_masks_once_then_requires_persistent_mask_readback() {
+        let mut calls = Vec::new();
+        let mut states = ["disabled", "masked"].into_iter();
+        let result = converge_mask_with("postgresql@.service", true, |args| {
+            calls.push(args.to_vec());
+            match args[0].as_str() {
+                "is-enabled" => fake_ok(states.next().unwrap()),
+                "mask" => fake_ok("created symlink"),
+                other => panic!("unexpected systemctl action {other}"),
+            }
+        });
+        assert!(result.ok);
+        assert!(result.changed);
+        assert!(!result.skipped);
+        assert_eq!(result.enabled_before.as_deref(), Some("disabled"));
+        assert_eq!(result.enabled_after.as_deref(), Some("masked"));
+        assert_eq!(
+            calls,
+            vec![
+                vec![
+                    String::from("is-enabled"),
+                    String::from("postgresql@.service")
+                ],
+                vec!["mask".into(), "postgresql@.service".into()],
+                vec![
+                    String::from("is-enabled"),
+                    String::from("postgresql@.service")
+                ],
+            ]
+        );
+        assert!(calls
+            .iter()
+            .all(|args| !args.iter().any(|arg| arg == "--now")));
+    }
+
+    #[test]
+    fn second_identical_mask_convergence_adds_no_mask_mutation() {
+        let mut calls = Vec::new();
+        let result = converge_mask_with("postgresql@.service", true, |args| {
+            calls.push(args.to_vec());
+            fake_ok("masked")
+        });
+        assert!(result.ok);
+        assert!(result.skipped);
+        assert_eq!(calls.iter().filter(|args| args[0] == "mask").count(), 0);
+    }
+
+    #[test]
+    fn mask_owns_its_state_and_ignores_unrelated_prior_module_change() {
+        let mut calls = Vec::new();
+        let result = converge_mask_with("postgresql@.service", true, |args| {
+            calls.push(args.to_vec());
+            fake_ok("masked")
+        });
+        assert!(result.ok);
+        assert!(result.skipped);
+        assert!(calls.iter().all(|args| args[0] != "mask"));
+    }
+
+    #[test]
+    fn dry_run_observes_and_plans_mask_without_mutation() {
+        let mut calls = Vec::new();
+        let result = converge_mask_with("postgresql@.service", false, |args| {
+            calls.push(args.to_vec());
+            fake_ok("disabled")
+        });
+        assert!(result.ok);
+        assert!(!result.changed);
+        assert!(result.skipped);
+        assert_eq!(result.message, "planned systemd mask postgresql@.service");
+        assert_eq!(result.enabled_before.as_deref(), Some("disabled"));
+        assert_eq!(result.enabled_after.as_deref(), Some("disabled"));
+        assert!(calls.iter().all(|args| args[0] != "mask"));
+    }
+
+    #[test]
+    fn mask_failure_or_non_masked_readback_fails_truthfully() {
+        let mut states = ["disabled", "disabled"].into_iter();
+        let result =
+            converge_mask_with("postgresql@.service", true, |args| match args[0].as_str() {
+                "is-enabled" => fake_ok(states.next().unwrap()),
+                "mask" => fake_ok("created symlink"),
+                other => panic!("unexpected systemctl action {other}"),
+            });
+        assert!(!result.ok);
+        assert!(!result.changed);
+        assert_eq!(result.enabled_after.as_deref(), Some("disabled"));
+        assert!(result.message.contains("post-readback"));
+    }
+
+    #[test]
+    fn runtime_mask_is_upgraded_to_persistent_mask() {
+        let mut states = ["masked-runtime", "masked"].into_iter();
+        let result =
+            converge_mask_with("postgresql@.service", true, |args| match args[0].as_str() {
+                "is-enabled" => fake_ok(states.next().unwrap()),
+                "mask" => fake_ok("created persistent mask"),
+                other => panic!("unexpected systemctl action {other}"),
+            });
+        assert!(result.ok);
+        assert!(result.changed);
+        assert_eq!(result.enabled_before.as_deref(), Some("masked-runtime"));
+        assert_eq!(result.enabled_after.as_deref(), Some("masked"));
+    }
+
+    #[test]
+    fn postgres_manifest_declares_typed_template_mask_without_raw_systemctl_command() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let manifest =
+            load_ladder_manifest(&root.join("profiles/homeserver/modules/postgres/manifest.json"))
+                .unwrap();
+        let step = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "postgres-distro-instance-mask")
+            .unwrap();
+        assert_eq!(step.tool, "systemd");
+        assert_eq!(step.permutation, "mask");
+        assert_eq!(step.args["service"], "postgresql@.service");
+        assert!(!step.args.contains_key("program"));
+        assert!(!step.args.contains_key("args"));
+        assert!(is_unit_basename("postgresql@.service"));
     }
 }
