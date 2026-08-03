@@ -223,6 +223,7 @@ pub struct FileConvergenceOutcome {
     pub written: usize,
     pub backed_up: usize,
     pub missing: Vec<String>,
+    pub missing_target_birth_debts: Vec<String>,
     pub entries: Vec<FileConvergenceEntry>,
     pub message: String,
 }
@@ -604,6 +605,7 @@ pub(crate) fn converge_managed_files(
     let desired_gid = request.group.map(resolve_gid).transpose()?;
     for file in request.files {
         let path = PathBuf::from(&file.path);
+        let target_exists_before = fs::symlink_metadata(&path).is_ok();
         let target_regular = fs::symlink_metadata(&path)
             .map(|metadata| metadata.file_type().is_file())
             .unwrap_or(false);
@@ -615,13 +617,9 @@ pub(crate) fn converge_managed_files(
         let (owner_equal, group_equal) = ownership_equal(&path, desired_uid, desired_gid)?;
         let ownership_matches = owner_equal && group_equal;
         let file_changed = !content_equal || !mode_equal || !ownership_matches;
-        if file_changed {
+        let missing_target_debt = !target_exists_before;
+        if file_changed && !missing_target_debt {
             if apply {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| {
-                        format!("managed-file-parent-failed {}: {e}", parent.display())
-                    })?;
-                }
                 if !content_equal || !mode_equal {
                     atomic_write_bytes(&path, desired, Some(mode))?;
                 }
@@ -639,9 +637,13 @@ pub(crate) fn converge_managed_files(
             } else {
                 missing.push(file.path.clone());
             }
+        } else if missing_target_debt {
+            missing.push(file.path.clone());
         }
         entries.push(json!({
             "path": file.path,
+            "target_exists_before": target_exists_before,
+            "state": if missing_target_debt { "missing-target-birth-debt" } else { "observed" },
             "mode": mode,
             "content_equal_before": content_equal,
             "mode_equal_before": mode_equal,
@@ -649,8 +651,8 @@ pub(crate) fn converge_managed_files(
             "group": request.group,
             "owner_equal_before": owner_equal,
             "group_equal_before": group_equal,
-            "changed": file_changed,
-            "written": apply && file_changed,
+            "changed": file_changed && !missing_target_debt,
+            "written": apply && file_changed && !missing_target_debt,
         }));
         let safe_name = file
             .path
@@ -666,7 +668,7 @@ pub(crate) fn converge_managed_files(
             &per_file,
             &json!({
                 "schema": "harmonia.files.managed_file.v1",
-                "ok": !file_changed || apply,
+                "ok": !missing_target_debt && (!file_changed || apply),
                 "module": request.module_id,
                 "path": file.path,
                 "mode": mode,
@@ -675,9 +677,11 @@ pub(crate) fn converge_managed_files(
                 "owner_equal_before": owner_equal,
                 "group_equal_before": group_equal,
                 "apply": apply,
-                "changed": file_changed,
-                "written": apply && file_changed,
-                "first_missing_signal": if !file_changed || apply { "none" } else { request.first_missing_signal },
+                "target_exists_before": target_exists_before,
+                "state": if missing_target_debt { "missing-target-birth-debt" } else { "observed" },
+                "changed": file_changed && !missing_target_debt,
+                "written": apply && file_changed && !missing_target_debt,
+                "first_missing_signal": if missing_target_debt { "missing-target-birth-debt" } else if !file_changed || apply { "none" } else { request.first_missing_signal },
             }),
         )?;
     }
@@ -693,14 +697,14 @@ pub(crate) fn converge_managed_files(
             "schema": request.schema,
             "ok": ok,
             "module": request.module_id,
-            "missing": missing,
+            "missing_target_birth_debts": missing,
             "written": written,
             "owner": request.owner,
             "group": request.group,
             "apply": apply,
             "changed": changed,
             "entries": entries,
-            "first_missing_signal": if ok { "none" } else { request.first_missing_signal },
+            "first_missing_signal": if ok { "none" } else if !missing.is_empty() { "missing-target-birth-debt" } else { request.first_missing_signal },
         }),
     )?;
     Ok(crate::OperationOutcome {
@@ -834,6 +838,7 @@ pub fn converge_files(
 
     let mut entries = Vec::new();
     let mut missing = Vec::new();
+    let mut missing_target_birth_debts = Vec::new();
     let mut written = 0usize;
     let mut backed_up = 0usize;
 
@@ -842,7 +847,7 @@ pub fn converge_files(
         let target = request.target_root.join(&spec.relative_path);
         let relative_path = spec.relative_path.to_string_lossy().to_string();
         let source_exists = source.is_file();
-        let target_exists_before = target.exists();
+        let target_exists_before = fs::symlink_metadata(&target).is_ok();
         if !source_exists {
             missing.push(relative_path.clone());
             entries.push(FileConvergenceEntry {
@@ -871,22 +876,35 @@ pub fn converge_files(
             continue;
         }
 
-        if target_exists_before && !target.is_file() {
-            let signal = format!("files-converge-target-not-file {}", target.display());
-            write_partial_failure_receipt(
-                receipt_dir,
-                request,
-                apply,
-                request.files.len(),
-                written,
-                backed_up,
-                &missing,
-                &entries,
-                &signal,
-            )?;
-            return Err(signal);
+        if !target_exists_before {
+            missing_target_birth_debts.push(relative_path.clone());
+            entries.push(FileConvergenceEntry {
+                relative_path,
+                source,
+                target,
+                source_exists,
+                target_exists_before: false,
+                content_equal_before: false,
+                mode_equal_before: false,
+                target_exists_after: false,
+                content_equal_after: false,
+                mode_equal_after: false,
+                changed: false,
+                backed_up_to: None,
+                final_mode: spec.mode.or_else(|| source_mode(&request.source_root.join(&spec.relative_path)).ok()),
+                ownership_source: ownership_source.to_string(),
+                observed_uid_before: None,
+                observed_gid_before: None,
+                observed_uid_after: None,
+                observed_gid_after: None,
+                ownership_changed: false,
+                observed_uid: None,
+                observed_gid: None,
+            });
+            continue;
         }
-        let content_equal_before = if target_exists_before {
+
+        let content_equal_before = if target.is_file() {
             match same_file_bytes(&source, &target) {
                 Ok(equal) => equal,
                 Err(signal) => {
@@ -920,15 +938,12 @@ pub fn converge_files(
             || desired_gid
                 .map(|gid| observed_gid_before != Some(gid))
                 .unwrap_or(false);
-        let content_changed = !target_exists_before || !content_equal_before || !mode_equal_before;
+        let content_changed = !content_equal_before || !mode_equal_before;
         let entry_changed = content_changed || ownership_changed;
         let mut backed_up_to = None;
 
         if apply && entry_changed {
-            if let Some(parent) = target.parent() {
-                create_parent_dirs(parent, desired_uid, desired_gid)?;
-            }
-            if target_exists_before && content_changed && request.backup_existing {
+            if content_changed && request.backup_existing {
                 let backup = backup_target(&target, receipt_dir, &spec.relative_path)?;
                 backed_up_to = Some(backup);
                 backed_up += 1;
@@ -1047,7 +1062,7 @@ pub fn converge_files(
         });
     }
 
-    let ok = missing.is_empty();
+    let ok = missing.is_empty() && missing_target_birth_debts.is_empty();
     let changed = entries.iter().any(|entry| entry.changed);
     let ownership_changed = entries.iter().any(|entry| entry.ownership_changed);
     let outcome = FileConvergenceOutcome {
@@ -1058,6 +1073,7 @@ pub fn converge_files(
         written,
         backed_up,
         missing,
+        missing_target_birth_debts,
         entries,
         message: if ok {
             format!(
@@ -1068,7 +1084,7 @@ pub fn converge_files(
                 request.target_root.display()
             )
         } else {
-            "files convergence source incomplete".to_string()
+            "files convergence incomplete".to_string()
         },
     };
     write_convergence_receipt(receipt_dir, request, &outcome, apply)?;
@@ -1112,6 +1128,7 @@ pub fn ensure_files_present(
             written: 0,
             backed_up: 0,
             missing: Vec::new(),
+            missing_target_birth_debts: Vec::new(),
             entries: Vec::new(),
             message: format!("{} seed files already present and preserved", request.files.len()),
         };
@@ -2939,46 +2956,6 @@ fn observed_ownership(_path: &Path) -> Result<(Option<u32>, Option<u32>), String
     Ok((None, None))
 }
 
-fn create_parent_dirs(
-    parent: &Path,
-    desired_uid: Option<u32>,
-    desired_gid: Option<u32>,
-) -> Result<(), String> {
-    if desired_uid.is_none() && desired_gid.is_none() {
-        return fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "files-converge-target-parent-create-failed {}: {error}",
-                parent.display()
-            )
-        });
-    }
-
-    let mut missing = Vec::new();
-    let mut cursor = parent;
-    while !cursor.exists() {
-        missing.push(cursor.to_path_buf());
-        cursor = cursor.parent().ok_or_else(|| {
-            format!(
-                "files-converge-target-parent-create-failed {}",
-                parent.display()
-            )
-        })?;
-    }
-    for directory in missing.iter().rev() {
-        match fs::create_dir(directory) {
-            Ok(()) => set_ownership(directory, desired_uid, desired_gid)?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(format!(
-                    "files-converge-target-parent-create-failed {}: {error}",
-                    directory.display()
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 pub(crate) fn file_mode(path: &Path) -> Result<u32, String> {
     Ok(fs::metadata(path)
@@ -3125,6 +3102,7 @@ fn write_partial_failure_receipt(
         written,
         backed_up,
         missing: missing.to_vec(),
+        missing_target_birth_debts: Vec::new(),
         entries: entries.to_vec(),
         message: signal.to_string(),
     };
@@ -3153,8 +3131,9 @@ fn write_convergence_receipt(
         "changed": outcome.changed,
         "ownership_changed": outcome.ownership_changed,
         "missing": outcome.missing,
+        "missing_target_birth_debts": outcome.missing_target_birth_debts,
         "entries": outcome.entries,
-        "first_missing_signal": if outcome.ok { "none" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
+        "first_missing_signal": if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
     });
     let mut receipt_name = request.receipt_name.clone();
     if receipt_name.is_empty() {

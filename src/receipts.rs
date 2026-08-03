@@ -160,7 +160,7 @@ pub(crate) fn write_tool_receipt(
     )
 }
 
-pub(crate) fn write_engine_run_receipt(
+pub(crate) fn write_engine_run_receipt_with_duration(
     receipt_dir: &Path,
     profile: &Profile,
     apply: bool,
@@ -172,6 +172,7 @@ pub(crate) fn write_engine_run_receipt(
     first_missing_signal: &str,
     module_root: &Path,
     suite_ok: bool,
+    run_duration_ms: u128,
 ) -> Result<(), String> {
     write_json(
         &receipt_dir.join("run.json"),
@@ -187,6 +188,7 @@ pub(crate) fn write_engine_run_receipt(
             "identity_source": run_identity_source(),
             "module_count": module_count,
             "operation_count": operation_count,
+            "run_duration_ms": run_duration_ms,
             "first_missing_signal": first_missing_signal,
             "module_spine_entered": module_root,
             "selected_profile": profile.id,

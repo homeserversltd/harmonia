@@ -1,6 +1,6 @@
 use crate::{tools, CmdResult, ModuleExecution, OperationOutcome};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,6 +60,18 @@ pub(crate) struct LadderStep {
     pub args: BTreeMap<String, Value>,
     #[serde(default = "default_on_failure")]
     pub on_failure: OnFailure,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandPrecondition {
+    program: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -175,6 +187,7 @@ pub(crate) fn validate_ladder(
         }
         validate_args(&step.step_id, permutation, &resolved)?;
         validate_tool_semantics(&step.step_id, &step.tool, &step.permutation, &resolved)?;
+        validate_command_precondition(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validated.push(ValidatedStep {
             step_id: step.step_id.clone(),
             tool: step.tool.clone(),
@@ -314,6 +327,52 @@ fn validate_args(
     Ok(())
 }
 
+fn command_precondition(
+    args: &BTreeMap<String, Value>,
+) -> Result<Option<CommandPrecondition>, String> {
+    let Some(value) = args.get("precondition") else {
+        return Ok(None);
+    };
+    let precondition = serde_json::from_value(value.clone())
+        .map_err(|error| format!("precondition-invalid: {error}"))?;
+    Ok(Some(precondition))
+}
+
+fn validate_command_precondition(
+    step_id: &str,
+    tool: &str,
+    permutation: &str,
+    args: &BTreeMap<String, Value>,
+) -> Result<(), LadderValidationError> {
+    let Some(precondition) =
+        command_precondition(args).map_err(|defect| LadderValidationError {
+            step_id: step_id.into(),
+            defect,
+        })?
+    else {
+        return Ok(());
+    };
+    if tool != "command" || permutation != "capture" {
+        return Err(LadderValidationError {
+            step_id: step_id.into(),
+            defect: "precondition-requires-command-capture".into(),
+        });
+    }
+    if precondition.program.trim().is_empty() {
+        return Err(LadderValidationError {
+            step_id: step_id.into(),
+            defect: "precondition-program-empty".into(),
+        });
+    }
+    if precondition.timeout_secs == Some(0) {
+        return Err(LadderValidationError {
+            step_id: step_id.into(),
+            defect: "precondition-timeout-secs-zero".into(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_tool_semantics(
     step_id: &str,
     tool: &str,
@@ -376,6 +435,23 @@ pub(crate) fn execute_ladder_manifest(
     let mut first_missing_signal = None;
     let mut operation_count = 0usize;
     for step in steps {
+        if let Some(precondition) = command_precondition(&step.args)? {
+            operation_count += 1;
+            let outcome = command_precondition_step(&step, &precondition, manifest, module_dir)?;
+            if !outcome.ok {
+                ok = false;
+                let probe_error = outcome
+                    .command
+                    .as_ref()
+                    .map(|result| format!("exit_code={} stderr={}", result.code, result.stderr))
+                    .unwrap_or_else(|| outcome.message.clone());
+                first_missing_signal = Some(format!(
+                    "step_id={} state=blocked probe_error={probe_error}",
+                    step.step_id
+                ));
+                break;
+            }
+        }
         operation_count += 1;
         let outcome = execute_validated_step(
             &step,
@@ -597,6 +673,46 @@ fn command_capture_step(
         changed: false,
         skipped: !apply,
         message: format!("command capture {}", program),
+        command: Some(result),
+    })
+}
+
+fn command_precondition_step(
+    step: &ValidatedStep,
+    precondition: &CommandPrecondition,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+) -> Result<OperationOutcome, String> {
+    let argv_refs: Vec<&str> = precondition.args.iter().map(String::as_str).collect();
+    let result = tools::command::capture_with_options(
+        &precondition.program,
+        &argv_refs,
+        tools::command::CaptureOptions::new()
+            .cwd(precondition.cwd.as_deref())
+            .timeout_secs(precondition.timeout_secs.unwrap_or(tools::command::DEFAULT_TIMEOUT_SECS)),
+    );
+    crate::write_json(
+        &module_dir.join(format!("{}-precondition.json", step.step_id)),
+        &json!({
+            "schema": "harmonia.command_precondition.v1",
+            "module": manifest.id,
+            "step_id": step.step_id,
+            "state": if result.ok { "satisfied" } else { "blocked" },
+            "program": precondition.program,
+            "args": precondition.args,
+            "cwd": precondition.cwd,
+            "timeout_secs": precondition.timeout_secs.unwrap_or(tools::command::DEFAULT_TIMEOUT_SECS),
+            "raw_command_ran": false,
+            "probe": result,
+            "probe_error": if result.ok { "none".to_string() } else { format!("exit_code={} stderr={}", result.code, result.stderr) },
+            "first_missing_signal": if result.ok { "none" } else { "command-precondition-blocked" },
+        }),
+    )?;
+    Ok(OperationOutcome {
+        ok: result.ok,
+        changed: false,
+        skipped: false,
+        message: format!("command precondition {}", precondition.program),
         command: Some(result),
     })
 }

@@ -3089,9 +3089,10 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             }
             let module = load_module(&module_root.join("local-ai-runtime").join("sidecar.json"))?;
             let harmonia_root = harmonia_root_from_module_root(&module_root);
+            let run_started = std::time::Instant::now();
             let execution =
                 execute_profile_module(&module, &module_root, &receipt_dir, apply, &harmonia_root)?;
-            write_engine_run_receipt(
+            write_engine_run_receipt_with_duration(
                 &receipt_dir,
                 &profile,
                 apply,
@@ -3103,6 +3104,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 execution.first_missing_signal.as_deref().unwrap_or("none"),
                 &module_root,
                 execution.ok,
+                run_started.elapsed().as_millis(),
             )?;
             println!("schema=harmonia.local_ai_runtime.v1");
             println!("ok={}", execution.ok);
