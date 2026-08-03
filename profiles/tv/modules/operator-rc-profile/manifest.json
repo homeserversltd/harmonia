@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "operator-rc-profile",
   "version": "1.0.0",
-  "description": "TV operator-rc-profile module. Rust owns operator rc files, zsh login shell helpers, Oh My Posh config paths, and bin helpers; oh-my-posh package currentness is owned by the oh-my-posh-aur-ratchet module.",
+  "description": "TV operator rc profile. This module is the sole owner and converger of the operator shell rc set, including the Fulcrum PATH export, zsh helpers, Oh My Posh config paths, and bin helpers; oh-my-posh package currentness remains owned by oh-my-posh-aur-ratchet.",
   "optional": false,
   "constants": {
     "packages": [
@@ -14,10 +14,12 @@
     ],
     "target_dir": "/home/owner",
     "expected_files": [
-      ".zshrc",
-      ".zshrc.arch-install",
       ".aliases",
       ".functions",
+      ".inputrc",
+      ".nanorc",
+      ".profile",
+      ".zshrc",
       "omp.json",
       ".config/omp.json",
       "bin/waybar-meter.sh",
@@ -25,7 +27,7 @@
     ],
     "phase": 4,
     "receipt_schema": "harmonia.tv.operator_rc_profile.v1",
-    "meaning": "operator rc files, zsh login shell helpers, Oh My Posh config paths, and bin helpers are maintained; oh-my-posh package currentness is owned by oh-my-posh-aur-ratchet"
+    "meaning": "operator rc files, including the Fulcrum PATH export, are maintained only by operator-rc-profile; oh-my-posh package currentness is owned by oh-my-posh-aur-ratchet"
   },
   "ladder": [
     {
@@ -38,108 +40,27 @@
       }
     },
     {
-      "step_id": "expected-file-zshrc",
-      "tool": "command",
-      "permutation": "capture",
+      "step_id": "operator-rc-managed-files",
+      "tool": "files",
+      "permutation": "converge",
       "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.zshrc"
+        "source_root": "files_root/shell-rc",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".aliases",
+          ".functions",
+          ".inputrc",
+          ".nanorc",
+          ".profile",
+          ".zshrc"
         ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-zshrc-arch-install",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.zshrc.arch-install"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-aliases",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.aliases"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-functions",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.functions"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-omp-json",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/omp.json"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-config-omp-json",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.config/omp.json"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-bin-waybar-meter-sh",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/bin/waybar-meter.sh"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-bin-volume-sh",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/bin/volume.sh"
-        ],
-        "timeout_secs": 30
-      }
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tv-operator-shell-rc"
+      },
+      "on_failure": "stop"
     }
-  ]
+  ],
+  "files_root": "files_root"
 }
