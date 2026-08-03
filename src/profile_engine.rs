@@ -381,9 +381,9 @@ pub(crate) fn run_profile_engine_with_preflight_selected(
             }
         }
     } else {
-        // Engine-plane currentness is observed through its own preflight receipt;
-        // module hard consent never widens into a profile-wide engine mutation.
-        let preflight = run_engine_preflight(module_root, receipt_dir, false)?;
+        // Engine-plane self-update is automatic in every profile run. It has its
+        // own receipt and never derives from, nor widens, module hard consent.
+        let preflight = run_engine_preflight(module_root, receipt_dir, true)?;
         operation_count += preflight.operation_count;
         if preflight.changed {
             changed = true;
@@ -715,7 +715,9 @@ where
     let run = || {
         ensure_engine_config_for_rolling()?;
         normalize_engine_branch_upstream()?;
-        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, apply)?;
+        // Like the ordinary profile path, the engine owns automatic software
+        // currentness regardless of this rolling profile's module apply gate.
+        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, true)?;
         prelude(&effective_receipt_dir)?;
         let profile_path = module_root
             .parent()

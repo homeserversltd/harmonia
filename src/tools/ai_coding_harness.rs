@@ -5,10 +5,10 @@ use std::path::Path;
 
 pub const NAME: &str = "ai-coding-harness";
 pub const DESCRIPTION: &str =
-    "Owner-scoped AI coding harness currency reconciliation primitive that always follows upstream.";
+    "Owner-scoped AI coding harness currency reconciliation primitive that follows upstream only after target observation.";
 pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
     "reconcile",
-    "read current harness state and converge it to the current upstream state",
+    "probe current and upstream harness state, then converge only observed deltas",
     &[
         ToolArg::required("owner", ToolArgKind::String),
         ToolArg::required("claude_bin", ToolArgKind::String),
@@ -19,6 +19,9 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
     ],
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
+
+const CLAUDE_PACKAGE: &str = "@anthropic-ai/claude-code";
+const HONCHO_PLUGIN_PACKAGE: &str = "honcho";
 
 fn run(
     program: &str,
@@ -42,6 +45,21 @@ fn version(text: &str) -> Option<String> {
         })
         .collect();
     (tokens.len() == 1).then(|| tokens[0].to_string())
+}
+
+fn registry_version(text: &str) -> Option<String> {
+    serde_json::from_str::<String>(text)
+        .ok()
+        .or_else(|| version(text))
+        .filter(|value| !value.is_empty())
+}
+
+fn git_head(text: &str) -> Option<String> {
+    let values: Vec<_> = text
+        .split_whitespace()
+        .filter(|value| value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .collect();
+    (values.len() == 1).then(|| values[0].to_string())
 }
 
 fn plugin_version(value: &Value, id: &str) -> Option<String> {
@@ -78,30 +96,79 @@ fn plugin_version(value: &Value, id: &str) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, Default)]
 struct State {
     claude: Option<String>,
+    claude_latest: Option<String>,
     plugin: Option<String>,
+    plugin_latest: Option<String>,
     head: Option<String>,
-    git_status: Value,
+    head_latest: Option<String>,
+    probes: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct UpdatePlan {
+    claude: bool,
+    plugin: bool,
+    honcho: bool,
 }
 
 fn command_receipt(name: &str, result: &CmdResult) -> Value {
     json!({"name": name, "result": result})
 }
 
-fn upstream_command_names(remote: &str, branch: &str) -> Vec<String> {
-    vec![
-        "claude update".into(),
-        "claude plugin update honcho@honcho --scope user".into(),
-        format!("git fetch {remote} {branch}"),
-        format!("git merge --ff-only {remote}/{branch}"),
-        "uv sync".into(),
-        "systemctl --user restart honcho-api.service honcho-deriver.service".into(),
-    ]
+fn state_receipt(state: &State) -> Value {
+    json!({
+        "claude_version": state.claude,
+        "claude_latest_version": state.claude_latest,
+        "honcho_plugin_version": state.plugin,
+        "honcho_plugin_latest_version": state.plugin_latest,
+        "honcho_head": state.head,
+        "honcho_latest_head": state.head_latest,
+        "probes": state.probes,
+    })
 }
 
-fn read_state(owner: &str, claude_bin: &str, repo: &str, timeout_secs: u64) -> State {
+fn update_plan(state: &State) -> Result<UpdatePlan, &'static str> {
+    let comparable = |current: &Option<String>, latest: &Option<String>, signal| {
+        current
+            .as_ref()
+            .zip(latest.as_ref())
+            .map(|(current, latest)| current != latest)
+            .ok_or(signal)
+    };
+    Ok(UpdatePlan {
+        claude: comparable(
+            &state.claude,
+            &state.claude_latest,
+            "claude-target-unavailable",
+        )?,
+        plugin: comparable(
+            &state.plugin,
+            &state.plugin_latest,
+            "honcho-plugin-target-unavailable",
+        )?,
+        honcho: comparable(&state.head, &state.head_latest, "honcho-target-unavailable")?,
+    })
+}
+
+fn read_state(
+    owner: &str,
+    claude_bin: &str,
+    repo: &str,
+    remote: &str,
+    branch: &str,
+    timeout_secs: u64,
+) -> State {
     let claude = run(claude_bin, &["--version"], None, owner, timeout_secs);
+    let claude_latest = run(
+        "npm",
+        &["view", CLAUDE_PACKAGE, "version", "--json"],
+        None,
+        owner,
+        timeout_secs,
+    );
     let plugins = run(
         claude_bin,
         &["plugin", "list", "--json"],
@@ -109,9 +176,23 @@ fn read_state(owner: &str, claude_bin: &str, repo: &str, timeout_secs: u64) -> S
         owner,
         timeout_secs,
     );
+    let plugin_latest = run(
+        "npm",
+        &["view", HONCHO_PLUGIN_PACKAGE, "version", "--json"],
+        None,
+        owner,
+        timeout_secs,
+    );
     let head = run(
         "git",
         &["rev-parse", "HEAD"],
+        Some(repo),
+        owner,
+        timeout_secs,
+    );
+    let head_latest = run(
+        "git",
+        &["ls-remote", remote, branch],
         Some(repo),
         owner,
         timeout_secs,
@@ -125,26 +206,37 @@ fn read_state(owner: &str, claude_bin: &str, repo: &str, timeout_secs: u64) -> S
     );
     State {
         claude: claude.ok.then(|| version(&claude.stdout)).flatten(),
+        claude_latest: claude_latest
+            .ok
+            .then(|| registry_version(&claude_latest.stdout))
+            .flatten(),
         plugin: plugins
             .ok
             .then(|| serde_json::from_str::<Value>(&plugins.stdout).ok())
             .flatten()
             .and_then(|value| plugin_version(&value, "honcho@honcho")),
-        head: head
+        plugin_latest: plugin_latest
             .ok
-            .then(|| head.stdout.trim().to_string())
-            .filter(|value| value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())),
-        git_status: command_receipt("git status --porcelain --untracked-files=no", &git_status),
+            .then(|| registry_version(&plugin_latest.stdout))
+            .flatten(),
+        head: head.ok.then(|| git_head(&head.stdout)).flatten(),
+        head_latest: head_latest
+            .ok
+            .then(|| git_head(&head_latest.stdout))
+            .flatten(),
+        probes: vec![
+            command_receipt("claude --version", &claude),
+            command_receipt(
+                "npm view @anthropic-ai/claude-code version --json",
+                &claude_latest,
+            ),
+            command_receipt("claude plugin list --json", &plugins),
+            command_receipt("npm view honcho version --json", &plugin_latest),
+            command_receipt("git rev-parse HEAD", &head),
+            command_receipt(&format!("git ls-remote {remote} {branch}"), &head_latest),
+            command_receipt("git status --porcelain --untracked-files=no", &git_status),
+        ],
     }
-}
-
-fn state_receipt(state: &State) -> Value {
-    json!({
-        "claude_version": state.claude,
-        "honcho_plugin_version": state.plugin,
-        "honcho_head": state.head,
-        "git_status": state.git_status,
-    })
 }
 
 pub(crate) fn reconcile(
@@ -161,95 +253,104 @@ pub(crate) fn reconcile(
         return Err("ai-coding-harness-owner-refused".into());
     }
 
-    let before = read_state(owner, claude_bin, repo, timeout_secs);
+    let before = read_state(owner, claude_bin, repo, remote, branch, timeout_secs);
+    let plan = update_plan(&before);
     let mut commands = Vec::new();
 
     if apply {
-        let mut planned = upstream_command_names(remote, branch).into_iter();
-        let claude_update = run(claude_bin, &["update"], None, owner, timeout_secs);
-
-        commands.push(command_receipt(&planned.next().unwrap(), &claude_update));
-
-        let plugin_update = run(
-            claude_bin,
-            &["plugin", "update", "honcho@honcho", "--scope", "user"],
-            None,
-            owner,
-            timeout_secs,
-        );
-
-        commands.push(command_receipt(&planned.next().unwrap(), &plugin_update));
-
-        let fetch = run(
-            "git",
-            &["fetch", remote, branch],
-            Some(repo),
-            owner,
-            timeout_secs,
-        );
-
-        commands.push(command_receipt(&planned.next().unwrap(), &fetch));
-
-        let merge_ref = format!("{remote}/{branch}");
-        let merge = run(
-            "git",
-            &["merge", "--ff-only", &merge_ref],
-            Some(repo),
-            owner,
-            timeout_secs,
-        );
-
-        commands.push(command_receipt(&planned.next().unwrap(), &merge));
-
-        let sync = run("uv", &["sync"], Some(repo), owner, timeout_secs);
-
-        commands.push(command_receipt(&planned.next().unwrap(), &sync));
-
-        let updated = read_state(owner, claude_bin, repo, timeout_secs);
-        let service_material_changed = before.head != updated.head;
-        let restart = if service_material_changed {
-            command::user_bus_env_for_bearer(owner).map_or_else(
-                |err| CmdResult {
-                    ok: false,
-                    code: -1,
-                    stdout: String::new(),
-                    stderr: err,
-                },
-                |env| {
-                    command::capture_with_cwd_as_bearer_and_env(
-                        "systemctl",
-                        &[
-                            "--user",
-                            "restart",
-                            "honcho-api.service",
-                            "honcho-deriver.service",
-                        ],
-                        None,
-                        owner,
-                        env,
-                    )
-                },
-            )
-        } else {
-            CmdResult {
-                ok: true,
-                code: 0,
-                stdout: "converged-quiet: service material unchanged".into(),
-                stderr: String::new(),
+        if let Ok(plan) = &plan {
+            if plan.claude {
+                let result = run(claude_bin, &["update"], None, owner, timeout_secs);
+                commands.push(command_receipt("claude update", &result));
             }
-        };
-        commands.push(command_receipt(&planned.next().unwrap(), &restart));
+            if plan.plugin {
+                let result = run(
+                    claude_bin,
+                    &["plugin", "update", "honcho@honcho", "--scope", "user"],
+                    None,
+                    owner,
+                    timeout_secs,
+                );
+                commands.push(command_receipt(
+                    "claude plugin update honcho@honcho --scope user",
+                    &result,
+                ));
+            }
+            if plan.honcho {
+                let fetch = run(
+                    "git",
+                    &["fetch", remote, branch],
+                    Some(repo),
+                    owner,
+                    timeout_secs,
+                );
+                commands.push(command_receipt(
+                    &format!("git fetch {remote} {branch}"),
+                    &fetch,
+                ));
+                if fetch.ok {
+                    let merge_ref = format!("{remote}/{branch}");
+                    let merge = run(
+                        "git",
+                        &["merge", "--ff-only", &merge_ref],
+                        Some(repo),
+                        owner,
+                        timeout_secs,
+                    );
+                    commands.push(command_receipt(
+                        &format!("git merge --ff-only {merge_ref}"),
+                        &merge,
+                    ));
+                    if merge.ok {
+                        let sync = run("uv", &["sync"], Some(repo), owner, timeout_secs);
+                        commands.push(command_receipt("uv sync", &sync));
+                    }
+                }
+            }
+        }
     }
 
-    let after = read_state(owner, claude_bin, repo, timeout_secs);
-    let changed = before.claude != after.claude
-        || before.plugin != after.plugin
-        || before.head != after.head;
+    let after_updates = read_state(owner, claude_bin, repo, remote, branch, timeout_secs);
+    if apply && plan.as_ref().is_ok_and(|plan| plan.honcho) && before.head != after_updates.head {
+        let restart = command::user_bus_env_for_bearer(owner).map_or_else(
+            |err| CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: err,
+            },
+            |env| {
+                command::capture_with_cwd_as_bearer_and_env(
+                    "systemctl",
+                    &[
+                        "--user",
+                        "restart",
+                        "honcho-api.service",
+                        "honcho-deriver.service",
+                    ],
+                    None,
+                    owner,
+                    env,
+                )
+            },
+        );
+        commands.push(command_receipt(
+            "systemctl --user restart honcho-api.service honcho-deriver.service",
+            &restart,
+        ));
+    }
+    let after = read_state(owner, claude_bin, repo, remote, branch, timeout_secs);
+    let changed =
+        before.claude != after.claude || before.plugin != after.plugin || before.head != after.head;
     let next_session_required = before.claude != after.claude || before.plugin != after.plugin;
-    let ok = commands
+    let commands_ok = commands
         .iter()
         .all(|command| command["result"]["ok"] == Value::Bool(true));
-    let signal = if apply && !ok {
+    let plan_signal = plan.err().unwrap_or("none");
+    let ok = commands_ok && plan_signal == "none";
+    let signal = if plan_signal != "none" {
+        plan_signal
+    } else if apply && !commands_ok {
         "ai-coding-harness-command-failed"
     } else {
         "none"
@@ -287,7 +388,12 @@ mod tests {
     #[test]
     fn strict_version_and_plugin_parse() {
         assert_eq!(version("v2.1.218"), Some("2.1.218".into()));
+        assert_eq!(registry_version("\"2.1.220\""), Some("2.1.220".into()));
         assert_eq!(version("a 1.2 b 3.4"), None);
+        assert_eq!(
+            git_head("0123456789012345678901234567890123456789\trefs/heads/main\n"),
+            Some("0123456789012345678901234567890123456789".into())
+        );
         let value: Value =
             serde_json::json!({"plugins":[{"id":"honcho@honcho","version":"0.2.7"}]});
         assert_eq!(
@@ -297,17 +403,34 @@ mod tests {
     }
 
     #[test]
-    fn upstream_command_inventory_keeps_restart_as_the_final_gated_action() {
-        assert_eq!(
-            upstream_command_names("origin", "main"),
-            vec![
-                "claude update",
-                "claude plugin update honcho@honcho --scope user",
-                "git fetch origin main",
-                "git merge --ff-only origin/main",
-                "uv sync",
-                "systemctl --user restart honcho-api.service honcho-deriver.service",
-            ]
-        );
+    fn current_probe_produces_an_empty_update_plan() {
+        let current = State {
+            claude: Some("2.1.220".into()),
+            claude_latest: Some("2.1.220".into()),
+            plugin: Some("0.4.13".into()),
+            plugin_latest: Some("0.4.13".into()),
+            head: Some("0123456789012345678901234567890123456789".into()),
+            head_latest: Some("0123456789012345678901234567890123456789".into()),
+            probes: Vec::new(),
+        };
+        assert_eq!(update_plan(&current).unwrap(), UpdatePlan::default());
+        let receipt = json!({"changed": false, "commands": Vec::<Value>::new(), "before": state_receipt(&current)});
+        assert_eq!(receipt["changed"], Value::Bool(false));
+        assert_eq!(receipt["commands"], json!([]));
+        assert_eq!(receipt["before"]["claude_latest_version"], "2.1.220");
+    }
+
+    #[test]
+    fn unavailable_target_refuses_update_before_any_command() {
+        let state = State {
+            claude: Some("2.1.220".into()),
+            claude_latest: None,
+            plugin: Some("0.4.13".into()),
+            plugin_latest: Some("0.4.13".into()),
+            head: Some("0123456789012345678901234567890123456789".into()),
+            head_latest: Some("0123456789012345678901234567890123456789".into()),
+            probes: Vec::new(),
+        };
+        assert_eq!(update_plan(&state), Err("claude-target-unavailable"));
     }
 }
