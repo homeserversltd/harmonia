@@ -3095,6 +3095,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 &receipt_dir,
                 &profile,
                 apply,
+                None,
                 execution.ok,
                 execution.changed,
                 1,
@@ -3268,7 +3269,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia resolve-source <component> --certificate <path> [--owner-module <id>] [--step-id <id>]");
     println!("  harmonia acquire-source <component> --certificate <path> --engine-config <path> --destination <path> [--bearer <name>] [--expected-commit <sha>]");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
-    println!("  harmonia update [--apply] [--receipt-dir <path>]");
+    println!("  harmonia update [--hard all|<module-id>] [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia subscription show");
     println!("  harmonia molt <profile-id> --out <path> [--harmonia-root <path>] [--mode copy|symlink] [--receipt-dir <path>]");

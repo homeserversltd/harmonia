@@ -274,7 +274,26 @@ pub(crate) fn run_profile_engine(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<(), String> {
-    run_profile_engine_with_preflight(profile, module_root, receipt_dir, apply, false, None, None)
+    run_profile_engine_selected(profile, module_root, receipt_dir, apply, None)
+}
+
+pub(crate) fn run_profile_engine_selected(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    apply: bool,
+    hard_module: Option<&str>,
+) -> Result<(), String> {
+    run_profile_engine_with_preflight_selected(
+        profile,
+        module_root,
+        receipt_dir,
+        apply,
+        hard_module,
+        false,
+        None,
+        None,
+    )
 }
 
 pub(crate) fn run_profile_engine_with_preflight(
@@ -282,6 +301,28 @@ pub(crate) fn run_profile_engine_with_preflight(
     module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
+    skip_preflight: bool,
+    completed_preflight: Option<ModuleExecution>,
+    suite_debt: Option<&str>,
+) -> Result<(), String> {
+    run_profile_engine_with_preflight_selected(
+        profile,
+        module_root,
+        receipt_dir,
+        apply,
+        None,
+        skip_preflight,
+        completed_preflight,
+        suite_debt,
+    )
+}
+
+pub(crate) fn run_profile_engine_with_preflight_selected(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    apply: bool,
+    hard_module: Option<&str>,
     skip_preflight: bool,
     completed_preflight: Option<ModuleExecution>,
     suite_debt: Option<&str>,
@@ -340,7 +381,9 @@ pub(crate) fn run_profile_engine_with_preflight(
             }
         }
     } else {
-        let preflight = run_engine_preflight(module_root, receipt_dir, apply)?;
+        // Engine-plane self-update is automatic in every profile run. It has its
+        // own receipt and never derives from, nor widens, module hard consent.
+        let preflight = run_engine_preflight(module_root, receipt_dir, true)?;
         operation_count += preflight.operation_count;
         if preflight.changed {
             changed = true;
@@ -428,10 +471,15 @@ pub(crate) fn run_profile_engine_with_preflight(
             )?;
             continue;
         }
+        let module_apply = apply && hard_module.is_none_or(|selected| selected == module.id());
         let execution_result = match &module {
-            LoadedModule::Sidecar(sidecar) => {
-                execute_profile_module(sidecar, module_root, receipt_dir, apply, &harmonia_root)
-            }
+            LoadedModule::Sidecar(sidecar) => execute_profile_module(
+                sidecar,
+                module_root,
+                receipt_dir,
+                module_apply,
+                &harmonia_root,
+            ),
             LoadedModule::Ladder(manifest) => {
                 let module_dir = receipt_dir.join("modules").join(&manifest.id);
                 let mut manifest = manifest.clone();
@@ -439,7 +487,7 @@ pub(crate) fn run_profile_engine_with_preflight(
                 execute_ladder_manifest(
                     &manifest,
                     &module_dir,
-                    apply,
+                    module_apply,
                     profile.package_authority.as_ref(),
                 )
             }
@@ -509,6 +557,7 @@ pub(crate) fn run_profile_engine_with_preflight(
         receipt_dir,
         profile,
         apply,
+        hard_module,
         ok,
         changed,
         module_count,
@@ -525,7 +574,10 @@ pub(crate) fn run_profile_engine_with_preflight(
     println!("operation_count={}", operation_count);
     println!("first_missing_signal={}", first_missing_signal);
     println!("receipt_dir={}", receipt_dir.display());
-    if ok {
+    // A report-only sweep is a census, not a systemd failure: its written
+    // aggregate receipt carries all drift/blocker/failure truth. Hard runs
+    // return failure only after that receipt has been emitted.
+    if ok || !apply {
         Ok(())
     } else {
         Err(first_missing_signal)
@@ -663,7 +715,9 @@ where
     let run = || {
         ensure_engine_config_for_rolling()?;
         normalize_engine_branch_upstream()?;
-        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, apply)?;
+        // Like the ordinary profile path, the engine owns automatic software
+        // currentness regardless of this rolling profile's module apply gate.
+        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, true)?;
         prelude(&effective_receipt_dir)?;
         let profile_path = module_root
             .parent()
