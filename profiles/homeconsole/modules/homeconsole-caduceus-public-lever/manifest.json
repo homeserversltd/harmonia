@@ -1,55 +1,42 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "homeconsole-caduceus-public-lever",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "HomeConsole Caduceus public lever runtime. Rust owns caduceus source sync, cargo build, binary install, profile/policy/state convergence, caduceus.service standup, and HTTP health proof; this sidecar carries constants only.",
   "constants": {},
   "ladder": [
     {
-      "step_id": "caduceus-staff-venv",
-      "tool": "command",
-      "permutation": "capture",
+      "step_id": "caduceus-bootstrap-source-from-declared-profile",
+      "tool": "git-artifact",
+      "permutation": "sync",
       "args": {
-        "program": "/usr/bin/python3",
-        "args": [
-          "-m",
-          "venv",
-          "/var/lib/caduceus/venv"
-        ]
+        "component": "caduceus",
+        "path": "/opt/caduceus/source",
+        "source_dir": "/opt/caduceus/source"
       }
     },
     {
-        "step_id": "caduceus-bootstrap-source-from-declared-profile",
-        "tool": "git-artifact",
-        "permutation": "sync",
-        "args": {
-            "component": "caduceus",
-            "path": "/opt/caduceus/source",
-            "source_dir": "/opt/caduceus/source"
-        }
+      "step_id": "caduceus-staff-shelf-from-synced-source",
+      "tool": "files",
+      "permutation": "source-shelf-sweep",
+      "args": {
+        "source_root": "/opt/caduceus/source/data/staff-actuators",
+        "shelf_source": "caduceus_staff",
+        "target_shelf": "/usr/local/sbin/caduceus_staff",
+        "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
+        "launcher_target_root": "/usr/local/sbin",
+        "launcher_pattern": "caduceus-*",
+        "shelf_owner": "root",
+        "shelf_group": "root",
+        "shelf_directory_mode": 493,
+        "shelf_file_mode": 420,
+        "launcher_mode": 493,
+        "prune": true
+      }
     },
     {
-        "step_id": "caduceus-staff-shelf-from-synced-source",
-        "tool": "files",
-        "permutation": "source-shelf-sweep",
-        "args": {
-            "source_root": "/opt/caduceus/source/data/staff-actuators",
-            "shelf_source": "caduceus_staff",
-            "target_shelf": "/usr/local/sbin/caduceus_staff",
-            "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
-            "launcher_target_root": "/usr/local/sbin",
-            "launcher_pattern": "caduceus-*",
-            "shelf_owner": "root",
-            "shelf_group": "root",
-            "shelf_directory_mode": 493,
-            "shelf_file_mode": 420,
-            "launcher_mode": 493,
-            "prune": true
-        }
-    },
-    {
-        "step_id": "caduceus-service-runtime",
-        "tool": "service-runtime",
+      "step_id": "caduceus-service-runtime",
+      "tool": "service-runtime",
       "permutation": "converge",
       "args": {
         "module_id": "homeconsole-caduceus-public-lever",
@@ -95,5 +82,5 @@
         }
       }
     }
-    ]
-    }
+  ]
+}

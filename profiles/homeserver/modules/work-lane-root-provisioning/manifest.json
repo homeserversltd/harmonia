@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "work-lane-root-provisioning",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Converge the existing Harmonia work root and homeserver body lane root as owner-writable directories; no package installation or service ownership.",
   "optional": false,
   "constants": {
@@ -10,28 +10,5 @@
     "bearer": "owner",
     "group": "owner"
   },
-  "ladder": [
-    {
-      "step_id": "work-root-directory-owner",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/install",
-        "args": ["-d", "-o", "$constants.bearer", "-g", "$constants.group", "-m", "0755", "$constants.work_root"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "body-lane-root-directory-owner",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/install",
-        "args": ["-d", "-o", "$constants.bearer", "-g", "$constants.group", "-m", "0755", "$constants.body_lane_root"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    }
-  ]
+  "ladder": []
 }

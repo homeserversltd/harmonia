@@ -206,15 +206,11 @@ struct OperationOutcome {
 
 pub mod application_presets;
 mod arcadia_gui_runtime;
-mod keyman_runtime;
 mod pinned_artifacts_runtime;
 
 pub(crate) use arcadia_gui_runtime::{
     homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
 };
-pub(crate) use keyman_runtime::homeconsole_keyman_update;
-#[cfg(test)]
-pub(crate) use keyman_runtime::{redact_secret_text, sync_directory};
 pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 
 mod capsule;
@@ -702,15 +698,6 @@ mod tests {
         assert!(!crate::tools::package::pacman_stdout_indicates_change(
             " there is nothing to do"
         ));
-    }
-
-    #[test]
-    fn redacts_secret_bearing_lines() {
-        let redacted = redact_secret_text("ok\npassword=abc\nusername=owner\npublic=yes");
-        assert!(redacted.contains("ok"));
-        assert!(redacted.contains("public=yes"));
-        assert!(!redacted.contains("abc"));
-        assert!(!redacted.contains("owner"));
     }
 
     #[test]
@@ -2182,7 +2169,7 @@ mod tests {
     }
 
     #[test]
-    fn keyman_runtime_module_requires_git_checkout_authority() {
+    fn keyman_module_requires_git_checkout_authority() {
         let root = repo_root();
         assert!(!root
             .join("profiles/homeconsole/modules/harmonia-runtime")
@@ -2461,20 +2448,6 @@ mod tests {
         assert!(tools::get("health").is_some());
         assert!(tools::get("files").is_some());
         assert!(tools::get("package").is_some());
-    }
-
-    #[test]
-    fn keyman_store_update_noops_when_checkout_and_store_are_same_path() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-keyman-same-path-{}", process::id()));
-        fs::create_dir_all(root.join("lib/keyman_installer")).unwrap();
-        fs::write(root.join("index.py"), "print('ok')\n").unwrap();
-        fs::write(root.join("lib/keyman_installer/index.py"), "print('ok')\n").unwrap();
-        fs::write(root.join("keystartup.sh"), "#!/bin/sh\n").unwrap();
-        fs::write(root.join("exportkey.sh"), "#!/bin/sh\n").unwrap();
-        let changed = sync_directory(&root, &root).unwrap();
-        assert!(!changed);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2890,38 +2863,6 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let module_root = default_module_root(Path::new(path));
             tv_update(&profile, &module_root, &receipt_dir, apply)
         }
-        Some("homeconsole-keyman-update") => {
-            let path = args
-                .get(1)
-                .ok_or("homeconsole-keyman-update requires <profile-index-json>")?;
-            let receipt_dir = receipt_dir_arg(&args)
-                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/keyman-latest"));
-            let source =
-                value_arg(&args, "--source").unwrap_or_else(|| PathBuf::from("/opt/keyman/source"));
-            let store_dir = value_arg(&args, "--store-dir")
-                .unwrap_or_else(|| PathBuf::from("/opt/keyman/source"));
-            let runtime_dir =
-                value_arg(&args, "--runtime-dir").unwrap_or_else(|| PathBuf::from("/vault/keyman"));
-            let vault_dir =
-                value_arg(&args, "--vault-dir").unwrap_or_else(|| PathBuf::from("/vault"));
-            let key_dir =
-                value_arg(&args, "--key-dir").unwrap_or_else(|| PathBuf::from("/root/key"));
-            let exchange_dir = value_arg(&args, "--exchange-dir")
-                .unwrap_or_else(|| PathBuf::from("/mnt/keyexchange"));
-            let apply = args.iter().any(|arg| arg == "--apply");
-            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
-            homeconsole_keyman_update(
-                &profile,
-                &receipt_dir,
-                &source,
-                &store_dir,
-                &runtime_dir,
-                &vault_dir,
-                &key_dir,
-                &exchange_dir,
-                apply,
-            )
-        }
         Some("homeconsole-local-ai-update") => {
             let path = args
                 .get(1)
@@ -3133,7 +3074,6 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia homeserver-update <profiles/homeserver/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia tv-update <profiles/tv/index.json> [--apply] [--receipt-dir <path>]");
-    println!("  harmonia homeconsole-keyman-update <profiles/homeconsole/index.json> --source <keyman-source> [--apply] [--store-dir /opt/keyman/source] [--runtime-dir /vault/keyman] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-local-ai-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha <sha>] [--source-sha-file <path>] [--receipt-dir <path>]");

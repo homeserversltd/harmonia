@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "HOMESERVER Caduceus public lever with a provisioned caduceus_staff Python environment and sudoers refresh consumer declaration.",
   "constants": {
     "staff_venv": "/var/lib/caduceus/venv",
@@ -21,33 +21,6 @@
             "owner": "owner",
             "group": "owner"
           }
-        ]
-      }
-    },
-    {
-      "step_id": "caduceus-staff-venv",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": [
-          "-m",
-          "venv",
-          "/var/lib/caduceus/venv"
-        ]
-      }
-    },
-    {
-      "step_id": "caduceus-staff-cryptography",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/var/lib/caduceus/venv/bin/python3",
-        "args": [
-          "-m",
-          "pip",
-          "install",
-          "cryptography"
         ]
       }
     },
