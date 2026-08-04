@@ -257,6 +257,27 @@ fn module_from_args(
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
+struct SourceGateObservation {
+    remote_probe: Option<tools::git_artifact::RemoteHeadProbe>,
+    promoted_source_head: Option<CmdResult>,
+    installed_binary_present: bool,
+}
+
+impl SourceGateObservation {
+    fn matches(&self) -> bool {
+        self.remote_probe
+            .as_ref()
+            .and_then(|probe| probe.remote_sha.as_deref())
+            .zip(self.promoted_source_head.as_ref())
+            .is_some_and(|(remote_sha, source_head)| {
+                source_head.ok
+                    && source_head.stdout.trim() == remote_sha
+                    && self.installed_binary_present
+            })
+    }
+}
+
 pub(crate) struct ServiceRuntimeSpec {
     pub op_prefix: &'static str,
     pub run_schema: &'static str,
@@ -311,21 +332,72 @@ pub(crate) fn execute(
         source_plan.bearer = bearer.to_string();
     }
     let source_bearer = source_plan.bearer.clone();
-    let remote_probe = apply.then(|| tools::git_artifact::probe_declared_remote_head(&source_plan));
-    let promoted_source_head = remote_probe
-        .as_ref()
-        .and_then(|probe| probe.remote_sha.as_ref())
-        .map(|_| tools::git_artifact::source_head(&source_dir, &source_bearer));
-    let installed_binary_present = fs::symlink_metadata(&install_bin)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false);
-    let source_gate_matched = remote_probe
-        .as_ref()
-        .and_then(|probe| probe.remote_sha.as_deref())
-        .zip(promoted_source_head.as_ref())
-        .is_some_and(|(remote_sha, source_head)| {
-            source_head.ok && source_head.stdout.trim() == remote_sha && installed_binary_present
-        });
+    let source_gate = tools::comparison::execute(
+        || {
+            let remote_probe =
+                apply.then(|| tools::git_artifact::probe_declared_remote_head(&source_plan));
+            let promoted_source_head = remote_probe
+                .as_ref()
+                .and_then(|probe| probe.remote_sha.as_ref())
+                .map(|_| tools::git_artifact::source_head(&source_dir, &source_bearer));
+            let installed_binary_present = fs::symlink_metadata(&install_bin)
+                .map(|metadata| metadata.file_type().is_file())
+                .unwrap_or(false);
+            Ok::<_, String>(SourceGateObservation {
+                remote_probe,
+                promoted_source_head,
+                installed_binary_present,
+            })
+        },
+        |observation| {
+            if observation.matches() {
+                tools::comparison::DiffDecision::Empty
+            } else {
+                tools::comparison::DiffDecision::Different
+            }
+        },
+        |_, _| {
+            if apply {
+                Ok(tools::git_artifact::acquire_source(&source_plan))
+            } else {
+                Ok(tools::git_artifact::SourceOutcome {
+                    ok: true,
+                    changed: false,
+                    receipt: tools::git_artifact::SourceReceipt {
+                        attempts: Vec::new(),
+                        served_index: None,
+                        resolved_commit: None,
+                        promotion: "planned source acquisition".to_string(),
+                    },
+                })
+            }
+        },
+    )?;
+    let source_gate_matched = source_gate.decision() == tools::comparison::DiffDecision::Empty;
+    let remote_probe = source_gate.observation().remote_probe.clone();
+    let promoted_source_head = source_gate.observation().promoted_source_head.clone();
+    let installed_binary_present = source_gate.observation().installed_binary_present;
+    let git_outcome = match source_gate {
+        tools::comparison::ComparisonRun::Current { .. } => {
+            let source_sha = promoted_source_head
+                .as_ref()
+                .map(|result| result.stdout.trim())
+                .unwrap_or_default();
+            tools::git_artifact::SourceOutcome {
+                ok: true,
+                changed: false,
+                receipt: tools::git_artifact::SourceReceipt {
+                    attempts: Vec::new(),
+                    served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
+                    resolved_commit: Some(source_sha.to_string()),
+                    promotion: format!(
+                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present=true"
+                    ),
+                },
+            }
+        }
+        tools::comparison::ComparisonRun::Moved { movement, .. } => movement,
+    };
     write_source_gate_receipt(
         receipt_dir,
         spec,
@@ -333,38 +405,8 @@ pub(crate) fn execute(
         promoted_source_head.as_ref(),
         installed_binary_present,
         source_gate_matched,
+        &git_outcome,
     )?;
-    let git_outcome = if source_gate_matched {
-        let source_sha = promoted_source_head
-            .as_ref()
-            .map(|result| result.stdout.trim())
-            .unwrap_or_default();
-        tools::git_artifact::SourceOutcome {
-            ok: true,
-            changed: false,
-            receipt: tools::git_artifact::SourceReceipt {
-                attempts: Vec::new(),
-                served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
-                resolved_commit: Some(source_sha.to_string()),
-                promotion: format!(
-                    "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present=true"
-                ),
-            },
-        }
-    } else if apply {
-        tools::git_artifact::acquire_source(&source_plan)
-    } else {
-        tools::git_artifact::SourceOutcome {
-            ok: true,
-            changed: false,
-            receipt: tools::git_artifact::SourceReceipt {
-                attempts: Vec::new(),
-                served_index: None,
-                resolved_commit: None,
-                promotion: "planned source acquisition".to_string(),
-            },
-        }
-    };
     let source_command = source_outcome_cmd(&git_outcome);
     write_command_receipt(receipt_dir, spec.source_op, &source_command)?;
     if !git_outcome.ok {
@@ -771,6 +813,7 @@ fn write_source_gate_receipt(
     promoted_source_head: Option<&CmdResult>,
     installed_binary_present: bool,
     matched: bool,
+    movement: &tools::git_artifact::SourceOutcome,
 ) -> Result<(), String> {
     let remote_sha = probe.and_then(|probe| probe.remote_sha.as_deref());
     let promoted_source_sha = promoted_source_head
@@ -789,7 +832,23 @@ fn write_source_gate_receipt(
         &json!({
             "schema": "harmonia.service-runtime.source-gate.v1",
             "state": state,
-            "changed": false,
+            "observed_state": {
+                "promoted_source_sha": promoted_source_sha,
+                "installed_binary_present": installed_binary_present,
+            },
+            "desired_state": {
+                "remote_sha": remote_sha,
+            },
+            "diff_decision": if matched { "empty" } else { "different" },
+            "movement": {
+                "kind": if matched { "none" } else { "source-acquire" },
+                "attempted": !matched,
+                "ok": movement.ok,
+                "changed": movement.changed,
+                "resolved_commit": movement.receipt.resolved_commit.as_deref(),
+                "promotion": movement.receipt.promotion.as_str(),
+            },
+            "changed": movement.changed,
             "acquire_skipped": matched,
             "build_skipped": matched,
             "reference": probe.map(|probe| probe.reference.as_str()),
