@@ -397,7 +397,7 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
 
-    let certificate = PathBuf::from("/etc/appliance/profile.json");
+    let certificate = crate::device_profile_certificate_path();
     let resolution = crate::resolve_source(
         &certificate,
         component,
