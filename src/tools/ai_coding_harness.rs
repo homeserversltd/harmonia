@@ -112,6 +112,13 @@ struct UpdatePlan {
     claude: bool,
     plugin: bool,
     honcho: bool,
+    latest_lookup_signal: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Comparison {
+    update: bool,
+    latest_lookup_signal: Option<&'static str>,
 }
 
 fn command_receipt(name: &str, result: &CmdResult) -> Value {
@@ -131,25 +138,43 @@ fn state_receipt(state: &State) -> Value {
 }
 
 fn update_plan(state: &State) -> Result<UpdatePlan, &'static str> {
-    let comparable = |current: &Option<String>, latest: &Option<String>, signal| {
-        current
-            .as_ref()
-            .zip(latest.as_ref())
-            .map(|(current, latest)| current != latest)
-            .ok_or(signal)
-    };
+    let comparable =
+        |current: &Option<String>, latest: &Option<String>, target_signal, latest_lookup_signal| {
+            let current = current.as_ref().ok_or(target_signal)?;
+            Ok(Comparison {
+                update: latest
+                    .as_ref()
+                    .map(|latest| current != latest)
+                    .unwrap_or(false),
+                latest_lookup_signal: latest.is_none().then_some(latest_lookup_signal),
+            })
+        };
+    let claude = comparable(
+        &state.claude,
+        &state.claude_latest,
+        "claude-target-unavailable",
+        "claude-latest-lookup-unavailable",
+    )?;
+    let plugin = comparable(
+        &state.plugin,
+        &state.plugin_latest,
+        "honcho-plugin-target-unavailable",
+        "honcho-plugin-latest-lookup-unavailable",
+    )?;
+    let honcho = comparable(
+        &state.head,
+        &state.head_latest,
+        "honcho-target-unavailable",
+        "honcho-latest-lookup-unavailable",
+    )?;
     Ok(UpdatePlan {
-        claude: comparable(
-            &state.claude,
-            &state.claude_latest,
-            "claude-target-unavailable",
-        )?,
-        plugin: comparable(
-            &state.plugin,
-            &state.plugin_latest,
-            "honcho-plugin-target-unavailable",
-        )?,
-        honcho: comparable(&state.head, &state.head_latest, "honcho-target-unavailable")?,
+        claude: claude.update,
+        plugin: plugin.update,
+        honcho: honcho.update,
+        latest_lookup_signal: claude
+            .latest_lookup_signal
+            .or(plugin.latest_lookup_signal)
+            .or(honcho.latest_lookup_signal),
     })
 }
 
@@ -161,7 +186,14 @@ fn read_state(
     branch: &str,
     timeout_secs: u64,
 ) -> State {
-    let claude = run(claude_bin, &["--version"], None, owner, timeout_secs);
+    // Resolve under the privileged engine before dropping to the declared owner.
+    // This keeps an owner-owned symlink usable while the actual invocation still
+    // proves that the owner can execute its resolved target.
+    let claude_program = Path::new(claude_bin)
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(claude_bin).to_path_buf());
+    let claude_program = claude_program.to_string_lossy();
+    let claude = run(&claude_program, &["--version"], None, owner, timeout_secs);
     let claude_latest = run(
         "npm",
         &["view", CLAUDE_PACKAGE, "version", "--json"],
@@ -346,12 +378,19 @@ pub(crate) fn reconcile(
     let commands_ok = commands
         .iter()
         .all(|command| command["result"]["ok"] == Value::Bool(true));
-    let plan_signal = plan.err().unwrap_or("none");
+    let plan_signal = plan.as_ref().err().copied().unwrap_or("none");
+    let latest_lookup_signal = plan
+        .as_ref()
+        .ok()
+        .and_then(|plan| plan.latest_lookup_signal)
+        .unwrap_or("none");
     let ok = commands_ok && plan_signal == "none";
     let signal = if plan_signal != "none" {
         plan_signal
     } else if apply && !commands_ok {
         "ai-coding-harness-command-failed"
+    } else if latest_lookup_signal != "none" {
+        latest_lookup_signal
     } else {
         "none"
     };
