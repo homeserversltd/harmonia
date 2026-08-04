@@ -1060,13 +1060,24 @@ fn files_converge_step(
             .and_then(Value::as_bool)
             .unwrap_or(false)
     {
+        let run = crate::tools::comparison::execute(
+            || Ok::<_, String>((source_root.clone(), target_root.clone())),
+            |_| crate::tools::comparison::DiffDecision::Empty,
+            |_, _| Ok::<_, String>(()),
+        )?;
+        let (observed_source_root, observed_target_root) = match run {
+            crate::tools::comparison::ComparisonRun::Current { observation, .. } => observation,
+            crate::tools::comparison::ComparisonRun::Moved { .. } => {
+                return Err("directory-sync-same-root-unexpected-movement".into());
+            }
+        };
         let outcome = OperationOutcome {
             ok: true,
             changed: false,
             skipped: !apply,
             message: format!(
                 "directory-sync same-root verified {}",
-                source_root.display()
+                observed_source_root.display()
             ),
             command: None,
         };
@@ -1077,6 +1088,27 @@ fn files_converge_step(
             "directory-sync",
             &outcome,
         )?;
+        let receipt_path = module_dir.join(format!("{}.json", step.step_id));
+        let mut receipt: serde_json::Value = serde_json::from_slice(
+            &fs::read(&receipt_path)
+                .map_err(|error| format!("directory-sync-receipt-read-failed: {error}"))?,
+        )
+        .map_err(|error| format!("directory-sync-receipt-parse-failed: {error}"))?;
+        let object = receipt
+            .as_object_mut()
+            .ok_or_else(|| "directory-sync-receipt-not-object".to_string())?;
+        object.insert(
+            "observed_state".into(),
+            serde_json::json!({"source_root": observed_source_root, "target_root": observed_target_root, "same_root": true}),
+        );
+        object.insert(
+            "desired_state".into(),
+            serde_json::json!({"directory_sync": "verified"}),
+        );
+        object.insert("diff_decision".into(), serde_json::json!("empty"));
+        object.insert("movement".into(), serde_json::json!("none"));
+        object.insert("truthful_changed".into(), serde_json::json!(false));
+        crate::write_json(&receipt_path, &receipt)?;
         return Ok(outcome);
     }
     let rels = if step.permutation == "directory-sync" && !step.args.contains_key("files") {

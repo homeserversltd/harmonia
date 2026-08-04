@@ -1101,19 +1101,35 @@ pub fn converge_files(
                 .unwrap_or(false);
         let content_changed = !content_equal_before || !mode_equal_before;
         let entry_changed = content_changed || ownership_changed;
-        let mut backed_up_to = None;
-
-        if apply && entry_changed {
-            if content_changed && request.backup_existing {
-                let backup = backup_target(&target, receipt_dir, &spec.relative_path)?;
-                backed_up_to = Some(backup);
-                backed_up += 1;
-            }
-            if let Err(signal) = if content_changed {
-                atomic_copy(&source, &target, final_mode, desired_uid, desired_gid)
-            } else {
-                set_ownership(&target, desired_uid, desired_gid)
-            } {
+        let run = crate::tools::comparison::execute(
+            || Ok::<_, String>(entry_changed),
+            |different| {
+                if *different {
+                    crate::tools::comparison::DiffDecision::Different
+                } else {
+                    crate::tools::comparison::DiffDecision::Empty
+                }
+            },
+            |_, _| {
+                if !apply {
+                    return Ok::<_, String>((None, false, false));
+                }
+                let mut backup = None;
+                if content_changed && request.backup_existing {
+                    backup = Some(backup_target(&target, receipt_dir, &spec.relative_path)?);
+                }
+                if content_changed {
+                    atomic_copy(&source, &target, final_mode, desired_uid, desired_gid)?;
+                } else {
+                    set_ownership(&target, desired_uid, desired_gid)?;
+                }
+                Ok((backup, content_changed, true))
+            },
+        );
+        let (backed_up_to, wrote_content, truthful_changed) = match run {
+            Ok(crate::tools::comparison::ComparisonRun::Current { .. }) => (None, false, false),
+            Ok(crate::tools::comparison::ComparisonRun::Moved { movement, .. }) => movement,
+            Err(signal) => {
                 write_partial_failure_receipt(
                     receipt_dir,
                     request,
@@ -1127,9 +1143,12 @@ pub fn converge_files(
                 )?;
                 return Err(signal);
             }
-            if content_changed {
-                written += 1;
-            }
+        };
+        if backed_up_to.is_some() {
+            backed_up += 1;
+        }
+        if wrote_content {
+            written += 1;
         }
 
         let target_exists_after = target.exists();
@@ -1172,7 +1191,7 @@ pub fn converge_files(
                 target_exists_after,
                 content_equal_after,
                 mode_equal_after,
-                changed: entry_changed,
+                changed: truthful_changed,
                 backed_up_to: backed_up_to.clone(),
                 final_mode,
                 ownership_source: ownership_source.to_string(),
@@ -2124,6 +2143,11 @@ fn write_sweep_receipts(
                 "transaction": "all-or-restored",
                 "receipt_write_contract": "same-directory temp write, file fsync, atomic rename, parent-directory fsync",
                 "entry": entry,
+                "observed_state": {"before_digest": entry.before_digest, "before_mode": entry.before_mode, "before_uid": entry.before_uid, "before_gid": entry.before_gid},
+                "desired_state": {"source_digest": entry.source_digest, "mode": entry.desired_mode, "uid": entry.desired_uid, "gid": entry.desired_gid},
+                "diff_decision": if entry.changed { "different" } else { "empty" },
+                "movement": entry.action,
+                "truthful_changed": entry.changed && outcome.changed,
                 "first_blocker": if entry.readback_ok { "none" } else { outcome.first_blocker.as_str() },
             }),
         )?;
@@ -2140,6 +2164,11 @@ fn write_sweep_receipts(
             "ok": outcome.ok,
             "apply": apply,
             "changed": outcome.changed,
+            "observed_state": {"source_inventory_count": outcome.source_inventory_count, "target_inventory_count_before": outcome.target_inventory_count_before, "current": outcome.current},
+            "desired_state": {"shelf_source": request.shelf_source, "target_shelf": request.target_shelf, "prune": request.prune},
+            "diff_decision": if outcome.current && !outcome.changed { "empty" } else { "different" },
+            "movement": if outcome.changed { "shelf-promote-or-bounded-removal" } else if outcome.current { "none" } else { "report-only" },
+            "truthful_changed": outcome.changed,
             "current": outcome.current,
             "atomicity": "per-path atomic",
             "transaction_contract": "all-or-restored",
@@ -2342,7 +2371,7 @@ fn source_shelf_sweep_with_fault(
         gid,
         false,
     )?;
-    if !drift || !apply {
+    if !apply {
         let outcome = SourceShelfSweepOutcome {
             ok: true,
             changed: false,
@@ -2366,369 +2395,413 @@ fn source_shelf_sweep_with_fault(
         return Ok(outcome);
     }
 
-    let shelf_parent = request.target_shelf.parent().ok_or_else(|| {
-        format!(
-            "source-shelf-sweep-target-shelf-parent-missing {}",
-            request.target_shelf.display()
-        )
-    })?;
-    let nonce = sweep_nonce();
-    let shelf_name = request
-        .target_shelf
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "source-shelf-sweep-target-shelf-name-invalid".to_string())?;
-    let stage = shelf_parent.join(format!(".{shelf_name}.harmonia-stage-{nonce}"));
-    let shelf_backup = shelf_parent.join(format!(".{shelf_name}.harmonia-prior-{nonce}"));
-    let quarantine = request
-        .launcher_target_root
-        .join(format!(".harmonia-source-shelf-sweep-{nonce}"));
-    let stage_existed_before = stage.exists();
-    let quarantine_existed_before = quarantine.exists();
-    let setup = (|| -> Result<(), String> {
-        stage_sweep_tree(
-            &shelf_source,
-            &stage,
-            &source_entries,
-            request.shelf_directory_mode,
-            request.shelf_file_mode,
-            uid,
-            gid,
-        )?;
-        if fault.fail_setup_after_stage {
-            return Err("source-shelf-sweep-injected-setup-failure".into());
-        }
-        fs::create_dir(&quarantine).map_err(|error| {
-            format!(
-                "source-shelf-sweep-quarantine-create-failed {}: {error}",
-                quarantine.display()
-            )
-        })?;
-        sync_directory(&request.launcher_target_root)?;
-        Ok(())
-    })();
-    if let Err(blocker) = setup {
-        let mut cleanup_errors = Vec::new();
-        for (path, existed_before) in [
-            (&stage, stage_existed_before),
-            (&quarantine, quarantine_existed_before),
-        ] {
-            if existed_before {
-                continue;
-            }
-            if let Err(error) = fs::remove_dir_all(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    cleanup_errors.push(format!("remove setup path {}: {error}", path.display()));
-                }
-            }
-        }
-        for parent in [shelf_parent, request.launcher_target_root.as_path()] {
-            if let Err(error) = sync_directory(parent) {
-                cleanup_errors.push(error);
-            }
-        }
-        let cleanup_complete = cleanup_errors.is_empty();
-        let outcome = SourceShelfSweepOutcome {
-            ok: false,
-            changed: !cleanup_complete,
-            current: false,
-            source_inventory_count: source_entries.len() + launchers.len(),
-            target_inventory_count_before: target_before.len() + target_launchers.len(),
-            target_inventory_count_after: target_before.len() + target_launchers.len(),
-            promoted_count: 0,
-            removed_count: 0,
-            transaction_state: if cleanup_complete {
-                "setup-failed-cleaned"
+    let run = crate::tools::comparison::execute(
+        || Ok::<_, String>(drift),
+        |different| {
+            if *different {
+                crate::tools::comparison::DiffDecision::Different
             } else {
-                "setup-cleanup-incomplete"
+                crate::tools::comparison::DiffDecision::Empty
             }
-            .into(),
-            rollback_state: if cleanup_complete {
-                "restored"
-            } else {
-                "incomplete"
-            }
-            .into(),
-            first_blocker: blocker.clone(),
-            entries: planned_entries.clone(),
-            message: if cleanup_complete {
-                format!("{blocker}; staging and quarantine setup residue removed")
-            } else {
+        },
+        |_, _| {
+            let shelf_parent = request.target_shelf.parent().ok_or_else(|| {
                 format!(
-                    "{blocker}; setup cleanup errors: {}",
-                    cleanup_errors.join("; ")
-                )
-            },
-        };
-        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
-        return Err(outcome.message);
-    }
-
-    let shelf_had_prior = request.target_shelf.exists();
-    let mut shelf_promoted = false;
-    let mut launcher_backups: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut new_launchers: Vec<PathBuf> = Vec::new();
-    let mut promoted_count = 0usize;
-    let mut removed_count = 0usize;
-    let transaction = (|| -> Result<(), String> {
-        if !shelf_current {
-            if shelf_had_prior {
-                fs::rename(&request.target_shelf, &shelf_backup).map_err(|error| {
-                    format!("source-shelf-sweep-shelf-quarantine-failed: {error}")
-                })?;
-            }
-            fs::rename(&stage, &request.target_shelf)
-                .map_err(|error| format!("source-shelf-sweep-shelf-promote-failed: {error}"))?;
-            sync_directory(shelf_parent)?;
-            shelf_promoted = true;
-            promoted_count += 1;
-            if fault
-                .fail_after_promotions
-                .is_some_and(|limit| promoted_count >= limit)
-            {
-                return Err("source-shelf-sweep-injected-promotion-failure".into());
-            }
-        }
-        for name in &launcher_drift {
-            let source = launchers
-                .get(name)
-                .expect("launcher drift names come from inventory");
-            let target = request.launcher_target_root.join(name);
-            if target.exists() {
-                let backup = quarantine.join(name);
-                fs::rename(&target, &backup).map_err(|error| {
-                    format!(
-                        "source-shelf-sweep-launcher-quarantine-failed {}: {error}",
-                        target.display()
-                    )
-                })?;
-                launcher_backups.push((target.clone(), backup));
-            } else {
-                new_launchers.push(target.clone());
-            }
-            atomic_copy(
-                source,
-                &target,
-                Some(request.launcher_mode),
-                Some(uid),
-                Some(gid),
-            )?;
-            sync_directory(&request.launcher_target_root)?;
-            promoted_count += 1;
-            if fault
-                .fail_after_promotions
-                .is_some_and(|limit| promoted_count >= limit)
-            {
-                return Err("source-shelf-sweep-injected-promotion-failure".into());
-            }
-        }
-        if request.prune {
-            for name in &stale {
-                let target = request.launcher_target_root.join(name);
-                let backup = quarantine.join(name);
-                fs::rename(&target, &backup).map_err(|error| {
-                    format!(
-                        "source-shelf-sweep-stale-launcher-quarantine-failed {}: {error}",
-                        target.display()
-                    )
-                })?;
-                launcher_backups.push((target, backup));
-                removed_count += 1;
-            }
-            sync_directory(&request.launcher_target_root)?;
-        }
-        if !shelf_is_current(
-            &shelf_source,
-            &request.target_shelf,
-            &source_entries,
-            request.shelf_directory_mode,
-            request.shelf_file_mode,
-            uid,
-            gid,
-        )? {
-            return Err("source-shelf-sweep-shelf-readback-failed".into());
-        }
-        for (name, source) in &launchers {
-            if !launcher_is_current(
-                source,
-                &request.launcher_target_root.join(name),
-                request.launcher_mode,
-                uid,
-                gid,
-            )? {
-                return Err(format!(
-                    "source-shelf-sweep-launcher-readback-failed {name}"
-                ));
-            }
-        }
-        if request.prune {
-            for name in &stale {
-                if request.launcher_target_root.join(name).exists() {
-                    return Err(format!(
-                        "source-shelf-sweep-stale-launcher-readback-failed {name}"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    })();
-
-    let mut committed_outcome = None;
-    let transaction = transaction.and_then(|_| {
-        let target_after = inventory_sweep_tree_if_present(&request.target_shelf)?;
-        let target_launchers_after =
-            target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
-        let entries = readback_sweep_entries(planned_entries.clone())?;
-        if entries.iter().any(|entry| !entry.readback_ok) {
-            return Err("source-shelf-sweep-entry-readback-failed".into());
-        }
-        let outcome = SourceShelfSweepOutcome {
-            ok: true,
-            changed: true,
-            current: true,
-            source_inventory_count: source_entries.len() + launchers.len(),
-            target_inventory_count_before: target_before.len() + target_launchers.len(),
-            target_inventory_count_after: target_after.len() + target_launchers_after.len(),
-            promoted_count,
-            removed_count,
-            transaction_state: "committed".into(),
-            rollback_state: "not-needed".into(),
-            first_blocker: "none".into(),
-            entries,
-            message: "source shelf and launchers converged".into(),
-        };
-        committed_outcome = Some(outcome);
-        Ok(())
-    });
-
-    if let Err(blocker) = transaction {
-        let mut rollback_errors = Vec::new();
-        for target in new_launchers.iter().rev() {
-            if let Err(error) = fs::remove_file(target) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    rollback_errors.push(format!("remove {}: {error}", target.display()));
-                }
-            }
-        }
-        for (target, backup) in launcher_backups.iter().rev() {
-            let _ = fs::remove_file(target);
-            if let Err(error) = fs::rename(backup, target) {
-                rollback_errors.push(format!(
-                    "restore {} -> {}: {error}",
-                    backup.display(),
-                    target.display()
-                ));
-            }
-        }
-        if shelf_promoted {
-            if let Err(error) = fs::remove_dir_all(&request.target_shelf) {
-                rollback_errors.push(format!(
-                    "remove promoted shelf {}: {error}",
+                    "source-shelf-sweep-target-shelf-parent-missing {}",
                     request.target_shelf.display()
-                ));
-            }
-            if shelf_had_prior {
-                if let Err(error) = fs::rename(&shelf_backup, &request.target_shelf) {
-                    rollback_errors.push(format!(
-                        "restore shelf {} -> {}: {error}",
-                        shelf_backup.display(),
-                        request.target_shelf.display()
-                    ));
-                }
-            }
-        }
-        let _ = fs::remove_dir_all(&stage);
-        let _ = fs::remove_dir_all(&quarantine);
-        let rollback_entries = match readback_rollback_entries(planned_entries) {
-            Ok(entries) => {
-                if entries
-                    .iter()
-                    .any(|entry| entry.rollback_readback_ok != Some(true))
-                {
-                    rollback_errors.push("rollback-readback-mismatch".into());
-                }
-                entries
-            }
-            Err(error) => {
-                rollback_errors.push(format!("rollback-readback-failed: {error}"));
-                Vec::new()
-            }
-        };
-        let rollback_state = if rollback_errors.is_empty() {
-            "restored"
-        } else {
-            "incomplete"
-        };
-        let outcome = SourceShelfSweepOutcome {
-            ok: false,
-            changed: !rollback_errors.is_empty(),
-            current: false,
-            source_inventory_count: source_entries.len() + launchers.len(),
-            target_inventory_count_before: target_before.len() + target_launchers.len(),
-            target_inventory_count_after: inventory_sweep_tree_if_present(&request.target_shelf)
-                .map(|entries| entries.len())
-                .unwrap_or_default()
-                + target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)
-                    .map(|entries| entries.len())
-                    .unwrap_or_default(),
-            promoted_count,
-            removed_count,
-            transaction_state: if rollback_errors.is_empty() {
-                "rolled-back"
-            } else {
-                "rollback-incomplete"
-            }
-            .into(),
-            rollback_state: rollback_state.into(),
-            first_blocker: blocker.clone(),
-            entries: rollback_entries,
-            message: if rollback_errors.is_empty() {
-                format!("{blocker}; prior state restored")
-            } else {
-                format!("{blocker}; rollback errors: {}", rollback_errors.join("; "))
-            },
-        };
-        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
-        return Err(outcome.message);
-    }
-
-    let mut outcome = committed_outcome
-        .ok_or_else(|| "source-shelf-sweep-committed-outcome-missing".to_string())?;
-    let cleanup = (|| -> Result<(), String> {
-        if fault.fail_cleanup {
-            return Err("source-shelf-sweep-injected-cleanup-failure".into());
-        }
-        fs::remove_dir_all(&quarantine).map_err(|error| {
-            format!(
-                "source-shelf-sweep-quarantine-remove-failed {}: {error}",
-                quarantine.display()
-            )
-        })?;
-        if shelf_had_prior && shelf_promoted {
-            fs::remove_dir_all(&shelf_backup).map_err(|error| {
-                format!(
-                    "source-shelf-sweep-prior-shelf-remove-failed {}: {error}",
-                    shelf_backup.display()
                 )
             })?;
+            let nonce = sweep_nonce();
+            let shelf_name = request
+                .target_shelf
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "source-shelf-sweep-target-shelf-name-invalid".to_string())?;
+            let stage = shelf_parent.join(format!(".{shelf_name}.harmonia-stage-{nonce}"));
+            let shelf_backup = shelf_parent.join(format!(".{shelf_name}.harmonia-prior-{nonce}"));
+            let quarantine = request
+                .launcher_target_root
+                .join(format!(".harmonia-source-shelf-sweep-{nonce}"));
+            let stage_existed_before = stage.exists();
+            let quarantine_existed_before = quarantine.exists();
+            let setup = (|| -> Result<(), String> {
+                stage_sweep_tree(
+                    &shelf_source,
+                    &stage,
+                    &source_entries,
+                    request.shelf_directory_mode,
+                    request.shelf_file_mode,
+                    uid,
+                    gid,
+                )?;
+                if fault.fail_setup_after_stage {
+                    return Err("source-shelf-sweep-injected-setup-failure".into());
+                }
+                fs::create_dir(&quarantine).map_err(|error| {
+                    format!(
+                        "source-shelf-sweep-quarantine-create-failed {}: {error}",
+                        quarantine.display()
+                    )
+                })?;
+                sync_directory(&request.launcher_target_root)?;
+                Ok(())
+            })();
+            if let Err(blocker) = setup {
+                let mut cleanup_errors = Vec::new();
+                for (path, existed_before) in [
+                    (&stage, stage_existed_before),
+                    (&quarantine, quarantine_existed_before),
+                ] {
+                    if existed_before {
+                        continue;
+                    }
+                    if let Err(error) = fs::remove_dir_all(path) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            cleanup_errors
+                                .push(format!("remove setup path {}: {error}", path.display()));
+                        }
+                    }
+                }
+                for parent in [shelf_parent, request.launcher_target_root.as_path()] {
+                    if let Err(error) = sync_directory(parent) {
+                        cleanup_errors.push(error);
+                    }
+                }
+                let cleanup_complete = cleanup_errors.is_empty();
+                let outcome = SourceShelfSweepOutcome {
+                    ok: false,
+                    changed: !cleanup_complete,
+                    current: false,
+                    source_inventory_count: source_entries.len() + launchers.len(),
+                    target_inventory_count_before: target_before.len() + target_launchers.len(),
+                    target_inventory_count_after: target_before.len() + target_launchers.len(),
+                    promoted_count: 0,
+                    removed_count: 0,
+                    transaction_state: if cleanup_complete {
+                        "setup-failed-cleaned"
+                    } else {
+                        "setup-cleanup-incomplete"
+                    }
+                    .into(),
+                    rollback_state: if cleanup_complete {
+                        "restored"
+                    } else {
+                        "incomplete"
+                    }
+                    .into(),
+                    first_blocker: blocker.clone(),
+                    entries: planned_entries.clone(),
+                    message: if cleanup_complete {
+                        format!("{blocker}; staging and quarantine setup residue removed")
+                    } else {
+                        format!(
+                            "{blocker}; setup cleanup errors: {}",
+                            cleanup_errors.join("; ")
+                        )
+                    },
+                };
+                write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+                return Err(outcome.message);
+            }
+
+            let shelf_had_prior = request.target_shelf.exists();
+            let mut shelf_promoted = false;
+            let mut launcher_backups: Vec<(PathBuf, PathBuf)> = Vec::new();
+            let mut new_launchers: Vec<PathBuf> = Vec::new();
+            let mut promoted_count = 0usize;
+            let mut removed_count = 0usize;
+            let transaction = (|| -> Result<(), String> {
+                if !shelf_current {
+                    if shelf_had_prior {
+                        fs::rename(&request.target_shelf, &shelf_backup).map_err(|error| {
+                            format!("source-shelf-sweep-shelf-quarantine-failed: {error}")
+                        })?;
+                    }
+                    fs::rename(&stage, &request.target_shelf).map_err(|error| {
+                        format!("source-shelf-sweep-shelf-promote-failed: {error}")
+                    })?;
+                    sync_directory(shelf_parent)?;
+                    shelf_promoted = true;
+                    promoted_count += 1;
+                    if fault
+                        .fail_after_promotions
+                        .is_some_and(|limit| promoted_count >= limit)
+                    {
+                        return Err("source-shelf-sweep-injected-promotion-failure".into());
+                    }
+                }
+                for name in &launcher_drift {
+                    let source = launchers
+                        .get(name)
+                        .expect("launcher drift names come from inventory");
+                    let target = request.launcher_target_root.join(name);
+                    if target.exists() {
+                        let backup = quarantine.join(name);
+                        fs::rename(&target, &backup).map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-launcher-quarantine-failed {}: {error}",
+                                target.display()
+                            )
+                        })?;
+                        launcher_backups.push((target.clone(), backup));
+                    } else {
+                        new_launchers.push(target.clone());
+                    }
+                    atomic_copy(
+                        source,
+                        &target,
+                        Some(request.launcher_mode),
+                        Some(uid),
+                        Some(gid),
+                    )?;
+                    sync_directory(&request.launcher_target_root)?;
+                    promoted_count += 1;
+                    if fault
+                        .fail_after_promotions
+                        .is_some_and(|limit| promoted_count >= limit)
+                    {
+                        return Err("source-shelf-sweep-injected-promotion-failure".into());
+                    }
+                }
+                if request.prune {
+                    for name in &stale {
+                        let target = request.launcher_target_root.join(name);
+                        let backup = quarantine.join(name);
+                        fs::rename(&target, &backup).map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-stale-launcher-quarantine-failed {}: {error}",
+                                target.display()
+                            )
+                        })?;
+                        launcher_backups.push((target, backup));
+                        removed_count += 1;
+                    }
+                    sync_directory(&request.launcher_target_root)?;
+                }
+                if !shelf_is_current(
+                    &shelf_source,
+                    &request.target_shelf,
+                    &source_entries,
+                    request.shelf_directory_mode,
+                    request.shelf_file_mode,
+                    uid,
+                    gid,
+                )? {
+                    return Err("source-shelf-sweep-shelf-readback-failed".into());
+                }
+                for (name, source) in &launchers {
+                    if !launcher_is_current(
+                        source,
+                        &request.launcher_target_root.join(name),
+                        request.launcher_mode,
+                        uid,
+                        gid,
+                    )? {
+                        return Err(format!(
+                            "source-shelf-sweep-launcher-readback-failed {name}"
+                        ));
+                    }
+                }
+                if request.prune {
+                    for name in &stale {
+                        if request.launcher_target_root.join(name).exists() {
+                            return Err(format!(
+                                "source-shelf-sweep-stale-launcher-readback-failed {name}"
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            })();
+
+            let mut committed_outcome = None;
+            let transaction = transaction.and_then(|_| {
+                let target_after = inventory_sweep_tree_if_present(&request.target_shelf)?;
+                let target_launchers_after =
+                    target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
+                let entries = readback_sweep_entries(planned_entries.clone())?;
+                if entries.iter().any(|entry| !entry.readback_ok) {
+                    return Err("source-shelf-sweep-entry-readback-failed".into());
+                }
+                let outcome = SourceShelfSweepOutcome {
+                    ok: true,
+                    changed: true,
+                    current: true,
+                    source_inventory_count: source_entries.len() + launchers.len(),
+                    target_inventory_count_before: target_before.len() + target_launchers.len(),
+                    target_inventory_count_after: target_after.len() + target_launchers_after.len(),
+                    promoted_count,
+                    removed_count,
+                    transaction_state: "committed".into(),
+                    rollback_state: "not-needed".into(),
+                    first_blocker: "none".into(),
+                    entries,
+                    message: "source shelf and launchers converged".into(),
+                };
+                committed_outcome = Some(outcome);
+                Ok(())
+            });
+
+            if let Err(blocker) = transaction {
+                let mut rollback_errors = Vec::new();
+                for target in new_launchers.iter().rev() {
+                    if let Err(error) = fs::remove_file(target) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            rollback_errors.push(format!("remove {}: {error}", target.display()));
+                        }
+                    }
+                }
+                for (target, backup) in launcher_backups.iter().rev() {
+                    let _ = fs::remove_file(target);
+                    if let Err(error) = fs::rename(backup, target) {
+                        rollback_errors.push(format!(
+                            "restore {} -> {}: {error}",
+                            backup.display(),
+                            target.display()
+                        ));
+                    }
+                }
+                if shelf_promoted {
+                    if let Err(error) = fs::remove_dir_all(&request.target_shelf) {
+                        rollback_errors.push(format!(
+                            "remove promoted shelf {}: {error}",
+                            request.target_shelf.display()
+                        ));
+                    }
+                    if shelf_had_prior {
+                        if let Err(error) = fs::rename(&shelf_backup, &request.target_shelf) {
+                            rollback_errors.push(format!(
+                                "restore shelf {} -> {}: {error}",
+                                shelf_backup.display(),
+                                request.target_shelf.display()
+                            ));
+                        }
+                    }
+                }
+                let _ = fs::remove_dir_all(&stage);
+                let _ = fs::remove_dir_all(&quarantine);
+                let rollback_entries = match readback_rollback_entries(planned_entries.clone()) {
+                    Ok(entries) => {
+                        if entries
+                            .iter()
+                            .any(|entry| entry.rollback_readback_ok != Some(true))
+                        {
+                            rollback_errors.push("rollback-readback-mismatch".into());
+                        }
+                        entries
+                    }
+                    Err(error) => {
+                        rollback_errors.push(format!("rollback-readback-failed: {error}"));
+                        Vec::new()
+                    }
+                };
+                let rollback_state = if rollback_errors.is_empty() {
+                    "restored"
+                } else {
+                    "incomplete"
+                };
+                let outcome = SourceShelfSweepOutcome {
+                    ok: false,
+                    changed: !rollback_errors.is_empty(),
+                    current: false,
+                    source_inventory_count: source_entries.len() + launchers.len(),
+                    target_inventory_count_before: target_before.len() + target_launchers.len(),
+                    target_inventory_count_after: inventory_sweep_tree_if_present(
+                        &request.target_shelf,
+                    )
+                    .map(|entries| entries.len())
+                    .unwrap_or_default()
+                        + target_pattern_files(
+                            &request.launcher_target_root,
+                            &request.launcher_pattern,
+                        )
+                        .map(|entries| entries.len())
+                        .unwrap_or_default(),
+                    promoted_count,
+                    removed_count,
+                    transaction_state: if rollback_errors.is_empty() {
+                        "rolled-back"
+                    } else {
+                        "rollback-incomplete"
+                    }
+                    .into(),
+                    rollback_state: rollback_state.into(),
+                    first_blocker: blocker.clone(),
+                    entries: rollback_entries,
+                    message: if rollback_errors.is_empty() {
+                        format!("{blocker}; prior state restored")
+                    } else {
+                        format!("{blocker}; rollback errors: {}", rollback_errors.join("; "))
+                    },
+                };
+                write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+                return Err(outcome.message);
+            }
+
+            let mut outcome = committed_outcome
+                .ok_or_else(|| "source-shelf-sweep-committed-outcome-missing".to_string())?;
+            let cleanup = (|| -> Result<(), String> {
+                if fault.fail_cleanup {
+                    return Err("source-shelf-sweep-injected-cleanup-failure".into());
+                }
+                fs::remove_dir_all(&quarantine).map_err(|error| {
+                    format!(
+                        "source-shelf-sweep-quarantine-remove-failed {}: {error}",
+                        quarantine.display()
+                    )
+                })?;
+                if shelf_had_prior && shelf_promoted {
+                    fs::remove_dir_all(&shelf_backup).map_err(|error| {
+                        format!(
+                            "source-shelf-sweep-prior-shelf-remove-failed {}: {error}",
+                            shelf_backup.display()
+                        )
+                    })?;
+                }
+                let _ = fs::remove_dir_all(&stage);
+                sync_directory(shelf_parent)?;
+                sync_directory(&request.launcher_target_root)?;
+                Ok(())
+            })();
+            if let Err(blocker) = cleanup {
+                outcome.ok = false;
+                outcome.transaction_state = "committed-cleanup-debt".into();
+                outcome.first_blocker = blocker.clone();
+                outcome.message =
+                    format!("source shelf and launchers converged; cleanup debt: {blocker}");
+                write_sweep_receipts(receipt_dir, request, &outcome, apply).map_err(
+                    |receipt_error| {
+                        format!("{}; receipt-write-failed: {receipt_error}", outcome.message)
+                    },
+                )?;
+                return Err(outcome.message);
+            }
+            write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+            Ok(outcome)
+        },
+    )?;
+    match run {
+        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement),
+        crate::tools::comparison::ComparisonRun::Current { .. } => {
+            let outcome = SourceShelfSweepOutcome {
+                ok: true,
+                changed: false,
+                current: true,
+                source_inventory_count: source_entries.len() + launchers.len(),
+                target_inventory_count_before: target_before.len() + target_launchers.len(),
+                target_inventory_count_after: target_before.len() + target_launchers.len(),
+                promoted_count: 0,
+                removed_count: 0,
+                transaction_state: "unchanged".into(),
+                rollback_state: "not-needed".into(),
+                first_blocker: "none".into(),
+                entries: planned_entries,
+                message: "source shelf and launchers current".into(),
+            };
+            write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+            Ok(outcome)
         }
-        let _ = fs::remove_dir_all(&stage);
-        sync_directory(shelf_parent)?;
-        sync_directory(&request.launcher_target_root)?;
-        Ok(())
-    })();
-    if let Err(blocker) = cleanup {
-        outcome.ok = false;
-        outcome.transaction_state = "committed-cleanup-debt".into();
-        outcome.first_blocker = blocker.clone();
-        outcome.message = format!("source shelf and launchers converged; cleanup debt: {blocker}");
-        write_sweep_receipts(receipt_dir, request, &outcome, apply).map_err(|receipt_error| {
-            format!("{}; receipt-write-failed: {receipt_error}", outcome.message)
-        })?;
-        return Err(outcome.message);
     }
-    write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
-    Ok(outcome)
 }
 
 fn validate_executable_name(executable: &str) -> Result<(), String> {
@@ -3446,6 +3519,49 @@ fn write_partial_failure_receipt(
     write_convergence_receipt(receipt_dir, request, &outcome, apply)
 }
 
+fn convergence_entry_receipt(entry: &FileConvergenceEntry) -> serde_json::Value {
+    let mut receipt = serde_json::to_value(entry).expect("file convergence entry serializes");
+    let object = receipt
+        .as_object_mut()
+        .expect("file convergence entry serializes to an object");
+    let exact_before = entry.source_exists
+        && entry.target_exists_before
+        && entry.content_equal_before
+        && entry.mode_equal_before
+        && !entry.ownership_changed;
+    let diff_decision = if exact_before { "empty" } else { "different" };
+    let movement = if entry.changed {
+        if entry.backed_up_to.is_some() || !entry.content_equal_before || !entry.mode_equal_before {
+            "backup-and-atomic-copy"
+        } else {
+            "chown"
+        }
+    } else if diff_decision == "different" {
+        "report-only"
+    } else {
+        "none"
+    };
+    object.insert(
+        "observed_state".into(),
+        json!({
+            "source_exists": entry.source_exists,
+            "target_exists": entry.target_exists_before,
+            "content_equal": entry.content_equal_before,
+            "mode_equal": entry.mode_equal_before,
+            "uid": entry.observed_uid_before,
+            "gid": entry.observed_gid_before,
+        }),
+    );
+    object.insert(
+        "desired_state".into(),
+        json!({"mode": entry.final_mode, "ownership_source": entry.ownership_source}),
+    );
+    object.insert("diff_decision".into(), json!(diff_decision));
+    object.insert("movement".into(), json!(movement));
+    object.insert("truthful_changed".into(), json!(entry.changed));
+    receipt
+}
+
 fn write_convergence_receipt(
     receipt_dir: &Path,
     request: &FileConvergenceRequest,
@@ -3469,7 +3585,7 @@ fn write_convergence_receipt(
         "ownership_changed": outcome.ownership_changed,
         "missing": outcome.missing,
         "missing_target_birth_debts": outcome.missing_target_birth_debts,
-        "entries": outcome.entries,
+        "entries": outcome.entries.iter().map(convergence_entry_receipt).collect::<Vec<_>>(),
         "first_missing_signal": if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
     });
     let mut receipt_name = request.receipt_name.clone();
