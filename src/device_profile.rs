@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEVICE_PROFILE_CERTIFICATE: &str = "/etc/profile.json";
+const DEVICE_PROFILE_CERTIFICATE: &str = "/etc/appliance/profile.json";
 const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
 const HARMONIA_MODULE_ROOT: &str = "/etc/harmonia";
 

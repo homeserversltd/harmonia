@@ -399,7 +399,7 @@ pub(crate) fn homeconsole_arcadia_gui_update(
 
     let certificate = std::env::var_os("HARMONIA_DEVICE_PROFILE_CERTIFICATE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/etc/profile.json"));
+        .unwrap_or_else(|| PathBuf::from("/etc/appliance/profile.json"));
     let resolution = crate::resolve_source(
         &certificate,
         component,

@@ -226,7 +226,7 @@ fn rejected(reason: impl Into<String>) -> DeclarationOutcome {
 mod tests {
     use super::*;
 
-    const SOURCE: &str = "/etc/profile.json";
+    const SOURCE: &str = "/etc/appliance/profile.json";
     const VALID: &str = r#"{
         "schema": "homeserver.device-profile.v1",
         "kernel": { "profile": "tv" },
