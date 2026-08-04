@@ -30,6 +30,7 @@ window#waybar {
 #custom-printer,
 #custom-fetch,
 #custom-drives,
+#custom-harmonia-interactables,
 #custom-notifications {
     background-color: rgba(20, 22, 28, 0.82);
     padding: 0 10px;
@@ -136,4 +137,17 @@ window#waybar {
 
 #custom-clipboard.empty {
     color: #6b7280;
+}
+
+#custom-harmonia-interactables {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+#custom-harmonia-interactables.ok {
+    color: #a3be8c;
+}
+
+#custom-harmonia-interactables.pending {
+    color: #ebcb8b;
 }

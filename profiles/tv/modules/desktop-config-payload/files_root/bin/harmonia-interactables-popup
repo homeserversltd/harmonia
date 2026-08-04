@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -u
+
+eww_config="${XDG_CONFIG_HOME:-$HOME/.config}/eww"
+mode="${1:-popup}"
+
+notify_unavailable() {
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send "Harmonia updates" "The updates popup is unavailable because eww is not installed or could not open."
+    fi
+}
+
+list_payload() {
+    harmonia interactable list --json
+}
+
+render_eww() {
+    local payload
+    payload="$(list_payload 2>/dev/null)" || return 1
+    HARMONIA_INTERACTABLES_PAYLOAD="$payload" python3 - "/home/owner/bin/harmonia-interactables-popup" <<'PY'
+import json
+import os
+import shlex
+import sys
+
+payload = json.loads(os.environ["HARMONIA_INTERACTABLES_PAYLOAD"])
+if isinstance(payload, dict):
+    rows = payload.get("interactables", payload.get("items", []))
+elif isinstance(payload, list):
+    rows = payload
+else:
+    raise ValueError("unsupported interactables payload")
+if not isinstance(rows, list):
+    raise ValueError("interactables must be a list")
+
+pending = []
+for row in rows:
+    if not isinstance(row, dict):
+        continue
+    state = str(row.get("state", row.get("status", "pending"))).strip().lower()
+    if state in {"ok", "clean", "applied", "complete", "completed"}:
+        continue
+    ident = str(row.get("id") or "").strip()
+    if ident:
+        pending.append((ident, row))
+
+quote = lambda value: json.dumps(str(value), ensure_ascii=False)
+markup = [
+    '(box :class "harmonia-interactables-content" :orientation "v" :spacing 16',
+    '  (label :class "harmonia-interactables-title" :xalign 0 :text "Harmonia updates")',
+]
+if not pending:
+    markup.append('  (label :class "harmonia-interactables-empty" :xalign 0 :text "No pending updates")')
+for ident, row in pending:
+    name = str(row.get("name") or ident)
+    module = str(row.get("module") or row.get("module_id") or "module unavailable")
+    drift = str(row.get("drift_summary") or row.get("drift") or row.get("summary") or "Update available")
+    command = f"{shlex.quote(sys.argv[1])} apply {shlex.quote(ident)}"
+    markup.extend([
+        '  (box :class "harmonia-interactable" :orientation "v" :spacing 8',
+        '    (label :class "harmonia-interactable-name" :xalign 0 :text ' + quote(name) + ')',
+        '    (label :class "harmonia-interactable-module" :xalign 0 :text ' + quote(module) + ')',
+        '    (label :class "harmonia-interactable-drift" :xalign 0 :wrap true :text ' + quote(drift) + ')',
+        '    (button :class "harmonia-interactable-apply" :onclick ' + quote(command) + ' "Apply"))',
+    ])
+markup.append(')')
+print("\n".join(markup))
+PY
+}
+
+refresh_popup() {
+    local markup
+    markup="$(render_eww)" || markup='(box :class "harmonia-interactables-degraded" (label :text "Harmonia updates unavailable"))'
+    eww --config "$eww_config" update harmonia_interactables_markup="$markup" >/dev/null 2>&1 || true
+}
+
+case "$mode" in
+    popup)
+        if ! command -v eww >/dev/null 2>&1; then
+            notify_unavailable
+            exit 0
+        fi
+        active_windows="$(eww --config "$eww_config" active-windows 2>/dev/null || true)"
+        if printf '%s\n' "$active_windows" | grep -Eq '(^|[[:space:]])harmonia-interactables([:[:space:]]|$)'; then
+            eww --config "$eww_config" update harmonia_interactables_open=false >/dev/null 2>&1 || true
+            eww --config "$eww_config" close harmonia-interactables >/dev/null 2>&1 || true
+            exit 0
+        fi
+        refresh_popup
+        eww --config "$eww_config" update harmonia_interactables_open=true >/dev/null 2>&1 || true
+        if ! eww --config "$eww_config" open harmonia-interactables >/dev/null 2>&1; then
+            eww --config "$eww_config" update harmonia_interactables_open=false >/dev/null 2>&1 || true
+            notify_unavailable
+        fi
+        ;;
+    eww)
+        render_eww || printf '%s\n' '(box :class "harmonia-interactables-degraded" (label :text "Harmonia updates unavailable"))'
+        ;;
+    apply)
+        ident="${2:-}"
+        if [[ -z "$ident" ]]; then
+            exit 2
+        fi
+        sudo -n harmonia interactable run "$ident" || {
+            if command -v notify-send >/dev/null 2>&1; then
+                notify-send "Harmonia updates" "Could not apply $ident."
+            fi
+            refresh_popup
+            exit 1
+        }
+        refresh_popup
+        ;;
+    *)
+        exit 2
+        ;;
+esac
