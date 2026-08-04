@@ -592,6 +592,52 @@ pub(crate) fn converge_managed_directories(
     })
 }
 
+#[derive(Debug, Clone)]
+struct ManagedFileObservation {
+    path: PathBuf,
+    target_exists_before: bool,
+    missing_target_debt: bool,
+    mode: u32,
+    content_equal: bool,
+    mode_equal: bool,
+    owner_equal: bool,
+    group_equal: bool,
+}
+
+impl ManagedFileObservation {
+    fn file_changed(&self) -> bool {
+        !self.content_equal || !self.mode_equal || !self.owner_equal || !self.group_equal
+    }
+
+    fn observed_state(&self) -> serde_json::Value {
+        json!({
+            "target_exists": self.target_exists_before,
+            "state": if self.missing_target_debt { "missing-target-birth-debt" } else { "observed" },
+            "content_equal": self.content_equal,
+            "mode_equal": self.mode_equal,
+            "owner_equal": self.owner_equal,
+            "group_equal": self.group_equal,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ManagedFileMovement {
+    ReportOnly,
+    ContentModeAndOwnership,
+    Ownership,
+}
+
+impl ManagedFileMovement {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReportOnly => "report-only",
+            Self::ContentModeAndOwnership => "atomic-write-chmod-chown",
+            Self::Ownership => "chown",
+        }
+    }
+}
+
 pub(crate) fn converge_managed_files(
     request: &ManagedFilesRequest<'_>,
     receipt_dir: &Path,
@@ -610,41 +656,92 @@ pub(crate) fn converge_managed_files(
     let desired_uid = request.owner.map(resolve_uid).transpose()?;
     let desired_gid = request.group.map(resolve_gid).transpose()?;
     for file in request.files {
-        let path = PathBuf::from(&file.path);
-        let target_exists_before = fs::symlink_metadata(&path).is_ok();
-        let target_regular = fs::symlink_metadata(&path)
-            .map(|metadata| metadata.file_type().is_file())
-            .unwrap_or(false);
-        let existing = fs::read(&path).ok();
         let desired = file.content.as_bytes();
-        let content_equal = target_regular && existing.as_deref() == Some(desired);
-        let mode = file.mode.unwrap_or(0o644);
-        let mode_equal = target_regular && target_mode(&path)? == Some(mode);
-        let (owner_equal, group_equal) = ownership_equal(&path, desired_uid, desired_gid)?;
-        let ownership_matches = owner_equal && group_equal;
-        let file_changed = !content_equal || !mode_equal || !ownership_matches;
-        let missing_target_debt = !target_exists_before;
-        if file_changed && !missing_target_debt {
-            if apply {
-                if !content_equal || !mode_equal {
-                    atomic_write_bytes(&path, desired, Some(mode))?;
+        let run = crate::tools::comparison::execute(
+            || {
+                let path = PathBuf::from(&file.path);
+                let target_exists_before = fs::symlink_metadata(&path).is_ok();
+                let target_regular = fs::symlink_metadata(&path)
+                    .map(|metadata| metadata.file_type().is_file())
+                    .unwrap_or(false);
+                let existing = fs::read(&path).ok();
+                let mode = file.mode.unwrap_or(0o644);
+                let content_equal = target_regular && existing.as_deref() == Some(desired);
+                let mode_equal = target_regular && target_mode(&path)? == Some(mode);
+                let (owner_equal, group_equal) = ownership_equal(&path, desired_uid, desired_gid)?;
+                Ok::<_, String>(ManagedFileObservation {
+                    path,
+                    target_exists_before,
+                    missing_target_debt: !target_exists_before,
+                    mode,
+                    content_equal,
+                    mode_equal,
+                    owner_equal,
+                    group_equal,
+                })
+            },
+            |observation| {
+                if observation.file_changed() {
+                    crate::tools::comparison::DiffDecision::Different
+                } else {
+                    crate::tools::comparison::DiffDecision::Empty
                 }
-                set_ownership(&path, desired_uid, desired_gid)?;
+            },
+            |_, observation| {
+                if !apply || observation.missing_target_debt {
+                    return Ok(ManagedFileMovement::ReportOnly);
+                }
+                if !observation.content_equal || !observation.mode_equal {
+                    atomic_write_bytes(&observation.path, desired, Some(observation.mode))?;
+                }
+                set_ownership(&observation.path, desired_uid, desired_gid)?;
                 let (owner_equal_after, group_equal_after) =
-                    ownership_equal(&path, desired_uid, desired_gid)?;
+                    ownership_equal(&observation.path, desired_uid, desired_gid)?;
                 if !owner_equal_after || !group_equal_after {
                     return Err(format!(
                         "managed-file-owner-readback-failed {}",
-                        path.display()
+                        observation.path.display()
                     ));
                 }
-                written.push(file.path.clone());
-                changed = true;
-            } else {
-                drift.push(file.path.clone());
+                Ok(if !observation.content_equal || !observation.mode_equal {
+                    ManagedFileMovement::ContentModeAndOwnership
+                } else {
+                    ManagedFileMovement::Ownership
+                })
+            },
+        )?;
+        let observation = run.observation();
+        let file_changed = observation.file_changed();
+        let missing_target_debt = observation.missing_target_debt;
+        let target_exists_before = observation.target_exists_before;
+        let mode = observation.mode;
+        let content_equal = observation.content_equal;
+        let mode_equal = observation.mode_equal;
+        let owner_equal = observation.owner_equal;
+        let group_equal = observation.group_equal;
+        let diff_decision = match run.decision() {
+            crate::tools::comparison::DiffDecision::Empty => "empty",
+            crate::tools::comparison::DiffDecision::Different => "different",
+        };
+        let movement = match &run {
+            crate::tools::comparison::ComparisonRun::Current { .. } => "none",
+            crate::tools::comparison::ComparisonRun::Moved { movement, .. } => movement.as_str(),
+        };
+        let truthful_changed = matches!(
+            &run,
+            crate::tools::comparison::ComparisonRun::Moved {
+                movement: ManagedFileMovement::ContentModeAndOwnership
+                    | ManagedFileMovement::Ownership,
+                ..
             }
-        } else if missing_target_debt {
+        );
+        if missing_target_debt {
             missing_target_birth_debts.push(file.path.clone());
+        } else if file_changed && truthful_changed {
+            written.push(file.path.clone());
+            changed = true;
+        } else if file_changed {
+            drift.push(file.path.clone());
         }
         entries.push(json!({
             "path": file.path,
@@ -657,8 +754,14 @@ pub(crate) fn converge_managed_files(
             "group": request.group,
             "owner_equal_before": owner_equal,
             "group_equal_before": group_equal,
-            "changed": file_changed && !missing_target_debt,
-            "written": apply && file_changed && !missing_target_debt,
+            "changed": truthful_changed,
+            "drift_detected": file_changed && !missing_target_debt,
+            "written": truthful_changed,
+            "observed_state": observation.observed_state(),
+            "desired_state": {"content_sha256": format!("{:x}", Sha256::digest(desired)), "mode": mode, "uid": desired_uid, "gid": desired_gid},
+            "diff_decision": diff_decision,
+            "movement": movement,
+            "truthful_changed": truthful_changed,
         }));
         let safe_name = file
             .path
@@ -685,8 +788,14 @@ pub(crate) fn converge_managed_files(
                 "apply": apply,
                 "target_exists_before": target_exists_before,
                 "state": if missing_target_debt { "missing-target-birth-debt" } else { "observed" },
-                "changed": file_changed && !missing_target_debt,
-                "written": apply && file_changed && !missing_target_debt,
+                "changed": truthful_changed,
+                "drift_detected": file_changed && !missing_target_debt,
+                "written": truthful_changed,
+                "observed_state": observation.observed_state(),
+                "desired_state": {"content_sha256": format!("{:x}", Sha256::digest(desired)), "mode": mode, "uid": desired_uid, "gid": desired_gid},
+                "diff_decision": diff_decision,
+                "movement": movement,
+                "truthful_changed": truthful_changed,
                 "first_missing_signal": if missing_target_debt { "missing-target-birth-debt" } else if !file_changed || apply { "none" } else { request.first_missing_signal },
             }),
         )?;
