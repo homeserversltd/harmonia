@@ -28,6 +28,8 @@ pub(crate) struct LadderManifest {
     pub caduceus_commands: Vec<String>,
     #[serde(default)]
     pub files_root: Option<String>,
+    #[serde(default)]
+    pub config_deploy: Option<String>,
     pub ladder: Vec<LadderStep>,
     #[serde(skip)]
     pub(crate) base_dir: PathBuf,
@@ -133,6 +135,16 @@ pub(crate) fn validate_ladder(
         return Err(LadderValidationError {
             step_id: "manifest".into(),
             defect: format!("unsupported-schema-{}", manifest.schema),
+        });
+    }
+    if manifest
+        .config_deploy
+        .as_deref()
+        .is_some_and(|tier| tier != "interactable")
+    {
+        return Err(LadderValidationError {
+            step_id: "manifest".into(),
+            defect: "config-deploy-unsupported".into(),
         });
     }
     if let Some(group) = &manifest.group {
@@ -1102,7 +1114,15 @@ fn files_converge_step(
         .files
         .iter()
         .any(|file| is_configuration_path(&request.target_root.join(&file.relative_path)));
-    let outcome = crate::tools::files::converge_files(&request, module_dir, apply && !config_write)?;
+    let tier_two = manifest.config_deploy.as_deref() == Some("interactable");
+    let outcome = crate::tools::files::converge_files(
+        &request,
+        module_dir,
+        apply && !config_write && !tier_two,
+    )?;
+    if tier_two {
+        crate::refresh_interactables_for_convergence(manifest, &request, &outcome)?;
+    }
     if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
         let name = summary
             .get("name")
