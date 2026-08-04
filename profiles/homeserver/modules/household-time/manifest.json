@@ -7,11 +7,11 @@
   "caduceus_commands": ["time resolve", "time state"],
   "ladder": [
     {"step_id":"household-time-resolve","tool":"household-time","permutation":"resolve","args":{"backend":"caduceus","timeout_secs":15}},
-    {"step_id":"chrony-birth-operator-debt","tool":"systemd","permutation":"unit-present","args":{"service":"chronyd.service","timeout_secs":15},"on_failure":"stop"},
+    {"step_id":"chrony-birth-operator-debt","tool":"systemd","permutation":"unit-present","args":{"service":"chrony.service","timeout_secs":15},"on_failure":"stop"},
     {"step_id":"household-time-chrony-lan-policy","tool":"files","permutation":"managed-files","args":{},"on_failure":"stop"},
     {"step_id":"household-time-disable-timesyncd-client","tool":"systemd","permutation":"disable-stop","args":{"service":"systemd-timesyncd.service","timeout_secs":15},"on_failure":"stop"},
-    {"step_id":"household-time-enable-chrony-server","tool":"systemd","permutation":"enable-now","args":{"service":"chronyd.service","timeout_secs":15},"on_failure":"stop"},
-    {"step_id":"household-time-restart-chrony-server","tool":"systemd","permutation":"restart","args":{"service":"chronyd.service","timeout_secs":15,"restart_policy":"always"},"on_failure":"stop"}
+    {"step_id":"household-time-enable-chrony-server","tool":"systemd","permutation":"enable-now","args":{"service":"chrony.service","timeout_secs":15},"on_failure":"stop"},
+    {"step_id":"household-time-restart-chrony-server","tool":"systemd","permutation":"restart","args":{"service":"chrony.service","timeout_secs":15,"restart_policy":"always"},"on_failure":"stop"}
   ],
   "files_root": "files_root"
 }
