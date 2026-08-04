@@ -109,6 +109,7 @@ pub mod ai_coding_harness;
 pub mod artifact_lock;
 pub mod aur;
 pub mod command;
+pub(crate) mod comparison;
 pub mod files;
 pub mod git_artifact;
 pub mod health;
