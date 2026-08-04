@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "owner-profile",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TV owner-profile module. Rust owns owner account, sudo posture, shell, and TV operator groups are maintained; this sidecar carries constants only.",
   "optional": false,
   "constants": {
@@ -27,20 +27,5 @@
     "receipt_schema": "harmonia.tv.owner_profile.v1",
     "meaning": "owner account, sudo posture, shell, and TV operator groups are maintained"
   },
-  "ladder": [
-    {
-      "step_id": "owner-groups-apply",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "missing=\"\"; have=\"$(id -nG owner 2>/dev/null || true)\"; for g in wheel video input render audio storage network uucp; do echo \"$have\" | tr \" \" \"\n\" | grep -qx \"$g\" || missing=\"$missing${missing:+,}$g\"; done; [ -z \"$missing\" ] || /usr/sbin/usermod -aG \"$missing\" owner"
-        ],
-        "timeout_secs": 120
-      }
-    }
-  ]
+  "ladder": []
 }
