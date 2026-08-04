@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "matrix",
   "version": "1.0.0",
-  "description": "Matrix Synapse host server and Element Web chat portal: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback API, LAN/Tailscale web entry points, DNS, homeserver.json portal registration, log rotation, and health proof.",
+  "description": "Matrix Synapse host server and Element Web chat portal: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback API, LAN/Tailscale web entry points, DNS, Caduceus-delegated portal registration, log rotation, and health proof.",
   "constants": {
     "server_name": "home.arpa",
     "synapse_loopback": "127.0.0.1:8008",

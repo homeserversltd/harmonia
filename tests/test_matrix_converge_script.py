@@ -1,8 +1,6 @@
 import json
-import os
 import pathlib
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -14,17 +12,6 @@ class MatrixConvergeScriptTests(unittest.TestCase):
     def script_text(self) -> str:
         return MATRIX_CONVERGE.read_text(encoding="utf-8")
 
-    def config_converger_source(self, config_path: pathlib.Path) -> str:
-        text = self.script_text()
-        source = text.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
-        return source.replace("Path('/etc/homeserver/config.json')", f"Path({str(config_path)!r})")
-
-    def run_as_root(self, source: str) -> None:
-        subprocess.run(["sudo", "-n", sys.executable, "-c", source], check=True)
-
-    def require_noninteractive_sudo(self) -> None:
-        if subprocess.run(["sudo", "-n", "true"], check=False).returncode != 0:
-            self.skipTest("fixture ownership proof requires noninteractive sudo")
 
     def test_harmonia_converger_does_not_install_birth_owned_packages(self) -> None:
         text = self.script_text()
@@ -58,66 +45,64 @@ class MatrixConvergeScriptTests(unittest.TestCase):
         self.assertLess(text.index("ensure_unbound_conf_d_include"), text.index("unbound-checkconf"))
         self.assertLess(text.index("unbound-checkconf"), text.index(unbound_reload))
 
-    def test_matrix_portal_uses_the_directory_seated_new_stack_config(self) -> None:
+    def test_matrix_portal_is_delegated_to_caduceus(self) -> None:
         text = self.script_text()
-        self.assertIn("[ -d /etc/homeserver ] || install -d -o root -g root -m 0755 /etc/homeserver", text)
-        self.assertNotIn("\ninstall -d -o root -g root -m 0755 /etc/homeserver\n", text)
-        self.assertIn("Path('/etc/homeserver/config.json')", text)
-        self.assertNotIn("Path('/etc/homeserver.json')", text)
-        self.assertIn("elements['Element'] = True", text)
-        self.assertIn("elements.pop('element', None)", text)
-        self.assertIn("'name': 'Element'", text)
-        self.assertIn("'services': ['matrix-synapse']", text)
-        self.assertIn("'port': 8008", text)
-        self.assertNotIn("'owningUnits'", text)
-        self.assertNotIn("'status'", text)
-        portal_entry = text.split("entry = {", 1)[1].split("for index, item", 1)[0]
-        self.assertNotIn("nginx", portal_entry)
+        self.assertNotIn("/etc/homeserver", text)
+        self.assertIn("http://127.0.0.1:3014/api/v1/config/show", text)
+        self.assertIn("http://127.0.0.1:3014/api/v1/config/set", text)
+        self.assertIn("--request POST", text)
+        self.assertIn("--header 'Content-Type: application/json'", text)
+        self.assertIn("tabs.portals.data.portals", text)
+        self.assertIn("tabs.portals.visibility.elements", text)
+        self.assertIn("first_missing_signal=caduceus-config-unreachable", text)
 
-    def test_config_convergence_preserves_shared_ownership_and_skips_identical_write(self) -> None:
-        self.require_noninteractive_sudo()
+    def test_matrix_portal_merge_preserves_preexisting_non_element_portal(self) -> None:
+        text = self.script_text()
+        merge_program = text.split("<<'PY'\n", 1)[1].split("\nPY\nthen", 1)[0]
+        jellyfin = {
+            "name": "Jellyfin",
+            "description": "Preserve this exact portal record.",
+            "services": ["jellyfin"],
+            "type": "systemd",
+            "port": 8096,
+            "localURL": "https://jellyfin.home.arpa",
+        }
+        document = {
+            "tabs": {
+                "portals": {
+                    "data": {"portals": [jellyfin, {"name": "eLeMeNt", "stale": True}]},
+                    "visibility": {"elements": {"element": True, "Jellyfin": True}},
+                }
+            }
+        }
         with tempfile.TemporaryDirectory() as tmpdir:
-            homeserver = pathlib.Path(tmpdir) / "etc" / "homeserver"
-            homeserver.mkdir(parents=True)
-            config = homeserver / "config.json"
-            source = self.config_converger_source(config)
-
-            self.run_as_root(source)
-            shared_gid = os.getgid()
-            self.run_as_root(
-                "import os; "
-                f"os.chown({str(homeserver)!r}, 0, {shared_gid}); "
-                f"os.chmod({str(homeserver)!r}, 0o775); "
-                f"os.chown({str(config)!r}, 0, {shared_gid}); "
-                f"os.chmod({str(config)!r}, 0o640)"
+            tmp = pathlib.Path(tmpdir)
+            source = tmp / "document.json"
+            portals = tmp / "portals.json"
+            elements = tmp / "elements.json"
+            source.write_text(json.dumps({"document": document}), encoding="utf-8")
+            subprocess.run(
+                ["python3", "-c", merge_program, str(source), str(portals), str(elements)],
+                check=True,
             )
-
-            before = config.stat()
-            directory_before = homeserver.stat()
-            self.run_as_root(source)
-            after = config.stat()
-            directory_after = homeserver.stat()
-            self.assertEqual(after.st_gid, before.st_gid)
-            self.assertEqual(directory_after.st_gid, directory_before.st_gid)
-            self.assertEqual(after.st_ino, before.st_ino)
-            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
-            self.assertEqual(after.st_mode & 0o777, before.st_mode & 0o777)
-
-            incorrect_data = {"tabs": {"portals": {"visibility": {"elements": {"element": True}}}}}
-            self.run_as_root(
-                "import json; from pathlib import Path; "
-                f"Path({str(config)!r}).write_text({json.dumps(incorrect_data)!r}, encoding='utf-8')"
+            portals_payload = json.loads(portals.read_text(encoding="utf-8"))
+            elements_payload = json.loads(elements.read_text(encoding="utf-8"))
+            first_portals_payload = portals.read_bytes()
+            first_elements_payload = elements.read_bytes()
+            subprocess.run(
+                ["python3", "-c", merge_program, str(source), str(portals), str(elements)],
+                check=True,
             )
-            incorrect = config.stat()
-            self.run_as_root(source)
-            corrected = config.stat()
-            data = json.loads(config.read_text(encoding="utf-8"))
-            self.assertNotEqual(corrected.st_ino, incorrect.st_ino)
-            self.assertEqual(corrected.st_gid, shared_gid)
-            self.assertEqual(corrected.st_mode & 0o777, 0o640)
-            self.assertTrue(data["tabs"]["portals"]["visibility"]["elements"]["Element"])
-            self.assertNotIn("element", data["tabs"]["portals"]["visibility"]["elements"])
-            self.assertEqual(data["tabs"]["portals"]["data"]["portals"][0]["name"], "Element")
+            self.assertEqual(portals.read_bytes(), first_portals_payload)
+            self.assertEqual(elements.read_bytes(), first_elements_payload)
+
+        self.assertEqual(portals_payload["path"], "tabs.portals.data.portals")
+        self.assertEqual(portals_payload["value"][0], jellyfin)
+        self.assertEqual(portals_payload["value"][1]["name"], "Element")
+        self.assertEqual(elements_payload["path"], "tabs.portals.visibility.elements")
+        self.assertNotIn("element", elements_payload["value"])
+        self.assertTrue(elements_payload["value"]["Element"])
+        self.assertTrue(elements_payload["value"]["Jellyfin"])
 
 
 if __name__ == "__main__":
