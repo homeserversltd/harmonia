@@ -5,9 +5,8 @@ This module carries the HOMESERVER product crown configuration lifted from the o
 The ladder:
 
 - fails closed unless the birth-provided `coronatio` executable exists;
-- requires `/etc/homeserver.json` to be non-empty and valid JSON, but never overwrites that household-edited live file;
-- converges the secret-free product baseline to `/etc/homeserver.factory`, backing up replaced bytes;
-- validates the installed factory baseline;
+- captures `/etc/appliance/config.json` as a non-empty, valid JSON household document but never overwrites it; Caduceus is its sole writer;
+- always converges the secret-free product baseline to `/etc/appliance/config.factory`, backing up replaced bytes; Harmonia owns that factory baseline;
 - performs no restart because Coronatio reads the household JSON when serving configuration-backed routes.
 
 The factory baseline preserves the quarry tab, portal, upload, mount, permissions, theme and visibility shape. The admin PIN and site-specific remote URLs are empty for birth-owned fill. Generated release timestamps/build identity and instance network notes are not carried.

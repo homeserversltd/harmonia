@@ -46,13 +46,35 @@
       "on_failure": "stop"
     },
     {
+      "step_id": "coronatio-live-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-s", "/etc/appliance/config.json"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "coronatio-live-config-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": ["-m", "json.tool", "/etc/appliance/config.json"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
       "step_id": "coronatio-product-config",
       "tool": "files",
       "permutation": "converge",
       "args": {
         "source_root": "files_root",
         "target_root": "/",
-        "files": ["etc/homeserver.factory"],
+        "files": ["etc/appliance/config.factory"],
         "backup_existing": true,
         "owner": "root",
         "group": "root",
