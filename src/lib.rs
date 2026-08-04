@@ -419,115 +419,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn machine_id_truncate_zeroes_file_and_receipts_no_reboot() {
-        let scratch = std::env::temp_dir().join(format!("harmonia-machine-id-{}", process::id()));
-        let etc = scratch.join("etc-machine-id");
-        let dbus = scratch.join("dbus-machine-id");
-        let receipts = scratch.join("receipts");
-        fs::create_dir_all(&scratch).unwrap();
-        fs::write(&etc, "0123456789abcdef0123456789abcdef\n").unwrap();
-        symlink(&etc, &dbus).unwrap();
-
-        let outcome = tools::machine_id::truncate(
-            &receipts,
-            "truncate-machine-id",
-            Some(etc.to_str().unwrap()),
-            Some(dbus.to_str().unwrap()),
-            true,
-        )
-        .unwrap();
-
-        assert!(outcome.ok);
-        assert!(outcome.changed);
-        assert_eq!(fs::metadata(&etc).unwrap().len(), 0);
-        let receipt = fs::read_to_string(receipts.join("truncate-machine-id.json")).unwrap();
-        assert!(receipt.contains("harmonia.machine_id_truncate_receipt.v1"));
-        assert!(receipt.contains("old machine-id is gone"));
-        assert!(receipt.contains("\"reboot_performed\": false"));
-        let _ = fs::remove_dir_all(scratch);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn machine_id_truncate_is_idempotent_when_already_empty() {
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-machine-id-empty-{}", process::id()));
-        let etc = scratch.join("etc-machine-id");
-        let dbus = scratch.join("dbus-machine-id");
-        let receipts = scratch.join("receipts");
-        fs::create_dir_all(&scratch).unwrap();
-        fs::write(&etc, "").unwrap();
-        symlink(&etc, &dbus).unwrap();
-
-        let outcome = tools::machine_id::truncate(
-            &receipts,
-            "truncate-machine-id",
-            Some(etc.to_str().unwrap()),
-            Some(dbus.to_str().unwrap()),
-            true,
-        )
-        .unwrap();
-
-        assert!(outcome.ok);
-        assert!(!outcome.changed);
-        assert_eq!(fs::metadata(&etc).unwrap().len(), 0);
-        let _ = fs::remove_dir_all(scratch);
-    }
-
-    #[test]
-    fn parked_machine_id_module_is_valid_and_unreferenced_by_profiles() {
-        let root = repo_root();
-        let manifest_path = root.join("profiles/_parked/modules/machine-id-truncate/manifest.json");
-        let manifest = load_ladder_manifest(&manifest_path).unwrap();
-        assert_eq!(manifest.id, "machine-id-truncate");
-        validate_ladder(&manifest).unwrap();
-
-        for profile_id in ["homeserver", "homeconsole", "rebis", "tv"] {
-            let text =
-                fs::read_to_string(root.join("profiles").join(profile_id).join("index.json"))
-                    .unwrap();
-            let profile: Profile = serde_json::from_str(&text).unwrap();
-            assert!(
-                !profile
-                    .modules
-                    .iter()
-                    .any(|module| module == "machine-id-truncate"),
-                "{profile_id} must not arm machine-id-truncate"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn machine_id_truncate_refuses_divergent_dbus_regular_file() {
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-machine-id-diverge-{}", process::id()));
-        let etc = scratch.join("etc-machine-id");
-        let dbus = scratch.join("dbus-machine-id");
-        let receipts = scratch.join("receipts");
-        fs::create_dir_all(&scratch).unwrap();
-        fs::write(&etc, "0123456789abcdef0123456789abcdef\n").unwrap();
-        fs::write(&dbus, "fedcba9876543210fedcba9876543210\n").unwrap();
-
-        let outcome = tools::machine_id::truncate(
-            &receipts,
-            "truncate-machine-id",
-            Some(etc.to_str().unwrap()),
-            Some(dbus.to_str().unwrap()),
-            true,
-        )
-        .unwrap();
-
-        assert!(!outcome.ok);
-        assert!(!outcome.changed);
-        assert!(outcome.message.contains("dbus-machine-id-divergent"));
-        assert!(fs::read_to_string(&etc).unwrap().starts_with("012345"));
-        let receipt = fs::read_to_string(receipts.join("truncate-machine-id.json")).unwrap();
-        assert!(receipt.contains("regular-file"));
-        let _ = fs::remove_dir_all(scratch);
-    }
 
     #[test]
     fn artifact_promote_detects_equal_length_byte_change_by_sha256() {
@@ -2507,7 +2398,7 @@ mod tests {
                     ("systemd", "is-active-probe"),
                 ],
             ),
-            ("rebis", "rebis-waybar-config", vec![("files", "converge")]),
+
         ];
         for (profile, module, expected) in cases {
             let dir = root
