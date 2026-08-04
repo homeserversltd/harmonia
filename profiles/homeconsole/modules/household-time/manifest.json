@@ -4,13 +4,42 @@
   "version": "2.1.0",
   "optional": false,
   "description": "Household time watched consumer: applies only a fresh valid resolver fact and proves NTP through systemd.",
-  "caduceus_commands": ["time set-timezone"],
-  "constants": {"resolver_time_state_url":"http://homeserver.home.arpa:3014/time/state"},
+  "caduceus_commands": [
+    "time set-timezone"
+  ],
+  "constants": {
+    "resolver_time_state_url": "http://homeserver.home.arpa:3014/time/state"
+  },
   "ladder": [
-    {"step_id":"household-time-peer-state","tool":"household-time","permutation":"watch-and-set","args":{"backend":"caduceus","state_url":"$constants.resolver_time_state_url","timeout_secs":10}},
-    {"step_id":"household-time-timesyncd-gateway","tool":"files","permutation":"managed-files","args":{},"on_failure":"stop"},
-    {"step_id":"household-time-restart-timesyncd","tool":"systemd","permutation":"restart","args":{"service":"systemd-timesyncd.service","timeout_secs":15,"restart_policy":"always"},"on_failure":"stop"},
-    {"step_id":"household-time-ensure-ntp","tool":"systemd","permutation":"enable-first-present-now","args":{"candidate_units":["systemd-timesyncd.service"],"timeout_secs":15},"on_failure":"stop"}
+    {
+      "step_id": "household-time-peer-state",
+      "tool": "household-time",
+      "permutation": "watch-and-set",
+      "args": {
+        "backend": "caduceus",
+        "state_url": "$constants.resolver_time_state_url",
+        "timeout_secs": 10
+      }
+    },
+    {
+      "step_id": "household-time-timesyncd-gateway",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "household-time-ensure-ntp",
+      "tool": "systemd",
+      "permutation": "enable-first-present-now",
+      "args": {
+        "candidate_units": [
+          "systemd-timesyncd.service"
+        ],
+        "timeout_secs": 15
+      },
+      "on_failure": "stop"
+    }
   ],
   "files_root": "files_root"
 }

@@ -17,16 +17,6 @@
   "constants": {},
   "ladder": [
     {
-      "step_id": "gogs-package-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": [
-          "gogs"
-        ]
-      }
-    },
-    {
       "step_id": "gogs-service-enable",
       "tool": "systemd",
       "permutation": "enable-now",

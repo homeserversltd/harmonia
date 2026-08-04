@@ -10,24 +10,5 @@
       "archlinux-keyring"
     ]
   },
-  "ladder": [
-    {
-      "step_id": "package-keyring-repair",
-      "tool": "package",
-      "permutation": "keyring-repair",
-      "args": {
-        "package": "$constants.package"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "archlinux-keyring-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": "$constants.packages"
-      },
-      "on_failure": "stop"
-    }
-  ]
+  "ladder": []
 }

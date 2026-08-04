@@ -19,15 +19,5 @@
     "receipt_schema": "harmonia.tv.gpu_display_stack.v1",
     "meaning": "GPU/Vulkan display stack for the TV appliance is maintained"
   },
-  "ladder": [
-    {
-      "step_id": "packages-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": "$constants.packages",
-        "timeout_secs": 1800
-      }
-    }
-  ]
+  "ladder": []
 }

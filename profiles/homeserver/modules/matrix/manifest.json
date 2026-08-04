@@ -25,7 +25,7 @@
       "tool": "command",
       "permutation": "capture",
       "args": {
-        "program": "/usr/local/libexec/harmonia-matrix-converge",
+        "program": "/usr/local/sbin/caduceus-matrix-converge",
         "timeout_secs": 1800
       }
     },
@@ -36,42 +36,9 @@
       "args": {}
     },
     {
-      "step_id": "matrix-nginx-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "nginx.service"
-      }
-    },
-    {
-      "step_id": "matrix-unbound-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "unbound.service"
-      }
-    },
-    {
-      "step_id": "matrix-prepare-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "harmonia-matrix-prepare.service"
-      }
-    },
-    {
       "step_id": "matrix-synapse-enable",
       "tool": "systemd",
       "permutation": "enable-now",
-      "args": {
-        "service": "matrix-synapse.service",
-        "timeout_secs": 120
-      }
-    },
-    {
-      "step_id": "matrix-synapse-restart",
-      "tool": "systemd",
-      "permutation": "restart",
       "args": {
         "service": "matrix-synapse.service",
         "timeout_secs": 120
