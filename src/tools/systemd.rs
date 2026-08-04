@@ -1,6 +1,8 @@
+use super::comparison::{self, DiffDecision};
 use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::{write_json, CmdResult, OperationOutcome};
-use serde_json::json;
+use serde::Serialize;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -285,6 +287,130 @@ fn decide_restart(service_material_changed: bool) -> RestartDecision {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SystemdObservation {
+    enabled: Option<String>,
+    active: Option<String>,
+    load_state: Option<String>,
+    unit_file_state: Option<String>,
+    needs_reload: Option<String>,
+    unit_present: Option<bool>,
+    unit_file_exists: bool,
+    probe: Option<CmdResult>,
+}
+
+#[derive(Clone)]
+struct SystemdMovement {
+    outcome: OperationOutcome,
+    after: SystemdObservation,
+}
+
+fn observe_systemd_state(
+    action: &str,
+    service: &str,
+    user: bool,
+    target_user: Option<&str>,
+    timeout_secs: u64,
+) -> SystemdObservation {
+    let probe = matches!(action, "unit-present" | "is-active-probe")
+        .then(|| systemctl(action, service, user, target_user, timeout_secs));
+    let unit_present = if action == "unit-present" {
+        probe
+            .as_ref()
+            .map(|result| result.ok && result.stdout.trim() != "not-found")
+    } else {
+        None
+    };
+    SystemdObservation {
+        enabled: state("is-enabled", service, user, target_user, timeout_secs),
+        active: state("is-active", service, user, target_user, timeout_secs),
+        load_state: state("load-state", service, user, target_user, timeout_secs),
+        unit_file_state: state("unit-file-state", service, user, target_user, timeout_secs),
+        needs_reload: state("needs-reload", service, user, target_user, timeout_secs),
+        unit_present,
+        unit_file_exists: action == "disable-stop-remove"
+            && unit_file_path(service).is_some_and(|path| path.exists()),
+        probe,
+    }
+}
+
+fn comparison_fields(
+    observation: &SystemdObservation,
+    desired_state: Value,
+    decision: DiffDecision,
+    movement: Option<&OperationOutcome>,
+    changed: bool,
+) -> Value {
+    json!({
+        "observed_state": observation,
+        "desired_state": desired_state,
+        "diff_decision": match decision { DiffDecision::Empty => "empty", DiffDecision::Different => "different" },
+        "movement": movement.map(|movement| json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command})),
+        "changed": changed,
+    })
+}
+
+fn augment_comparison_receipt(receipt_dir: &Path, name: &str, fields: Value) -> Result<(), String> {
+    let path = receipt_dir.join(format!("{name}.json"));
+    let mut receipt: Value =
+        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let receipt = receipt
+        .as_object_mut()
+        .ok_or_else(|| "systemd-receipt-object-invalid".to_string())?;
+    let fields = fields
+        .as_object()
+        .ok_or_else(|| "systemd-comparison-fields-invalid".to_string())?;
+    receipt.extend(fields.clone());
+    write_json(&path, &Value::Object(receipt.clone()))
+}
+
+fn desired_state(action: &str, service_material_changed: bool) -> Value {
+    match action {
+        "daemon-reload" => json!({"manager_reload_required": service_material_changed}),
+        "enable-now" => json!({"enabled": "enabled", "active": "active"}),
+        "disable-stop" => json!({"enabled": "disabled", "active": "inactive"}),
+        "disable-stop-remove" => json!({"unit_file": "absent"}),
+        "restart" => json!({"service_material_changed": service_material_changed}),
+        "stop" => {
+            json!({"active": "inactive", "service_material_changed": service_material_changed})
+        }
+        "unit-present" => json!({"observation_only": "unit-present"}),
+        "is-active-probe" => json!({"observation_only": "is-active"}),
+        other => json!({"action": other}),
+    }
+}
+
+fn decide_action(
+    action: &str,
+    observation: &SystemdObservation,
+    service_material_changed: bool,
+) -> DiffDecision {
+    let unit_absent = observation.load_state.as_deref() == Some("not-found")
+        || observation.unit_file_state.as_deref() == Some("not-found");
+    let different = match action {
+        "unit-present" | "is-active-probe" => false,
+        "daemon-reload" | "restart" => service_material_changed,
+        "stop" => service_material_changed && !unit_absent,
+        "enable-now" => {
+            observation.enabled.as_deref() != Some("enabled")
+                || observation.active.as_deref() != Some("active")
+        }
+        "disable-stop" => {
+            !unit_absent
+                && (observation.enabled.as_deref() != Some("disabled")
+                    || observation.active.as_deref() == Some("active"))
+        }
+        "disable-stop-remove" => observation.unit_file_exists && !unit_absent,
+        _ => true,
+    };
+    if different {
+        DiffDecision::Different
+    } else {
+        DiffDecision::Empty
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_restart(
     receipt_dir: &Path,
@@ -296,79 +422,20 @@ fn run_restart(
     apply: bool,
     service_material_changed: bool,
 ) -> Result<OperationOutcome, String> {
-    let service = service.unwrap_or("");
-    let active_before = state("is-active", service, user, target_user, timeout_secs);
-    let decision = decide_restart(service_material_changed);
-    if !decision.execute {
-        let result = CmdResult {
-            ok: true,
-            code: 0,
-            stdout: "restart skipped: converged-quiet".to_string(),
-            stderr: String::new(),
-        };
-        write_systemd_receipt(
-            receipt_dir,
-            name,
-            "restart",
-            service,
-            user,
-            apply,
-            &result,
-            None,
-            active_before.as_deref(),
-            None,
-            active_before.as_deref(),
-            false,
-            target_user,
-            Some(decision),
-            service_material_changed,
-        )?;
-        return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: "converged-quiet".to_string(),
-            command: Some(result),
-        });
-    }
-    let result = if apply {
-        systemctl("restart", service, user, target_user, timeout_secs)
-    } else {
-        CmdResult {
-            ok: true,
-            code: 0,
-            stdout: format!("planned systemd restart {service}"),
-            stderr: String::new(),
-        }
-    };
-    let active_after = state("is-active", service, user, target_user, timeout_secs);
-    let changed = result.ok && apply && service_material_changed;
-    write_systemd_receipt(
+    run_action(
         receipt_dir,
         name,
         "restart",
         service,
         user,
-        apply,
-        &result,
-        None,
-        active_before.as_deref(),
-        None,
-        active_after.as_deref(),
-        changed,
         target_user,
-        Some(decision),
+        timeout_secs,
+        apply,
         service_material_changed,
-    )?;
-    Ok(OperationOutcome {
-        ok: result.ok,
-        changed,
-        skipped: !apply,
-        message: decision.reason.to_string(),
-        command: Some(result),
-    })
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_action(
     receipt_dir: &Path,
     name: &str,
@@ -381,75 +448,97 @@ pub(crate) fn run_action(
     service_material_changed: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
-    let mutating = matches!(
-        action,
-        "daemon-reload"
-            | "enable-now"
-            | "disable-stop"
-            | "disable-stop-remove"
-            | "restart"
-            | "stop"
-    );
-    let unit_file_before = if action == "disable-stop-remove" {
-        unit_file_path(service).is_some_and(|path| path.exists())
-    } else {
-        false
-    };
-    let before_enabled = state("is-enabled", service, user, target_user, timeout_secs);
-    let before_active = state("is-active", service, user, target_user, timeout_secs);
-    let unit_absent_already_satisfied =
-        if matches!(action, "disable-stop" | "disable-stop-remove" | "stop") {
-            let presence = systemctl("unit-present", service, user, target_user, timeout_secs);
-            presence.ok && presence.stdout.trim() == "not-found"
-        } else {
-            false
-        };
-    let action_needed = match action {
-        "daemon-reload" | "restart" => service_material_changed,
-        "stop" => service_material_changed && !unit_absent_already_satisfied,
-        "enable-now" => {
-            before_enabled.as_deref() != Some("enabled")
-                || before_active.as_deref() != Some("active")
-        }
-        "disable-stop" => {
-            !unit_absent_already_satisfied
-                && (before_enabled.as_deref() != Some("disabled")
-                    || before_active.as_deref() == Some("active"))
-        }
-        "disable-stop-remove" => unit_file_before && !unit_absent_already_satisfied,
-        _ => true,
-    };
-    let mut result = if apply && unit_absent_already_satisfied {
-        CmdResult {
-            ok: true,
-            code: 0,
-            stdout: "unit-absent-already-satisfied".to_string(),
-            stderr: String::new(),
-        }
-    } else if mutating && (!apply || !action_needed) {
-        CmdResult {
-            ok: true,
-            code: 0,
-            stdout: if !apply {
-                format!("planned systemd {action} {service}")
+    let restart_decision = decide_restart(service_material_changed);
+    let run = comparison::execute(
+        || {
+            Ok::<_, String>(observe_systemd_state(
+                action,
+                service,
+                user,
+                target_user,
+                timeout_secs,
+            ))
+        },
+        |observation| decide_action(action, observation, service_material_changed),
+        |_authorization, before| {
+            let result = if apply {
+                systemctl(action, service, user, target_user, timeout_secs)
             } else {
-                format!("systemd {action} skipped: converged-quiet")
-            },
-            stderr: String::new(),
+                CmdResult {
+                    ok: true,
+                    code: 0,
+                    stdout: format!("planned systemd {action} {service}"),
+                    stderr: String::new(),
+                }
+            };
+            let after = observe_systemd_state(action, service, user, target_user, timeout_secs);
+            let changed = apply
+                && result.ok
+                && (before.enabled != after.enabled
+                    || before.active != after.active
+                    || before.unit_file_state != after.unit_file_state
+                    || before.unit_file_exists != after.unit_file_exists
+                    || (matches!(action, "daemon-reload" | "restart") && service_material_changed));
+            Ok(SystemdMovement {
+                outcome: OperationOutcome {
+                    ok: result.ok,
+                    changed,
+                    skipped: !apply,
+                    message: if action == "restart" {
+                        restart_decision.reason.to_string()
+                    } else {
+                        format!(
+                            "systemd{} {action} {service}",
+                            if user { " --user" } else { "" }
+                        )
+                    },
+                    command: Some(result),
+                },
+                after,
+            })
+        },
+    )?;
+    let observation = run.observation().clone();
+    let decision = run.decision();
+    let (outcome, after, movement) = match run {
+        comparison::ComparisonRun::Current { .. } => {
+            let probe = observation.probe.clone().map(|result| {
+                if action == "unit-present" {
+                    unit_present_result(result, service)
+                } else {
+                    result
+                }
+            });
+            (
+                OperationOutcome {
+                    ok: probe.as_ref().is_none_or(|result| result.ok),
+                    changed: false,
+                    skipped: true,
+                    message: if matches!(action, "unit-present" | "is-active-probe") {
+                        format!(
+                            "systemd{} {action} {service}",
+                            if user { " --user" } else { "" }
+                        )
+                    } else {
+                        "converged-quiet".to_string()
+                    },
+                    command: probe,
+                },
+                observation.clone(),
+                None,
+            )
         }
-    } else {
-        systemctl(action, service, user, target_user, timeout_secs)
+        comparison::ComparisonRun::Moved { movement, .. } => {
+            let after = movement.after.clone();
+            (movement.outcome.clone(), after, Some(movement.outcome))
+        }
     };
-    if action == "unit-present" {
-        result = unit_present_result(result, service);
-    }
-    let after_enabled = state("is-enabled", service, user, target_user, timeout_secs);
-    let after_active = state("is-active", service, user, target_user, timeout_secs);
-    let changed = mutating
-        && action_needed
-        && apply
-        && result.ok
-        && (before_enabled != after_enabled || before_active != after_active || unit_file_before);
+    let command = outcome.command.clone().unwrap_or(CmdResult {
+        ok: outcome.ok,
+        code: if outcome.ok { 0 } else { -1 },
+        stdout: outcome.message.clone(),
+        stderr: String::new(),
+    });
     write_systemd_receipt(
         receipt_dir,
         name,
@@ -457,32 +546,28 @@ pub(crate) fn run_action(
         service,
         user,
         apply,
-        &result,
-        before_enabled.as_deref(),
-        before_active.as_deref(),
-        after_enabled.as_deref(),
-        after_active.as_deref(),
-        changed,
+        &command,
+        observation.enabled.as_deref(),
+        observation.active.as_deref(),
+        after.enabled.as_deref(),
+        after.active.as_deref(),
+        outcome.changed,
         target_user,
-        None,
+        (action == "restart").then_some(restart_decision),
         service_material_changed,
     )?;
-    Ok(OperationOutcome {
-        ok: result.ok,
-        changed,
-        skipped: mutating && (!apply || !action_needed),
-        message: if apply && unit_absent_already_satisfied {
-            "unit-absent-already-satisfied".to_string()
-        } else if mutating && apply && !action_needed {
-            "converged-quiet".to_string()
-        } else {
-            format!(
-                "systemd{} {action} {service}",
-                if user { " --user" } else { "" }
-            )
-        },
-        command: Some(result),
-    })
+    augment_comparison_receipt(
+        receipt_dir,
+        name,
+        comparison_fields(
+            &observation,
+            desired_state(action, service_material_changed),
+            decision,
+            movement.as_ref(),
+            outcome.changed,
+        ),
+    )?;
+    Ok(outcome)
 }
 
 fn systemctl(
@@ -511,6 +596,30 @@ fn systemctl(
             args.extend([
                 "show".to_string(),
                 "--property=LoadState".to_string(),
+                "--value".to_string(),
+                service.to_string(),
+            ]);
+        }
+        "load-state" => {
+            args.extend([
+                "show".to_string(),
+                "--property=LoadState".to_string(),
+                "--value".to_string(),
+                service.to_string(),
+            ]);
+        }
+        "unit-file-state" => {
+            args.extend([
+                "show".to_string(),
+                "--property=UnitFileState".to_string(),
+                "--value".to_string(),
+                service.to_string(),
+            ]);
+        }
+        "needs-reload" => {
+            args.extend([
+                "show".to_string(),
+                "--property=NeedDaemonReload".to_string(),
                 "--value".to_string(),
                 service.to_string(),
             ]);
@@ -639,8 +748,16 @@ fn state(
     let mut args: Vec<String> = systemctl_scope_args(user, target_user);
     args.extend([kind.to_string(), service.to_string()]);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let result =
-        crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs);
+    let result = match kind {
+        "load-state" | "unit-file-state" | "needs-reload" => {
+            systemctl(kind, service, user, target_user, timeout_secs)
+        }
+        _ => crate::tools::command::capture_with_timeout(
+            "/usr/bin/systemctl",
+            &arg_refs,
+            timeout_secs,
+        ),
+    };
     if result.code == -1 {
         None
     } else {
