@@ -21,7 +21,13 @@
         "op_prefix": "arcadia-gui",
         "run_schema": "harmonia.arcadia_gui_runtime.v1",
         "managed_files_schema": "harmonia.arcadia_gui_runtime.managed_files.v1",
-        "managed_files": []
+        "managed_files": [
+          {
+            "path": "/etc/systemd/system/arcadia.service",
+            "mode": 420,
+            "content": "[Unit]\nDescription=Arcadia appliance GUI\nAfter=network.target caduceus.service\n\n[Service]\nExecStart=/usr/local/bin/arcadia\nRestart=on-failure\nEnvironment=CADUCEUS_HTTP_BASE=http://127.0.0.1:8787\n\n[Install]\nWantedBy=multi-user.target\n"
+          }
+        ]
       }
     }
   ]
