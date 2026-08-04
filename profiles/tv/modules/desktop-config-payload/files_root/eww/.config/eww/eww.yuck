@@ -1,0 +1,21 @@
+(defvar harmonia_interactables_open false)
+
+(defpoll harmonia_interactables_markup
+  :interval "30s"
+  :run-while harmonia_interactables_open
+  :initial "(box :class \"harmonia-interactables-degraded\" (label :text \"Harmonia updates loading…\"))"
+  "$HOME/bin/harmonia-interactables-popup eww")
+
+(defwindow harmonia-interactables
+  :monitor 0
+  :geometry (geometry
+    :x "32px"
+    :y "72px"
+    :width "680px"
+    :anchor "bottom right")
+  :stacking "fg"
+  :exclusive false
+  :focusable true
+  (scroll :hscroll false
+    (box :class "harmonia-interactables-popup"
+      (literal :content harmonia_interactables_markup))))

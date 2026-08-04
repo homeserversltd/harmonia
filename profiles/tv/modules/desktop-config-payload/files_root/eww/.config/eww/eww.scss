@@ -1,0 +1,53 @@
+* {
+  all: unset;
+  font-family: "MesloLGS Nerd Font", "Noto Sans", sans-serif;
+}
+
+.harmonia-interactables-popup {
+  color: #e5e9f0;
+  background: rgba(20, 22, 28, 0.98);
+  border: 2px solid rgba(235, 203, 139, 0.9);
+  border-radius: 16px;
+  padding: 28px;
+}
+
+.harmonia-interactables-title {
+  color: #ffffff;
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.harmonia-interactable {
+  background: rgba(46, 52, 64, 0.86);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+
+.harmonia-interactable-name {
+  color: #ebcb8b;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.harmonia-interactable-module,
+.harmonia-interactable-drift {
+  color: #d8dee9;
+  font-size: 19px;
+}
+
+.harmonia-interactable-apply {
+  color: #2e3440;
+  background: #a3be8c;
+  border-radius: 9px;
+  margin-top: 8px;
+  padding: 12px 20px;
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.harmonia-interactables-empty,
+.harmonia-interactables-degraded {
+  color: #aeb6c3;
+  font-size: 21px;
+  padding: 12px 0;
+}
