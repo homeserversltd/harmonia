@@ -138,7 +138,11 @@ fn parse_run_mode(args: &[String]) -> Result<RunMode, String> {
             _ => return Err("update accepts [--apply] and --receipt-dir only".to_string()),
         }
     }
-    Ok(if apply { RunMode::Apply } else { RunMode::ReportOnly })
+    Ok(if apply {
+        RunMode::Apply
+    } else {
+        RunMode::ReportOnly
+    })
 }
 
 pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
@@ -161,6 +165,46 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
                 }),
             )
             .map_err(|err| format!("{reason}; update-refusal-receipt-failed: {err}"))?;
+            return Err(reason);
+        }
+    };
+    let _run_lock = match try_acquire_engine_run_lock() {
+        Ok(guard) => guard,
+        Err(EngineRunLockFailure::Busy) => {
+            let reason = "run-in-progress";
+            write_json(
+                &receipt_dir.join("run.json"),
+                &json!({
+                    "schema": "harmonia.run_profile.v1",
+                    "ok": false,
+                    "mutation": mode.apply(),
+                    "mode": "refused",
+                    "profile_id": serde_json::Value::Null,
+                    "identity": serde_json::Value::Null,
+                    "identity_source": "certificate",
+                    "lock_path": engine_run_lock_path(),
+                    "first_missing_signal": reason,
+                }),
+            )
+            .map_err(|err| format!("{reason}; update-refusal-receipt-failed: {err}"))?;
+            return Err(reason.to_string());
+        }
+        Err(EngineRunLockFailure::Unavailable(reason)) => {
+            write_json(
+                &receipt_dir.join("run.json"),
+                &json!({
+                    "schema": "harmonia.run_profile.v1",
+                    "ok": false,
+                    "mutation": mode.apply(),
+                    "mode": if mode.apply() { "apply" } else { "report-only" },
+                    "profile_id": serde_json::Value::Null,
+                    "identity": serde_json::Value::Null,
+                    "identity_source": "certificate",
+                    "lock_path": engine_run_lock_path(),
+                    "first_missing_signal": reason,
+                }),
+            )
+            .map_err(|err| format!("{reason}; update-lock-receipt-failed: {err}"))?;
             return Err(reason);
         }
     };
