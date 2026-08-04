@@ -597,7 +597,8 @@ pub(crate) fn converge_managed_files(
         reject_ssh_path(Path::new(&file.path))?;
     }
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    let mut missing = Vec::new();
+    let mut drift = Vec::new();
+    let mut missing_target_birth_debts = Vec::new();
     let mut written = Vec::new();
     let mut changed = false;
     let mut entries = Vec::new();
@@ -635,10 +636,10 @@ pub(crate) fn converge_managed_files(
                 written.push(file.path.clone());
                 changed = true;
             } else {
-                missing.push(file.path.clone());
+                drift.push(file.path.clone());
             }
         } else if missing_target_debt {
-            missing.push(file.path.clone());
+            missing_target_birth_debts.push(file.path.clone());
         }
         entries.push(json!({
             "path": file.path,
@@ -685,7 +686,7 @@ pub(crate) fn converge_managed_files(
             }),
         )?;
     }
-    let ok = missing.is_empty() || !apply;
+    let ok = missing_target_birth_debts.is_empty() || !apply;
     let receipt = receipt_dir.join(if request.receipt_name.ends_with(".json") {
         request.receipt_name.to_string()
     } else {
@@ -697,14 +698,15 @@ pub(crate) fn converge_managed_files(
             "schema": request.schema,
             "ok": ok,
             "module": request.module_id,
-            "missing_target_birth_debts": missing,
+            "drift": drift,
+            "missing_target_birth_debts": missing_target_birth_debts,
             "written": written,
             "owner": request.owner,
             "group": request.group,
             "apply": apply,
             "changed": changed,
             "entries": entries,
-            "first_missing_signal": if ok { "none" } else if !missing.is_empty() { "missing-target-birth-debt" } else { request.first_missing_signal },
+            "first_missing_signal": if ok { "none" } else if !missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else { request.first_missing_signal },
         }),
     )?;
     Ok(crate::OperationOutcome {
