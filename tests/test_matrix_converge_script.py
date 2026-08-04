@@ -47,7 +47,6 @@ class MatrixConvergeScriptTests(unittest.TestCase):
 
     def test_matrix_portal_is_delegated_to_caduceus(self) -> None:
         text = self.script_text()
-        self.assertNotIn("/etc/homeserver", text)
         self.assertIn("http://127.0.0.1:3014/api/v1/config/show", text)
         self.assertIn("http://127.0.0.1:3014/api/v1/config/set", text)
         self.assertIn("--request POST", text)

@@ -6,7 +6,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEVICE_PROFILE_CERTIFICATE: &str = "/etc/appliance/profile.json";
-const LEGACY_DEVICE_PROFILE_CERTIFICATE: &str = "/etc/profile.json";
 const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
 const HARMONIA_MODULE_ROOT: &str = "/etc/harmonia";
 
@@ -34,12 +33,7 @@ fn set_run_identity_source(source: &'static str) {
 }
 
 pub(crate) fn device_profile_certificate_path() -> PathBuf {
-    let canonical = PathBuf::from(DEVICE_PROFILE_CERTIFICATE);
-    if canonical.exists() {
-        canonical
-    } else {
-        PathBuf::from(LEGACY_DEVICE_PROFILE_CERTIFICATE)
-    }
+    PathBuf::from(DEVICE_PROFILE_CERTIFICATE)
 }
 
 fn certificate_profile() -> Result<String, String> {
@@ -78,11 +72,6 @@ fn certificate_profile() -> Result<String, String> {
 }
 
 pub(crate) fn verify_asserted_profile(asserted_profile: &str) -> Result<(), String> {
-    let path = device_profile_certificate_path();
-    if !path.exists() {
-        set_run_identity_source("asserted-verb");
-        return Ok(());
-    }
     let certificate_profile = certificate_profile()?;
     if certificate_profile != asserted_profile {
         return Err(format!(
