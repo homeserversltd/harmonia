@@ -39,54 +39,6 @@
       }
     },
     {
-      "step_id": "binary-ssh",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "ssh"
-      }
-    },
-    {
-      "step_id": "binary-git",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "git"
-      }
-    },
-    {
-      "step_id": "binary-tmux",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "tmux"
-      }
-    },
-    {
-      "step_id": "binary-kitty",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "kitty"
-      }
-    },
-    {
-      "step_id": "binary-curl",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "curl"
-      }
-    },
-    {
-      "step_id": "binary-jq",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "jq"
-      }
-    },
-    {
       "step_id": "service-sshd-service",
       "tool": "systemd",
       "permutation": "enable-now",

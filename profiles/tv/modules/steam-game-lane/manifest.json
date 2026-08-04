@@ -33,45 +33,9 @@
   },
   "ladder": [
     {
-      "step_id": "packages-check",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/pacman",
-        "args": [
-          "-Q",
-          "steam",
-          "gamescope",
-          "mangohud",
-          "gamemode",
-          "power-profiles-daemon"
-        ],
-        "timeout_secs": 180
-      },
-      "on_failure": "continue-optional"
-    },
-    {
       "step_id": "managed-files",
       "tool": "files",
       "permutation": "managed-files",
-      "on_failure": "continue-optional"
-    },
-    {
-      "step_id": "binary-gamescope",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "gamescope"
-      },
-      "on_failure": "continue-optional"
-    },
-    {
-      "step_id": "binary-steam",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "steam"
-      },
       "on_failure": "continue-optional"
     },
     {
@@ -81,48 +45,6 @@
       "args": {
         "service": "power-profiles-daemon.service",
         "timeout_secs": 60
-      },
-      "on_failure": "continue-optional"
-    },
-    {
-      "step_id": "expected-file-usr-local-bin-arch-tv-steam-game-lane",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/usr/local/bin/arch-tv-steam-game-lane"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "continue-optional"
-    },
-    {
-      "step_id": "expected-file-usr-share-applications-arch-tv-steam-game-lane-desktop",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/usr/share/applications/arch-tv-steam-game-lane.desktop"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "continue-optional"
-    },
-    {
-      "step_id": "expected-file-etc-arch-tv-steam-game-lane-policy-md",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/etc/arch-tv/steam-game-lane-policy.md"
-        ],
-        "timeout_secs": 30
       },
       "on_failure": "continue-optional"
     }

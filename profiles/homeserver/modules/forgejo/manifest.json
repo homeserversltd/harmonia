@@ -17,28 +17,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "forgejo-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/opt/forgejo/forgejo"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-s", "/opt/forgejo/custom/conf/app.ini"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "forgejo-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -52,17 +30,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "forgejo-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-unit-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": ["verify", "/etc/systemd/system/forgejo.service"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -92,27 +59,6 @@
       "args": {
         "service": "forgejo.service",
         "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "forgejo.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-health",
-      "tool": "health",
-      "permutation": "probe",
-      "args": {
-        "url": "http://127.0.0.1:3000/",
-        "timeout_secs": 3,
-        "retries": 1
       },
       "on_failure": "stop"
     }

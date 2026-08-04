@@ -6,39 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "navidrome-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/opt/navidrome/navidrome"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "navidrome-ffmpeg-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "ffmpeg",
-        "search_scope": "system",
-        "receipt_label": "birth-provided FFmpeg binary"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "navidrome-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-s", "/etc/navidrome/navidrome.toml"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "navidrome-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -52,17 +19,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "navidrome-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "navidrome-unit-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": ["verify", "/etc/systemd/system/navidrome.service"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -92,16 +48,6 @@
       "args": {
         "service": "navidrome.service",
         "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "navidrome-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "navidrome.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

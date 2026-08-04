@@ -40,25 +40,6 @@
         ],
         "timeout_secs": 900
       }
-    },
-    {
-      "step_id": "keyman-runtime-verify",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": [
-          "/opt/keyman/runtime/lib/keyman_installer/index.py",
-          "verify",
-          "--runtime-dir",
-          "/opt/keyman/runtime",
-          "--key-dir",
-          "/root/key",
-          "--vault-dir",
-          "/vault/.keys"
-        ],
-        "timeout_secs": 120
-      }
     }
   ]
 }

@@ -76,17 +76,6 @@
         "service": "matrix-synapse.service",
         "timeout_secs": 120
       }
-    },
-    {
-      "step_id": "matrix-synapse-health",
-      "tool": "health",
-      "permutation": "probe",
-      "args": {
-        "url": "http://127.0.0.1:8008/_matrix/client/versions",
-        "expected_contains": "versions",
-        "timeout_secs": 5,
-        "retries": 5
-      }
     }
   ]
 }

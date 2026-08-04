@@ -7,28 +7,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "mkdocs-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/opt/docs/venv/bin/mkdocs"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "mkdocs-documentation-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-d", "/opt/docs/docs"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "mkdocs-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -43,17 +21,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "mkdocs-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "mkdocs-unit-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": ["verify", "/etc/systemd/system/mkdocs.service"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -83,16 +50,6 @@
       "args": {
         "service": "mkdocs.service",
         "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "mkdocs-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "mkdocs.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

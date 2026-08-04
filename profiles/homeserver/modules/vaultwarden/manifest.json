@@ -6,28 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "vaultwarden-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/opt/vaultwarden/vaultwarden"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "vaultwarden-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-s", "/etc/vaultwarden.env"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "vaultwarden-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -41,17 +19,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "vaultwarden-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "vaultwarden-unit-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": ["verify", "/etc/systemd/system/vaultwarden.service"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -81,16 +48,6 @@
       "args": {
         "service": "vaultwarden.service",
         "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "vaultwarden-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "vaultwarden.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

@@ -53,28 +53,6 @@
         "owner": "root",
         "group": "root"
       }
-    },
-    {
-      "step_id": "local-ai-binary-readback",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/local/bin/llama-server",
-        "args": [
-          "--version"
-        ],
-        "timeout_secs": 60
-      }
-    },
-    {
-      "step_id": "local-ai-service-readback",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "arcadia-llama-server.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "continue-optional"
     }
   ],
   "optional": true

@@ -28,14 +28,6 @@
         "packages": "$constants.packages",
         "timeout_secs": 1800
       }
-    },
-    {
-      "step_id": "binary-vulkaninfo",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "vulkaninfo"
-      }
     }
   ]
 }

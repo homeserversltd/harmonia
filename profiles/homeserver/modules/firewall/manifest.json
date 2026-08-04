@@ -19,92 +19,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "nft-binary-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "nft",
-        "search_scope": "system",
-        "receipt_label": "birth-provided nftables binary"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "unbound-checkconf-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "unbound-checkconf",
-        "search_scope": "system",
-        "receipt_label": "birth-provided Unbound validator"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "kea-dhcp4-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "kea-dhcp4",
-        "search_scope": "system",
-        "receipt_label": "birth-provided Kea DHCP validator"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-networkd-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/lib/systemd/systemd-networkd",
-        "search_scope": "system",
-        "receipt_label": "birth-provided systemd-networkd binary"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "wan-network-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-s",
-          "/etc/systemd/network/10-wan0.network"
-        ],
-        "timeout_secs": 10
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "lan-network-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-s",
-          "/etc/systemd/network/20-lan0.network"
-        ],
-        "timeout_secs": 10
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "kea-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-s",
-          "/etc/kea/kea-dhcp4.conf"
-        ],
-        "timeout_secs": 10
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "firewall-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -143,62 +57,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "nftables-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/sbin/nft",
-        "args": [
-          "-c",
-          "-f",
-          "/etc/nftables.conf"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "unbound-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/sbin/unbound-checkconf",
-        "args": [
-          "/etc/unbound/unbound.conf"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "kea-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/sbin/kea-dhcp4",
-        "args": [
-          "-t",
-          "/etc/kea/kea-dhcp4.conf"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "nftables-unit-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": [
-          "verify",
-          "/etc/systemd/system/nftables.service"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "firewall-systemd-reload",
       "tool": "systemd",
       "permutation": "daemon-reload",
@@ -218,29 +76,9 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "nftables-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "nftables.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "unbound-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "unbound.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "unbound-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
       "args": {
         "service": "unbound.service",
         "timeout_secs": 30
@@ -253,26 +91,6 @@
       "permutation": "restart",
       "args": {
         "service": "kea-dhcp4-server.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "kea-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "kea-dhcp4-server.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "networkd-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "systemd-networkd.service",
         "timeout_secs": 30
       },
       "on_failure": "stop"

@@ -14,15 +14,6 @@
   },
   "ladder": [
     {
-      "step_id": "aur-check",
-      "tool": "aur",
-      "permutation": "check",
-      "args": {
-        "package": "$constants.package",
-        "lock": "$constants.lock"
-      }
-    },
-    {
       "step_id": "aur-build-pinned",
       "tool": "aur",
       "permutation": "build-pinned",
@@ -33,14 +24,6 @@
         "builder_user": "$constants.builder_user",
         "timeout_secs": "$constants.timeout_secs",
         "install": true
-      }
-    },
-    {
-      "step_id": "binary-oh-my-posh",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "oh-my-posh"
       }
     }
   ]

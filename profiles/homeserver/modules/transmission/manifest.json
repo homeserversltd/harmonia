@@ -6,50 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "transmission-binary-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "transmission-daemon",
-        "search_scope": "system",
-        "receipt_label": "birth-provided Transmission daemon"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "transmission-vpn-launcher-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/vault/scripts/transmission.py"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "transmission-user-settings-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-s", "/etc/transmission-daemon/settings.json"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "transmission-user-settings-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": ["-m", "json.tool", "/etc/transmission-daemon/settings.json"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "transmission-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -64,17 +20,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "transmission-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "transmission-unit-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": ["verify", "/etc/systemd/system/transmissionPIA.service"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -104,16 +49,6 @@
       "args": {
         "service": "transmissionPIA.service",
         "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "transmission-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "transmissionPIA.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

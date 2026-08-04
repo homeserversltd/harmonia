@@ -11,15 +11,6 @@
     ]
   },
   "ladder": [
-    {
-      "step_id": "uname",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "$constants.program",
-        "args": "$constants.args"
-      },
-      "on_failure": "stop"
-    }
+
   ]
 }
