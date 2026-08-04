@@ -311,7 +311,47 @@ pub(crate) fn execute(
         source_plan.bearer = bearer.to_string();
     }
     let source_bearer = source_plan.bearer.clone();
-    let git_outcome = if apply {
+    let remote_probe = apply.then(|| tools::git_artifact::probe_declared_remote_head(&source_plan));
+    let promoted_source_head = remote_probe
+        .as_ref()
+        .and_then(|probe| probe.remote_sha.as_ref())
+        .map(|_| tools::git_artifact::source_head(&source_dir, &source_bearer));
+    let installed_binary_present = fs::symlink_metadata(&install_bin)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false);
+    let source_gate_matched = remote_probe
+        .as_ref()
+        .and_then(|probe| probe.remote_sha.as_deref())
+        .zip(promoted_source_head.as_ref())
+        .is_some_and(|(remote_sha, source_head)| {
+            source_head.ok && source_head.stdout.trim() == remote_sha && installed_binary_present
+        });
+    write_source_gate_receipt(
+        receipt_dir,
+        spec,
+        remote_probe.as_ref(),
+        promoted_source_head.as_ref(),
+        installed_binary_present,
+        source_gate_matched,
+    )?;
+    let git_outcome = if source_gate_matched {
+        let source_sha = promoted_source_head
+            .as_ref()
+            .map(|result| result.stdout.trim())
+            .unwrap_or_default();
+        tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
+                resolved_commit: Some(source_sha.to_string()),
+                promotion: format!(
+                    "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present=true"
+                ),
+            },
+        }
+    } else if apply {
         tools::git_artifact::acquire_source(&source_plan)
     } else {
         tools::git_artifact::SourceOutcome {
@@ -355,7 +395,9 @@ pub(crate) fn execute(
         ));
     }
 
-    let source_sha = tools::git_artifact::source_head(&source_dir, &source_bearer);
+    let source_sha = promoted_source_head
+        .filter(|_| source_gate_matched)
+        .unwrap_or_else(|| tools::git_artifact::source_head(&source_dir, &source_bearer));
     write_source_sha_receipt(receipt_dir, spec.source_sha_op, &source_sha, &source_bearer)?;
     let source_sha_value = source_sha.stdout.trim().to_string();
 
@@ -445,44 +487,64 @@ pub(crate) fn execute(
 
     let build_environment = build_environment(args, Some(&source_sha_value))?;
 
-    let build = tools::command::capture_with_cwd_as_bearer_and_env(
-        "cargo",
-        &["build", "--release"],
-        source_dir.to_str(),
-        &source_bearer,
-        build_environment,
-    );
-    write_command_receipt(receipt_dir, spec.build_op, &build)?;
-    if !build.ok {
-        write_run_receipt(
+    let install = if source_gate_matched {
+        write_skipped_build_receipt(
             receipt_dir,
             spec,
-            apply,
-            false,
-            true,
-            &format!("{}-cargo-build-failed", spec.op_prefix),
-            &source_plan.reference,
-            &source_plan.reference,
-            &source_dir,
-            Some(&source_sha_value),
+            &source_sha_value,
+            remote_probe
+                .as_ref()
+                .and_then(|probe| probe.remote_sha.as_deref())
+                .unwrap_or_default(),
         )?;
-        return Ok(ModuleExecution::from_operations(
-            vec![(
-                spec.build_op,
-                OperationOutcome {
-                    ok: false,
-                    changed: false,
-                    skipped: false,
-                    message: format!("{} cargo build failed", spec.op_prefix),
-                    command: None,
-                },
-            )],
-            &module.id,
-        ));
-    }
+        write_skipped_binary_install_receipt(receipt_dir, spec, &install_bin, apply)?;
+        OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "converged-quiet".to_string(),
+            command: None,
+        }
+    } else {
+        let build = tools::command::capture_with_cwd_as_bearer_and_env(
+            "cargo",
+            &["build", "--release"],
+            source_dir.to_str(),
+            &source_bearer,
+            build_environment,
+        );
+        write_command_receipt(receipt_dir, spec.build_op, &build)?;
+        if !build.ok {
+            write_run_receipt(
+                receipt_dir,
+                spec,
+                apply,
+                false,
+                true,
+                &format!("{}-cargo-build-failed", spec.op_prefix),
+                &source_plan.reference,
+                &source_plan.reference,
+                &source_dir,
+                Some(&source_sha_value),
+            )?;
+            return Ok(ModuleExecution::from_operations(
+                vec![(
+                    spec.build_op,
+                    OperationOutcome {
+                        ok: false,
+                        changed: false,
+                        skipped: false,
+                        message: format!("{} cargo build failed", spec.op_prefix),
+                        command: None,
+                    },
+                )],
+                &module.id,
+            ));
+        }
 
-    let artifact = source_dir.join("target/release").join(spec.binary_name);
-    let install = install_binary(receipt_dir, spec, &artifact, &install_bin, apply)?;
+        let artifact = source_dir.join("target/release").join(spec.binary_name);
+        install_binary(receipt_dir, spec, &artifact, &install_bin, apply)?
+    };
     if !install.ok {
         write_run_receipt(
             receipt_dir,
@@ -700,6 +762,94 @@ fn render_caduceus_profile_source(
         content: rendered,
         mode: profile_source.mode,
     })
+}
+
+fn write_source_gate_receipt(
+    receipt_dir: &Path,
+    spec: &ServiceRuntimeSpec,
+    probe: Option<&tools::git_artifact::RemoteHeadProbe>,
+    promoted_source_head: Option<&CmdResult>,
+    installed_binary_present: bool,
+    matched: bool,
+) -> Result<(), String> {
+    let remote_sha = probe.and_then(|probe| probe.remote_sha.as_deref());
+    let promoted_source_sha = promoted_source_head
+        .filter(|result| result.ok)
+        .map(|result| result.stdout.trim())
+        .filter(|value| is_hex_sha(value));
+    let state = if matched {
+        "converged-quiet"
+    } else if remote_sha.is_some() && promoted_source_sha.is_some() {
+        "sha-mismatch-or-precondition-incomplete"
+    } else {
+        probe.map(|probe| probe.state.as_str()).unwrap_or("planned")
+    };
+    write_json(
+        &receipt_dir.join(format!("{}-gate.json", spec.source_op)),
+        &json!({
+            "schema": "harmonia.service-runtime.source-gate.v1",
+            "state": state,
+            "changed": false,
+            "acquire_skipped": matched,
+            "build_skipped": matched,
+            "reference": probe.map(|probe| probe.reference.as_str()),
+            "candidate_index": probe.and_then(|probe| probe.candidate_index),
+            "credential_selector": probe.and_then(|probe| probe.credential_selector.as_deref()),
+            "failed_candidates": probe.map(|probe| probe.failed_attempts.iter().map(|attempt| json!({
+                "index": attempt.index,
+                "kind": format!("{:?}", attempt.kind),
+                "locator": attempt.locator,
+                "credential_selector": attempt.credential_selector,
+                "disposition": attempt.disposition,
+                "detail": attempt.detail,
+            })).collect::<Vec<_>>()),
+            "remote_sha": remote_sha,
+            "promoted_source_sha": promoted_source_sha,
+            "installed_binary_present": installed_binary_present,
+            "probe": probe.map(|probe| &probe.command),
+        }),
+    )
+}
+
+fn write_skipped_build_receipt(
+    receipt_dir: &Path,
+    spec: &ServiceRuntimeSpec,
+    promoted_source_sha: &str,
+    remote_sha: &str,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{}.json", spec.build_op)),
+        &json!({
+            "schema": "harmonia.service-runtime.cargo-build.v1",
+            "state": "converged-quiet",
+            "ok": true,
+            "changed": false,
+            "invoked": false,
+            "reason": "source-sha-matches-promoted-source-and-installed-binary",
+            "remote_sha": remote_sha,
+            "promoted_source_sha": promoted_source_sha,
+        }),
+    )
+}
+
+fn write_skipped_binary_install_receipt(
+    receipt_dir: &Path,
+    spec: &ServiceRuntimeSpec,
+    install_bin: &Path,
+    apply: bool,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join(format!("{}.json", spec.binary_install_op)),
+        &json!({
+            "schema": "harmonia.service-runtime.binary-install.v1",
+            "install_bin": install_bin,
+            "apply": apply,
+            "ok": true,
+            "changed": false,
+            "state": "converged-quiet",
+            "reason": "source-sha-gate-preserved-installed-binary",
+        }),
+    )
 }
 
 fn source_outcome_cmd(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
