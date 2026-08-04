@@ -2490,12 +2490,16 @@ fn source_shelf_sweep_with_fault(
 
 fn validate_executable_name(executable: &str) -> Result<(), String> {
     let path = Path::new(executable);
-    if executable.is_empty()
-        || executable.contains('/')
-        || executable.contains('\\')
-        || path.components().count() != 1
-        || matches!(executable, "." | "..")
-    {
+    let is_bare_name = !executable.contains('/')
+        && !executable.contains('\\')
+        && path.components().count() == 1
+        && !matches!(executable, "." | "..");
+    let is_absolute_path = path.is_absolute()
+        && !executable.contains('\\')
+        && !path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::CurDir));
+    if executable.is_empty() || !(is_bare_name || is_absolute_path) {
         return Err(format!("executable-name-rejected {executable:?}"));
     }
     Ok(())
@@ -4203,7 +4207,8 @@ mod managed_ownership_tests {
             assert_eq!(receipt["changed"], false);
         }
         assert!(ExecutableSearchScope::parse(Some("manifest-path")).is_err());
-        assert!(validate_executable_name("/usr/bin/sh").is_err());
+        assert!(validate_executable_name("/usr/bin/sh").is_ok());
+        assert!(validate_executable_name("/usr/bin/../sh").is_err());
         let _ = fs::remove_dir_all(&scratch);
     }
 
