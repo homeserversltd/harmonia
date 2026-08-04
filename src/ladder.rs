@@ -579,7 +579,6 @@ fn execute_validated_step(
         }),
         ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, apply),
         ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, apply),
-        ("machine-id", "truncate") => machine_id_step(step, module_dir, apply),
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
             aur_step(step, manifest, module_dir, apply)
         }
@@ -1271,20 +1270,6 @@ fn package_step(
         "keyring-repair" => Err("package-keyring-repair-backend-unsupported".to_string()),
         other => Err(format!("package-permutation-unsupported-{other}")),
     }
-}
-
-fn machine_id_step(
-    step: &ValidatedStep,
-    module_dir: &Path,
-    apply: bool,
-) -> Result<OperationOutcome, String> {
-    tools::machine_id::truncate(
-        module_dir,
-        &step.step_id,
-        optional_string_arg(&step.args, "etc_machine_id"),
-        optional_string_arg(&step.args, "dbus_machine_id"),
-        apply,
-    )
 }
 
 fn aur_step(
