@@ -64,7 +64,6 @@ install -d -o root -g matrix-synapse -m 0750 /etc/matrix-synapse /etc/matrix-syn
 install -d -o matrix-synapse -g matrix-synapse -m 0750 /var/lib/matrix-synapse /var/lib/matrix-synapse/media
 install -d -o matrix-synapse -g adm -m 0750 /var/log/matrix-synapse
 install -d -o root -g root -m 0755 /usr/share/harmonia/matrix
-[ -d /etc/homeserver ] || install -d -o root -g root -m 0755 /etc/homeserver
 
 # Birth-owned values are generated once. Harmonia owns only presence, owner, and mode;
 # it never renders or replaces this file.
@@ -146,65 +145,18 @@ ensure_unbound_conf_d_include
 ln -sfn /etc/nginx/sites-available/homeserver-matrix /etc/nginx/sites-enabled/homeserver-matrix
 ln -sfn /etc/nginx/sites-available/homeserver-element /etc/nginx/sites-enabled/homeserver-element
 
-python3 - <<'PY'
-import json
-import os
-import stat
-from pathlib import Path
-
-path = Path('/etc/homeserver/config.json')
-if path.exists():
-    data = json.loads(path.read_text(encoding='utf-8'))
-else:
-    data = {'tabs': {}, 'global': {}, 'capabilities': {}, 'settings': {}}
-if not isinstance(data, dict):
-    raise SystemExit('homeserver-json-root-not-object')
-for key in ('tabs', 'global', 'capabilities', 'settings'):
-    data.setdefault(key, {})
-    if not isinstance(data[key], dict):
-        raise SystemExit(f'homeserver-json-{key}-not-object')
-portals_tab = data['tabs'].setdefault('portals', {})
-if not isinstance(portals_tab, dict):
-    raise SystemExit('homeserver-json-portals-tab-not-object')
-visibility = portals_tab.setdefault('visibility', {})
-if not isinstance(visibility, dict):
-    raise SystemExit('homeserver-json-portals-visibility-not-object')
-visibility.setdefault('tab', True)
-elements = visibility.setdefault('elements', {})
-if not isinstance(elements, dict):
-    raise SystemExit('homeserver-json-portals-elements-not-object')
-elements.pop('element', None)
-elements['Element'] = True
-pdata = portals_tab.setdefault('data', {})
-if not isinstance(pdata, dict):
-    raise SystemExit('homeserver-json-portals-data-not-object')
-items = pdata.setdefault('portals', [])
-if not isinstance(items, list):
-    raise SystemExit('homeserver-json-portals-list-not-array')
-entry = {
-    'name': 'Element',
-    'description': 'Private chat for your homeserver.',
-    'services': ['matrix-synapse'],
-    'type': 'systemd',
-    'port': 8008,
-    'localURL': 'https://chat.home.arpa',
-}
-for index, item in enumerate(items):
-    if isinstance(item, dict) and item.get('name', '').casefold() == 'element':
-        items[index] = entry
-        break
-else:
-    items.append(entry)
-tmp = path.with_suffix(path.suffix + '.harmonia-matrix-new')
-serialized = json.dumps(data, indent=2, sort_keys=False) + '\n'
-if not path.exists() or path.read_text(encoding='utf-8') != serialized:
-    previous = path.stat() if path.exists() else None
-    tmp.write_text(serialized, encoding='utf-8')
-    if previous is not None:
-        os.chown(tmp, previous.st_uid, previous.st_gid)
-        tmp.chmod(stat.S_IMODE(previous.st_mode))
-    tmp.replace(path)
-PY
+# Caduceus is the sole configuration writer. The logical path keeps this
+# concern profile-agnostic while Caduceus preserves the household document.
+if ! curl --fail --silent --show-error --max-time 10 \
+    --request POST http://127.0.0.1:3014/api/v1/config/set \
+    --header 'Content-Type: application/json' \
+    --data-binary @- <<'JSON'
+{"path":"tabs.portals","value":{"visibility":{"tab":true,"elements":{"Element":true}},"data":{"portals":[{"name":"Element","description":"Private chat for your homeserver.","services":["matrix-synapse"],"type":"systemd","port":8008,"localURL":"https://chat.home.arpa"}]}}}
+JSON
+then
+    echo 'first_missing_signal=caduceus-config-unreachable' >&2
+    exit 1
+fi
 
 nginx -t
 unbound-checkconf

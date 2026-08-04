@@ -10,6 +10,6 @@ This public HOMESERVER module converges a private Matrix collaboration surface:
 - `/etc/matrix-synapse/conf.d/90-birth-secrets.yaml` is generated only when absent, mode `0640`, and is never replaced by Harmonia; Synapse reads configuration as `matrix-synapse`, so group-read is required.
 - The helper ensures `/etc/unbound/unbound.conf` includes `/etc/unbound/unbound.conf.d/*.conf` before reload so the module-owned Matrix records are not inert on bodies whose hand-rolled root config only included the blocklist.
 
-Element Web is part of the same concern because it is the static client and the portal surface for this Synapse endpoint. Harmonia now converges the `homeserver.json` `tabs.portals` Element record with local URL `https://chat.home.arpa`, leaving the top-level `tabs/global/capabilities/settings` schema intact.
+Element Web is part of the same concern because it is the static client and the portal surface for this Synapse endpoint. Harmonia delegates the `tabs.portals` Element record with local URL `https://chat.home.arpa` to Caduceus, the sole household-configuration writer.
 
 The maintenance helper installs the Matrix package floor as part of convergence so already-born HOMESERVER bodies can receive the module before the next full birth walk. The canonical fleet port registry currently has no admitted Matrix allocation. This module therefore uses the requested fallback loopback port `8008`; add `matrix-synapse-loopback` to the fleet registry before any future renumbering.
