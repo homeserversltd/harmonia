@@ -768,6 +768,9 @@ fn managed_files_step(
     } else {
         Vec::new()
     };
+    let config_write = files
+        .iter()
+        .any(|file| is_configuration_path(Path::new(&file.path)));
     tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: "ladder",
@@ -779,8 +782,20 @@ fn managed_files_step(
             first_missing_signal: "managed-files-drift",
         },
         module_dir,
-        apply,
+        apply && !config_write,
     )
+}
+
+fn is_configuration_path(path: &Path) -> bool {
+    let path = path.to_string_lossy();
+    path == "/etc"
+        || path.starts_with("/etc/")
+        || path == "/home"
+        || path.starts_with("/home/")
+        || path == "/root"
+        || path.starts_with("/root/")
+        || path == "$HOME"
+        || path.starts_with("$HOME/")
 }
 
 fn managed_directories_step(
@@ -1083,7 +1098,11 @@ fn files_converge_step(
         owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
         group: optional_string_arg(&step.args, "group").map(ToString::to_string),
     };
-    let outcome = crate::tools::files::converge_files(&request, module_dir, apply)?;
+    let config_write = request
+        .files
+        .iter()
+        .any(|file| is_configuration_path(&request.target_root.join(&file.relative_path)));
+    let outcome = crate::tools::files::converge_files(&request, module_dir, apply && !config_write)?;
     if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
         let name = summary
             .get("name")

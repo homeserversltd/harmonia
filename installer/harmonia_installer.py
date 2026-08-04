@@ -409,7 +409,7 @@ def copy_tree(src: Path, dst: Path) -> None:
 
 def install_systemd_units(paths: InstallPaths) -> None:
     receipt_latest = f"{paths.receipt_dir}/update-latest"
-    run_command = f"{paths.bin_path} update --receipt-dir {receipt_latest}"
+    run_command = f"{paths.bin_path} update --apply --receipt-dir {receipt_latest}"
     service_name = "harmonia.service"
     timer_name = "harmonia.timer"
     service = f"""[Unit]

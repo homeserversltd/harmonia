@@ -275,22 +275,11 @@ pub(crate) fn run_profile_engine(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<(), String> {
-    run_profile_engine_selected(profile, module_root, receipt_dir, apply, None)
-}
-
-pub(crate) fn run_profile_engine_selected(
-    profile: &Profile,
-    module_root: &Path,
-    receipt_dir: &Path,
-    apply: bool,
-    hard_module: Option<&str>,
-) -> Result<(), String> {
-    run_profile_engine_with_preflight_selected(
+    run_profile_engine_with_preflight(
         profile,
         module_root,
         receipt_dir,
         apply,
-        hard_module,
         false,
         None,
         None,
@@ -302,28 +291,6 @@ pub(crate) fn run_profile_engine_with_preflight(
     module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
-    skip_preflight: bool,
-    completed_preflight: Option<ModuleExecution>,
-    suite_debt: Option<&str>,
-) -> Result<(), String> {
-    run_profile_engine_with_preflight_selected(
-        profile,
-        module_root,
-        receipt_dir,
-        apply,
-        None,
-        skip_preflight,
-        completed_preflight,
-        suite_debt,
-    )
-}
-
-pub(crate) fn run_profile_engine_with_preflight_selected(
-    profile: &Profile,
-    module_root: &Path,
-    receipt_dir: &Path,
-    apply: bool,
-    hard_module: Option<&str>,
     skip_preflight: bool,
     completed_preflight: Option<ModuleExecution>,
     suite_debt: Option<&str>,
@@ -473,7 +440,7 @@ pub(crate) fn run_profile_engine_with_preflight_selected(
             )?;
             continue;
         }
-        let module_apply = apply && hard_module.is_none_or(|selected| selected == module.id());
+        let module_apply = apply;
         let execution_result = match &module {
             LoadedModule::Sidecar(sidecar) => execute_profile_module(
                 sidecar,
@@ -559,7 +526,6 @@ pub(crate) fn run_profile_engine_with_preflight_selected(
         receipt_dir,
         profile,
         apply,
-        hard_module,
         ok,
         changed,
         module_count,

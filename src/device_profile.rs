@@ -116,55 +116,29 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RunMode {
     ReportOnly,
-    HardAll,
-    HardModule(String),
+    Apply,
 }
 
 impl RunMode {
-    pub(crate) fn is_hard(&self) -> bool {
-        !matches!(self, Self::ReportOnly)
-    }
-
-    pub(crate) fn hard_selection(&self) -> Option<&str> {
-        match self {
-            Self::ReportOnly => None,
-            Self::HardAll => Some("all"),
-            Self::HardModule(module_id) => Some(module_id),
-        }
+    pub(crate) fn apply(&self) -> bool {
+        matches!(self, Self::Apply)
     }
 }
 
 fn parse_run_mode(args: &[String]) -> Result<RunMode, String> {
-    let mut hard = None;
+    let mut apply = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--apply" => {
-                return Err("legacy --apply refused; use --hard all|<module-id>".to_string())
-            }
-            "--hard" if index + 1 < args.len() && hard.is_none() => {
-                hard = Some(args[index + 1].clone());
-                index += 2;
-            }
-            "--hard" => {
-                return Err("update --hard requires exactly one all|<module-id> value".to_string())
+            "--apply" if !apply => {
+                apply = true;
+                index += 1;
             }
             "--receipt-dir" if index + 1 < args.len() => index += 2,
-            _ => {
-                return Err(
-                    "update accepts [--hard all|<module-id>] and --receipt-dir only".to_string(),
-                )
-            }
+            _ => return Err("update accepts [--apply] and --receipt-dir only".to_string()),
         }
     }
-    Ok(match hard.as_deref() {
-        None => RunMode::ReportOnly,
-        Some("all") => RunMode::HardAll,
-        Some(module_id) if !module_id.is_empty() && !module_id.starts_with('-') => {
-            RunMode::HardModule(module_id.to_string())
-        }
-        _ => return Err("update --hard requires exactly one all|<module-id> value".to_string()),
-    })
+    Ok(if apply { RunMode::Apply } else { RunMode::ReportOnly })
 }
 
 pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
@@ -180,7 +154,6 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
                     "ok": false,
                     "mutation": false,
                     "mode": "refused",
-                    "hard_selection": serde_json::Value::Null,
                     "profile_id": serde_json::Value::Null,
                     "identity": serde_json::Value::Null,
                     "identity_source": "certificate",
@@ -197,9 +170,8 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
             &json!({
                 "schema": "harmonia.run_profile.v1",
                 "ok": false,
-                "mutation": mode.is_hard(),
-                "mode": if mode.is_hard() { "hard" } else { "report-only" },
-                "hard_selection": mode.hard_selection(),
+                "mutation": mode.apply(),
+                "mode": if mode.apply() { "apply" } else { "report-only" },
                 "profile_id": serde_json::Value::Null,
                 "identity": serde_json::Value::Null,
                 "identity_source": "certificate",
@@ -218,9 +190,8 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
                 &json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
-                    "mutation": mode.is_hard(),
-                "mode": if mode.is_hard() { "hard" } else { "report-only" },
-                "hard_selection": mode.hard_selection(),
+                    "mutation": mode.apply(),
+                    "mode": if mode.apply() { "apply" } else { "report-only" },
                     "profile_id": serde_json::Value::Null,
                     "identity": serde_json::Value::Null,
                     "identity_source": "certificate",
@@ -235,38 +206,5 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
     let module_root = default_module_root(&profile_path);
-    if let Some(selected) = mode
-        .hard_selection()
-        .filter(|selection| *selection != "all")
-    {
-        if !profile
-            .modules
-            .iter()
-            .any(|module_id| module_id == selected)
-        {
-            write_json(
-                &receipt_dir.join("run.json"),
-                &json!({
-                    "schema": "harmonia.run_profile.v1",
-                    "ok": false,
-                    "mutation": false,
-                    "mode": "hard",
-                    "hard_selection": selected,
-                    "profile_id": profile.id,
-                    "identity": profile.identity,
-                    "identity_source": run_identity_source(),
-                    "first_missing_signal": format!("hard-selection-unselected-{selected}"),
-                }),
-            )?;
-            return Err(format!("hard-selection-unselected-{selected}"));
-        }
-    }
-    run_profile_engine_selected(
-        &profile,
-        &module_root,
-        &receipt_dir,
-        mode.is_hard(),
-        mode.hard_selection()
-            .filter(|selection| *selection != "all"),
-    )
+    run_profile_engine(&profile, &module_root, &receipt_dir, mode.apply())
 }
