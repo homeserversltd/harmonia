@@ -769,7 +769,7 @@ pub(crate) fn homeconsole_update(
             profile.id, profile.identity
         ));
     }
-    let suite_debt = enforce_homeconsole_update_suite(profile, module_root)?;
+    let suite_debt = enforce_update_suite(profile, module_root)?;
     rolling_update_run(
         profile,
         module_root,
@@ -801,44 +801,18 @@ pub(crate) fn lawful_module_manifest_exists(module_dir: &Path) -> bool {
         || module_dir.join("manifest.json").exists()
 }
 
-pub(crate) fn module_ids_from_profile_modules(module_root: &Path) -> Result<Vec<String>, String> {
-    let mut found = Vec::new();
-    for module_id in [
-        "identity",
-        "arch-keyring-maintenance",
-        "system-packages",
-        "keyman-runtime",
-        "rust-build-toolchain",
-        "arcadia-gui-runtime",
-        "local-ai-runtime",
-        "pinned-artifacts-runtime",
-        "homeconsole-update-runtime",
-        "household-time",
-        "homeconsole-caduceus-public-lever",
-    ] {
-        let module_dir = module_root.join(module_id);
-        if lawful_module_manifest_exists(&module_dir) {
-            found.push(module_id.to_string());
-        }
-    }
-    Ok(found)
-}
-
-pub(crate) fn enforce_homeconsole_update_suite(
+pub(crate) fn enforce_update_suite(
     profile: &Profile,
     module_root: &Path,
 ) -> Result<Option<String>, String> {
-    let expected = module_ids_from_profile_modules(module_root)?;
-    if profile.modules == expected {
-        Ok(None)
-    } else {
-        Ok(Some(format!(
-            "homeconsole-update-suite-spine-mismatch module_root={} expected={} got={}",
-            module_root.display(),
-            expected.join(","),
-            profile.modules.join(",")
-        )))
-    }
+    Ok(profile.modules.iter().find_map(|module_id| {
+        (!lawful_module_manifest_exists(&module_root.join(module_id))).then(|| {
+            format!(
+                "profile-module-manifest-missing module_root={} module_id={module_id}",
+                module_root.display(),
+            )
+        })
+    }))
 }
 
 pub(crate) fn homeserver_update(
@@ -853,7 +827,7 @@ pub(crate) fn homeserver_update(
             profile.id, profile.identity
         ));
     }
-    let suite_debt = enforce_homeserver_update_suite(profile, module_root)?;
+    let suite_debt = enforce_update_suite(profile, module_root)?;
     rolling_update_run(
         profile,
         module_root,
@@ -888,7 +862,7 @@ pub(crate) fn tv_update(
             profile.id, profile.identity
         ));
     }
-    let suite_debt = enforce_tv_update_suite(profile, module_root)?;
+    let suite_debt = enforce_update_suite(profile, module_root)?;
     rolling_update_run(
         profile,
         module_root,
@@ -988,100 +962,8 @@ pub(crate) fn homeserver_module_root() -> PathBuf {
     Path::new("profiles/homeserver/modules").to_path_buf()
 }
 
-pub(crate) fn homeserver_module_ids_from_profile_modules(
-    module_root: &Path,
-) -> Result<Vec<String>, String> {
-    let mut found = Vec::new();
-    for module_id in [
-        "work-lane-root-provisioning",
-        "rust-build-toolchain",
-        "nginx",
-        "coronatio",
-        "keyman",
-        "household-time",
-        "caduceus",
-        "forgejo",
-        "gogs",
-        "jellyfin",
-        "matrix",
-        "homeserver-update-runtime",
-    ] {
-        if lawful_module_manifest_exists(&module_root.join(module_id)) {
-            found.push(module_id.to_string());
-        }
-    }
-    Ok(found)
-}
-
-pub(crate) fn enforce_homeserver_update_suite(
-    profile: &Profile,
-    module_root: &Path,
-) -> Result<Option<String>, String> {
-    let expected = homeserver_module_ids_from_profile_modules(module_root)?;
-    if profile.modules == expected {
-        Ok(None)
-    } else {
-        Ok(Some(format!(
-            "homeserver-update-suite-spine-mismatch module_root={} expected={} got={}",
-            module_root.display(),
-            expected.join(","),
-            profile.modules.join(",")
-        )))
-    }
-}
-
 pub(crate) fn tv_module_root() -> PathBuf {
     Path::new("profiles/tv/modules").to_path_buf()
-}
-
-pub(crate) fn tv_module_ids_from_profile_modules(
-    module_root: &Path,
-) -> Result<Vec<String>, String> {
-    let mut found = Vec::new();
-    for module_id in [
-        "identity",
-        "arch-keyring-maintenance",
-        "system-packages",
-        "owner-profile",
-        "gpu-display-stack",
-        "hyprland-desktop",
-        "oh-my-posh-aur-ratchet",
-        "operator-rc-profile",
-        "desktop-config-payload",
-        "xdg-user-settings",
-        "chromium",
-        "user-session-services",
-        "sddm-autologin-hyprland",
-        "steam-game-lane",
-        "power-controller-maintenance",
-        "console-recovery",
-        "tv-update-runtime",
-        "household-time",
-        "caduceus-public-lever",
-        "appliance-proof",
-    ] {
-        if lawful_module_manifest_exists(&module_root.join(module_id)) {
-            found.push(module_id.to_string());
-        }
-    }
-    Ok(found)
-}
-
-pub(crate) fn enforce_tv_update_suite(
-    profile: &Profile,
-    module_root: &Path,
-) -> Result<Option<String>, String> {
-    let expected = tv_module_ids_from_profile_modules(module_root)?;
-    if profile.modules == expected {
-        Ok(None)
-    } else {
-        Ok(Some(format!(
-            "tv-update-suite-spine-mismatch module_root={} expected={} got={}",
-            module_root.display(),
-            expected.join(","),
-            profile.modules.join(",")
-        )))
-    }
 }
 
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {

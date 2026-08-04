@@ -509,7 +509,7 @@ mod tests {
             package_authority: None,
             id: "homeconsole".into(),
             identity: format!("{}-{}", "arch", "console"),
-            modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap(),
+            modules: vec![],
         };
         assert!(homeconsole_update(
             &old,
@@ -527,7 +527,7 @@ mod tests {
             package_authority: None,
             id: "homeserver".into(),
             identity: "homeconsole".into(),
-            modules: homeserver_module_ids_from_profile_modules(&homeserver_module_root()).unwrap(),
+            modules: vec![],
         };
         assert!(homeserver_update(
             &profile,
@@ -539,28 +539,6 @@ mod tests {
         .contains("homeserver/homeserver"));
     }
 
-    #[test]
-    fn run_profile_homeserver_delegates_to_rolling_update_suite() {
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-run-profile-homeserver-{}", process::id()));
-        let _ = fs::remove_dir_all(&scratch);
-        fs::create_dir_all(scratch.join("modules")).unwrap();
-        let profile_path = scratch.join("index.json");
-        fs::write(
-            &profile_path,
-            r#"{"id":"homeserver","identity":"homeserver","package_authority":{"os_family":"debian","package_manager":"apt"},"modules":["identity"]}"#,
-        )
-        .unwrap();
-        let err = run(vec![
-            "run-profile".into(),
-            profile_path.display().to_string(),
-            "--receipt-dir".into(),
-            scratch.join("receipts").display().to_string(),
-        ])
-        .unwrap_err();
-        assert!(err.contains("homeserver-update-suite-spine-mismatch"));
-        let _ = fs::remove_dir_all(scratch);
-    }
 
     #[test]
     fn homeserver_profile_sync_advances_subscription_module_digest() {
@@ -603,7 +581,7 @@ mod tests {
             }),
             id: "tv".into(),
             identity: "homeconsole".into(),
-            modules: tv_module_ids_from_profile_modules(&tv_module_root()).unwrap(),
+            modules: vec![],
         };
         assert!(tv_update(
             &profile,
@@ -615,28 +593,6 @@ mod tests {
         .contains("tv/arch-tv"));
     }
 
-    #[test]
-    fn run_profile_tv_delegates_to_rolling_update_suite() {
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-run-profile-tv-{}", process::id()));
-        let _ = fs::remove_dir_all(&scratch);
-        fs::create_dir_all(scratch.join("modules")).unwrap();
-        let profile_path = scratch.join("index.json");
-        fs::write(
-            &profile_path,
-            r#"{"id":"tv","identity":"arch-tv","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["identity"]}"#,
-        )
-        .unwrap();
-        let err = run(vec![
-            "run-profile".into(),
-            profile_path.display().to_string(),
-            "--receipt-dir".into(),
-            scratch.join("receipts").display().to_string(),
-        ])
-        .unwrap_err();
-        assert!(err.contains("tv-update-suite-spine-mismatch"));
-        let _ = fs::remove_dir_all(scratch);
-    }
 
     #[test]
     fn tv_profile_sync_advances_subscription_module_digest() {
@@ -696,7 +652,9 @@ mod tests {
             package_authority: None,
             id: "homeconsole".into(),
             identity: "homeconsole".into(),
-            modules: module_ids_from_profile_modules(&homeconsole_module_root()).unwrap(),
+            modules: load_profile(&repo_root().join("profiles/homeconsole/index.json"))
+                .unwrap()
+                .modules,
         };
         let _guard = try_acquire_homeconsole_update_lock(&lock_path).expect("hold lock");
         let previous_lock = std::env::var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK").ok();
@@ -1052,11 +1010,9 @@ mod tests {
         assert_eq!(profile.id, "homeconsole");
         assert_eq!(profile.identity, "homeconsole");
         assert_eq!(
-            profile.modules,
-            module_ids_from_profile_modules(&root.join("profiles/homeconsole/modules")).unwrap()
+            enforce_update_suite(&profile, &root.join("profiles/homeconsole/modules")).unwrap(),
+            None
         );
-        enforce_homeconsole_update_suite(&profile, &root.join("profiles/homeconsole/modules"))
-            .unwrap();
         assert!(
             !root.join("modules").exists(),
             "top-level module execution tree must be absent"
@@ -1881,7 +1837,7 @@ mod tests {
     }
 
     #[test]
-    fn suite_spine_debt_runs_the_profile_modules() {
+    fn missing_module_manifest_debt_runs_the_profile_modules() {
         fn write_command_module(module_root: &Path, module_id: &str) {
             let module_dir = module_root.join(module_id);
             fs::create_dir_all(&module_dir).unwrap();
@@ -1914,11 +1870,11 @@ mod tests {
             package_authority: None,
             id: "homeconsole".into(),
             identity: "homeconsole".into(),
-            modules: vec!["first".into(), "second".into()],
+            modules: vec!["first".into(), "second".into(), "missing".into()],
         };
-        let suite_debt = enforce_homeconsole_update_suite(&profile, &module_root)
+        let suite_debt = enforce_update_suite(&profile, &module_root)
             .unwrap()
-            .expect("divergent spine is recorded as debt");
+            .expect("missing manifest is recorded as debt");
         let result = run_profile_engine_with_preflight(
             &profile,
             &module_root,
