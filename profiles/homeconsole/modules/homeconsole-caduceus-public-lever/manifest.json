@@ -70,6 +70,11 @@
             "content": "[Unit]\nDescription=Caduceus LAN-open appliance API\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:8787\nEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin\nEnvironment=PYTHONPATH=/usr/local/sbin\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
           },
           {
+            "path": "/var/lib/caduceus/venv/lib/python3.14/site-packages/caduceus-staff.pth",
+            "mode": 420,
+            "content": "/usr/local/sbin\n"
+          },
+          {
             "path": "/etc/caduceus/identity.json",
             "mode": 420,
             "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"arch-gaming-console\",\n  \"profile\": \"console\",\n  \"mode\": \"console\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\"\n}\n"
