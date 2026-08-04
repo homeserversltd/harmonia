@@ -33,11 +33,6 @@
       "mode": "0644"
     },
     {
-      "source": "etc/systemd/system/harmonia-matrix-prepare.service",
-      "target": "/etc/systemd/system/harmonia-matrix-prepare.service",
-      "mode": "0644"
-    },
-    {
       "source": "etc/unbound/unbound.conf.d/matrix.conf",
       "target": "/etc/unbound/unbound.conf.d/matrix.conf",
       "mode": "0644"
@@ -51,11 +46,6 @@
       "source": "usr/share/harmonia/matrix/postgres.sql",
       "target": "/usr/share/harmonia/matrix/postgres.sql",
       "mode": "0644"
-    },
-    {
-      "source": "usr/local/libexec/harmonia-matrix-converge",
-      "target": "/usr/local/libexec/harmonia-matrix-converge",
-      "mode": "0755"
     }
   ]
 }

@@ -9,15 +9,5 @@
       "rust"
     ]
   },
-  "ladder": [
-    {
-      "step_id": "rust-package-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": "$constants.packages"
-      },
-      "on_failure": "stop"
-    }
-  ]
+  "ladder": []
 }

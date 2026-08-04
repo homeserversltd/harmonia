@@ -5,13 +5,5 @@
   "description": "homeconsole system package upgrade ladder using the package tool.",
   "optional": false,
   "constants": {},
-  "ladder": [
-    {
-      "step_id": "pacman-upgrade",
-      "tool": "package",
-      "permutation": "upgrade",
-      "args": {},
-      "on_failure": "stop"
-    }
-  ]
+  "ladder": []
 }

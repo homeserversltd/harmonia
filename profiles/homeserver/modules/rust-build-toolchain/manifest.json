@@ -15,15 +15,6 @@
   },
   "ladder": [
     {
-      "step_id": "rust-package-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": "$constants.packages"
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "rust-wrapper-shims",
       "tool": "files",
       "permutation": "managed-files",

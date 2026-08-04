@@ -30,15 +30,6 @@
   },
   "ladder": [
     {
-      "step_id": "packages-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": "$constants.packages",
-        "timeout_secs": 1800
-      }
-    },
-    {
       "step_id": "service-sshd-service",
       "tool": "systemd",
       "permutation": "enable-now",

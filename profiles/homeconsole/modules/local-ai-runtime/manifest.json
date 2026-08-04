@@ -6,17 +6,6 @@
   "constants": {},
   "ladder": [
     {
-      "step_id": "local-ai-package-install",
-      "tool": "package",
-      "permutation": "install",
-      "args": {
-        "packages": [
-          "llama-cpp-vulkan"
-        ],
-        "timeout_secs": 1800
-      }
-    },
-    {
       "step_id": "local-ai-directories",
       "tool": "command",
       "permutation": "capture",
