@@ -970,7 +970,10 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
             }
         }
     }
-    source_failure(attempts, "all-candidates-unavailable", precondition_changed)
+    // Every failed candidate is staged under a guarded sibling and removed before
+    // reaching this terminal outcome. The source destination is therefore
+    // preserved, so the module receipt must not claim a source change.
+    source_failure(attempts, "all-candidates-unavailable", false)
 }
 
 fn local_checkout_source_preflight(source: &Path) -> Result<(), String> {

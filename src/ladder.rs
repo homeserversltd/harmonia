@@ -1405,15 +1405,27 @@ fn source_plan_for_step(
         .or_else(|| optional_string_arg(&step.args, "source_dir"))
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("source-destination-missing module={} step_id={}", manifest.id, step.step_id))?;
-    let certificate = PathBuf::from("/etc/appliance/profile.json");
-    let resolution = crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
-    if let Some(blocker) = resolution.blocker {
-        return Err(format!("source-resolution-blocked module={} step_id={} component={} blocker={blocker}", manifest.id, step.step_id, component));
-    }
-    let resolution = resolution
-        .resolution
-        .ok_or_else(|| format!("source-resolution-plan-missing module={} step_id={} component={component}", manifest.id, step.step_id))?;
     let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
+    let certificate = PathBuf::from("/etc/appliance/profile.json");
+    let certificate_resolution = crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
+    let resolution = match certificate_resolution.resolution {
+        Some(resolution) => resolution,
+        None if certificate_resolution
+            .blocker
+            .as_deref()
+            .is_some_and(|blocker| blocker == format!("source-component-undeclared component={component}")) => {
+            let config = config.as_ref().ok_or_else(|| {
+                format!("source-resolution-blocked module={} step_id={} component={} blocker=engine-config-missing", manifest.id, step.step_id, component)
+            })?;
+            engine_source_resolution(component, config)?
+        }
+        None => {
+            let blocker = certificate_resolution
+                .blocker
+                .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
+            return Err(format!("source-resolution-blocked module={} step_id={} component={} blocker={blocker}", manifest.id, step.step_id, component));
+        }
+    };
     let credentials = config
         .as_ref()
         .map(crate::credential_scopes)
@@ -1431,6 +1443,46 @@ fn source_plan_for_step(
         expected_commit,
         credentials,
     ))
+}
+
+fn engine_source_resolution(
+    component: &str,
+    config: &crate::EnginePlaneConfig,
+) -> Result<crate::source_resolver::SourceResolution, String> {
+    let source_component = config
+        .source_repo_url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .and_then(|segment| segment.rsplit(':').next())
+        .unwrap_or_default()
+        .trim_end_matches(".git");
+    if source_component != component {
+        return Err(format!(
+            "source-component-undeclared component={component}; engine-source-component={source_component}"
+        ));
+    }
+    let credential_selector = match config.credential_scopes.len() {
+        0 => None,
+        1 => config.credential_scopes.keys().next().cloned(),
+        _ => {
+            return Err(format!(
+                "engine-source-credential-selector-ambiguous component={component} scopes={}",
+                config.credential_scopes.len()
+            ));
+        }
+    };
+    Ok(crate::source_resolver::SourceResolution {
+        schema: crate::source_resolver::SOURCE_PLAN_SCHEMA,
+        component: component.to_string(),
+        requested_ref: config.branch.clone(),
+        candidates: vec![crate::source_resolver::SourceCandidatePlan {
+            kind: "git".to_string(),
+            locator: config.source_repo_url.clone(),
+            credential_selector,
+            freshness_authority: None,
+        }],
+    })
 }
 
 fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
