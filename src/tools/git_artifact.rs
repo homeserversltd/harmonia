@@ -1,4 +1,4 @@
-use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
+use super::{command, comparison, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 
 pub const NAME: &str = "git-artifact";
 pub const DESCRIPTION: &str = "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.";
@@ -210,6 +210,18 @@ fn is_lower_hex_sha(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn parse_declared_remote_head(output: &str, reference: &str) -> Option<String> {
+    let mut rows = output.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        let sha = fields.next()?;
+        let observed_ref = fields.next()?;
+        (fields.next().is_none() && observed_ref == reference && is_lower_hex_sha(sha))
+            .then(|| sha.to_string())
+    });
+    let first = rows.next()?;
+    rows.next().is_none().then_some(first)
 }
 
 /// Validate only path identity and stage the SSH selector for the Git child.
@@ -854,17 +866,7 @@ pub fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
         );
         let remote_sha = command
             .ok
-            .then(|| {
-                let mut rows = command.stdout.lines().filter_map(|line| {
-                    let mut fields = line.split_whitespace();
-                    let sha = fields.next()?;
-                    let observed_ref = fields.next()?;
-                    (fields.next().is_none() && observed_ref == reference && is_lower_hex_sha(sha))
-                        .then(|| sha.to_string())
-                });
-                let first = rows.next()?;
-                rows.next().is_none().then_some(first)
-            })
+            .then(|| parse_declared_remote_head(&command.stdout, &reference))
             .flatten();
         if let Some(remote_sha) = remote_sha {
             return RemoteHeadProbe {
@@ -1058,7 +1060,67 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                     }
                 }
             }
-            SourceCandidateKind::Git => {}
+            SourceCandidateKind::Git => {
+                // Observe both authoritative identities before creating a parent,
+                // staging tree, or Git checkout. A failed/ambiguous observation is
+                // deliberately a nonempty comparison so the established acquisition
+                // path retains its identity and transport checks.
+                let destination_head = source_head(&plan.destination, &plan.bearer);
+                let destination_commit = destination_head
+                    .ok
+                    .then(|| destination_head.stdout.trim().to_string())
+                    .filter(|sha| is_lower_hex_sha(sha));
+                let probe_request = scoped_request(plan, candidate, plan.destination.clone());
+                let reference = format!("refs/heads/{}", plan.reference);
+                let remote_probe = capture_git(
+                    &probe_request,
+                    &["ls-remote", "--refs", &candidate.locator, &reference],
+                    None,
+                );
+                let remote_commit = remote_probe
+                    .ok
+                    .then(|| parse_declared_remote_head(&remote_probe.stdout, &reference))
+                    .flatten();
+                let expected_matches = plan
+                    .expected_commit
+                    .as_deref()
+                    .map_or(true, |expected| remote_commit.as_deref() == Some(expected));
+                let comparison = match comparison::execute(
+                    || Ok::<_, String>((destination_commit.clone(), remote_commit.clone())),
+                    |(destination, remote)| {
+                        if destination.is_some() && destination == remote && expected_matches {
+                            comparison::DiffDecision::Empty
+                        } else {
+                            comparison::DiffDecision::Different
+                        }
+                    },
+                    |_, _| Ok::<_, String>(()),
+                ) {
+                    Ok(comparison) => comparison,
+                    Err(detail) => return source_failure(attempts, &detail, precondition_changed),
+                };
+                if matches!(comparison, comparison::ComparisonRun::Current { .. }) {
+                    let commit = remote_commit.expect("empty comparison requires remote commit");
+                    attempts.push(source_attempt(
+                        index,
+                        candidate,
+                        "already-current",
+                        Some(commit.clone()),
+                        false,
+                        "destination-already-projects-observed-head".into(),
+                    ));
+                    return SourceOutcome {
+                        ok: true,
+                        changed: false,
+                        receipt: SourceReceipt {
+                            attempts,
+                            served_index: Some(index),
+                            resolved_commit: Some(commit),
+                            promotion: "already-current; destination projects observed remote head; no clone, stage, or promotion".into(),
+                        },
+                    };
+                }
+            }
         }
         if !candidate_parent_prepared {
             let preparation = match prepare_source_acquisition_parent(plan) {
