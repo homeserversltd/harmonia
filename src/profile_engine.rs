@@ -588,7 +588,6 @@ pub(crate) fn run_profile_engine_with_preflight_selected(
 }
 
 const DEFAULT_HARMONIA_SOURCE_REPO: &str = "https://github.com/homeserversltd/harmonia.git";
-const DEFAULT_HARMONIA_SOURCE_DIR: &str = "/opt/harmonia/source";
 const DEFAULT_HARMONIA_INSTALL_BIN: &str = "/usr/local/bin/harmonia";
 
 pub(crate) fn ensure_engine_config_for_rolling() -> Result<(), String> {
@@ -605,7 +604,7 @@ pub(crate) fn ensure_engine_config_for_rolling() -> Result<(), String> {
         &json!({
             "source_repo_url": DEFAULT_HARMONIA_SOURCE_REPO,
             "branch": "main",
-            "source_dir": DEFAULT_HARMONIA_SOURCE_DIR,
+            "source_dir": SOURCE_ROOT,
             "install_bin": DEFAULT_HARMONIA_INSTALL_BIN,
             "enabled": true,
             "ratchet_lock": ratchet_lock,

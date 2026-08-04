@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path("/opt/harmonia/source")
 DEFAULT_BIN = Path("/usr/local/bin/harmonia")
 DEFAULT_CONFIG_DIR = Path("/etc/harmonia")
 DEFAULT_STATE_DIR = Path("/var/lib/harmonia")
@@ -105,7 +105,7 @@ Install contract:
     install_p.add_argument("--profile", default="homeconsole", help="Profile to install under /etc/harmonia/profiles/<profile>.")
     install_p.add_argument("--lane", default="upstream", choices=("upstream", "owner"), help="Machine subscription lane to seed after apply.")
     install_p.add_argument("--source", default=None, help="Machine subscription source repo URL or capsule origin. Defaults to git origin or repo path.")
-    install_p.add_argument("--local-source-checkout", default=None, help="Owner-refreshed local checkout for root read/build/promotion; defaults to this checkout and disables root network fetch in preflight.")
+    install_p.add_argument("--local-source-checkout", default=None, help=f"Owner-refreshed local checkout for root read/build/promotion; defaults to {SOURCE_ROOT} and disables root network fetch in preflight.")
     install_p.add_argument("--ref", default=None, help="Machine subscription ref. Defaults to this repo HEAD.")
     install_p.add_argument("--cargo", default="cargo", help="Cargo executable to use.")
     install_p.add_argument("--package", default="harmonia", help="Cargo package name.")
@@ -153,7 +153,7 @@ def status(paths: InstallPaths) -> int:
     payload = {
         "schema": "harmonia.installer.status.v1",
         "ok": True,
-        "repo_root": str(REPO_ROOT),
+        "repo_root": str(SOURCE_ROOT),
         "binary": describe_path(paths.bin_path),
         "config_dir": describe_path(paths.config_dir),
         "state_dir": describe_path(paths.state_dir),
@@ -170,14 +170,14 @@ def build(args: argparse.Namespace) -> int:
     cmd = [args.cargo, "build", "-p", args.package]
     if not getattr(args, "debug", False):
         cmd.append("--release")
-    return run_checked_as_source_owner(cmd, cwd=REPO_ROOT)
+    return run_checked_as_source_owner(cmd, cwd=SOURCE_ROOT)
 
 
 def install(args: argparse.Namespace) -> int:
     paths = InstallPaths.from_args(args)
     apply = bool(args.apply)
     with_systemd = bool(args.with_systemd or args.enable_timer)
-    artifact = REPO_ROOT / "target" / ("debug" if getattr(args, "debug", False) else "release") / "harmonia"
+    artifact = SOURCE_ROOT / "target" / ("debug" if getattr(args, "debug", False) else "release") / "harmonia"
     capsule_dir = paths.state_dir / "capsules" / args.profile
     plan = [
         f"build binary with cargo unless --skip-build ({artifact})",
@@ -209,8 +209,8 @@ def install(args: argparse.Namespace) -> int:
         paths.config_dir / "engine.json",
         source=args.source or repo_source(),
         ref=args.ref or repo_ref(),
-        source_dir=Path(args.local_source_checkout) if args.local_source_checkout else REPO_ROOT,
-        local_source_checkout=Path(args.local_source_checkout) if args.local_source_checkout else REPO_ROOT,
+        source_dir=SOURCE_ROOT,
+        local_source_checkout=Path(args.local_source_checkout) if args.local_source_checkout else SOURCE_ROOT,
         install_bin=paths.bin_path,
         enabled=True,
         ratchet_lock=Path(args.ratchet_lock) if args.ratchet_lock else None,
@@ -223,15 +223,15 @@ def install(args: argparse.Namespace) -> int:
     for directory in [paths.state_dir, paths.receipt_dir, paths.log_dir]:
         directory.mkdir(parents=True, exist_ok=True)
     pack_code = run_checked(
-        [str(paths.bin_path), "capsule", "pack", args.profile, "--out", str(capsule_dir), "--harmonia-root", str(REPO_ROOT)],
-        cwd=REPO_ROOT,
+        [str(paths.bin_path), "capsule", "pack", args.profile, "--out", str(capsule_dir), "--harmonia-root", str(SOURCE_ROOT)],
+        cwd=SOURCE_ROOT,
     )
     print(f"capsule_pack_exit={pack_code}")
     if pack_code != 0:
         print("ok=false")
         return pack_code
     try:
-        packed_module_count = validate_packed_capsule(REPO_ROOT, capsule_dir, args.profile)
+        packed_module_count = validate_packed_capsule(SOURCE_ROOT, capsule_dir, args.profile)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"capsule_pack_validation_failed={exc}", file=sys.stderr)
         print("ok=false")
@@ -239,7 +239,7 @@ def install(args: argparse.Namespace) -> int:
     print(f"capsule_pack_validated_module_count={packed_module_count}")
     install_code = run_checked(
         [str(paths.bin_path), "capsule", "install", str(capsule_dir), "--config-dir", str(paths.config_dir), "--apply"],
-        cwd=REPO_ROOT,
+        cwd=SOURCE_ROOT,
     )
     print(f"capsule_install_exit={install_code}")
     if install_code != 0:
@@ -256,7 +256,7 @@ def install(args: argparse.Namespace) -> int:
     if with_systemd:
         install_systemd_units(paths)
         retired = retire_profile_keyed_systemd_units(paths)
-        daemon_reload = run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
+        daemon_reload = run_checked(["systemctl", "daemon-reload"], cwd=SOURCE_ROOT, allow_missing=True)
         print(f"systemctl_daemon_reload_exit={daemon_reload}")
         if daemon_reload != 0:
             print("ok=false")
@@ -266,7 +266,7 @@ def install(args: argparse.Namespace) -> int:
         if args.enable_timer:
             enable_timer = run_checked(
                 ["systemctl", "enable", "--now", "harmonia.timer"],
-                cwd=REPO_ROOT,
+                cwd=SOURCE_ROOT,
                 allow_missing=True,
             )
             print(f"systemctl_enable_timer_exit={enable_timer}")
@@ -305,10 +305,10 @@ def uninstall(args: argparse.Namespace) -> int:
     if args.with_systemd:
         run_checked(
             ["systemctl", "disable", "--now", "harmonia.timer"],
-            cwd=REPO_ROOT,
+            cwd=SOURCE_ROOT,
             allow_missing=True,
         )
-        run_checked(["systemctl", "daemon-reload"], cwd=REPO_ROOT, allow_missing=True)
+        run_checked(["systemctl", "daemon-reload"], cwd=SOURCE_ROOT, allow_missing=True)
     for target in targets:
         remove_path(target)
     print("schema=harmonia.installer.uninstall.v1")
@@ -447,7 +447,7 @@ def retire_profile_keyed_systemd_units(paths: InstallPaths) -> list[str]:
     """Retire the old scheduler family; identity belongs in installed profile data."""
     retired: list[str] = []
     for unit in sorted(paths.systemd_dir.glob("harmonia-*.service")) + sorted(paths.systemd_dir.glob("harmonia-*.timer")):
-        run_checked(["systemctl", "disable", "--now", unit.name], cwd=REPO_ROOT, allow_missing=True)
+        run_checked(["systemctl", "disable", "--now", unit.name], cwd=SOURCE_ROOT, allow_missing=True)
         remove_path(unit)
         retired.append(unit.name)
     return retired
@@ -576,11 +576,11 @@ def seed_engine_config(
 
 
 def repo_source() -> str:
-    completed = subprocess.run(["git", "remote", "get-url", "origin"], cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
-    return completed.stdout.strip() if completed.returncode == 0 and completed.stdout.strip() else str(REPO_ROOT)
+    completed = subprocess.run(["git", "remote", "get-url", "origin"], cwd=SOURCE_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    return completed.stdout.strip() if completed.returncode == 0 and completed.stdout.strip() else str(SOURCE_ROOT)
 
 
-def repo_ref(root: Path = REPO_ROOT) -> str:
+def repo_ref(root: Path = SOURCE_ROOT) -> str:
     completed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     return completed.stdout.strip() if completed.returncode == 0 and completed.stdout.strip() else "unknown"
 
