@@ -376,6 +376,10 @@ pub const SYSTEM_EXECUTABLE_PATHS: &[&str] = &[
     "/usr/bin",
     "/sbin",
     "/bin",
+    // Debian places systemd's service binaries outside PATH; they remain a
+    // kernel-owned system executable surface and must be discoverable here.
+    "/usr/lib/systemd",
+    "/lib/systemd",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
