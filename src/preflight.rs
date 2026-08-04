@@ -172,8 +172,13 @@ pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlane
     }
     let text = fs::read_to_string(path)
         .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
-    let config: EnginePlaneConfig = serde_json::from_str(&text)
+    let mut config: EnginePlaneConfig = serde_json::from_str(&text)
         .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
+    config.source_dir = PathBuf::from(SOURCE_ROOT);
+    config.local_source_checkout = config
+        .local_source_checkout
+        .as_ref()
+        .map(|_| PathBuf::from(SOURCE_ROOT));
     validate_credential_scopes(&config.credential_scopes)?;
     Ok(Some(config))
 }

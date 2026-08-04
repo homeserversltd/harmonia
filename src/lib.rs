@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{self};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const SOURCE_ROOT: &str = "/opt/harmonia/source";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Profile {
@@ -2956,8 +2957,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                     let profile_id = args.get(2).ok_or("capsule pack requires <profile-id>")?;
                     let output_dir =
                         value_arg(&args, "--out").ok_or("capsule pack requires --out <dir>")?;
-                    let harmonia_root =
-                        value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from("."));
+                    let harmonia_root = value_arg(&args, "--harmonia-root")
+                        .unwrap_or_else(|| PathBuf::from(SOURCE_ROOT));
                     capsule_pack(profile_id, &output_dir, &harmonia_root)
                 }
                 "verify" => {
@@ -2985,7 +2986,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let profile_id = args.get(1).ok_or("molt requires <profile-id>")?;
             let output_dir = value_arg(&args, "--out").ok_or("molt requires --out <path>")?;
             let harmonia_root =
-                value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from("."));
+                value_arg(&args, "--harmonia-root").unwrap_or_else(|| PathBuf::from(SOURCE_ROOT));
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| output_dir.join("receipts"));
             let mode = MoltMode::parse(value_arg_string(&args, "--mode"))?;
             molt(&harmonia_root, profile_id, &output_dir, &receipt_dir, mode)
