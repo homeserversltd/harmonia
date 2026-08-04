@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEVICE_PROFILE_CERTIFICATE: &str = "/etc/appliance/profile.json";
+const LEGACY_DEVICE_PROFILE_CERTIFICATE: &str = "/etc/profile.json";
 const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
 const HARMONIA_MODULE_ROOT: &str = "/etc/harmonia";
 
@@ -32,12 +33,21 @@ fn set_run_identity_source(source: &'static str) {
     RUN_IDENTITY_SOURCE.with(|current| current.set(source));
 }
 
+pub(crate) fn device_profile_certificate_path() -> PathBuf {
+    let canonical = PathBuf::from(DEVICE_PROFILE_CERTIFICATE);
+    if canonical.exists() {
+        canonical
+    } else {
+        PathBuf::from(LEGACY_DEVICE_PROFILE_CERTIFICATE)
+    }
+}
+
 fn certificate_profile() -> Result<String, String> {
-    let path = Path::new(DEVICE_PROFILE_CERTIFICATE);
+    let path = device_profile_certificate_path();
     if !path.exists() {
         return Err("device-profile-certificate-missing".to_string());
     }
-    let text = fs::read_to_string(path).map_err(|err| {
+    let text = fs::read_to_string(&path).map_err(|err| {
         format!(
             "device-profile-certificate-read-failed {}: {err}",
             path.display()
@@ -68,7 +78,7 @@ fn certificate_profile() -> Result<String, String> {
 }
 
 pub(crate) fn verify_asserted_profile(asserted_profile: &str) -> Result<(), String> {
-    let path = Path::new(DEVICE_PROFILE_CERTIFICATE);
+    let path = device_profile_certificate_path();
     if !path.exists() {
         set_run_identity_source("asserted-verb");
         return Ok(());
@@ -208,7 +218,8 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
             return Err(reason);
         }
     };
-    if let Err(reason) = validate_declared_sources(Path::new(DEVICE_PROFILE_CERTIFICATE)) {
+    let certificate_path = device_profile_certificate_path();
+    if let Err(reason) = validate_declared_sources(&certificate_path) {
         write_json(
             &receipt_dir.join("run.json"),
             &json!({

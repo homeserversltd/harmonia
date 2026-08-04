@@ -1426,7 +1426,7 @@ fn source_plan_for_step(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("source-destination-missing module={} step_id={}", manifest.id, step.step_id))?;
     let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
-    let certificate = PathBuf::from("/etc/appliance/profile.json");
+    let certificate = crate::device_profile_certificate_path();
     let certificate_resolution = crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
     let resolution = match certificate_resolution.resolution {
         Some(resolution) => resolution,
