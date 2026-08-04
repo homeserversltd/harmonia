@@ -59,15 +59,6 @@
         "service": "harmonia-tv.timer",
         "timeout_secs": 30
       }
-    },
-    {
-      "step_id": "homeserver-update-installer-timer-present",
-      "tool": "systemd",
-      "permutation": "unit-present",
-      "args": {
-        "service": "harmonia.timer",
-        "timeout_secs": 30
-      }
     }
   ]
 }

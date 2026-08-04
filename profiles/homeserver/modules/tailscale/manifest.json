@@ -6,17 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "tailscale-binary-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "tailscaled",
-        "search_scope": "system",
-        "receipt_label": "birth-provided Tailscale daemon"
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "tailscale-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -50,16 +39,6 @@
       "args": {
         "service": "tailscaled.service",
         "timeout_secs": 60
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "tailscale-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "tailscaled.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

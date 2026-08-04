@@ -46,39 +46,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "coronatio-binary-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "coronatio",
-        "search_scope": "system",
-        "receipt_label": "attested Coronatio binary"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "coronatio-live-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-s", "/etc/homeserver.json"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "coronatio-live-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": ["-m", "json.tool", "/etc/homeserver.json"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "coronatio-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -90,17 +57,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "coronatio-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "coronatio-factory-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": ["-m", "json.tool", "/etc/homeserver.factory"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

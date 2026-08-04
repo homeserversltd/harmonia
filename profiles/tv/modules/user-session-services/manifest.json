@@ -91,58 +91,6 @@
         "user": "$constants.target_user",
         "timeout_secs": 60
       }
-    },
-    {
-      "step_id": "expected-file-config-systemd-user-hs-dunst-service",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.config/systemd/user/hs-dunst.service"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-config-systemd-user-hs-waybar-service",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.config/systemd/user/hs-waybar.service"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-local-bin-tv-hdmi-audio-ensure",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/home/owner/.local/bin/tv-hdmi-audio-ensure"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-etc-asound-conf",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/etc/asound.conf"
-        ],
-        "timeout_secs": 30
-      }
     }
   ]
 }

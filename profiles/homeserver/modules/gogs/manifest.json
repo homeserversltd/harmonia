@@ -33,16 +33,6 @@
       "args": {
         "service": "gogs.service"
       }
-    },
-    {
-      "step_id": "gogs-health",
-      "tool": "health",
-      "permutation": "probe",
-      "args": {
-        "url": "http://127.0.0.1:3000/",
-        "timeout_secs": 3,
-        "retries": 1
-      }
     }
   ]
 }

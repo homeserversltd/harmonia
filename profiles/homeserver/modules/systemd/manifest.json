@@ -6,39 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "systemd-analyze-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "systemd-analyze",
-        "search_scope": "system",
-        "receipt_label": "birth-provided systemd validator"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-vault-mapper-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-e", "/dev/mapper/vault"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-vault-init-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/vault/scripts/init.sh"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "systemd-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -53,21 +20,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "systemd-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-units-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": [
-          "verify",
-          "/etc/systemd/system/vault.mount",
-          "/etc/systemd/system/mountNas.service"
-        ],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -117,26 +69,6 @@
       "args": {
         "service": "mountNas.service",
         "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-vault-mount-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "vault.mount",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-nas-mount-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "mountNas.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

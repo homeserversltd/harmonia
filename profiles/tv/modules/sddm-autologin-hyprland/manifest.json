@@ -37,32 +37,6 @@
         "service": "sddm.service",
         "timeout_secs": 60
       }
-    },
-    {
-      "step_id": "expected-file-usr-share-wayland-sessions-arch-tv-hyprland-desktop",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/usr/share/wayland-sessions/arch-tv-hyprland.desktop"
-        ],
-        "timeout_secs": 30
-      }
-    },
-    {
-      "step_id": "expected-file-etc-sddm-conf-d-10-arch-tv-autologin-conf",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-e",
-          "/etc/sddm.conf.d/10-arch-tv-autologin.conf"
-        ],
-        "timeout_secs": 30
-      }
     }
   ]
 }

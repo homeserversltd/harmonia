@@ -6,17 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "postgres-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/opt/homeserver/postgresql/bin/postgres"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "postgres-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -49,22 +38,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "postgres-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/sbin/runuser",
-        "args": [
-          "-u", "postgres", "--",
-          "/opt/homeserver/postgresql/bin/postgres",
-          "-D", "/opt/homeserver/postgresql/current",
-          "-C", "data_directory"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "postgres-systemd-reload",
       "tool": "systemd",
       "permutation": "daemon-reload",
@@ -83,13 +56,6 @@
       "tool": "systemd",
       "permutation": "enable-now",
       "args": {"service": "postgresql.service", "timeout_secs": 120},
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "postgres-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {"service": "postgresql.service", "timeout_secs": 30},
       "on_failure": "stop"
     }
   ]

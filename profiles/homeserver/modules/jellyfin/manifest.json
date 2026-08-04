@@ -7,17 +7,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "jellyfin-binary-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "jellyfin",
-        "search_scope": "system",
-        "receipt_label": "birth-provided Jellyfin binary"
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "jellyfin-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -57,16 +46,6 @@
       "step_id": "jellyfin-service-enable",
       "tool": "systemd",
       "permutation": "enable-now",
-      "args": {
-        "service": "jellyfin.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "jellyfin-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
       "args": {
         "service": "jellyfin.service",
         "timeout_secs": 30

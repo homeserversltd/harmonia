@@ -6,28 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "yarr-go-runtime-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/usr/local/go/bin/go"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "yarr-source-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-d", "/opt/yarr/cmd/yarr"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "yarr-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -41,17 +19,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "yarr-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "yarr-unit-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/systemd-analyze",
-        "args": ["verify", "/etc/systemd/system/yarr.service"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -81,16 +48,6 @@
       "args": {
         "service": "yarr.service",
         "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "yarr-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "yarr.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

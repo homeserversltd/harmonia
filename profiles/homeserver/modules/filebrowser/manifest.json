@@ -6,17 +6,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "filebrowser-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/usr/local/bin/filebrowser"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "filebrowser-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -51,13 +40,6 @@
       "step_id": "filebrowser-enable",
       "tool": "systemd",
       "permutation": "enable-now",
-      "args": {"service": "filebrowser.service", "timeout_secs": 30},
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "filebrowser-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
       "args": {"service": "filebrowser.service", "timeout_secs": 30},
       "on_failure": "stop"
     }

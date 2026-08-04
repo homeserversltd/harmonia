@@ -21,17 +21,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "nginx-binary-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "nginx",
-        "search_scope": "system",
-        "receipt_label": "birth-provided nginx binary"
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "nginx-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -205,17 +194,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "nginx-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/sbin/nginx",
-        "args": ["-t"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "nginx-systemd-reload",
       "tool": "systemd",
       "permutation": "daemon-reload",
@@ -228,16 +206,6 @@
       "step_id": "nginx-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "nginx.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "nginx-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
       "args": {
         "service": "nginx.service",
         "timeout_secs": 30

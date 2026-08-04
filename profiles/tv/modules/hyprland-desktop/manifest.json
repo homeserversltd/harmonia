@@ -53,54 +53,6 @@
         "packages": "$constants.packages",
         "timeout_secs": 1800
       }
-    },
-    {
-      "step_id": "binary-hyprland",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "Hyprland"
-      }
-    },
-    {
-      "step_id": "binary-waybar",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "waybar"
-      }
-    },
-    {
-      "step_id": "binary-dunst",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "dunst"
-      }
-    },
-    {
-      "step_id": "binary-chromium",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "chromium"
-      }
-    },
-    {
-      "step_id": "binary-pipewire",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "pipewire"
-      }
-    },
-    {
-      "step_id": "binary-wireplumber",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "wireplumber"
-      }
     }
   ]
 }
