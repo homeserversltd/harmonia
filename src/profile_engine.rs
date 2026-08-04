@@ -1,6 +1,6 @@
 use crate::*;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,37 @@ struct GroupSelection {
     winner: String,
     losers: Vec<String>,
     observations: Vec<GroupProbeObservation>,
+}
+
+const APPLIANCE_CONFIG_PATH: &str = "/etc/appliance/config.json";
+
+#[derive(Default)]
+struct DeviceModulePolicy {
+    disabled_modules: BTreeSet<String>,
+}
+
+fn read_device_module_policy() -> Result<DeviceModulePolicy, String> {
+    let path = Path::new(APPLIANCE_CONFIG_PATH);
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(DeviceModulePolicy::default()),
+        Err(err) => return Err(format!("appliance-config-read-failed {}: {err}", path.display())),
+    };
+    let config: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|err| format!("appliance-config-parse-failed {}: {err}", path.display()))?;
+    let disabled_modules = config
+        .get("harmonia")
+        .and_then(|harmonia| harmonia.get("disabled_modules"))
+        .and_then(serde_json::Value::as_array)
+        .map(|modules| {
+            modules
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(DeviceModulePolicy { disabled_modules })
 }
 
 pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
@@ -112,9 +143,13 @@ fn resolve_group_selections(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
+    disabled_modules: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, GroupSelection>, String> {
     let mut groups: BTreeMap<String, Vec<(String, LadderManifest)>> = BTreeMap::new();
     for module_id in &profile.modules {
+        if disabled_modules.contains(module_id) {
+            continue;
+        }
         let module = match load_profile_module(module_root, module_id) {
             Ok(LoadedModule::Ladder(manifest)) => manifest,
             Ok(LoadedModule::Sidecar(_)) | Err(_) => continue,
@@ -208,8 +243,19 @@ fn caduceus_commands_for_profile(
     profile: &Profile,
     module_root: &Path,
 ) -> Result<Vec<String>, String> {
+    caduceus_commands_for_profile_with_policy(profile, module_root, &BTreeSet::new())
+}
+
+fn caduceus_commands_for_profile_with_policy(
+    profile: &Profile,
+    module_root: &Path,
+    disabled_modules: &BTreeSet<String>,
+) -> Result<Vec<String>, String> {
     let mut commands = Vec::new();
     for module_id in &profile.modules {
+        if disabled_modules.contains(module_id) {
+            continue;
+        }
         let Ok(LoadedModule::Ladder(module)) = load_profile_module(module_root, module_id) else {
             continue;
         };
@@ -227,6 +273,15 @@ fn compose_caduceus_commands(
     module_root: &Path,
     manifest: &mut LadderManifest,
 ) -> Result<(), String> {
+    compose_caduceus_commands_with_policy(profile, module_root, manifest, &BTreeSet::new())
+}
+
+fn compose_caduceus_commands_with_policy(
+    profile: &Profile,
+    module_root: &Path,
+    manifest: &mut LadderManifest,
+    disabled_modules: &BTreeSet<String>,
+) -> Result<(), String> {
     let is_caduceus = manifest.ladder.iter().any(|step| {
         step.tool == "service-runtime"
             && step.args.get("component").and_then(|value| value.as_str()) == Some("caduceus")
@@ -234,7 +289,8 @@ fn compose_caduceus_commands(
     if !is_caduceus {
         return Ok(());
     }
-    let commands = caduceus_commands_for_profile(profile, module_root)?;
+    let commands =
+        caduceus_commands_for_profile_with_policy(profile, module_root, disabled_modules)?;
     for step in &mut manifest.ladder {
         if step.tool == "service-runtime" && step.permutation == "converge" {
             step.args
@@ -311,6 +367,7 @@ pub(crate) fn run_profile_engine_with_preflight(
     let mut first_missing_signal = "none".to_string();
     let mut module_count = 0usize;
     let mut operation_count = 0usize;
+    let device_module_policy = read_device_module_policy()?;
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
 
@@ -385,10 +442,40 @@ pub(crate) fn run_profile_engine_with_preflight(
         )?;
     }
 
-    let group_selections = resolve_group_selections(profile, module_root, receipt_dir)?;
+    let group_selections = resolve_group_selections(
+        profile,
+        module_root,
+        receipt_dir,
+        &device_module_policy.disabled_modules,
+    )?;
     let group_losers = group_loser_winners(&group_selections);
 
     for module_id in &profile.modules {
+        if device_module_policy.disabled_modules.contains(module_id) {
+            module_count += 1;
+            let signal = "module-disabled-by-device";
+            append_profile_ledger_entry(
+                receipt_dir,
+                profile,
+                ProfileLedgerEntry {
+                    run_id: &run_id,
+                    module_id,
+                    ok: true,
+                    changed: false,
+                    operation_count: 0,
+                    first_missing_signal: signal,
+                    receipt_dir,
+                    module_version: None,
+                },
+            )?;
+            event(
+                &mut events,
+                "module-skipped",
+                true,
+                &format!("{module_id} {signal}"),
+            )?;
+            continue;
+        }
         let module = match load_profile_module(module_root, module_id) {
             Ok(m) => m,
             Err(err) => {
@@ -452,7 +539,12 @@ pub(crate) fn run_profile_engine_with_preflight(
             LoadedModule::Ladder(manifest) => {
                 let module_dir = receipt_dir.join("modules").join(&manifest.id);
                 let mut manifest = manifest.clone();
-                compose_caduceus_commands(profile, module_root, &mut manifest)?;
+                compose_caduceus_commands_with_policy(
+                    profile,
+                    module_root,
+                    &mut manifest,
+                    &device_module_policy.disabled_modules,
+                )?;
                 execute_ladder_manifest(
                     &manifest,
                     &module_dir,
