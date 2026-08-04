@@ -1,3 +1,4 @@
+use super::comparison::{self, DiffDecision};
 use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::{write_json, CmdResult, OperationOutcome};
 use serde::{Deserialize, Serialize};
@@ -266,26 +267,68 @@ pub(crate) fn check(
     lock_path: &Path,
     upstream_state: Option<&str>,
 ) -> Result<OperationOutcome, String> {
-    let lock = read_lock(lock_path, package)?;
-    let state = read_upstream_state(upstream_state, package)?;
-    let newer_available = state.pkgbuild_sha != lock.pkgbuild_sha
-        || version_changed(&lock.pinned_version, &state.available_version);
+    let run = comparison::execute(
+        || {
+            let lock = read_lock(lock_path, package)?;
+            let state = read_upstream_state(upstream_state, package)?;
+            let newer_available = state.pkgbuild_sha != lock.pkgbuild_sha
+                || version_changed(&lock.pinned_version, &state.available_version);
+            Ok::<_, String>((lock, state, newer_available))
+        },
+        |(_, _, newer_available)| {
+            if *newer_available {
+                DiffDecision::Different
+            } else {
+                DiffDecision::Empty
+            }
+        },
+        |_, _| {
+            Ok(OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: format!("aur check {package}"),
+                command: None,
+            })
+        },
+    )?;
+    let (lock, state, newer_available) = run.observation();
+    let decision = run.decision();
+    let movement = match &run {
+        comparison::ComparisonRun::Current { .. } => None,
+        comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
+    };
     let receipt = AurCheckReceipt {
         schema: "harmonia.aur.check.v1",
         package: package.to_string(),
-        pinned_version: lock.pinned_version,
-        pinned_pkgbuild_sha: lock.pkgbuild_sha,
-        available_version: Some(state.available_version),
-        available_pkgbuild_sha: Some(state.pkgbuild_sha),
-        upstream_source_observed: Some(state.observed_source),
-        newer_available,
+        pinned_version: lock.pinned_version.clone(),
+        pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
+        available_version: Some(state.available_version.clone()),
+        available_pkgbuild_sha: Some(state.pkgbuild_sha.clone()),
+        upstream_source_observed: Some(state.observed_source.clone()),
+        newer_available: *newer_available,
         ok: true,
         changed: false,
         first_missing_signal: "none".into(),
     };
+    let receipt_path = receipt_dir.join(format!("{receipt_name}.json"));
     write_json(
-        &receipt_dir.join(format!("{receipt_name}.json")),
+        &receipt_path,
         &serde_json::to_value(&receipt).map_err(|e| e.to_string())?,
+    )?;
+    augment_comparison_receipt(
+        &receipt_path,
+        serde_json::json!({
+            "pinned_version": lock.pinned_version,
+            "pinned_pkgbuild_sha": lock.pkgbuild_sha,
+            "available_version": state.available_version,
+            "available_pkgbuild_sha": state.pkgbuild_sha,
+            "upstream_source": state.observed_source,
+        }),
+        serde_json::json!({"ratchet_lock_matches_upstream": true}),
+        decision,
+        movement,
+        false,
     )?;
     Ok(OperationOutcome {
         ok: true,
@@ -301,6 +344,75 @@ fn version_changed(pinned: &str, available: &str) -> bool {
 }
 
 pub(crate) fn install(
+    receipt_dir: &Path,
+    receipt_name: &str,
+    package: &str,
+    timeout_secs: u64,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let timeout_secs = bounded_timeout(timeout_secs);
+    let build_dir = Path::new(DEFAULT_BUILD_ROOT).join(package);
+    let builder = if unsafe { libc::geteuid() } == 0 {
+        "nobody"
+    } else {
+        "current-user"
+    };
+    let run = comparison::execute(
+        || {
+            Ok::<_, String>(if apply {
+                installed_version(package)
+            } else {
+                None
+            })
+        },
+        |installed| {
+            if apply && installed.is_some() {
+                DiffDecision::Empty
+            } else {
+                DiffDecision::Different
+            }
+        },
+        |_, _| install_action(receipt_dir, receipt_name, package, timeout_secs, apply),
+    )?;
+    let decision = run.decision();
+    let observed = run.observation().clone();
+    let movement = match &run {
+        comparison::ComparisonRun::Current { .. } => None,
+        comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
+    };
+    let outcome = match movement {
+        Some(movement) => movement.clone(),
+        None => {
+            let receipt = serde_json::json!({
+                "schema": "harmonia.aur.install.v1", "package": package, "build_dir": build_dir,
+                "timeout_policy": format!("bounded-timeout-seconds={timeout_secs}"),
+                "safety_posture": "current-aur-head;no-pin;no-upstream-check-cycle;unprivileged-makepkg",
+                "unprivileged_builder": builder, "ok": true, "changed": false,
+                "installed_converged": true, "first_blocker": null,
+            });
+            write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+            OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: false,
+                message: format!("aur install idle {package}"),
+                command: None,
+            }
+        }
+    };
+    let receipt_path = receipt_dir.join(format!("{receipt_name}.json"));
+    augment_comparison_receipt(
+        &receipt_path,
+        serde_json::json!({"installed_version": observed}),
+        serde_json::json!({"package_installed": true}),
+        decision,
+        movement,
+        outcome.changed,
+    )?;
+    Ok(outcome)
+}
+
+fn install_action(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -408,6 +520,95 @@ fn write_install_failure(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pinned(
+    receipt_dir: &Path,
+    receipt_name: &str,
+    package: &str,
+    lock_path: &Path,
+    build_root: &Path,
+    source_dir: Option<&str>,
+    builder_user: Option<&str>,
+    timeout_secs: u64,
+    install: bool,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let lock = read_lock(lock_path, package)?;
+    let timeout_secs = bounded_timeout(timeout_secs);
+    let build_dir = build_root.join(package);
+    let builder = if unsafe { libc::geteuid() } == 0 {
+        builder_user.unwrap_or("nobody").to_string()
+    } else {
+        "current-user".to_string()
+    };
+    let observed_installed = if apply && install {
+        installed_version(package)
+    } else {
+        None
+    };
+    let run = comparison::execute(
+        || Ok::<_, String>(observed_installed.clone()),
+        |installed| {
+            if apply && install && installed.as_deref() == Some(lock.pinned_version.as_str()) {
+                DiffDecision::Empty
+            } else {
+                DiffDecision::Different
+            }
+        },
+        |_, _| {
+            build_pinned_action(
+                receipt_dir,
+                receipt_name,
+                package,
+                lock_path,
+                build_root,
+                source_dir,
+                builder_user,
+                timeout_secs,
+                install,
+                apply,
+            )
+        },
+    )?;
+    let decision = run.decision();
+    let observed = run.observation().clone();
+    let movement = match &run {
+        comparison::ComparisonRun::Current { .. } => None,
+        comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
+    };
+    let outcome = if let Some(movement) = movement {
+        movement.clone()
+    } else {
+        let receipt = AurBuildReceipt {
+            schema: "harmonia.aur.build_pinned.v1", package: package.to_string(),
+            pinned_version: lock.pinned_version.clone(), pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
+            build_dir, produced_package_path: None, installed_version_before: observed.clone(),
+            install_requested: install, installed_converged: true, first_blocker: None,
+            pkgver_neutralized: false, timeout_policy: format!("bounded-timeout-seconds={timeout_secs}"),
+            safety_posture: "bounded-timeout;no-curl-pipe-bash;no-partial-db-sync;exact-pkgbuild-sha;unprivileged-makepkg".into(),
+            unprivileged_builder: builder, ok: true, changed: false, command: None,
+            install_command: None, install_verify_command: None,
+        };
+        write_build_receipt(receipt_dir, receipt_name, &receipt)?;
+        OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: format!("aur build-pinned idle {package}"),
+            command: None,
+        }
+    };
+    augment_comparison_receipt(
+        &receipt_dir.join(format!("{receipt_name}.json")),
+        serde_json::json!({"installed_version": observed, "pinned_version": lock.pinned_version, "pinned_pkgbuild_sha": lock.pkgbuild_sha}),
+        serde_json::json!({"pinned_package_built": true, "pinned_package_installed": install}),
+        decision,
+        movement,
+        outcome.changed,
+    )?;
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_pinned_action(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -918,6 +1119,51 @@ fn first_blocker(command: &CmdResult) -> String {
     } else {
         format!("aur-command-exit-{}", command.code)
     }
+}
+
+fn augment_comparison_receipt(
+    path: &Path,
+    observed_state: Value,
+    desired_state: Value,
+    decision: DiffDecision,
+    movement: Option<&OperationOutcome>,
+    changed: bool,
+) -> Result<(), String> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("aur-receipt-read-failed {}: {e}", path.display()))?;
+    let mut receipt: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("aur-receipt-parse-failed {}: {e}", path.display()))?;
+    let fields = receipt
+        .as_object_mut()
+        .ok_or_else(|| format!("aur-receipt-object-required {}", path.display()))?;
+    fields.insert("observed_state".into(), observed_state);
+    fields.insert("desired_state".into(), desired_state);
+    fields.insert(
+        "diff_decision".into(),
+        Value::String(
+            match decision {
+                DiffDecision::Empty => "empty",
+                DiffDecision::Different => "different",
+            }
+            .into(),
+        ),
+    );
+    fields.insert(
+        "movement".into(),
+        movement
+            .map(|movement| {
+                serde_json::json!({
+                    "ok": movement.ok,
+                    "changed": movement.changed,
+                    "skipped": movement.skipped,
+                    "message": movement.message,
+                    "command": movement.command,
+                })
+            })
+            .unwrap_or(Value::Null),
+    );
+    fields.insert("changed".into(), Value::Bool(changed));
+    write_json(path, &receipt)
 }
 
 fn write_build_receipt(
