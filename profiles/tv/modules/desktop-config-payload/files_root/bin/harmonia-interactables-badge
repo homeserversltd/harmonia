@@ -2,7 +2,7 @@
 set -u
 
 payload="$(harmonia interactable list --json 2>/dev/null)" || {
-    printf '%s\n' '{"text":"","class":"ok","tooltip":"Harmonia interactables unavailable"}'
+    printf '%s\n' '{"text":"󰚰","class":"ok","tooltip":"Harmonia interactables unavailable"}'
     exit 0
 }
 
@@ -32,13 +32,13 @@ for row in rows:
 names = [str(row.get("name") or row.get("id") or "unnamed interactable") for row in pending]
 tooltip = "Harmonia: no pending interactables" if not names else "Harmonia pending:\n" + "\n".join(f"• {name}" for name in names[:5])
 print(json.dumps({
-    "text": "" if not names else f"󰚰 {len(names)}",
+    "text": "󰚰" if not names else f"󰚰 {len(names)}",
     "class": "ok" if not names else "pending",
     "tooltip": tooltip,
 }, ensure_ascii=False, separators=(",", ":")))
 PY
 )"; then
-    printf '%s\n' '{"text":"","class":"ok","tooltip":"Harmonia interactables unavailable"}'
+    printf '%s\n' '{"text":"󰚰","class":"ok","tooltip":"Harmonia interactables unavailable"}'
     exit 0
 fi
 
