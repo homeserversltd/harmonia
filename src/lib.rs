@@ -220,6 +220,7 @@ pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 mod capsule;
 mod convergence_lock;
 pub mod device_profile;
+mod interactables;
 mod ladder;
 mod module_dispatch;
 mod molt;
@@ -232,6 +233,7 @@ mod subscription;
 pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
 pub(crate) use device_profile::*;
+pub(crate) use interactables::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use molt::*;
@@ -2623,6 +2625,7 @@ mod tests {
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     match args.first().map(String::as_str) {
+        Some("interactable") => interactable_command(&args[1..]),
         Some("update") => update_from_certificate(&args[1..]),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
@@ -3114,6 +3117,8 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
+    println!("  harmonia interactable list [--json]");
+    println!("  harmonia interactable run <id>");
     println!("  harmonia validate-ladder <manifest.json>");
     println!("  harmonia resolve-source <component> --certificate <path> [--owner-module <id>] [--step-id <id>]");
     println!("  harmonia acquire-source <component> --certificate <path> --engine-config <path> --destination <path> [--bearer <name>] [--expected-commit <sha>]");

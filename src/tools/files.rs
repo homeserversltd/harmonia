@@ -12,6 +12,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const NAME: &str = "files";
 pub const DESCRIPTION: &str =
@@ -2899,6 +2900,101 @@ fn reject_ssh_path(path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+pub(crate) fn validate_interactable_target(path: &Path) -> Result<(), String> {
+    reject_ssh_path(path)?;
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let key_shaped = name.starts_with("id_")
+        || name.ends_with(".key")
+        || name.ends_with(".pem")
+        || name.ends_with(".p12")
+        || name.ends_with(".pfx")
+        || path.components().any(|component| {
+            matches!(component, Component::Normal(value) if matches!(value.to_str(), Some("key") | Some("keys") | Some("private") | Some("credentials") | Some("secrets")))
+        });
+    if key_shaped {
+        return Err(format!(
+            "credential-boundary-refused: {} is key-shaped, Harmonia never hard-stamps credential material",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn hard_stamp_interactable(
+    id: &str,
+    source: &Path,
+    target: &Path,
+    mode: Option<u32>,
+    owner: Option<&str>,
+    group: Option<&str>,
+    backup_root: &Path,
+) -> Result<serde_json::Value, String> {
+    validate_interactable_target(target)?;
+    if !source.is_file() {
+        return Err(format!("interactable-reference-source-missing {}", source.display()));
+    }
+    let metadata = fs::symlink_metadata(target)
+        .map_err(|error| format!("interactable-target-birth-debt {}: {error}", target.display()))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("interactable-target-not-regular-file {}", target.display()));
+    }
+    let desired_uid = owner.map(resolve_uid).transpose()?;
+    let desired_gid = group.map(resolve_gid).transpose()?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    let backup = backup_root.join(id).join(format!(
+        "{}-{}",
+        stamp,
+        target.file_name().and_then(|name| name.to_str()).unwrap_or("target")
+    ));
+    if let Some(parent) = backup.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "interactable-backup-parent-create-failed {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::copy(target, &backup)
+        .map_err(|error| format!("interactable-backup-failed {}: {error}", target.display()))?;
+    let before_sha256 = format!(
+        "{:x}",
+        Sha256::digest(fs::read(&backup).map_err(|error| error.to_string())?)
+    );
+    let reference_sha256 = format!(
+        "{:x}",
+        Sha256::digest(fs::read(source).map_err(|error| error.to_string())?)
+    );
+    atomic_copy(
+        source,
+        target,
+        mode.or_else(|| source_mode(source).ok()),
+        desired_uid,
+        desired_gid,
+    )?;
+    let target_sha256 = format!(
+        "{:x}",
+        Sha256::digest(fs::read(target).map_err(|error| error.to_string())?)
+    );
+    if target_sha256 != reference_sha256 {
+        return Err(format!("interactable-hard-stamp-readback-failed {}", target.display()));
+    }
+    Ok(json!({
+        "schema": "harmonia.interactables.hard_stamp.receipt.v1",
+        "ok": true,
+        "id": id,
+        "kind": "hard-stamp",
+        "backup_path": backup,
+        "before_sha256": before_sha256,
+        "reference_sha256": reference_sha256,
+        "target_sha256": target_sha256,
+        "target": target,
+        "reference_source": source,
+    }))
 }
 
 fn validate_specs(specs: &[FileSpec]) -> Result<(), String> {
