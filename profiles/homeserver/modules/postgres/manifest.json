@@ -43,7 +43,7 @@
       "permutation": "capture",
       "args": {
         "program": "/usr/bin/systemctl",
-        "args": ["mask", "--now", "postgresql@.service"],
+        "args": ["mask", "postgresql@.service"],
         "timeout_secs": 60
       },
       "on_failure": "stop"
