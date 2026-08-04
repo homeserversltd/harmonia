@@ -56,7 +56,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "executable": "systemd-networkd",
+        "executable": "/lib/systemd/systemd-networkd",
         "search_scope": "system",
         "receipt_label": "birth-provided systemd-networkd binary"
       },
