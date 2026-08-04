@@ -26,7 +26,7 @@ pub type CommandReceipt = crate::CmdResult;
 
 const DEFAULT_BEARER: &str = "owner";
 const ESTATE_FORGEJO_PREFIX: &str = "https://git.home.arpa/";
-const ESTATE_FORGEJO_HELPER: &str = "credential.helper=/usr/local/bin/forgejo-credential-helper";
+const ESTATE_FORGEJO_TOKEN_PATH: &str = "/home/owner/.ssh/forgejo-token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -103,11 +103,25 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
             };
         }
     };
-    let credential_helper = owner_https_credential_helper(request);
     let estate_single_source = request
         .repo
         .as_deref()
         .is_some_and(|repo| repo.starts_with(ESTATE_FORGEJO_PREFIX));
+    let credential_helper = if estate_single_source {
+        match estate_forgejo_credential_helper() {
+            Ok(helper) => Some(helper),
+            Err(stderr) => {
+                return CommandReceipt {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr,
+                };
+            }
+        }
+    } else {
+        owner_https_credential_helper(request)
+    };
     let mut safe_configs = Vec::with_capacity(request.safe_directories.len());
     for path in &request.safe_directories {
         let path = match path.to_str() {
@@ -127,9 +141,7 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
     for config in &safe_configs {
         git_args.extend(["-c", config.as_str()]);
     }
-    if estate_single_source {
-        git_args.extend(["-c", "credential.helper=", "-c", ESTATE_FORGEJO_HELPER]);
-    } else if let Some(helper) = credential_helper.as_deref() {
+    if let Some(helper) = credential_helper.as_deref() {
         git_args.extend(["-c", "credential.helper="]);
         git_args.extend(["-c", helper]);
     }
@@ -141,6 +153,37 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
         &request.bearer,
         env,
     )
+}
+
+fn estate_forgejo_credential_helper() -> Result<String, String> {
+    // Validate in the engine so absent/empty owner material enters the existing
+    // Git unavailable receipt path before a child is started. The inline helper
+    // re-reads the same file at Git's credential query boundary, so the token
+    // never enters Git argv, the repository config, or a filesystem helper.
+    read_forgejo_token(Path::new(ESTATE_FORGEJO_TOKEN_PATH))?;
+    Ok(format!(
+        "credential.helper=!f() {{ protocol= host=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${{line#protocol=}} ;; host=*) host=${{line#host=}} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = git.home.arpa ]; then token=; while IFS= read -r line || [ -n \"$line\" ]; do value=$(printf '%s' \"$line\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'); case \"$value\" in FORGEJO_TOKEN=*) token=${{value#FORGEJO_TOKEN=}} ;; *=*) ;; *) token=$value ;; esac; [ -n \"$token\" ] && break; done < {}; if [ -n \"$token\" ]; then printf \"username=owner\\npassword=%s\\n\" \"$token\"; fi; fi; }}; f",
+        shell_quote(ESTATE_FORGEJO_TOKEN_PATH),
+    ))
+}
+
+fn read_forgejo_token(path: &Path) -> Result<(), String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|err| format!("forgejo-token-unavailable {}: {err}", path.display()))?;
+    let token = contents.lines().find_map(|line| {
+        let value = line.trim();
+        if value.is_empty() {
+            return None;
+        }
+        value
+            .strip_prefix("FORGEJO_TOKEN=")
+            .map(str::trim)
+            .or((!value.contains('=')).then_some(value))
+            .filter(|token| !token.is_empty())
+    });
+    token
+        .map(|_| ())
+        .ok_or_else(|| format!("forgejo-token-empty {}", path.display()))
 }
 
 fn owner_https_credential_helper(request: &Request) -> Option<String> {
