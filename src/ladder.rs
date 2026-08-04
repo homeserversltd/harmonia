@@ -1405,9 +1405,7 @@ fn source_plan_for_step(
         .or_else(|| optional_string_arg(&step.args, "source_dir"))
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("source-destination-missing module={} step_id={}", manifest.id, step.step_id))?;
-    let certificate = std::env::var_os("HARMONIA_DEVICE_PROFILE_CERTIFICATE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/etc/appliance/profile.json"));
+    let certificate = PathBuf::from("/etc/appliance/profile.json");
     let resolution = crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
     if let Some(blocker) = resolution.blocker {
         return Err(format!("source-resolution-blocked module={} step_id={} component={} blocker={blocker}", manifest.id, step.step_id, component));
