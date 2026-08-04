@@ -161,7 +161,7 @@ class InstallerCliTests(unittest.TestCase):
             install_systemd_units(paths)
             service = (paths.systemd_dir / "harmonia.service").read_text()
             timer = (paths.systemd_dir / "harmonia.timer").read_text()
-            self.assertIn("harmonia update --apply", service)
+            self.assertIn("harmonia update --receipt-dir", service)
             self.assertIn("receipts/update-latest", service)
             self.assertNotIn("profiles/", service)
             self.assertIn("Unit=harmonia.service", timer)
