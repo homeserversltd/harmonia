@@ -145,18 +145,80 @@ ensure_unbound_conf_d_include
 ln -sfn /etc/nginx/sites-available/homeserver-matrix /etc/nginx/sites-enabled/homeserver-matrix
 ln -sfn /etc/nginx/sites-available/homeserver-element /etc/nginx/sites-enabled/homeserver-element
 
-# Caduceus is the sole configuration writer. The logical path keeps this
-# concern profile-agnostic while Caduceus preserves the household document.
-if ! curl --fail --silent --show-error --max-time 10 \
-    --request POST http://127.0.0.1:3014/api/v1/config/set \
-    --header 'Content-Type: application/json' \
-    --data-binary @- <<'JSON'
-{"path":"tabs.portals","value":{"visibility":{"tab":true,"elements":{"Element":true}},"data":{"portals":[{"name":"Element","description":"Private chat for your homeserver.","services":["matrix-synapse"],"type":"systemd","port":8008,"localURL":"https://chat.home.arpa"}]}}}
-JSON
-then
+# Caduceus is the sole configuration writer. Read its current household
+# document before changing only Matrix's portal record and visibility entry.
+caduceus_tmp="$(mktemp -d)"
+trap 'rm -rf "$caduceus_tmp"' EXIT HUP INT TERM
+caduceus_fail_closed() {
     echo 'first_missing_signal=caduceus-config-unreachable' >&2
     exit 1
+}
+if ! curl --fail --silent --show-error --max-time 10 \
+    http://127.0.0.1:3014/api/v1/config/show >"$caduceus_tmp/document.json"; then
+    caduceus_fail_closed
 fi
+if ! python3 - "$caduceus_tmp/document.json" "$caduceus_tmp/portals.json" "$caduceus_tmp/elements.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source, portals_out, elements_out = map(Path, sys.argv[1:])
+response = json.loads(source.read_text(encoding='utf-8'))
+document = response.get('document')
+if not isinstance(document, dict):
+    raise SystemExit('caduceus-config-document-not-object')
+tabs = document.get('tabs', {})
+if not isinstance(tabs, dict):
+    raise SystemExit('caduceus-config-tabs-not-object')
+portals_tab = tabs.get('portals', {})
+if not isinstance(portals_tab, dict):
+    raise SystemExit('caduceus-config-portals-tab-not-object')
+data = portals_tab.get('data', {})
+if not isinstance(data, dict):
+    raise SystemExit('caduceus-config-portals-data-not-object')
+portals = data.get('portals', [])
+if not isinstance(portals, list):
+    raise SystemExit('caduceus-config-portals-not-array')
+visibility = portals_tab.get('visibility', {})
+if not isinstance(visibility, dict):
+    raise SystemExit('caduceus-config-portals-visibility-not-object')
+elements = visibility.get('elements', {})
+if not isinstance(elements, dict):
+    raise SystemExit('caduceus-config-elements-not-object')
+
+entry = {
+    'name': 'Element',
+    'description': 'Private chat for your homeserver.',
+    'services': ['matrix-synapse'],
+    'type': 'systemd',
+    'port': 8008,
+    'localURL': 'https://chat.home.arpa',
+}
+portals = list(portals)
+for index, item in enumerate(portals):
+    if isinstance(item, dict) and isinstance(item.get('name'), str) and item['name'].casefold() == 'element':
+        portals[index] = entry
+        break
+else:
+    portals.append(entry)
+elements = dict(elements)
+elements.pop('element', None)
+elements['Element'] = True
+
+portals_out.write_text(json.dumps({'path': 'tabs.portals.data.portals', 'value': portals}), encoding='utf-8')
+elements_out.write_text(json.dumps({'path': 'tabs.portals.visibility.elements', 'value': elements}), encoding='utf-8')
+PY
+then
+    caduceus_fail_closed
+fi
+for payload in "$caduceus_tmp/portals.json" "$caduceus_tmp/elements.json"; do
+    if ! curl --fail --silent --show-error --max-time 10 \
+        --request POST http://127.0.0.1:3014/api/v1/config/set \
+        --header 'Content-Type: application/json' \
+        --data-binary "@$payload"; then
+        caduceus_fail_closed
+    fi
+done
 
 nginx -t
 unbound-checkconf

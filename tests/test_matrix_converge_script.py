@@ -1,5 +1,7 @@
+import json
 import pathlib
 import subprocess
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -46,14 +48,61 @@ class MatrixConvergeScriptTests(unittest.TestCase):
     def test_matrix_portal_is_delegated_to_caduceus(self) -> None:
         text = self.script_text()
         self.assertNotIn("/etc/homeserver", text)
+        self.assertIn("http://127.0.0.1:3014/api/v1/config/show", text)
         self.assertIn("http://127.0.0.1:3014/api/v1/config/set", text)
         self.assertIn("--request POST", text)
         self.assertIn("--header 'Content-Type: application/json'", text)
-        self.assertIn('"path":"tabs.portals"', text)
-        self.assertIn('"name":"Element"', text)
-        self.assertIn('"services":["matrix-synapse"]', text)
-        self.assertIn('"port":8008', text)
+        self.assertIn("tabs.portals.data.portals", text)
+        self.assertIn("tabs.portals.visibility.elements", text)
         self.assertIn("first_missing_signal=caduceus-config-unreachable", text)
+
+    def test_matrix_portal_merge_preserves_preexisting_non_element_portal(self) -> None:
+        text = self.script_text()
+        merge_program = text.split("<<'PY'\n", 1)[1].split("\nPY\nthen", 1)[0]
+        jellyfin = {
+            "name": "Jellyfin",
+            "description": "Preserve this exact portal record.",
+            "services": ["jellyfin"],
+            "type": "systemd",
+            "port": 8096,
+            "localURL": "https://jellyfin.home.arpa",
+        }
+        document = {
+            "tabs": {
+                "portals": {
+                    "data": {"portals": [jellyfin, {"name": "eLeMeNt", "stale": True}]},
+                    "visibility": {"elements": {"element": True, "Jellyfin": True}},
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = pathlib.Path(tmpdir)
+            source = tmp / "document.json"
+            portals = tmp / "portals.json"
+            elements = tmp / "elements.json"
+            source.write_text(json.dumps({"document": document}), encoding="utf-8")
+            subprocess.run(
+                ["python3", "-c", merge_program, str(source), str(portals), str(elements)],
+                check=True,
+            )
+            portals_payload = json.loads(portals.read_text(encoding="utf-8"))
+            elements_payload = json.loads(elements.read_text(encoding="utf-8"))
+            first_portals_payload = portals.read_bytes()
+            first_elements_payload = elements.read_bytes()
+            subprocess.run(
+                ["python3", "-c", merge_program, str(source), str(portals), str(elements)],
+                check=True,
+            )
+            self.assertEqual(portals.read_bytes(), first_portals_payload)
+            self.assertEqual(elements.read_bytes(), first_elements_payload)
+
+        self.assertEqual(portals_payload["path"], "tabs.portals.data.portals")
+        self.assertEqual(portals_payload["value"][0], jellyfin)
+        self.assertEqual(portals_payload["value"][1]["name"], "Element")
+        self.assertEqual(elements_payload["path"], "tabs.portals.visibility.elements")
+        self.assertNotIn("element", elements_payload["value"])
+        self.assertTrue(elements_payload["value"]["Element"])
+        self.assertTrue(elements_payload["value"]["Jellyfin"])
 
 
 if __name__ == "__main__":
