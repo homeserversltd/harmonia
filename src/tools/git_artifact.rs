@@ -205,6 +205,13 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn is_lower_hex_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Validate only path identity and stage the SSH selector for the Git child.
 /// This deliberately never opens the key: `ssh` reads it only in the exec'd
 /// Git transport process, after a privileged parent has dropped to its bearer.
@@ -736,6 +743,116 @@ pub struct SourceOutcome {
     pub ok: bool,
     pub changed: bool,
     pub receipt: SourceReceipt,
+}
+
+/// Read-only authority observed before a runtime decides whether a fresh source
+/// candidate is needed. This probe never changes the destination or a Git
+/// checkout; acquisition remains the sole promotion path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteHeadProbe {
+    pub state: String,
+    pub candidate_index: Option<usize>,
+    pub candidate_kind: Option<SourceCandidateKind>,
+    pub locator: Option<String>,
+    pub credential_selector: Option<String>,
+    pub reference: String,
+    pub remote_sha: Option<String>,
+    pub command: CommandReceipt,
+}
+
+/// Read the declared branch head only when the first ordered candidate is Git.
+/// Any other result deliberately leaves the caller on the established
+/// acquire-and-promote path, preserving candidate ordering and fallback law.
+pub fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
+    let Some(candidate) = plan.candidates.first() else {
+        return RemoteHeadProbe {
+            state: "not-applicable".into(),
+            candidate_index: None,
+            candidate_kind: None,
+            locator: None,
+            credential_selector: None,
+            reference: plan.reference.clone(),
+            remote_sha: None,
+            command: CommandReceipt {
+                ok: true,
+                code: 0,
+                stdout: "source candidates absent; remote probe not applicable".into(),
+                stderr: String::new(),
+            },
+        };
+    };
+    if candidate.kind != SourceCandidateKind::Git {
+        return RemoteHeadProbe {
+            state: "not-applicable".into(),
+            candidate_index: Some(1),
+            candidate_kind: Some(candidate.kind),
+            locator: Some(candidate.locator.clone()),
+            credential_selector: candidate.credential_selector.clone(),
+            reference: plan.reference.clone(),
+            remote_sha: None,
+            command: CommandReceipt {
+                ok: true,
+                code: 0,
+                stdout: "first ordered source candidate is not Git; remote probe not applicable"
+                    .into(),
+                stderr: String::new(),
+            },
+        };
+    }
+    if let Some(selector) = candidate.credential_selector.as_deref() {
+        if !plan.credentials.contains_key(selector) {
+            return RemoteHeadProbe {
+                state: "probe-unavailable".into(),
+                candidate_index: Some(1),
+                candidate_kind: Some(candidate.kind),
+                locator: Some(candidate.locator.clone()),
+                credential_selector: candidate.credential_selector.clone(),
+                reference: plan.reference.clone(),
+                remote_sha: None,
+                command: CommandReceipt {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: "credential-selector-unresolved".into(),
+                },
+            };
+        }
+    }
+    let reference = format!("refs/heads/{}", plan.reference);
+    let request = scoped_request(plan, candidate, plan.destination.clone());
+    let command = capture_git(
+        &request,
+        &["ls-remote", "--refs", &candidate.locator, &reference],
+        None,
+    );
+    let remote_sha = command
+        .ok
+        .then(|| {
+            let mut rows = command.stdout.lines().filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let sha = fields.next()?;
+                let observed_ref = fields.next()?;
+                (fields.next().is_none() && observed_ref == reference && is_lower_hex_sha(sha))
+                    .then(|| sha.to_string())
+            });
+            let first = rows.next()?;
+            rows.next().is_none().then_some(first)
+        })
+        .flatten();
+    RemoteHeadProbe {
+        state: if remote_sha.is_some() {
+            "remote-head-observed".into()
+        } else {
+            "probe-unavailable".into()
+        },
+        candidate_index: Some(1),
+        candidate_kind: Some(candidate.kind),
+        locator: Some(candidate.locator.clone()),
+        credential_selector: candidate.credential_selector.clone(),
+        reference: plan.reference.clone(),
+        remote_sha,
+        command,
+    }
 }
 
 /// Acquire one candidate into a fresh sibling staging tree, verify it, then
