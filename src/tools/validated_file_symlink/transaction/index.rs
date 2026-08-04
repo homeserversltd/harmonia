@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 pub(crate) struct ValidatedFileSymlinkRequest<'a> {
     pub receipt_dir: &'a Path,
     pub name: &'a str,
@@ -137,11 +138,73 @@ fn rollback_file_symlink(
     first_error
 }
 
-/// Validates desired bytes through a hidden source candidate and a non-hidden sibling
-/// link candidate, so Nginx's `sites-enabled/*` include observes the exact candidate.
+/// Comparison is the sole gate for promotion; the legacy body is reachable only
+/// from the non-empty action arm.
 pub(crate) fn execute(
     request: ValidatedFileSymlinkRequest<'_>,
 ) -> Result<OperationOutcome, String> {
+    let run = crate::tools::comparison::execute(
+        || {
+            let desired = fs::read(request.desired_source)
+                .map_err(|_| "validated-file-symlink-desired-source-missing".to_string())?;
+            let source = save_file(request.source)?;
+            let link = save_link(request.target)?;
+            Ok::<_, String>((desired, source, link))
+        },
+        |(desired, source, link)| {
+            let desired_mode = file_mode(request.desired_source).unwrap_or_default();
+            if desired.as_slice() == source.bytes.as_deref().unwrap_or_default()
+                && link.target.as_deref() == Some(request.source)
+                && desired_mode == source.mode.unwrap_or_default()
+            {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |_, _| execute_action(request),
+    )?;
+    match run {
+        crate::tools::comparison::ComparisonRun::Current { .. } => {
+            write_receipt(&request, TerminalReceipt::no_change(true))
+        }
+        crate::tools::comparison::ComparisonRun::Moved {
+            observation,
+            movement,
+            ..
+        } => {
+            let (desired, source_before, link_before) = observation;
+            let path = request.receipt_dir.join(format!("{}.json", request.name));
+            let mut receipt: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            let object = receipt
+                .as_object_mut()
+                .ok_or_else(|| "validated-file-symlink-receipt-not-object".to_string())?;
+            object.insert(
+                "observed_state".into(),
+                json!({
+                    "desired_bytes": desired,
+                    "source_bytes": source_before.bytes,
+                    "source_mode": source_before.mode,
+                    "link_target": link_before.target,
+                }),
+            );
+            object.insert(
+                "desired_state".into(),
+                json!({"source_bytes": desired, "source_mode": file_mode(request.desired_source).ok(), "link_target": request.source}),
+            );
+            object.insert("diff_decision".into(), json!("different"));
+            object.insert("truthful_changed".into(), json!(movement.changed));
+            crate::write_json(&path, &receipt)?;
+            Ok(movement)
+        }
+    }
+}
+
+/// Validates desired bytes through a hidden source candidate and a non-hidden sibling
+/// link candidate, so Nginx's `sites-enabled/*` include observes the exact candidate.
+fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationOutcome, String> {
     let desired = match fs::read(request.desired_source) {
         Ok(value) => value,
         Err(_) => {

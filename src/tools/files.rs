@@ -237,6 +237,11 @@ pub struct FileRemovalEntry {
     pub exists_after: bool,
     pub result: String,
     pub changed: bool,
+    pub observed_state: serde_json::Value,
+    pub desired_state: serde_json::Value,
+    pub diff_decision: String,
+    pub movement: String,
+    pub truthful_changed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -520,56 +525,94 @@ pub(crate) fn converge_managed_directories(
         reject_ssh_path(&path)?;
         let desired_uid = resolve_uid(&directory.owner)?;
         let desired_gid = resolve_gid(&directory.group)?;
-        let metadata = fs::symlink_metadata(&path).ok();
-        if metadata
-            .as_ref()
-            .is_some_and(|value| !value.file_type().is_dir())
-        {
-            return Err(format!(
-                "managed-directory-not-directory {}",
-                path.display()
-            ));
-        }
-        let existed_before = metadata.is_some();
-        let mode_equal_before = existed_before && target_mode(&path)? == Some(directory.mode);
-        let (owner_equal_before, group_equal_before) =
-            ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
-        let entry_changed =
-            !existed_before || !mode_equal_before || !owner_equal_before || !group_equal_before;
-        if apply && entry_changed {
-            fs::create_dir_all(&path)
-                .map_err(|e| format!("managed-directory-create-failed {}: {e}", path.display()))?;
-            fs::set_permissions(&path, fs::Permissions::from_mode(directory.mode)).map_err(
-                |e| format!("managed-directory-mode-set-failed {}: {e}", path.display()),
-            )?;
-            set_ownership(&path, Some(desired_uid), Some(desired_gid))?;
-            if target_mode(&path)? != Some(directory.mode) {
-                return Err(format!(
-                    "managed-directory-mode-readback-failed {}",
-                    path.display()
-                ));
+        let run = crate::tools::comparison::execute(
+            || {
+                let metadata = fs::symlink_metadata(&path).ok();
+                if metadata
+                    .as_ref()
+                    .is_some_and(|value| !value.file_type().is_dir())
+                {
+                    return Err(format!(
+                        "managed-directory-not-directory {}",
+                        path.display()
+                    ));
+                }
+                let existed_before = metadata.is_some();
+                let mode_equal_before =
+                    existed_before && target_mode(&path)? == Some(directory.mode);
+                let (owner_equal_before, group_equal_before) =
+                    ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
+                Ok::<_, String>((
+                    existed_before,
+                    mode_equal_before,
+                    owner_equal_before,
+                    group_equal_before,
+                ))
+            },
+            |observation| {
+                if observation.0 && observation.1 && observation.2 && observation.3 {
+                    crate::tools::comparison::DiffDecision::Empty
+                } else {
+                    crate::tools::comparison::DiffDecision::Different
+                }
+            },
+            |_, _| {
+                if !apply {
+                    return Ok(false);
+                }
+                fs::create_dir_all(&path).map_err(|e| {
+                    format!("managed-directory-create-failed {}: {e}", path.display())
+                })?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(directory.mode)).map_err(
+                    |e| format!("managed-directory-mode-set-failed {}: {e}", path.display()),
+                )?;
+                set_ownership(&path, Some(desired_uid), Some(desired_gid))?;
+                if target_mode(&path)? != Some(directory.mode) {
+                    return Err(format!(
+                        "managed-directory-mode-readback-failed {}",
+                        path.display()
+                    ));
+                }
+                let (owner_equal_after, group_equal_after) =
+                    ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
+                if !owner_equal_after || !group_equal_after {
+                    return Err(format!(
+                        "managed-directory-owner-readback-failed {}",
+                        path.display()
+                    ));
+                }
+                Ok(true)
+            },
+        )?;
+        let observation = run.observation();
+        let diff_decision = match run.decision() {
+            crate::tools::comparison::DiffDecision::Empty => "empty",
+            crate::tools::comparison::DiffDecision::Different => "different",
+        };
+        let (movement, truthful_changed) = match &run {
+            crate::tools::comparison::ComparisonRun::Current { .. } => ("none", false),
+            crate::tools::comparison::ComparisonRun::Moved { movement, .. } if *movement => {
+                ("mkdir-chmod-chown", true)
             }
-            let (owner_equal_after, group_equal_after) =
-                ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
-            if !owner_equal_after || !group_equal_after {
-                return Err(format!(
-                    "managed-directory-owner-readback-failed {}",
-                    path.display()
-                ));
-            }
-            changed = true;
-        }
+            crate::tools::comparison::ComparisonRun::Moved { .. } => ("report-only", false),
+        };
+        changed |= truthful_changed;
         entries.push(json!({
             "path": directory.path,
             "mode": directory.mode,
             "owner": directory.owner,
             "group": directory.group,
-            "existed_before": existed_before,
-            "mode_equal_before": mode_equal_before,
-            "owner_equal_before": owner_equal_before,
-            "group_equal_before": group_equal_before,
-            "changed": entry_changed,
-            "applied": apply && entry_changed,
+            "existed_before": observation.0,
+            "mode_equal_before": observation.1,
+            "owner_equal_before": observation.2,
+            "group_equal_before": observation.3,
+            "changed": truthful_changed,
+            "applied": truthful_changed,
+            "observed_state": {"exists": observation.0, "mode_equal": observation.1, "owner_equal": observation.2, "group_equal": observation.3},
+            "desired_state": {"mode": directory.mode, "uid": desired_uid, "gid": desired_gid},
+            "diff_decision": diff_decision,
+            "movement": movement,
+            "truthful_changed": truthful_changed,
         }));
     }
     crate::write_json(
@@ -1007,7 +1050,9 @@ pub fn converge_files(
                 mode_equal_after: false,
                 changed: false,
                 backed_up_to: None,
-                final_mode: spec.mode.or_else(|| source_mode(&request.source_root.join(&spec.relative_path)).ok()),
+                final_mode: spec
+                    .mode
+                    .or_else(|| source_mode(&request.source_root.join(&spec.relative_path)).ok()),
                 ownership_source: ownership_source.to_string(),
                 observed_uid_before: None,
                 observed_gid_before: None,
@@ -1220,47 +1265,129 @@ pub fn ensure_files_present(
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
-    let mut absent = Vec::new();
+    let desired_uid = request.owner.as_deref().map(resolve_uid).transpose()?;
+    let desired_gid = request.group.as_deref().map(resolve_gid).transpose()?;
+    let mut comparisons = Vec::new();
+    let mut written = 0usize;
     for spec in &request.files {
         let source = request.source_root.join(&spec.relative_path);
         if !source.is_file() {
-            return Err(format!("files-ensure-present-source-missing {}", source.display()));
+            return Err(format!(
+                "files-ensure-present-source-missing {}",
+                source.display()
+            ));
         }
         let target = request.target_root.join(&spec.relative_path);
         reject_ssh_path(&target)?;
-        match fs::symlink_metadata(&target) {
-            Ok(metadata) if metadata.file_type().is_file() => {}
-            Ok(_) => return Err(format!("files-ensure-present-target-not-regular-file {}", target.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => absent.push(spec.clone()),
-            Err(error) => return Err(format!("files-ensure-present-target-metadata-failed {}: {error}", target.display())),
-        }
-    }
-    if absent.is_empty() {
-        let outcome = FileConvergenceOutcome {
-            ok: true,
-            changed: false,
-            ownership_changed: false,
-            checked: request.files.len(),
-            written: 0,
-            backed_up: 0,
-            missing: Vec::new(),
-            missing_target_birth_debts: Vec::new(),
-            entries: Vec::new(),
-            message: format!("{} seed files already present and preserved", request.files.len()),
+        let run = crate::tools::comparison::execute(
+            || match fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+                Ok(_) => Err(format!(
+                    "files-ensure-present-target-not-regular-file {}",
+                    target.display()
+                )),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(format!(
+                    "files-ensure-present-target-metadata-failed {}: {error}",
+                    target.display()
+                )),
+            },
+            |present| {
+                if *present {
+                    crate::tools::comparison::DiffDecision::Empty
+                } else {
+                    crate::tools::comparison::DiffDecision::Different
+                }
+            },
+            |_, _| {
+                if !apply {
+                    return Ok(false);
+                }
+                let parent = target
+                    .parent()
+                    .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "files-ensure-present-parent-create-failed {}: {e}",
+                        parent.display()
+                    )
+                })?;
+                atomic_copy(
+                    &source,
+                    &target,
+                    spec.mode.or_else(|| source_mode(&source).ok()),
+                    desired_uid,
+                    desired_gid,
+                )?;
+                if !fs::symlink_metadata(&target)
+                    .map(|m| m.file_type().is_file())
+                    .unwrap_or(false)
+                {
+                    return Err(format!(
+                        "files-ensure-present-readback-failed {}",
+                        target.display()
+                    ));
+                }
+                Ok(true)
+            },
+        )?;
+        let present = *run.observation();
+        let decision = match run.decision() {
+            crate::tools::comparison::DiffDecision::Empty => "empty",
+            crate::tools::comparison::DiffDecision::Different => "different",
         };
-        write_convergence_receipt(receipt_dir, request, &outcome, apply)?;
-        return Ok(outcome);
+        let changed = matches!(
+            &run,
+            crate::tools::comparison::ComparisonRun::Moved { movement: true, .. }
+        );
+        written += usize::from(changed);
+        comparisons.push(json!({
+            "relative_path": spec.relative_path,
+            "source": source, "target": target,
+            "observed_state": {"target_kind": if present { "regular-file" } else { "absent" }},
+            "desired_state": {"target_kind": "regular-file", "mode": spec.mode, "uid": desired_uid, "gid": desired_gid},
+            "diff_decision": decision,
+            "movement": if changed { "create-seed" } else if decision == "different" { "report-only" } else { "none" },
+            "truthful_changed": changed,
+        }));
     }
-    let create_request = FileConvergenceRequest {
-        source_root: request.source_root.clone(),
-        target_root: request.target_root.clone(),
-        files: absent,
-        backup_existing: false,
-        receipt_name: request.receipt_name.clone(),
-        owner: request.owner.clone(),
-        group: request.group.clone(),
+    let changed = written > 0;
+    let outcome = FileConvergenceOutcome {
+        ok: true,
+        changed,
+        ownership_changed: false,
+        checked: request.files.len(),
+        written,
+        backed_up: 0,
+        missing: Vec::new(),
+        missing_target_birth_debts: Vec::new(),
+        entries: Vec::new(),
+        message: format!(
+            "{} seed files {}",
+            request.files.len(),
+            if changed {
+                "created"
+            } else {
+                "already present or planned"
+            }
+        ),
     };
-    converge_files(&create_request, receipt_dir, apply)
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let receipt_name = if request.receipt_name.ends_with(".json") {
+        request.receipt_name.clone()
+    } else {
+        format!("{}.json", request.receipt_name)
+    };
+    crate::write_json(
+        &receipt_dir.join(receipt_name),
+        &json!({
+            "schema": "harmonia.files.ensure_present.v1", "ok": true, "apply": apply,
+            "source_root": request.source_root, "target_root": request.target_root,
+            "checked": outcome.checked, "written": outcome.written, "changed": outcome.changed,
+            "entries": comparisons, "first_missing_signal": "none",
+        }),
+    )?;
+    Ok(outcome)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2845,112 +2972,93 @@ pub fn remove_declared_files(
         })
         .collect();
     validate_specs(&specs)?;
-
     let mut entries = Vec::new();
     let mut removed = 0usize;
     let mut changed = false;
     let mut failure = None;
     for spec in specs {
         let target = target_root.join(&spec.relative_path);
-        let metadata = match fs::symlink_metadata(&target) {
-            Ok(metadata) => Some(metadata),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => {
-                failure = Some(format!(
+        let relative_path = spec.relative_path.to_string_lossy().into_owned();
+        let run = crate::tools::comparison::execute(
+            || match fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.file_type().is_file() => Ok("regular-file"),
+                Ok(_metadata) => Err(format!(
+                    "files-remove-target-not-regular-file {}",
+                    target.display()
+                )),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("absent"),
+                Err(error) => Err(format!(
                     "files-remove-metadata-failed {}: {error}",
                     target.display()
-                ));
-                entries.push(FileRemovalEntry {
-                    relative_path: spec.relative_path.to_string_lossy().into_owned(),
-                    target,
-                    found_before: "unreadable".into(),
-                    exists_after: true,
-                    result: "unreadable".into(),
-                    changed: false,
-                });
+                )),
+            },
+            |state| {
+                if *state == "regular-file" {
+                    crate::tools::comparison::DiffDecision::Different
+                } else {
+                    crate::tools::comparison::DiffDecision::Empty
+                }
+            },
+            |_, state| {
+                if !apply {
+                    return Ok(false);
+                }
+                fs::remove_file(&target).map_err(|error| {
+                    format!("files-remove-failed {}: {error}", target.display())
+                })?;
+                if fs::symlink_metadata(&target).is_ok() {
+                    return Err(format!(
+                        "files-remove-post-remove-readback-failed {}",
+                        target.display()
+                    ));
+                }
+                let _ = state;
+                Ok(true)
+            },
+        );
+        let run = match run {
+            Ok(run) => run,
+            Err(error) => {
+                failure = Some(error);
                 break;
             }
         };
-        let relative_path = spec.relative_path.to_string_lossy().into_owned();
-        match metadata {
-            None => entries.push(FileRemovalEntry {
-                relative_path,
-                target,
-                found_before: "absent".into(),
-                exists_after: false,
-                result: "absent".into(),
-                changed: false,
-            }),
-            Some(metadata) if !metadata.file_type().is_file() => {
-                failure = Some(format!(
-                    "files-remove-target-not-regular-file {}",
-                    target.display()
-                ));
-                entries.push(FileRemovalEntry {
-                    relative_path,
-                    target,
-                    found_before: if metadata.file_type().is_symlink() {
-                        "symlink".into()
-                    } else {
-                        "non-regular".into()
-                    },
-                    exists_after: true,
-                    result: "refused-non-regular".into(),
-                    changed: false,
-                });
-                break;
+        let state = *run.observation();
+        let diff_decision = match run.decision() {
+            crate::tools::comparison::DiffDecision::Empty => "empty",
+            crate::tools::comparison::DiffDecision::Different => "different",
+        };
+        let (movement, truthful_changed) = match &run {
+            crate::tools::comparison::ComparisonRun::Current { .. } => ("none", false),
+            crate::tools::comparison::ComparisonRun::Moved { movement, .. } if *movement => {
+                ("remove-file", true)
             }
-            Some(_) if apply => {
-                match fs::remove_file(&target) {
-                    Ok(()) => {
-                        let exists_after = fs::symlink_metadata(&target).is_ok();
-                        if exists_after {
-                            failure = Some(format!(
-                                "files-remove-post-remove-readback-failed {}",
-                                target.display()
-                            ));
-                        }
-                        removed += 1;
-                        changed = true;
-                        entries.push(FileRemovalEntry {
-                            relative_path,
-                            target,
-                            found_before: "regular-file".into(),
-                            exists_after,
-                            result: if exists_after {
-                                "remove-readback-failed".into()
-                            } else {
-                                "removed".into()
-                            },
-                            changed: true,
-                        });
-                    }
-                    Err(error) => {
-                        failure =
-                            Some(format!("files-remove-failed {}: {error}", target.display()));
-                        entries.push(FileRemovalEntry {
-                            relative_path,
-                            target,
-                            found_before: "regular-file".into(),
-                            exists_after: true,
-                            result: "remove-failed".into(),
-                            changed: false,
-                        });
-                    }
-                }
-                if failure.is_some() {
-                    break;
-                }
-            }
-            Some(_) => entries.push(FileRemovalEntry {
-                relative_path,
-                target,
-                found_before: "regular-file".into(),
-                exists_after: true,
-                result: "planned-removal".into(),
-                changed: true,
-            }),
+            crate::tools::comparison::ComparisonRun::Moved { .. } => ("report-only", false),
+        };
+        if truthful_changed {
+            removed += 1;
+            changed = true;
         }
+        entries.push(FileRemovalEntry {
+            relative_path,
+            target: target.clone(),
+            found_before: state.into(),
+            exists_after: !truthful_changed && state == "regular-file",
+            result: if state == "absent" {
+                "absent"
+            } else if truthful_changed {
+                "removed"
+            } else {
+                "planned-removal"
+            }
+            .into(),
+            changed: truthful_changed,
+            observed_state: json!({"state": state}),
+            desired_state: json!({"state": "absent"}),
+            diff_decision: diff_decision.into(),
+            movement: movement.into(),
+            truthful_changed,
+        });
     }
     let ok = failure.is_none();
     let outcome = FileRemovalOutcome {
@@ -2971,14 +3079,9 @@ pub fn remove_declared_files(
     crate::write_json(
         &receipt,
         &json!({
-            "schema": "harmonia.files.remove.v1",
-            "ok": outcome.ok,
-            "apply": apply,
-            "target_root": target_root,
-            "checked": outcome.checked,
-            "removed": outcome.removed,
-            "changed": outcome.changed,
-            "entries": outcome.entries,
+            "schema": "harmonia.files.remove.v1", "ok": outcome.ok, "apply": apply,
+            "target_root": target_root, "checked": outcome.checked, "removed": outcome.removed,
+            "changed": outcome.changed, "entries": outcome.entries,
             "first_missing_signal": if outcome.ok { "none" } else { outcome.message.as_str() },
         }),
     )?;
@@ -3013,7 +3116,10 @@ fn reject_ssh_path(path: &Path) -> Result<(), String> {
 
 pub(crate) fn validate_interactable_target(path: &Path) -> Result<(), String> {
     reject_ssh_path(path)?;
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
     let key_shaped = name.starts_with("id_")
         || name.ends_with(".key")
         || name.ends_with(".pem")
@@ -3042,12 +3148,22 @@ pub(crate) fn hard_stamp_interactable(
 ) -> Result<serde_json::Value, String> {
     validate_interactable_target(target)?;
     if !source.is_file() {
-        return Err(format!("interactable-reference-source-missing {}", source.display()));
+        return Err(format!(
+            "interactable-reference-source-missing {}",
+            source.display()
+        ));
     }
-    let metadata = fs::symlink_metadata(target)
-        .map_err(|error| format!("interactable-target-birth-debt {}: {error}", target.display()))?;
+    let metadata = fs::symlink_metadata(target).map_err(|error| {
+        format!(
+            "interactable-target-birth-debt {}: {error}",
+            target.display()
+        )
+    })?;
     if !metadata.file_type().is_file() {
-        return Err(format!("interactable-target-not-regular-file {}", target.display()));
+        return Err(format!(
+            "interactable-target-not-regular-file {}",
+            target.display()
+        ));
     }
     let desired_uid = owner.map(resolve_uid).transpose()?;
     let desired_gid = group.map(resolve_gid).transpose()?;
@@ -3058,7 +3174,10 @@ pub(crate) fn hard_stamp_interactable(
     let backup = backup_root.join(id).join(format!(
         "{}-{}",
         stamp,
-        target.file_name().and_then(|name| name.to_str()).unwrap_or("target")
+        target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("target")
     ));
     if let Some(parent) = backup.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -3090,7 +3209,10 @@ pub(crate) fn hard_stamp_interactable(
         Sha256::digest(fs::read(target).map_err(|error| error.to_string())?)
     );
     if target_sha256 != reference_sha256 {
-        return Err(format!("interactable-hard-stamp-readback-failed {}", target.display()));
+        return Err(format!(
+            "interactable-hard-stamp-readback-failed {}",
+            target.display()
+        ));
     }
     Ok(json!({
         "schema": "harmonia.interactables.hard_stamp.receipt.v1",
@@ -3652,7 +3774,126 @@ fn promote_staged_symlink(
     })
 }
 
+#[derive(Debug, Clone)]
+struct SymlinkComparisonObservation {
+    before: SymlinkPathIdentity,
+    source: Result<SymlinkSourceIdentity, String>,
+    desired_uid: Option<u32>,
+    desired_gid: Option<u32>,
+}
+
+fn symlink_diff_decision(
+    observation: &SymlinkComparisonObservation,
+    request: &SymlinkConvergeRequest,
+) -> crate::tools::comparison::DiffDecision {
+    let ownership_current = observation
+        .desired_uid
+        .map_or(true, |uid| observation.before.uid == Some(uid))
+        && observation
+            .desired_gid
+            .map_or(true, |gid| observation.before.gid == Some(gid));
+    let exact = observation.before.kind == "symlink"
+        && observation.before.link_target.as_deref() == Some(request.source.as_path())
+        && ownership_current
+        && observation.source.is_ok();
+    if exact {
+        crate::tools::comparison::DiffDecision::Empty
+    } else {
+        crate::tools::comparison::DiffDecision::Different
+    }
+}
+
 pub(crate) fn symlink_converge(
+    request: &SymlinkConvergeRequest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<crate::OperationOutcome, String> {
+    validate_receipt_name(&request.receipt_name)?;
+    let desired_uid = request
+        .owner
+        .as_deref()
+        .map(resolve_uid)
+        .transpose()
+        .map_err(|error| format!("symlink-converge-owner-resolution-failed: {error}"))?;
+    let desired_gid = request
+        .group
+        .as_deref()
+        .map(resolve_gid)
+        .transpose()
+        .map_err(|error| format!("symlink-converge-group-resolution-failed: {error}"))?;
+    let observation = crate::tools::comparison::execute(
+        || {
+            Ok::<_, String>(SymlinkComparisonObservation {
+                before: observe_symlink_path(&request.target)?,
+                source: read_symlink_source(&request.source, request.required_source_kind),
+                desired_uid,
+                desired_gid,
+            })
+        },
+        |observation| symlink_diff_decision(observation, request),
+        |_, _| symlink_converge_action(request, receipt_dir, apply),
+    )?;
+    let decision = match observation.decision() {
+        crate::tools::comparison::DiffDecision::Empty => "empty",
+        crate::tools::comparison::DiffDecision::Different => "different",
+    };
+    let movement = match &observation {
+        crate::tools::comparison::ComparisonRun::Current { .. } => None,
+        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
+    };
+    let outcome = match &observation {
+        crate::tools::comparison::ComparisonRun::Current { .. } => crate::OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: !apply,
+            message: "symlink converge unchanged".into(),
+            command: None,
+        },
+        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => movement.clone(),
+    };
+    let path = receipt_dir.join(format!("{}.json", request.receipt_name));
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let mut receipt = if path.exists() {
+        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+    } else {
+        json!({
+            "schema": "harmonia.files.symlink_converge.v1",
+            "ok": outcome.ok, "apply": apply, "changed": outcome.changed,
+            "would_change": false, "source": request.source, "target": request.target,
+            "required_source_kind": request.required_source_kind,
+            "conflict_policy": request.conflict_policy,
+            "owner": request.owner, "group": request.group,
+            "desired_uid": desired_uid, "desired_gid": desired_gid,
+            "before": observation.observation().before, "after": observation.observation().before,
+            "final_readlink": observation.observation().before.link_target,
+            "first_missing_signal": "none",
+        })
+    };
+    let object = receipt
+        .as_object_mut()
+        .ok_or_else(|| "symlink-converge-receipt-not-object".to_string())?;
+    object.insert(
+        "observed_state".into(),
+        serde_json::to_value(&observation.observation().before).map_err(|e| e.to_string())?,
+    );
+    object.insert(
+        "desired_state".into(),
+        json!({"kind":"symlink","link_target":request.source,"uid":desired_uid,"gid":desired_gid}),
+    );
+    object.insert("diff_decision".into(), json!(decision));
+    object.insert(
+        "movement".into(),
+        movement
+            .map(|m| json!({"ok":m.ok,"changed":m.changed,"skipped":m.skipped,"message":m.message}))
+            .unwrap_or_else(|| json!("none")),
+    );
+    object.insert("truthful_changed".into(), json!(outcome.changed));
+    crate::write_json(&path, &receipt)?;
+    Ok(outcome)
+}
+
+fn symlink_converge_action(
     request: &SymlinkConvergeRequest,
     receipt_dir: &Path,
     apply: bool,
@@ -3956,6 +4197,71 @@ pub(crate) fn symlink_converge(
 }
 
 pub(crate) fn validated_symlink(
+    receipt_dir: &Path,
+    name: &str,
+    source: &Path,
+    target: &Path,
+    validator_program: &str,
+    validator_args: &[String],
+    reload_program: Option<&str>,
+    reload_args: &[String],
+    timeout_secs: u64,
+    apply: bool,
+) -> Result<crate::OperationOutcome, String> {
+    let run = crate::tools::comparison::execute(
+        || Ok::<_, String>((source.is_file(), fs::read_link(target).ok())),
+        |(source_ok, current)| {
+            if *source_ok && current.as_deref() == Some(source) {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |_, _| {
+            validated_symlink_action(
+                receipt_dir,
+                name,
+                source,
+                target,
+                validator_program,
+                validator_args,
+                reload_program,
+                reload_args,
+                timeout_secs,
+                apply,
+            )
+        },
+    )?;
+    match run {
+        crate::tools::comparison::ComparisonRun::Current { observation, .. } => {
+            let (source_exists, current) = observation;
+            crate::write_json(
+                &receipt_dir.join(format!("{name}.json")),
+                &json!({
+                    "schema":"harmonia.files.validated_symlink.v1",
+                    "source":source,"target":target,"apply":apply,"changed":false,
+                    "source_exists":source_exists,"link_current_before":current.as_deref() == Some(source),
+                    "validator":{"ok":true,"code":0,"stdout":"not-run","stderr":""},"reload":null,
+                    "first_missing_signal":"none","ok":true,
+                    "observed_state":{"source_exists":source_exists,"link_target":current},
+                    "desired_state":{"link_target":source},"diff_decision":"empty",
+                    "movement":"none","truthful_changed":false
+                }),
+            )?;
+            Ok(crate::OperationOutcome {
+                ok: source_exists,
+                changed: false,
+                skipped: !apply,
+                message: "validated symlink unchanged".into(),
+                command: None,
+            })
+        }
+
+        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement),
+    }
+}
+
+fn validated_symlink_action(
     receipt_dir: &Path,
     name: &str,
     source: &Path,
@@ -4280,17 +4586,25 @@ mod managed_ownership_tests {
     #[cfg(unix)]
     #[test]
     fn ensure_present_creates_seed_once_and_preserves_caduceus_bytes_on_quiet_convergence() {
-        let scratch = std::env::temp_dir().join(format!("harmonia-ensure-present-{}", std::process::id()));
+        let scratch =
+            std::env::temp_dir().join(format!("harmonia-ensure-present-{}", std::process::id()));
         let _ = fs::remove_dir_all(&scratch);
         let source = scratch.join("source");
         let target = scratch.join("target");
         let receipts = scratch.join("receipts");
         fs::create_dir_all(source.join("etc/nftables.d")).unwrap();
-        fs::write(source.join("etc/nftables.d/caduceus-child-filter.nft"), b"# inert\n").unwrap();
+        fs::write(
+            source.join("etc/nftables.d/caduceus-child-filter.nft"),
+            b"# inert\n",
+        )
+        .unwrap();
         let request = FileConvergenceRequest {
             source_root: source,
             target_root: target.clone(),
-            files: vec![FileSpec { relative_path: PathBuf::from("etc/nftables.d/caduceus-child-filter.nft"), mode: Some(0o640) }],
+            files: vec![FileSpec {
+                relative_path: PathBuf::from("etc/nftables.d/caduceus-child-filter.nft"),
+                mode: Some(0o640),
+            }],
             backup_existing: true,
             receipt_name: "child-filter".into(),
             owner: None,
@@ -4305,7 +4619,10 @@ mod managed_ownership_tests {
         let preserved = ensure_files_present(&request, &receipts, true).unwrap();
         assert!(preserved.ok);
         assert!(!preserved.changed);
-        assert_eq!(fs::read(&child).unwrap(), b"add rule inet filter forward counter accept\n");
+        assert_eq!(
+            fs::read(&child).unwrap(),
+            b"add rule inet filter forward counter accept\n"
+        );
         assert_eq!(file_mode(&child).unwrap(), 0o600);
         let _ = fs::remove_dir_all(&scratch);
     }
