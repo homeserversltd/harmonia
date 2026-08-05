@@ -944,6 +944,15 @@ pub(crate) fn tv_update(
     )
 }
 
+pub(crate) fn profile_update(profile: &Profile, module_root: &Path, receipt_dir: &Path, mode: UpdateMode) -> Result<(), String> {
+    let suite_debt = enforce_update_suite(profile, module_root)?;
+    let profile_id = profile.id.clone();
+    rolling_update_run(profile, module_root, receipt_dir, mode, suite_debt, profile_update_lock_path(&profile_id)?, materialize_profile_receipt_dir, try_acquire_homeconsole_update_lock, |effective_receipt_dir| {
+        let engine = load_engine_plane_config(&engine_config_path())?.ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
+        sync_profile_from_source(&engine.source_dir, &profile_id, module_root, effective_receipt_dir, &engine.git_bearer)
+    })
+}
+
 pub(crate) fn normalize_homeserver_engine_branch() -> Result<(), String> {
     normalize_engine_branch_upstream()
 }

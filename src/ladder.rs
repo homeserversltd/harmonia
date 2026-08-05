@@ -602,8 +602,8 @@ fn execute_validated_step(
         ("tls-lifecycle", "converge") => tools::tls_lifecycle::execute_ladder_step(&step.args, module_dir, false)
         .map(|execution| OperationOutcome {
             ok: execution.ok,
-            changed: execution.changed,
-            skipped: false,
+            changed: false,
+            skipped: true,
             message: format!("tls-lifecycle converge operations={}", execution.operation_count),
             command: None,
         }),

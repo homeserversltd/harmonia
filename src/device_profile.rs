@@ -270,6 +270,6 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
         ("homeserver", "homeserver") => homeserver_update(&profile, &module_root, &receipt_dir, mode),
         ("homeconsole", "homeconsole") => homeconsole_update(&profile, &module_root, &receipt_dir, mode),
         ("tv", "arch-tv") => tv_update(&profile, &module_root, &receipt_dir, mode),
-        _ => run_profile_engine(&profile, &module_root, &receipt_dir, mode),
+        _ => profile_update(&profile, &module_root, &receipt_dir, mode),
     }
 }

@@ -218,6 +218,13 @@ pub(crate) fn tv_update_lock_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(TV_UPDATE_LOCK_PATH))
 }
 
+pub(crate) fn profile_update_lock_path(profile_id: &str) -> Result<PathBuf, String> {
+    if profile_id.is_empty() || !profile_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) {
+        return Err(format!("profile-update-lock-profile-id-invalid {profile_id}"));
+    }
+    Ok(PathBuf::from("/run/harmonia").join(format!("{profile_id}-update.lock")))
+}
+
 pub(crate) fn try_acquire_tv_update_lock(
     lock_path: &Path,
 ) -> Result<ConvergenceLockGuard, ConvergenceLockBusy> {
@@ -351,6 +358,33 @@ pub(crate) fn materialize_homeserver_receipt_dir(
     fs::create_dir_all(&per_run).map_err(|e| e.to_string())?;
     migrate_homeserver_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_homeserver_latest_symlink(receipt_dir, &per_run)?;
+    Ok(per_run)
+}
+
+pub(crate) fn materialize_profile_receipt_dir(receipt_dir: &Path, run_id: &str) -> Result<PathBuf, String> {
+    let file_name = receipt_dir.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    if file_name != "latest" && !file_name.ends_with("-latest") {
+        return Ok(receipt_dir.to_path_buf());
+    }
+    let parent = receipt_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| receipt_dir.to_path_buf());
+    let base = file_name.strip_suffix("-latest").filter(|stem| !stem.is_empty()).unwrap_or("profile-update");
+    let per_run = parent.join(format!("{base}-{run_id}"));
+    fs::create_dir_all(&per_run).map_err(|e| e.to_string())?;
+    if receipt_dir.exists() && !receipt_dir.is_symlink() {
+        if receipt_dir.is_dir() {
+            let migrated = parent.join(format!("{base}-legacy-{run_id}"));
+            fs::rename(receipt_dir, &migrated).map_err(|e| format!("profile-update-latest-migrate-failed {} -> {}: {e}", receipt_dir.display(), migrated.display()))?;
+        } else {
+            fs::remove_file(receipt_dir).map_err(|e| e.to_string())?;
+        }
+    }
+    if receipt_dir.is_symlink() || receipt_dir.exists() {
+        fs::remove_file(receipt_dir).map_err(|e| e.to_string())?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&per_run, receipt_dir).map_err(|e| format!("profile-update-latest-symlink-failed {} -> {}: {e}", per_run.display(), receipt_dir.display()))?;
+    #[cfg(not(unix))]
+    return Err("profile-update-latest-symlink-unsupported".to_string());
     Ok(per_run)
 }
 
