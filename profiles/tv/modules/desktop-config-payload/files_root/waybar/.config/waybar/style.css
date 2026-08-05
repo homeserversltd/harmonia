@@ -144,10 +144,14 @@ window#waybar {
     font-weight: 700;
 }
 
-#custom-harmonia-interactables.ok {
+#custom-harmonia-interactables.good {
     color: #a3be8c;
 }
 
-#custom-harmonia-interactables.pending {
+#custom-harmonia-interactables.medium {
     color: #ebcb8b;
+}
+
+#custom-harmonia-interactables.bad {
+    color: #bf616a;
 }
