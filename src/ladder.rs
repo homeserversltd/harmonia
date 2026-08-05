@@ -553,6 +553,18 @@ fn execute_validated_step(
     package_authority: Option<&crate::PackageAuthority>,
     module_changed_before_step: bool,
 ) -> Result<OperationOutcome, String> {
+    // Apply is a SoftwarePlane capability. Configuration and identity steps
+    // remain report-only; only these explicit software permutations receive it.
+    let software_apply = software_authorization.is_some()
+        && matches!(
+            (step.tool.as_str(), step.permutation.as_str()),
+            ("package", "install")
+                | ("package", "upgrade")
+                | ("package", "keyring-repair")
+                | ("git-artifact", "sync")
+                | ("aur", "install")
+                | ("aur", "build-pinned")
+        );
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("command", "capture") => command_capture_step(step, module_dir, false),
         ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, false),
@@ -585,7 +597,7 @@ fn execute_validated_step(
             tools::service_runtime::execute_ladder_step(
                 &step.args,
                 module_dir,
-                software_authorization.is_some(),
+                false,
                 &source_plan,
             )
         }
@@ -607,15 +619,15 @@ fn execute_validated_step(
             message: format!("tls-lifecycle converge operations={}", execution.operation_count),
             command: None,
         }),
-        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_authorization.is_some()),
+        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_apply),
         ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, false),
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
-            aur_step(step, manifest, module_dir, software_authorization.is_some())
+            aur_step(step, manifest, module_dir, software_apply)
         }
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => package_step(step, module_dir, software_authorization.is_some(), package_authority),
+        | ("package", "keyring-repair") => package_step(step, module_dir, software_apply, package_authority),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
