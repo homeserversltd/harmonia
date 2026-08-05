@@ -1,282 +1,137 @@
 #!/usr/bin/env bash
-set -u
+set -u -o pipefail
 
-readonly EWW_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/eww"
-readonly FEED_PATH="/var/lib/harmonia/interactables.json"
-readonly APPLIANCE_CONFIG="/etc/appliance/config.json"
+readonly PROFILE_INDEX="${HARMONIA_PROFILE_INDEX:-/etc/harmonia/profiles/tv/index.json}"
 readonly TOGGLE_BIN="/usr/local/sbin/caduceus-harmonia-module-toggle"
-readonly POPUP_BIN="/home/owner/bin/harmonia-interactables-popup"
-mode="${1:-popup}"
 
-notify_unavailable() {
-    if command -v notify-send >/dev/null 2>&1; then
-        notify-send "Harmonia updates" "The updates popup is unavailable because eww is not installed or could not open."
-    fi
+notify() {
+    command -v notify-send >/dev/null 2>&1 && notify-send "Harmonia updates" "$1"
 }
 
-render_eww() {
-    local pane="${1:-interactables}"
-    HARMONIA_FEED_PATH="$FEED_PATH" \
-    HARMONIA_APPLIANCE_CONFIG="$APPLIANCE_CONFIG" \
-    HARMONIA_TOGGLE_BIN="$TOGGLE_BIN" \
-    HARMONIA_POPUP_BIN="$POPUP_BIN" \
-    python3 - "$pane" <<'PY'
+pending_records() {
+    harmonia interactable list --json 2>/dev/null | python3 -c '
 import json
-import os
-import shlex
-import subprocess
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, OSError):
+    payload = {}
+for row in payload.get("interactables", []) if isinstance(payload, dict) else []:
+    if not isinstance(row, dict):
+        continue
+    ident = str(row.get("id") or "").strip()
+    if not ident:
+        continue
+    name = str(row.get("name") or ident).replace("\t", " ").replace("\n", " ")
+    print(f"{ident}\t{name}")
+'
+}
+
+module_records() {
+    [[ -x "$TOGGLE_BIN" && -f "$PROFILE_INDEX" ]] || return 0
+
+    local states
+    states="$(sudo -n "$TOGGLE_BIN" list 2>/dev/null)" || return 0
+    python3 -c '
+import json
 import sys
 from pathlib import Path
 
-feed_path = Path(os.environ["HARMONIA_FEED_PATH"])
-config_path = Path(os.environ["HARMONIA_APPLIANCE_CONFIG"])
-toggle_bin = Path(os.environ["HARMONIA_TOGGLE_BIN"])
-popup_bin = os.environ["HARMONIA_POPUP_BIN"]
-pane = sys.argv[1]
-
-
-def quote(value):
-    return json.dumps(str(value), ensure_ascii=False)
-
-
-def label(css, text, wrap=False):
-    wrap_attr = " :wrap true" if wrap else ""
-    return f'    (label :class "{css}" :xalign 0{wrap_attr} :text {quote(text)})'
-
-
-def read_feed():
-    try:
-        payload = json.loads(feed_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return [], "Pending-update feed is not present."
-    except (OSError, json.JSONDecodeError) as error:
-        return [], f"Pending-update feed is unavailable: {error}"
-    if not isinstance(payload, dict) or not isinstance(payload.get("interactables", []), list):
-        return [], "Pending-update feed has an unsupported shape."
-    return [row for row in payload["interactables"] if isinstance(row, dict)], None
-
-
-def drift_text(row):
-    drift = row.get("drift")
-    if isinstance(drift, dict):
-        parts = [name for name in ("content", "mode", "ownership") if drift.get(name)]
-        if parts:
-            return "Drift: " + ", ".join(parts)
-    return str(row.get("drift_summary") or row.get("summary") or row.get("description") or "Update available")
-
-
-def distance_text(row):
-    for key in ("commit_distance", "ahead", "distance", "commits_behind"):
-        value = row.get(key)
-        if value not in (None, "", 0, "0"):
-            return f"Commit distance: {value}"
-    return ""
-
-
-def render_interactables():
-    rows, error = read_feed()
-    markup = [
-        '(box :class "harmonia-pane" :orientation "v" :spacing 12',
-        label("harmonia-pane-heading", f"Pending updates · {len(rows)}"),
-    ]
-    if error:
-        markup.append(label("harmonia-interactables-degraded", error, True))
-    elif not rows:
-        markup.append(label("harmonia-interactables-empty", "No pending updates"))
-    for row in rows:
-        ident = str(row.get("id") or "").strip()
-        if not ident:
-            continue
-        name = str(row.get("name") or ident)
-        module = str(row.get("module_id") or row.get("module") or "module unavailable")
-        command = f"{shlex.quote(popup_bin)} apply {shlex.quote(ident)}"
-        markup.extend([
-            '  (box :class "harmonia-interactable" :orientation "v" :spacing 7',
-            label("harmonia-interactable-name", name),
-            label("harmonia-interactable-module", f"Module: {module}"),
-            label("harmonia-interactable-drift", drift_text(row), True),
-        ])
-        distance = distance_text(row)
-        if distance:
-            markup.append(label("harmonia-interactable-distance", distance))
-        markup.append('    (button :class "harmonia-interactable-apply" :onclick ' + quote(command) + ' "Apply"))')
-    markup.append(')')
-    return "\n".join(markup)
-
-
-def profile_from_config(config):
-    profile_path = config.get("harmonia_profile") or config.get("harmonia_profile_path")
-    if isinstance(profile_path, str) and profile_path:
-        path = Path(profile_path)
-        return path.parent.name, path
-    profile = config.get("profile") or config.get("profile_id")
-    if isinstance(profile, str) and profile:
-        return profile, Path("/etc/harmonia/profiles") / profile / "index.json"
-    return None, None
-
-
-def parse_toggle_state(text, roster):
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return None, "toggle receipt is invalid."
-    if not isinstance(payload, dict):
-        return None, "toggle receipt has an unsupported shape."
-    if payload.get("ok") is not True:
-        return None, str(payload.get("firstMissingSignal") or "toggle receipt reported unavailable.")
-    disabled_modules = payload.get("disabled_modules")
-    if not isinstance(disabled_modules, list) or not all(isinstance(module, str) for module in disabled_modules):
-        return None, "toggle receipt has an unsupported shape."
-    disabled = set(disabled_modules)
-    return {module: "disabled" if module in disabled else "enabled" for module in roster}, None
-
-
-def receipt_status(profile, module):
-    root = Path("/var/lib/harmonia/receipts") / f"{profile}-update-latest" / "modules" / module
-    if not root.is_dir():
-        return "Not checked yet"
-    candidates = sorted(root.rglob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    for path in candidates:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        verdict = payload.get("verdict") or payload.get("state") or payload.get("status") or payload.get("result")
-        checked = payload.get("checked_at") or payload.get("finished_at") or payload.get("completed_at") or payload.get("timestamp") or payload.get("updated_at")
-        if verdict or checked:
-            return "Last check: " + str(verdict or "recorded") + (f" · {checked}" if checked else "")
-    return "Last check: receipt present"
-
-
-def render_settings():
-    markup = ['(box :class "harmonia-pane" :orientation "v" :spacing 12', label("harmonia-pane-heading", "Update modules")]
-    if not config_path.is_file():
-        markup.append(label("harmonia-settings-state", "Settings unavailable: /etc/appliance/config.json is missing."))
-        markup.append(')')
-        return "\n".join(markup)
-    try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        markup.append(label("harmonia-settings-state", f"Settings unavailable: config.json cannot be read ({error}).", True))
-        markup.append(')')
-        return "\n".join(markup)
-    if not isinstance(config, dict):
-        markup.append(label("harmonia-settings-state", "Settings unavailable: config.json has an unsupported shape."))
-        markup.append(')')
-        return "\n".join(markup)
-    profile, profile_path = profile_from_config(config)
-    if not profile or not profile_path or not profile_path.is_file():
-        markup.append(label("harmonia-settings-state", "Settings unavailable: the configured Harmonia profile module set is not available."))
-        markup.append(')')
-        return "\n".join(markup)
-    try:
-        profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
-        modules = profile_data.get("modules", []) if isinstance(profile_data, dict) else []
-    except (OSError, json.JSONDecodeError):
-        modules = []
-    modules = [str(module) for module in modules if isinstance(module, str) and module]
-    if not modules:
-        markup.append(label("harmonia-settings-state", f"Settings unavailable: profile {profile} has no readable module roster."))
-        markup.append(')')
-        return "\n".join(markup)
-    if not (toggle_bin.is_file() and os.access(toggle_bin, os.X_OK)):
-        markup.append(label("harmonia-settings-state", "Module switches unavailable: caduceus-harmonia-module-toggle is not installed."))
-        markup.append(')')
-        return "\n".join(markup)
-    result = subprocess.run([str(toggle_bin), "list"], text=True, capture_output=True)
-    if result.returncode:
-        message = (result.stderr or result.stdout or "no receipt returned").strip()
-        markup.append(label("harmonia-settings-state", f"Module switches unavailable: {message}", True))
-        markup.append(')')
-        return "\n".join(markup)
-    states, unavailable_reason = parse_toggle_state(result.stdout, modules)
-    if unavailable_reason:
-        markup.append(label("harmonia-settings-state", f"Module switches unavailable: {unavailable_reason}", True))
-        markup.append(')')
-        return "\n".join(markup)
-    markup.append('  (box :class "harmonia-settings-table" :orientation "v" :spacing 8')
-    for module in modules:
-        state = states.get(module, "unknown")
-        enabled = state in {"on", "enabled", "true", "1"}
-        action = "off" if enabled else "on"
-        action_label = "Disable" if enabled else "Enable"
-        command = f"{shlex.quote(popup_bin)} toggle {shlex.quote(module)} {action}"
-        markup.extend([
-            '    (box :class "harmonia-settings-row" :orientation "h" :space-evenly false',
-            '      (box :class "harmonia-settings-detail" :orientation "v" :hexpand true :spacing 3',
-            label("harmonia-settings-module", module),
-            label("harmonia-settings-receipt", f"{state.capitalize()} · {receipt_status(profile, module)}", True),
-            '      )',
-            '      (button :class "harmonia-settings-toggle" :onclick ' + quote(command) + f' "{action_label}"))',
-        ])
-    markup.extend(['  )', ')'])
-    return "\n".join(markup)
-
-print(render_settings() if pane == "settings" else render_interactables())
-PY
+try:
+    profile = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    receipt = json.load(sys.stdin)
+except (json.JSONDecodeError, OSError):
+    raise SystemExit(0)
+if not isinstance(profile, dict) or not isinstance(receipt, dict) or receipt.get("ok") is not True:
+    raise SystemExit(0)
+disabled = receipt.get("disabled_modules")
+if not isinstance(disabled, list) or not all(isinstance(module, str) for module in disabled):
+    raise SystemExit(0)
+for module in profile.get("modules", []):
+    if not isinstance(module, str) or not module:
+        continue
+    state = "Disabled" if module in disabled else "Enabled"
+    action = "on" if state == "Disabled" else "off"
+    print(f"{module}\t{state}\t{action}")
+' "$PROFILE_INDEX" <<<"$states"
 }
 
-refresh_popup() {
-    local interactables settings
-    interactables="$(render_eww interactables)" || interactables='(box :class "harmonia-interactables-degraded" (label :text "Harmonia updates unavailable"))'
-    settings="$(render_eww settings)" || settings='(box :class "harmonia-interactables-degraded" (label :text "Settings unavailable"))'
-    eww --config "$EWW_CONFIG" update harmonia_interactables_markup="$interactables" harmonia_settings_markup="$settings" >/dev/null 2>&1 || true
+apply_interactable() {
+    local ident="$1"
+    if sudo -n harmonia interactable run "$ident" >/dev/null; then
+        notify "Applied update: $ident"
+    else
+        notify "Could not apply update: $ident"
+    fi
 }
 
-case "$mode" in
-    popup)
-        if ! command -v eww >/dev/null 2>&1; then
-            notify_unavailable
-            exit 0
-        fi
-        active_windows="$(eww --config "$EWW_CONFIG" active-windows 2>/dev/null || true)"
-        if printf '%s\n' "$active_windows" | grep -Eq '(^|[[:space:]])harmonia-interactables([:[:space:]]|$)'; then
-            eww --config "$EWW_CONFIG" update harmonia_interactables_open=false >/dev/null 2>&1 || true
-            eww --config "$EWW_CONFIG" close harmonia-interactables >/dev/null 2>&1 || true
-            exit 0
-        fi
-        refresh_popup
-        eww --config "$EWW_CONFIG" update harmonia_interactables_tab=interactables harmonia_interactables_open=true >/dev/null 2>&1 || true
-        if ! eww --config "$EWW_CONFIG" open harmonia-interactables >/dev/null 2>&1; then
-            eww --config "$EWW_CONFIG" update harmonia_interactables_open=false >/dev/null 2>&1 || true
-            notify_unavailable
-        fi
-        ;;
-    eww)
-        render_eww "${2:-interactables}"
-        ;;
-    refresh)
-        refresh_popup
-        ;;
-    apply)
-        ident="${2:-}"
-        [[ -n "$ident" ]] || exit 2
-        sudo -n harmonia interactable run "$ident" || {
-            command -v notify-send >/dev/null 2>&1 && notify-send "Harmonia updates" "Could not apply $ident."
-            refresh_popup
-            exit 1
-        }
-        refresh_popup
-        ;;
-    toggle)
-        module="${2:-}"
-        desired="${3:-}"
-        [[ -n "$module" && ( "$desired" == "on" || "$desired" == "off" ) ]] || exit 2
-        if [[ ! -x "$TOGGLE_BIN" ]]; then
-            command -v notify-send >/dev/null 2>&1 && notify-send "Harmonia updates" "Module switches are unavailable."
-            refresh_popup
-            exit 1
-        fi
-        sudo -n "$TOGGLE_BIN" "$module" "$desired" || {
-            command -v notify-send >/dev/null 2>&1 && notify-send "Harmonia updates" "Could not change $module."
-            refresh_popup
-            exit 1
-        }
-        refresh_popup
-        ;;
-    *)
-        exit 2
-        ;;
-esac
+toggle_module() {
+    local module="$1"
+    local action="$2"
+    if sudo -n "$TOGGLE_BIN" "$module" "$action" >/dev/null; then
+        notify "$module: turned $action"
+    else
+        notify "Could not turn $action $module"
+    fi
+}
+
+if (( $# > 1 )) || [[ "${1:-popup}" != "popup" ]]; then
+    exit 2
+fi
+
+mapfile -t pending < <(pending_records)
+
+if ! command -v fuzzel >/dev/null 2>&1; then
+    if ((${#pending[@]})); then
+        pending_names=()
+        for record in "${pending[@]}"; do
+            IFS=$'\t' read -r _ name <<<"$record"
+            pending_names+=("$name")
+        done
+        notify $'Pending updates:\n'"$(printf '%s\n' "${pending_names[@]}")"
+    else
+        notify "No pending updates."
+    fi
+    exit 0
+fi
+
+rows=()
+action_kinds=()
+action_first=()
+action_second=()
+for record in "${pending[@]}"; do
+    IFS=$'\t' read -r ident name <<<"$record"
+    rows+=("Apply: $name")
+    action_kinds+=("apply")
+    action_first+=("$ident")
+    action_second+=("")
+done
+
+mapfile -t modules < <(module_records)
+for record in "${modules[@]}"; do
+    IFS=$'\t' read -r module state action <<<"$record"
+    if [[ "$state" == "Enabled" ]]; then
+        rows+=("$module: Enabled - turn off")
+    else
+        rows+=("$module: Disabled - turn on")
+    fi
+    action_kinds+=("toggle")
+    action_first+=("$module")
+    action_second+=("$action")
+done
+
+((${#rows[@]})) || exit 0
+selection="$(printf '%s\n' "${rows[@]}" | fuzzel --dmenu --prompt "Harmonia ")" || exit 0
+[[ -n "$selection" ]] || exit 0
+
+for index in "${!rows[@]}"; do
+    [[ "${rows[$index]}" == "$selection" ]] || continue
+    case "${action_kinds[$index]}" in
+        apply) apply_interactable "${action_first[$index]}" ;;
+        toggle) toggle_module "${action_first[$index]}" "${action_second[$index]}" ;;
+    esac
+    exit 0
+done
+
+exit 0
