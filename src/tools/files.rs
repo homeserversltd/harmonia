@@ -196,10 +196,108 @@ pub struct FileConvergenceRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct HotfixFileBackfillRequest { pub target: PathBuf, pub file_bytes: Vec<u8>, pub mode: Option<u32>, pub owner: Option<String> }
+pub struct HotfixFileBackfillRequest {
+    pub target: PathBuf,
+    pub file_bytes: Vec<u8>,
+    pub mode: Option<u32>,
+    pub owner: Option<String>,
+}
 #[derive(Debug, Clone, Serialize)]
-pub struct HotfixFileBackfillOutcome { pub ok: bool, pub changed: bool, pub target_path: PathBuf, pub movement: String }
-pub(crate) fn comparison_gated_hotfix_backfill(request: &HotfixFileBackfillRequest) -> Result<HotfixFileBackfillOutcome, String> { if !request.target.is_absolute() || request.target.components().any(|part| matches!(part, Component::ParentDir)) || request.target.starts_with("/etc") || request.target.starts_with("/home") || request.target.starts_with("/root") || request.target.starts_with("/var/lib/harmonia") || request.target.components().any(|part| matches!(part, Component::Normal(value) if value == ".ssh" || value.to_string_lossy().starts_with('.'))) { return Err(format!("hotfix-target-identity-or-config-wall {}", request.target.display())); } reject_ssh_path(&request.target)?; let uid = request.owner.as_deref().map(resolve_uid).transpose()?; atomic_write_bytes_with_ownership(&request.target, &request.file_bytes, request.mode, uid, None)?; if fs::read(&request.target).map_err(|error| format!("hotfix-file-readback-failed {}: {error}", request.target.display()))? != request.file_bytes { return Err(format!("hotfix-file-readback-failed {}", request.target.display())); } if let Some(mode) = request.mode { if target_mode(&request.target)? != Some(mode) { return Err(format!("hotfix-file-mode-readback-failed {}", request.target.display())); } } if !ownership_equal(&request.target, uid, None)?.0 { return Err(format!("hotfix-file-owner-readback-failed {}", request.target.display())); } Ok(HotfixFileBackfillOutcome { ok: true, changed: true, target_path: request.target.clone(), movement: "atomic-file-backfill".to_string() }) }
+pub struct HotfixFileBackfillOutcome {
+    pub ok: bool,
+    pub changed: bool,
+    pub target_path: PathBuf,
+    pub movement: String,
+}
+pub(crate) fn comparison_gated_hotfix_backfill(
+    request: &HotfixFileBackfillRequest,
+) -> Result<HotfixFileBackfillOutcome, String> {
+    validate_hotfix_target(&request.target)?;
+    let uid = request.owner.as_deref().map(resolve_uid).transpose()?;
+    atomic_write_bytes_with_ownership(
+        &request.target,
+        &request.file_bytes,
+        request.mode,
+        uid,
+        None,
+    )?;
+    if fs::read(&request.target).map_err(|error| {
+        format!(
+            "hotfix-file-readback-failed {}: {error}",
+            request.target.display()
+        )
+    })? != request.file_bytes
+    {
+        return Err(format!(
+            "hotfix-file-readback-failed {}",
+            request.target.display()
+        ));
+    }
+    if let Some(mode) = request.mode {
+        if target_mode(&request.target)? != Some(mode) {
+            return Err(format!(
+                "hotfix-file-mode-readback-failed {}",
+                request.target.display()
+            ));
+        }
+    }
+    if !ownership_equal(&request.target, uid, None)?.0 {
+        return Err(format!(
+            "hotfix-file-owner-readback-failed {}",
+            request.target.display()
+        ));
+    }
+    Ok(HotfixFileBackfillOutcome {
+        ok: true,
+        changed: true,
+        target_path: request.target.clone(),
+        movement: "atomic-file-backfill".to_string(),
+    })
+}
+
+fn validate_hotfix_target(target: &Path) -> Result<(), String> {
+    let home_dotfile = target.starts_with("/home")
+        && target.components().any(|part| {
+            matches!(part, Component::Normal(value) if value.to_string_lossy().starts_with('.'))
+        });
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let key_material = file_name.starts_with("id_")
+        || file_name.ends_with(".key")
+        || file_name.ends_with(".pem")
+        || file_name.ends_with(".p12")
+        || file_name.ends_with(".pfx")
+        || target.components().any(|part| {
+            matches!(part, Component::Normal(value) if matches!(value.to_str(), Some("key") | Some("keys") | Some("private") | Some("credentials") | Some("secrets")))
+        });
+    let account_or_operator_setting = matches!(
+        target.to_str(),
+        Some("/etc/passwd" | "/etc/shadow" | "/etc/group" | "/etc/gshadow" | "/etc/sudoers")
+    );
+    let homeserver_configuration = matches!(
+        target.to_str(),
+        Some("/etc/homeserver/config.json" | "/etc/homeserver.json")
+    ) || target.starts_with("/var/www/homeserver");
+    if !target.is_absolute()
+        || target
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+        || target.starts_with("/root")
+        || home_dotfile
+        || file_name == "authorized_keys"
+        || key_material
+        || account_or_operator_setting
+        || homeserver_configuration
+    {
+        return Err(format!(
+            "hotfix-target-identity-or-config-wall {}",
+            target.display()
+        ));
+    }
+    reject_ssh_path(target)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileConvergenceEntry {

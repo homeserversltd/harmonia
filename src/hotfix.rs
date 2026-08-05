@@ -20,21 +20,24 @@ struct Payload {
     owner: Option<String>,
 }
 
-pub(crate) fn run_profile_hotfixes(profile: &Profile, receipt_dir: &Path) -> Result<(), String> {
-    for declaration in &profile.hotfixes {
-        run_one(profile, receipt_dir, declaration)?;
+pub(crate) fn run_profile_hotfixes(profile: &Profile, receipt_dir: &Path) {
+    for (ordinal, declaration) in profile.hotfixes.iter().enumerate() {
+        if let Err(blocker) = run_one(profile, receipt_dir, declaration) {
+            // A Hotfix failure is terminal for that declaration, never for the
+            // profile engine.  Receipt persistence is attempted independently
+            // so a broken receipt destination cannot suppress sibling hotfixes.
+            let _ = write_blocked_receipt(profile, receipt_dir, declaration, ordinal, &blocker);
+        }
     }
-    Ok(())
 }
 
 fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result<(), String> {
     let object = declaration
         .as_object()
         .ok_or_else(|| "hotfix-declaration-not-object".to_string())?;
+    // Schema is additive declaration metadata, not a behavior gate. Field
+    // presence selects this primitive and the full declaration is preserved.
     let schema = optional_string(object, "schema").unwrap_or(SCHEMA);
-    if schema != SCHEMA {
-        return Err(format!("hotfix-schema-unsupported {schema}"));
-    }
     let id = required_string(object, "id", "hotfix-id-missing")?;
     let description = required_string(object, "description", "hotfix-description-missing")?;
     let scope = parse_scope(object.get("scope"))?;
@@ -96,7 +99,7 @@ fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result
     // The file-tool receipt is durable before the machine-local completion fact.
     let mut receipt = prior_receipt(&receipt_path)?;
     receipt.insert("schema".into(), json!(RECEIPT_SCHEMA));
-    receipt.insert("hotfix_schema".into(), json!(SCHEMA));
+    receipt.insert("hotfix_schema".into(), json!(schema));
     receipt.insert("hotfix_id".into(), json!(id));
     receipt.insert("description".into(), json!(description));
     receipt.insert("profile_id".into(), json!(profile.id));
@@ -136,6 +139,49 @@ fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result
         )?;
     }
     Ok(())
+}
+
+fn write_blocked_receipt(
+    profile: &Profile,
+    receipt_dir: &Path,
+    declaration: &Value,
+    ordinal: usize,
+    blocker: &str,
+) -> Result<(), String> {
+    let id = declaration
+        .as_object()
+        .and_then(|object| optional_string(object, "id"))
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("invalid-{ordinal}"));
+    let receipt_path = receipt_dir.join("hotfixes").join(format!("{id}.json"));
+    let mut receipt = prior_receipt(&receipt_path)?;
+    receipt.insert("schema".into(), json!(RECEIPT_SCHEMA));
+    receipt.insert(
+        "hotfix_schema".into(),
+        json!(declaration
+            .as_object()
+            .and_then(|object| optional_string(object, "schema"))
+            .unwrap_or(SCHEMA)),
+    );
+    receipt.insert("hotfix_id".into(), json!(id));
+    receipt.insert("profile_id".into(), json!(profile.id));
+    receipt.insert("body_identity".into(), json!(profile.identity));
+    receipt.insert("scope_observation".into(), json!("in-scope-or-unreadable"));
+    receipt.insert("lifecycle".into(), json!("blocked"));
+    receipt.insert("blocker".into(), json!(blocker));
+    receipt.insert("movement".into(), json!("none"));
+    receipt.insert("changed".into(), json!(false));
+    receipt.insert("file_tool_receipt".into(), Value::Null);
+    receipt.insert(
+        "source_cure_debt".into(),
+        json!(format!("source-cure-required:hotfix:{id}")),
+    );
+    receipt.insert("declaration".into(), declaration.clone());
+    receipt.insert(
+        "receipt_stamps".into(),
+        append_stamp(receipt.get("receipt_stamps"), "hotfix-blocked"),
+    );
+    write_json(&receipt_path, &Value::Object(receipt))
 }
 
 fn prior_receipt(path: &Path) -> Result<Map<String, Value>, String> {
