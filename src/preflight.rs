@@ -24,8 +24,11 @@ const LEGACY_ROOT_GITCONFIG: &str = "/root/.gitconfig";
 const LEGACY_ROOT_FORGEJO_INCLUDE: &str = "/root/.gitconfig.d/forgejo-credentials.inc";
 const LEGACY_ROOT_FORGEJO_STORE: &str = "/root/.git-credentials-forgejo";
 const LEGACY_OWNER_FORGEJO_STORE: &str = "/home/owner/.git-credentials-forgejo";
+const CADUCEUS_COMPONENT: &str = "caduceus";
+const CADUCEUS_SOURCE_DIR: &str = "/opt/caduceus/source";
 const CADUCEUS_STAFF_SOURCE_ROOT: &str = "/opt/caduceus/source/data/staff-actuators";
 const CADUCEUS_STAFF_RECEIPT: &str = "caduceus-staff-shelf-sweep.json";
+const CADUCEUS_SOURCE_RECEIPT: &str = "caduceus-source-possession.json";
 
 #[cfg(test)]
 thread_local! {
@@ -845,14 +848,15 @@ fn local_source_checkout_possession(config: &EnginePlaneConfig) -> CmdResult {
 fn converge_caduceus_staff_shelf(
     preflight_dir: &Path,
     apply: bool,
+    source_ready: bool,
 ) -> Result<OperationOutcome, String> {
     let source_root = PathBuf::from(CADUCEUS_STAFF_SOURCE_ROOT);
     let receipt_path = preflight_dir.join(CADUCEUS_STAFF_RECEIPT);
-    if !source_root.is_dir() {
+    if !source_ready || !source_root.is_dir() {
         let outcome = OperationOutcome {
             ok: true,
             changed: false,
-            skipped: false,
+            skipped: true,
             message: format!(
                 "Caduceus staff source not possessed at {}",
                 source_root.display()
@@ -870,10 +874,10 @@ fn converge_caduceus_staff_shelf(
                 "checked": 0,
                 "changed": false,
                 "entries": [],
-                "skipped": false,
+                "skipped": true,
                 "message": outcome.message,
                 "first_missing_signal": "caduceus-source-not-possessed",
-                "observed_state": {"source_root": source_root, "possessed": false},
+                "observed_state": {"source_root": source_root, "possessed": false, "source_ready": source_ready},
                 "desired_state": {"target_shelf": "/usr/local/sbin/caduceus_staff", "launcher_target_root": "/usr/local/sbin"},
                 "diff_decision": "unavailable",
                 "movement": "none",
@@ -928,6 +932,170 @@ fn converge_caduceus_staff_shelf(
         }),
     )?;
     Ok(outcome)
+}
+
+/// Possess the Caduceus source for the engine-owned staff shelf only when the
+/// body certificate declares that component. The certificate selects source
+/// candidates and the engine config supplies only owner-held credential scopes;
+/// `acquire_source` performs the remote-versus-destination comparison before it
+/// stages or promotes anything.
+///
+/// This is deliberately non-gating for engine self-possession. A missing or
+/// failed Caduceus acquisition leaves the staff sweep skipped with its existing
+/// `caduceus-source-not-possessed` signal instead of failing the whole preflight.
+fn possess_caduceus_source_for_staff_shelf(
+    config: &EnginePlaneConfig,
+    preflight_dir: &Path,
+    apply: bool,
+) -> Result<(OperationOutcome, bool), String> {
+    let receipt_path = preflight_dir.join(CADUCEUS_SOURCE_RECEIPT);
+    let certificate = device_profile_certificate_path();
+    let resolution_receipt = resolve_source(
+        &certificate,
+        CADUCEUS_COMPONENT,
+        "engine-plane",
+        "caduceus-staff-shelf-source-possession",
+    );
+    let Some(resolution) = resolution_receipt.resolution.clone() else {
+        let blocker = resolution_receipt
+            .blocker
+            .clone()
+            .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
+        write_json(
+            &receipt_path,
+            &json!({
+                "schema": "harmonia.engine.caduceus_source_possession.v1",
+                "ok": true,
+                "apply": apply,
+                "changed": false,
+                "skipped": true,
+                "component": CADUCEUS_COMPONENT,
+                "destination": CADUCEUS_SOURCE_DIR,
+                "source_resolution": resolution_receipt,
+                "first_missing_signal": "caduceus-source-not-possessed",
+                "reason": blocker,
+                "movement": "none",
+            }),
+        )?;
+        return Ok((
+            OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: "Caduceus source is not declared by this body certificate".into(),
+                command: None,
+            },
+            false,
+        ));
+    };
+
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    let plan = bridge_acquisition_plan(
+        &resolution,
+        PathBuf::from(CADUCEUS_SOURCE_DIR),
+        config.git_bearer.clone(),
+        expected_commit,
+        credential_scopes(config),
+    );
+    if !apply {
+        let probe = tools::git_artifact::probe_declared_remote_head(&plan);
+        write_json(
+            &receipt_path,
+            &json!({
+                "schema": "harmonia.engine.caduceus_source_possession.v1",
+                "ok": true,
+                "apply": false,
+                "changed": false,
+                "skipped": true,
+                "component": CADUCEUS_COMPONENT,
+                "destination": CADUCEUS_SOURCE_DIR,
+                "source_resolution": resolution_receipt,
+                "remote_probe": {
+                    "state": probe.state,
+                    "candidate_index": probe.candidate_index,
+                    "locator": probe.locator,
+                    "reference": probe.reference,
+                    "remote_sha": probe.remote_sha,
+                    "ok": probe.command.ok,
+                    "failed_attempt_count": probe.failed_attempts.len(),
+                },
+                "first_missing_signal": "none",
+                "movement": "report-only",
+            }),
+        )?;
+        return Ok((
+            OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: "Caduceus source possession is report-only".into(),
+                command: None,
+            },
+            Path::new(CADUCEUS_STAFF_SOURCE_ROOT).is_dir(),
+        ));
+    }
+
+    let acquisition = tools::git_artifact::acquire_source(&plan);
+    let command = CmdResult {
+        ok: acquisition.ok,
+        code: if acquisition.ok { 0 } else { 1 },
+        stdout: acquisition.receipt.promotion.clone(),
+        stderr: (!acquisition.ok)
+            .then(|| acquisition.receipt.promotion.clone())
+            .unwrap_or_default(),
+    };
+    write_command_receipt(preflight_dir, "caduceus-source-possession", &command)?;
+    let source_ready = acquisition.ok && Path::new(CADUCEUS_STAFF_SOURCE_ROOT).is_dir();
+    write_json(
+        &receipt_path,
+        &json!({
+            "schema": "harmonia.engine.caduceus_source_possession.v1",
+            "ok": acquisition.ok,
+            "apply": true,
+            "changed": acquisition.changed,
+            "skipped": !source_ready,
+            "component": CADUCEUS_COMPONENT,
+            "destination": CADUCEUS_SOURCE_DIR,
+            "source_resolution": resolution_receipt,
+            "attempts": acquisition.receipt.attempts.iter().map(|attempt| json!({
+                "index": attempt.index,
+                "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
+                "locator": attempt.locator,
+                "credential_selector": attempt.credential_selector,
+                "disposition": attempt.disposition,
+                "resolved_commit": attempt.resolved_commit,
+                "external_freshness": attempt.external_freshness,
+                "detail": attempt.detail,
+            })).collect::<Vec<_>>(),
+            "served_index": acquisition.receipt.served_index,
+            "resolved_commit": acquisition.receipt.resolved_commit,
+            "promotion": acquisition.receipt.promotion,
+            "first_missing_signal": if source_ready { "none" } else { "caduceus-source-not-possessed" },
+            "movement": if acquisition.changed { "source-promoted" } else if source_ready { "none" } else { "none" },
+        }),
+    )?;
+    Ok((
+        OperationOutcome {
+            // Source possession is auxiliary to the engine's own update. Its
+            // detailed receipt retains failure truth while the preflight carries
+            // on to emit the shelf's established honest skip receipt.
+            ok: true,
+            changed: acquisition.changed,
+            skipped: !source_ready,
+            message: if source_ready {
+                "Caduceus source possessed for engine staff shelf".into()
+            } else {
+                "Caduceus source possession unavailable; staff shelf will skip".into()
+            },
+            command: Some(command),
+        },
+        source_ready,
+    ))
 }
 
 fn emit_preflight_receipt(
@@ -1486,16 +1654,38 @@ pub(crate) fn run_engine_preflight(
         operation_count += 1;
     }
 
-    let caduceus_staff_shelf = match converge_caduceus_staff_shelf(&preflight_dir, apply) {
-        Ok(outcome) => outcome,
-        Err(error) => OperationOutcome {
-            ok: false,
-            changed: false,
-            skipped: true,
-            message: error,
-            command: None,
-        },
-    };
+    let (caduceus_source_possession, caduceus_source_ready) =
+        match possess_caduceus_source_for_staff_shelf(&config, &preflight_dir, apply) {
+            Ok(result) => result,
+            Err(error) => (
+                OperationOutcome {
+                    // The shelf is an engine primitive, but a source-resolution
+                    // receipt failure must not fail-fast the engine preflight.
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: format!(
+                        "Caduceus source possession unavailable; staff shelf will skip: {error}"
+                    ),
+                    command: None,
+                },
+                false,
+            ),
+        };
+    operation_count += 1;
+    changed |= caduceus_source_possession.changed;
+
+    let caduceus_staff_shelf =
+        match converge_caduceus_staff_shelf(&preflight_dir, apply, caduceus_source_ready) {
+            Ok(outcome) => outcome,
+            Err(error) => OperationOutcome {
+                ok: false,
+                changed: false,
+                skipped: true,
+                message: error,
+                command: None,
+            },
+        };
     operation_count += 1;
     changed |= caduceus_staff_shelf.changed;
     if !caduceus_staff_shelf.ok && first_missing_signal == "none" {
@@ -1619,6 +1809,7 @@ pub(crate) fn run_engine_preflight(
             ("system-sync", system_sync),
             ("artifact-lane", artifact_outcome),
             ("source-possession", source_outcome),
+            ("caduceus-source-possession", caduceus_source_possession),
             ("caduceus-staff-shelf-sweep", caduceus_staff_shelf),
             (
                 "staged-build",
