@@ -24,6 +24,8 @@ const LEGACY_ROOT_GITCONFIG: &str = "/root/.gitconfig";
 const LEGACY_ROOT_FORGEJO_INCLUDE: &str = "/root/.gitconfig.d/forgejo-credentials.inc";
 const LEGACY_ROOT_FORGEJO_STORE: &str = "/root/.git-credentials-forgejo";
 const LEGACY_OWNER_FORGEJO_STORE: &str = "/home/owner/.git-credentials-forgejo";
+const CADUCEUS_STAFF_SOURCE_ROOT: &str = "/opt/caduceus/source/data/staff-actuators";
+const CADUCEUS_STAFF_RECEIPT: &str = "caduceus-staff-shelf-sweep.json";
 
 #[cfg(test)]
 thread_local! {
@@ -837,6 +839,97 @@ fn local_source_checkout_possession(config: &EnginePlaneConfig) -> CmdResult {
     }
 }
 
+/// Converge the Caduceus Python staff package and its launchers after the
+/// engine's source-possession lane. This engine-owned maintenance runs through
+/// the preflight on every update.
+fn converge_caduceus_staff_shelf(
+    preflight_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let source_root = PathBuf::from(CADUCEUS_STAFF_SOURCE_ROOT);
+    let receipt_path = preflight_dir.join(CADUCEUS_STAFF_RECEIPT);
+    if !source_root.is_dir() {
+        let outcome = OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: format!(
+                "Caduceus staff source not possessed at {}",
+                source_root.display()
+            ),
+            command: None,
+        };
+        write_json(
+            &receipt_path,
+            &json!({
+                "schema": "harmonia.tool_receipt.v1",
+                "operation_id": "caduceus-staff-shelf-sweep",
+                "tool": "files",
+                "action": "source-shelf-sweep",
+                "ok": true,
+                "checked": 0,
+                "changed": false,
+                "entries": [],
+                "skipped": false,
+                "message": outcome.message,
+                "first_missing_signal": "caduceus-source-not-possessed",
+                "observed_state": {"source_root": source_root, "possessed": false},
+                "desired_state": {"target_shelf": "/usr/local/sbin/caduceus_staff", "launcher_target_root": "/usr/local/sbin"},
+                "diff_decision": "unavailable",
+                "movement": "none",
+                "truthful_changed": false,
+            }),
+        )?;
+        return Ok(outcome);
+    }
+
+    let request = tools::files::SourceShelfSweepRequest {
+        source_root: source_root.clone(),
+        shelf_source: PathBuf::from("caduceus_staff"),
+        target_shelf: PathBuf::from("/usr/local/sbin/caduceus_staff"),
+        launcher_source_root: source_root,
+        launcher_target_root: PathBuf::from("/usr/local/sbin"),
+        launcher_pattern: "caduceus-*".into(),
+        shelf_owner: "root".into(),
+        shelf_group: "root".into(),
+        shelf_directory_mode: 0o755,
+        shelf_file_mode: 0o644,
+        launcher_mode: 0o755,
+        prune: true,
+        receipt_name: "caduceus-staff-shelf-sweep-detail".into(),
+    };
+    let sweep = tools::files::source_shelf_sweep(&request, preflight_dir, apply)?;
+    let outcome = OperationOutcome {
+        ok: sweep.ok,
+        changed: sweep.changed,
+        skipped: !apply,
+        message: sweep.message.clone(),
+        command: None,
+    };
+    write_json(
+        &receipt_path,
+        &json!({
+            "schema": "harmonia.tool_receipt.v1",
+            "operation_id": "caduceus-staff-shelf-sweep",
+            "tool": "files",
+            "action": "source-shelf-sweep",
+            "ok": sweep.ok,
+            "checked": sweep.entries.len(),
+            "changed": sweep.changed,
+            "entries": sweep.entries,
+            "skipped": !apply,
+            "message": sweep.message,
+            "first_missing_signal": if sweep.ok { "none" } else { sweep.first_blocker.as_str() },
+            "observed_state": {"source_inventory_count": sweep.source_inventory_count, "target_inventory_count_before": sweep.target_inventory_count_before, "current": sweep.current},
+            "desired_state": {"target_shelf": request.target_shelf, "launcher_target_root": request.launcher_target_root, "prune": request.prune},
+            "diff_decision": if sweep.current && !sweep.changed { "empty" } else { "different" },
+            "movement": if sweep.changed { "shelf-promote-or-bounded-removal" } else if sweep.current { "none" } else { "report-only" },
+            "truthful_changed": sweep.changed,
+        }),
+    )?;
+    Ok(outcome)
+}
+
 fn emit_preflight_receipt(
     preflight_dir: &Path,
     ok: bool,
@@ -1393,6 +1486,22 @@ pub(crate) fn run_engine_preflight(
         operation_count += 1;
     }
 
+    let caduceus_staff_shelf = match converge_caduceus_staff_shelf(&preflight_dir, apply) {
+        Ok(outcome) => outcome,
+        Err(error) => OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: error,
+            command: None,
+        },
+    };
+    operation_count += 1;
+    changed |= caduceus_staff_shelf.changed;
+    if !caduceus_staff_shelf.ok && first_missing_signal == "none" {
+        first_missing_signal = "caduceus-staff-shelf-sweep-failed".into();
+    }
+
     if first_missing_signal == "none"
         && matches!(lane.as_str(), "source-fallback" | "local-checkout")
     {
@@ -1510,6 +1619,7 @@ pub(crate) fn run_engine_preflight(
             ("system-sync", system_sync),
             ("artifact-lane", artifact_outcome),
             ("source-possession", source_outcome),
+            ("caduceus-staff-shelf-sweep", caduceus_staff_shelf),
             (
                 "staged-build",
                 OperationOutcome {
