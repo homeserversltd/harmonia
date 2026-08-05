@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -38,6 +40,19 @@ struct Interactable {
     owner: Option<String>,
     #[serde(default)]
     group: Option<String>,
+    /// Local source commit compared with `target_sha` for source-shaped items.
+    /// File convergence proposals have no source-commit authority, so this
+    /// remains null without changing their existing shape.
+    #[serde(default)]
+    source_sha: Option<String>,
+    /// Observed target commit for source-shaped items, when the possession lane
+    /// can observe it without a separate source acquisition.
+    #[serde(default)]
+    target_sha: Option<String>,
+    /// Number of commits from `source_sha` to `target_sha`; null means the
+    /// source lane did not establish a comparable Git pair.
+    #[serde(default)]
+    commits_behind: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +102,11 @@ fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
 fn save_feed(path: &Path, feed: &InteractablesFeed) -> Result<(), String> {
     let value = serde_json::to_value(feed)
         .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?;
-    crate::write_json(path, &value)
+    crate::write_json(path, &value)?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+        .map_err(|error| format!("interactables-feed-mode-failed {}: {error}", path.display()))?;
+    Ok(())
 }
 
 pub(crate) fn refresh_interactables_for_convergence(
@@ -134,6 +153,9 @@ pub(crate) fn refresh_interactables_for_convergence(
             mode: entry.final_mode,
             owner: request.owner.clone(),
             group: request.group.clone(),
+            source_sha: None,
+            target_sha: None,
+            commits_behind: None,
         });
     }
     feed.interactables.sort_by(|left, right| left.id.cmp(&right.id));
