@@ -9,8 +9,6 @@
     "target_dir": "/home/owner",
     "expected_files": [
       ".config/dunst/dunstrc",
-      ".config/eww/eww.scss",
-      ".config/eww/eww.yuck",
       ".config/gtk-3.0/settings.ini",
       ".config/gtk-4.0/settings.ini",
       ".config/hypr/autostart.conf",
@@ -88,7 +86,6 @@
     "intent_folders": [
       "browser",
       "dunst",
-      "eww",
       "gtk",
       "hyprland",
       "kate",
@@ -168,29 +165,6 @@
         "receipt_name": "tv-desktop-config-dunst",
         "summary_receipt": {
           "name": "tv-desktop-config-dunst-summary",
-          "schema": "harmonia.tv.desktop_config_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-desktop-config-files-incomplete"
-        }
-      }
-    },
-    {
-      "step_id": "files-eww",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/eww",
-        "target_root": "$constants.target_dir",
-        "files": [
-          ".config/eww/eww.scss",
-          ".config/eww/eww.yuck"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "tv-desktop-config-eww",
-        "summary_receipt": {
-          "name": "tv-desktop-config-eww-summary",
           "schema": "harmonia.tv.desktop_config_install.v1",
           "authority": "harmonia-profile-module-owned-files",
           "first_missing_signal": "tv-desktop-config-files-incomplete"
