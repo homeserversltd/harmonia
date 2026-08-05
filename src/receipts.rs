@@ -8,12 +8,44 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static RECEIPT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+const RECEIPT_TREE_ROOT: &str = "/var/lib/harmonia/receipts";
+
+fn is_backup_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "backups")
+}
+
+fn make_receipt_tree_readable(path: &Path) -> Result<(), String> {
+    let root = Path::new(RECEIPT_TREE_ROOT);
+    let Ok(relative) = path.strip_prefix(root) else {
+        return Ok(());
+    };
+    if is_backup_path(relative) {
+        return Ok(());
+    }
+    let mut current = root.to_path_buf();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&current, fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("receipt-directory-mode-failed {}: {error}", current.display()))?;
+        for component in relative.components() {
+            current.push(component);
+            fs::set_permissions(&current, fs::Permissions::from_mode(0o755)).map_err(|error| {
+                format!("receipt-directory-mode-failed {}: {error}", current.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("receipt-parent-missing {}", path.display()))?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("receipt-parent-create-failed {}: {error}", parent.display()))?;
+    make_receipt_tree_readable(parent)?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -44,6 +76,14 @@ pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), S
                 path.display()
             )
         })?;
+        if !is_backup_path(path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+                    .map_err(|error| format!("receipt-mode-failed {}: {error}", path.display()))?;
+            }
+        }
         File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| format!("receipt-parent-sync-failed {}: {error}", parent.display()))?;
