@@ -266,10 +266,5 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
     let module_root = default_module_root(&profile_path);
-    match (profile.id.as_str(), profile.identity.as_str()) {
-        ("homeserver", "homeserver") => homeserver_update(&profile, &module_root, &receipt_dir, mode),
-        ("homeconsole", "homeconsole") => homeconsole_update(&profile, &module_root, &receipt_dir, mode),
-        ("tv", "arch-tv") => tv_update(&profile, &module_root, &receipt_dir, mode),
-        _ => profile_update(&profile, &module_root, &receipt_dir, mode),
-    }
+    rolling_update_from_certificate(&profile, &module_root, &receipt_dir, mode)
 }
