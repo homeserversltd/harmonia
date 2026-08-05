@@ -112,19 +112,39 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
     Ok((profile, profile_path))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RunMode {
-    ReportOnly,
-    Apply,
+/// Capability for the software plane only. Its field remains private so only
+/// update argument parsing can mint it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SoftwareApplyAuthorization(());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpdateMode {
+    Observe,
+    ApplySoftware(SoftwareApplyAuthorization),
 }
 
-impl RunMode {
-    pub(crate) fn apply(&self) -> bool {
-        matches!(self, Self::Apply)
+impl UpdateMode {
+    pub(crate) fn from_apply_flag(apply: bool) -> Self {
+        if apply {
+            Self::ApplySoftware(SoftwareApplyAuthorization(()))
+        } else {
+            Self::Observe
+        }
+    }
+
+    pub(crate) fn software_authorization(&self) -> Option<&SoftwareApplyAuthorization> {
+        match self {
+            Self::Observe => None,
+            Self::ApplySoftware(authorization) => Some(authorization),
+        }
+    }
+
+    pub(crate) fn is_software_apply(&self) -> bool {
+        self.software_authorization().is_some()
     }
 }
 
-fn parse_run_mode(args: &[String]) -> Result<RunMode, String> {
+fn parse_update_mode(args: &[String]) -> Result<UpdateMode, String> {
     let mut apply = false;
     let mut index = 0;
     while index < args.len() {
@@ -137,17 +157,13 @@ fn parse_run_mode(args: &[String]) -> Result<RunMode, String> {
             _ => return Err("update accepts [--apply] and --receipt-dir only".to_string()),
         }
     }
-    Ok(if apply {
-        RunMode::Apply
-    } else {
-        RunMode::ReportOnly
-    })
+    Ok(UpdateMode::from_apply_flag(apply))
 }
 
 pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
     let receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
-    let mode = match parse_run_mode(args) {
+    let mode = match parse_update_mode(args) {
         Ok(mode) => mode,
         Err(reason) => {
             write_json(
@@ -176,7 +192,7 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
                 &json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
-                    "mutation": mode.apply(),
+                    "mutation": mode.is_software_apply(),
                     "mode": "refused",
                     "profile_id": serde_json::Value::Null,
                     "identity": serde_json::Value::Null,
@@ -194,8 +210,8 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
                 &json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
-                    "mutation": mode.apply(),
-                    "mode": if mode.apply() { "apply" } else { "report-only" },
+                    "mutation": mode.is_software_apply(),
+                    "mode": if mode.is_software_apply() { "apply" } else { "report-only" },
                     "profile_id": serde_json::Value::Null,
                     "identity": serde_json::Value::Null,
                     "identity_source": "certificate",
@@ -214,8 +230,8 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
             &json!({
                 "schema": "harmonia.run_profile.v1",
                 "ok": false,
-                "mutation": mode.apply(),
-                "mode": if mode.apply() { "apply" } else { "report-only" },
+                "mutation": mode.is_software_apply(),
+                "mode": if mode.is_software_apply() { "apply" } else { "report-only" },
                 "profile_id": serde_json::Value::Null,
                 "identity": serde_json::Value::Null,
                 "identity_source": "certificate",
@@ -234,8 +250,8 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
                 &json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
-                    "mutation": mode.apply(),
-                    "mode": if mode.apply() { "apply" } else { "report-only" },
+                    "mutation": mode.is_software_apply(),
+                    "mode": if mode.is_software_apply() { "apply" } else { "report-only" },
                     "profile_id": serde_json::Value::Null,
                     "identity": serde_json::Value::Null,
                     "identity_source": "certificate",
@@ -250,5 +266,10 @@ pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
     let module_root = default_module_root(&profile_path);
-    run_profile_engine(&profile, &module_root, &receipt_dir, mode.apply())
+    match (profile.id.as_str(), profile.identity.as_str()) {
+        ("homeserver", "homeserver") => homeserver_update(&profile, &module_root, &receipt_dir, mode),
+        ("homeconsole", "homeconsole") => homeconsole_update(&profile, &module_root, &receipt_dir, mode),
+        ("tv", "arch-tv") => tv_update(&profile, &module_root, &receipt_dir, mode),
+        _ => profile_update(&profile, &module_root, &receipt_dir, mode),
+    }
 }
