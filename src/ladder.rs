@@ -266,7 +266,7 @@ pub(crate) fn execute_group_live_probe(
     let step = validate_group(group, &manifest.constants)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    execute_validated_step(&step, manifest, receipt_dir, true, None, false)
+    execute_validated_step(&step, manifest, receipt_dir, None, None, false)
 }
 
 fn resolve_args(
@@ -441,7 +441,7 @@ pub(crate) struct ValidatedStep {
 pub(crate) fn execute_ladder_manifest(
     manifest: &LadderManifest,
     module_dir: &Path,
-    apply: bool,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     package_authority: Option<&crate::PackageAuthority>,
 ) -> Result<ModuleExecution, String> {
     let steps = validate_ladder(manifest)
@@ -474,7 +474,7 @@ pub(crate) fn execute_ladder_manifest(
             &step,
             manifest,
             module_dir,
-            apply,
+            software_authorization,
             package_authority,
             changed,
         )?;
@@ -549,38 +549,43 @@ fn execute_validated_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
     module_dir: &Path,
-    apply: bool,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     package_authority: Option<&crate::PackageAuthority>,
     module_changed_before_step: bool,
 ) -> Result<OperationOutcome, String> {
     match (step.tool.as_str(), step.permutation.as_str()) {
-        ("command", "capture") => command_capture_step(step, module_dir, apply),
-        ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, apply),
-        ("health", "probe") => health_probe_step(step, module_dir, apply),
-        ("household-time", _) => household_time_step(step, module_dir, apply),
-        ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
-        ("files", "managed-directories") => managed_directories_step(step, module_dir, apply),
-        ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
-        ("files", "symlink-converge") => symlink_converge_step(step, module_dir, apply),
+        ("command", "capture") => command_capture_step(step, module_dir, false),
+        ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, false),
+        ("health", "probe") => health_probe_step(step, module_dir, false),
+        ("household-time", _) => household_time_step(step, module_dir, false),
+        ("files", "managed-files") => managed_files_step(step, manifest, module_dir, false),
+        ("files", "managed-directories") => managed_directories_step(step, module_dir, false),
+        ("files", "validated-symlink") => validated_symlink_step(step, module_dir, false),
+        ("files", "symlink-converge") => symlink_converge_step(step, module_dir, false),
         ("files", "validated-file-symlink") => {
-            validated_file_symlink_step(step, manifest, module_dir, apply)
+            validated_file_symlink_step(step, manifest, module_dir, false)
         }
-        ("files", "remove") => files_remove_step(step, module_dir, apply),
+        ("files", "remove") => files_remove_step(step, module_dir, false),
         ("files", "executable-present") => files_executable_present_step(step, module_dir),
         ("files", "source-shelf-sweep") => {
-            files_source_shelf_sweep_step(step, manifest, module_dir, apply)
+            files_source_shelf_sweep_step(step, manifest, module_dir, false)
         }
-        ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, apply),
+        ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, false),
         ("files", "converge") | ("files", "directory-sync") => {
-            files_converge_step(step, manifest, module_dir, apply)
+            files_converge_step(step, manifest, module_dir, false)
         }
-        ("systemd", _) => systemd_step(step, module_dir, apply, module_changed_before_step),
+        ("systemd", _) => systemd_step(
+            step,
+            module_dir,
+            software_authorization.is_some() && step.permutation.ends_with("restart"),
+            module_changed_before_step,
+        ),
         ("service-runtime", "converge") => {
             let source_plan = source_plan_for_step(step, manifest)?;
             tools::service_runtime::execute_ladder_step(
                 &step.args,
                 module_dir,
-                apply,
+                software_authorization.is_some(),
                 &source_plan,
             )
         }
@@ -594,7 +599,7 @@ fn execute_validated_step(
             ),
             command: None,
         }),
-        ("tls-lifecycle", "converge") => tools::tls_lifecycle::execute_ladder_step(&step.args, module_dir, apply)
+        ("tls-lifecycle", "converge") => tools::tls_lifecycle::execute_ladder_step(&step.args, module_dir, false)
         .map(|execution| OperationOutcome {
             ok: execution.ok,
             changed: execution.changed,
@@ -602,15 +607,15 @@ fn execute_validated_step(
             message: format!("tls-lifecycle converge operations={}", execution.operation_count),
             command: None,
         }),
-        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, apply),
-        ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, apply),
+        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_authorization.is_some()),
+        ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, false),
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
-            aur_step(step, manifest, module_dir, apply)
+            aur_step(step, manifest, module_dir, software_authorization.is_some())
         }
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => package_step(step, module_dir, apply, package_authority),
+        | ("package", "keyring-repair") => package_step(step, module_dir, software_authorization.is_some(), package_authority),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation

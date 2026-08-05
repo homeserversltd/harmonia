@@ -2758,17 +2758,17 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("run-profile requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args)
                 .unwrap_or_else(|| PathBuf::from("target/harmonia-run-profile"));
-            let apply = args.iter().any(|arg| arg == "--apply");
+            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             if profile.id == "homeserver" && profile.identity == "homeserver" {
-                homeserver_update(&profile, &module_root, &receipt_dir, apply)
+                homeserver_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
-                homeconsole_update(&profile, &module_root, &receipt_dir, apply)
+                homeconsole_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "tv" && profile.identity == "arch-tv" {
-                tv_update(&profile, &module_root, &receipt_dir, apply)
+                tv_update(&profile, &module_root, &receipt_dir, mode)
             } else {
-                run_profile_engine(&profile, &module_root, &receipt_dir, apply)
+                run_profile_engine(&profile, &module_root, &receipt_dir, mode)
             }
         }
         Some("capsule") => {
@@ -2834,11 +2834,11 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("homeserver-update requires <profile-index-json>")?;
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeserver_update_receipt_latest);
-            let apply = args.iter().any(|arg| arg == "--apply");
+            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
             verify_asserted_profile("homeserver")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            homeserver_update(&profile, &module_root, &receipt_dir, apply)
+            homeserver_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("homeconsole-update") => {
             let path = args
@@ -2846,22 +2846,22 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("homeconsole-update requires <profile-index-json>")?;
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeconsole_update_receipt_latest);
-            let apply = args.iter().any(|arg| arg == "--apply");
+            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
             verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            homeconsole_update(&profile, &module_root, &receipt_dir, apply)
+            homeconsole_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("tv-update") => {
             let path = args
                 .get(1)
                 .ok_or("tv-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
-            let apply = args.iter().any(|arg| arg == "--apply");
+            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
             verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            tv_update(&profile, &module_root, &receipt_dir, apply)
+            tv_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("homeconsole-local-ai-update") => {
             let path = args
@@ -2870,7 +2870,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
                 PathBuf::from("/var/lib/harmonia/receipts/local-ai-runtime-latest")
             });
-            let apply = args.iter().any(|arg| arg == "--apply");
+            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let apply = mode.is_software_apply();
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             if profile.id != "homeconsole" || profile.identity != "homeconsole" {
@@ -2883,7 +2884,13 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let harmonia_root = harmonia_root_from_module_root(&module_root);
             let run_started = std::time::Instant::now();
             let execution =
-                execute_profile_module(&module, &module_root, &receipt_dir, apply, &harmonia_root)?;
+                execute_profile_module(
+                    &module,
+                    &module_root,
+                    &receipt_dir,
+                    mode.software_authorization(),
+                    &harmonia_root,
+                )?;
             write_engine_run_receipt_with_duration(
                 &receipt_dir,
                 &profile,

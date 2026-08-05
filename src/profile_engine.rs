@@ -329,13 +329,13 @@ pub(crate) fn run_profile_engine(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    apply: bool,
+    mode: UpdateMode,
 ) -> Result<(), String> {
     run_profile_engine_with_preflight(
         profile,
         module_root,
         receipt_dir,
-        apply,
+        mode,
         false,
         None,
         None,
@@ -346,11 +346,12 @@ pub(crate) fn run_profile_engine_with_preflight(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    apply: bool,
+    mode: UpdateMode,
     skip_preflight: bool,
     completed_preflight: Option<ModuleExecution>,
     suite_debt: Option<&str>,
 ) -> Result<(), String> {
+    let apply = mode.is_software_apply();
     let run_started = Instant::now();
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
@@ -527,13 +528,12 @@ pub(crate) fn run_profile_engine_with_preflight(
             )?;
             continue;
         }
-        let module_apply = apply;
         let execution_result = match &module {
             LoadedModule::Sidecar(sidecar) => execute_profile_module(
                 sidecar,
                 module_root,
                 receipt_dir,
-                module_apply,
+                mode.software_authorization(),
                 &harmonia_root,
             ),
             LoadedModule::Ladder(manifest) => {
@@ -548,7 +548,7 @@ pub(crate) fn run_profile_engine_with_preflight(
                 execute_ladder_manifest(
                     &manifest,
                     &module_dir,
-                    module_apply,
+                    mode.software_authorization(),
                     profile.package_authority.as_ref(),
                 )
             }
@@ -759,7 +759,7 @@ fn rolling_update_run<F>(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    apply: bool,
+    mode: UpdateMode,
     suite_debt: Option<String>,
     lock_path: PathBuf,
     materialize_receipt: fn(&Path, &str) -> Result<PathBuf, String>,
@@ -769,6 +769,7 @@ fn rolling_update_run<F>(
 where
     F: FnOnce(&Path) -> Result<(), String>,
 {
+    let apply = mode.is_software_apply();
     let run_id = run_id_from_stamp();
     let effective_receipt_dir = materialize_receipt(receipt_dir, &run_id)?;
     fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
@@ -788,7 +789,7 @@ where
             &refreshed_profile,
             module_root,
             &effective_receipt_dir,
-            apply,
+            mode,
             true,
             Some(preflight),
             suite_debt.as_deref(),
@@ -819,7 +820,7 @@ pub(crate) fn homeconsole_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    apply: bool,
+    mode: UpdateMode,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
@@ -832,7 +833,7 @@ pub(crate) fn homeconsole_update(
         profile,
         module_root,
         receipt_dir,
-        apply,
+        mode,
         suite_debt,
         homeconsole_update_lock_path(),
         materialize_homeconsole_receipt_dir,
@@ -877,7 +878,7 @@ pub(crate) fn homeserver_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    apply: bool,
+    mode: UpdateMode,
 ) -> Result<(), String> {
     if profile.id != "homeserver" || profile.identity != "homeserver" {
         return Err(format!(
@@ -890,7 +891,7 @@ pub(crate) fn homeserver_update(
         profile,
         module_root,
         receipt_dir,
-        apply,
+        mode,
         suite_debt,
         homeserver_update_lock_path(),
         materialize_homeserver_receipt_dir,
@@ -912,7 +913,7 @@ pub(crate) fn tv_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    apply: bool,
+    mode: UpdateMode,
 ) -> Result<(), String> {
     if profile.id != "tv" || profile.identity != "arch-tv" {
         return Err(format!(
@@ -925,7 +926,7 @@ pub(crate) fn tv_update(
         profile,
         module_root,
         receipt_dir,
-        apply,
+        mode,
         suite_debt,
         tv_update_lock_path(),
         materialize_tv_receipt_dir,
