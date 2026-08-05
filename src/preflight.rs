@@ -29,6 +29,9 @@ const CADUCEUS_SOURCE_DIR: &str = "/opt/caduceus/source";
 const CADUCEUS_STAFF_SOURCE_ROOT: &str = "/opt/caduceus/source/data/staff-actuators";
 const CADUCEUS_STAFF_RECEIPT: &str = "caduceus-staff-shelf-sweep.json";
 const CADUCEUS_SOURCE_RECEIPT: &str = "caduceus-source-possession.json";
+const SBIN_SOURCE_ROOT: &str = "/opt/sbin/source";
+const SBIN_SHELF_RECEIPT: &str = "sbin-shelf-sweep.json";
+const SBIN_SHELF_DETAIL_RECEIPT: &str = "sbin-shelf-sweep-detail.json";
 
 #[cfg(test)]
 thread_local! {
@@ -934,6 +937,269 @@ fn converge_caduceus_staff_shelf(
     Ok(outcome)
 }
 
+/// Carry only Harmonia launchers from the possessed sbin checkout. The generic
+/// source shelf sweep cannot be used here: its shelf-tree phase would carry the
+/// entire legacy repository and its glob prune is not provenance-scoped.
+fn converge_sbin_shelf(preflight_dir: &Path, apply: bool) -> Result<OperationOutcome, String> {
+    let source_root = PathBuf::from(SBIN_SOURCE_ROOT);
+    let target_root = PathBuf::from("/usr/local/sbin");
+    let receipt_path = preflight_dir.join(SBIN_SHELF_RECEIPT);
+    let detail_path = preflight_dir.join(SBIN_SHELF_DETAIL_RECEIPT);
+    if !source_root.is_dir() {
+        let outcome = OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: format!("sbin source not possessed at {}", source_root.display()),
+            command: None,
+        };
+        let receipt = json!({
+            "schema": "harmonia.tool_receipt.v1",
+            "operation_id": "sbin-shelf-sweep",
+            "tool": "files",
+            "action": "source-shelf-sweep",
+            "ok": true,
+            "checked": 0,
+            "changed": false,
+            "entries": [],
+            "skipped": true,
+            "message": outcome.message,
+            "first_missing_signal": "sbin-source-not-possessed",
+            "observed_state": {"source_root": source_root, "possessed": false},
+            "desired_state": {"launcher_target_root": target_root, "launcher_pattern": "harmonia-*", "prune": false},
+            "diff_decision": "unavailable",
+            "movement": "none",
+            "truthful_changed": false,
+        });
+        write_json(&receipt_path, &receipt)?;
+        write_json(
+            &detail_path,
+            &json!({
+                "schema": "harmonia.files.source_shelf_sweep.transaction.v1",
+                "ok": true,
+                "apply": apply,
+                "changed": false,
+                "source_root": source_root,
+                "launcher_target_root": target_root,
+                "launcher_pattern": "harmonia-*",
+                "prune": false,
+                "entries": [],
+                "first_blocker": "sbin-source-not-possessed",
+                "transaction_state": "skipped",
+            }),
+        )?;
+        return Ok(outcome);
+    }
+
+    let mut entries = Vec::new();
+    let mut failure = None;
+    let source_listing = fs::read_dir(&source_root).map_err(|error| {
+        format!(
+            "sbin-shelf-source-read-failed {}: {error}",
+            source_root.display()
+        )
+    })?;
+    for source in source_listing {
+        let source = source.map_err(|error| error.to_string())?;
+        let name = source.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("harmonia-") {
+            continue;
+        }
+        let source_path = source.path();
+        let kind = source.file_type().map_err(|error| error.to_string())?;
+        if !kind.is_file() || kind.is_symlink() {
+            failure = Some(format!(
+                "sbin-shelf-launcher-source-kind-rejected {}",
+                source_path.display()
+            ));
+            break;
+        }
+        let target = target_root.join(&name);
+        let target_metadata = fs::symlink_metadata(&target);
+        if let Ok(metadata) = &target_metadata {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                failure = Some(format!(
+                    "sbin-shelf-launcher-target-kind-rejected {}",
+                    target.display()
+                ));
+                break;
+            }
+        } else if target_metadata
+            .as_ref()
+            .is_err_and(|error| error.kind() != std::io::ErrorKind::NotFound)
+        {
+            failure = Some(format!(
+                "sbin-shelf-launcher-target-metadata-failed {}",
+                target.display()
+            ));
+            break;
+        }
+        let source_digest = sha256_file(&source_path)?;
+        let before_digest = if target.exists() {
+            Some(sha256_file(&target)?)
+        } else {
+            None
+        };
+        #[cfg(unix)]
+        let ownership_current = target_metadata.as_ref().ok().is_some_and(|metadata| {
+            use std::os::unix::fs::MetadataExt;
+            metadata.uid() == 0 && metadata.gid() == 0
+        });
+        #[cfg(not(unix))]
+        let ownership_current = true;
+        let mode_current = target_metadata
+            .as_ref()
+            .ok()
+            .is_some_and(|_| tools::files::file_mode(&target).ok() == Some(0o755));
+        let current = before_digest.as_deref() == Some(source_digest.as_str())
+            && ownership_current
+            && mode_current;
+        entries.push((
+            name,
+            source_path,
+            target,
+            source_digest,
+            before_digest,
+            current,
+        ));
+    }
+
+    let mut changed = false;
+    if failure.is_none() && apply {
+        for (_, source, target, _, _, current) in &entries {
+            if !current {
+                if let Err(error) =
+                    tools::files::atomic_copy(source, target, Some(0o755), Some(0), Some(0))
+                {
+                    failure = Some(format!(
+                        "sbin-shelf-launcher-promote-failed {}: {error}",
+                        target.display()
+                    ));
+                    break;
+                }
+                changed = true;
+            }
+        }
+    }
+
+    let mut receipt_entries = Vec::new();
+    for (name, source, target, source_digest, before_digest, current) in &entries {
+        let after_digest = if target.exists() {
+            Some(sha256_file(target)?)
+        } else {
+            None
+        };
+        #[cfg(unix)]
+        let (after_uid, after_gid) = match fs::symlink_metadata(target) {
+            Ok(metadata)
+                if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+            {
+                use std::os::unix::fs::MetadataExt;
+                (Some(metadata.uid()), Some(metadata.gid()))
+            }
+            _ => (None, None),
+        };
+        #[cfg(not(unix))]
+        let (after_uid, after_gid) = (None, None);
+        let after_mode = tools::files::file_mode(target).ok();
+        let readback_ok = if apply {
+            after_digest.as_deref() == Some(source_digest.as_str())
+                && after_mode == Some(0o755)
+                && after_uid == Some(0)
+                && after_gid == Some(0)
+        } else {
+            *current
+        };
+        receipt_entries.push(json!({
+            "kind": "launcher",
+            "relative_path": name,
+            "source": source,
+            "target": target,
+            "source_digest": source_digest,
+            "before_digest": before_digest,
+            "after_digest": after_digest,
+            "desired_mode": 493,
+            "after_mode": after_mode,
+            "desired_uid": 0,
+            "desired_gid": 0,
+            "after_uid": after_uid,
+            "after_gid": after_gid,
+            "action": if *current { "unchanged" } else if apply && readback_ok { "promoted" } else { "planned" },
+            "changed": !current,
+            "readback_ok": readback_ok,
+        }));
+    }
+    if apply
+        && failure.is_none()
+        && receipt_entries
+            .iter()
+            .any(|entry| entry["readback_ok"] != true)
+    {
+        failure = Some("sbin-shelf-launcher-readback-failed".into());
+    }
+    let ok = failure.is_none();
+    let current = receipt_entries
+        .iter()
+        .all(|entry| entry["readback_ok"] == true);
+    let message = failure.clone().unwrap_or_else(|| {
+        if changed {
+            "sbin Harmonia launchers converged".into()
+        } else if current {
+            "sbin Harmonia launchers current".into()
+        } else {
+            "sbin Harmonia launchers planned".into()
+        }
+    });
+    let first_blocker = failure.unwrap_or_else(|| "none".into());
+    write_json(
+        &detail_path,
+        &json!({
+            "schema": "harmonia.files.source_shelf_sweep.transaction.v1",
+            "ok": ok,
+            "apply": apply,
+            "changed": changed,
+            "source_root": source_root,
+            "launcher_target_root": target_root,
+            "launcher_pattern": "harmonia-*",
+            "prune": false,
+            "source_inventory_count": receipt_entries.len(),
+            "promoted_count": if changed { receipt_entries.iter().filter(|entry| entry["changed"] == true).count() } else { 0 },
+            "removed_count": 0,
+            "transaction_state": if ok { if apply && changed { "committed" } else if current { "unchanged" } else { "planned" } } else { "refused" },
+            "first_blocker": first_blocker,
+            "entries": receipt_entries,
+        }),
+    )?;
+    write_json(
+        &receipt_path,
+        &json!({
+            "schema": "harmonia.tool_receipt.v1",
+            "operation_id": "sbin-shelf-sweep",
+            "tool": "files",
+            "action": "source-shelf-sweep",
+            "ok": ok,
+            "checked": entries.len(),
+            "changed": changed,
+            "entries": receipt_entries,
+            "skipped": !apply,
+            "message": message,
+            "first_missing_signal": first_blocker,
+            "observed_state": {"source_root": source_root, "source_inventory_count": entries.len(), "current": current},
+            "desired_state": {"launcher_target_root": target_root, "launcher_pattern": "harmonia-*", "owner": "root", "group": "root", "mode": 493, "prune": false},
+            "diff_decision": if current { "empty" } else { "different" },
+            "movement": if changed { "bounded-launcher-promote" } else if current { "none" } else { "report-only" },
+            "truthful_changed": changed,
+        }),
+    )?;
+    Ok(OperationOutcome {
+        ok,
+        changed,
+        skipped: !apply,
+        message,
+        command: None,
+    })
+}
+
 /// Possess the Caduceus source for the engine-owned staff shelf only when the
 /// body certificate declares that component. The certificate selects source
 /// candidates and the engine config supplies only owner-held credential scopes;
@@ -1692,6 +1958,22 @@ pub(crate) fn run_engine_preflight(
         first_missing_signal = "caduceus-staff-shelf-sweep-failed".into();
     }
 
+    let sbin_shelf = match converge_sbin_shelf(&preflight_dir, apply) {
+        Ok(outcome) => outcome,
+        Err(error) => OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: error,
+            command: None,
+        },
+    };
+    operation_count += 1;
+    changed |= sbin_shelf.changed;
+    if !sbin_shelf.ok && first_missing_signal == "none" {
+        first_missing_signal = "sbin-shelf-sweep-failed".into();
+    }
+
     if first_missing_signal == "none"
         && matches!(lane.as_str(), "source-fallback" | "local-checkout")
     {
@@ -1811,6 +2093,7 @@ pub(crate) fn run_engine_preflight(
             ("source-possession", source_outcome),
             ("caduceus-source-possession", caduceus_source_possession),
             ("caduceus-staff-shelf-sweep", caduceus_staff_shelf),
+            ("sbin-shelf-sweep", sbin_shelf),
             (
                 "staged-build",
                 OperationOutcome {

@@ -3575,7 +3575,7 @@ fn atomic_write_bytes_with_ownership(
     result
 }
 
-fn atomic_copy(
+pub(crate) fn atomic_copy(
     source: &Path,
     target: &Path,
     mode: Option<u32>,
