@@ -17,37 +17,82 @@
   font-weight: 700;
 }
 
-.harmonia-interactable {
-  background: rgba(46, 52, 64, 0.86);
-  border-radius: 12px;
-  padding: 18px 20px;
+.harmonia-interactables-subtitle,
+.harmonia-pane-heading {
+  color: #aeb6c3;
+  font-size: 18px;
 }
 
-.harmonia-interactable-name {
+.harmonia-pane-heading {
   color: #ebcb8b;
-  font-size: 24px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.harmonia-tabs {
+  padding: 4px 0 10px;
+}
+
+.harmonia-tab {
+  color: #d8dee9;
+  background: rgba(46, 52, 64, 0.86);
+  border-radius: 8px;
+  padding: 9px 15px;
+  font-size: 18px;
+}
+
+.harmonia-tab.active {
+  color: #2e3440;
+  background: #ebcb8b;
+  font-weight: 700;
+}
+
+.harmonia-interactable,
+.harmonia-settings-row {
+  background: rgba(46, 52, 64, 0.86);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+
+.harmonia-interactable-name,
+.harmonia-settings-module {
+  color: #ebcb8b;
+  font-size: 22px;
   font-weight: 700;
 }
 
 .harmonia-interactable-module,
-.harmonia-interactable-drift {
+.harmonia-interactable-drift,
+.harmonia-interactable-distance,
+.harmonia-settings-receipt {
   color: #d8dee9;
-  font-size: 19px;
+  font-size: 18px;
 }
 
-.harmonia-interactable-apply {
+.harmonia-interactable-distance,
+.harmonia-settings-receipt {
+  color: #aeb6c3;
+}
+
+.harmonia-interactable-apply,
+.harmonia-settings-toggle {
   color: #2e3440;
   background: #a3be8c;
   border-radius: 9px;
   margin-top: 8px;
-  padding: 12px 20px;
-  font-size: 21px;
+  padding: 10px 16px;
+  font-size: 19px;
   font-weight: 700;
 }
 
+.harmonia-settings-toggle {
+  margin: 0 0 0 14px;
+}
+
 .harmonia-interactables-empty,
-.harmonia-interactables-degraded {
+.harmonia-interactables-degraded,
+.harmonia-settings-state {
   color: #aeb6c3;
-  font-size: 21px;
+  font-size: 20px;
   padding: 12px 0;
 }

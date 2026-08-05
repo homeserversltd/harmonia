@@ -1,44 +1,31 @@
 #!/usr/bin/env bash
 set -u
 
-payload="$(harmonia interactable list --json 2>/dev/null)" || {
-    printf '%s\n' '{"text":"󰚰","class":"ok","tooltip":"Harmonia interactables unavailable"}'
-    exit 0
-}
+readonly FEED_PATH="/var/lib/harmonia/interactables.json"
 
-if ! rendered="$(HARMONIA_INTERACTABLES_PAYLOAD="$payload" python3 - <<'PY'
+if ! rendered="$(HARMONIA_FEED_PATH="$FEED_PATH" python3 - <<'PY'
 import json
 import os
+from pathlib import Path
 
-payload = json.loads(os.environ["HARMONIA_INTERACTABLES_PAYLOAD"])
-if isinstance(payload, dict):
-    rows = payload.get("interactables", payload.get("items", []))
-elif isinstance(payload, list):
-    rows = payload
-else:
-    raise ValueError("unsupported interactables payload")
-if not isinstance(rows, list):
-    raise ValueError("interactables must be a list")
-
-pending = []
-for row in rows:
-    if not isinstance(row, dict):
-        continue
-    state = str(row.get("state", row.get("status", "pending"))).strip().lower()
-    if state in {"ok", "clean", "applied", "complete", "completed"}:
-        continue
-    pending.append(row)
-
-names = [str(row.get("name") or row.get("id") or "unnamed interactable") for row in pending]
-tooltip = "Harmonia: no pending interactables" if not names else "Harmonia pending:\n" + "\n".join(f"• {name}" for name in names[:5])
-print(json.dumps({
-    "text": "󰚰" if not names else f"󰚰 {len(names)}",
-    "class": "ok" if not names else "pending",
-    "tooltip": tooltip,
-}, ensure_ascii=False, separators=(",", ":")))
+try:
+    payload = json.loads(Path(os.environ["HARMONIA_FEED_PATH"]).read_text(encoding="utf-8"))
+    rows = payload.get("interactables", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        raise ValueError("interactables is not a list")
+    count = sum(1 for row in rows if isinstance(row, dict))
+    names = [str(row.get("name") or row.get("id") or "unnamed update") for row in rows if isinstance(row, dict)]
+    tooltip = "Harmonia: no pending updates" if not names else "Harmonia pending updates:\n" + "\n".join(f"• {name}" for name in names[:5])
+    print(json.dumps({
+        "text": "󰚰" if not count else f"󰚰 {count}",
+        "class": "ok" if not count else "pending",
+        "tooltip": tooltip,
+    }, ensure_ascii=False, separators=(",", ":")))
+except (OSError, ValueError, json.JSONDecodeError) as error:
+    print(json.dumps({"text": "󰚰", "class": "ok", "tooltip": f"Harmonia updates unavailable: {error}"}, ensure_ascii=False, separators=(",", ":")))
 PY
 )"; then
-    printf '%s\n' '{"text":"󰚰","class":"ok","tooltip":"Harmonia interactables unavailable"}'
+    printf '%s\n' '{"text":"󰚰","class":"ok","tooltip":"Harmonia updates unavailable"}'
     exit 0
 fi
 

@@ -1,10 +1,17 @@
 (defvar harmonia_interactables_open false)
+(defvar harmonia_interactables_tab "interactables")
 
 (defpoll harmonia_interactables_markup
   :interval "30s"
   :run-while harmonia_interactables_open
   :initial "(box :class \"harmonia-interactables-degraded\" (label :text \"Harmonia updates loading…\"))"
-  "$HOME/bin/harmonia-interactables-popup eww")
+  "$HOME/bin/harmonia-interactables-popup eww interactables")
+
+(defpoll harmonia_settings_markup
+  :interval "30s"
+  :run-while harmonia_interactables_open
+  :initial "(box :class \"harmonia-interactables-degraded\" (label :text \"Settings loading…\"))"
+  "$HOME/bin/harmonia-interactables-popup eww settings")
 
 (defwindow harmonia-interactables
   :monitor 0
@@ -16,6 +23,20 @@
   :stacking "fg"
   :exclusive false
   :focusable true
-  (scroll :hscroll false
-    (box :class "harmonia-interactables-popup"
-      (literal :content harmonia_interactables_markup))))
+  (box :class "harmonia-interactables-popup" :orientation "v" :spacing 16
+    (box :class "harmonia-interactables-header" :orientation "v" :spacing 4
+      (label :class "harmonia-interactables-title" :xalign 0 :text "Harmonia updates")
+      (label :class "harmonia-interactables-subtitle" :xalign 0 :text "Review pending updates and update modules"))
+    (box :class "harmonia-tabs" :spacing 8
+      (button :class {harmonia_interactables_tab == "interactables" ? "harmonia-tab active" : "harmonia-tab"}
+        :onclick "eww update harmonia_interactables_tab=interactables"
+        "Interactables")
+      (button :class {harmonia_interactables_tab == "settings" ? "harmonia-tab active" : "harmonia-tab"}
+        :onclick "eww update harmonia_interactables_tab=settings"
+        "Settings"))
+    (scroll :hscroll false :vscroll true
+      (box :orientation "v"
+        (revealer :reveal {harmonia_interactables_tab == "interactables"}
+          (literal :content harmonia_interactables_markup))
+        (revealer :reveal {harmonia_interactables_tab == "settings"}
+          (literal :content harmonia_settings_markup))))))
