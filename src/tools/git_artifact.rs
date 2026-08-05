@@ -1188,7 +1188,7 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
         }
         let checkout = capture_git(
             &request,
-            &["checkout", "--detach", "FETCH_HEAD"],
+            &["checkout", "-B", &plan.reference, "FETCH_HEAD"],
             stage.to_str(),
         );
         let head = if checkout.ok {
