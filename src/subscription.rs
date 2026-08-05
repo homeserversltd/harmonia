@@ -229,6 +229,9 @@ pub(crate) fn update_engine_plane(
     write_json_value_atomic(path, &Value::Object(object))
 }
 
+pub(crate) fn hotfix_ledger_entry(path: &Path, hotfix_id: &str) -> Result<Option<Value>, String> { if !path.exists() { return Ok(None); } let text = fs::read_to_string(path).map_err(|error| format!("subscription-read-failed {}: {error}", path.display()))?; let value: Value = serde_json::from_str(&text).map_err(|error| format!("subscription-parse-failed {}: {error}", path.display()))?; Ok(value.get("hotfix_ledger").and_then(Value::as_object).and_then(|ledger| ledger.get(hotfix_id)).cloned()) }
+pub(crate) fn close_hotfix_ledger(path: &Path, hotfix_id: &str, body_identity: &str, closing_reason: &str, receipt_reference: &Path) -> Result<(), String> { let existing = if path.exists() { let text = fs::read_to_string(path).map_err(|error| format!("subscription-read-failed {}: {error}", path.display()))?; serde_json::from_str::<Value>(&text).map_err(|error| format!("subscription-parse-failed {}: {error}", path.display()))? } else { Value::Object(Map::new()) }; let mut root = existing.as_object().cloned().unwrap_or_default(); let mut ledger = root.get("hotfix_ledger").and_then(Value::as_object).cloned().unwrap_or_default(); ledger.entry(hotfix_id.to_string()).or_insert_with(|| json!({"hotfix_id": hotfix_id, "body_identity": body_identity, "closing_reason": closing_reason, "receipt_reference": receipt_reference})); root.insert("hotfix_ledger".to_string(), Value::Object(ledger)); root.insert("schema".to_string(), json!(SUBSCRIPTION_SCHEMA)); root.insert("updated_at_unix_ms".to_string(), json!(now_unix_ms())); write_json_value_atomic(path, &Value::Object(root)) }
+
 pub(crate) fn write_json_value_atomic(path: &Path, value: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "\n";
     write_bytes_atomic(path, text.as_bytes())

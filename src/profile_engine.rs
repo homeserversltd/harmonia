@@ -372,6 +372,8 @@ pub(crate) fn run_profile_engine_with_preflight(
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
 
+    run_profile_hotfixes(profile, receipt_dir);
+
     if let Some(suite_debt) = suite_debt {
         ok = false;
         suite_ok = false;

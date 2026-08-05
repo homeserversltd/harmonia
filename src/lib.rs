@@ -18,6 +18,9 @@ struct Profile {
     package_authority: Option<PackageAuthority>,
     #[serde(default)]
     modules: Vec<String>,
+    /// Raw declarations preserve future additive fields across engine hops.
+    #[serde(default)]
+    hotfixes: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -217,6 +220,7 @@ mod capsule;
 mod convergence_lock;
 pub mod device_profile;
 mod interactables;
+mod hotfix;
 mod ladder;
 mod module_dispatch;
 mod molt;
@@ -230,6 +234,7 @@ pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
 pub(crate) use device_profile::*;
 pub(crate) use interactables::*;
+pub(crate) use hotfix::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use molt::*;
