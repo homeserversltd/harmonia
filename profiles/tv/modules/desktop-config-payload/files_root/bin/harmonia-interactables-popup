@@ -115,32 +115,20 @@ def profile_from_config(config):
     return None, None
 
 
-def parse_toggle_state(text):
+def parse_toggle_state(text, roster):
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        payload = None
-    states = {}
-    if isinstance(payload, dict):
-        source = payload.get("modules", payload)
-        if isinstance(source, dict):
-            for module, state in source.items():
-                if isinstance(state, dict):
-                    state = state.get("state", state.get("enabled", "unknown"))
-                states[str(module)] = "enabled" if state is True else "disabled" if state is False else str(state).lower()
-        elif isinstance(source, list):
-            for item in source:
-                if isinstance(item, dict):
-                    module = item.get("id") or item.get("module") or item.get("name")
-                    state = item.get("state", item.get("enabled", "unknown"))
-                    if module:
-                        states[str(module)] = "enabled" if state is True else "disabled" if state is False else str(state).lower()
-    if not states:
-        for line in text.splitlines():
-            fields = line.split()
-            if len(fields) >= 2:
-                states[fields[0]] = fields[1].lower()
-    return states
+        return None, "toggle receipt is invalid."
+    if not isinstance(payload, dict):
+        return None, "toggle receipt has an unsupported shape."
+    if payload.get("ok") is not True:
+        return None, str(payload.get("firstMissingSignal") or "toggle receipt reported unavailable.")
+    disabled_modules = payload.get("disabled_modules")
+    if not isinstance(disabled_modules, list) or not all(isinstance(module, str) for module in disabled_modules):
+        return None, "toggle receipt has an unsupported shape."
+    disabled = set(disabled_modules)
+    return {module: "disabled" if module in disabled else "enabled" for module in roster}, None
 
 
 def receipt_status(profile, module):
@@ -203,7 +191,11 @@ def render_settings():
         markup.append(label("harmonia-settings-state", f"Module switches unavailable: {message}", True))
         markup.append(')')
         return "\n".join(markup)
-    states = parse_toggle_state(result.stdout)
+    states, unavailable_reason = parse_toggle_state(result.stdout, modules)
+    if unavailable_reason:
+        markup.append(label("harmonia-settings-state", f"Module switches unavailable: {unavailable_reason}", True))
+        markup.append(')')
+        return "\n".join(markup)
     markup.append('  (box :class "harmonia-settings-table" :orientation "v" :spacing 8')
     for module in modules:
         state = states.get(module, "unknown")
@@ -277,7 +269,7 @@ case "$mode" in
             refresh_popup
             exit 1
         fi
-        "$TOGGLE_BIN" "$module" "$desired" || {
+        sudo -n "$TOGGLE_BIN" "$module" "$desired" || {
             command -v notify-send >/dev/null 2>&1 && notify-send "Harmonia updates" "Could not change $module."
             refresh_popup
             exit 1
