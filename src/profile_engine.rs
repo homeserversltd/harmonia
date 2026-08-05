@@ -773,10 +773,9 @@ where
     let effective_receipt_dir = materialize_receipt(receipt_dir, &run_id)?;
     fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
     let run = || {
-        ensure_engine_config_for_rolling()?;
-        normalize_engine_branch_upstream()?;
-        // Like the ordinary profile path, the engine owns automatic software
-        // currentness regardless of this rolling profile's module apply gate.
+        // The engine plane remains independent of update apply; it owns its
+        // currentness ratchet and one re-exec guard without widening software
+        // authority into configuration or identity.
         let preflight = run_engine_preflight(module_root, &effective_receipt_dir, true)?;
         prelude(&effective_receipt_dir)?;
         let profile_path = module_root
@@ -813,6 +812,40 @@ where
     } else {
         run()
     }
+}
+
+pub(crate) fn rolling_update_from_certificate(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: UpdateMode,
+    software_apply: Option<SoftwareApplyAuthorization>,
+) -> Result<(), String> {
+    let apply_software = matches!(mode, UpdateMode::ApplySoftware) && software_apply.is_some();
+    rolling_update_run(
+        profile,
+        module_root,
+        receipt_dir,
+        apply_software,
+        enforce_update_suite(profile, module_root)?,
+        engine_run_lock_path(),
+        materialize_tv_receipt_dir,
+        try_acquire_homeconsole_update_lock,
+        |effective_receipt_dir| {
+            if !apply_software {
+                return Ok(());
+            }
+            let engine = load_engine_plane_config(&engine_config_path())?
+                .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
+            sync_profile_from_source(
+                &engine.source_dir,
+                &profile.id,
+                module_root,
+                effective_receipt_dir,
+                &engine.git_bearer,
+            )
+        },
+    )
 }
 
 pub(crate) fn homeconsole_update(

@@ -553,34 +553,48 @@ fn execute_validated_step(
     package_authority: Option<&crate::PackageAuthority>,
     module_changed_before_step: bool,
 ) -> Result<OperationOutcome, String> {
+    // Update apply is a SoftwarePlane capability. Configuration and identity
+    // permutations receive report-only execution even when the caller chose
+    // `harmonia update --apply`.
+    let software_apply = apply
+        && matches!(
+            (step.tool.as_str(), step.permutation.as_str()),
+            ("package", "install")
+                | ("package", "upgrade")
+                | ("package", "keyring-repair")
+                | ("git-artifact", "sync")
+                | ("aur", "install")
+                | ("aur", "build-pinned")
+                | ("systemd", _)
+        );
     match (step.tool.as_str(), step.permutation.as_str()) {
-        ("command", "capture") => command_capture_step(step, module_dir, apply),
-        ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, apply),
-        ("health", "probe") => health_probe_step(step, module_dir, apply),
-        ("household-time", _) => household_time_step(step, module_dir, apply),
-        ("files", "managed-files") => managed_files_step(step, manifest, module_dir, apply),
-        ("files", "managed-directories") => managed_directories_step(step, module_dir, apply),
-        ("files", "validated-symlink") => validated_symlink_step(step, module_dir, apply),
-        ("files", "symlink-converge") => symlink_converge_step(step, module_dir, apply),
+        ("command", "capture") => command_capture_step(step, module_dir, false),
+        ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, false),
+        ("health", "probe") => health_probe_step(step, module_dir, false),
+        ("household-time", _) => household_time_step(step, module_dir, false),
+        ("files", "managed-files") => managed_files_step(step, manifest, module_dir, false),
+        ("files", "managed-directories") => managed_directories_step(step, module_dir, false),
+        ("files", "validated-symlink") => validated_symlink_step(step, module_dir, false),
+        ("files", "symlink-converge") => symlink_converge_step(step, module_dir, false),
         ("files", "validated-file-symlink") => {
-            validated_file_symlink_step(step, manifest, module_dir, apply)
+            validated_file_symlink_step(step, manifest, module_dir, false)
         }
-        ("files", "remove") => files_remove_step(step, module_dir, apply),
+        ("files", "remove") => files_remove_step(step, module_dir, false),
         ("files", "executable-present") => files_executable_present_step(step, module_dir),
         ("files", "source-shelf-sweep") => {
-            files_source_shelf_sweep_step(step, manifest, module_dir, apply)
+            files_source_shelf_sweep_step(step, manifest, module_dir, false)
         }
-        ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, apply),
+        ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, false),
         ("files", "converge") | ("files", "directory-sync") => {
-            files_converge_step(step, manifest, module_dir, apply)
+            files_converge_step(step, manifest, module_dir, false)
         }
-        ("systemd", _) => systemd_step(step, module_dir, apply, module_changed_before_step),
+        ("systemd", _) => systemd_step(step, module_dir, software_apply, module_changed_before_step),
         ("service-runtime", "converge") => {
             let source_plan = source_plan_for_step(step, manifest)?;
             tools::service_runtime::execute_ladder_step(
                 &step.args,
                 module_dir,
-                apply,
+                false,
                 &source_plan,
             )
         }
@@ -594,7 +608,7 @@ fn execute_validated_step(
             ),
             command: None,
         }),
-        ("tls-lifecycle", "converge") => tools::tls_lifecycle::execute_ladder_step(&step.args, module_dir, apply)
+        ("tls-lifecycle", "converge") => tools::tls_lifecycle::execute_ladder_step(&step.args, module_dir, false)
         .map(|execution| OperationOutcome {
             ok: execution.ok,
             changed: execution.changed,
@@ -602,15 +616,15 @@ fn execute_validated_step(
             message: format!("tls-lifecycle converge operations={}", execution.operation_count),
             command: None,
         }),
-        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, apply),
-        ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, apply),
+        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_apply),
+        ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, false),
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
-            aur_step(step, manifest, module_dir, apply)
+            aur_step(step, manifest, module_dir, software_apply)
         }
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => package_step(step, module_dir, apply, package_authority),
+        | ("package", "keyring-repair") => package_step(step, module_dir, software_apply, package_authority),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
