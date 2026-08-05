@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "calibreweb",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Calibre-Web service configuration: assert birth-provided application and watcher executables, converge product-owned units with backups, validate both units, and restart only after this module changed managed material.",
   "constants": {},
   "files_root": "files_root",
@@ -47,26 +47,6 @@
       "step_id": "calibreweb-watcher-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "calibre-simple-watch.service",
-        "timeout_secs": 60
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "calibreweb-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "calibre-web.service",
-        "timeout_secs": 60
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "calibreweb-watcher-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
       "args": {
         "service": "calibre-simple-watch.service",
         "timeout_secs": 60

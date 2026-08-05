@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "samba",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Samba and discovery configuration: assert birth-provided executables, preserve user-editable Samba and hosts seeds, converge product-owned Avahi files with backups, validate Samba, and restart Avahi only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
@@ -29,46 +29,6 @@
       "permutation": "restart",
       "args": {
         "service": "avahi-daemon.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-smbd-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "smbd.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-nmbd-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "nmbd.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-avahi-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "avahi-daemon.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-wsdd2-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "wsdd2.service",
         "timeout_secs": 120
       },
       "on_failure": "stop"

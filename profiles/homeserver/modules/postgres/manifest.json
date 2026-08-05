@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "postgres",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER PostgreSQL configuration: assert the birth-provided binary, converge product-owned configuration and unit bytes with backups, preserve the one-unit design, validate the installed configuration, and restart only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
@@ -32,7 +32,10 @@
       "permutation": "capture",
       "args": {
         "program": "/usr/bin/systemctl",
-        "args": ["mask", "postgresql@.service"],
+        "args": [
+          "mask",
+          "postgresql@.service"
+        ],
         "timeout_secs": 60
       },
       "on_failure": "stop"
@@ -41,21 +44,19 @@
       "step_id": "postgres-systemd-reload",
       "tool": "systemd",
       "permutation": "daemon-reload",
-      "args": {"timeout_secs": 30},
+      "args": {
+        "timeout_secs": 30
+      },
       "on_failure": "stop"
     },
     {
       "step_id": "postgres-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {"service": "postgresql.service", "timeout_secs": 120},
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "postgres-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {"service": "postgresql.service", "timeout_secs": 120},
+      "args": {
+        "service": "postgresql.service",
+        "timeout_secs": 120
+      },
       "on_failure": "stop"
     }
   ]

@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "navidrome",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Navidrome configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing configuration seed, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
@@ -35,16 +35,6 @@
       "step_id": "navidrome-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "navidrome.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "navidrome-service-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
       "args": {
         "service": "navidrome.service",
         "timeout_secs": 120

@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "console-recovery",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TV console-recovery module. Rust owns TTY recovery, SSH continuity, git, tmux, kitty, curl, and jq are maintained; this sidecar carries constants only.",
   "optional": false,
   "constants": {
@@ -28,15 +28,5 @@
     "receipt_schema": "harmonia.tv.console_recovery.v1",
     "meaning": "TTY recovery, SSH continuity, git, tmux, kitty, curl, and jq are maintained"
   },
-  "ladder": [
-    {
-      "step_id": "service-sshd-service",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "sshd.service",
-        "timeout_secs": 60
-      }
-    }
-  ]
+  "ladder": []
 }
