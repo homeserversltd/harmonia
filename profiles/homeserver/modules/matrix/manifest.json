@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "matrix",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Matrix Synapse host server and Element Web chat portal: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback API, LAN/Tailscale web entry points, DNS, Caduceus-delegated portal registration, log rotation, and health proof.",
   "constants": {
     "server_name": "home.arpa",
@@ -34,15 +34,6 @@
       "tool": "systemd",
       "permutation": "daemon-reload",
       "args": {}
-    },
-    {
-      "step_id": "matrix-synapse-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "matrix-synapse.service",
-        "timeout_secs": 120
-      }
     }
   ]
 }

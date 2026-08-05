@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "gogs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Generic Gogs legacy git host maintenance competitor: package currentness, gogs.service convergence, and default localhost web health proof.",
   "group": {
     "group_id": "git-host",
@@ -15,14 +15,5 @@
     }
   },
   "constants": {},
-  "ladder": [
-    {
-      "step_id": "gogs-service-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "gogs.service"
-      }
-    }
-  ]
+  "ladder": []
 }

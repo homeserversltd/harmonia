@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "forgejo",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Quarry-lifted HOMESERVER Forgejo configuration: assert the birth-provided binary and birth-owned app configuration, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "group": {
     "group_id": "git-host",
@@ -46,16 +46,6 @@
       "step_id": "forgejo-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "forgejo.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-service-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
       "args": {
         "service": "forgejo.service",
         "timeout_secs": 120

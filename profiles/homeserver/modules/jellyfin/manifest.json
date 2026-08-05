@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "jellyfin",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Quarry-lifted HOMESERVER Jellyfin configuration: assert the birth-provided binary, converge the product-owned unit with backup, preserve user-editable system.xml, and restart only after this module changed managed material.",
   "constants": {},
   "files_root": "files_root",
@@ -36,16 +36,6 @@
       "step_id": "jellyfin-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "jellyfin.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "jellyfin-service-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
       "args": {
         "service": "jellyfin.service",
         "timeout_secs": 30

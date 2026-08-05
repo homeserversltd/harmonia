@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "systemd",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quarry-lifted residual HOMESERVER systemd wiring: assert birth-provided systemd and vault prerequisites, converge product-owned units with backups, validate them, and restart only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
@@ -46,26 +46,6 @@
       "step_id": "systemd-nas-mount-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "mountNas.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-vault-mount-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "vault.mount",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-nas-mount-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
       "args": {
         "service": "mountNas.service",
         "timeout_secs": 120

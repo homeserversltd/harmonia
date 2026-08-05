@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "piwigo",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Piwigo configuration: assert birth-provided PHP-FPM and application material, preserve the birth-filled database configuration, converge product-owned PHP-FPM configuration and unit bytes with backups, validate them, and restart only after this module changed managed material.",
   "constants": {},
   "files_root": "files_root",
@@ -33,7 +33,11 @@
         "source": "/opt/homeserver/php-fpm/current/mods-available/piwigo.ini",
         "target": "/opt/homeserver/php-fpm/current/fpm/conf.d/20-piwigo.ini",
         "validator_program": "/opt/homeserver/php-fpm/bin/php-fpm",
-        "validator_args": ["-t", "--fpm-config", "/opt/homeserver/php-fpm/current/fpm/php-fpm.conf"],
+        "validator_args": [
+          "-t",
+          "--fpm-config",
+          "/opt/homeserver/php-fpm/current/fpm/php-fpm.conf"
+        ],
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -51,16 +55,6 @@
       "step_id": "piwigo-php-fpm-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "php-fpm.service",
-        "timeout_secs": 60
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "piwigo-php-fpm-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
       "args": {
         "service": "php-fpm.service",
         "timeout_secs": 60

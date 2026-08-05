@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "user-session-services",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TV user-session-services module. Rust owns Dunst, Waybar, PipeWire, Bluetooth, HDMI audio fallback, and TV user session services are maintained; this sidecar carries constants only.",
   "optional": false,
   "constants": {
@@ -36,49 +36,10 @@
   },
   "ladder": [
     {
-      "step_id": "service-bluetooth-service",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "bluetooth.service",
-        "timeout_secs": 60
-      }
-    },
-    {
       "step_id": "user-daemon-reload",
       "tool": "systemd",
       "permutation": "user-daemon-reload",
       "args": {
-        "user": "$constants.target_user",
-        "timeout_secs": 60
-      }
-    },
-    {
-      "step_id": "user-service-hs-dunst-service",
-      "tool": "systemd",
-      "permutation": "user-enable-now",
-      "args": {
-        "service": "hs-dunst.service",
-        "user": "$constants.target_user",
-        "timeout_secs": 60
-      }
-    },
-    {
-      "step_id": "user-service-hs-waybar-service",
-      "tool": "systemd",
-      "permutation": "user-enable-now",
-      "args": {
-        "service": "hs-waybar.service",
-        "user": "$constants.target_user",
-        "timeout_secs": 60
-      }
-    },
-    {
-      "step_id": "user-service-tv-hdmi-audio-service",
-      "tool": "systemd",
-      "permutation": "user-enable-now",
-      "args": {
-        "service": "tv-hdmi-audio.service",
         "user": "$constants.target_user",
         "timeout_secs": 60
       }

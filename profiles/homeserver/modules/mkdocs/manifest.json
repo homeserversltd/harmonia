@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "mkdocs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER MkDocs configuration: assert the birth-provided runtime and documentation source, converge product-owned configuration and unit bytes with backups, validate the unit, and restart only after this module changed managed material.",
   "constants": {},
   "files_root": "files_root",
@@ -37,16 +37,6 @@
       "step_id": "mkdocs-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
-      "args": {
-        "service": "mkdocs.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "mkdocs-service-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
       "args": {
         "service": "mkdocs.service",
         "timeout_secs": 120
