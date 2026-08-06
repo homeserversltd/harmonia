@@ -9,6 +9,27 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn iso8601_now() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let timestamp = seconds.min(i64::MAX as u64) as libc::time_t;
+    let mut utc: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::gmtime_r(&timestamp, &mut utc) }.is_null() {
+        return "1970-01-01T00:00:00Z".to_string();
+    }
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        utc.tm_year + 1900,
+        utc.tm_mon + 1,
+        utc.tm_mday,
+        utc.tm_hour,
+        utc.tm_min,
+        utc.tm_sec
+    )
+}
+
 const FEED_SCHEMA: &str = "harmonia.interactables.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
@@ -34,6 +55,10 @@ struct Interactable {
     drift: DriftSummary,
     created_at: String,
     refreshed_at: String,
+    /// UTC time when this item became available, or was last re-reported.
+    /// Legacy rows omit this field and deserialize as null.
+    #[serde(default)]
+    available_at: Option<String>,
     has_run: bool,
     #[serde(default)]
     mode: Option<u32>,
@@ -118,6 +143,7 @@ pub(crate) fn refresh_interactables_for_convergence(
     let path = feed_path();
     let mut feed = load_feed(&path)?;
     let now = stamp();
+    let available_at = iso8601_now();
     for entry in &outcome.entries {
         let id = stable_id(&manifest.id, &entry.target);
         let created_at = feed
@@ -150,6 +176,7 @@ pub(crate) fn refresh_interactables_for_convergence(
             drift,
             created_at,
             refreshed_at: now.clone(),
+            available_at: Some(available_at.clone()),
             has_run: false,
             mode: entry.final_mode,
             owner: request.owner.clone(),
