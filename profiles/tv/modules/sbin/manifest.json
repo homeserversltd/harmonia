@@ -25,7 +25,7 @@
         "launcher_pattern": "*",
         "launcher_exclude": [".git*", "README.md", "LICENSE", "VERSION", "CONTRIBUTING.md", "tests", "caduceus-*", "caduceus_staff"],
         "shelf_owner": "root", "shelf_group": "root",
-        "shelf_directory_mode": 493, "shelf_file_mode": 493, "launcher_mode": 493,
+        "shelf_directory_mode": 448, "shelf_file_mode": 448, "launcher_mode": 448,
         "prune": true,
         "provenance_state": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json"
       }
