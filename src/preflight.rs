@@ -913,6 +913,7 @@ fn converge_caduceus_staff_shelf(
         prune: true,
         launcher_exclude: Vec::new(),
         provenance_state: None,
+        owned_recursive: false,
         receipt_name: "caduceus-staff-shelf-sweep-detail".into(),
     };
     let sweep = tools::files::source_shelf_sweep(&request, preflight_dir, apply)?;

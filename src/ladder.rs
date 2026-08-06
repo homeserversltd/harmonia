@@ -425,6 +425,9 @@ fn validate_tool_semantics(
                 step_id: step_id.into(),
                 defect,
             }),
+        ("venv", "converge") => tools::venv::validate_ladder_args(args).map_err(|defect| {
+            LadderValidationError { step_id: step_id.into(), defect }
+        }),
         _ => Ok(()),
     }
 }
@@ -562,6 +565,8 @@ fn execute_validated_step(
                 | ("package", "upgrade")
                 | ("package", "keyring-repair")
                 | ("git-artifact", "sync")
+                | ("files", "source-shelf-sweep")
+                | ("venv", "converge")
                 | ("aur", "install")
                 | ("aur", "build-pinned")
         );
@@ -580,12 +585,18 @@ fn execute_validated_step(
         ("files", "remove") => files_remove_step(step, module_dir, false),
         ("files", "executable-present") => files_executable_present_step(step, module_dir),
         ("files", "source-shelf-sweep") => {
-            files_source_shelf_sweep_step(step, manifest, module_dir, false)
+            files_source_shelf_sweep_step(step, manifest, module_dir, software_apply)
         }
         ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, false),
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, false)
         }
+        ("venv", "converge") => tools::venv::execute_ladder_step(
+            &step.args,
+            module_dir,
+            &step.step_id,
+            software_apply,
+        ),
         ("systemd", _) => systemd_step(
             step,
             module_dir,
@@ -1062,6 +1073,7 @@ fn files_source_shelf_sweep_step(
             .unwrap_or(false),
         launcher_exclude: string_array_arg(&step.args, "launcher_exclude"),
         provenance_state: optional_string_arg(&step.args, "provenance_state").map(PathBuf::from),
+        owned_recursive: step.args.get("owned_recursive").and_then(Value::as_bool).unwrap_or(false),
         receipt_name: step.step_id.clone(),
     };
     let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply)?;

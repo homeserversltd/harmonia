@@ -1,8 +1,54 @@
 {
   "schema": "harmonia.module.ladder.v1",
-  "id": "sbin", "version": "1.0.0", "description": "Synchronize the declared sbin source and carry only provenance-owned launchers.", "optional": false, "constants": {},
+  "id": "sbin",
+  "version": "1.0.0",
+  "description": "Synchronize the declared sbin source, converge its owned recursive shelf paths, and keep the staff venv present.",
+  "optional": false,
+  "constants": {},
   "ladder": [
-    {"step_id":"sbin-source-sync","tool":"git-artifact","permutation":"sync","args":{"component":"sbin","path":"/opt/sbin/source","source_dir":"/opt/sbin/source","bearer":"owner"}},
-    {"step_id":"sbin-source-shelf-sweep","tool":"files","permutation":"source-shelf-sweep","args":{"source_root":"/opt/sbin/source","shelf_source":".","target_shelf":"/usr/local/sbin","launcher_source_root":"/opt/sbin/source","launcher_target_root":"/usr/local/sbin","launcher_pattern":"*","launcher_exclude":[".git*","README.md","LICENSE","VERSION","CONTRIBUTING.md","tests","caduceus-*","caduceus_staff"],"shelf_owner":"root","shelf_group":"root","shelf_directory_mode":493,"shelf_file_mode":493,"launcher_mode":493,"prune":true,"provenance_state":"/var/lib/harmonia/state/sbin-source-shelf-sweep.json"}}
+    {
+      "step_id": "sbin-source-sync",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "component": "sbin",
+        "path": "/opt/sbin/source",
+        "source_dir": "/opt/sbin/source",
+        "bearer": "owner"
+      }
+    },
+    {
+      "step_id": "caduceus-venv-converge",
+      "tool": "venv",
+      "permutation": "converge",
+      "args": {
+        "venv": "/var/lib/caduceus/venv",
+        "source_root": "/opt/sbin/source",
+        "source_patterns": ["requirements*.txt", "pyproject.toml"],
+        "python": "/usr/bin/python3"
+      }
+    },
+    {
+      "step_id": "sbin-source-shelf-sweep",
+      "tool": "files",
+      "permutation": "source-shelf-sweep",
+      "args": {
+        "source_root": "/opt/sbin/source",
+        "shelf_source": ".",
+        "target_shelf": "/usr/local/sbin",
+        "launcher_source_root": "/opt/sbin/source",
+        "launcher_target_root": "/usr/local/sbin",
+        "launcher_pattern": "*",
+        "launcher_exclude": [".git*", "README.md", "LICENSE", "VERSION", "CONTRIBUTING.md", "tests", "caduceus-*", "caduceus_staff"],
+        "shelf_owner": "root",
+        "shelf_group": "root",
+        "shelf_directory_mode": 448,
+        "shelf_file_mode": 448,
+        "launcher_mode": 448,
+        "prune": true,
+        "provenance_state": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
+        "owned_recursive": true
+      }
+    }
   ]
 }
