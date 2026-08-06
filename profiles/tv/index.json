@@ -29,7 +29,8 @@
     "tv-update-runtime",
     "household-time",
     "caduceus-public-lever",
-    "appliance-proof"
+    "appliance-proof",
+    "sbin"
   ],
   "identity": "arch-tv",
   "module_spine_entered": "profiles/tv/modules"

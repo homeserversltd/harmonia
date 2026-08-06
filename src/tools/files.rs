@@ -101,6 +101,8 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("shelf_file_mode", ToolArgKind::Integer),
             ToolArg::required("launcher_mode", ToolArgKind::Integer),
             ToolArg::required("prune", ToolArgKind::Bool),
+            ToolArg::optional("launcher_exclude", ToolArgKind::StringArray),
+            ToolArg::optional("provenance_state", ToolArgKind::String),
         ],
     ),
     ToolPermutation::new(
@@ -1532,7 +1534,17 @@ pub struct SourceShelfSweepRequest {
     pub shelf_file_mode: u32,
     pub launcher_mode: u32,
     pub prune: bool,
+    /// Additive shared-root guard.  When absent, preserve the established sweep.
+    pub launcher_exclude: Vec<String>,
+    /// Additive ownership ledger.  Only paths recorded here may be replaced/pruned.
+    pub provenance_state: Option<PathBuf>,
     pub receipt_name: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct SourceShelfSweepProvenance {
+    #[serde(default)]
+    paths: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1671,6 +1683,35 @@ fn basename_pattern_matches(pattern: &str, value: &str) -> bool {
         previous = current;
     }
     previous[value.len()]
+}
+
+fn source_shelf_excluded(patterns: &[String], relative: &Path) -> bool {
+    let relative = relative.to_string_lossy();
+    patterns.iter().any(|pattern| {
+        basename_pattern_matches(pattern, &relative)
+            || relative.split('/').any(|part| basename_pattern_matches(pattern, part))
+    })
+}
+
+fn load_sweep_provenance(path: &Path) -> Result<SourceShelfSweepProvenance, String> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| format!(
+            "source-shelf-sweep-provenance-parse-failed {}: {error}", path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(format!("source-shelf-sweep-provenance-read-failed {}: {error}", path.display())),
+    }
+}
+
+fn write_sweep_provenance(path: &Path, provenance: &SourceShelfSweepProvenance) -> Result<(), String> {
+    let parent = path.parent().ok_or_else(|| "source-shelf-sweep-provenance-parent-missing".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| format!(
+        "source-shelf-sweep-provenance-parent-create-failed {}: {error}", parent.display()
+    ))?;
+    crate::write_json(path, &json!({
+        "schema":"harmonia.files.source_shelf_sweep.provenance.v1",
+        "paths": provenance.paths,
+    }))
 }
 
 fn inventory_sweep_tree(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
@@ -1907,6 +1948,7 @@ fn shelf_is_current(
 fn source_launchers(
     source_root: &Path,
     pattern: &str,
+    exclude: &[String],
 ) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut launchers = BTreeMap::new();
     for entry in fs::read_dir(source_root).map_err(|error| {
@@ -1917,7 +1959,9 @@ fn source_launchers(
     })? {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !basename_pattern_matches(pattern, &name) {
+        if !basename_pattern_matches(pattern, &name)
+            || source_shelf_excluded(exclude, Path::new(&name))
+        {
             continue;
         }
         let path = entry.path();
@@ -1944,7 +1988,11 @@ fn source_launchers(
     Ok(launchers)
 }
 
-fn target_pattern_files(target_root: &Path, pattern: &str) -> Result<BTreeSet<String>, String> {
+fn target_pattern_files(
+    target_root: &Path,
+    pattern: &str,
+    exclude: &[String],
+) -> Result<BTreeSet<String>, String> {
     if !target_root.exists() {
         return Ok(BTreeSet::new());
     }
@@ -1957,7 +2005,10 @@ fn target_pattern_files(target_root: &Path, pattern: &str) -> Result<BTreeSet<St
     })? {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !basename_pattern_matches(pattern, &name) {
+        if !basename_pattern_matches(pattern, &name)
+            || source_shelf_excluded(exclude, Path::new(&name))
+            || name.starts_with(".harmonia-source-shelf-sweep-")
+        {
             continue;
         }
         let kind = entry.file_type().map_err(|error| error.to_string())?;
@@ -2327,7 +2378,13 @@ pub fn source_shelf_sweep(
                 } else {
                     format!("{}.json", request.receipt_name)
                 };
-                if !receipt_dir.join(receipt_name).exists() {
+                let receipt_path = receipt_dir.join(receipt_name);
+                let stale = fs::read(&receipt_path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .and_then(|receipt| receipt.get("first_blocker").and_then(serde_json::Value::as_str).map(str::to_string))
+                    .is_none_or(|first_blocker| first_blocker != blocker);
+                if !receipt_path.exists() || stale {
                     let outcome = SourceShelfSweepOutcome {
                         ok: false,
                         changed: false,
@@ -2362,7 +2419,9 @@ fn source_shelf_sweep_with_fault(
     fault: SourceShelfSweepFault,
 ) -> Result<SourceShelfSweepOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
-    validate_relative_path(&request.shelf_source)?;
+    if request.shelf_source != Path::new(".") {
+        validate_relative_path(&request.shelf_source)?;
+    }
     validate_launcher_pattern(&request.launcher_pattern)?;
     validate_mode("shelf-directory", request.shelf_directory_mode)?;
     validate_mode("shelf-file", request.shelf_file_mode)?;
@@ -2438,16 +2497,33 @@ fn source_shelf_sweep_with_fault(
         .map_err(|error| format!("source-shelf-sweep-owner-resolution-failed: {error}"))?;
     let gid = resolve_gid(&request.shelf_group)
         .map_err(|error| format!("source-shelf-sweep-group-resolution-failed: {error}"))?;
-    let source_entries = inventory_sweep_tree(&shelf_source)?;
+    let launcher_only = request.provenance_state.is_some()
+        && request.shelf_source == Path::new(".")
+        && request.target_shelf == request.launcher_target_root;
+    let source_entries = if launcher_only {
+        Vec::new()
+    } else {
+        inventory_sweep_tree(&shelf_source)?
+            .into_iter()
+            .filter(|entry| !source_shelf_excluded(&request.launcher_exclude, &entry.relative_path))
+            .collect()
+    };
     let target_before = inventory_sweep_tree_if_present(&request.target_shelf)?;
-    let launchers = source_launchers(&launcher_source_root, &request.launcher_pattern)?;
-    let target_launchers =
-        target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
+    let launchers = source_launchers(
+        &launcher_source_root,
+        &request.launcher_pattern,
+        &request.launcher_exclude,
+    )?;
+    let target_launchers = target_pattern_files(
+        &request.launcher_target_root,
+        &request.launcher_pattern,
+        &request.launcher_exclude,
+    )?;
     let stale: BTreeSet<_> = target_launchers
         .difference(&launchers.keys().cloned().collect())
         .cloned()
         .collect();
-    let shelf_current = shelf_is_current(
+    let shelf_current = launcher_only || shelf_is_current(
         &shelf_source,
         &request.target_shelf,
         &source_entries,
@@ -2466,6 +2542,23 @@ fn source_shelf_sweep_with_fault(
             gid,
         )? {
             launcher_drift.insert(name.clone());
+        }
+    }
+    let mut provenance = request
+        .provenance_state
+        .as_ref()
+        .map(|path| load_sweep_provenance(path))
+        .transpose()?
+        .unwrap_or_default();
+    if request.provenance_state.is_some() {
+        for name in launcher_drift.iter().chain(stale.iter()) {
+            let target = request.launcher_target_root.join(name);
+            if target.exists() && !provenance.paths.contains(&target.display().to_string()) {
+                return Err(format!(
+                    "source-shelf-sweep-provenance-refused-unowned-target {}",
+                    target.display()
+                ));
+            }
         }
     }
     let drift =
@@ -2687,15 +2780,17 @@ fn source_shelf_sweep_with_fault(
                     }
                     sync_directory(&request.launcher_target_root)?;
                 }
-                if !shelf_is_current(
-                    &shelf_source,
-                    &request.target_shelf,
-                    &source_entries,
-                    request.shelf_directory_mode,
-                    request.shelf_file_mode,
-                    uid,
-                    gid,
-                )? {
+                if !launcher_only
+                    && !shelf_is_current(
+                        &shelf_source,
+                        &request.target_shelf,
+                        &source_entries,
+                        request.shelf_directory_mode,
+                        request.shelf_file_mode,
+                        uid,
+                        gid,
+                    )?
+                {
                     return Err("source-shelf-sweep-shelf-readback-failed".into());
                 }
                 for (name, source) in &launchers {
@@ -2726,8 +2821,11 @@ fn source_shelf_sweep_with_fault(
             let mut committed_outcome = None;
             let transaction = transaction.and_then(|_| {
                 let target_after = inventory_sweep_tree_if_present(&request.target_shelf)?;
-                let target_launchers_after =
-                    target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
+                let target_launchers_after = target_pattern_files(
+                    &request.launcher_target_root,
+                    &request.launcher_pattern,
+                    &request.launcher_exclude,
+                )?;
                 let entries = readback_sweep_entries(planned_entries.clone())?;
                 if entries.iter().any(|entry| !entry.readback_ok) {
                     return Err("source-shelf-sweep-entry-readback-failed".into());
@@ -2823,6 +2921,7 @@ fn source_shelf_sweep_with_fault(
                         + target_pattern_files(
                             &request.launcher_target_root,
                             &request.launcher_pattern,
+                            &request.launcher_exclude,
                         )
                         .map(|entries| entries.len())
                         .unwrap_or_default(),
@@ -2884,6 +2983,19 @@ fn source_shelf_sweep_with_fault(
                     },
                 )?;
                 return Err(outcome.message);
+            }
+            if let Some(path) = request.provenance_state.as_ref() {
+                for name in launchers.keys() {
+                    provenance.paths.insert(
+                        request.launcher_target_root.join(name).display().to_string(),
+                    );
+                }
+                for name in &stale {
+                    provenance
+                        .paths
+                        .remove(&request.launcher_target_root.join(name).display().to_string());
+                }
+                write_sweep_provenance(path, &provenance)?;
             }
             write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
             Ok(outcome)
@@ -5090,6 +5202,8 @@ mod managed_ownership_tests {
             shelf_file_mode: 0o644,
             launcher_mode: 0o755,
             prune: true,
+            launcher_exclude: Vec::new(),
+            provenance_state: None,
             receipt_name: "source-shelf-sweep".into(),
         }
     }
