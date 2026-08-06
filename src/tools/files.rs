@@ -2,6 +2,7 @@ use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use similar::TextDiff;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::ffi::CString;
@@ -340,6 +341,10 @@ pub struct FileConvergenceEntry {
     pub ownership_changed: bool,
     pub observed_uid: Option<u32>,
     pub observed_gid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_omitted: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -354,6 +359,79 @@ pub struct FileConvergenceOutcome {
     pub missing_target_birth_debts: Vec<String>,
     pub entries: Vec<FileConvergenceEntry>,
     pub message: String,
+}
+
+const UNIFIED_DIFF_BYTE_LIMIT: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Default)]
+struct UnifiedFileDiff {
+    text: Option<String>,
+    omitted: Option<String>,
+}
+
+fn unified_file_diff(source: &Path, target: &Path) -> Result<UnifiedFileDiff, String> {
+    let declared = fs::read(source)
+        .map_err(|error| format!("files-source-read-failed {}: {error}", source.display()))?;
+    let current = match fs::read(target) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(format!(
+                "files-target-read-failed {}: {error}",
+                target.display()
+            ));
+        }
+    };
+    if current.len() > UNIFIED_DIFF_BYTE_LIMIT || declared.len() > UNIFIED_DIFF_BYTE_LIMIT {
+        return Ok(UnifiedFileDiff {
+            text: None,
+            omitted: Some(format!(
+                "too-large: {} -> {}",
+                human_byte_size(current.len()),
+                human_byte_size(declared.len())
+            )),
+        });
+    }
+    let Ok(current) = String::from_utf8(current) else {
+        return Ok(UnifiedFileDiff { text: None, omitted: Some("binary".to_string()) });
+    };
+    let Ok(declared) = String::from_utf8(declared) else {
+        return Ok(UnifiedFileDiff { text: None, omitted: Some("binary".to_string()) });
+    };
+    Ok(UnifiedFileDiff {
+        text: Some(
+            TextDiff::from_lines(&current, &declared)
+                .unified_diff()
+                .context_radius(3)
+                .header("current", "declared")
+                .to_string(),
+        ),
+        omitted: None,
+    })
+}
+
+fn human_byte_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes}B")
+    } else {
+        format!("{:.1}KiB", bytes as f64 / 1024.0)
+    }
+}
+
+fn write_unified_diff_receipt(
+    receipt_dir: &Path,
+    receipt_name: &str,
+    relative_path: &str,
+    diff: &str,
+) -> Result<(), String> {
+    let safe_path = relative_path.replace('/', "_").replace('\\', "_");
+    let stem = receipt_name.trim_end_matches(".json");
+    fs::create_dir_all(receipt_dir).map_err(|error| {
+        format!("files-diff-receipt-directory-create-failed {}: {error}", receipt_dir.display())
+    })?;
+    let path = receipt_dir.join(format!("{stem}-{safe_path}.diff"));
+    fs::write(&path, diff)
+        .map_err(|error| format!("files-diff-receipt-write-failed {}: {error}", path.display()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1158,12 +1236,18 @@ pub fn converge_files(
                 ownership_changed: false,
                 observed_uid: None,
                 observed_gid: None,
+                diff: None,
+                diff_omitted: None,
             });
             continue;
         }
 
         if !target_exists_before {
             missing_target_birth_debts.push(relative_path.clone());
+            let file_diff = unified_file_diff(&source, &target)?;
+            if let Some(diff) = file_diff.text.as_deref() {
+                write_unified_diff_receipt(receipt_dir, &request.receipt_name, &relative_path, diff)?;
+            }
             entries.push(FileConvergenceEntry {
                 relative_path,
                 source,
@@ -1188,6 +1272,8 @@ pub fn converge_files(
                 ownership_changed: false,
                 observed_uid: None,
                 observed_gid: None,
+                diff: file_diff.text,
+                diff_omitted: file_diff.omitted,
             });
             continue;
         }
@@ -1228,6 +1314,14 @@ pub fn converge_files(
                 .unwrap_or(false);
         let content_changed = !content_equal_before || !mode_equal_before;
         let entry_changed = content_changed || ownership_changed;
+        let file_diff = if !content_equal_before {
+            unified_file_diff(&source, &target)?
+        } else {
+            UnifiedFileDiff::default()
+        };
+        if let Some(diff) = file_diff.text.as_deref() {
+            write_unified_diff_receipt(receipt_dir, &request.receipt_name, &relative_path, diff)?;
+        }
         let run = crate::tools::comparison::execute(
             || Ok::<_, String>(entry_changed),
             |different| {
@@ -1329,6 +1423,8 @@ pub fn converge_files(
                 ownership_changed,
                 observed_uid: observed_uid_after,
                 observed_gid: observed_gid_after,
+                diff: file_diff.text.clone(),
+                diff_omitted: file_diff.omitted.clone(),
             });
             write_partial_failure_receipt(
                 receipt_dir,
@@ -1366,6 +1462,8 @@ pub fn converge_files(
             ownership_changed,
             observed_uid: observed_uid_after,
             observed_gid: observed_gid_after,
+            diff: file_diff.text,
+            diff_omitted: file_diff.omitted,
         });
     }
 
