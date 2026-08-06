@@ -30,7 +30,8 @@
     "household-time",
     "caduceus-public-lever",
     "appliance-proof",
-    "sbin"
+    "sbin",
+    "sudoers"
   ],
   "identity": "arch-tv",
   "module_spine_entered": "profiles/tv/modules"

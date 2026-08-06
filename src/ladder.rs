@@ -566,6 +566,7 @@ fn execute_validated_step(
                 | ("package", "keyring-repair")
                 | ("git-artifact", "sync")
                 | ("files", "source-shelf-sweep")
+                | ("files", "validated-sudoers-converge")
                 | ("venv", "converge")
                 | ("aur", "install")
                 | ("aur", "build-pinned")
@@ -586,6 +587,9 @@ fn execute_validated_step(
         ("files", "executable-present") => files_executable_present_step(step, module_dir),
         ("files", "source-shelf-sweep") => {
             files_source_shelf_sweep_step(step, manifest, module_dir, software_apply)
+        }
+        ("files", "validated-sudoers-converge") => {
+            files_validated_sudoers_converge_step(step, manifest, module_dir, software_apply)
         }
         ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, false),
         ("files", "converge") | ("files", "directory-sync") => {
@@ -1077,6 +1081,86 @@ fn files_source_shelf_sweep_step(
         receipt_name: step.step_id.clone(),
     };
     let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply)?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+
+fn files_validated_sudoers_converge_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
+    let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
+    let owned_prefix = string_arg(&step.args, "owned_prefix");
+    let validator_program = string_arg(&step.args, "validator_program");
+    let validator_args = string_array_arg(&step.args, "validator_args");
+    let files = string_array_arg(&step.args, "files");
+
+    if target_root != PathBuf::from("/etc/sudoers.d") {
+        return Err("validated-sudoers-target-root-refused".into());
+    }
+    if owned_prefix.is_empty()
+        || owned_prefix.contains('/')
+        || owned_prefix.contains('\\')
+        || !matches!(validator_program, "/usr/bin/visudo" | "/usr/sbin/visudo")
+        || validator_args.len() != 1
+        || validator_args[0] != "-cf"
+        || string_arg(&step.args, "owner") != "root"
+        || string_arg(&step.args, "group") != "root"
+    {
+        return Err("validated-sudoers-contract-refused".into());
+    }
+    if files.is_empty() {
+        return Err("validated-sudoers-files-empty".into());
+    }
+
+    for name in &files {
+        let relative = Path::new(name);
+        if relative.components().count() != 1
+            || relative.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
+            || !name.starts_with(owned_prefix)
+        {
+            return Err(format!("validated-sudoers-declared-path-refused {name}"));
+        }
+        let candidate = source_root.join(relative);
+        let candidate_text = candidate.to_string_lossy();
+        let refs = ["-cf", candidate_text.as_ref()];
+        let result = tools::command::capture_with_timeout(validator_program, &refs, 30);
+        crate::write_command_receipt(
+            module_dir,
+            &format!("{}-{}-validation", step.step_id, name),
+            &result,
+        )?;
+        if !result.ok {
+            return Err(format!("validated-sudoers-visudo-rejected {name}"));
+        }
+    }
+
+    let request = crate::tools::files::FileConvergenceRequest {
+        source_root,
+        target_root,
+        files: files
+            .into_iter()
+            .map(|relative_path| crate::tools::files::FileSpec {
+                relative_path: PathBuf::from(relative_path),
+                mode: Some(0o440),
+            })
+            .collect(),
+        backup_existing: false,
+        receipt_name: optional_string_arg(&step.args, "receipt_name")
+            .unwrap_or(&step.step_id)
+            .to_string(),
+        owner: Some("root".to_string()),
+        group: Some("root".to_string()),
+    };
+    let outcome = crate::tools::files::converge_files(&request, module_dir, apply)?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
