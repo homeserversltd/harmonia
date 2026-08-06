@@ -13,6 +13,7 @@ pub(crate) struct LadderManifest {
     pub schema: String,
     pub id: String,
     pub version: String,
+    #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub role: Option<String>,

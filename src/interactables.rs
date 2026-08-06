@@ -26,6 +26,7 @@ struct Interactable {
     id: String,
     module_id: String,
     name: String,
+    #[serde(default)]
     description: String,
     kind: String,
     target_path: PathBuf,

@@ -39,7 +39,7 @@ fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result
     // presence selects this primitive and the full declaration is preserved.
     let schema = optional_string(object, "schema").unwrap_or(SCHEMA);
     let id = required_string(object, "id", "hotfix-id-missing")?;
-    let description = required_string(object, "description", "hotfix-description-missing")?;
+    let description = optional_string(object, "description").unwrap_or_default();
     let scope = parse_scope(object.get("scope"))?;
     let in_scope = (scope.profiles.is_empty()
         || scope.profiles.iter().any(|value| value == &profile.id))
@@ -164,6 +164,13 @@ fn write_blocked_receipt(
             .unwrap_or(SCHEMA)),
     );
     receipt.insert("hotfix_id".into(), json!(id));
+    receipt.insert(
+        "description".into(),
+        json!(declaration
+            .as_object()
+            .and_then(|object| optional_string(object, "description"))
+            .unwrap_or_default()),
+    );
     receipt.insert("profile_id".into(), json!(profile.id));
     receipt.insert("body_identity".into(), json!(profile.identity));
     receipt.insert("scope_observation".into(), json!("in-scope-or-unreadable"));
