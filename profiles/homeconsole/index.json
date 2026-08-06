@@ -21,6 +21,7 @@
     "homeconsole-update-runtime",
     "household-time",
     "homeconsole-caduceus-public-lever",
-    "sbin"
+    "sbin",
+    "sudoers"
   ]
 }

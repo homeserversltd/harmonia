@@ -86,6 +86,21 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         ],
     ),
     ToolPermutation::new(
+        "validated-sudoers-converge",
+        "validate and atomically converge only declared estate-owned sudoers.d fragments",
+        &[
+            ToolArg::required("source_root", ToolArgKind::String),
+            ToolArg::required("target_root", ToolArgKind::String),
+            ToolArg::required("files", ToolArgKind::StringArray),
+            ToolArg::required("owned_prefix", ToolArgKind::String),
+            ToolArg::required("validator_program", ToolArgKind::String),
+            ToolArg::required("validator_args", ToolArgKind::StringArray),
+            ToolArg::required("owner", ToolArgKind::String),
+            ToolArg::required("group", ToolArgKind::String),
+            ToolArg::optional("receipt_name", ToolArgKind::String),
+        ],
+    ),
+    ToolPermutation::new(
         "source-shelf-sweep",
         "converge one source shelf plus pattern-selected flat launchers with per-path atomic, all-or-restored semantics",
         &[
