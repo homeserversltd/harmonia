@@ -2440,6 +2440,7 @@ fn source_shelf_owned_recursive_sweep(
     apply: bool,
 ) -> Result<SourceShelfSweepOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
+    validate_source_shelf_relative_path(&request.shelf_source)?;
     let provenance_path = request
         .provenance_state
         .as_ref()
@@ -2612,9 +2613,7 @@ fn source_shelf_sweep_with_fault(
     fault: SourceShelfSweepFault,
 ) -> Result<SourceShelfSweepOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
-    if request.shelf_source != Path::new(".") {
-        validate_relative_path(&request.shelf_source)?;
-    }
+    validate_source_shelf_relative_path(&request.shelf_source)?;
     validate_launcher_pattern(&request.launcher_pattern)?;
     validate_mode("shelf-directory", request.shelf_directory_mode)?;
     validate_mode("shelf-file", request.shelf_file_mode)?;
@@ -3584,6 +3583,21 @@ pub(crate) fn validate_relative_path(path: &Path) -> Result<(), String> {
             Component::Normal(_) => {}
             _ => return Err(format!("files-relative-path-rejected {}", path.display())),
         }
+    }
+    Ok(())
+}
+
+fn validate_source_shelf_relative_path(path: &Path) -> Result<(), String> {
+    if path == Path::new(".") {
+        return Ok(());
+    }
+    validate_relative_path(path)?;
+    if path
+        .to_string_lossy()
+        .split(std::path::MAIN_SEPARATOR)
+        .any(|component| component == ".")
+    {
+        return Err(format!("files-relative-path-rejected {}", path.display()));
     }
     Ok(())
 }
