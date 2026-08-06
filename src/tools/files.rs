@@ -1988,7 +1988,11 @@ fn source_launchers(
     Ok(launchers)
 }
 
-fn target_pattern_files(target_root: &Path, pattern: &str) -> Result<BTreeSet<String>, String> {
+fn target_pattern_files(
+    target_root: &Path,
+    pattern: &str,
+    exclude: &[String],
+) -> Result<BTreeSet<String>, String> {
     if !target_root.exists() {
         return Ok(BTreeSet::new());
     }
@@ -2002,6 +2006,7 @@ fn target_pattern_files(target_root: &Path, pattern: &str) -> Result<BTreeSet<St
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if !basename_pattern_matches(pattern, &name)
+            || source_shelf_excluded(exclude, Path::new(&name))
             || name.starts_with(".harmonia-source-shelf-sweep-")
         {
             continue;
@@ -2509,8 +2514,11 @@ fn source_shelf_sweep_with_fault(
         &request.launcher_pattern,
         &request.launcher_exclude,
     )?;
-    let target_launchers =
-        target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
+    let target_launchers = target_pattern_files(
+        &request.launcher_target_root,
+        &request.launcher_pattern,
+        &request.launcher_exclude,
+    )?;
     let stale: BTreeSet<_> = target_launchers
         .difference(&launchers.keys().cloned().collect())
         .cloned()
@@ -2813,8 +2821,11 @@ fn source_shelf_sweep_with_fault(
             let mut committed_outcome = None;
             let transaction = transaction.and_then(|_| {
                 let target_after = inventory_sweep_tree_if_present(&request.target_shelf)?;
-                let target_launchers_after =
-                    target_pattern_files(&request.launcher_target_root, &request.launcher_pattern)?;
+                let target_launchers_after = target_pattern_files(
+                    &request.launcher_target_root,
+                    &request.launcher_pattern,
+                    &request.launcher_exclude,
+                )?;
                 let entries = readback_sweep_entries(planned_entries.clone())?;
                 if entries.iter().any(|entry| !entry.readback_ok) {
                     return Err("source-shelf-sweep-entry-readback-failed".into());
@@ -2910,6 +2921,7 @@ fn source_shelf_sweep_with_fault(
                         + target_pattern_files(
                             &request.launcher_target_root,
                             &request.launcher_pattern,
+                            &request.launcher_exclude,
                         )
                         .map(|entries| entries.len())
                         .unwrap_or_default(),
