@@ -1060,6 +1060,8 @@ fn files_source_shelf_sweep_step(
             .get("prune")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        launcher_exclude: string_array_arg(&step.args, "launcher_exclude"),
+        provenance_state: optional_string_arg(&step.args, "provenance_state").map(PathBuf::from),
         receipt_name: step.step_id.clone(),
     };
     let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply)?;
@@ -1531,14 +1533,26 @@ fn engine_source_resolution(
     component: &str,
     config: &crate::EnginePlaneConfig,
 ) -> Result<crate::source_resolver::SourceResolution, String> {
+    let declared = config.source_components.get(component);
+    let (source_repo_url, branch) = if let Some(declared) = declared {
+        (&declared.repo_url, &declared.branch)
+    } else {
+        (&config.source_repo_url, &config.branch)
+    };
     let source_component = config
+        .source_components
+        .get(component)
+        .map(|_| component)
+        .unwrap_or_else(|| {
+            config
         .source_repo_url
         .trim_end_matches('/')
         .rsplit('/')
         .next()
         .and_then(|segment| segment.rsplit(':').next())
         .unwrap_or_default()
-        .trim_end_matches(".git");
+        .trim_end_matches(".git")
+        });
     if source_component != component {
         return Err(format!(
             "source-component-undeclared component={component}; engine-source-component={source_component}"
@@ -1557,10 +1571,10 @@ fn engine_source_resolution(
     Ok(crate::source_resolver::SourceResolution {
         schema: crate::source_resolver::SOURCE_PLAN_SCHEMA,
         component: component.to_string(),
-        requested_ref: config.branch.clone(),
+        requested_ref: branch.clone(),
         candidates: vec![crate::source_resolver::SourceCandidatePlan {
             kind: "git".to_string(),
-            locator: config.source_repo_url.clone(),
+            locator: source_repo_url.clone(),
             credential_selector,
             freshness_authority: None,
         }],

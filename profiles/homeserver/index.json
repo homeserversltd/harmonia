@@ -71,7 +71,8 @@
     "udev",
     "systemd",
     "matrix",
-    "homeserver-update-runtime"
+    "homeserver-update-runtime",
+    "sbin"
   ],
   "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Matrix/Element service modules, and the permissions source-artifact scaffold; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [

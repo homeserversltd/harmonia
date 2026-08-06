@@ -389,9 +389,22 @@ pub(crate) fn write_plan_receipts(
                         manifest.id
                     ));
                 }
-                validate_ladder(&manifest)
-                    .map(|_| ())
-                    .map_err(|err| err.first_missing_signal())
+                let steps = validate_ladder(&manifest)
+                    .map_err(|err| err.first_missing_signal())?;
+                for step in steps {
+                    writeln!(
+                        events,
+                        "{}",
+                        json!({
+                            "event":"step-planned", "module":module,
+                            "step_id":step.step_id, "tool":step.tool,
+                            "permutation":step.permutation, "args":step.args,
+                            "ok":true, "mutation":false
+                        })
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                Ok(())
             })
         } else {
             load_module(&module_dir.join("sidecar.json")).map(|_| ())

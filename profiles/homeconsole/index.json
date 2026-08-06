@@ -20,6 +20,7 @@
     "pinned-artifacts-runtime",
     "homeconsole-update-runtime",
     "household-time",
-    "homeconsole-caduceus-public-lever"
+    "homeconsole-caduceus-public-lever",
+    "sbin"
   ]
 }
