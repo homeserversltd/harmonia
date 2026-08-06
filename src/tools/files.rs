@@ -103,6 +103,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("prune", ToolArgKind::Bool),
             ToolArg::optional("launcher_exclude", ToolArgKind::StringArray),
             ToolArg::optional("provenance_state", ToolArgKind::String),
+            ToolArg::optional("owned_recursive", ToolArgKind::Bool),
         ],
     ),
     ToolPermutation::new(
@@ -1538,6 +1539,9 @@ pub struct SourceShelfSweepRequest {
     pub launcher_exclude: Vec<String>,
     /// Additive ownership ledger.  Only paths recorded here may be replaced/pruned.
     pub provenance_state: Option<PathBuf>,
+    /// Shared-root mode: carry source inventory per owned path without replacing
+    /// cohabiting material outside the provenance ledger.
+    pub owned_recursive: bool,
     pub receipt_name: String,
 }
 
@@ -2364,6 +2368,9 @@ pub fn source_shelf_sweep(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<SourceShelfSweepOutcome, String> {
+    if request.owned_recursive {
+        return source_shelf_owned_recursive_sweep(request, receipt_dir, apply);
+    }
     match source_shelf_sweep_with_fault(
         request,
         receipt_dir,
@@ -2410,6 +2417,177 @@ pub fn source_shelf_sweep(
             Err(blocker)
         }
     }
+}
+
+fn source_shelf_owned_recursive_sweep(
+    request: &SourceShelfSweepRequest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<SourceShelfSweepOutcome, String> {
+    validate_receipt_name(&request.receipt_name)?;
+    let provenance_path = request
+        .provenance_state
+        .as_ref()
+        .ok_or_else(|| "source-shelf-sweep-owned-recursive-provenance-required".to_string())?;
+    if !request.target_shelf.is_absolute() || !request.target_shelf.is_dir() {
+        return Err("source-shelf-sweep-owned-recursive-target-root-invalid".into());
+    }
+    validate_mode("shelf-directory", request.shelf_directory_mode)?;
+    validate_mode("shelf-file", request.shelf_file_mode)?;
+    reject_ssh_path(&request.target_shelf)?;
+    reject_symlink_components(&request.target_shelf)?;
+    let source_root = request.source_root.canonicalize().map_err(|error| {
+        format!("source-shelf-sweep-source-root-invalid {}: {error}", request.source_root.display())
+    })?;
+    let shelf_source = source_root.join(&request.shelf_source).canonicalize().map_err(|error| {
+        format!("source-shelf-sweep-shelf-source-invalid {}: {error}", request.shelf_source.display())
+    })?;
+    shelf_source.strip_prefix(&source_root).map_err(|_| {
+        format!("source-shelf-sweep-shelf-source-outside-root {}", shelf_source.display())
+    })?;
+    let uid = resolve_uid(&request.shelf_owner)
+        .map_err(|error| format!("source-shelf-sweep-owner-resolution-failed: {error}"))?;
+    let gid = resolve_gid(&request.shelf_group)
+        .map_err(|error| format!("source-shelf-sweep-group-resolution-failed: {error}"))?;
+    let desired: Vec<SweepTreeEntry> = inventory_sweep_tree(&shelf_source)?
+        .into_iter()
+        .filter(|entry| entry.relative_path != Path::new(".") && !source_shelf_excluded(&request.launcher_exclude, &entry.relative_path))
+        .collect();
+    let desired_paths: BTreeSet<String> = desired.iter()
+        .map(|entry| request.target_shelf.join(&entry.relative_path).display().to_string())
+        .collect();
+    let mut provenance = load_sweep_provenance(provenance_path)?;
+    let mut stale: Vec<PathBuf> = provenance.paths.iter().filter_map(|path| {
+        let absolute = PathBuf::from(path);
+        absolute.strip_prefix(&request.target_shelf).ok().and_then(|relative| {
+            (!relative.as_os_str().is_empty() && !desired_paths.contains(path)).then(|| relative.to_path_buf())
+        })
+    }).collect();
+    stale.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    let mut entries = Vec::new();
+    let mut drift = !stale.is_empty();
+    for entry in &desired {
+        let source = shelf_source.join(&entry.relative_path);
+        let target = request.target_shelf.join(&entry.relative_path);
+        let owned = provenance.paths.contains(&target.display().to_string());
+        if target.exists() && !owned && !entry.is_dir {
+            return Err(format!("source-shelf-sweep-provenance-refused-unowned-target {}", target.display()));
+        }
+        let current = if entry.is_dir && target.exists() && !owned {
+            true
+        } else {
+            let (digest, mode, observed_uid, observed_gid) = sweep_path_state(&target, entry.is_dir)?;
+            mode == Some(if entry.is_dir { request.shelf_directory_mode } else { request.shelf_file_mode })
+                && observed_uid == Some(uid)
+                && observed_gid == Some(gid)
+                && (entry.is_dir || digest == Some(digest_file(&source)?))
+        };
+        drift |= !current;
+        entries.push(SourceShelfSweepEntry {
+            kind: if entry.is_dir { "owned-recursive-directory" } else { "owned-recursive-file" }.into(),
+            relative_path: entry.relative_path.display().to_string(), source: Some(source), target,
+            source_digest: None, before_digest: None, after_digest: None,
+            desired_mode: if entry.is_dir { request.shelf_directory_mode } else { request.shelf_file_mode },
+            before_mode: None, after_mode: None, desired_uid: uid, desired_gid: gid,
+            before_uid: None, before_gid: None, after_uid: None, after_gid: None,
+            action: if current { "unchanged" } else { "planned" }.into(), changed: !current,
+            readback_ok: current, rollback_action: "not-needed".into(), rollback_readback_ok: None,
+        });
+    }
+    for relative in &stale {
+        entries.push(SourceShelfSweepEntry {
+            kind: "stale-owned-recursive-path".into(), relative_path: relative.display().to_string(),
+            source: None, target: request.target_shelf.join(relative), source_digest: None,
+            before_digest: None, after_digest: None, desired_mode: request.shelf_file_mode,
+            before_mode: None, after_mode: None, desired_uid: uid, desired_gid: gid,
+            before_uid: None, before_gid: None, after_uid: None, after_gid: None,
+            action: "quarantined".into(), changed: true, readback_ok: false,
+            rollback_action: "quarantine-preserved".into(), rollback_readback_ok: None,
+        });
+    }
+    if !apply {
+        let outcome = SourceShelfSweepOutcome { ok: true, changed: false, current: !drift,
+            source_inventory_count: desired.len(), target_inventory_count_before: 0, target_inventory_count_after: 0,
+            promoted_count: 0, removed_count: 0, transaction_state: if drift { "planned" } else { "unchanged" }.into(),
+            rollback_state: "not-needed".into(), first_blocker: "none".into(), entries,
+            message: "owned recursive source shelf sweep planned".into() };
+        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        return Ok(outcome);
+    }
+    let quarantine = request.target_shelf.join(format!(".harmonia-source-shelf-sweep-{}", sweep_nonce()));
+    fs::create_dir(&quarantine).map_err(|error| format!("source-shelf-sweep-quarantine-create-failed {}: {error}", quarantine.display()))?;
+    let mut promoted_count = 0usize;
+    let mut removed_count = 0usize;
+    let movement = (|| -> Result<(), String> {
+        for entry in &desired {
+            let source = shelf_source.join(&entry.relative_path);
+            let target = request.target_shelf.join(&entry.relative_path);
+            let owned = provenance.paths.contains(&target.display().to_string());
+            if entry.is_dir {
+                if !target.exists() {
+                    fs::create_dir_all(&target).map_err(|error| format!("source-shelf-sweep-owned-directory-create-failed {}: {error}", target.display()))?;
+                    set_mode(&target, request.shelf_directory_mode)?;
+                    set_ownership(&target, Some(uid), Some(gid))?;
+                    provenance.paths.insert(target.display().to_string());
+                    promoted_count += 1;
+                } else if owned {
+                    set_mode(&target, request.shelf_directory_mode)?;
+                    set_ownership(&target, Some(uid), Some(gid))?;
+                }
+            } else {
+                let (digest, mode, observed_uid, observed_gid) = sweep_path_state(&target, false)?;
+                let current = digest == Some(digest_file(&source)?)
+                    && mode == Some(request.shelf_file_mode)
+                    && observed_uid == Some(uid)
+                    && observed_gid == Some(gid);
+                if current {
+                    continue;
+                }
+                if target.exists() {
+                    if !owned { return Err(format!("source-shelf-sweep-provenance-refused-unowned-target {}", target.display())); }
+                    let backup = quarantine.join(&entry.relative_path);
+                    if let Some(parent) = backup.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+                    fs::rename(&target, &backup).map_err(|error| format!("source-shelf-sweep-owned-quarantine-failed {}: {error}", target.display()))?;
+                }
+                atomic_copy(&source, &target, Some(request.shelf_file_mode), Some(uid), Some(gid))?;
+                provenance.paths.insert(target.display().to_string());
+                promoted_count += 1;
+            }
+        }
+        for relative in &stale {
+            let target = request.target_shelf.join(relative);
+            if !target.exists() { provenance.paths.remove(&target.display().to_string()); continue; }
+            if fs::symlink_metadata(&target).map_err(|error| error.to_string())?.file_type().is_dir()
+                && fs::read_dir(&target).map_err(|error| error.to_string())?.next().is_some() {
+                return Err(format!("source-shelf-sweep-owned-directory-not-empty {}", target.display()));
+            }
+            let backup = quarantine.join(relative);
+            if let Some(parent) = backup.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+            fs::rename(&target, &backup).map_err(|error| format!("source-shelf-sweep-owned-quarantine-failed {}: {error}", target.display()))?;
+            provenance.paths.remove(&target.display().to_string());
+            removed_count += 1;
+        }
+        write_sweep_provenance(provenance_path, &provenance)
+    })();
+    if let Err(blocker) = movement {
+        let outcome = SourceShelfSweepOutcome { ok: false, changed: promoted_count > 0 || removed_count > 0, current: false,
+            source_inventory_count: desired.len(), target_inventory_count_before: 0, target_inventory_count_after: 0,
+            promoted_count, removed_count, transaction_state: "incomplete".into(), rollback_state: "quarantine-preserved".into(),
+            first_blocker: blocker.clone(), entries, message: blocker.clone() };
+        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        return Err(blocker);
+    }
+    for entry in &mut entries {
+        entry.readback_ok = if entry.action == "quarantined" { !entry.target.exists() } else { entry.target.exists() };
+        entry.action = if entry.action == "unchanged" { "unchanged".into() } else if entry.action == "quarantined" { "quarantined".into() } else { "promoted".into() };
+    }
+    let outcome = SourceShelfSweepOutcome { ok: true, changed: promoted_count > 0 || removed_count > 0, current: true,
+        source_inventory_count: desired.len(), target_inventory_count_before: 0,
+        target_inventory_count_after: inventory_sweep_tree_if_present(&request.target_shelf)?.len(), promoted_count, removed_count,
+        transaction_state: "committed".into(), rollback_state: "quarantine-preserved".into(), first_blocker: "none".into(), entries,
+        message: "owned recursive source shelf converged".into() };
+    write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+    Ok(outcome)
 }
 
 fn source_shelf_sweep_with_fault(

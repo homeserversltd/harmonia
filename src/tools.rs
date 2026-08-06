@@ -120,6 +120,7 @@ pub(crate) mod service_runtime;
 pub mod systemd;
 pub(crate) mod tls_lifecycle;
 pub(crate) mod validated_file_symlink;
+pub mod venv;
 
 pub const TOOLBELT: &[ToolContract] = &[
     ai_coding_harness::CONTRACT,
@@ -134,6 +135,7 @@ pub const TOOLBELT: &[ToolContract] = &[
     service_runtime::CONTRACT,
     systemd::CONTRACT,
     tls_lifecycle::CONTRACT,
+    venv::CONTRACT,
 ];
 
 pub fn all() -> &'static [ToolContract] {
@@ -236,6 +238,7 @@ mod tests {
             "package",
             "service-runtime",
             "systemd",
+            "venv",
         ]);
         let actual: BTreeSet<&str> = all().iter().map(|tool| tool.name).collect();
         assert_eq!(actual, expected);
