@@ -1,11 +1,39 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "mkdocs",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER MkDocs configuration: assert the birth-provided runtime and documentation source, converge product-owned configuration and unit bytes with backups, validate the unit, and restart only after this module changed managed material.",
   "constants": {},
   "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "mkdocs-binary-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-x",
+          "/opt/docs/venv/bin/mkdocs"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "mkdocs-documentation-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-d",
+          "/opt/docs/docs"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "mkdocs-product-config",
       "tool": "files",
@@ -25,6 +53,21 @@
       "on_failure": "stop"
     },
     {
+      "step_id": "mkdocs-unit-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": [
+          "--root=/",
+          "verify",
+          "/etc/systemd/system/mkdocs.service"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
       "step_id": "mkdocs-systemd-reload",
       "tool": "systemd",
       "permutation": "daemon-reload",
@@ -40,6 +83,26 @@
       "args": {
         "service": "mkdocs.service",
         "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "mkdocs-service-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "mkdocs.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "mkdocs-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "mkdocs.service",
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

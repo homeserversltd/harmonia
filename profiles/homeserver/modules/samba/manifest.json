@@ -1,10 +1,88 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "samba",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER Samba and discovery configuration: assert birth-provided executables, preserve user-editable Samba and hosts seeds, converge product-owned Avahi files with backups, validate Samba, and restart Avahi only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "samba-smbd-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "path": "/usr/sbin/smbd",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-nmbd-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "path": "/usr/sbin/nmbd",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-testparm-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "path": "/usr/bin/testparm",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-avahi-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "path": "/usr/sbin/avahi-daemon",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-wsdd2-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "path": "/usr/bin/wsdd2",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-user-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-s",
+          "/etc/samba/smb.conf"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-user-hosts-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-s",
+          "/etc/hosts"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "samba-product-config",
       "tool": "files",
@@ -24,12 +102,105 @@
       "on_failure": "stop"
     },
     {
+      "step_id": "samba-config-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/testparm",
+        "args": [
+          "-s"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
       "step_id": "samba-avahi-restart-on-change",
       "tool": "systemd",
       "permutation": "restart",
       "args": {
         "service": "avahi-daemon.service",
         "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-smbd-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "smbd.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-smbd-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "smbd.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-nmbd-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "nmbd.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-nmbd-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "nmbd.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-avahi-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "avahi-daemon.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-avahi-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "avahi-daemon.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-wsdd2-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "wsdd2.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "samba-wsdd2-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "wsdd2.service",
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

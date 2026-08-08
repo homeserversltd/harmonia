@@ -7,7 +7,6 @@ The ladder:
 - fails closed unless the birth-provided network executables and validators exist;
 - requires the four user-editable host/site files to exist but never overwrites them;
 - converges six product-owned policy files with backups of replaced files;
-- creates the Caduceus child-filter seed only when absent, then validates the complete nftables candidate including that child;
 - validates nftables, Unbound, Kea, and the nftables unit;
 - reloads systemd and restarts nftables, Unbound, and Kea only when this module changed managed material;
 - proves those services and systemd-networkd are active.
@@ -15,10 +14,6 @@ The ladder:
 ## User-editable boundary
 
 The quarry bytes for `10-wan0.network`, `20-lan0.network`, and `kea-dhcp4.conf` are carried for birth/export parity, but the maintenance ladder only asserts the installed copies are non-empty. It does not overwrite them. They bind physical interface names, static addressing, and DHCP reservations; replacing a locally adapted copy can sever remote access. The public Kea seed preserves the quarry subnet, pool, and options but deliberately removes the two instance MAC reservations (`reservations: []`). This classification and adaptation are proposals for operator verdict, not settled product law.
-
-## Caduceus child-filter boundary
-
-Harmonia owns the baseline `/etc/nftables.conf`, including its fixed include of `/etc/nftables.d/caduceus-child-filter.nft`, and owns only the child's first creation from the inert repository seed. Caduceus owns the child policy contents after that creation and may modify the real loaded file directly. The `ensure-present` step refuses a non-regular target but never reconverges an existing regular file's bytes, mode, or ownership. The ordinary `nft -c -f /etc/nftables.conf` step runs after seed assurance, so a missing or malformed child prevents any later service actuation.
 
 ## Generated and external surfaces
 
