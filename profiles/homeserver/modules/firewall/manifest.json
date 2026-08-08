@@ -12,8 +12,7 @@
     "user_editable_files": [
       "/etc/systemd/network/10-wan0.network",
       "/etc/systemd/network/20-lan0.network",
-      "/etc/kea/kea-dhcp4.conf",
-      "/etc/nftables.d/caduceus-child-filter.nft"
+      "/etc/kea/kea-dhcp4.conf"
     ]
   },
   "files_root": "files_root",
@@ -37,22 +36,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "firewall-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "caduceus-child-filter-seed-present",
-      "tool": "files",
-      "permutation": "ensure-present",
-      "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "etc/nftables.d/caduceus-child-filter.nft"
-        ],
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "caduceus-child-filter-seed"
       },
       "on_failure": "stop"
     },
