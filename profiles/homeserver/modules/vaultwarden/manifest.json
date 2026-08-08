@@ -1,10 +1,32 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "vaultwarden",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER Vaultwarden configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing environment file, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "vaultwarden-binary-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-x", "/opt/vaultwarden/vaultwarden"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "vaultwarden-user-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": ["-s", "/etc/vaultwarden.env"],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "vaultwarden-product-config",
       "tool": "files",
@@ -19,6 +41,17 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "vaultwarden-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "vaultwarden-unit-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": ["verify", "/etc/systemd/system/vaultwarden.service"],
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -38,6 +71,26 @@
       "args": {
         "service": "vaultwarden.service",
         "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "vaultwarden-service-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "vaultwarden.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "vaultwarden-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "vaultwarden.service",
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     }
