@@ -1,47 +1,17 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "coronatio",
-  "version": "2.1.0",
-  "description": "HOMESERVER Coronatio crown currentness: acquire the declared source, build and attest the native binary, then preserve and validate the user-editable household memory and secret-free product factory baseline.",
+  "version": "2.1.1",
+  "description": "HOMESERVER Coronatio crown currentness: assert the birth-provided binary, preserve and validate the user-editable household memory, and converge the secret-free product factory baseline.",
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "coronatio-service-runtime",
-      "tool": "service-runtime",
-      "permutation": "converge",
+      "step_id": "coronatio-binary-present",
+      "tool": "files",
+      "permutation": "executable-present",
       "args": {
-        "module_id": "coronatio",
-        "component": "coronatio",
-        "bearer": "owner",
-        "source_dir": "/opt/coronatio/source",
-        "install_bin": "/usr/local/bin/coronatio",
-        "service": "coronatio.service",
-        "url": "http://127.0.0.1:3013/health",
-        "source_sha_file": "/var/lib/harmonia/state/coronatio.sha",
-        "binary_name": "coronatio",
-        "op_prefix": "coronatio",
-        "run_schema": "harmonia.homeserver.coronatio_runtime.v1",
-        "managed_files_schema": "harmonia.homeserver.coronatio_managed_files.v1",
-        "build_environment": {
-          "RUSTUP_HOME": "/opt/rustup",
-          "CARGO_HOME": "/opt/cargo"
-        },
-        "identity_environment": [
-          "CORONATIO_SOURCE_SHA",
-          "CORONATIO_BUILD_SHA"
-        ],
-        "managed_files": [
-          {
-            "path": "/etc/systemd/system/coronatio.service",
-            "mode": 420,
-            "content": "[Unit]\nDescription=Coronatio HOMESERVER Rust crown\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nSupplementaryGroups=www-data\nStateDirectory=coronatio\nEnvironment=CORONATIO_PORT=3013\nEnvironment=CORONATIO_TAB_ROOT=/var/lib/coronatio/tabs\nExecStart=/usr/local/bin/coronatio\nRestart=on-failure\nRestartSec=2s\n\n[Install]\nWantedBy=multi-user.target\n"
-          },
-          {
-            "path": "/var/lib/coronatio/runtime.json",
-            "mode": 420,
-            "content": "{\n  \"schema\": \"coronatio.runtime.v1\",\n  \"profile\": \"homeserver\",\n  \"port\": 3013,\n  \"caduceus\": \"http://127.0.0.1:3014\"\n}\n"
-          }
-        ]
+        "executable": "/usr/local/bin/coronatio",
+        "receipt_label": "coronatio-binary"
       },
       "on_failure": "stop"
     },
@@ -51,7 +21,10 @@
       "permutation": "capture",
       "args": {
         "program": "/usr/bin/test",
-        "args": ["-s", "/etc/appliance/config.json"],
+        "args": [
+          "-s",
+          "/etc/appliance/config.json"
+        ],
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -62,7 +35,11 @@
       "permutation": "capture",
       "args": {
         "program": "/usr/bin/python3",
-        "args": ["-m", "json.tool", "/etc/appliance/config.json"],
+        "args": [
+          "-m",
+          "json.tool",
+          "/etc/appliance/config.json"
+        ],
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -74,11 +51,28 @@
       "args": {
         "source_root": "files_root",
         "target_root": "/",
-        "files": ["etc/appliance/config.factory"],
+        "files": [
+          "etc/appliance/config.factory"
+        ],
         "backup_existing": true,
         "owner": "root",
         "group": "root",
         "receipt_name": "coronatio-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "coronatio-factory-config-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": [
+          "-m",
+          "json.tool",
+          "/etc/appliance/config.factory"
+        ],
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

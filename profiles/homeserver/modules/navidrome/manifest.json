@@ -1,10 +1,48 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "navidrome",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER Navidrome configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing configuration seed, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "navidrome-binary-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-x",
+          "/opt/navidrome/navidrome"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "navidrome-ffmpeg-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "/usr/bin/ffmpeg",
+        "receipt_label": "navidrome-ffmpeg"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "navidrome-user-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-s",
+          "/etc/navidrome/navidrome.toml"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "navidrome-product-config",
       "tool": "files",
@@ -19,6 +57,20 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "navidrome-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "navidrome-unit-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": [
+          "verify",
+          "/etc/systemd/system/navidrome.service"
+        ],
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -38,6 +90,26 @@
       "args": {
         "service": "navidrome.service",
         "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "navidrome-service-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "navidrome.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "navidrome-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "navidrome.service",
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     }

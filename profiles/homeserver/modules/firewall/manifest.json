@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "firewall",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Quarry-lifted HOMESERVER network spine: assert birth-provided executables and host-owned network inputs, converge product-owned firewall/DNS/unit policy with backups, validate service configurations, and restart only after this module changed managed material.",
   "caduceus_commands": [
     "caduceus.network.firewall.read",
@@ -12,8 +12,7 @@
     "user_editable_files": [
       "/etc/systemd/network/10-wan0.network",
       "/etc/systemd/network/20-lan0.network",
-      "/etc/kea/kea-dhcp4.conf",
-      "/etc/nftables.d/caduceus-child-filter.nft"
+      "/etc/kea/kea-dhcp4.conf"
     ]
   },
   "files_root": "files_root",
@@ -37,22 +36,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "firewall-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "caduceus-child-filter-seed-present",
-      "tool": "files",
-      "permutation": "ensure-present",
-      "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "etc/nftables.d/caduceus-child-filter.nft"
-        ],
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "caduceus-child-filter-seed"
       },
       "on_failure": "stop"
     },

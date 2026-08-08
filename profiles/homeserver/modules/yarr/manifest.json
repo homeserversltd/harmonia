@@ -1,10 +1,38 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "yarr",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER Yarr service configuration: assert the birth-provided Go runtime and Yarr source tree, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "yarr-go-runtime-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-x",
+          "/usr/local/go/bin/go"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "yarr-source-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-d",
+          "/opt/yarr/cmd/yarr"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "yarr-product-config",
       "tool": "files",
@@ -19,6 +47,20 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "yarr-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "yarr-unit-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": [
+          "verify",
+          "/etc/systemd/system/yarr.service"
+        ],
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     },
@@ -38,6 +80,26 @@
       "args": {
         "service": "yarr.service",
         "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "yarr-service-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "yarr.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "yarr-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "yarr.service",
+        "timeout_secs": 30
       },
       "on_failure": "stop"
     }
