@@ -262,20 +262,42 @@ struct SourceGateObservation {
     remote_probe: Option<tools::git_artifact::RemoteHeadProbe>,
     promoted_source_head: Option<CmdResult>,
     installed_binary_present: bool,
+    installed_build_sha: Option<String>,
 }
 
 impl SourceGateObservation {
     fn matches(&self) -> bool {
-        self.remote_probe
+        let Some(remote_sha) = self
+            .remote_probe
             .as_ref()
             .and_then(|probe| probe.remote_sha.as_deref())
-            .zip(self.promoted_source_head.as_ref())
-            .is_some_and(|(remote_sha, source_head)| {
-                source_head.ok
-                    && source_head.stdout.trim() == remote_sha
-                    && self.installed_binary_present
-            })
+        else {
+            return false;
+        };
+        let Some(source_head) = self.promoted_source_head.as_ref() else {
+            return false;
+        };
+        self.installed_binary_present
+            && source_head.ok
+            && is_hex_sha(remote_sha)
+            && source_head.stdout.trim() == remote_sha
+            && self.installed_build_sha.as_deref() == Some(remote_sha)
     }
+}
+
+fn read_installed_build_sha(health_url: &str) -> Option<String> {
+    let health = tools::health::curl_probe(&tools::health::ProbeRequest {
+        url: health_url,
+        retries: 0,
+        timeout_secs: 3,
+        expected_contains: None,
+    });
+    if !health.ok {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&health.stdout).ok()?;
+    let build_sha = value.get("build_sha").and_then(Value::as_str)?.trim();
+    is_hex_sha(build_sha).then(|| build_sha.to_string())
 }
 
 pub(crate) struct ServiceRuntimeSpec {
@@ -343,10 +365,14 @@ pub(crate) fn execute(
             let installed_binary_present = fs::symlink_metadata(&install_bin)
                 .map(|metadata| metadata.file_type().is_file())
                 .unwrap_or(false);
+            let installed_build_sha = installed_binary_present
+                .then(|| read_installed_build_sha(health_url))
+                .flatten();
             Ok::<_, String>(SourceGateObservation {
                 remote_probe,
                 promoted_source_head,
                 installed_binary_present,
+                installed_build_sha,
             })
         },
         |observation| {
@@ -377,6 +403,7 @@ pub(crate) fn execute(
     let remote_probe = source_gate.observation().remote_probe.clone();
     let promoted_source_head = source_gate.observation().promoted_source_head.clone();
     let installed_binary_present = source_gate.observation().installed_binary_present;
+    let installed_build_sha = source_gate.observation().installed_build_sha.clone();
     let git_outcome = match source_gate {
         tools::comparison::ComparisonRun::Current { .. } => {
             let source_sha = promoted_source_head
@@ -391,7 +418,8 @@ pub(crate) fn execute(
                     served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
                     resolved_commit: Some(source_sha.to_string()),
                     promotion: format!(
-                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present=true"
+                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; installed_build_sha={}",
+                        installed_build_sha.as_deref().unwrap_or_default(),
                     ),
                 },
             }
@@ -404,6 +432,7 @@ pub(crate) fn execute(
         remote_probe.as_ref(),
         promoted_source_head.as_ref(),
         installed_binary_present,
+        installed_build_sha.as_deref(),
         source_gate_matched,
         &git_outcome,
     )?;
@@ -444,6 +473,7 @@ pub(crate) fn execute(
     let source_sha_value = source_sha.stdout.trim().to_string();
 
     let managed_files = effective_managed_files(module, &source_dir)?;
+    // pali:harmonia-apply-ladder-law: module declared managed_files are required SoftwarePlane scaffolding, not ConfigPlane operator configuration.
     let managed = tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: &module.id,
@@ -812,6 +842,7 @@ fn write_source_gate_receipt(
     probe: Option<&tools::git_artifact::RemoteHeadProbe>,
     promoted_source_head: Option<&CmdResult>,
     installed_binary_present: bool,
+    installed_build_sha: Option<&str>,
     matched: bool,
     movement: &tools::git_artifact::SourceOutcome,
 ) -> Result<(), String> {
@@ -834,6 +865,7 @@ fn write_source_gate_receipt(
             "state": state,
             "observed_state": {
                 "promoted_source_sha": promoted_source_sha,
+                "installed_build_sha": installed_build_sha,
                 "installed_binary_present": installed_binary_present,
             },
             "desired_state": {
@@ -864,6 +896,7 @@ fn write_source_gate_receipt(
             })).collect::<Vec<_>>()),
             "remote_sha": remote_sha,
             "promoted_source_sha": promoted_source_sha,
+            "installed_build_sha": installed_build_sha,
             "installed_binary_present": installed_binary_present,
             "probe": probe.map(|probe| &probe.command),
         }),
