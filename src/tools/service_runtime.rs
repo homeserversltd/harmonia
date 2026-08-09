@@ -265,23 +265,39 @@ struct SourceGateObservation {
     installed_build_sha: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceGateDecision {
+    ConfirmedMatch,
+    ConfirmedMismatch,
+    Indeterminate,
+}
+
 impl SourceGateObservation {
-    fn matches(&self) -> bool {
+    fn decision(&self) -> SourceGateDecision {
         let Some(remote_sha) = self
             .remote_probe
             .as_ref()
             .and_then(|probe| probe.remote_sha.as_deref())
         else {
-            return false;
+            return SourceGateDecision::ConfirmedMismatch;
         };
         let Some(source_head) = self.promoted_source_head.as_ref() else {
-            return false;
+            return SourceGateDecision::ConfirmedMismatch;
         };
-        self.installed_binary_present
-            && source_head.ok
-            && is_hex_sha(remote_sha)
-            && source_head.stdout.trim() == remote_sha
-            && self.installed_build_sha.as_deref() == Some(remote_sha)
+        if !self.installed_binary_present
+            || !source_head.ok
+            || !is_hex_sha(remote_sha)
+            || source_head.stdout.trim() != remote_sha
+        {
+            return SourceGateDecision::ConfirmedMismatch;
+        }
+        match self.installed_build_sha.as_deref() {
+            Some(installed_build_sha) if installed_build_sha == remote_sha => {
+                SourceGateDecision::ConfirmedMatch
+            }
+            Some(_) => SourceGateDecision::ConfirmedMismatch,
+            None => SourceGateDecision::Indeterminate,
+        }
     }
 }
 
@@ -376,10 +392,10 @@ pub(crate) fn execute(
             })
         },
         |observation| {
-            if observation.matches() {
-                tools::comparison::DiffDecision::Empty
-            } else {
+            if observation.decision() == SourceGateDecision::ConfirmedMismatch {
                 tools::comparison::DiffDecision::Different
+            } else {
+                tools::comparison::DiffDecision::Empty
             }
         },
         |_, _| {
@@ -404,6 +420,7 @@ pub(crate) fn execute(
     let promoted_source_head = source_gate.observation().promoted_source_head.clone();
     let installed_binary_present = source_gate.observation().installed_binary_present;
     let installed_build_sha = source_gate.observation().installed_build_sha.clone();
+    let source_gate_decision = source_gate.observation().decision();
     let git_outcome = match source_gate {
         tools::comparison::ComparisonRun::Current { .. } => {
             let source_sha = promoted_source_head
@@ -417,10 +434,16 @@ pub(crate) fn execute(
                     attempts: Vec::new(),
                     served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
                     resolved_commit: Some(source_sha.to_string()),
-                    promotion: format!(
-                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; installed_build_sha={}",
-                        installed_build_sha.as_deref().unwrap_or_default(),
-                    ),
+                    promotion: match source_gate_decision {
+                        SourceGateDecision::ConfirmedMatch => format!(
+                            "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; installed_build_sha={}",
+                            installed_build_sha.as_deref().unwrap_or_default(),
+                        ),
+                        SourceGateDecision::Indeterminate => format!(
+                            "state=blocked; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; first_missing_signal=installed-build-sha-unavailable",
+                        ),
+                        SourceGateDecision::ConfirmedMismatch => unreachable!("different source gate must move"),
+                    },
                 },
             }
         }
@@ -433,11 +456,34 @@ pub(crate) fn execute(
         promoted_source_head.as_ref(),
         installed_binary_present,
         installed_build_sha.as_deref(),
-        source_gate_matched,
+        source_gate_decision,
         &git_outcome,
     )?;
     let source_command = source_outcome_cmd(&git_outcome);
     write_command_receipt(receipt_dir, spec.source_op, &source_command)?;
+    if source_gate_decision == SourceGateDecision::Indeterminate {
+        write_run_receipt(
+            receipt_dir,
+            spec,
+            apply,
+            false,
+            false,
+            "installed-build-sha-unavailable",
+            &source_plan.reference,
+            &source_plan.reference,
+            &source_dir,
+            promoted_source_head
+                .as_ref()
+                .map(|result| result.stdout.trim())
+                .filter(|source_sha| is_hex_sha(source_sha)),
+        )?;
+        return Ok(ModuleExecution {
+            ok: false,
+            changed: false,
+            operation_count: 1,
+            first_missing_signal: Some("installed-build-sha-unavailable".to_string()),
+        });
+    }
     if !git_outcome.ok {
         write_run_receipt(
             receipt_dir,
@@ -843,7 +889,7 @@ fn write_source_gate_receipt(
     promoted_source_head: Option<&CmdResult>,
     installed_binary_present: bool,
     installed_build_sha: Option<&str>,
-    matched: bool,
+    decision: SourceGateDecision,
     movement: &tools::git_artifact::SourceOutcome,
 ) -> Result<(), String> {
     let remote_sha = probe.and_then(|probe| probe.remote_sha.as_deref());
@@ -851,8 +897,10 @@ fn write_source_gate_receipt(
         .filter(|result| result.ok)
         .map(|result| result.stdout.trim())
         .filter(|value| is_hex_sha(value));
-    let state = if matched {
+    let state = if decision == SourceGateDecision::ConfirmedMatch {
         "converged-quiet"
+    } else if decision == SourceGateDecision::Indeterminate {
+        "blocked"
     } else if remote_sha.is_some() && promoted_source_sha.is_some() {
         "sha-mismatch-or-precondition-incomplete"
     } else {
@@ -871,18 +919,23 @@ fn write_source_gate_receipt(
             "desired_state": {
                 "remote_sha": remote_sha,
             },
-            "diff_decision": if matched { "empty" } else { "different" },
+            "diff_decision": match decision {
+                SourceGateDecision::ConfirmedMatch => "empty",
+                SourceGateDecision::ConfirmedMismatch => "different",
+                SourceGateDecision::Indeterminate => "indeterminate",
+            },
             "movement": {
-                "kind": if matched { "none" } else { "source-acquire" },
-                "attempted": !matched,
+                "kind": if decision == SourceGateDecision::ConfirmedMismatch { "source-acquire" } else { "none" },
+                "attempted": decision == SourceGateDecision::ConfirmedMismatch,
                 "ok": movement.ok,
                 "changed": movement.changed,
                 "resolved_commit": movement.receipt.resolved_commit.as_deref(),
                 "promotion": movement.receipt.promotion.as_str(),
             },
             "changed": movement.changed,
-            "acquire_skipped": matched,
-            "build_skipped": matched,
+            "acquire_skipped": decision != SourceGateDecision::ConfirmedMismatch,
+            "build_skipped": decision != SourceGateDecision::ConfirmedMismatch,
+            "first_missing_signal": if decision == SourceGateDecision::Indeterminate { "installed-build-sha-unavailable" } else { "none" },
             "reference": probe.map(|probe| probe.reference.as_str()),
             "candidate_index": probe.and_then(|probe| probe.candidate_index),
             "credential_selector": probe.and_then(|probe| probe.credential_selector.as_deref()),
