@@ -2958,6 +2958,74 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                     .unwrap_or_else(|| "local-ai-runtime-failed".to_string()))
             }
         }
+        Some("homeconsole-sync") => {
+            let path = args
+                .get(1)
+                .ok_or("homeconsole-sync requires <profile-index-json>")?;
+            let module_path =
+                value_arg(&args, "--module").ok_or("homeconsole-sync requires --module <path>")?;
+            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
+                PathBuf::from("/var/lib/harmonia/receipts/homeconsole-sync-latest")
+            });
+            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let apply = mode.is_software_apply();
+            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            if profile.id != "homeconsole" || profile.identity != "homeconsole" {
+                return Err(format!(
+                    "homeconsole-sync requires homeconsole/homeconsole profile, got {}/{}",
+                    profile.id, profile.identity
+                ));
+            }
+            let module = load_module(Path::new(&module_path))?;
+            let module_root = default_module_root(Path::new(path));
+            let harmonia_root = harmonia_root_from_module_root(&module_root);
+            let run_started = std::time::Instant::now();
+            let execution = execute_profile_module(
+                &module,
+                &module_root,
+                &receipt_dir,
+                mode.software_authorization(),
+                &harmonia_root,
+            )?;
+            write_engine_run_receipt_with_duration(
+                &receipt_dir,
+                &profile,
+                apply,
+                execution.ok,
+                execution.changed,
+                1,
+                execution.operation_count,
+                execution.first_missing_signal.as_deref().unwrap_or("none"),
+                &module_root,
+                execution.ok,
+                run_started.elapsed().as_millis(),
+            )?;
+            println!("schema=harmonia.homeconsole_sync.v1");
+            hyalos::forward_receipt(
+                "schema=harmonia.homeconsole_sync.v1",
+                &format!("schema=harmonia.homeconsole_sync.v1 ok={}", execution.ok),
+                Some(
+                    serde_json::json!({"schema": "harmonia.homeconsole_sync.v1", "ok": execution.ok}),
+                ),
+                Some(execution.ok),
+            );
+            println!("ok={}", execution.ok);
+            println!("changed={}", execution.changed);
+            println!("profile_id={}", profile.id);
+            println!("operation_count={}", execution.operation_count);
+            println!(
+                "first_missing_signal={}",
+                execution.first_missing_signal.as_deref().unwrap_or("none")
+            );
+            println!("receipt_dir={}", receipt_dir.display());
+            if execution.ok {
+                Ok(())
+            } else {
+                Err(execution
+                    .first_missing_signal
+                    .unwrap_or_else(|| "homeconsole-sync-failed".to_string()))
+            }
+        }
         Some("homeconsole-arcadia-check") => {
             let path = args
                 .get(1)
@@ -3130,6 +3198,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia tv-update <profiles/tv/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-local-ai-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> --module <path> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha <sha>] [--source-sha-file <path>] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-gui-update <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--source-dir /opt/arcadia/source] [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha-file <path>] [--receipt-dir <path>]");
