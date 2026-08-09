@@ -76,7 +76,8 @@
     "systemd",
     "matrix",
     "homeserver-update-runtime",
-    "sbin"
+    "sbin",
+    "linker"
   ],
   "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Matrix/Element service modules, and the direct-owned sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
