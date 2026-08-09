@@ -630,6 +630,12 @@ pub(crate) fn run_profile_engine_with_preflight(
         run_started.elapsed().as_millis(),
     )?;
     println!("schema=harmonia.run_profile.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.run_profile.v1",
+        &format!("schema=harmonia.run_profile.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.run_profile.v1", "ok": ok})),
+        Some(ok),
+    );
     println!("ok={}", ok);
     println!("changed={}", changed);
     println!("profile_id={}", profile.id);

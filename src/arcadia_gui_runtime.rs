@@ -109,6 +109,12 @@ pub(crate) fn homeconsole_arcadia_check(
         }),
     )?;
     println!("schema=harmonia.arcadia_fast_check.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.arcadia_fast_check.v1",
+        &format!("schema=harmonia.arcadia_fast_check.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.arcadia_fast_check.v1", "ok": ok})),
+        Some(ok),
+    );
     println!("ok={}", ok);
     println!("update_available={}", update_available);
     println!(
@@ -364,6 +370,12 @@ pub(crate) fn homeconsole_arcadia_update(
     )?;
     write_run_receipt(receipt_dir, profile, apply, ok, &first_missing_signal)?;
     println!("schema=harmonia.homeconsole_arcadia_update.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.homeconsole_arcadia_update.v1",
+        &format!("schema=harmonia.homeconsole_arcadia_update.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_update.v1", "ok": ok})),
+        Some(ok),
+    );
     println!("ok={}", ok);
     println!("changed={}", changed);
     println!("first_missing_signal={}", first_missing_signal);
@@ -498,6 +510,12 @@ pub(crate) fn homeconsole_arcadia_gui_update(
             Some(&source_sha_value),
         )?;
         println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
+        hyalos::forward_receipt(
+            "schema=harmonia.homeconsole_arcadia_gui_update.v1",
+            &format!("schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}", true),
+            Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_gui_update.v1", "ok": true})),
+            Some(true),
+        );
         println!("ok=true");
         println!("changed={}", git_outcome.changed);
         println!("first_missing_signal=none");
@@ -557,6 +575,12 @@ pub(crate) fn homeconsole_arcadia_gui_update(
         Some(&source_sha_value),
     )?;
     println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.homeconsole_arcadia_gui_update.v1",
+        &format!("schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_gui_update.v1", "ok": ok})),
+        Some(ok),
+    );
     println!("ok={}", ok);
     println!("changed=true");
     println!("first_missing_signal={}", first_missing_signal);

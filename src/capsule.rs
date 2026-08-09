@@ -1,3 +1,4 @@
+use crate::hyalos;
 use crate::{
     diff_subscription_modules, is_ladder_manifest, load_ladder_manifest, load_profile,
     preserve_existing_lane_or_default, run_id_from_stamp, subscription_path,
@@ -232,6 +233,12 @@ pub(crate) fn capsule_pack(
     };
     write_json_atomic(&output_dir.join("pack-receipt.json"), &receipt)?;
     println!("schema=harmonia.capsule.pack.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.capsule.pack.v1",
+        &format!("schema=harmonia.capsule.pack.v1 ok={}", true),
+        Some(serde_json::json!({"schema": "harmonia.capsule.pack.v1", "ok": true})),
+        Some(true),
+    );
     println!("ok=true");
     println!("profile_id={}", receipt.profile_id);
     println!("identity={}", receipt.identity);
@@ -324,6 +331,12 @@ pub(crate) fn capsule_verify(capsule_dir: &Path) -> Result<(), String> {
     };
     write_json_atomic(&capsule_dir.join("verify-receipt.json"), &receipt)?;
     println!("schema=harmonia.capsule.verify.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.capsule.verify.v1",
+        &format!("schema=harmonia.capsule.verify.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.capsule.verify.v1", "ok": ok})),
+        Some(ok),
+    );
     println!("ok={}", ok);
     println!("profile_id={}", receipt.profile_id);
     println!("module_count={}", receipt.modules.len());
@@ -476,6 +489,12 @@ pub(crate) fn capsule_install(
     };
     write_json_atomic(&receipt_path, &receipt)?;
     println!("schema=harmonia.capsule.install.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.capsule.install.v1",
+        &format!("schema=harmonia.capsule.install.v1 ok={}", true),
+        Some(serde_json::json!({"schema": "harmonia.capsule.install.v1", "ok": true})),
+        Some(true),
+    );
     println!("ok=true");
     println!("apply={}", apply);
     println!("profile_id={}", manifest.profile_id);

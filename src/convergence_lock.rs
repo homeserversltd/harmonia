@@ -566,6 +566,12 @@ pub(crate) fn write_convergence_skipped_receipt(
 
 pub(crate) fn emit_convergence_skipped_stdout(receipt_dir: &Path, reason: &str, profile_id: &str) {
     println!("schema=harmonia.convergence.skipped.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.convergence.skipped.v1",
+        &format!("schema=harmonia.convergence.skipped.v1 ok={}", true),
+        Some(serde_json::json!({"schema": "harmonia.convergence.skipped.v1", "ok": true})),
+        Some(true),
+    );
     println!("ok=true");
     println!("changed=false");
     println!("profile_id={profile_id}");

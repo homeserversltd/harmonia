@@ -1,3 +1,4 @@
+pub(crate) mod hyalos;
 pub mod tools;
 
 use serde::{Deserialize, Serialize};
@@ -2615,6 +2616,12 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             match validate_ladder(&manifest) {
                 Ok(steps) => {
                     println!("schema=harmonia.ladder.validate.v1");
+                    hyalos::forward_receipt(
+                        "schema=harmonia.ladder.validate.v1",
+                        &format!("schema=harmonia.ladder.validate.v1 ok={}", true),
+                        Some(serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": true})),
+                        Some(true),
+                    );
                     println!("ok=true");
                     println!("module_id={}", manifest.id);
                     println!("version={}", manifest.version);
@@ -2624,6 +2631,12 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 }
                 Err(err) => {
                     println!("schema=harmonia.ladder.validate.v1");
+                    hyalos::forward_receipt(
+                        "schema=harmonia.ladder.validate.v1",
+                        &format!("schema=harmonia.ladder.validate.v1 ok={}", false),
+                        Some(serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": false})),
+                        Some(false),
+                    );
                     println!("ok=false");
                     println!("module_id={}", manifest.id);
                     println!("version={}", manifest.version);
@@ -2733,6 +2746,12 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("inspect-profile requires <profile-index-json>")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             println!("schema=harmonia.profile.inspect.v1");
+            hyalos::forward_receipt(
+                "schema=harmonia.profile.inspect.v1",
+                &format!("schema=harmonia.profile.inspect.v1 ok={}", true),
+                Some(serde_json::json!({"schema": "harmonia.profile.inspect.v1", "ok": true})),
+                Some(true),
+            );
             println!("ok=true");
             println!("profile_id={}", profile.id);
             println!("identity={}", profile.identity);
@@ -2751,6 +2770,12 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let module_root = default_module_root(profile_path);
             write_plan_receipts(&profile, &module_root, &receipt_dir).map_err(|e| e.to_string())?;
             println!("schema=harmonia.plan_run.v1");
+            hyalos::forward_receipt(
+                "schema=harmonia.plan_run.v1",
+                &format!("schema=harmonia.plan_run.v1 ok={}", true),
+                Some(serde_json::json!({"schema": "harmonia.plan_run.v1", "ok": true})),
+                Some(true),
+            );
             println!("ok=true");
             println!("profile_id={}", profile.id);
             println!("receipt_dir={}", receipt_dir.display());
@@ -2910,6 +2935,12 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 run_started.elapsed().as_millis(),
             )?;
             println!("schema=harmonia.local_ai_runtime.v1");
+            hyalos::forward_receipt(
+                "schema=harmonia.local_ai_runtime.v1",
+                &format!("schema=harmonia.local_ai_runtime.v1 ok={}", execution.ok),
+                Some(serde_json::json!({"schema": "harmonia.local_ai_runtime.v1", "ok": execution.ok})),
+                Some(execution.ok),
+            );
             println!("ok={}", execution.ok);
             println!("changed={}", execution.changed);
             println!("profile_id={}", profile.id);
@@ -3017,6 +3048,12 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
 
 pub(crate) fn toolbelt() -> Result<(), String> {
     println!("schema=harmonia.toolbelt.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.toolbelt.v1",
+        &format!("schema=harmonia.toolbelt.v1 ok={}", true),
+        Some(serde_json::json!({"schema": "harmonia.toolbelt.v1", "ok": true})),
+        Some(true),
+    );
     println!("ok=true");
     println!("tool_count={}", tools::all().len());
     for tool in tools::all() {
@@ -3053,6 +3090,12 @@ pub(crate) fn toolbelt() -> Result<(), String> {
 
 pub(crate) fn explain() -> Result<(), String> {
     println!("schema=harmonia.explain.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.explain.v1",
+        &format!("schema=harmonia.explain.v1 ok={}", true),
+        Some(serde_json::json!({"schema": "harmonia.explain.v1", "ok": true})),
+        Some(true),
+    );
     println!("ok=true");
     println!("name=harmonia");
     println!("version={}", VERSION);
