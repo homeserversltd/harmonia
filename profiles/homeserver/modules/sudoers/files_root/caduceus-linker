@@ -1,0 +1,2 @@
+# Caduceus Linker policy: one fixed root-owned launcher for the retained adapter.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/caduceus-linker
