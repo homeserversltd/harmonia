@@ -8,7 +8,7 @@ Group=yarr
 WorkingDirectory=/opt/yarr
 Environment="GOPATH=/home/yarr/go"
 Environment="GOROOT=/usr/local/go"
-ExecStart=/usr/local/go/bin/go run -tags "sqlite_foreign_keys" ./cmd/yarr -db /var/lib/yarr/yarr.db
+ExecStart=/usr/local/go/bin/go run -tags "sqlite_foreign_keys sqlite_fts5" ./cmd/yarr -db /var/lib/yarr/yarr.db
 
 [Install]
 WantedBy=multi-user.target 
