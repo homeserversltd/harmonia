@@ -248,6 +248,12 @@ pub(crate) fn molt_at_subscription_path(
     fs::write(receipt_dir.join("molt.json"), receipt_text).map_err(|e| e.to_string())?;
 
     println!("schema=harmonia.molt.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.molt.v1",
+        &format!("schema=harmonia.molt.v1 ok={}", true),
+        Some(serde_json::json!({"schema": "harmonia.molt.v1", "ok": true})),
+        Some(true),
+    );
     println!("ok=true");
     println!("profile_id={}", profile.id);
     println!("identity={}", profile.identity);

@@ -99,6 +99,12 @@ pub(crate) fn pinned_artifacts_check(
         }),
     )?;
     println!("schema=harmonia.pinned_artifacts.check.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.pinned_artifacts.check.v1",
+        &format!("schema=harmonia.pinned_artifacts.check.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.pinned_artifacts.check.v1", "ok": ok})),
+        Some(ok),
+    );
     println!("ok={}", ok);
     println!("profile_id={}", profile.id);
     println!("artifact_count={}", lock.artifacts.len());
@@ -166,6 +172,12 @@ pub(crate) fn pinned_artifacts_nudge(
         }),
     )?;
     println!("schema=harmonia.pinned_artifacts.nudge.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.pinned_artifacts.nudge.v1",
+        &format!("schema=harmonia.pinned_artifacts.nudge.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.pinned_artifacts.nudge.v1", "ok": ok})),
+        Some(ok),
+    );
     println!("ok={}", ok);
     println!("artifact={}", name);
     println!("candidate_version={}", version);
@@ -246,6 +258,12 @@ pub(crate) fn pinned_artifacts_bless(
         }),
     )?;
     println!("schema=harmonia.pinned_artifacts.bless.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.pinned_artifacts.bless.v1",
+        &format!("schema=harmonia.pinned_artifacts.bless.v1 ok={}", true),
+        Some(serde_json::json!({"schema": "harmonia.pinned_artifacts.bless.v1", "ok": true})),
+        Some(true),
+    );
     println!("ok=true");
     println!("mutation={}", apply);
     println!("artifact={}", name);
