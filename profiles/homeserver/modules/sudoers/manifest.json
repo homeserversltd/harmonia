@@ -1,0 +1,28 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sudoers",
+  "version": "1.0.0",
+  "description": "Operator ruling (2026-08-06): ‘sudoers is like sbin where it has to be maintained live... there are a few parts of harmonia that have to be forcibly rolling release clobbers. sbin is one. sudoers is one. both the user don't need to touch to do what they need to do — they are explicitly ours. and sudoers needs to be per appliance.’ This module forcibly converges only its declared estate-owned caduceus-* sudoers.d fragments; it is not report-only.",
+  "optional": false,
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "estate-sudoers-converge",
+      "tool": "files",
+      "permutation": "validated-sudoers-converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/etc/sudoers.d",
+        "files": ["caduceus-keyman", "caduceus-disk-doors"],
+        "owned_prefix": "caduceus-",
+        "validator_program": "/usr/bin/visudo",
+        "validator_args": ["-cf"],
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "estate-sudoers-converge"
+      },
+      "on_failure": "stop"
+    }
+  ],
+  "files_root": "files_root"
+}
