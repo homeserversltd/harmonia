@@ -98,12 +98,6 @@
         "launcher_mode": 493,
         "prune": true
       }
-    },
-    {
-      "step_id": "caduceus-sudoers-policy-files-root",
-      "tool": "files",
-      "permutation": "managed-files",
-      "args": {}
     }
   ],
   "files_root": "files_root"

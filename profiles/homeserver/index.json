@@ -40,7 +40,7 @@
       "systemd",
       "searx",
       "rust-build-toolchain",
-      "permissions",
+      "sudoers",
       "matrix",
       "work-lane-root-provisioning"
     ]
@@ -59,6 +59,7 @@
     "household-time",
     "desktop-config-payload",
     "caduceus",
+    "sudoers",
     "forgejo",
     "gogs",
     "calibreweb",
@@ -77,7 +78,7 @@
     "homeserver-update-runtime",
     "sbin"
   ],
-  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Matrix/Element service modules, and the permissions source-artifact scaffold; remaining homeserver ghosts stay README-only for later slices",
+  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Matrix/Element service modules, and the direct-owned sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
     "desktop-config-payload",
@@ -102,7 +103,7 @@
     "systemd",
     "searx",
     "rust-build-toolchain",
-    "permissions",
+    "sudoers",
     "matrix"
   ],
   "public_source_boundary": "public reusable product module concerns and non-secret configuration only",
