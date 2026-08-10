@@ -776,10 +776,11 @@ pub struct RemoteHeadProbe {
     pub failed_attempts: Vec<SourceAttemptReceipt>,
 }
 
-/// Read the declared branch head through ordered candidates exactly as
-/// acquisition does: unresolved credential selectors are hard-red, a local
-/// checkout remains not applicable to remote freshness, and failed Git
-/// transports fall through to the next declared Git candidate.
+/// Read the declared source head through ordered candidates exactly as
+/// acquisition does. A local checkout observes its immutable commit directly;
+/// its credential selector is a declaration for later Git candidates and is not
+/// required to read the local checkout. Failed Git transports fall through to
+/// the next declared Git candidate.
 pub fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
     if plan.candidates.is_empty() {
         return RemoteHeadProbe {
@@ -810,22 +811,25 @@ pub fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
     };
     for (offset, candidate) in plan.candidates.iter().enumerate() {
         let index = offset + 1;
-        if candidate.kind != SourceCandidateKind::Git {
+        if candidate.kind == SourceCandidateKind::LocalCheckout {
+            let command = source_head(Path::new(&candidate.locator), &plan.bearer);
+            let remote_sha = command
+                .ok
+                .then(|| command.stdout.trim().to_string())
+                .filter(|sha| is_lower_hex_sha(sha));
             return RemoteHeadProbe {
-                state: "not-applicable".into(),
+                state: if remote_sha.is_some() {
+                    "local-checkout-observed".into()
+                } else {
+                    "probe-unavailable".into()
+                },
                 candidate_index: Some(index),
                 candidate_kind: Some(candidate.kind),
                 locator: Some(candidate.locator.clone()),
                 credential_selector: candidate.credential_selector.clone(),
                 reference: plan.reference.clone(),
-                remote_sha: None,
-                command: CommandReceipt {
-                    ok: true,
-                    code: 0,
-                    stdout: "ordered source candidate is not Git; remote probe not applicable"
-                        .into(),
-                    stderr: String::new(),
-                },
+                remote_sha,
+                command,
                 failed_attempts,
             };
         }
@@ -939,17 +943,19 @@ pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
 
     for (offset, candidate) in plan.candidates.iter().enumerate() {
         let index = offset + 1;
-        if let Some(selector) = candidate.credential_selector.as_deref() {
-            if !plan.credentials.contains_key(selector) {
-                attempts.push(source_attempt(
-                    index,
-                    candidate,
-                    "hard-red-credential",
-                    None,
-                    false,
-                    "credential-selector-unresolved".into(),
-                ));
-                return source_hard_red(attempts, precondition_changed);
+        if candidate.kind == SourceCandidateKind::Git {
+            if let Some(selector) = candidate.credential_selector.as_deref() {
+                if !plan.credentials.contains_key(selector) {
+                    attempts.push(source_attempt(
+                        index,
+                        candidate,
+                        "hard-red-credential",
+                        None,
+                        false,
+                        "credential-selector-unresolved".into(),
+                    ));
+                    return source_hard_red(attempts, precondition_changed);
+                }
             }
         }
         match candidate.kind {

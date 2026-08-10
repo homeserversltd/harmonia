@@ -1552,6 +1552,32 @@ fn git_artifact_step(
             command: Some(command.clone()),
         },
     )?;
+    let receipt_path = module_dir.join(format!("{}.json", step.step_id));
+    let mut receipt: Value = serde_json::from_slice(
+        &fs::read(&receipt_path)
+            .map_err(|error| format!("git-artifact-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("git-artifact-receipt-parse-failed: {error}"))?;
+    let object = receipt
+        .as_object_mut()
+        .ok_or_else(|| "git-artifact-receipt-not-object".to_string())?;
+    object.insert(
+        "attempts".into(),
+        json!(outcome.receipt.attempts.iter().map(|attempt| json!({
+            "index": attempt.index,
+            "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
+            "locator": attempt.locator,
+            "credential_selector": attempt.credential_selector,
+            "disposition": attempt.disposition,
+            "resolved_commit": attempt.resolved_commit,
+            "external_freshness": attempt.external_freshness,
+            "detail": attempt.detail,
+        })).collect::<Vec<_>>()),
+    );
+    object.insert("served_index".into(), json!(outcome.receipt.served_index));
+    object.insert("resolved_commit".into(), json!(outcome.receipt.resolved_commit));
+    object.insert("promotion".into(), json!(outcome.receipt.promotion));
+    crate::write_json(&receipt_path, &receipt)?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
