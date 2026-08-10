@@ -561,6 +561,7 @@ fn execute_validated_step(
                 | ("package", "upgrade")
                 | ("package", "keyring-repair")
                 | ("git-artifact", "sync")
+                | ("service-runtime", "converge")
                 | ("files", "source-shelf-sweep")
                 | ("files", "validated-sudoers-converge")
                 | ("venv", "converge")
@@ -608,7 +609,7 @@ fn execute_validated_step(
             tools::service_runtime::execute_ladder_step(
                 &step.args,
                 module_dir,
-                false,
+                software_apply,
                 &source_plan,
             )
         }
