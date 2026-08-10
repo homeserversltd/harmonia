@@ -14,7 +14,6 @@
     "system-packages",
     "keyman-runtime",
     "rust-build-toolchain",
-    "homeconsole-tls-lifecycle",
     "arcadia-gui-runtime",
     "local-ai-runtime",
     "pinned-artifacts-runtime",
