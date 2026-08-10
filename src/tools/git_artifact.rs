@@ -1343,13 +1343,26 @@ fn project_local_checkout(
                 destination.display()
             ));
         }
-        if destination_head.stdout.trim() == observed_commit {
+        let destination_commit = destination_head.stdout.trim();
+        if destination_commit == observed_commit {
             return Ok(false);
         }
-        return Err(format!(
-            "local-checkout-destination-divergent-refused {}",
-            destination.display()
-        ));
+        let destination_is_ancestor = capture_git(
+            request,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                destination_commit,
+                observed_commit,
+            ],
+            source.to_str(),
+        );
+        if !destination_is_ancestor.ok {
+            return Err(format!(
+                "local-checkout-destination-divergent-refused {}",
+                destination.display()
+            ));
+        }
     }
 
     let parent = destination
