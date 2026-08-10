@@ -40,6 +40,7 @@
       "permutation": "converge",
       "args": {
         "module_id": "homeconsole-caduceus-public-lever",
+        "identity_environment": ["CADUCEUS_BUILD_SHA"],
         "component": "caduceus",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
