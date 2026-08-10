@@ -404,11 +404,6 @@ fn validate_tool_semantics(
                 step_id: step_id.into(),
                 defect,
             }),
-        ("tls-lifecycle", "converge") => tools::tls_lifecycle::validate_ladder_args(args)
-            .map_err(|defect| LadderValidationError {
-                step_id: step_id.into(),
-                defect,
-            }),
         ("aur", permutation) => {
             tools::aur::validate_ladder_args(permutation, args).map_err(|defect| {
                 LadderValidationError { step_id: step_id.into(), defect }
@@ -625,14 +620,6 @@ fn execute_validated_step(
                 "service-runtime converge operations={}",
                 execution.operation_count
             ),
-            command: None,
-        }),
-        ("tls-lifecycle", "converge") => tools::tls_lifecycle::execute_ladder_step(&step.args, module_dir, false)
-        .map(|execution| OperationOutcome {
-            ok: execution.ok,
-            changed: false,
-            skipped: true,
-            message: format!("tls-lifecycle converge operations={}", execution.operation_count),
             command: None,
         }),
         ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_apply),

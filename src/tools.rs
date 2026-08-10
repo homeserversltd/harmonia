@@ -118,7 +118,6 @@ pub(crate) mod module_steps;
 pub mod package;
 pub(crate) mod service_runtime;
 pub mod systemd;
-pub(crate) mod tls_lifecycle;
 pub(crate) mod validated_file_symlink;
 pub mod venv;
 
@@ -134,7 +133,6 @@ pub const TOOLBELT: &[ToolContract] = &[
     package::CONTRACT,
     service_runtime::CONTRACT,
     systemd::CONTRACT,
-    tls_lifecycle::CONTRACT,
     venv::CONTRACT,
 ];
 
