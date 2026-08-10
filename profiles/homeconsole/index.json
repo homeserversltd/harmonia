@@ -19,6 +19,7 @@
     "local-ai-runtime",
     "pinned-artifacts-runtime",
     "homeconsole-update-runtime",
+    "homeconsole-sync-runtime",
     "household-time",
     "homeconsole-caduceus-public-lever",
     "sbin",
