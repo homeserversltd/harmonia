@@ -65,7 +65,7 @@
           {
             "path": "/etc/caduceus/identity.json",
             "mode": 420,
-            "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"arch-gaming-console\",\n  \"profile\": \"console\",\n  \"mode\": \"console\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\"\n}\n"
+            "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\"\n}\n"
           },
           {
             "path": "/var/lib/caduceus/state.json",
@@ -77,8 +77,6 @@
           "source": "profiles/console/index.yaml",
           "path": "/etc/caduceus/profile.yaml",
           "mode": 420,
-          "insert_after_profile": "",
-          "insert_after_mode": "",
           "append": ""
         }
       }

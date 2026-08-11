@@ -73,10 +73,6 @@ struct CaduceusProfileSourceManifest {
     #[serde(default)]
     mode: Option<u32>,
     #[serde(default)]
-    insert_after_profile: String,
-    #[serde(default)]
-    insert_after_mode: String,
-    #[serde(default)]
     append: String,
 }
 
@@ -1133,8 +1129,7 @@ mod tests {
             "harmonia_profile: /etc/harmonia/profiles/homeserver/index.json",
         ] {
             assert!(
-                source_profile.insert_after_profile.contains(required)
-                    || source_profile.insert_after_mode.contains(required),
+                source_profile.append.contains(required),
                 "homeserver Caduceus profile source overlay missing {required}"
             );
         }

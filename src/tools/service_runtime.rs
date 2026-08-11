@@ -847,27 +847,12 @@ fn render_caduceus_profile_source(
         )
     })?;
     let mut rendered = String::new();
-    let mut inserted_profile = profile_source.insert_after_profile.trim().is_empty();
-    let mut inserted_mode = profile_source.insert_after_mode.trim().is_empty();
     for line in source.lines() {
+        if line.starts_with("profile:") || line.starts_with("mode:") {
+            continue;
+        }
         rendered.push_str(line);
         rendered.push('\n');
-        if !inserted_profile && line.starts_with("profile:") {
-            rendered.push_str(profile_source.insert_after_profile.trim_end());
-            rendered.push('\n');
-            inserted_profile = true;
-        }
-        if !inserted_mode && line.starts_with("mode:") {
-            rendered.push_str(profile_source.insert_after_mode.trim_end());
-            rendered.push('\n');
-            inserted_mode = true;
-        }
-    }
-    if !inserted_profile {
-        return Err("service-runtime-caduceus-profile-source-missing-profile".to_string());
-    }
-    if !inserted_mode {
-        return Err("service-runtime-caduceus-profile-source-missing-mode".to_string());
     }
     if !profile_source.append.trim().is_empty() {
         rendered.push_str(profile_source.append.trim_start());
