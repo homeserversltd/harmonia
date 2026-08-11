@@ -1810,6 +1810,46 @@ fn source_shelf_excluded(patterns: &[String], relative: &Path) -> bool {
     })
 }
 
+
+fn carry_excluded_shelf_entries(
+    shelf_backup: &Path, promoted_shelf: &Path, exclude: &[String],
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    fn carry(shelf_backup: &Path, promoted_shelf: &Path, path: &Path, exclude: &[String], carried: &mut Vec<(PathBuf, PathBuf)>) -> Result<(), String> {
+        let mut children = fs::read_dir(path).map_err(|error| format!(
+            "source-shelf-sweep-excluded-backup-read-failed {}: {error}", path.display()
+        ))?.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let backup_path = child.path();
+            let relative_path = backup_path.strip_prefix(shelf_backup).map_err(|error| error.to_string())?.to_path_buf();
+            validate_relative_path(&relative_path)?;
+            let promoted_path = promoted_shelf.join(&relative_path);
+            if source_shelf_excluded(exclude, &relative_path) {
+                match fs::symlink_metadata(&promoted_path) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        fs::rename(&backup_path, &promoted_path).map_err(|error| format!(
+                            "source-shelf-sweep-excluded-carry-failed {} -> {}: {error}", backup_path.display(), promoted_path.display()
+                        ))?;
+                        carried.push((backup_path, promoted_path));
+                    }
+                    Err(error) => return Err(format!(
+                        "source-shelf-sweep-excluded-stage-metadata-failed {}: {error}", promoted_path.display()
+                    )),
+                }
+                continue;
+            }
+            if child.file_type().map_err(|error| format!("source-shelf-sweep-excluded-entry-type-failed: {error}"))?.is_dir() {
+                carry(shelf_backup, promoted_shelf, &backup_path, exclude, carried)?;
+            }
+        }
+        Ok(())
+    }
+    let mut carried = Vec::new();
+    carry(shelf_backup, promoted_shelf, shelf_backup, exclude, &mut carried)?;
+    Ok(carried)
+}
+
 fn load_sweep_provenance(path: &Path) -> Result<SourceShelfSweepProvenance, String> {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| format!(
@@ -3000,6 +3040,7 @@ fn source_shelf_sweep_with_fault(
 
             let shelf_had_prior = request.target_shelf.exists();
             let mut shelf_promoted = false;
+            let mut carried_excluded: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut launcher_backups: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut new_launchers: Vec<PathBuf> = Vec::new();
             let mut promoted_count = 0usize;
@@ -3014,6 +3055,13 @@ fn source_shelf_sweep_with_fault(
                     fs::rename(&stage, &request.target_shelf).map_err(|error| {
                         format!("source-shelf-sweep-shelf-promote-failed: {error}")
                     })?;
+                    if shelf_had_prior {
+                        carried_excluded = carry_excluded_shelf_entries(
+                            &shelf_backup,
+                            &request.target_shelf,
+                            &request.launcher_exclude,
+                        )?;
+                    }
                     sync_directory(shelf_parent)?;
                     shelf_promoted = true;
                     promoted_count += 1;
@@ -3178,6 +3226,14 @@ fn source_shelf_sweep_with_fault(
                     }
                 }
                 if shelf_promoted {
+                    for (backup, promoted) in carried_excluded.iter().rev() {
+                        if let Err(error) = fs::rename(promoted, backup) {
+                            rollback_errors.push(format!(
+                                "restore excluded {} -> {}: {error}",
+                                promoted.display(), backup.display()
+                            ));
+                        }
+                    }
                     if let Err(error) = fs::remove_dir_all(&request.target_shelf) {
                         rollback_errors.push(format!(
                             "remove promoted shelf {}: {error}",
