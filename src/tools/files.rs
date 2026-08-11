@@ -3030,6 +3030,12 @@ fn source_shelf_sweep_with_fault(
                         .expect("launcher drift names come from inventory");
                     let target = request.launcher_target_root.join(name);
                     if target.exists() {
+                        fs::create_dir_all(&quarantine).map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-quarantine-create-failed {}: {error}",
+                                quarantine.display()
+                            )
+                        })?;
                         let backup = quarantine.join(name);
                         fs::rename(&target, &backup).map_err(|error| {
                             format!(
@@ -3060,6 +3066,12 @@ fn source_shelf_sweep_with_fault(
                 if request.prune {
                     for name in &stale {
                         let target = request.launcher_target_root.join(name);
+                        fs::create_dir_all(&quarantine).map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-quarantine-create-failed {}: {error}",
+                                quarantine.display()
+                            )
+                        })?;
                         let backup = quarantine.join(name);
                         fs::rename(&target, &backup).map_err(|error| {
                             format!(
@@ -3072,6 +3084,10 @@ fn source_shelf_sweep_with_fault(
                     }
                     sync_directory(&request.launcher_target_root)?;
                 }
+                let mut readback_exclude = request.launcher_exclude.clone();
+                if let Ok(relative) = quarantine.strip_prefix(&request.target_shelf) {
+                    readback_exclude.push(relative.to_string_lossy().into_owned());
+                }
                 if !launcher_only
                     && !shelf_is_current(
                         &shelf_source,
@@ -3081,7 +3097,7 @@ fn source_shelf_sweep_with_fault(
                         request.shelf_file_mode,
                         uid,
                         gid,
-                        &request.launcher_exclude,
+                        &readback_exclude,
                     )?
                 {
                     return Err("source-shelf-sweep-shelf-readback-failed".into());
