@@ -120,8 +120,6 @@ struct ModuleManifest {
     #[serde(default)]
     target_dir: Option<String>,
     #[serde(default)]
-    source_sha_file: Option<String>,
-    #[serde(default)]
     packages: Vec<String>,
     #[serde(default)]
     package_conflict_policy: Option<String>,
@@ -971,7 +969,6 @@ mod tests {
             source_dir: None,
             install_profile: None,
             target_dir: None,
-            source_sha_file: None,
             packages: vec![],
             package_conflict_policy: None,
             package_conflict_paths: vec![],
@@ -3060,8 +3057,6 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .and_then(|p| p.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "arcadia.service".to_string());
             let source_sha = value_arg_string(&args, "--source-sha");
-            let source_sha_file = value_arg(&args, "--source-sha-file")
-                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/state/arcadia.sha"));
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             homeconsole_arcadia_update(
@@ -3072,7 +3067,6 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 &service,
                 apply,
                 source_sha.as_deref(),
-                &source_sha_file,
             )
         }
         Some("homeconsole-arcadia-gui-update") => {
@@ -3090,8 +3084,6 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let service = value_arg(&args, "--service")
                 .and_then(|p| p.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "arcadia.service".to_string());
-            let source_sha_file = value_arg(&args, "--source-sha-file")
-                .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/state/arcadia.sha"));
             let apply = args.iter().any(|arg| arg == "--apply");
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             homeconsole_arcadia_gui_update(
@@ -3102,7 +3094,6 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 &install_bin,
                 &service,
                 apply,
-                &source_sha_file,
             )
         }
         _ => usage(),

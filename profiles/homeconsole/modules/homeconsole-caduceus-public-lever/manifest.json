@@ -40,13 +40,11 @@
       "permutation": "converge",
       "args": {
         "module_id": "homeconsole-caduceus-public-lever",
-        "identity_environment": ["CADUCEUS_BUILD_SHA"],
         "component": "caduceus",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
         "service": "caduceus.service",
         "url": "http://127.0.0.1:8787/health",
-        "source_sha_file": "/var/lib/harmonia/state/caduceus.sha",
         "binary_name": "caduceus",
         "op_prefix": "caduceus",
         "run_schema": "harmonia.homeconsole.caduceus_public_lever.v1",

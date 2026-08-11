@@ -20,7 +20,6 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("install_bin", ToolArgKind::String),
         ToolArg::required("service", ToolArgKind::String),
         ToolArg::required("url", ToolArgKind::String),
-        ToolArg::required("source_sha_file", ToolArgKind::String),
         ToolArg::required("binary_name", ToolArgKind::String),
         ToolArg::required("op_prefix", ToolArgKind::String),
         ToolArg::required("run_schema", ToolArgKind::String),
@@ -29,7 +28,6 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
         ToolArg::optional("caduceus_commands", ToolArgKind::Json),
         ToolArg::optional("build_environment", ToolArgKind::Json),
-        ToolArg::optional("identity_environment", ToolArgKind::Json),
     ],
 )];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
@@ -42,41 +40,18 @@ fn string_arg(args: &BTreeMap<String, Value>, name: &str) -> Result<String, Stri
         .ok_or_else(|| format!("service-runtime-missing-{name}"))
 }
 
-fn identity_environment(args: &BTreeMap<String, Value>) -> Result<Vec<String>, String> {
-    let Some(value) = args.get("identity_environment") else {
-        return Ok(Vec::new());
-    };
-    let values = value
-        .as_array()
-        .ok_or_else(|| "service-runtime-identity-environment-invalid".to_string())?;
-    let mut declared = Vec::with_capacity(values.len());
-    for value in values {
-        let name = value
-            .as_str()
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "service-runtime-identity-environment-invalid".to_string())?;
-        let safe_identity_name = name
-            .strip_suffix("_SOURCE_SHA")
-            .or_else(|| name.strip_suffix("_BUILD_SHA"))
-            .is_some_and(|prefix| {
-                !prefix.is_empty()
-                    && prefix
-                        .chars()
-                        .all(|character| character.is_ascii_uppercase() || character == '_')
-            });
-        if !safe_identity_name {
-            return Err(format!(
-                "service-runtime-identity-environment-refused-{name}"
-            ));
-        }
-        if declared.iter().any(|declared_name| declared_name == name) {
-            return Err(format!(
-                "service-runtime-identity-environment-duplicate-{name}"
-            ));
-        }
-        declared.push(name.to_string());
-    }
-    Ok(declared)
+fn build_identity_name(component: &str) -> String {
+    let component = component
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("{component}_BUILD_SHA")
 }
 
 fn build_environment(
@@ -100,13 +75,12 @@ fn build_environment(
             .collect::<Result<BTreeMap<_, _>, _>>()?,
         Some(_) => return Err("service-runtime-build-environment-invalid".to_string()),
     };
-    for name in identity_environment(args)? {
-        if let Some(source_sha) = acquired_source_sha {
-            if !is_hex_sha(source_sha) {
-                return Err("service-runtime-identity-source-sha-invalid".to_string());
-            }
-            environment.insert(name, source_sha.to_string());
+    if let Some(source_sha) = acquired_source_sha {
+        if !is_hex_sha(source_sha) {
+            return Err("service-runtime-identity-source-sha-invalid".to_string());
         }
+        let component = string_arg(args, "component")?;
+        environment.insert(build_identity_name(&component), source_sha.to_string());
     }
     Ok(environment)
 }
@@ -235,7 +209,6 @@ fn module_from_args(
         source_dir: Some(string_arg(args, "source_dir")?),
         install_profile: None,
         target_dir: None,
-        source_sha_file: Some(string_arg(args, "source_sha_file")?),
         packages: vec![],
         package_conflict_policy: None,
         package_conflict_paths: vec![],
@@ -339,7 +312,6 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     require_path(module, &module.install_bin, "install_bin")?;
     require_path(module, &module.service, "service")?;
     require_path(module, &module.url, "url")?;
-    require_path(module, &module.source_sha_file, "source_sha_file")?;
     Ok(())
 }
 
@@ -359,11 +331,6 @@ pub(crate) fn execute(
     let install_bin = PathBuf::from(require_path(module, &module.install_bin, "install_bin")?);
     let service = require_path(module, &module.service, "service")?;
     let health_url = require_path(module, &module.url, "url")?;
-    let source_sha_file = PathBuf::from(require_path(
-        module,
-        &module.source_sha_file,
-        "source_sha_file",
-    )?);
 
     let mut source_plan = source_plan.clone();
     if let Some(bearer) = bearer {
@@ -392,10 +359,10 @@ pub(crate) fn execute(
             })
         },
         |observation| {
-            if observation.decision() == SourceGateDecision::ConfirmedMismatch {
-                tools::comparison::DiffDecision::Different
-            } else {
+            if observation.decision() == SourceGateDecision::ConfirmedMatch {
                 tools::comparison::DiffDecision::Empty
+            } else {
+                tools::comparison::DiffDecision::Different
             }
         },
         |_, _| {
@@ -434,16 +401,10 @@ pub(crate) fn execute(
                     attempts: Vec::new(),
                     served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
                     resolved_commit: Some(source_sha.to_string()),
-                    promotion: match source_gate_decision {
-                        SourceGateDecision::ConfirmedMatch => format!(
-                            "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; installed_build_sha={}",
-                            installed_build_sha.as_deref().unwrap_or_default(),
-                        ),
-                        SourceGateDecision::Indeterminate => format!(
-                            "state=blocked; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; first_missing_signal=installed-build-sha-unavailable",
-                        ),
-                        SourceGateDecision::ConfirmedMismatch => unreachable!("different source gate must move"),
-                    },
+                    promotion: format!(
+                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; installed_build_sha={}",
+                        installed_build_sha.as_deref().unwrap_or_default(),
+                    ),
                 },
             }
         }
@@ -461,29 +422,6 @@ pub(crate) fn execute(
     )?;
     let source_command = source_outcome_cmd(&git_outcome);
     write_command_receipt(receipt_dir, spec.source_op, &source_command)?;
-    if source_gate_decision == SourceGateDecision::Indeterminate {
-        write_run_receipt(
-            receipt_dir,
-            spec,
-            apply,
-            false,
-            false,
-            "installed-build-sha-unavailable",
-            &source_plan.reference,
-            &source_plan.reference,
-            &source_dir,
-            promoted_source_head
-                .as_ref()
-                .map(|result| result.stdout.trim())
-                .filter(|source_sha| is_hex_sha(source_sha)),
-        )?;
-        return Ok(ModuleExecution {
-            ok: false,
-            changed: false,
-            operation_count: 1,
-            first_missing_signal: Some("installed-build-sha-unavailable".to_string()),
-        });
-    }
     if !git_outcome.ok {
         write_run_receipt(
             receipt_dir,
@@ -680,14 +618,6 @@ pub(crate) fn execute(
             vec![(spec.binary_install_op, install)],
             &module.id,
         ));
-    }
-
-    if apply {
-        write_text_if_changed(
-            &source_sha_file,
-            &format!("{source_sha_value}\n"),
-            &format!("{}-source-sha", spec.op_prefix),
-        )?;
     }
 
     let service_outcome = ensure_service_active(
@@ -1231,17 +1161,6 @@ fn files_equal(left: &Path, right: &Path) -> Result<bool, String> {
     }
 }
 
-fn write_text_if_changed(path: &Path, desired: &str, label: &str) -> Result<bool, String> {
-    if fs::read_to_string(path).ok().as_deref() == Some(desired) {
-        return Ok(false);
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(path, desired).map_err(|e| format!("{label}-write-failed: {e}"))?;
-    Ok(true)
-}
-
 fn write_binary_install_receipt(
     receipt_dir: &Path,
     spec: &ServiceRuntimeSpec,
@@ -1312,7 +1231,6 @@ mod tests {
     fn base_args(root: &Path) -> BTreeMap<String, Value> {
         let source_dir = root.join("source");
         let install_bin = root.join("bin/service");
-        let source_sha_file = root.join("state/service.sha");
         BTreeMap::from([
             (
                 "module_id".to_string(),
@@ -1332,10 +1250,6 @@ mod tests {
             ),
             ("service".to_string(), json!("empty-managed-files.service")),
             ("url".to_string(), json!("http://127.0.0.1:1/health")),
-            (
-                "source_sha_file".to_string(),
-                json!(source_sha_file.display().to_string()),
-            ),
             ("binary_name".to_string(), json!("service")),
             ("op_prefix".to_string(), json!("empty-managed-files")),
             (
@@ -1393,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_identity_environment_supplies_exact_acquired_sha_to_cargo_build() {
+    fn component_identity_environment_supplies_exact_acquired_sha_to_cargo_build() {
         let root = scratch("identity-environment");
         let mut args = base_args(&root);
         args.insert(
@@ -1403,23 +1317,16 @@ mod tests {
                 "CARGO_HOME": "/opt/cargo"
             }),
         );
-        args.insert(
-            "identity_environment".to_string(),
-            json!(["CORONATIO_SOURCE_SHA", "CORONATIO_BUILD_SHA"]),
-        );
         let acquired_sha = "a5c8cd44e139db3d949b3c601fff9337cc6f3c80";
 
         let environment = build_environment(&args, Some(acquired_sha)).unwrap();
 
         assert_eq!(
-            environment.get("CORONATIO_SOURCE_SHA").map(String::as_str),
+            environment
+                .get("TEST_SERVICE_BUILD_SHA")
+                .map(String::as_str),
             Some(acquired_sha),
-            "cargo build lacks the exact acquired source identity environment"
-        );
-        assert_eq!(
-            environment.get("CORONATIO_BUILD_SHA").map(String::as_str),
-            Some(acquired_sha),
-            "cargo build lacks the exact acquired build identity environment"
+            "cargo build lacks the exact component-derived acquired build identity environment"
         );
         assert_eq!(
             environment.get("RUSTUP_HOME").map(String::as_str),
@@ -1433,19 +1340,19 @@ mod tests {
     }
 
     #[test]
-    fn malformed_identity_environment_is_refused_by_ladder_validation() {
-        let root = scratch("identity-environment-invalid");
+    fn invalid_build_environment_and_acquired_sha_are_refused_by_ladder_validation() {
+        let root = scratch("build-environment-invalid");
         let mut args = base_args(&root);
-        args.insert("identity_environment".to_string(), json!(["RUSTFLAGS"]));
+        args.insert(
+            "build_environment".to_string(),
+            json!({"RUSTFLAGS": "-C debuginfo=0"}),
+        );
 
         assert_eq!(
             validate_ladder_args(&args).unwrap_err(),
-            "service-runtime-identity-environment-refused-RUSTFLAGS"
+            "service-runtime-build-environment-refused-RUSTFLAGS"
         );
-        args.insert(
-            "identity_environment".to_string(),
-            json!(["CORONATIO_SOURCE_SHA"]),
-        );
+        args.remove("build_environment");
         assert_eq!(
             build_environment(&args, Some("g5c8cd44e139db3d949b3c601fff9337cc6f3c80")).unwrap_err(),
             "service-runtime-identity-source-sha-invalid"

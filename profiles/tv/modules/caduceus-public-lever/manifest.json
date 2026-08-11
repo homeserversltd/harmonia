@@ -17,7 +17,6 @@
         "install_bin": "/usr/local/bin/caduceus",
         "service": "caduceus.service",
         "url": "http://127.0.0.1:8787/health",
-        "source_sha_file": "/var/lib/harmonia/state/caduceus.sha",
         "binary_name": "caduceus",
         "op_prefix": "caduceus",
         "run_schema": "harmonia.tv.caduceus_public_lever.v1",
