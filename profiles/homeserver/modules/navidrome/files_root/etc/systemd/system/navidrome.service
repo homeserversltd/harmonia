@@ -9,6 +9,8 @@ Group=navidrome
 ExecStart=/opt/navidrome/navidrome --configfile /etc/navidrome/navidrome.toml
 WorkingDirectory=/opt/navidrome
 KillMode=process
+CPUWeight=10000
+IOWeight=10000
 
 
 [Install]
