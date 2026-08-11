@@ -567,9 +567,10 @@ fn execute_validated_step(
                 | ("venv", "converge")
                 | ("aur", "install")
                 | ("aur", "build-pinned")
+                | ("command", "capture")
         );
     match (step.tool.as_str(), step.permutation.as_str()) {
-        ("command", "capture") => command_capture_step(step, module_dir, false),
+        ("command", "capture") => command_capture_step(step, module_dir, software_apply),
         ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, false),
         ("health", "probe") => health_probe_step(step, module_dir, false),
         ("household-time", _) => household_time_step(step, module_dir, false),
