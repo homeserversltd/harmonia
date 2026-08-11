@@ -233,8 +233,7 @@ pub(crate) fn homeconsole_arcadia_update(
     install_bin: &Path,
     service: &str,
     apply: bool,
-    source_sha: Option<&str>,
-    source_sha_file: &Path,
+    _source_sha: Option<&str>,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
@@ -278,22 +277,6 @@ pub(crate) fn homeconsole_arcadia_update(
             )?;
         } else {
             event(&mut events, "artifact-current", true, "converged-quiet")?;
-        }
-        if let Some(source_sha) = source_sha {
-            let desired = format!("{}\n", source_sha.trim());
-            if fs::read_to_string(source_sha_file).ok().as_deref() != Some(desired.as_str()) {
-                if let Some(parent) = source_sha_file.parent() {
-                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                fs::write(source_sha_file, desired)
-                    .map_err(|e| format!("source-sha-write-failed: {e}"))?;
-            }
-            event(
-                &mut events,
-                "source-sha-recorded",
-                true,
-                "Arcadia source SHA recorded",
-            )?;
         }
         let authority_changed = ensure_arcadia_control_surface_authority(receipt_dir, true)?;
         changed = changed || authority_changed;
@@ -399,7 +382,6 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     install_bin: &Path,
     service: &str,
     apply: bool,
-    source_sha_file: &Path,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
@@ -555,7 +537,6 @@ pub(crate) fn homeconsole_arcadia_gui_update(
         service,
         true,
         Some(&source_sha_value),
-        source_sha_file,
     )?;
 
     let health = arcadia_health_with_retry();

@@ -11,13 +11,11 @@
       "permutation": "converge",
       "args": {
         "module_id": "arcadia-gui-runtime",
-        "identity_environment": ["ARCADIA_BUILD_SHA"],
         "component": "arcadia",
         "source_dir": "/opt/arcadia/source",
         "install_bin": "/usr/local/bin/arcadia",
         "service": "arcadia.service",
         "url": "http://127.0.0.1:8080/health",
-        "source_sha_file": "/var/lib/harmonia/state/arcadia.sha",
         "binary_name": "arcadia",
         "op_prefix": "arcadia-gui",
         "run_schema": "harmonia.arcadia_gui_runtime.v1",
