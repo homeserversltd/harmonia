@@ -38,6 +38,16 @@
         "launcher_mode": 493,
         "prune": true
       }
+    },
+    {
+      "step_id": "linker-venv-self-heal",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/local/lib/linker/setup_venv.sh",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
     }
   ]
 }
