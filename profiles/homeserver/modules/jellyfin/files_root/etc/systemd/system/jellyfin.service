@@ -12,6 +12,8 @@ Environment=JELLYFIN_LOG_DIR=/var/log/jellyfin
 Environment=JELLYFIN_MEDIA_DIR=/mnt/nas/media
 Environment=JELLYFIN_WEB_DIR=/usr/share/jellyfin/web
 ExecStart=/usr/bin/jellyfin
+CPUWeight=10000
+IOWeight=10000
 
 [Install]
 WantedBy=multi-user.target
