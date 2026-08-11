@@ -10,7 +10,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "path": "/usr/sbin/smbd",
+        "executable": "/usr/sbin/smbd",
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -20,7 +20,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "path": "/usr/sbin/nmbd",
+        "executable": "/usr/sbin/nmbd",
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -30,7 +30,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "path": "/usr/bin/testparm",
+        "executable": "/usr/bin/testparm",
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -40,7 +40,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "path": "/usr/sbin/avahi-daemon",
+        "executable": "/usr/sbin/avahi-daemon",
         "timeout_secs": 30
       },
       "on_failure": "stop"
@@ -50,7 +50,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "path": "/usr/bin/wsdd2",
+        "executable": "/usr/sbin/wsdd2",
         "timeout_secs": 30
       },
       "on_failure": "stop"

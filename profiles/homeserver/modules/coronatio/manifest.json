@@ -10,7 +10,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "path": "/usr/local/bin/coronatio",
+        "executable": "/usr/local/bin/coronatio",
         "timeout_secs": 30
       },
       "on_failure": "stop"

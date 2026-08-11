@@ -15,7 +15,7 @@
         "target_root": "/etc/sudoers.d",
         "files": ["caduceus-keyman", "caduceus-disk-doors", "caduceus-forgejo-credential", "caduceus-linker"],
         "owned_prefix": "caduceus-",
-        "validator_program": "/usr/bin/visudo",
+        "validator_program": "/usr/sbin/visudo",
         "validator_args": ["-cf"],
         "owner": "root",
         "group": "root",
