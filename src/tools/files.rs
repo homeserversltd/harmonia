@@ -1831,7 +1831,7 @@ fn write_sweep_provenance(path: &Path, provenance: &SourceShelfSweepProvenance) 
     }))
 }
 
-fn inventory_sweep_tree(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
+fn inventory_sweep_tree(root: &Path, exclude: &[String]) -> Result<Vec<SweepTreeEntry>, String> {
     let metadata = fs::symlink_metadata(root).map_err(|error| {
         format!(
             "source-shelf-sweep-tree-metadata-failed {}: {error}",
@@ -1848,7 +1848,7 @@ fn inventory_sweep_tree(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
         relative_path: PathBuf::from("."),
         is_dir: true,
     }];
-    fn walk(root: &Path, path: &Path, entries: &mut Vec<SweepTreeEntry>) -> Result<(), String> {
+    fn walk(root: &Path, path: &Path, exclude: &[String], entries: &mut Vec<SweepTreeEntry>) -> Result<(), String> {
         let mut children = fs::read_dir(path)
             .map_err(|error| {
                 format!(
@@ -1866,6 +1866,9 @@ fn inventory_sweep_tree(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
                 .map_err(|error| error.to_string())?
                 .to_path_buf();
             validate_relative_path(&relative_path)?;
+            if source_shelf_excluded(exclude, &relative_path) {
+                continue;
+            }
             let kind = child
                 .file_type()
                 .map_err(|error| format!("source-shelf-sweep-entry-type-failed: {error}"))?;
@@ -1880,19 +1883,19 @@ fn inventory_sweep_tree(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
                 is_dir: kind.is_dir(),
             });
             if kind.is_dir() {
-                walk(root, &child_path, entries)?;
+                walk(root, &child_path, exclude, entries)?;
             }
         }
         Ok(())
     }
-    walk(root, root, &mut entries)?;
+    walk(root, root, exclude, &mut entries)?;
     entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(entries)
 }
 
-fn inventory_sweep_tree_if_present(root: &Path) -> Result<Vec<SweepTreeEntry>, String> {
+fn inventory_sweep_tree_if_present(root: &Path, exclude: &[String]) -> Result<Vec<SweepTreeEntry>, String> {
     match fs::symlink_metadata(root) {
-        Ok(_) => inventory_sweep_tree(root),
+        Ok(_) => inventory_sweep_tree(root, exclude),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(format!(
             "source-shelf-sweep-target-metadata-failed {}: {error}",
@@ -2028,8 +2031,9 @@ fn shelf_is_current(
     file_mode: u32,
     uid: u32,
     gid: u32,
+    exclude: &[String],
 ) -> Result<bool, String> {
-    let target_entries = inventory_sweep_tree_if_present(target)?;
+    let target_entries = inventory_sweep_tree_if_present(target, exclude)?;
     if source_entries != target_entries {
         return Ok(false);
     }
@@ -2563,9 +2567,9 @@ fn source_shelf_owned_recursive_sweep(
         .map_err(|error| format!("source-shelf-sweep-owner-resolution-failed: {error}"))?;
     let gid = resolve_gid(&request.shelf_group)
         .map_err(|error| format!("source-shelf-sweep-group-resolution-failed: {error}"))?;
-    let desired: Vec<SweepTreeEntry> = inventory_sweep_tree(&shelf_source)?
+    let desired: Vec<SweepTreeEntry> = inventory_sweep_tree(&shelf_source, &request.launcher_exclude)?
         .into_iter()
-        .filter(|entry| entry.relative_path != Path::new(".") && !source_shelf_excluded(&request.launcher_exclude, &entry.relative_path))
+        .filter(|entry| entry.relative_path != Path::new("."))
         .collect();
     let desired_paths: BTreeSet<String> = desired.iter()
         .map(|entry| request.target_shelf.join(&entry.relative_path).display().to_string())
@@ -2697,7 +2701,7 @@ fn source_shelf_owned_recursive_sweep(
     }
     let outcome = SourceShelfSweepOutcome { ok: true, changed: promoted_count > 0 || removed_count > 0, current: true,
         source_inventory_count: desired.len(), target_inventory_count_before: 0,
-        target_inventory_count_after: inventory_sweep_tree_if_present(&request.target_shelf)?.len(), promoted_count, removed_count,
+        target_inventory_count_after: inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?.len(), promoted_count, removed_count,
         transaction_state: "committed".into(), rollback_state: "quarantine-preserved".into(), first_blocker: "none".into(), entries,
         message: "owned recursive source shelf converged".into() };
     write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
@@ -2793,12 +2797,9 @@ fn source_shelf_sweep_with_fault(
     let source_entries = if launcher_only {
         Vec::new()
     } else {
-        inventory_sweep_tree(&shelf_source)?
-            .into_iter()
-            .filter(|entry| !source_shelf_excluded(&request.launcher_exclude, &entry.relative_path))
-            .collect()
+        inventory_sweep_tree(&shelf_source, &request.launcher_exclude)?
     };
-    let target_before = inventory_sweep_tree_if_present(&request.target_shelf)?;
+    let target_before = inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
     let launchers = source_launchers(
         &launcher_source_root,
         &request.launcher_pattern,
@@ -2821,6 +2822,7 @@ fn source_shelf_sweep_with_fault(
         request.shelf_file_mode,
         uid,
         gid,
+        &request.launcher_exclude,
     )?;
     let mut launcher_drift = BTreeSet::new();
     for (name, source) in &launchers {
@@ -3079,6 +3081,7 @@ fn source_shelf_sweep_with_fault(
                         request.shelf_file_mode,
                         uid,
                         gid,
+                        &request.launcher_exclude,
                     )?
                 {
                     return Err("source-shelf-sweep-shelf-readback-failed".into());
@@ -3110,7 +3113,7 @@ fn source_shelf_sweep_with_fault(
 
             let mut committed_outcome = None;
             let transaction = transaction.and_then(|_| {
-                let target_after = inventory_sweep_tree_if_present(&request.target_shelf)?;
+                let target_after = inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
                 let target_launchers_after = target_pattern_files(
                     &request.launcher_target_root,
                     &request.launcher_pattern,
@@ -3205,6 +3208,7 @@ fn source_shelf_sweep_with_fault(
                     target_inventory_count_before: target_before.len() + target_launchers.len(),
                     target_inventory_count_after: inventory_sweep_tree_if_present(
                         &request.target_shelf,
+                        &request.launcher_exclude,
                     )
                     .map(|entries| entries.len())
                     .unwrap_or_default()
