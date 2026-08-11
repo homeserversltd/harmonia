@@ -3318,19 +3318,29 @@ fn source_shelf_sweep_with_fault(
                 if fault.fail_cleanup {
                     return Err("source-shelf-sweep-injected-cleanup-failure".into());
                 }
-                fs::remove_dir_all(&quarantine).map_err(|error| {
-                    format!(
-                        "source-shelf-sweep-quarantine-remove-failed {}: {error}",
-                        quarantine.display()
-                    )
-                })?;
+                let remove_dir_all_if_present = |path: &Path, label: &str| -> Result<(), String> {
+                    if let Err(error) = fs::remove_dir_all(path) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            return Err(format!("{label} {}: {error}", path.display()));
+                        }
+                    }
+                    Ok(())
+                };
+                remove_dir_all_if_present(
+                    &quarantine,
+                    "source-shelf-sweep-quarantine-remove-failed",
+                )?;
                 if shelf_had_prior && shelf_promoted {
-                    fs::remove_dir_all(&shelf_backup).map_err(|error| {
-                        format!(
-                            "source-shelf-sweep-prior-shelf-remove-failed {}: {error}",
-                            shelf_backup.display()
-                        )
-                    })?;
+                    if let Ok(relative) = quarantine.strip_prefix(&request.target_shelf) {
+                        remove_dir_all_if_present(
+                            &shelf_backup.join(relative),
+                            "source-shelf-sweep-quarantine-backup-remove-failed",
+                        )?;
+                    }
+                    remove_dir_all_if_present(
+                        &shelf_backup,
+                        "source-shelf-sweep-prior-shelf-remove-failed",
+                    )?;
                 }
                 let _ = fs::remove_dir_all(&stage);
                 sync_directory(shelf_parent)?;
