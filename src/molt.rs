@@ -118,10 +118,7 @@ pub(crate) fn molt_at_subscription_path(
     let mut untouched_modules = Vec::new();
     export_one(
         &profile_path,
-        &output_dir
-            .join("profiles")
-            .join(&profile.id)
-            .join("index.json"),
+        &output_dir.join("index.json"),
         "profile-index",
         mode,
         &mut artifacts,
@@ -135,11 +132,7 @@ pub(crate) fn molt_at_subscription_path(
         let module_dir = module_root.join(module);
         let sidecar = module_dir.join("sidecar.json");
         let manifest = module_dir.join("manifest.json");
-        let module_output_dir = output_dir
-            .join("profiles")
-            .join(&profile.id)
-            .join("modules")
-            .join(module);
+        let module_output_dir = output_dir.join("modules").join(module);
         let source_tree_sha256 = module_tree_sha256(&module_dir)?;
         let installed_clean = module_output_dir.is_dir()
             && module_tree_sha256(&module_output_dir)? == source_tree_sha256;
@@ -197,20 +190,14 @@ pub(crate) fn molt_at_subscription_path(
     if lock_path.exists() {
         export_one(
             &lock_path,
-            &output_dir
-                .join("locks")
-                .join(&profile.id)
-                .join("pinned-artifacts.json"),
+            &output_dir.join("locks").join("pinned-artifacts.json"),
             "profile-lock",
             mode,
             &mut artifacts,
         )?;
     }
 
-    let output_module_root = output_dir
-        .join("profiles")
-        .join(&profile.id)
-        .join("modules");
+    let output_module_root = output_dir.join("modules");
     let pruned_modules = prune_retired_module_dirs(&output_module_root, &profile.modules)?;
 
     let lane = preserve_existing_lane_or_default(&subscription_path);

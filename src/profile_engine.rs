@@ -712,8 +712,6 @@ pub(crate) fn sync_profile_from_source(
 ) -> Result<(), String> {
     let installed_root = installed_module_root
         .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
         .ok_or_else(|| format!("{profile_id}-config-root-missing"))?;
     molt(
         source_root,

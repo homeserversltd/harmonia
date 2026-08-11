@@ -2030,18 +2030,18 @@ mod tests {
             MoltMode::Copy,
         )
         .unwrap();
-        assert!(output.join("profiles/homeconsole/index.json").exists());
+        assert!(output.join("index.json").exists());
         assert!(output
-            .join("profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json")
+            .join("modules/arcadia-gui-runtime/manifest.json")
             .exists());
         assert!(output
-            .join("profiles/homeconsole/modules/pinned-artifacts-runtime/manifest.json")
+            .join("modules/pinned-artifacts-runtime/manifest.json")
             .exists());
         assert!(!output
-            .join("profiles/homeconsole/modules/homeconsole-update-runtime/files_root")
+            .join("modules/homeconsole-update-runtime/files_root")
             .exists());
         assert!(output
-            .join("locks/homeconsole/pinned-artifacts.json")
+            .join("locks/pinned-artifacts.json")
             .exists());
         assert!(receipts.join("molt.json").exists());
         let receipt = fs::read_to_string(receipts.join("molt.json")).unwrap();
@@ -2051,10 +2051,34 @@ mod tests {
         assert!(receipt.contains("profile-lock"));
         assert!(
             !output
-                .join("profiles/homeconsole/modules/arcadia-gui-runtime/index.rs")
+                .join("modules/arcadia-gui-runtime/index.rs")
                 .exists(),
             "molt carries constants, not module code"
         );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn molt_uses_the_same_flat_profile_layout_for_absent_and_existing_output_roots() {
+        fn relative_file_bytes(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+            fn collect(root: &Path, current: &Path, files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+                for entry in fs::read_dir(current).unwrap() {
+                    let entry = entry.unwrap(); let path = entry.path();
+                    if entry.file_type().unwrap().is_dir() { collect(root, &path, files); }
+                    else { files.insert(path.strip_prefix(root).unwrap().to_path_buf(), fs::read(path).unwrap()); }
+                }
+            }
+            let mut files = std::collections::BTreeMap::new(); collect(root, root, &mut files); files
+        }
+        let scratch = std::env::temp_dir().join(format!("harmonia-molt-layout-{}", process::id()));
+        let root = scratch.join("root"); let absent_output = scratch.join("absent-output"); let existing_output = scratch.join("existing-output");
+        write_molt_fixture(&root);
+        molt_at_subscription_path(&root, "fixture", &absent_output, &scratch.join("absent-receipts"), &scratch.join("absent-subscription.json"), MoltMode::Copy).unwrap();
+        fs::create_dir_all(&existing_output).unwrap();
+        molt_at_subscription_path(&root, "fixture", &existing_output, &scratch.join("existing-receipts"), &scratch.join("existing-subscription.json"), MoltMode::Copy).unwrap();
+        assert!(absent_output.join("index.json").is_file()); assert!(absent_output.join("modules/alpha/manifest.json").is_file());
+        assert!(!absent_output.join("profiles/fixture").exists());
+        assert_eq!(relative_file_bytes(&absent_output), relative_file_bytes(&existing_output));
         let _ = fs::remove_dir_all(scratch);
     }
 
