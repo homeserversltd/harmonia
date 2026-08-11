@@ -24,7 +24,7 @@
       "tool": "files",
       "permutation": "executable-present",
       "args": {
-        "path": "/usr/bin/ffmpeg",
+        "executable": "/usr/bin/ffmpeg",
         "timeout_secs": 30
       },
       "on_failure": "stop"

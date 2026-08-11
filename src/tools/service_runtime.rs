@@ -746,16 +746,19 @@ fn effective_managed_files(
 
 fn append_caduceus_yaml_commands(content: &str, additions: &[String]) -> Result<String, String> {
     let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
-    let services = lines
+    let commands = lines
         .iter()
-        .position(|line| line == "services:")
-        .ok_or_else(|| "service-runtime-caduceus-profile-yaml-services-missing".to_string())?;
+        .position(|line| line == "commands:")
+        .ok_or_else(|| "service-runtime-caduceus-profile-yaml-commands-missing".to_string())?;
     let existing: std::collections::BTreeSet<String> = lines
         .iter()
         .filter_map(|line| line.strip_prefix("- "))
         .map(ToString::to_string)
         .collect();
-    let mut insert_at = services;
+    let mut insert_at = commands + 1;
+    while insert_at < lines.len() && lines[insert_at].starts_with("- ") {
+        insert_at += 1;
+    }
     for command in additions {
         if !existing.contains(command) {
             lines.insert(insert_at, format!("- {command}"));

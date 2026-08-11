@@ -28,7 +28,8 @@
         "launcher_target_root": "/usr/local/lib/linker",
         "launcher_pattern": "linker",
         "launcher_exclude": [
-          ".git"
+          ".git",
+          "venv"
         ],
         "shelf_owner": "root",
         "shelf_group": "root",
