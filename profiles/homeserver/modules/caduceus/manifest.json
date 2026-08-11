@@ -5,8 +5,7 @@
   "description": "HOMESERVER Caduceus public lever with a provisioned caduceus_staff Python environment and sudoers refresh consumer declaration.",
   "constants": {
     "staff_venv": "/var/lib/caduceus/venv",
-    "staff_module_root": "/usr/local/sbin",
-    "sudoers_refresh_consumer_role": "caduceus"
+    "staff_module_root": "/usr/local/sbin"
   },
   "ladder": [
     {
