@@ -54,13 +54,13 @@
       "name_today": "files",
       "species": "tool",
       "chartered_target_name": "remove-file",
-      "migration_status": "flat"
+      "migration_status": "landed"
     },
     {
       "name_today": "files",
       "species": "tool",
       "chartered_target_name": "make-symlink",
-      "migration_status": "nested"
+      "migration_status": "landed"
     },
     {
       "name_today": "files",
@@ -121,12 +121,6 @@
       "species": "tool",
       "chartered_target_name": "remove-unit",
       "migration_status": "flat"
-    },
-    {
-      "name_today": "validated_file_symlink",
-      "species": "tool",
-      "chartered_target_name": "make-symlink",
-      "migration_status": "nested"
     },
     {
       "name_today": "venv",

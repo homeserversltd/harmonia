@@ -118,7 +118,8 @@ pub(crate) mod module_steps;
 pub mod package;
 pub(crate) mod service_runtime;
 pub mod systemd;
-pub(crate) mod validated_file_symlink;
+#[path = "tools/make-symlink.rs"]
+pub(crate) mod make_symlink;
 pub mod venv;
 
 pub const TOOLBELT: &[ToolContract] = &[

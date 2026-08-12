@@ -3,7 +3,7 @@
 //! The source remains one Rust privacy scope through `include!`, while each
 //! independently named transaction boundary owns an indexed directory.
 
-use crate::tools::files::{atomic_write_bytes, file_mode};
+use crate::atoms;
 use crate::{CmdResult, OperationOutcome};
 use serde_json::json;
 use std::fs;

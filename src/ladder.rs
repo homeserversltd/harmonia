@@ -974,8 +974,8 @@ fn validated_file_symlink_step(
     let target = PathBuf::from(string_arg(&step.args, "target"));
     let validator_args = string_array_arg(&step.args, "validator_args");
     let reload_args = string_array_arg(&step.args, "reload_args");
-    crate::tools::validated_file_symlink::execute(
-        crate::tools::validated_file_symlink::ValidatedFileSymlinkRequest {
+    crate::tools::make_symlink::execute(
+        crate::tools::make_symlink::ValidatedFileSymlinkRequest {
             receipt_dir: module_dir,
             name: &step.step_id,
             desired_source: &desired_source,

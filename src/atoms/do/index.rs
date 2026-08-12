@@ -218,6 +218,126 @@ fn set_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(
     Ok(())
 }
 
+pub(crate) fn create_dir_all(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: true,
+            drift: super::Drift::Current,
+            message: format!("directory created {}", path.display()),
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn remove_file(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+) -> Result<(), String> {
+    fs::remove_file(path).map_err(|error| error.to_string())?;
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: true,
+            drift: super::Drift::Current,
+            message: format!("file removed {}", path.display()),
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn rename(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    from: &Path,
+    to: &Path,
+) -> Result<(), String> {
+    fs::rename(from, to).map_err(|error| error.to_string())?;
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: true,
+            drift: super::Drift::Current,
+            message: format!("renamed {} -> {}", from.display(), to.display()),
+        },
+    )?;
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn symlink(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    target: &Path,
+    link: &Path,
+) -> Result<(), String> {
+    std::os::unix::fs::symlink(target, link).map_err(|error| error.to_string())?;
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: true,
+            drift: super::Drift::Current,
+            message: format!("symlink created {} -> {}", link.display(), target.display()),
+        },
+    )?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn symlink(
+    _authorization: ActionAuthorization,
+    _invocation: InvocationKey,
+    _target: &Path,
+    _link: &Path,
+) -> Result<(), String> {
+    Err("validated-file-symlink-unsupported".into())
+}
+
+pub(crate) fn command_with_timeout(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<super::CommandObservation, String> {
+    let result = run_with_timeout(program, args, timeout);
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: result.ok,
+            drift: super::Drift::Current,
+            message: format!(
+                "program={program}; args={args:?}; code={:?}; stdout={:?}; stderr={:?}",
+                result.code, result.stdout, result.stderr
+            ),
+        },
+    )?;
+    Ok(super::CommandObservation {
+        program: program.into(),
+        args: args.to_vec(),
+        ok: result.ok,
+        code: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+    })
+}
+
 pub(crate) fn mutating_command(
     authorization: ActionAuthorization,
     invocation: InvocationKey,
@@ -272,6 +392,10 @@ struct ResultData {
 }
 
 fn run(program: &str, args: &[String]) -> ResultData {
+    run_with_timeout(program, args, COMMAND_TIMEOUT)
+}
+
+fn run_with_timeout(program: &str, args: &[String], timeout: Duration) -> ResultData {
     let mut child = match Command::new(program)
         .args(args)
         .stdout(Stdio::piped())
@@ -296,7 +420,7 @@ fn run(program: &str, args: &[String]) -> ResultData {
         .stderr
         .take()
         .map(|mut reader| thread::spawn(move || bounded(&mut reader)));
-    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let mut timed_out = false;
     let status = loop {
         match child.try_wait() {

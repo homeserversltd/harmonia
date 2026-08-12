@@ -42,19 +42,20 @@ fn write_receipt(
     receipt: TerminalReceipt,
 ) -> Result<OperationOutcome, String> {
     let observed_state = json!({
-        "source": fs::symlink_metadata(request.source).ok().map(|m| {
-            json!({"kind": if m.file_type().is_file() { "regular-file" } else { "other" }, "mode": file_mode(request.source).ok()})
+        "source": atoms::ask::path_kind(request.source).ok().flatten().map(|kind| {
+            json!({"kind": if kind == atoms::ask::PathKind::RegularFile { "regular-file" } else { "other" }, "mode": atoms::ask::file_mode(request.source).ok()})
         }),
-        "link_target": fs::read_link(request.target).ok(),
+        "link_target": atoms::ask::link_target(request.target).ok(),
     });
-    let desired_state = json!({"source_bytes_present": request.desired_source.exists(), "link_target": request.source});
+    let desired_state = json!({"source_bytes_present": atoms::ask::path_kind(request.desired_source).ok().flatten().is_some(), "link_target": request.source});
     let diff_decision = if receipt.changed {
         "different"
     } else {
         "empty"
     };
+    let receipt_path = request.receipt_dir.join(format!("{}.json", request.name));
     crate::write_json(
-        &request.receipt_dir.join(format!("{}.json", request.name)),
+        &receipt_path,
         &json!({
             "schema":"harmonia.files.validated_file_symlink.v1",
             "ok":receipt.ok,
@@ -71,6 +72,16 @@ fn write_receipt(
             "movement": {"source": receipt.promotion.source, "link": receipt.promotion.link},
             "truthful_changed": receipt.changed,
         }),
+    )?;
+    atoms::attest::attest(
+        &request.receipt_dir.join("harmonia-atoms.log"),
+        &atoms::Receipt {
+            atom: "make-symlink".into(),
+            ok: receipt.ok,
+            drift: atoms::Drift::Current,
+            message: receipt.signal.clone(),
+        },
+        &[],
     )?;
     Ok(OperationOutcome {
         ok: receipt.ok,

@@ -15,6 +15,40 @@ pub(crate) fn file(path: &Path) -> Result<FileObservation, String> {
     ask_file(path)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PathKind {
+    RegularFile,
+    Symlink,
+    Other,
+}
+
+pub(crate) fn path_kind(path: &Path) -> Result<Option<PathKind>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(Some(PathKind::RegularFile)),
+        Ok(metadata) if metadata.file_type().is_symlink() => Ok(Some(PathKind::Symlink)),
+        Ok(_) => Ok(Some(PathKind::Other)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+pub(crate) fn link_target(path: &Path) -> Result<std::path::PathBuf, String> {
+    std::fs::read_link(path).map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+pub(crate) fn file_mode(path: &Path) -> Result<u32, String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o777)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn file_mode(_path: &Path) -> Result<u32, String> {
+    Ok(0)
+}
+
 pub(crate) fn file_if_present(path: &Path) -> Result<Option<FileObservation>, String> {
     match File::open(path) {
         Ok(_) => ask_file(path).map(Some),
