@@ -1,15 +1,28 @@
 {
   "schema": "harmonia.tool-registry.v1",
+  "species_vocabulary": [
+    "tool",
+    "routine",
+    "gate",
+    "registry",
+    "atom",
+    "rung"
+  ],
+  "status_meaning": {
+    "flat": "the current source remains flat and has not migrated",
+    "nested": "the target shape exists or is adopted, but the old source still stands",
+    "landed": "the old path actually migrated to the chartered target"
+  },
   "entries": [
     {
       "name_today": "ai-coding-harness",
       "species": "routine",
-      "chartered_target_name": "build-crate",
+      "chartered_target_name": "module-manifest routine",
       "migration_status": "flat"
     },
     {
       "name_today": "artifact-lock",
-      "species": "gate",
+      "species": "rung",
       "chartered_target_name": "ratchet-aur-package",
       "migration_status": "flat"
     },
@@ -21,21 +34,21 @@
     },
     {
       "name_today": "command",
-      "species": "tool",
-      "chartered_target_name": "build-crate",
+      "species": "atom",
+      "chartered_target_name": "atoms::ask + atoms::do",
       "migration_status": "flat"
     },
     {
       "name_today": "comparison",
       "species": "gate",
-      "chartered_target_name": "place-file",
-      "migration_status": "landed"
+      "chartered_target_name": "the observe→act shape of every tool",
+      "migration_status": "nested"
     },
     {
       "name_today": "files",
       "species": "tool",
       "chartered_target_name": "place-file",
-      "migration_status": "landed"
+      "migration_status": "flat"
     },
     {
       "name_today": "files",
@@ -89,12 +102,12 @@
       "name_today": "place-file",
       "species": "tool",
       "chartered_target_name": "place-file",
-      "migration_status": "landed"
+      "migration_status": "nested"
     },
     {
       "name_today": "service-runtime",
       "species": "routine",
-      "chartered_target_name": "enable-unit",
+      "chartered_target_name": "module-manifest routine",
       "migration_status": "flat"
     },
     {
