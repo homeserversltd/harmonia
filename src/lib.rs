@@ -1,3 +1,4 @@
+mod atoms;
 pub(crate) mod hyalos;
 pub mod tools;
 mod update_set;

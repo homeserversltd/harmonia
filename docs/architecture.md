@@ -1,4 +1,9 @@
-# Harmonia architecture
+# Harmonia architecture — engine restructure
+
+Harmonia breathes through one bounded engine path: **ask → compare → do → attest**. The path is typed, profile-scoped, and quiet when current. It does not block on remote observers, and it does not invent authorization from drift alone.
+
+## Current engine (pre-migration)
+
 
 Harmonia updates through one lane:
 
@@ -17,3 +22,62 @@ A Harmonia module is a self-contained intent that must remain updated. The modul
 Shared tools provide primitives: file comparison, atomic promotion, command execution, package checks, systemd operations, health probes, and receipt writing. A tool does not decide what the appliance concern means. The module composes the tools in the lawful order for its own domain.
 
 Managed-file modules follow the same update skeleton: render desired content from module-owned source, read the installed target, compare bytes and declared metadata, write only when drift exists, promote atomically, set ownership and mode, run the domain reconcile step, then receipt each file and the aggregate module. UDEV reconciles by reloading UDEV rules. Systemd reload and restart are gated by material changed during this run: a binary swap or a changed file declared by that module. Unchanged service material produces `converged-quiet` and no mutating systemd command. There is no force or manifest exception to the gate. Nginx validates with `nginx -t` before a change-driven reload. Firewall validates and applies its ruleset only when its declared material changed. Every module remains one intent with its own currentness definition.
+
+
+## Target tree
+
+```text
+main/
+├── bands/
+│   ├── renew-self/
+│   ├── pull-source/
+│   ├── stage-profile/
+│   │   ├── molt/
+│   │   └── capsule/
+│   │       └── prior-capsule-rollback-seat/
+│   ├── compare/
+│   ├── install-packages/
+│   ├── ratchet-binaries/
+│   ├── restart-services/
+│   ├── backfill-files/
+│   ├── propose-edits/
+│   └── report-home/
+├── tools/
+│   └── index.json
+├── atoms/
+│   ├── ask/
+│   ├── do/
+│   └── attest/
+├── profiles/
+│   └── <id>/
+│       ├── locks/
+│       └── tests/
+└── migration/
+    └── slice-1/
+```
+
+## Two keys
+
+The engine has two keys: diff-minted **Authorization** and invocation key **`--apply-or-timer`**. Do requires both by value; a bare `update` observes all and performs no act. Attest is one custody call: append the receipt to the appliance log stream, then forward through Hyalos using the same redacted receipt.
+
+## Charter target — ten bands
+
+The exact ordered bands are: **renew-self; pull-source; stage-profile (containing molt + capsule and one retained prior capsule as rollback seat); compare; install-packages; ratchet-binaries (three-of-a-kind atomic); restart-services; backfill-files; propose-edits; report-home.**
+
+## Tool species law and registry
+
+Tools are single-act tools only. The current pre-migration registry is the `src/tools.rs` `TOOLBELT`, whose shelf entries are: `ai-coding-harness`, `artifact-lock`, `aur`, `command`, `files`, `git-artifact`, `health`, `household-time`, `package`, `service-runtime`, `systemd`, and `venv`. The target charter makes `src/tools/index.json` the ONE registry; the shelf list stays. Compounds are routines in module manifests, never new tool species.
+
+## Rung composition
+
+Observe is **ask + attest**. Act is **do + attest**. `report-home` is **attest alone**. Stdlib world-touching occurs only inside atoms; no-block is mandatory. Bare `update` observes all and performs no act. Acting requires both diff-minted `Authorization` and invocation key **`--apply-or-timer`**.
+
+## Drift and proposals
+
+`on_drift` is typed. Absent means **Hold**: the user file wins, the ledger gets a quiet line, and known-good is sealed in the capsule. **Propose** emits one interactable with a human ceiling. **Replace** is allowed only_if_exact the sha256 of known-bad matches, and lowers the change to the hotfix lane whose predicates grow `FileMatchesExactly`; a missing propose-file is birth's debt.
+
+Proposals seat at `/var/lib/harmonia/proposals/` and have one identity across CLI and GUI. `show-known-good` is an ask-only face verb. Locks are exactly `profiles/<id>/locks/`. Tests are reserved until the operator's word. The heir wears identical geometry.
+
+## Migration status
+
+Slice 1 (atoms floor) is landed; all remaining bands/tools/profile migration remains flat/pre-migration. No-block breath.

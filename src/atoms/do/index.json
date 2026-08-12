@@ -1,0 +1,1 @@
+{"schema":"harmonia.atom.do.v1","authorization":"ActionAuthorization-by-value","invocation_key":"InvocationKey-from-exact---apply-or-timer-state","operations":["backup-first-file-write","truthful-mutating-command","typed-unit-verb-start-stop-restart-enable-disable"],"keys":["diff-minted-authorization","--apply-or-timer-invocation"]}
