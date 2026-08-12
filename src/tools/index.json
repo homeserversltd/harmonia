@@ -67,7 +67,7 @@
       "name_today": "files",
       "species": "tool",
       "chartered_target_name": "backfill-file",
-      "migration_status": "flat"
+      "migration_status": "landed"
     },
     {
       "name_today": "git-artifact",

@@ -1,4 +1,6 @@
 mod atoms;
+#[path = "tools/backfill-file/index.rs"]
+mod backfill_file;
 #[path = "tools/place-file/index.rs"]
 mod place_file;
 #[path = "tools/remove-file/index.rs"]

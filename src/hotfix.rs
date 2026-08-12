@@ -67,14 +67,19 @@ fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result
         |_| decision,
         |_, _| {
             let payload = payload.as_ref().expect("nonempty eligibility has payload");
-            tools::files::comparison_gated_hotfix_backfill(
-                &tools::files::HotfixFileBackfillRequest {
-                    target: payload.target_path.clone(),
-                    file_bytes: payload.file_bytes.clone(),
+            let backup = payload.target_path.with_extension("harmonia-hotfix.bak");
+            let ownership = crate::backfill_file::resolve_ownership(payload.owner.as_deref())?;
+            let backup_policy = crate::backfill_file::BackupPolicy::Observed(&backup);
+            let outcome =
+                crate::backfill_file::execute(crate::backfill_file::BackfillFileRequest {
+                    path: &payload.target_path,
+                    declared_bytes: &payload.file_bytes,
                     mode: payload.mode,
-                    owner: payload.owner.clone(),
-                },
-            )
+                    ownership,
+                    backup: backup_policy,
+                    invocation: crate::atoms::r#do::InvocationKey::from_apply_or_timer(true),
+                })?;
+            Ok(outcome.hotfix_receipt)
         },
     )?;
 
@@ -83,7 +88,7 @@ fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result
         tools::comparison::ComparisonRun::Moved { movement, .. } => (
             "comparison-gated-file-backfill",
             movement.changed,
-            serde_json::to_value(movement).map_err(|error| error.to_string())?,
+            serde_json::to_value(&movement).map_err(|error| error.to_string())?,
         ),
     };
     let closing_reason = if !predicate.0 {
@@ -192,7 +197,7 @@ fn write_blocked_receipt(
 }
 
 fn prior_receipt(path: &Path) -> Result<Map<String, Value>, String> {
-    if !path.exists() {
+    if std::fs::metadata(path).is_err() {
         return Ok(Map::new());
     }
     let text = fs::read_to_string(path)
@@ -292,75 +297,7 @@ fn observe_predicate(
     predicate: Option<&Value>,
     payload: Option<&Value>,
 ) -> Result<(bool, Value), String> {
-    let family = predicate
-        .and_then(Value::as_object)
-        .and_then(|object| object.get("family"))
-        .and_then(Value::as_str)
-        .unwrap_or("Always");
-    let args = predicate
-        .and_then(Value::as_object)
-        .and_then(|object| object.get("args"))
-        .and_then(Value::as_object);
-    match family {
-        "Always" => Ok((true, json!({"family":"Always", "condition":"always"}))),
-        "FileAbsent" => {
-            let path = args
-                .and_then(|args| args.get("target_path"))
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    payload
-                        .and_then(Value::as_object)
-                        .and_then(|item| item.get("target_path"))
-                        .and_then(Value::as_str)
-                })
-                .ok_or_else(|| "hotfix-file-absent-target-path-missing".to_string())?;
-            let absent = !Path::new(path).exists();
-            Ok((
-                absent,
-                json!({"family":"FileAbsent", "target_path":path, "condition": if absent {"absent"} else {"present"}}),
-            ))
-        }
-        "VersionBelow" => {
-            let args = args.ok_or_else(|| "hotfix-version-below-args-missing".to_string())?;
-            let witness_path =
-                required_string(args, "version_path", "hotfix-version-below-witness-missing")?;
-            let minimum = required_string(args, "minimum", "hotfix-version-below-minimum-missing")?;
-            let observed = fs::read_to_string(witness_path)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            let below = version_below(&observed, minimum);
-            Ok((
-                below,
-                json!({"family":"VersionBelow", "version_path":witness_path, "observed_version":observed, "minimum":minimum, "condition":if below {"below"} else {"current-or-newer"}}),
-            ))
-        }
-        other => Err(format!("hotfix-predicate-unsupported {other}")),
-    }
-}
-
-fn version_below(observed: &str, minimum: &str) -> bool {
-    let parse = |value: &str| {
-        value
-            .split('.')
-            .map(|part| part.parse::<u64>().ok())
-            .collect::<Option<Vec<_>>>()
-    };
-    match (parse(observed), parse(minimum)) {
-        (Some(observed), Some(minimum)) => {
-            let count = observed.len().max(minimum.len());
-            (0..count)
-                .map(|index| {
-                    (
-                        *observed.get(index).unwrap_or(&0),
-                        *minimum.get(index).unwrap_or(&0),
-                    )
-                })
-                .find_map(|(left, right)| (left != right).then_some(left < right))
-                .unwrap_or(false)
-        }
-        _ => observed < minimum,
-    }
+    crate::backfill_file::observe_predicate(predicate, payload)
 }
 
 fn optional_string<'a>(object: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
