@@ -127,7 +127,7 @@ pub(crate) struct AurBuildReceipt {
     pub install_verify_command: Option<CmdResult>,
 }
 
-fn read_lock(path: &Path, package: &str) -> Result<AurRatchetLock, String> {
+pub(crate) fn read_lock(path: &Path, package: &str) -> Result<AurRatchetLock, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("aur-ratchet-lock-read-failed {}: {e}", path.display()))?;
     let lock: AurRatchetLock = serde_json::from_str(&text)
@@ -161,7 +161,7 @@ pub(crate) fn validate_pin_shape(lock: &AurRatchetLock) -> Result<(), String> {
     Ok(())
 }
 
-fn is_git_sha(value: &str) -> bool {
+pub(crate) fn is_git_sha(value: &str) -> bool {
     value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
@@ -178,7 +178,10 @@ fn upstream_state_path(arg: Option<&str>) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn read_upstream_state(path: Option<&str>, package: &str) -> Result<AurUpstreamState, String> {
+pub(crate) fn read_upstream_state(
+    path: Option<&str>,
+    package: &str,
+) -> Result<AurUpstreamState, String> {
     let state = if let Some(path) = upstream_state_path(path) {
         let text = fs::read_to_string(&path)
             .map_err(|e| format!("aur-upstream-state-read-failed {path}: {e}"))?;
@@ -267,46 +270,18 @@ pub(crate) fn check(
     lock_path: &Path,
     upstream_state: Option<&str>,
 ) -> Result<OperationOutcome, String> {
-    let run = comparison::execute(
-        || {
-            let lock = read_lock(lock_path, package)?;
-            let state = read_upstream_state(upstream_state, package)?;
-            let newer_available = state.pkgbuild_sha != lock.pkgbuild_sha
-                || version_changed(&lock.pinned_version, &state.available_version);
-            Ok::<_, String>((lock, state, newer_available))
-        },
-        |(_, _, newer_available)| {
-            if *newer_available {
-                DiffDecision::Different
-            } else {
-                DiffDecision::Empty
-            }
-        },
-        |_, _| {
-            Ok(OperationOutcome {
-                ok: true,
-                changed: false,
-                skipped: true,
-                message: format!("aur check {package}"),
-                command: None,
-            })
-        },
-    )?;
-    let (lock, state, newer_available) = run.observation();
-    let decision = run.decision();
-    let movement = match &run {
-        comparison::ComparisonRun::Current { .. } => None,
-        comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
-    };
+    let observation = crate::ratchet_aur_package::check(package, lock_path, upstream_state)?;
+    let newer_available =
+        observation.verdict == crate::ratchet_aur_package::Verdict::UpstreamMovedPastPin;
     let receipt = AurCheckReceipt {
         schema: "harmonia.aur.check.v1",
         package: package.to_string(),
-        pinned_version: lock.pinned_version.clone(),
-        pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
-        available_version: Some(state.available_version.clone()),
-        available_pkgbuild_sha: Some(state.pkgbuild_sha.clone()),
-        upstream_source_observed: Some(state.observed_source.clone()),
-        newer_available: *newer_available,
+        pinned_version: observation.lock.pinned_version.clone(),
+        pinned_pkgbuild_sha: observation.lock.pkgbuild_sha.clone(),
+        available_version: Some(observation.upstream.available_version.clone()),
+        available_pkgbuild_sha: Some(observation.upstream.pkgbuild_sha.clone()),
+        upstream_source_observed: Some(observation.upstream.observed_source.clone()),
+        newer_available,
         ok: true,
         changed: false,
         first_missing_signal: "none".into(),
@@ -314,33 +289,35 @@ pub(crate) fn check(
     let receipt_path = receipt_dir.join(format!("{receipt_name}.json"));
     write_json(
         &receipt_path,
-        &serde_json::to_value(&receipt).map_err(|e| e.to_string())?,
+        &serde_json::to_value(&receipt).map_err(|error| error.to_string())?,
     )?;
     augment_comparison_receipt(
         &receipt_path,
         serde_json::json!({
-            "pinned_version": lock.pinned_version,
-            "pinned_pkgbuild_sha": lock.pkgbuild_sha,
-            "available_version": state.available_version,
-            "available_pkgbuild_sha": state.pkgbuild_sha,
-            "upstream_source": state.observed_source,
+            "pinned_version": observation.lock.pinned_version,
+            "pinned_pkgbuild_sha": observation.lock.pkgbuild_sha,
+            "available_version": observation.upstream.available_version,
+            "available_pkgbuild_sha": observation.upstream.pkgbuild_sha,
+            "upstream_source": observation.upstream.observed_source,
         }),
-        serde_json::json!({"ratchet_lock_matches_upstream": true}),
-        decision,
-        movement,
+        serde_json::json!({"ratchet_lock_matches_upstream": !newer_available}),
+        DiffDecision::Empty,
+        None,
         false,
     )?;
-    Ok(OperationOutcome {
+    let outcome = OperationOutcome {
         ok: true,
         changed: false,
         skipped: false,
         message: format!("aur check {package}"),
         command: None,
-    })
-}
-
-fn version_changed(pinned: &str, available: &str) -> bool {
-    pinned != available
+    };
+    crate::ratchet_aur_package::report(
+        &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+        observation.verdict,
+        &outcome,
+    )?;
+    Ok(outcome)
 }
 
 pub(crate) fn install(
@@ -357,22 +334,12 @@ pub(crate) fn install(
     } else {
         "current-user"
     };
-    let run = comparison::execute(
-        || {
-            Ok::<_, String>(if apply {
-                installed_version(package)
-            } else {
-                None
-            })
-        },
-        |installed| {
-            if apply && installed.is_some() {
-                DiffDecision::Empty
-            } else {
-                DiffDecision::Different
-            }
-        },
-        |_, _| install_action(receipt_dir, receipt_name, package, timeout_secs, apply),
+    let run = crate::ratchet_aur_package::install(
+        receipt_dir,
+        receipt_name,
+        package,
+        timeout_secs,
+        apply,
     )?;
     let decision = run.decision();
     let observed = run.observation().clone();
@@ -412,7 +379,7 @@ pub(crate) fn install(
     Ok(outcome)
 }
 
-fn install_action(
+pub(crate) fn install_action(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -539,37 +506,20 @@ pub(crate) fn build_pinned(
     } else {
         "current-user".to_string()
     };
-    let observed_installed = if apply && install {
-        installed_version(package)
-    } else {
-        None
-    };
-    let run = comparison::execute(
-        || Ok::<_, String>(observed_installed.clone()),
-        |installed| {
-            if apply && install && installed.as_deref() == Some(lock.pinned_version.as_str()) {
-                DiffDecision::Empty
-            } else {
-                DiffDecision::Different
-            }
-        },
-        |_, _| {
-            build_pinned_action(
-                receipt_dir,
-                receipt_name,
-                package,
-                lock_path,
-                build_root,
-                source_dir,
-                builder_user,
-                timeout_secs,
-                install,
-                apply,
-            )
-        },
+    let run = crate::ratchet_aur_package::build_pinned(
+        receipt_dir,
+        receipt_name,
+        package,
+        lock_path,
+        build_root,
+        source_dir,
+        builder_user,
+        timeout_secs,
+        install,
+        apply,
     )?;
     let decision = run.decision();
-    let observed = run.observation().clone();
+    let observed = run.observation().installed_version.clone();
     let movement = match &run {
         comparison::ComparisonRun::Current { .. } => None,
         comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
@@ -604,11 +554,16 @@ pub(crate) fn build_pinned(
         movement,
         outcome.changed,
     )?;
+    crate::ratchet_aur_package::report(
+        &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+        run.observation().verdict,
+        &outcome,
+    )?;
     Ok(outcome)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_pinned_action(
+pub(crate) fn build_pinned_action(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,

@@ -24,13 +24,15 @@
       "name_today": "artifact-lock",
       "species": "rung",
       "chartered_target_name": "ratchet-aur-package",
-      "migration_status": "flat"
+      "migration_status": "landed",
+      "delegation_note": "Absorbed into the ratchet-aur-package observe rung; the legacy verify signature remains a thin compatibility forward."
     },
     {
       "name_today": "aur",
       "species": "tool",
       "chartered_target_name": "ratchet-aur-package",
-      "migration_status": "flat"
+      "migration_status": "landed",
+      "delegation_note": "Check, current-head install, and pinned build/install delegate through ratchet-aur-package while legacy receipt writers remain authoritative."
     },
     {
       "name_today": "command",
@@ -110,6 +112,13 @@
       "species": "tool",
       "chartered_target_name": "place-file",
       "migration_status": "landed"
+    },
+    {
+      "name_today": "ratchet-aur-package",
+      "species": "tool",
+      "chartered_target_name": "ratchet-aur-package",
+      "migration_status": "landed",
+      "delegation_note": "Owns AUR lock observation, typed verdict, nudge-only upstream movement, keyed behind-pin actuation, and report-home attestation."
     },
     {
       "name_today": "service-runtime",

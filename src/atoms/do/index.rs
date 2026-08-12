@@ -425,6 +425,22 @@ pub(crate) fn command_with_timeout(
     })
 }
 
+pub(crate) fn aur_install(
+    _authorization: ActionAuthorization,
+    _invocation: InvocationKey,
+    callback: impl FnOnce() -> Result<crate::OperationOutcome, String>,
+) -> Result<crate::OperationOutcome, String> {
+    callback()
+}
+
+pub(crate) fn aur_build_pinned(
+    _authorization: ActionAuthorization,
+    _invocation: InvocationKey,
+    callback: impl FnOnce() -> Result<crate::OperationOutcome, String>,
+) -> Result<crate::OperationOutcome, String> {
+    callback()
+}
+
 pub(crate) fn git_pull(
     _authorization: ActionAuthorization,
     _invocation: InvocationKey,
