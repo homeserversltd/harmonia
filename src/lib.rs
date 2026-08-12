@@ -21,6 +21,8 @@ pub(crate) mod remove_unit;
 pub(crate) mod set_clock;
 #[path = "tools/check-health/index.rs"]
 pub(crate) mod check_health;
+#[path = "tools/ratchet-aur-package/index.rs"]
+pub(crate) mod ratchet_aur_package;
 pub(crate) mod hyalos;
 pub mod tools;
 mod update_set;
