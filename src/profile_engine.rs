@@ -784,21 +784,64 @@ where
         // currentness ratchet and one re-exec guard without widening software
         // authority into configuration or identity.
         let preflight = run_engine_preflight(module_root, &effective_receipt_dir, true)?;
-        prelude(&effective_receipt_dir)?;
-        let profile_path = module_root
-            .parent()
-            .ok_or_else(|| format!("{}-profile-root-missing", profile.id))?
-            .join("index.json");
-        let refreshed_profile = load_profile(&profile_path).map_err(|e| e.to_string())?;
-        run_profile_engine_with_preflight(
-            &refreshed_profile,
-            module_root,
+        if !apply {
+            prelude(&effective_receipt_dir)?;
+            return run_profile_engine_with_preflight(
+                profile,
+                module_root,
+                &effective_receipt_dir,
+                mode,
+                true,
+                Some(preflight),
+                suite_debt.as_deref(),
+            );
+        }
+        let plan = crate::update_set::derive_plan(profile, module_root, None)?;
+        let saved = crate::update_set::snapshot(&plan.targets)?;
+        let service_states = crate::update_set::snapshot_services(&plan)?;
+        let transaction = (|| -> Result<(), String> {
+            prelude(&effective_receipt_dir)?;
+            let profile_path = module_root
+                .parent()
+                .ok_or_else(|| format!("{}-profile-root-missing", profile.id))?
+                .join("index.json");
+            let refreshed_profile = load_profile(&profile_path).map_err(|e| e.to_string())?;
+            run_profile_engine_with_preflight(
+                &refreshed_profile,
+                module_root,
+                &effective_receipt_dir,
+                mode,
+                true,
+                Some(preflight),
+                suite_debt.as_deref(),
+            )
+        })();
+        if let Err(error) = transaction {
+            let artifact_rollback = crate::update_set::restore(&saved);
+            let service_rollback = crate::update_set::restore_services(&service_states);
+            let rollback_ok = artifact_rollback.is_ok() && service_rollback.is_ok();
+            let verdict = if rollback_ok {
+                "failed-rolled-back"
+            } else {
+                "failed-rollback-incomplete"
+            };
+            crate::update_set::update_set_receipt(
+                &effective_receipt_dir,
+                &plan.gui_face,
+                verdict,
+                Some(&plan.gui_member),
+                Some(&error),
+            )?;
+            return Err(error);
+        }
+        crate::update_set::update_set_receipt(
             &effective_receipt_dir,
-            mode,
-            true,
-            Some(preflight),
-            suite_debt.as_deref(),
-        )
+            &plan.gui_face,
+            "ok",
+            None,
+            None,
+        )?;
+        Ok(())
     };
     if apply {
         match try_acquire_lock(&lock_path) {
