@@ -1,0 +1,1 @@
+{"schema":"harmonia.recursive-rust-rung.v1","name":"act","uses":["atoms::do"],"requires":["ActionAuthorization","InvocationKey"]}
