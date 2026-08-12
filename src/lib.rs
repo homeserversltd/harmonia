@@ -2622,7 +2622,7 @@ mod tests {
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("bench-update-set") => update_set::bench(&args[1..]),
-        Some("interactable") => interactable_command(&args[1..]),
+        Some("interactable") | Some("config-proposal") => interactable_command(&args[1..]),
         Some("update") => update_from_certificate(&args[1..]),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
@@ -3193,8 +3193,8 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
-    println!("  harmonia interactable list [--json]");
-    println!("  harmonia interactable run <id>");
+    println!("  harmonia config-proposal list [--json]");
+    println!("  harmonia config-proposal accept <id>");
     println!("  harmonia validate-ladder <manifest.json>");
     println!("  harmonia resolve-source <component> --certificate <path> [--owner-module <id>] [--step-id <id>]");
     println!("  harmonia acquire-source <component> --certificate <path> --engine-config <path> --destination <path> [--bearer <name>] [--expected-commit <sha>]");

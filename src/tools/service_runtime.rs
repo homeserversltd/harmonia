@@ -457,7 +457,9 @@ pub(crate) fn execute(
     let source_sha_value = source_sha.stdout.trim().to_string();
 
     let managed_files = effective_managed_files(module, &source_dir)?;
-    // pali:harmonia-apply-ladder-law: module declared managed_files are required SoftwarePlane scaffolding, not ConfigPlane operator configuration.
+    // pali:harmonia-apply-ladder-law: SoftwareApplyAuthorization is structurally
+    // bounded to SoftwarePlane; configuration paths can only be observed here.
+    let config_write = managed_files.iter().any(|file| crate::ladder::is_configuration_path(Path::new(&file.path)));
     let managed = tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: &module.id,
@@ -469,7 +471,7 @@ pub(crate) fn execute(
             first_missing_signal: &format!("{}-managed-file-missing", spec.op_prefix),
         },
         receipt_dir,
-        apply,
+        apply && !config_write,
     )?;
 
     if !apply {

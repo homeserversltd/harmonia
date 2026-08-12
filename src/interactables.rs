@@ -31,7 +31,7 @@ fn iso8601_now() -> String {
     )
 }
 
-const FEED_SCHEMA: &str = "harmonia.interactables.feed.v1";
+const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,7 +105,7 @@ fn stamp() -> String {
 
 fn stable_id(module_id: &str, target: &Path) -> String {
     let digest = Sha256::digest(format!("{module_id}:{}", target.display()).as_bytes());
-    format!("hard-stamp-{}", &format!("{digest:x}")[..16])
+    format!("config-proposal-{}", &format!("{digest:x}")[..16])
 }
 
 fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
@@ -113,10 +113,10 @@ fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
         Ok(text) => {
             let feed: InteractablesFeed = serde_json::from_str(&text)
                 .map_err(|error| format!("interactables-feed-parse-failed {}: {error}", path.display()))?;
-            if feed.schema != FEED_SCHEMA {
+            if feed.schema != FEED_SCHEMA && feed.schema != "harmonia.interactables.feed.v1" {
                 return Err(format!("interactables-feed-schema-unsupported {}", feed.schema));
             }
-            Ok(feed)
+            Ok(InteractablesFeed { schema: FEED_SCHEMA.to_string(), ..feed })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(InteractablesFeed {
             schema: FEED_SCHEMA.to_string(),
@@ -133,7 +133,16 @@ fn save_feed(path: &Path, feed: &InteractablesFeed) -> Result<(), String> {
     #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o644))
         .map_err(|error| format!("interactables-feed-mode-failed {}: {error}", path.display()))?;
+    let proposal_root = path.parent().unwrap_or_else(|| Path::new(".")).join("config-proposals");
+    fs::create_dir_all(&proposal_root).map_err(|error| error.to_string())?;
+    for item in &feed.interactables {
+        crate::write_json(&proposal_root.join(format!("{}.json", item.id)), &serde_json::to_value(item).map_err(|error| error.to_string())?)?;
+    }
     Ok(())
+}
+
+pub(crate) fn pending_config_proposal_count() -> usize {
+    load_feed(&feed_path()).map(|feed| feed.interactables.len()).unwrap_or(0)
 }
 
 pub(crate) fn refresh_interactables_for_convergence(
@@ -209,7 +218,7 @@ fn refresh_interactables_at_path(
 pub(crate) fn interactable_command(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
-        Some("run") => interactable_run(&args[1..]),
+        Some("run") | Some("accept") => interactable_run(&args[1..]),
         _ => Err("interactable requires list [--json] or run <id>".to_string()),
     }
 }
@@ -223,7 +232,7 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
         println!("{}", serde_json::to_string_pretty(&feed).map_err(|error| error.to_string())?);
     } else {
         println!("schema={FEED_SCHEMA}");
-        println!("pending_count={}", feed.interactables.len());
+        println!("proposal_count={}", feed.interactables.len());
         for item in feed.interactables {
             println!("id={} module_id={} kind={} target={}", item.id, item.module_id, item.kind, item.target_path.display());
         }
