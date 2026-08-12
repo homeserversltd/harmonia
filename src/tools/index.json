@@ -48,7 +48,7 @@
       "name_today": "files",
       "species": "tool",
       "chartered_target_name": "place-file",
-      "migration_status": "flat"
+      "migration_status": "landed"
     },
     {
       "name_today": "files",
@@ -102,7 +102,7 @@
       "name_today": "place-file",
       "species": "tool",
       "chartered_target_name": "place-file",
-      "migration_status": "nested"
+      "migration_status": "landed"
     },
     {
       "name_today": "service-runtime",

@@ -1322,34 +1322,34 @@ pub fn converge_files(
         if let Some(diff) = file_diff.text.as_deref() {
             write_unified_diff_receipt(receipt_dir, &request.receipt_name, &relative_path, diff)?;
         }
-        let run = crate::tools::comparison::execute(
-            || Ok::<_, String>(entry_changed),
-            |different| {
-                if *different {
-                    crate::tools::comparison::DiffDecision::Different
-                } else {
-                    crate::tools::comparison::DiffDecision::Empty
-                }
+        let desired_bytes = fs::read(&source)
+            .map_err(|error| format!("files-source-read-failed {}: {error}", source.display()))?;
+        let backup_path = receipt_dir.join("backups").join(&spec.relative_path);
+        let place = crate::place_file::execute(crate::place_file::PlaceFileRequest {
+            path: &target,
+            declared_bytes: &desired_bytes,
+            mode: final_mode,
+            ownership: crate::place_file::DeclaredOwnership {
+                uid: desired_uid,
+                gid: desired_gid,
             },
-            |_, _| {
-                if !apply {
-                    return Ok::<_, String>((None, false, false));
-                }
-                let mut backup = None;
-                if content_changed && request.backup_existing {
-                    backup = Some(backup_target(&target, receipt_dir, &spec.relative_path)?);
-                }
-                if content_changed {
-                    atomic_copy(&source, &target, final_mode, desired_uid, desired_gid)?;
-                } else {
-                    set_ownership(&target, desired_uid, desired_gid)?;
-                }
-                Ok((backup, content_changed, true))
+            backup: if request.backup_existing && content_changed {
+                crate::place_file::BackupPolicy::To(&backup_path)
+            } else {
+                crate::place_file::BackupPolicy::None
             },
-        );
-        let (backed_up_to, wrote_content, truthful_changed) = match run {
-            Ok(crate::tools::comparison::ComparisonRun::Current { .. }) => (None, false, false),
-            Ok(crate::tools::comparison::ComparisonRun::Moved { movement, .. }) => movement,
+            invocation: crate::atoms::r#do::InvocationKey::from_apply_or_timer(apply),
+        });
+        let (backed_up_to, wrote_content, truthful_changed) = match place {
+            Ok(outcome) => {
+                let _typed_receipt = outcome.receipt;
+                let changed = outcome.movement.changed();
+                (
+                    outcome.movement.backed_up,
+                    outcome.movement.bytes || outcome.movement.mode,
+                    changed,
+                )
+            }
             Err(signal) => {
                 write_partial_failure_receipt(
                     receipt_dir,
@@ -3953,7 +3953,7 @@ fn source_mode(path: &Path) -> Result<u32, String> {
     file_mode(path)
 }
 
-fn target_mode(path: &Path) -> Result<Option<u32>, String> {
+pub(crate) fn target_mode(path: &Path) -> Result<Option<u32>, String> {
     if path.exists() {
         Ok(Some(file_mode(path)?))
     } else {
@@ -3998,26 +3998,6 @@ fn same_file_bytes(source: &Path, target: &Path) -> Result<bool, String> {
     let target_bytes = fs::read(target)
         .map_err(|e| format!("files-target-read-failed {}: {e}", target.display()))?;
     Ok(source_bytes == target_bytes)
-}
-
-fn backup_target(target: &Path, receipt_dir: &Path, rel: &Path) -> Result<PathBuf, String> {
-    let backup = receipt_dir.join("backups").join(rel);
-    if let Some(parent) = backup.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "files-backup-parent-create-failed {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-    fs::copy(target, &backup).map_err(|e| {
-        format!(
-            "files-backup-failed {} -> {}: {e}",
-            target.display(),
-            backup.display()
-        )
-    })?;
-    Ok(backup)
 }
 
 pub(crate) fn atomic_write_bytes(
