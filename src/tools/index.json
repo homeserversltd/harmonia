@@ -95,7 +95,8 @@
       "name_today": "module_steps",
       "species": "registry",
       "chartered_target_name": "build-crate",
-      "migration_status": "flat"
+      "migration_status": "landed",
+      "delegation_note": "The service-runtime cargo-build core delegates through build-crate; the unused generic cargo helper is not a shared production caller."
     },
     {
       "name_today": "package",
@@ -114,7 +115,8 @@
       "name_today": "service-runtime",
       "species": "routine",
       "chartered_target_name": "module-manifest routine",
-      "migration_status": "flat"
+      "migration_status": "flat",
+      "delegation_note": "Build step delegated; routine-ization pending."
     },
     {
       "name_today": "systemd",
@@ -134,7 +136,7 @@
       "name_today": "venv",
       "species": "tool",
       "chartered_target_name": "build-venv",
-      "migration_status": "flat"
+      "migration_status": "landed"
     }
   ]
 }

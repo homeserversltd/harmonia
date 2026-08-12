@@ -15,6 +15,19 @@ pub(crate) fn file(path: &Path) -> Result<FileObservation, String> {
     ask_file(path)
 }
 
+pub(crate) fn directory_entries(path: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|e| format!("ask-directory-open: {e}"))?
+        .map(|entry| {
+            entry
+                .map(|e| e.path())
+                .map_err(|e| format!("ask-directory-entry: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    Ok(entries)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PathKind {
     RegularFile,

@@ -1,4 +1,8 @@
 mod atoms;
+#[path = "tools/build-venv/index.rs"]
+pub(crate) mod build_venv;
+#[path = "tools/build-crate/index.rs"]
+pub(crate) mod build_crate;
 #[path = "tools/install-package/index.rs"]
 pub(crate) mod install_package;
 #[path = "tools/pull-repo/index.rs"]

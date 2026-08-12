@@ -584,32 +584,14 @@ pub(crate) fn execute(
 
     let build_environment = build_environment(args, Some(&source_sha_value))?;
 
-    let install = if source_gate_matched {
-        write_skipped_build_receipt(
-            receipt_dir,
-            spec,
-            &source_sha_value,
-            remote_probe
-                .as_ref()
-                .and_then(|probe| probe.remote_sha.as_deref())
-                .unwrap_or_default(),
-        )?;
-        write_skipped_binary_install_receipt(receipt_dir, spec, &install_bin, apply)?;
-        OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: "converged-quiet".to_string(),
-            command: None,
-        }
-    } else {
-        let build = tools::command::capture_with_cwd_as_bearer_and_env(
-            "cargo",
-            &["build", "--release"],
-            source_dir.to_str(),
-            &source_bearer,
-            build_environment,
-        );
+    let environment: Vec<(String, String)> = build_environment.into_iter().collect();
+    let build = crate::build_crate::run_build(
+        &source_dir, &source_sha_value, installed_build_sha.as_deref(), &install_bin, apply,
+        &environment, crate::tools::command::DEFAULT_TIMEOUT_SECS,
+        &receipt_dir.join("harmonia-atoms.log"), &source_bearer,
+    )?;
+    let install = if let Some(result) = build {
+        let build = CmdResult { ok: result.ok, code: result.code.unwrap_or(-1), stdout: result.stdout, stderr: result.stderr };
         write_command_receipt(receipt_dir, spec.build_op, &build)?;
         if !build.ok {
             write_run_receipt(
@@ -641,6 +623,24 @@ pub(crate) fn execute(
 
         let artifact = source_dir.join("target/release").join(spec.binary_name);
         install_binary(receipt_dir, spec, &artifact, &install_bin, apply)?
+    } else {
+        write_skipped_build_receipt(
+            receipt_dir,
+            spec,
+            &source_sha_value,
+            remote_probe
+                .as_ref()
+                .and_then(|probe| probe.remote_sha.as_deref())
+                .unwrap_or_default(),
+        )?;
+        write_skipped_binary_install_receipt(receipt_dir, spec, &install_bin, apply)?;
+        OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "converged-quiet".to_string(),
+            command: None,
+        }
     };
     if !install.ok {
         write_run_receipt(

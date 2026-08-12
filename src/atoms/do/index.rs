@@ -311,6 +311,89 @@ pub(crate) fn symlink(
     Err("validated-file-symlink-unsupported".into())
 }
 
+pub(crate) fn cargo_build(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    cwd: &Path,
+    environment: &[(String, String)],
+    bearer: &str,
+    _timeout: Duration,
+) -> Result<super::CommandObservation, String> {
+    let env = environment
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let result = crate::tools::command::capture_with_cwd_as_bearer_and_env(
+        "cargo",
+        &["build", "--release"],
+        cwd.to_str(),
+        bearer,
+        env,
+    );
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: result.ok,
+            drift: super::Drift::Current,
+            message: format!("cargo build code={}", result.code),
+        },
+    )?;
+    Ok(super::CommandObservation {
+        program: "cargo".into(),
+        args: vec!["build".into(), "--release".into()],
+        ok: result.ok,
+        code: Some(result.code),
+        stdout: result.stdout,
+        stderr: result.stderr,
+    })
+}
+
+pub(crate) fn command_with_timeout_in_dir(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    timeout: Duration,
+) -> Result<super::CommandObservation, String> {
+    command_with_timeout_in_dir_env(authorization, invocation, program, args, cwd, &[], timeout)
+}
+
+pub(crate) fn command_with_timeout_in_dir_env(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    environment: &[(String, String)],
+    timeout: Duration,
+) -> Result<super::CommandObservation, String> {
+    let result = run_with_timeout_in_dir_env(program, args, cwd, environment, timeout);
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: result.ok,
+            drift: super::Drift::Current,
+            message: format!(
+                "program={program}; args={args:?}; code={:?}; stdout={:?}; stderr={:?}",
+                result.code, result.stdout, result.stderr
+            ),
+        },
+    )?;
+    Ok(super::CommandObservation {
+        program: program.into(),
+        args: args.to_vec(),
+        ok: result.ok,
+        code: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+    })
+}
+
 pub(crate) fn command_with_timeout(
     authorization: ActionAuthorization,
     invocation: InvocationKey,
@@ -450,8 +533,32 @@ fn run(program: &str, args: &[String]) -> ResultData {
 }
 
 fn run_with_timeout(program: &str, args: &[String], timeout: Duration) -> ResultData {
-    let mut child = match Command::new(program)
-        .args(args)
+    run_with_timeout_in_dir_env(program, args, None, &[], timeout)
+}
+
+fn run_with_timeout_in_dir(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    timeout: Duration,
+) -> ResultData {
+    run_with_timeout_in_dir_env(program, args, cwd, &[], timeout)
+}
+
+fn run_with_timeout_in_dir_env(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    environment: &[(String, String)],
+    timeout: Duration,
+) -> ResultData {
+    let mut command = Command::new(program);
+    command.args(args);
+    command.envs(environment.iter().map(|(key, value)| (key, value)));
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
