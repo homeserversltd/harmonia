@@ -5,6 +5,10 @@ mod backfill_file;
 mod place_file;
 #[path = "tools/remove-file/index.rs"]
 mod remove_file;
+#[path = "tools/enable-unit/index.rs"]
+pub(crate) mod enable_unit;
+#[path = "tools/remove-unit/index.rs"]
+pub(crate) mod remove_unit;
 pub(crate) mod hyalos;
 pub mod tools;
 mod update_set;

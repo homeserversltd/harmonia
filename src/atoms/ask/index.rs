@@ -58,6 +58,14 @@ pub(crate) fn file_if_present(path: &Path) -> Result<Option<FileObservation>, St
 }
 
 pub(crate) fn read_only_command(program: &str, args: &[String]) -> CommandObservation {
+    read_only_command_with_timeout(program, args, COMMAND_TIMEOUT)
+}
+
+pub(crate) fn read_only_command_with_timeout(
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> CommandObservation {
     let mut child = match Command::new(program)
         .args(args)
         .stdout(Stdio::piped())
@@ -80,7 +88,7 @@ pub(crate) fn read_only_command(program: &str, args: &[String]) -> CommandObserv
     let stderr = child.stderr.take().expect("piped stderr");
     let out = thread::spawn(move || bounded_read(stdout));
     let err = thread::spawn(move || bounded_read(stderr));
-    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
@@ -97,10 +105,7 @@ pub(crate) fn read_only_command(program: &str, args: &[String]) -> CommandObserv
     let stdout = out.join().unwrap_or_default();
     let mut stderr = err.join().unwrap_or_default();
     if timed_out {
-        stderr = format!(
-            "command timed out after {}s; {stderr}",
-            COMMAND_TIMEOUT.as_secs()
-        );
+        stderr = format!("command timed out after {}s; {stderr}", timeout.as_secs());
     }
     CommandObservation {
         program: program.into(),
@@ -171,4 +176,52 @@ pub(crate) fn http_probe(url: &str) -> HttpObservation {
         reachable: result.ok && status.is_some(),
         status,
     }
+}
+
+pub(crate) fn systemd_state_query(
+    kind: &str,
+    unit: &str,
+    user: bool,
+    target_user: Option<&str>,
+    timeout_secs: u64,
+) -> CommandObservation {
+    let mut args = Vec::new();
+    if user {
+        args.push("--user".into());
+        if let Some(target) = target_user.filter(|v| !v.trim().is_empty()) {
+            args.push(format!("--machine={target}@.host"));
+        }
+    }
+    match kind {
+        "is-enabled" | "is-active" => args.extend([kind.into(), unit.into()]),
+        "load-state" | "unit-file-state" | "needs-reload" => {
+            let property = match kind {
+                "load-state" => "LoadState",
+                "unit-file-state" => "UnitFileState",
+                _ => "NeedDaemonReload",
+            };
+            args.extend([
+                "show".into(),
+                format!("--property={property}"),
+                "--value".into(),
+                unit.into(),
+            ]);
+        }
+        _ => {
+            return CommandObservation {
+                program: "/usr/bin/systemctl".into(),
+                args,
+                ok: false,
+                code: None,
+                stdout: String::new(),
+                stderr: format!("unsupported systemd state kind {kind}"),
+            }
+        }
+    }
+    let result = read_only_command_with_timeout(
+        "/usr/bin/systemctl",
+        &args,
+        Duration::from_secs(timeout_secs),
+    );
+    result
 }
