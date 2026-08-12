@@ -49,13 +49,13 @@ const DEFAULT_PACKAGE_TIMEOUT_SECS: u64 = 1800;
 const PACMAN_DATABASE_LOCK_RELATIVE_PATH: &str = "var/lib/pacman/db.lck";
 
 #[derive(Debug, Clone, Serialize)]
-struct PackageObservation {
-    observed_state: String,
-    desired_state: String,
-    current: Option<CmdResult>,
+pub(crate) struct PackageObservation {
+    pub(crate) observed_state: String,
+    pub(crate) desired_state: String,
+    pub(crate) current: Option<CmdResult>,
 }
 
-fn package_receipt_fields(
+pub(crate) fn package_receipt_fields(
     observation: &PackageObservation,
     decision: DiffDecision,
     movement: Option<&OperationOutcome>,
@@ -176,7 +176,7 @@ fn live_pacman_process_exists(program: &Path) -> bool {
         })
 }
 
-fn reclaim_pacman_database_lock(
+pub(crate) fn reclaim_pacman_database_lock(
     receipt_dir: &Path,
     program: &str,
     apply: bool,
@@ -287,7 +287,7 @@ pub(crate) fn pacman_mutate_packages_with_conflict_policy(
     )
 }
 
-fn pacman_mutate_packages_with_options(
+pub(crate) fn pacman_mutate_packages_with_options(
     receipt_dir: &Path,
     sync: bool,
     packages: &[String],
@@ -417,6 +417,16 @@ pub(crate) fn package_tool_with_policy_for_backend(
     backend: PackageBackend,
 ) -> Result<OperationOutcome, String> {
     match backend {
+        PackageBackend::Pacman if action == "install" => crate::install_package::run(
+            receipt_dir,
+            name,
+            packages,
+            apply,
+            conflict_policy,
+            conflict_paths,
+            timeout_secs,
+            &pacman_program(),
+        ),
         PackageBackend::Pacman => package_tool_with_policy(
             receipt_dir,
             name,
@@ -526,6 +536,31 @@ fn apt_package_tool(
 fn apt_stdout_indicates_change(stdout: &str) -> bool {
     let lower = stdout.to_ascii_lowercase();
     lower.contains("the following packages will be") || lower.contains("setting up ")
+}
+
+pub(crate) fn non_arch_install(
+    receipt_dir: &Path,
+    name: &str,
+    packages: &[String],
+) -> Result<OperationOutcome, String> {
+    let outcome = OperationOutcome {
+        ok: true,
+        changed: false,
+        skipped: true,
+        message: "non-Arch bootstrap not applicable".into(),
+        command: None,
+    };
+    let observation = PackageObservation {
+        observed_state: "package-manager-unavailable".into(),
+        desired_state: format!("install-declared:{}", packages.join(",")),
+        current: None,
+    };
+    write_json(
+        &receipt_dir.join(format!("{name}.comparison.json")),
+        &package_receipt_fields(&observation, DiffDecision::Empty, None, false),
+    )?;
+    write_package_receipt(receipt_dir, name, "install", &outcome)?;
+    Ok(outcome)
 }
 
 pub(crate) fn package_tool(

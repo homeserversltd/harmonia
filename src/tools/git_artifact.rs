@@ -250,6 +250,84 @@ fn git_ssh_env(path: Option<&Path>) -> Result<BTreeMap<String, String>, String> 
 }
 
 pub fn plan(request: &Request) -> Outcome {
+    crate::pull_repo::plan(request)
+}
+
+pub fn apply(request: &Request) -> Outcome {
+    crate::pull_repo::apply(request)
+}
+
+pub(crate) fn observe_request_current(request: &Request) -> Option<Outcome> {
+    if !request.path.join(".git").exists() {
+        return None;
+    }
+    let cwd = request.path.to_str()?;
+    let before = capture_git(request, &["rev-parse", "HEAD"], Some(cwd));
+    if !before.ok {
+        return None;
+    }
+    let dirty = capture_git(
+        request,
+        &["status", "--porcelain", "--", ".", ":(exclude).worktrees"],
+        Some(cwd),
+    );
+    if !dirty.ok || !dirty.stdout.trim().is_empty() {
+        return None;
+    }
+    let configured = capture_git(request, &["remote", "get-url", &request.remote], Some(cwd));
+    if !configured.ok
+        || request
+            .repo
+            .as_deref()
+            .is_some_and(|repo| configured.stdout.trim() != repo)
+    {
+        return None;
+    }
+    let remote_url = configured.stdout.trim().to_string();
+    let helpers = capture_git(
+        request,
+        &["config", "--local", "--get-all", "credential.helper"],
+        Some(cwd),
+    );
+    if helpers.ok && !helpers.stdout.trim().is_empty() {
+        return None;
+    }
+    if !helpers.ok && helpers.code != 1 {
+        return None;
+    }
+    let reference = format!("refs/heads/{}", request.branch);
+    let remote = capture_git(
+        request,
+        &["ls-remote", "--refs", &remote_url, &reference],
+        None,
+    );
+    let remote_sha = remote
+        .ok
+        .then(|| parse_declared_remote_head(&remote.stdout, &reference))
+        .flatten()?;
+    if remote_sha != before.stdout.trim() {
+        return None;
+    }
+    Some(Outcome {
+        ok: true,
+        changed: false,
+        message: format!("git-artifact sync {}", request.path.display()),
+        command: CommandReceipt {
+            ok: true,
+            code: 0,
+            stdout: format!(
+                "before={}\nafter={}\nls-remote --refs {} {}\nno fetch; already current",
+                before.stdout.trim(),
+                before.stdout.trim(),
+                remote_url,
+                reference
+            ),
+            stderr: String::new(),
+        },
+    })
+}
+
+pub(crate) fn legacy_plan(request: &Request) -> Outcome {
     let command = if request.path.join(".git").exists() {
         capture_git(request, &["status", "--short"], request.path.to_str())
     } else {
@@ -268,7 +346,7 @@ pub fn plan(request: &Request) -> Outcome {
     }
 }
 
-pub fn apply(request: &Request) -> Outcome {
+pub(crate) fn legacy_apply(request: &Request) -> Outcome {
     let sync = sync_repo(request);
     Outcome {
         ok: sync.command.ok,
@@ -923,6 +1001,51 @@ pub fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
 /// between moving the old tree aside and installing the new tree can leave the
 /// old tree at the named backup path.  The receipt states that limit plainly.
 pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
+    crate::pull_repo::acquire_source(plan)
+}
+
+pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome> {
+    for (offset, candidate) in plan.candidates.iter().enumerate() {
+        if candidate.kind != SourceCandidateKind::Git {
+            return None;
+        }
+        if let Some(selector) = candidate.credential_selector.as_deref() {
+            if !plan.credentials.contains_key(selector) {
+                return None;
+            }
+        }
+        let destination = source_head(&plan.destination, &plan.bearer);
+        let destination_commit = destination
+            .ok
+            .then(|| destination.stdout.trim().to_string())
+            .filter(|v| is_lower_hex_sha(v))?;
+        let request = scoped_request(plan, candidate, plan.destination.clone());
+        let reference = format!("refs/heads/{}", plan.reference);
+        let remote = capture_git(
+            &request,
+            &["ls-remote", "--refs", &candidate.locator, &reference],
+            None,
+        );
+        let remote_commit = remote
+            .ok
+            .then(|| parse_declared_remote_head(&remote.stdout, &reference))
+            .flatten()?;
+        if plan
+            .expected_commit
+            .as_deref()
+            .is_some_and(|expected| remote_commit != expected)
+            || destination_commit != remote_commit
+        {
+            return None;
+        }
+        let index = offset + 1;
+        let commit = remote_commit.clone();
+        return Some(SourceOutcome { ok:true, changed:false, receipt: SourceReceipt { attempts: vec![source_attempt(index,candidate,"already-current",Some(commit.clone()),false,"destination-already-projects-observed-head".into())], served_index:Some(index), resolved_commit:Some(commit), promotion:"already-current; destination projects observed remote head; no clone, stage, or promotion".into() } });
+    }
+    None
+}
+
+pub(crate) fn legacy_acquire_source(plan: &SourcePlan) -> SourceOutcome {
     let mut attempts = Vec::new();
     let mut precondition = Vec::new();
     let mut precondition_changed = false;

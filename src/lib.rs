@@ -1,4 +1,8 @@
 mod atoms;
+#[path = "tools/install-package/index.rs"]
+pub(crate) mod install_package;
+#[path = "tools/pull-repo/index.rs"]
+pub(crate) mod pull_repo;
 #[path = "tools/backfill-file/index.rs"]
 mod backfill_file;
 #[path = "tools/place-file/index.rs"]
