@@ -457,7 +457,9 @@ pub(crate) fn execute(
     let source_sha_value = source_sha.stdout.trim().to_string();
 
     let managed_files = effective_managed_files(module, &source_dir)?;
-    // pali:harmonia-apply-ladder-law: module declared managed_files are required SoftwarePlane scaffolding, not ConfigPlane operator configuration.
+    // pali:harmonia-apply-ladder-law: SoftwareApplyAuthorization is structurally
+    // bounded to SoftwarePlane; configuration paths can only be observed here.
+    let config_write = managed_files.iter().any(|file| crate::ladder::is_configuration_path(Path::new(&file.path)));
     let managed = tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: &module.id,
@@ -469,8 +471,47 @@ pub(crate) fn execute(
             first_missing_signal: &format!("{}-managed-file-missing", spec.op_prefix),
         },
         receipt_dir,
-        apply,
+        apply && !config_write,
     )?;
+    if config_write {
+        let source_root = receipt_dir.join(format!("{}-config-proposal-sources", spec.op_prefix));
+        let mut files = Vec::new();
+        let mut entries = Vec::new();
+        for file in managed_files.iter().filter(|file| crate::ladder::is_configuration_path(Path::new(&file.path))) {
+            let relative = PathBuf::from(file.path.trim_start_matches('/'));
+            let source = source_root.join(&relative);
+            if let Some(parent) = source.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+            fs::write(&source, file.content.as_bytes()).map_err(|error| error.to_string())?;
+            let target = PathBuf::from(&file.path);
+            let target_bytes = fs::read(&target).ok();
+            let target_exists = target_bytes.is_some();
+            let content_equal = target_bytes.as_deref() == Some(file.content.as_bytes());
+            let final_mode = file.mode.or(Some(0o644));
+            let mode_equal = target.metadata().ok().map(|metadata| {
+                #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; metadata.permissions().mode() & 0o7777 == final_mode.unwrap_or(0o644) }
+                #[cfg(not(unix))] { true }
+            }).unwrap_or(false);
+            files.push(tools::files::FileSpec { relative_path: relative.clone(), mode: final_mode });
+            entries.push(tools::files::FileConvergenceEntry {
+                relative_path: relative.to_string_lossy().into_owned(), source, target, source_exists: true,
+                target_exists_before: target_exists, content_equal_before: content_equal, mode_equal_before: mode_equal,
+                target_exists_after: target_exists, content_equal_after: content_equal, mode_equal_after: mode_equal,
+                changed: false, backed_up_to: None, final_mode, ownership_source: "unchanged".to_string(),
+                observed_uid_before: None, observed_gid_before: None, observed_uid_after: None, observed_gid_after: None,
+                ownership_changed: false, observed_uid: None, observed_gid: None, diff: None, diff_omitted: None,
+            });
+        }
+        let request = tools::files::FileConvergenceRequest { source_root, target_root: PathBuf::from("/"), files,
+            backup_existing: false, receipt_name: format!("{}-managed-files", spec.op_prefix), owner: None, group: None };
+        let outcome = tools::files::FileConvergenceOutcome { ok: managed.ok, changed: false, ownership_changed: false,
+            checked: entries.len(), written: 0, backed_up: 0, missing: Vec::new(), missing_target_birth_debts: Vec::new(),
+            entries, message: managed.message.clone() };
+        let manifest = crate::ladder::LadderManifest { schema: crate::ladder::SCHEMA.to_string(), id: module.id.clone(),
+            version: "0.0.0".to_string(), description: module.description.clone(), role: None, optional: false,
+            optional_warning: None, group: None, constants: BTreeMap::new(), caduceus_commands: Vec::new(), files_root: None,
+            config_deploy: Some("interactable".to_string()), ladder: Vec::new(), base_dir: receipt_dir.to_path_buf() };
+        crate::refresh_interactables_for_convergence(&manifest, &request, &outcome)?;
+    }
 
     if !apply {
         let managed_missing_signal = format!("{}-managed-file-missing", spec.op_prefix);

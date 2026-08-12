@@ -226,6 +226,7 @@ pub(crate) fn write_engine_run_receipt_with_duration(
             "identity_source": run_identity_source(),
             "module_count": module_count,
             "operation_count": operation_count,
+            "config_proposal_count": crate::pending_config_proposal_count(),
             "run_duration_ms": run_duration_ms,
             "first_missing_signal": first_missing_signal,
             "module_spine_entered": module_root,

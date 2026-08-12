@@ -833,7 +833,7 @@ fn managed_files_step(
     )
 }
 
-fn is_configuration_path(path: &Path) -> bool {
+pub(crate) fn is_configuration_path(path: &Path) -> bool {
     let path = path.to_string_lossy();
     path == "/etc"
         || path.starts_with("/etc/")
@@ -1270,7 +1270,7 @@ fn files_converge_step(
         module_dir,
         apply && !config_write && !tier_two,
     )?;
-    if tier_two {
+    if config_write || tier_two {
         crate::refresh_interactables_for_convergence(manifest, &request, &outcome)?;
     }
     if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
