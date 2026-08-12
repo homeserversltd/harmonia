@@ -81,13 +81,15 @@
       "name_today": "health",
       "species": "tool",
       "chartered_target_name": "check-health",
-      "migration_status": "flat"
+      "migration_status": "landed",
+      "delegation_note": "The health probe core delegates through the observe-only check-health organ; no act rung or action authority exists."
     },
     {
       "name_today": "household-time",
       "species": "tool",
       "chartered_target_name": "set-clock",
-      "migration_status": "flat"
+      "migration_status": "landed",
+      "delegation_note": "Household timezone and time synchronization delegate through observe/compare/act/report-home with both action keys."
     },
     {
       "name_today": "module_steps",

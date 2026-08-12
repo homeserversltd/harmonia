@@ -1,5 +1,5 @@
 use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
-use crate::{tools, CmdResult, OperationOutcome};
+use crate::{CmdResult, OperationOutcome};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -76,30 +76,16 @@ pub(crate) fn execute(
         .get("timeout_secs")
         .and_then(Value::as_u64)
         .unwrap_or(15);
+    let request = crate::set_clock::Request {
+        backend: string(args, "backend"),
+        operation: permutation,
+        timezone: (permutation == "set-timezone").then(|| string(args, "timezone")),
+        state_url: (permutation == "watch-and-set").then(|| string(args, "state_url")),
+        state_path: optional(args, "state_path"),
+        timeout_secs: timeout,
+    };
     let result = match permutation {
-        "resolve" => invoke(
-            string(args, "backend"),
-            "resolve",
-            None,
-            optional(args, "state_path"),
-            timeout,
-            apply,
-        ),
-        "set-timezone" => invoke(
-            string(args, "backend"),
-            "set-timezone",
-            Some(string(args, "timezone")),
-            optional(args, "state_path"),
-            timeout,
-            apply,
-        ),
-        "watch-and-set" => watch_and_set(
-            string(args, "backend"),
-            string(args, "state_url"),
-            optional(args, "state_path"),
-            timeout,
-            apply,
-        ),
+        "resolve" | "set-timezone" | "watch-and-set" => crate::set_clock::run(&request, apply)?,
         value => return Err(format!("household-time-permutation-unsupported-{value}")),
     };
     let changed = result.ok && receipt_changed(&result.stdout);
@@ -111,116 +97,18 @@ pub(crate) fn execute(
         command: Some(result),
     };
     crate::write_tool_receipt(receipt_dir, step_id, NAME, permutation, &outcome)?;
+    crate::set_clock::report_home(
+        &receipt_dir.join(format!("{step_id}.attest.jsonl")),
+        permutation,
+        outcome
+            .command
+            .as_ref()
+            .expect("household-time command result"),
+    )?;
     Ok(outcome)
 }
 
-fn watch_and_set(
-    backend: &str,
-    state_url: &str,
-    state_path: Option<&str>,
-    timeout: u64,
-    apply: bool,
-) -> CmdResult {
-    if !apply {
-        return planned("watch-and-set");
-    }
-    let seconds = timeout.to_string();
-    let fetched = tools::command::capture_with_timeout(
-        "/usr/bin/curl",
-        &[
-            "-fsS",
-            "--connect-timeout",
-            "3",
-            "--max-time",
-            &seconds,
-            state_url,
-        ],
-        timeout,
-    );
-    if !fetched.ok {
-        return preserved("household-time-peer-state-unreachable", fetched);
-    }
-    let timezone = fresh_timezone(&fetched.stdout);
-    let Some(timezone) = timezone else {
-        return preserved("household-time-peer-state-unavailable-or-stale", fetched);
-    };
-    invoke(
-        backend,
-        "set-timezone",
-        Some(&timezone),
-        state_path,
-        timeout,
-        true,
-    )
-}
-
-fn invoke(
-    backend: &str,
-    operation: &str,
-    timezone: Option<&str>,
-    state_path: Option<&str>,
-    timeout: u64,
-    apply: bool,
-) -> CmdResult {
-    if !apply {
-        return planned(operation);
-    }
-    match backend {
-        "caduceus" => {
-            if operation == "resolve" {
-                let state = tools::command::capture_with_timeout(
-                    "/usr/local/bin/caduceus",
-                    &["time", "state"],
-                    timeout,
-                );
-                if state.ok && fresh_timezone(&state.stdout).is_some() {
-                    return state;
-                }
-            }
-            let mut args = vec!["time", operation];
-            if let Some(zone) = timezone {
-                args.push(zone);
-            }
-            tools::command::capture_with_timeout("/usr/local/bin/caduceus", &args, timeout)
-        }
-        "staff" => {
-            let mut owned = vec![
-                "-m".to_string(),
-                "caduceus_staff.household_time".to_string(),
-                operation.to_string(),
-            ];
-            if let Some(zone) = timezone {
-                owned.push(zone.to_string());
-            }
-            let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-            let mut env = BTreeMap::from([(
-                "PYTHONPATH".into(),
-                "/usr/local/sbin:/usr/local/lib/harmonia-household-time".into(),
-            )]);
-            if let Some(path) = state_path {
-                env.insert(
-                    "CADUCEUS_HOUSEHOLD_TIME_STATE_PATH".into(),
-                    path.to_string(),
-                );
-            }
-            tools::command::capture_with_options(
-                "/usr/bin/python3",
-                &refs,
-                tools::command::CaptureOptions::new()
-                    .env(env)
-                    .timeout_secs(timeout),
-            )
-        }
-        _ => CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: "household-time-backend-invalid".into(),
-        },
-    }
-}
-
-fn fresh_timezone(text: &str) -> Option<String> {
+pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
     let value: Value = serde_json::from_str(text).ok()?;
     let state = value.get("state").unwrap_or(&value);
     let timezone = state.get("timezone")?.as_str()?;
@@ -235,10 +123,10 @@ fn receipt_changed(text: &str) -> bool {
         .and_then(|v| v.get("changed").and_then(Value::as_bool))
         .unwrap_or(false)
 }
-fn preserved(reason: &str, source: CmdResult) -> CmdResult {
+pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
     CmdResult { ok: true, code: 0, stdout: format!("{{\"schema\":\"harmonia.household-time.receipt.v1\",\"changed\":false,\"preserved\":true,\"first_missing_signal\":\"{reason}\"}}"), stderr: source.stderr }
 }
-fn planned(operation: &str) -> CmdResult {
+pub(crate) fn planned(operation: &str) -> CmdResult {
     CmdResult {
         ok: true,
         code: 0,

@@ -13,6 +13,10 @@ mod remove_file;
 pub(crate) mod enable_unit;
 #[path = "tools/remove-unit/index.rs"]
 pub(crate) mod remove_unit;
+#[path = "tools/set-clock/index.rs"]
+pub(crate) mod set_clock;
+#[path = "tools/check-health/index.rs"]
+pub(crate) mod check_health;
 pub(crate) mod hyalos;
 pub mod tools;
 mod update_set;
