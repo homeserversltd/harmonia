@@ -83,7 +83,11 @@ fn file_symlink_fault(_fault: FileSymlinkFault) -> Result<(), String> {
 }
 
 #[cfg(test)]
-fn replace_source_with_dangling_symlink_during_restoration(path: &Path) -> Result<bool, String> {
+fn replace_source_with_dangling_symlink_during_restoration(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: atoms::r#do::InvocationKey,
+    path: &Path,
+) -> Result<bool, String> {
     let fault = FileSymlinkFault::ReplaceSourceWithDanglingSymlinkDuringRestoration;
     let bit = 1 << (fault as u8);
     let injected = FILE_SYMLINK_FAULT.with(|slot| {
@@ -94,15 +98,19 @@ fn replace_source_with_dangling_symlink_during_restoration(path: &Path) -> Resul
     if !injected {
         return Ok(false);
     }
-    fs::remove_file(path).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(path.with_extension("residual"), path).map_err(|e| e.to_string())?;
-    #[cfg(not(unix))]
-    return Err("validated-file-symlink-unsupported".into());
+    atoms::r#do::remove_file(authorization, invocation, path)?;
+    atoms::r#do::symlink(
+        authorization,
+        invocation,
+        &path.with_extension("residual"),
+        path,
+    )?;
     Ok(true)
 }
 
 fn rollback_file_symlink(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: atoms::r#do::InvocationKey,
     mutations: &[FileSymlinkMutation],
     source: &Path,
     source_before: &SavedFile,
@@ -114,21 +122,27 @@ fn rollback_file_symlink(
         let result = match mutation {
             FileSymlinkMutation::Source => {
                 #[cfg(test)]
-                match replace_source_with_dangling_symlink_during_restoration(source) {
+                match replace_source_with_dangling_symlink_during_restoration(
+                    authorization,
+                    invocation,
+                    source,
+                ) {
                     Ok(true) => {
                         Err("injected residual dangling source symlink during restoration".into())
                     }
                     Ok(false) => file_symlink_fault(FileSymlinkFault::DuringSourceRestoration)
-                        .and_then(|_| restore_file(source, source_before)),
+                        .and_then(|_| {
+                            restore_file(authorization, invocation, source, source_before)
+                        }),
                     Err(error) => Err(error),
                 }
                 #[cfg(not(test))]
                 file_symlink_fault(FileSymlinkFault::DuringSourceRestoration)
-                    .and_then(|_| restore_file(source, source_before))
+                    .and_then(|_| restore_file(authorization, invocation, source, source_before))
             }
             FileSymlinkMutation::Link => {
                 file_symlink_fault(FileSymlinkFault::DuringLinkRestoration)
-                    .and_then(|_| restore_link(target, link_before))
+                    .and_then(|_| restore_link(authorization, invocation, target, link_before))
             }
         };
         if let Err(error) = result {
@@ -144,25 +158,25 @@ pub(crate) fn execute(
     request: ValidatedFileSymlinkRequest<'_>,
 ) -> Result<OperationOutcome, String> {
     let run = crate::tools::comparison::execute(
-        || {
-            let desired = fs::read(request.desired_source)
-                .map_err(|_| "validated-file-symlink-desired-source-missing".to_string())?;
-            let source = save_file(request.source)?;
-            let link = save_link(request.target)?;
-            Ok::<_, String>((desired, source, link))
-        },
-        |(desired, source, link)| {
-            let desired_mode = file_mode(request.desired_source).unwrap_or_default();
-            if desired.as_slice() == source.bytes.as_deref().unwrap_or_default()
-                && link.target.as_deref() == Some(request.source)
-                && desired_mode == source.mode.unwrap_or_default()
+        || observe_symlink(&request),
+        |observation| {
+            if observation.desired.as_slice()
+                == observation.source.bytes.as_deref().unwrap_or_default()
+                && observation.link.target.as_deref() == Some(request.source)
+                && observation.desired_mode == observation.source.mode.unwrap_or_default()
             {
                 crate::tools::comparison::DiffDecision::Empty
             } else {
                 crate::tools::comparison::DiffDecision::Different
             }
         },
-        |_, _| execute_action(request),
+        |authorization, observation| {
+            let Some(invocation) = atoms::r#do::InvocationKey::from_apply_or_timer(request.apply)
+            else {
+                return write_receipt(&request, TerminalReceipt::no_change(true));
+            };
+            execute_action(authorization, invocation, request, observation)
+        },
     )?;
     match run {
         crate::tools::comparison::ComparisonRun::Current { .. } => {
@@ -173,7 +187,12 @@ pub(crate) fn execute(
             movement,
             ..
         } => {
-            let (desired, source_before, link_before) = observation;
+            let SymlinkObservation {
+                desired,
+                desired_mode,
+                source: source_before,
+                link: link_before,
+            } = observation;
             let path = request.receipt_dir.join(format!("{}.json", request.name));
             let mut receipt: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
@@ -192,7 +211,7 @@ pub(crate) fn execute(
             );
             object.insert(
                 "desired_state".into(),
-                json!({"source_bytes": desired, "source_mode": file_mode(request.desired_source).ok(), "link_target": request.source}),
+                json!({"source_bytes": desired, "source_mode": desired_mode, "link_target": request.source}),
             );
             object.insert("diff_decision".into(), json!("different"));
             object.insert("truthful_changed".into(), json!(movement.changed));
@@ -204,22 +223,16 @@ pub(crate) fn execute(
 
 /// Validates desired bytes through a hidden source candidate and a non-hidden sibling
 /// link candidate, so Nginx's `sites-enabled/*` include observes the exact candidate.
-fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationOutcome, String> {
-    let desired = match fs::read(request.desired_source) {
-        Ok(value) => value,
-        Err(_) => {
-            return write_receipt(
-                &request,
-                TerminalReceipt::refusal("validated-file-symlink-desired-source-missing"),
-            )
-        }
-    };
-    let desired_mode = file_mode(request.desired_source)?;
-    let source_before = save_file(request.source)?;
-    let link_before = match save_link(request.target) {
-        Ok(saved) => saved,
-        Err(signal) => return write_receipt(&request, TerminalReceipt::refusal(signal)),
-    };
+fn execute_action(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: atoms::r#do::InvocationKey,
+    request: ValidatedFileSymlinkRequest<'_>,
+    observation: &SymlinkObservation,
+) -> Result<OperationOutcome, String> {
+    let desired = &observation.desired;
+    let desired_mode = observation.desired_mode;
+    let source_before = observation.source.clone();
+    let link_before = observation.link.clone();
     let source_current = source_before.bytes.as_deref() == Some(desired.as_slice())
         && source_before.mode == Some(desired_mode);
     let link_current = link_before.target.as_deref() == Some(request.source);
@@ -235,8 +248,8 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
         .target
         .parent()
         .ok_or_else(|| "validated-file-symlink-target-parent-missing".to_string())?;
-    fs::create_dir_all(source_parent).map_err(|e| e.to_string())?;
-    fs::create_dir_all(target_parent).map_err(|e| e.to_string())?;
+    atoms::r#do::create_dir_all(authorization, invocation, source_parent)?;
+    atoms::r#do::create_dir_all(authorization, invocation, target_parent)?;
     let pid = std::process::id();
     let source_candidate = source_parent.join(format!(
         ".{}.harmonia-source-candidate-{pid}",
@@ -255,13 +268,38 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
             .unwrap_or("link")
     ));
     let clean = || {
-        let _ = fs::remove_file(&source_candidate);
-        let _ = fs::remove_file(&link_candidate);
+        if atoms::ask::path_kind(&source_candidate)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = atoms::r#do::remove_file(authorization, invocation, &source_candidate);
+        }
+        if atoms::ask::path_kind(&link_candidate)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = atoms::r#do::remove_file(authorization, invocation, &link_candidate);
+        }
     };
     clean();
-    if let Err(error) = file_symlink_fault(FileSymlinkFault::StageSource)
-        .and_then(|_| atomic_write_bytes(&source_candidate, &desired, Some(desired_mode)))
-    {
+    if let Err(error) = file_symlink_fault(FileSymlinkFault::StageSource).and_then(|_| {
+        atoms::r#do::file_write(
+            authorization,
+            invocation,
+            &source_candidate,
+            desired,
+            atoms::r#do::FileWriteOptions {
+                write_bytes: true,
+                mode: Some(desired_mode),
+                uid: None,
+                gid: None,
+                backup_to: None,
+            },
+        )
+        .map(|_| ())
+    }) {
         clean();
         return write_receipt(
             &request,
@@ -272,7 +310,12 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
     }
     #[cfg(unix)]
     if let Err(error) = file_symlink_fault(FileSymlinkFault::StageLink).and_then(|_| {
-        std::os::unix::fs::symlink(&source_candidate, &link_candidate).map_err(|e| e.to_string())
+        atoms::r#do::symlink(
+            authorization,
+            invocation,
+            &source_candidate,
+            &link_candidate,
+        )
     }) {
         clean();
         return write_receipt(
@@ -299,8 +342,10 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
     let mut mutations = Vec::with_capacity(2);
     let mut promotion_error = None;
     if !source_current {
-        if let Err(error) = file_symlink_fault(FileSymlinkFault::BeforeSourcePromotion)
-            .and_then(|_| fs::rename(&source_candidate, request.source).map_err(|e| e.to_string()))
+        if let Err(error) =
+            file_symlink_fault(FileSymlinkFault::BeforeSourcePromotion).and_then(|_| {
+                atoms::r#do::rename(authorization, invocation, &source_candidate, request.source)
+            })
         {
             promotion_error = Some(format!(
                 "validated-file-symlink-promote-source-failed: {error}"
@@ -315,10 +360,16 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
         }
     }
     if promotion_error.is_none() && !link_current {
-        let _ = fs::remove_file(&link_candidate);
+        if atoms::ask::path_kind(&link_candidate)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = atoms::r#do::remove_file(authorization, invocation, &link_candidate);
+        }
         #[cfg(unix)]
         if let Err(error) = file_symlink_fault(FileSymlinkFault::BeforeLinkRestage).and_then(|_| {
-            std::os::unix::fs::symlink(request.source, &link_candidate).map_err(|e| e.to_string())
+            atoms::r#do::symlink(authorization, invocation, request.source, &link_candidate)
         }) {
             promotion_error = Some(format!(
                 "validated-file-symlink-restage-live-link-failed: {error}"
@@ -327,7 +378,7 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
         if promotion_error.is_none() {
             if let Err(error) =
                 file_symlink_fault(FileSymlinkFault::BeforeLinkPromotion).and_then(|_| {
-                    fs::rename(&link_candidate, request.target).map_err(|e| e.to_string())
+                    atoms::r#do::rename(authorization, invocation, &link_candidate, request.target)
                 })
             {
                 promotion_error = Some(format!(
@@ -353,6 +404,8 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
     };
     if let Some(error) = promotion_error {
         let restoration_error = rollback_file_symlink(
+            authorization,
+            invocation,
             &mutations,
             request.source,
             &source_before,
@@ -396,11 +449,23 @@ fn execute_action(request: ValidatedFileSymlinkRequest<'_>) -> Result<OperationO
     let mut changed = promotion.source || promotion.link;
     let mut signal = "none".to_string();
     if let Some(program) = request.reload_program.filter(|value| !value.is_empty()) {
-        let refs: Vec<&str> = request.reload_args.iter().map(String::as_str).collect();
-        let result =
-            crate::tools::command::capture_with_timeout(program, &refs, request.timeout_secs);
+        let observed = atoms::r#do::command_with_timeout(
+            authorization,
+            invocation,
+            program,
+            request.reload_args,
+            std::time::Duration::from_secs(request.timeout_secs),
+        )?;
+        let result = CmdResult {
+            ok: observed.ok,
+            code: observed.code.unwrap_or(-1),
+            stdout: observed.stdout,
+            stderr: observed.stderr,
+        };
         if !result.ok {
             let restoration_error = rollback_file_symlink(
+                authorization,
+                invocation,
                 &mutations,
                 request.source,
                 &source_before,

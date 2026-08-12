@@ -1,5 +1,5 @@
 {
   "schema": "harmonia.recursive-rust-band.v1",
-  "name": "validated_file_symlink-observe",
+  "name": "make-symlink-tests-structure",
   "children": []
 }

@@ -86,7 +86,7 @@ fn all_rust(path: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn recursive_band_sidecars_and_line_ceilings_hold() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools/validated_file_symlink");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools/make-symlink");
     assert_band(&root);
     let hoist = root.with_extension("rs");
     assert!(hoist.is_file());
