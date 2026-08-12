@@ -1,7 +1,5 @@
 use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
-use crate::{tools, CmdResult};
-use std::thread;
-use std::time::Duration;
+use crate::CmdResult;
 
 pub const NAME: &str = "health";
 pub const DESCRIPTION: &str =
@@ -78,43 +76,5 @@ impl<'a> ProbeRequest<'a> {
 }
 
 pub(crate) fn curl_probe(request: &ProbeRequest<'_>) -> CmdResult {
-    let mut last = tools::command::capture(
-        "/usr/bin/curl",
-        &[
-            "-fsS",
-            "--max-time",
-            &request.timeout_secs.to_string(),
-            request.url,
-        ],
-    );
-    for _ in 0..request.retries {
-        if command_matches(&last, request.expected_contains) {
-            return last;
-        }
-        thread::sleep(Duration::from_secs(1));
-        last = tools::command::capture(
-            "/usr/bin/curl",
-            &[
-                "-fsS",
-                "--max-time",
-                &request.timeout_secs.to_string(),
-                request.url,
-            ],
-        );
-    }
-    if last.ok && !command_matches(&last, request.expected_contains) {
-        last.ok = false;
-        last.stderr = request
-            .expected_contains
-            .map(|needle| format!("health-expected-content-missing: {needle}"))
-            .unwrap_or_else(|| last.stderr.clone());
-    }
-    last
-}
-
-fn command_matches(result: &CmdResult, expected_contains: Option<&str>) -> bool {
-    result.ok
-        && expected_contains
-            .map(|needle| result.stdout.contains(needle))
-            .unwrap_or(true)
+    crate::check_health::probe(request)
 }
