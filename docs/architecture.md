@@ -80,4 +80,6 @@ Proposals seat at `/var/lib/harmonia/proposals/` and have one identity across CL
 
 ## Migration status
 
+`make-symlink` carries an act-purity debt from slice 4: its act rung still reads only transaction-owned staging candidates during cleanup/restaging; a later slice will replace those checks with mutation-return state without weakening rollback correctness.
+
 Slices 1-4 are landed. The atoms floor and one data registry stand; `place-file` owns each `files/converge` single-file breath; `remove-file` now owns the `files/remove` observe-compare-remove breath; and the validated-file-symlink exemplar is absorbed by its chartered `make-symlink` seat. Both new seats observe through `atoms::ask`, mutate only through `atoms::do` after the comparison gate grants both keys, and report home without changing the established removal or validated-file-symlink receipt schemas. `files.rs` retains declaration production, its public removal interface, aggregate accounting, and ladder behavior while delegating removal execution. Hotfix backfill, all remaining bands, tools, and profile migration remain flat or at the registry status declared for their current shelf entries. No-block breath.

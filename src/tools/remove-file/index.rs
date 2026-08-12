@@ -105,8 +105,23 @@ pub(crate) fn execute(
             crate::tools::comparison::ComparisonRun::Moved { .. } => ("report-only", false),
         };
         if truthful_changed {
-            removed += 1;
-            changed = true;
+            match observe::file(&target) {
+                Ok(RemovalObservation::Absent) => {
+                    removed += 1;
+                    changed = true;
+                }
+                Ok(RemovalObservation::RegularFile) => {
+                    failure = Some(format!(
+                        "files-remove-post-remove-readback-failed {}",
+                        target.display()
+                    ));
+                    break;
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
         }
         let state = state.as_str();
         entries.push(FileRemovalEntry {

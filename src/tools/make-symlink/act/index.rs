@@ -158,31 +158,24 @@ pub(crate) fn execute(
     request: ValidatedFileSymlinkRequest<'_>,
 ) -> Result<OperationOutcome, String> {
     let run = crate::tools::comparison::execute(
-        || {
-            let desired = atoms::ask::file(request.desired_source)
-                .map(|observation| observation.bytes)
-                .map_err(|_| "validated-file-symlink-desired-source-missing".to_string())?;
-            let source = save_file(request.source)?;
-            let link = save_link(request.target)?;
-            Ok::<_, String>((desired, source, link))
-        },
-        |(desired, source, link)| {
-            let desired_mode = atoms::ask::file_mode(request.desired_source).unwrap_or_default();
-            if desired.as_slice() == source.bytes.as_deref().unwrap_or_default()
-                && link.target.as_deref() == Some(request.source)
-                && desired_mode == source.mode.unwrap_or_default()
+        || observe_symlink(&request),
+        |observation| {
+            if observation.desired.as_slice()
+                == observation.source.bytes.as_deref().unwrap_or_default()
+                && observation.link.target.as_deref() == Some(request.source)
+                && observation.desired_mode == observation.source.mode.unwrap_or_default()
             {
                 crate::tools::comparison::DiffDecision::Empty
             } else {
                 crate::tools::comparison::DiffDecision::Different
             }
         },
-        |authorization, _| {
+        |authorization, observation| {
             let Some(invocation) = atoms::r#do::InvocationKey::from_apply_or_timer(request.apply)
             else {
                 return write_receipt(&request, TerminalReceipt::no_change(true));
             };
-            execute_action(authorization, invocation, request)
+            execute_action(authorization, invocation, request, observation)
         },
     )?;
     match run {
@@ -194,7 +187,12 @@ pub(crate) fn execute(
             movement,
             ..
         } => {
-            let (desired, source_before, link_before) = observation;
+            let SymlinkObservation {
+                desired,
+                desired_mode,
+                source: source_before,
+                link: link_before,
+            } = observation;
             let path = request.receipt_dir.join(format!("{}.json", request.name));
             let mut receipt: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
@@ -213,7 +211,7 @@ pub(crate) fn execute(
             );
             object.insert(
                 "desired_state".into(),
-                json!({"source_bytes": desired, "source_mode": atoms::ask::file_mode(request.desired_source).ok(), "link_target": request.source}),
+                json!({"source_bytes": desired, "source_mode": desired_mode, "link_target": request.source}),
             );
             object.insert("diff_decision".into(), json!("different"));
             object.insert("truthful_changed".into(), json!(movement.changed));
@@ -229,22 +227,12 @@ fn execute_action(
     authorization: crate::tools::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     request: ValidatedFileSymlinkRequest<'_>,
+    observation: &SymlinkObservation,
 ) -> Result<OperationOutcome, String> {
-    let desired = match atoms::ask::file(request.desired_source) {
-        Ok(observation) => observation.bytes,
-        Err(_) => {
-            return write_receipt(
-                &request,
-                TerminalReceipt::refusal("validated-file-symlink-desired-source-missing"),
-            )
-        }
-    };
-    let desired_mode = atoms::ask::file_mode(request.desired_source)?;
-    let source_before = save_file(request.source)?;
-    let link_before = match save_link(request.target) {
-        Ok(saved) => saved,
-        Err(signal) => return write_receipt(&request, TerminalReceipt::refusal(signal)),
-    };
+    let desired = &observation.desired;
+    let desired_mode = observation.desired_mode;
+    let source_before = observation.source.clone();
+    let link_before = observation.link.clone();
     let source_current = source_before.bytes.as_deref() == Some(desired.as_slice())
         && source_before.mode == Some(desired_mode);
     let link_current = link_before.target.as_deref() == Some(request.source);
@@ -301,7 +289,7 @@ fn execute_action(
             authorization,
             invocation,
             &source_candidate,
-            &desired,
+            desired,
             atoms::r#do::FileWriteOptions {
                 write_bytes: true,
                 mode: Some(desired_mode),

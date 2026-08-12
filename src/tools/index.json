@@ -60,7 +60,8 @@
       "name_today": "files",
       "species": "tool",
       "chartered_target_name": "make-symlink",
-      "migration_status": "landed"
+      "migration_status": "landed",
+      "act_purity_debt": true
     },
     {
       "name_today": "files",

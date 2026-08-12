@@ -1,4 +1,27 @@
 #[derive(Clone)]
+struct SymlinkObservation {
+    desired: Vec<u8>,
+    desired_mode: u32,
+    source: SavedFile,
+    link: SavedLink,
+}
+
+fn observe_symlink(
+    request: &ValidatedFileSymlinkRequest<'_>,
+) -> Result<SymlinkObservation, String> {
+    let desired = atoms::ask::file(request.desired_source)
+        .map(|observation| observation.bytes)
+        .map_err(|_| "validated-file-symlink-desired-source-missing".to_string())?;
+    let desired_mode = atoms::ask::file_mode(request.desired_source)?;
+    Ok(SymlinkObservation {
+        desired,
+        desired_mode,
+        source: save_file(request.source)?,
+        link: save_link(request.target)?,
+    })
+}
+
+#[derive(Clone)]
 struct SavedFile {
     bytes: Option<Vec<u8>>,
     mode: Option<u32>,
