@@ -135,6 +135,14 @@ fn save_feed(path: &Path, feed: &InteractablesFeed) -> Result<(), String> {
         .map_err(|error| format!("interactables-feed-mode-failed {}: {error}", path.display()))?;
     let proposal_root = path.parent().unwrap_or_else(|| Path::new(".")).join("config-proposals");
     fs::create_dir_all(&proposal_root).map_err(|error| error.to_string())?;
+    let live_records = feed.interactables.iter().map(|item| format!("{}.json", item.id)).collect::<BTreeSet<_>>();
+    for entry in fs::read_dir(&proposal_root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        if entry.file_type().map_err(|error| error.to_string())?.is_file() && name.to_str().is_some_and(|name| name.starts_with("config-proposal-") && name.ends_with(".json") && !live_records.contains(name)) {
+            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+        }
+    }
     for item in &feed.interactables {
         crate::write_json(&proposal_root.join(format!("{}.json", item.id)), &serde_json::to_value(item).map_err(|error| error.to_string())?)?;
     }
@@ -219,13 +227,13 @@ pub(crate) fn interactable_command(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
         Some("run") | Some("accept") => interactable_run(&args[1..]),
-        _ => Err("interactable requires list [--json] or run <id>".to_string()),
+        _ => Err("config-proposal requires list [--json] or accept <id>".to_string()),
     }
 }
 
 fn interactable_list(args: &[String]) -> Result<(), String> {
     if args.iter().any(|arg| arg != "--json") {
-        return Err("interactable list accepts only --json".to_string());
+        return Err("config-proposal list accepts only --json".to_string());
     }
     let feed = load_feed(&feed_path())?;
     if args.iter().any(|arg| arg == "--json") {
@@ -242,7 +250,7 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
 
 fn interactable_run(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("interactable run requires exactly one <id>".to_string());
+        return Err("config-proposal accept requires exactly one <id>".to_string());
     }
     let path = feed_path();
     let mut feed = load_feed(&path)?;

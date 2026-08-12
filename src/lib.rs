@@ -223,6 +223,7 @@ mod molt;
 mod preflight;
 mod profile_engine;
 mod receipts;
+mod schedule;
 mod source_resolver;
 mod subscription;
 
@@ -2623,6 +2624,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("bench-update-set") => update_set::bench(&args[1..]),
         Some("interactable") | Some("config-proposal") => interactable_command(&args[1..]),
+        Some("install-timer") => schedule::install_timer(&args[1..]),
+        Some("uninstall-timer") => schedule::uninstall_timer(&args[1..]),
         Some("update") => update_from_certificate(&args[1..]),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
@@ -3195,6 +3198,8 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia toolbelt");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id>");
+    println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");
+    println!("  harmonia uninstall-timer [--systemd-root <path>] [--dry-run]");
     println!("  harmonia validate-ladder <manifest.json>");
     println!("  harmonia resolve-source <component> --certificate <path> [--owner-module <id>] [--step-id <id>]");
     println!("  harmonia acquire-source <component> --certificate <path> --engine-config <path> --destination <path> [--bearer <name>] [--expected-commit <sha>]");
