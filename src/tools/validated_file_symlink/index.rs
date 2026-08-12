@@ -9,9 +9,9 @@ use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-include!("observation/index.rs");
-include!("transaction/index.rs");
-include!("receipt/index.rs");
+include!("observe/index.rs");
+include!("act/index.rs");
+include!("report-home/index.rs");
 
 #[cfg(test)]
 #[path = "tests/index.rs"]

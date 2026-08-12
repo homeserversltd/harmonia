@@ -1,10 +1,9 @@
 {
   "schema": "harmonia.recursive-rust-band.v1",
-  "name": "validated_file_symlink",
+  "name": "place-file",
   "children": [
     "observe",
     "act",
-    "report-home",
-    "tests"
+    "report-home"
   ]
 }

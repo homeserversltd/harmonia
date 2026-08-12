@@ -1,4 +1,6 @@
 mod atoms;
+#[path = "tools/place-file/index.rs"]
+mod place_file;
 pub(crate) mod hyalos;
 pub mod tools;
 mod update_set;

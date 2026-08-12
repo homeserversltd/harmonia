@@ -70,7 +70,7 @@ pub(crate) struct Receipt {
     pub drift: Drift,
     pub message: String,
 }
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn file_sha256(bytes: &[u8]) -> String {
     let mut d = Sha256::new();
     d.update(bytes);
     format!("{:x}", d.finalize())
@@ -83,7 +83,7 @@ pub(crate) fn ask_file(path: &Path) -> Result<FileObservation, String> {
         .map_err(|e| format!("ask-file-read: {e}"))?;
     Ok(FileObservation {
         path: path.to_path_buf(),
-        sha256: sha256(&bytes),
+        sha256: file_sha256(&bytes),
         bytes,
     })
 }
@@ -104,6 +104,10 @@ fn derive_drift(declared: &Declaration, observation: &Observation) -> Drift {
         (Declaration::FileSha256(expected), Observation::File(actual)) => Drift::File {
             expected_sha256: expected.clone(),
             actual_sha256: Some(actual.sha256.clone()),
+        },
+        (Declaration::FileSha256(expected), Observation::FileAbsent(_)) => Drift::File {
+            expected_sha256: expected.clone(),
+            actual_sha256: None,
         },
         (Declaration::CommandCode(expected), Observation::Command(actual)) => Drift::Command {
             expected_code: *expected,
@@ -139,6 +143,7 @@ fn derive_drift(declared: &Declaration, observation: &Observation) -> Drift {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Observation {
     File(FileObservation),
+    FileAbsent(PathBuf),
     Command(CommandObservation),
     Unit(UnitObservation),
     Http(HttpObservation),

@@ -1,1 +1,1 @@
-Validated file-and-symlink promotion transaction. The stable Rust hoist delegates to this ordered band.
+Validated file-and-symlink promotion tool. Its chartered rungs are observe, act, and report-home; the stable Rust hoist preserves the existing behavior.
