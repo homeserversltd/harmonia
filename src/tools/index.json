@@ -115,13 +115,15 @@
       "name_today": "systemd",
       "species": "tool",
       "chartered_target_name": "enable-unit",
-      "migration_status": "flat"
+      "migration_status": "landed",
+      "delegation_note": "Delegates enable-now through the typed systemd breath."
     },
     {
       "name_today": "systemd",
       "species": "tool",
       "chartered_target_name": "remove-unit",
-      "migration_status": "flat"
+      "migration_status": "landed",
+      "delegation_note": "Delegates disable-stop-remove through the typed systemd breath."
     },
     {
       "name_today": "venv",

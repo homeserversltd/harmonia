@@ -153,6 +153,11 @@ pub(crate) fn run_permutation(
         );
     }
     let user = permutation.starts_with("user-");
+    if let Some(selected) = service {
+        if !is_unit_basename(selected) {
+            return Err(format!("systemd-unit-name-invalid-{selected}"));
+        }
+    }
     let action = permutation.strip_prefix("user-").unwrap_or(permutation);
     if action == "restart" {
         return run_restart(
@@ -367,15 +372,15 @@ pub(crate) fn restore_service_state(state_before: &ServiceStateSnapshot) -> Resu
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SystemdObservation {
-    enabled: Option<String>,
-    active: Option<String>,
-    load_state: Option<String>,
-    unit_file_state: Option<String>,
-    needs_reload: Option<String>,
-    unit_present: Option<bool>,
-    unit_file_exists: bool,
-    probe: Option<CmdResult>,
+pub(crate) struct SystemdObservation {
+    pub(crate) enabled: Option<String>,
+    pub(crate) active: Option<String>,
+    pub(crate) load_state: Option<String>,
+    pub(crate) unit_file_state: Option<String>,
+    pub(crate) needs_reload: Option<String>,
+    pub(crate) unit_present: Option<bool>,
+    pub(crate) unit_file_exists: bool,
+    pub(crate) probe: Option<CmdResult>,
 }
 
 #[derive(Clone)]
@@ -391,6 +396,13 @@ fn observe_systemd_state(
     target_user: Option<&str>,
     timeout_secs: u64,
 ) -> SystemdObservation {
+    if action == "enable-now" {
+        return crate::enable_unit::observe(service, user, target_user, timeout_secs);
+    }
+    if matches!(action, "disable-stop" | "disable-stop-remove") {
+        let path = (action == "disable-stop-remove").then(|| unit_file_path(service)).flatten();
+        return crate::remove_unit::observe(service, path.as_deref(), user, target_user, timeout_secs);
+    }
     let probe = matches!(action, "unit-present" | "is-active-probe")
         .then(|| systemctl(action, service, user, target_user, timeout_secs));
     let unit_present = if action == "unit-present" {
@@ -539,9 +551,15 @@ pub(crate) fn run_action(
             ))
         },
         |observation| decide_action(action, observation, service_material_changed),
-        |_authorization, before| {
+        |authorization, before| {
             let result = if apply {
-                systemctl(action, service, user, target_user, timeout_secs)
+                if action == "enable-now" {
+                    crate::enable_unit::act(authorization, crate::atoms::r#do::InvocationKey::from_apply_or_timer(true).expect("apply key"), service, user, target_user, timeout_secs)?
+                } else if matches!(action, "disable-stop" | "disable-stop-remove") {
+                    crate::remove_unit::act(authorization, crate::atoms::r#do::InvocationKey::from_apply_or_timer(true).expect("apply key"), service, action, unit_file_path(service).as_deref(), user, target_user, timeout_secs)?
+                } else {
+                    systemctl(action, service, user, target_user, timeout_secs)
+                }
             } else {
                 CmdResult {
                     ok: true,
@@ -646,6 +664,11 @@ pub(crate) fn run_action(
             outcome.changed,
         ),
     )?;
+    if action == "enable-now" {
+        crate::enable_unit::report_home(service, &receipt_dir.join("harmonia-atoms.log"), &command)?;
+    } else if matches!(action, "disable-stop" | "disable-stop-remove") {
+        crate::remove_unit::report_home(service, &receipt_dir.join("harmonia-atoms.log"), &command)?;
+    }
     Ok(outcome)
 }
 

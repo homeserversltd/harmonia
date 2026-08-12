@@ -1,7 +1,7 @@
 //! Authorized mutation atom. Every operation consumes both keys.
 #![allow(dead_code)]
 
-use super::Receipt;
+use super::{CommandObservation, Receipt};
 use crate::tools::comparison::ActionAuthorization;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -32,16 +32,20 @@ pub(crate) enum UnitVerb {
     Restart,
     Enable,
     Disable,
+    EnableNow,
+    DisableNow,
 }
 
 impl UnitVerb {
-    fn as_str(&self) -> &'static str {
+    fn argv(&self) -> &'static [&'static str] {
         match self {
-            Self::Start => "start",
-            Self::Stop => "stop",
-            Self::Restart => "restart",
-            Self::Enable => "enable",
-            Self::Disable => "disable",
+            Self::Start => &["start"],
+            Self::Stop => &["stop"],
+            Self::Restart => &["restart"],
+            Self::Enable => &["enable"],
+            Self::Disable => &["disable"],
+            Self::EnableNow => &["enable", "--now"],
+            Self::DisableNow => &["disable", "--now"],
         }
     }
 }
@@ -367,7 +371,12 @@ pub(crate) fn unit_change(
     verb: UnitVerb,
 ) -> Result<Receipt, String> {
     let program = "/usr/bin/systemctl";
-    let args = vec![verb.as_str().to_owned(), unit.to_owned()];
+    let args = verb
+        .argv()
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .chain(std::iter::once(unit.to_owned()))
+        .collect::<Vec<_>>();
     let result = run(program, &args);
     apply(
         authorization,
@@ -460,4 +469,31 @@ fn bounded<R: Read>(reader: &mut R) -> String {
         .read_to_end(&mut bytes)
         .ok();
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+pub(crate) fn unit_change_scoped(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    unit: &str,
+    verb: UnitVerb,
+    user: bool,
+    target_user: Option<&str>,
+    timeout_secs: u64,
+) -> Result<CommandObservation, String> {
+    let mut args = Vec::new();
+    if user {
+        args.push("--user".into());
+        if let Some(target) = target_user.filter(|v| !v.trim().is_empty()) {
+            args.push(format!("--machine={target}@.host"));
+        }
+    }
+    args.extend(verb.argv().iter().map(|arg| (*arg).to_owned()));
+    args.push(unit.to_owned());
+    command_with_timeout(
+        authorization,
+        invocation,
+        "/usr/bin/systemctl",
+        &args,
+        Duration::from_secs(timeout_secs),
+    )
 }
