@@ -1,3 +1,3 @@
 # Do
 
-Do consumes the comparison gate’s private-constructor authorization **by value**. File writes are backup-first; command and unit changes are admitted only through this atom.
+Do requires both keys by value: diff-minted `Authorization` and the exact `--apply-or-timer` invocation key. It performs real command and `systemctl` execution, reports truthful exit outcomes, and makes file writes backup-first.

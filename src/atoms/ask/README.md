@@ -1,3 +1,3 @@
 # Ask
 
-Ask returns typed file bytes and SHA-256, a read-only command observation, unit state, or bounded HTTP probe. It never blocks the engine path.
+Ask performs real bounded observations: file bytes and SHA-256, a `std::process` read-only command execution, three systemd queries (`is-active`, `is-enabled`, and `show`), and a real bounded `curl` HTTP probe. It never blocks the engine path.

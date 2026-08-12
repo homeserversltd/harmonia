@@ -1,44 +1,83 @@
 # Harmonia architecture — engine restructure
 
-Harmonia breathes through one bounded engine path: **ask → do → attest**. The
-path is typed, profile-scoped, and quiet when current. It does not block on
-remote observers, and it does not invent authorization from drift alone.
+Harmonia breathes through one bounded engine path: **ask → compare → do → attest**. The path is typed, profile-scoped, and quiet when current. It does not block on remote observers, and it does not invent authorization from drift alone.
+
+## Current engine (pre-migration)
+
+
+Harmonia updates through one lane:
+
+Profile -> Identity -> literal Rust module logic + adjacent sidecar constants -> shared Rust tools -> receipt.
+
+HomeConsole is the sole console identity. The HomeConsole profile is `profiles/homeconsole/index.json`; module-specific Rust logic and constants live together under `profiles/homeconsole/modules/<module>/index.rs` and `sidecar.json`. `src/module_dispatch.rs` is only the thin loader/dispatcher, and shared capability primitives live under `src/tools/*.rs`.
+
+Sidecars are constants only: paths, repos, branches, packages, services, users, groups, modes, URLs, health endpoints, locks, state files, env file paths, and expected receipt families. Sidecars do not own sequencing, commands, ladders, recursive Harmonia invocation, or appliance identity.
+
+Historical continuity is one ledger per profile, stored as JSONL under the receipts root, for example `homeconsole-ledger.jsonl`. Each module appends exactly one pass/fail entry per run with a stamp, sequence, run id, profile identity, module id, operation count, changed state, and first missing signal. Harmonia does not create per-module ledgers.
+
+## Self-contained module currentness
+
+A Harmonia module is a self-contained intent that must remain updated. The module owns the desired state for one appliance concern, the target surfaces that express that concern on the live body, the comparison that decides whether the concern is current, the safe mutation sequence that repairs drift, the domain-specific reconcile step, and the receipt schema that proves closure.
+
+Shared tools provide primitives: file comparison, atomic promotion, command execution, package checks, systemd operations, health probes, and receipt writing. A tool does not decide what the appliance concern means. The module composes the tools in the lawful order for its own domain.
+
+Managed-file modules follow the same update skeleton: render desired content from module-owned source, read the installed target, compare bytes and declared metadata, write only when drift exists, promote atomically, set ownership and mode, run the domain reconcile step, then receipt each file and the aggregate module. UDEV reconciles by reloading UDEV rules. Systemd reload and restart are gated by material changed during this run: a binary swap or a changed file declared by that module. Unchanged service material produces `converged-quiet` and no mutating systemd command. There is no force or manifest exception to the gate. Nginx validates with `nginx -t` before a change-driven reload. Firewall validates and applies its ruleset only when its declared material changed. Every module remains one intent with its own currentness definition.
+
 
 ## Target tree
 
 ```text
 main/
 ├── bands/
+│   ├── renew-self/
+│   ├── pull-source/
+│   ├── stage-profile/
+│   │   ├── molt/
+│   │   └── capsule/
+│   │       └── prior-capsule-rollback-seat/
+│   ├── compare/
+│   ├── install-packages/
+│   ├── ratchet-binaries/
+│   ├── restart-services/
+│   ├── backfill-files/
+│   ├── propose-edits/
+│   └── report-home/
 ├── tools/
-└── atoms/
-    ├── ask/
-    ├── do/
-    └── attest/
+│   └── index.json
+├── atoms/
+│   ├── ask/
+│   ├── do/
+│   └── attest/
+├── profiles/
+│   └── <id>/
+│       ├── locks/
+│       └── tests/
+└── migration/
+    └── slice-1/
 ```
-
-This slice lands the atoms floor under `src/atoms/` and reserves the profile
-locks, tests, reserve, monad, and migration surfaces for their named follow-on
-work. Each atom has an `index.rs`, `index.json`, and `README.md`.
 
 ## Two keys
 
-The engine has two keys: **observation** and **authorization**. Ask produces
-structured observations and typed drift: file bytes plus SHA-256, a read-only
-command result, unit state, or an HTTP probe. `Drift` is explicit rather than
-a stringly status.
+The engine has two keys: diff-minted **Authorization** and invocation key **`--apply-or-timer`**. Do requires both by value; a bare `update` observes all and performs no act. Attest is one custody call: append the receipt to the appliance log stream, then forward through Hyalos using the same redacted receipt.
 
-Do is the only mutating lane. Its private-constructor authorization is minted
-by the comparison gate and consumed **by value**, so an empty comparison cannot
-reach mutation. File writes are backup-first. Commands and unit changes are
-represented as mutating operations behind the same gate.
+## Charter target — ten bands
 
-Attest is one custody call: append the receipt to the appliance log stream,
-then forward through Hyalos using the existing redaction hook. Credentials,
-keys, and dotfiles are not an atom surface.
+The exact ordered bands are: **renew-self; pull-source; stage-profile (containing molt + capsule and one retained prior capsule as rollback seat); compare; install-packages; ratchet-binaries (three-of-a-kind atomic); restart-services; backfill-files; propose-edits; report-home.**
 
-## Breath law
+## Tool species law and registry
 
-Every future band or profile composes these atoms without changing their
-ordering: observe without blocking, compare typed drift, mutate only with
-by-value authorization, and attest once. The landed slice is deliberately
-small; it establishes the floor without adding tests or new controls.
+Tools are single-act tools only. The current pre-migration registry is the `src/tools.rs` `TOOLBELT`, whose shelf entries are: `ai-coding-harness`, `artifact-lock`, `aur`, `command`, `files`, `git-artifact`, `health`, `household-time`, `package`, `service-runtime`, `systemd`, and `venv`. The target charter makes `src/tools/index.json` the ONE registry; the shelf list stays. Compounds are routines in module manifests, never new tool species.
+
+## Rung composition
+
+Observe is **ask + attest**. Act is **do + attest**. `report-home` is **attest alone**. Stdlib world-touching occurs only inside atoms; no-block is mandatory. Bare `update` observes all and performs no act. Acting requires both diff-minted `Authorization` and invocation key **`--apply-or-timer`**.
+
+## Drift and proposals
+
+`on_drift` is typed. Absent means **Hold**: the user file wins, the ledger gets a quiet line, and known-good is sealed in the capsule. **Propose** emits one interactable with a human ceiling. **Replace** is allowed only_if_exact the sha256 of known-bad matches, and lowers the change to the hotfix lane whose predicates grow `FileMatchesExactly`; a missing propose-file is birth's debt.
+
+Proposals seat at `/var/lib/harmonia/proposals/` and have one identity across CLI and GUI. `show-known-good` is an ask-only face verb. Locks are exactly `profiles/<id>/locks/`. Tests are reserved until the operator's word. The heir wears identical geometry.
+
+## Migration status
+
+Slice 1 (atoms floor) is landed; all remaining bands/tools/profile migration remains flat/pre-migration. No-block breath.

@@ -1,8 +1,1 @@
-{
-  "schema": "harmonia.atoms.v1",
-  "name": "atoms",
-  "children": ["ask", "do", "attest"],
-  "keys": ["observation", "authorization"],
-  "law": ["breath", "no-block", "typed-drift"],
-  "profiles": ["locks", "tests", "reserve", "monad", "migration"]
-}
+{"schema":"harmonia.atoms.v1","name":"atoms","children":["ask","do","attest"],"rung":["ask","compare","do","attest"],"keys":["diff-minted-authorization","--apply-or-timer-invocation"],"law":["breath","no-block","derived-typed-drift","backup-first-write","redact-before-serialize"],"profiles":["locks","tests-reserved","reserve","monad","migration-slice-1-landed-rest-flat"]}
