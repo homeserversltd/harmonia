@@ -189,7 +189,8 @@
       "cors": {
         "allowed_origins": [
           "https://home.arpa",
-          "http://home.arpa:3013"
+          "http://home.arpa:3013",
+          "https://crown.home.arpa"
         ]
       },
       "mounts": {
