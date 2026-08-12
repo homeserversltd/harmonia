@@ -1,0 +1,8 @@
+{
+  "schema": "harmonia.atoms.v1",
+  "name": "atoms",
+  "children": ["ask", "do", "attest"],
+  "keys": ["observation", "authorization"],
+  "law": ["breath", "no-block", "typed-drift"],
+  "profiles": ["locks", "tests", "reserve", "monad", "migration"]
+}
