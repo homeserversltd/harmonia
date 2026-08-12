@@ -1,6 +1,7 @@
 //! Typed, bounded, non-blocking observation atoms.
 #![allow(dead_code)]
 use super::{ask_file, CommandObservation, FileObservation, HttpObservation, UnitObservation};
+use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -12,6 +13,14 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 
 pub(crate) fn file(path: &Path) -> Result<FileObservation, String> {
     ask_file(path)
+}
+
+pub(crate) fn file_if_present(path: &Path) -> Result<Option<FileObservation>, String> {
+    match File::open(path) {
+        Ok(_) => ask_file(path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("ask-file-open: {error}")),
+    }
 }
 
 pub(crate) fn read_only_command(program: &str, args: &[String]) -> CommandObservation {

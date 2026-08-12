@@ -80,4 +80,4 @@ Proposals seat at `/var/lib/harmonia/proposals/` and have one identity across CL
 
 ## Migration status
 
-Slice 1 (atoms floor) is landed; all remaining bands/tools/profile migration remains flat/pre-migration. No-block breath.
+Slice 1 (atoms floor) is landed. Slice 2 lands the one data registry, renames the validated-file-symlink exemplar rungs to `observe`, `act`, and `report-home`, and lands `place-file` as a wired, buildable standalone tool composed from atoms. The legacy `files.rs` managed-file path does not delegate yet because its mode, ownership, template, receipt, and ladder contract is broader than this single-act organ. All remaining bands, tools, and profile migration remains flat or at the registry status declared for its current shelf entry. No-block breath.

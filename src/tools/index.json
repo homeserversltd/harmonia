@@ -1,0 +1,125 @@
+{
+  "schema": "harmonia.tool-registry.v1",
+  "entries": [
+    {
+      "name_today": "ai-coding-harness",
+      "species": "routine",
+      "chartered_target_name": "build-crate",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "artifact-lock",
+      "species": "gate",
+      "chartered_target_name": "ratchet-aur-package",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "aur",
+      "species": "tool",
+      "chartered_target_name": "ratchet-aur-package",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "command",
+      "species": "tool",
+      "chartered_target_name": "build-crate",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "comparison",
+      "species": "gate",
+      "chartered_target_name": "place-file",
+      "migration_status": "landed"
+    },
+    {
+      "name_today": "files",
+      "species": "tool",
+      "chartered_target_name": "place-file",
+      "migration_status": "landed"
+    },
+    {
+      "name_today": "files",
+      "species": "tool",
+      "chartered_target_name": "remove-file",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "files",
+      "species": "tool",
+      "chartered_target_name": "make-symlink",
+      "migration_status": "nested"
+    },
+    {
+      "name_today": "files",
+      "species": "tool",
+      "chartered_target_name": "backfill-file",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "git-artifact",
+      "species": "tool",
+      "chartered_target_name": "pull-repo",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "health",
+      "species": "tool",
+      "chartered_target_name": "check-health",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "household-time",
+      "species": "tool",
+      "chartered_target_name": "set-clock",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "module_steps",
+      "species": "registry",
+      "chartered_target_name": "build-crate",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "package",
+      "species": "tool",
+      "chartered_target_name": "install-package",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "place-file",
+      "species": "tool",
+      "chartered_target_name": "place-file",
+      "migration_status": "landed"
+    },
+    {
+      "name_today": "service-runtime",
+      "species": "routine",
+      "chartered_target_name": "enable-unit",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "systemd",
+      "species": "tool",
+      "chartered_target_name": "enable-unit",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "systemd",
+      "species": "tool",
+      "chartered_target_name": "remove-unit",
+      "migration_status": "flat"
+    },
+    {
+      "name_today": "validated_file_symlink",
+      "species": "tool",
+      "chartered_target_name": "make-symlink",
+      "migration_status": "nested"
+    },
+    {
+      "name_today": "venv",
+      "species": "tool",
+      "chartered_target_name": "build-venv",
+      "migration_status": "flat"
+    }
+  ]
+}
