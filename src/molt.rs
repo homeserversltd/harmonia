@@ -336,6 +336,9 @@ fn export_one(
     mode: MoltMode,
     artifacts: &mut Vec<MoltArtifact>,
 ) -> Result<(), String> {
+    if export_is_current(source, output, mode)? {
+        return Ok(());
+    }
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -366,6 +369,47 @@ fn export_one(
         mode: mode.as_str(),
     });
     Ok(())
+}
+
+fn export_is_current(source: &Path, output: &Path, mode: MoltMode) -> Result<bool, String> {
+    let output_metadata = match fs::symlink_metadata(output) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    match mode {
+        MoltMode::Copy => {
+            if !output_metadata.is_file() || output_metadata.file_type().is_symlink() {
+                return Ok(false);
+            }
+            let source_metadata = fs::metadata(source).map_err(|error| error.to_string())?;
+            if file_mode(&source_metadata) != file_mode(&output_metadata) {
+                return Ok(false);
+            }
+            let source_bytes = fs::read(source).map_err(|error| error.to_string())?;
+            let output_bytes = fs::read(output).map_err(|error| error.to_string())?;
+            Ok(source_bytes == output_bytes)
+        }
+        MoltMode::Symlink => {
+            if !output_metadata.file_type().is_symlink() {
+                return Ok(false);
+            }
+            fs::read_link(output)
+                .map(|target| target == source)
+                .map_err(|error| error.to_string())
+        }
+    }
+}
+
+#[cfg(unix)]
+fn file_mode(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o7777
+}
+
+#[cfg(not(unix))]
+fn file_mode(_metadata: &fs::Metadata) -> u32 {
+    0
 }
 
 fn export_module_sibling_files(
