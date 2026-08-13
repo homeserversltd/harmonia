@@ -39,6 +39,8 @@
         "source_root": "/opt/sbin/source",
         "shelf_source": "agathodaimon",
         "target_shelf": "/usr/local/sbin/agathodaimon",
+        "launcher_source_root": "/opt/sbin/source",
+        "launcher_pattern": "caduceus-*",
         "shelf_owner": "root",
         "shelf_group": "root",
         "shelf_directory_mode": 493,
