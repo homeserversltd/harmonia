@@ -115,14 +115,28 @@ pub mod git_artifact;
 pub mod health;
 pub mod household_time;
 pub(crate) mod module_steps;
+#[path = "tools/make-symlink.rs"]
+pub(crate) mod make_symlink;
 pub mod package;
 pub(crate) mod service_runtime;
 pub mod systemd;
-#[path = "tools/make-symlink.rs"]
-pub(crate) mod make_symlink;
 pub mod venv;
 
+pub const ROUTINE_PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
+    "execute", "execute an ordered primitive routine", &[ToolArg::required("steps", ToolArgKind::Json)]
+)];
+pub const ROUTINE_CONTRACT: ToolContract = ToolContract::new("routine", "Ordered primitive routine grammar and execution.", ROUTINE_PERMUTATIONS);
+pub const PULL_REPO_CONTRACT: ToolContract = ToolContract::new("pull-repo", "primitive repository acquisition adapter.", &[ToolPermutation::new("acquire", "acquire source", &[ToolArg::required("component", ToolArgKind::String), ToolArg::required("path", ToolArgKind::String), ToolArg::optional("bearer", ToolArgKind::String)])]);
+pub const BUILD_CRATE_CONTRACT: ToolContract = ToolContract::new("build-crate", "primitive crate build adapter.", &[ToolPermutation::new("build", "build crate", &[ToolArg::required("cwd", ToolArgKind::String), ToolArg::required("source_build_sha", ToolArgKind::String), ToolArg::required("installed_binary", ToolArgKind::String), ToolArg::optional("installed_build_sha", ToolArgKind::String), ToolArg::optional("environment", ToolArgKind::Json), ToolArg::optional("timeout_secs", ToolArgKind::Integer), ToolArg::optional("bearer", ToolArgKind::String)])]);
+pub const PLACE_FILE_CONTRACT: ToolContract = ToolContract::new("place-file", "primitive file placement adapter.", &[ToolPermutation::new("place", "place file", &[ToolArg::required("path", ToolArgKind::String), ToolArg::optional("source_path", ToolArgKind::String), ToolArg::optional("declared_bytes", ToolArgKind::String), ToolArg::optional("mode", ToolArgKind::Integer), ToolArg::optional("uid", ToolArgKind::Integer), ToolArg::optional("gid", ToolArgKind::Integer)])]);
+pub const ENABLE_UNIT_CONTRACT: ToolContract = ToolContract::new("enable-unit", "primitive systemd enable adapter.", &[ToolPermutation::new("enable", "enable unit", &[ToolArg::required("service", ToolArgKind::String), ToolArg::optional("user", ToolArgKind::Bool), ToolArg::optional("target_user", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer)])]);
+
 pub const TOOLBELT: &[ToolContract] = &[
+    ROUTINE_CONTRACT,
+    PULL_REPO_CONTRACT,
+    BUILD_CRATE_CONTRACT,
+    PLACE_FILE_CONTRACT,
+    ENABLE_UNIT_CONTRACT,
     ai_coding_harness::CONTRACT,
     artifact_lock::CONTRACT,
     aur::CONTRACT,
@@ -144,6 +158,8 @@ pub fn all() -> &'static [ToolContract] {
 pub fn get(name: &str) -> Option<&'static ToolContract> {
     TOOLBELT.iter().find(|tool| tool.name == name)
 }
+
+pub(crate) fn routine_summonable(name: &str) -> bool { matches!(name, "pull-repo" | "build-crate" | "place-file" | "enable-unit") }
 
 #[cfg(test)]
 mod tests {
