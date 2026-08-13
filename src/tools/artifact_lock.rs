@@ -19,7 +19,6 @@ pub(crate) fn verify(
     lock_path: &Path,
     profile: Option<&str>,
     receipt_dir: &Path,
-    apply: bool,
 ) -> Result<OperationOutcome, String> {
-    crate::ratchet_aur_package::verify_artifact_lock(lock_path, profile, receipt_dir, apply)
+    crate::ratchet_aur_package::verify_artifact_lock(lock_path, profile, receipt_dir)
 }

@@ -18,6 +18,7 @@ pub(crate) fn run(
     conflict_paths: &[String],
     timeout_secs: u64,
     program: &str,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     if !crate::tools::package::pacman_available(program) {
         return crate::tools::package::non_arch_install(receipt_dir, name, packages);
@@ -54,7 +55,7 @@ pub(crate) fn run(
         },
         |authorization, _| {
             if apply {
-                let invocation = atoms::r#do::InvocationKey::from_apply_or_timer(true)
+                let invocation = invocation
                     .ok_or_else(|| "package-install-invocation-key-missing".to_string())?;
                 let result = act::install(
                     authorization,

@@ -142,6 +142,7 @@ pub(crate) fn run_permutation(
     timeout_secs: u64,
     apply: bool,
     module_changed_before_step: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     if permutation == "enable-first-present-now" {
         return run_enable_first_present_now(
@@ -150,6 +151,7 @@ pub(crate) fn run_permutation(
             candidate_units,
             timeout_secs,
             apply,
+            invocation,
         );
     }
     let user = permutation.starts_with("user-");
@@ -169,6 +171,7 @@ pub(crate) fn run_permutation(
             timeout_secs,
             apply,
             module_changed_before_step,
+            invocation,
         );
     }
     run_action(
@@ -181,6 +184,7 @@ pub(crate) fn run_permutation(
         timeout_secs,
         apply,
         module_changed_before_step,
+        invocation,
     )
 }
 
@@ -190,6 +194,7 @@ fn run_enable_first_present_now(
     candidate_units: &[String],
     timeout_secs: u64,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let service = select_first_present_unit(candidate_units, timeout_secs)?;
     let outcome = run_action(
@@ -202,6 +207,7 @@ fn run_enable_first_present_now(
         timeout_secs,
         apply,
         false,
+        invocation,
     )?;
     annotate_candidate_selection(receipt_dir, name, candidate_units, &service)?;
     Ok(OperationOutcome {
@@ -512,6 +518,7 @@ fn run_restart(
     timeout_secs: u64,
     apply: bool,
     service_material_changed: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     run_action(
         receipt_dir,
@@ -523,6 +530,7 @@ fn run_restart(
         timeout_secs,
         apply,
         service_material_changed,
+        invocation,
     )
 }
 
@@ -537,6 +545,7 @@ pub(crate) fn run_action(
     timeout_secs: u64,
     apply: bool,
     service_material_changed: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     let restart_decision = decide_restart(service_material_changed);
@@ -554,11 +563,11 @@ pub(crate) fn run_action(
         |authorization, before| {
             let result = if apply {
                 if action == "enable-now" {
-                    crate::enable_unit::act(authorization, crate::atoms::r#do::InvocationKey::from_apply_or_timer(true).expect("apply key"), service, user, target_user, timeout_secs)?
+                    crate::enable_unit::act(authorization, invocation.ok_or("invocation-key-missing")?, service, user, target_user, timeout_secs)?
                 } else if matches!(action, "disable-stop" | "disable-stop-remove") {
-                    crate::remove_unit::act(authorization, crate::atoms::r#do::InvocationKey::from_apply_or_timer(true).expect("apply key"), service, action, unit_file_path(service).as_deref(), user, target_user, timeout_secs)?
+                    crate::remove_unit::act(authorization, invocation.ok_or("invocation-key-missing")?, service, action, unit_file_path(service).as_deref(), user, target_user, timeout_secs)?
                 } else {
-                    systemctl(action, service, user, target_user, timeout_secs)
+                    keyed_systemctl(authorization, invocation.ok_or("invocation-key-missing")?, action, service, user, target_user, timeout_secs)?
                 }
             } else {
                 CmdResult {
@@ -670,6 +679,25 @@ pub(crate) fn run_action(
         crate::remove_unit::report_home(service, &receipt_dir.join("harmonia-atoms.log"), &command)?;
     }
     Ok(outcome)
+}
+
+fn keyed_systemctl(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+    action: &str,
+    service: &str,
+    user: bool,
+    target_user: Option<&str>,
+    timeout_secs: u64,
+) -> Result<CmdResult, String> {
+    let mut args: Vec<String> = systemctl_scope_args(user, target_user);
+    match action {
+        "daemon-reload" => args.push("daemon-reload".to_string()),
+        "restart" | "stop" => args.extend([action.to_string(), service.to_string()]),
+        _ => return Err(format!("systemd-keyed-action-unsupported-{action}")),
+    }
+    let result = crate::atoms::r#do::command_with_timeout(authorization, invocation, "/usr/bin/systemctl", &args, std::time::Duration::from_secs(timeout_secs))?;
+    Ok(CmdResult { ok: result.ok, code: result.code.unwrap_or(if result.ok { 0 } else { -1 }), stdout: result.stdout, stderr: result.stderr })
 }
 
 fn systemctl(

@@ -1315,7 +1315,7 @@ pub fn converge_files(
             } else {
                 crate::place_file::BackupPolicy::None
             },
-            invocation: crate::atoms::r#do::InvocationKey::from_apply_or_timer(apply),
+            invocation: None,
         });
         let (backed_up_to, wrote_content, truthful_changed) = match place {
             Ok(outcome) => {
@@ -2501,9 +2501,13 @@ pub fn source_shelf_sweep(
     request: &SourceShelfSweepRequest,
     receipt_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<SourceShelfSweepOutcome, String> {
+    if apply && invocation.is_none() {
+        return Err("source-shelf-sweep-invocation-key-missing".into());
+    }
     if request.owned_recursive {
-        return source_shelf_owned_recursive_sweep(request, receipt_dir, apply);
+        return source_shelf_owned_recursive_sweep(request, receipt_dir, apply, invocation);
     }
     match source_shelf_sweep_with_fault(
         request,
@@ -2557,7 +2561,11 @@ fn source_shelf_owned_recursive_sweep(
     request: &SourceShelfSweepRequest,
     receipt_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<SourceShelfSweepOutcome, String> {
+    if apply && invocation.is_none() {
+        return Err("source-shelf-sweep-invocation-key-missing".into());
+    }
     validate_receipt_name(&request.receipt_name)?;
     validate_source_shelf_relative_path(&request.shelf_source)?;
     let provenance_path = request
@@ -3606,8 +3614,9 @@ pub fn remove_declared_files(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileRemovalOutcome, String> {
-    crate::remove_file::execute(target_root, paths, receipt_dir, receipt_name, apply)
+    crate::remove_file::execute(target_root, paths, receipt_dir, receipt_name, apply, invocation)
 }
 
 pub(crate) fn validate_relative_path(path: &Path) -> Result<(), String> {

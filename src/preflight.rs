@@ -860,6 +860,7 @@ fn converge_caduceus_staff_shelf(
     preflight_dir: &Path,
     apply: bool,
     source_ready: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = PathBuf::from(CADUCEUS_STAFF_SOURCE_ROOT);
     let receipt_path = preflight_dir.join(CADUCEUS_STAFF_RECEIPT);
@@ -916,7 +917,16 @@ fn converge_caduceus_staff_shelf(
         owned_recursive: false,
         receipt_name: "caduceus-staff-shelf-sweep-detail".into(),
     };
-    let sweep = tools::files::source_shelf_sweep(&request, preflight_dir, apply)?;
+    let sweep = tools::files::source_shelf_sweep(
+        &request,
+        preflight_dir,
+        apply,
+        if apply {
+            Some(invocation.ok_or("invocation-key-missing")?)
+        } else {
+            None
+        },
+    )?;
     let outcome = OperationOutcome {
         ok: sweep.ok,
         changed: sweep.changed,
@@ -961,6 +971,7 @@ fn possess_caduceus_source_for_staff_shelf(
     config: &EnginePlaneConfig,
     preflight_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<(OperationOutcome, bool), String> {
     let receipt_path = preflight_dir.join(CADUCEUS_SOURCE_RECEIPT);
     let certificate = device_profile_certificate_path();
@@ -1054,7 +1065,10 @@ fn possess_caduceus_source_for_staff_shelf(
         ));
     }
 
-    let acquisition = tools::git_artifact::acquire_source(&plan);
+    let acquisition = tools::git_artifact::acquire_source(
+        &plan,
+        Some(invocation.ok_or("invocation-key-missing")?),
+    );
     let command = CmdResult {
         ok: acquisition.ok,
         code: if acquisition.ok { 0 } else { 1 },
@@ -1174,6 +1188,7 @@ pub(crate) fn run_engine_preflight(
     module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     let preflight_dir = receipt_dir.join("engine-preflight");
     fs::create_dir_all(&preflight_dir).map_err(|e| e.to_string())?;
@@ -1415,7 +1430,7 @@ pub(crate) fn run_engine_preflight(
                             config.git_https_credential_token_path.clone(),
                         );
                         let git_outcome = if apply {
-                            tools::git_artifact::apply(&request)
+                            tools::git_artifact::apply(&request, invocation.ok_or("invocation-key-missing")?)
                         } else {
                             tools::git_artifact::plan(&request)
                         };
@@ -1630,7 +1645,7 @@ pub(crate) fn run_engine_preflight(
                 config.git_https_credential_token_path.clone(),
             );
             let git_outcome = if apply {
-                tools::git_artifact::apply(&git_request)
+                tools::git_artifact::apply(&git_request, invocation.ok_or("invocation-key-missing")?)
             } else {
                 tools::git_artifact::plan(&git_request)
             };
@@ -1669,7 +1684,7 @@ pub(crate) fn run_engine_preflight(
     }
 
     let (caduceus_source_possession, caduceus_source_ready) =
-        match possess_caduceus_source_for_staff_shelf(&config, &preflight_dir, apply) {
+        match possess_caduceus_source_for_staff_shelf(&config, &preflight_dir, apply, invocation) {
             Ok(result) => result,
             Err(error) => (
                 OperationOutcome {
@@ -1690,7 +1705,7 @@ pub(crate) fn run_engine_preflight(
     changed |= caduceus_source_possession.changed;
 
     let caduceus_staff_shelf =
-        match converge_caduceus_staff_shelf(&preflight_dir, apply, caduceus_source_ready) {
+        match converge_caduceus_staff_shelf(&preflight_dir, apply, caduceus_source_ready, invocation) {
             Ok(outcome) => outcome,
             Err(error) => OperationOutcome {
                 ok: false,

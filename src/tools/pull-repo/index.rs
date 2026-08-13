@@ -14,7 +14,7 @@ mod report_home;
 pub(crate) fn plan(request: &Request) -> Outcome {
     report_home::outcome(observe::plan(request))
 }
-pub(crate) fn apply(request: &Request) -> Outcome {
+pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
     let run = comparison::execute(
         || Ok::<_, String>(observe::request(request)),
         |current| {
@@ -24,7 +24,7 @@ pub(crate) fn apply(request: &Request) -> Outcome {
                 DiffDecision::Different
             }
         },
-        |authorization, _| Ok(act::git_pull(authorization, request)),
+        |authorization, _| Ok(act::git_pull(authorization, request, invocation)),
     );
     let outcome = match run {
         Ok(comparison::ComparisonRun::Current {
@@ -57,7 +57,8 @@ pub(crate) fn apply(request: &Request) -> Outcome {
     };
     report_home::outcome(outcome)
 }
-pub(crate) fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
+pub(crate) fn acquire_source(plan: &SourcePlan, invocation: Option<crate::atoms::r#do::InvocationKey>) -> SourceOutcome {
+    let Some(invocation) = invocation else { return SourceOutcome { ok:false, changed:false, receipt: git_artifact::SourceReceipt { attempts:Vec::new(), served_index:None, resolved_commit:None, promotion:"invocation-key-missing".into() } }; };
     let run = comparison::execute(
         || Ok::<_, String>(observe::source(plan)),
         |current| {
@@ -67,7 +68,7 @@ pub(crate) fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
                 DiffDecision::Different
             }
         },
-        |authorization, _| Ok(act::git_acquire(authorization, plan)),
+        |authorization, _| Ok(act::git_acquire(authorization, plan, invocation)),
     );
     let outcome = match run {
         Ok(comparison::ComparisonRun::Current {

@@ -253,8 +253,8 @@ pub fn plan(request: &Request) -> Outcome {
     crate::pull_repo::plan(request)
 }
 
-pub fn apply(request: &Request) -> Outcome {
-    crate::pull_repo::apply(request)
+pub fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
+    crate::pull_repo::apply(request, invocation)
 }
 
 pub(crate) fn observe_request_current(request: &Request) -> Option<Outcome> {
@@ -1000,8 +1000,8 @@ pub fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
 /// not offer an atomic replacement of a non-empty directory: a power loss
 /// between moving the old tree aside and installing the new tree can leave the
 /// old tree at the named backup path.  The receipt states that limit plainly.
-pub fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
-    crate::pull_repo::acquire_source(plan)
+pub fn acquire_source(plan: &SourcePlan, invocation: Option<crate::atoms::r#do::InvocationKey>) -> SourceOutcome {
+    crate::pull_repo::acquire_source(plan, invocation)
 }
 
 pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome> {

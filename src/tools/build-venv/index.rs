@@ -18,7 +18,7 @@ pub(crate) struct Request<'a> {
     pub receipt_name: &'a str,
     pub timeout_secs: u64,
 }
-pub(crate) fn run(request: &Request<'_>, apply: bool) -> Result<OperationOutcome, String> {
+pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> {
     let run = comparison::execute(
         || observe::venv(request),
         |o| {
@@ -29,7 +29,7 @@ pub(crate) fn run(request: &Request<'_>, apply: bool) -> Result<OperationOutcome
             }
         },
         |authorization, observation| {
-            let invocation = atoms::r#do::InvocationKey::from_apply_or_timer(apply)
+            let invocation = invocation
                 .ok_or_else(|| "build-venv-invocation-key-missing".to_string())?;
             act::converge(authorization, invocation, request, observation)
         },

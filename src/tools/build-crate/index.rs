@@ -31,6 +31,7 @@ pub(crate) fn run_build(
     timeout_secs: u64,
     log: &Path,
     bearer: &str,
+    invocation: Option<atoms::r#do::InvocationKey>,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
     let run = comparison::execute(
         || observe::build_identity(source_build_sha, installed_build_sha, installed_binary),
@@ -42,7 +43,7 @@ pub(crate) fn run_build(
             }
         },
         |auth, _observation| {
-            let key = atoms::r#do::InvocationKey::from_apply_or_timer(apply)
+            let key = invocation
                 .ok_or("build-crate-invocation-key-missing")?;
             act::build(auth, key, cwd, environment, timeout_secs, bearer)
         },
@@ -97,6 +98,7 @@ pub(crate) fn run(
         timeout_secs,
         log,
         bearer,
+        None,
     )?
     .is_none_or(|result| result.ok))
 }

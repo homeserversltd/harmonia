@@ -56,9 +56,13 @@ main/
     └── slice-1/
 ```
 
+## Movement B — one invocation mint
+
+The binary face classifies argv once: bare update carries no `InvocationKey`, while `--apply` and the standalone source-acquisition face carry one. A private face token seals `InvocationKey::from_apply_or_timer`, and the resulting `Option<InvocationKey>` is threaded through update mode, the band walk, profile and ladder dispatchers, and every active tool consumer. No lower site can derive invocation authority from a local apply boolean.
+
 ## Two keys
 
-The engine has two keys: diff-minted **Authorization** and invocation key **`--apply-or-timer`**. Do requires both by value; a bare `update` observes all and performs no act. Attest is one custody call: append the receipt to the appliance log stream, then forward through Hyalos using the same redacted receipt.
+The engine has two keys: diff-minted **Authorization** and invocation key **`--apply-or-timer`**. The mint-once law is structural: only the face can construct the invocation key, and mutation entry receives that carried key by parameter. Do requires both by value; a bare `update` observes all and performs no act. Attest is one custody call: append the receipt to the appliance log stream, then forward through Hyalos using the same redacted receipt.
 
 ## Charter target — ten bands
 
@@ -122,5 +126,3 @@ Movement A seats the ten production faces and makes `profile_engine` enter them 
 | report-home | fronted | existing run receipt, Hyalos forward, stdout, and result |
 
 No phase was marked `moved`: no complete phase item exists independently of the current rolling prelude or mixed per-module item. Each face is nevertheless live: `bands::walk` enters it in the production driver, and the face calls or fronts the existing boundary without emitting anything new.
-
-Movement B debts are explicit: single-mint `InvocationKey` threading through `src/atoms/do/index.rs` and all fourteen active minting sites under `src/tools/**`; charter-order convergence after mixed module items can be separated safely; interior purification of each fronted face; and dissolution of remaining compound/service-runtime ownership into declared routines and band interiors.

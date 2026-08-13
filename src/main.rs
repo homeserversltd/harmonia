@@ -1,3 +1,3 @@
 fn main() {
-    harmonia::main_entry();
+    harmonia::invoke(std::env::args().skip(1).collect());
 }

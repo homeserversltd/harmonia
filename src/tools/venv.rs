@@ -60,6 +60,7 @@ pub(crate) fn execute_ladder_step(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     validate_ladder_args(args)?;
     let venv = std::path::PathBuf::from(args.get("venv").and_then(Value::as_str).unwrap());
@@ -89,5 +90,6 @@ pub(crate) fn execute_ladder_step(
             timeout_secs: crate::tools::command::DEFAULT_TIMEOUT_SECS,
         },
         apply,
+        invocation,
     )
 }

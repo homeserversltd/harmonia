@@ -70,6 +70,7 @@ pub(crate) fn execute(
     permutation: &str,
     args: &BTreeMap<String, Value>,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     validate_ladder_args(permutation, args)?;
     let timeout = args
@@ -85,7 +86,7 @@ pub(crate) fn execute(
         timeout_secs: timeout,
     };
     let result = match permutation {
-        "resolve" | "set-timezone" | "watch-and-set" => crate::set_clock::run(&request, apply)?,
+        "resolve" | "set-timezone" | "watch-and-set" => crate::set_clock::run(&request, apply, invocation)?,
         value => return Err(format!("household-time-permutation-unsupported-{value}")),
     };
     let changed = result.ok && receipt_changed(&result.stdout);

@@ -326,6 +326,7 @@ pub(crate) fn install(
     package: &str,
     timeout_secs: u64,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let timeout_secs = bounded_timeout(timeout_secs);
     let build_dir = Path::new(DEFAULT_BUILD_ROOT).join(package);
@@ -340,6 +341,7 @@ pub(crate) fn install(
         package,
         timeout_secs,
         apply,
+        invocation,
     )?;
     let decision = run.decision();
     let observed = run.observation().clone();
@@ -497,6 +499,7 @@ pub(crate) fn build_pinned(
     timeout_secs: u64,
     install: bool,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let lock = read_lock(lock_path, package)?;
     let timeout_secs = bounded_timeout(timeout_secs);
@@ -517,6 +520,7 @@ pub(crate) fn build_pinned(
         timeout_secs,
         install,
         apply,
+        invocation,
     )?;
     let decision = run.decision();
     let observed = run.observation().installed_version.clone();

@@ -43,6 +43,7 @@ pub(crate) fn execute_profile_module(
     receipt_dir: &Path,
     software_authorization: Option<&SoftwareApplyAuthorization>,
     _harmonia_root: &Path,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     let module_dir = receipt_dir.join("modules").join(&module.id);
     fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
@@ -55,7 +56,7 @@ pub(crate) fn execute_profile_module(
                 manifest.id
             ));
         }
-        execute_ladder_manifest(&manifest, &module_dir, software_authorization, None)
+        execute_ladder_manifest(&manifest, &module_dir, software_authorization, None, invocation)
     } else {
         Err(format!("module-unregistered-{}", module.id))
     }

@@ -20,7 +20,7 @@ pub(crate) struct Request<'a> {
     pub timeout_secs: u64,
 }
 
-pub(crate) fn run(request: &Request<'_>, apply: bool) -> Result<CmdResult, String> {
+pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::r#do::InvocationKey>) -> Result<CmdResult, String> {
     if !apply {
         return Ok(crate::tools::household_time::planned(request.operation));
     }
@@ -70,7 +70,7 @@ pub(crate) fn run(request: &Request<'_>, apply: bool) -> Result<CmdResult, Strin
             }
         },
         |authorization, _| {
-            let invocation = atoms::r#do::InvocationKey::from_apply_or_timer(apply)
+            let invocation = invocation
                 .ok_or_else(|| "set-clock-invocation-key-missing".to_string())?;
             act::apply(
                 authorization,

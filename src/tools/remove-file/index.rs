@@ -61,9 +61,10 @@ pub(crate) fn execute(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
+    invocation: Option<atoms::r#do::InvocationKey>,
 ) -> Result<FileRemovalOutcome, String> {
     validate_request(paths, receipt_name)?;
-    let invocation = atoms::r#do::InvocationKey::from_apply_or_timer(apply);
+    let invocation = invocation;
     let mut entries = Vec::new();
     let mut removed = 0usize;
     let mut changed = false;
