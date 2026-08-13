@@ -1735,7 +1735,7 @@ fn files_converge_step(
     let outcome = crate::tools::files::converge_files_with_invocation(
         &request,
         module_dir,
-        apply && !config_write && !tier_two,
+        apply,
         invocation,
     )?;
     if config_write || tier_two {

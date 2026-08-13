@@ -4010,6 +4010,13 @@ fn convergence_entry_receipt(entry: &FileConvergenceEntry) -> serde_json::Value 
     object.insert("diff_decision".into(), json!(diff_decision));
     object.insert("movement".into(), json!(movement));
     object.insert("truthful_changed".into(), json!(entry.changed));
+    object.insert(
+        "ok".into(),
+        json!(entry.source_exists
+            && entry.target_exists_after
+            && entry.content_equal_after
+            && entry.mode_equal_after),
+    );
     receipt
 }
 
