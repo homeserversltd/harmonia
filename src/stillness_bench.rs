@@ -18,6 +18,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
 
     let caduceus = caduceus_bench(&root)?;
+    let source_gate = crate::tools::service_runtime::bench_source_gate("stale-service-sha");
     let venv = venv_bench(&root, invocation)?;
     let package = package_bench(&root)?;
     let never = never_converge_bench()?;
@@ -25,6 +26,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         "schema": "harmonia.stillness-bench.v1",
         "ok": true,
         "caduceus": caduceus,
+        "source_gate": source_gate,
         "venv": venv,
         "package": package,
         "never_converge": never,
@@ -43,8 +45,8 @@ fn caduceus_bench(root: &Path) -> Result<serde_json::Value, String> {
     let artifact = dir.join("target/release/caduceus");
     let install = dir.join("usr/local/bin/caduceus");
     fs::create_dir_all(artifact.parent().unwrap()).map_err(|error| error.to_string())?;
-    fs::write(&artifact, b"caduceus-bench-artifact-v1\n").map_err(|error| error.to_string())?;
     let source_sha = "0123456789abcdef0123456789abcdef01234567".to_string();
+    let build = crate::build_crate::bench_build_guard(&dir, &source_sha)?;
     let run1 = crate::tools::service_runtime::bench_binary_install(
         &dir.join("run1"),
         &artifact,
@@ -69,13 +71,63 @@ fn caduceus_bench(root: &Path) -> Result<serde_json::Value, String> {
             source_sha.clone(),
         )
     })?;
+    let wrong_health = serve_health_value("fedcba9876543210fedcba9876543210fedcba98", |url| {
+        crate::tools::service_runtime::bench_health_identity(
+            &dir.join("wrong-health"),
+            url,
+            source_sha.clone(),
+        )
+    })?;
+    let build_environment = crate::tools::service_runtime::bench_build_environment(&source_sha)?;
+    let artifact_path = artifact.to_string_lossy().to_string();
+    if wrong_health.ok
+        || !wrong_health.stderr.starts_with("service-runtime-act-did-not-converge")
+        || build_environment.get("CADUCEUS_BUILD_SHA") != Some(&source_sha) {
+        return Err("caduceus-identity-guard-bench-failed".to_string());
+    }
     if !run1.ok || !run1.changed || !health1.ok || run2.changed || !run2.ok || !health2.ok {
         return Err("caduceus-shaped-bench-failed".to_string());
     }
     Ok(json!({
         "run1": {"ok": run1.ok, "changed": run1.changed, "operations": 1, "health_build_sha": source_sha, "source_sha": source_sha},
-        "run2": {"ok": run2.ok, "changed": run2.changed, "operations": 0, "health_build_sha": source_sha, "source_sha": source_sha}
+        "run2": {"ok": run2.ok, "changed": run2.changed, "operations": 0, "health_build_sha": source_sha, "source_sha": source_sha},
+        "build": {"guard": build, "environment": build_environment, "artifact": artifact_path},
+        "wrong_final_health": {"ok": wrong_health.ok, "stderr": wrong_health.stderr, "receipt": "caduceus-bench-health.json"}
     }))
+}
+
+fn serve_health_value<T>(
+    body_sha: &str,
+    run: impl FnOnce(String) -> Result<T, String>,
+) -> Result<T, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    let body = json!({"ok": true, "build_sha": body_sha}).to_string();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        let mut request = [0_u8; 2048];
+        let _ = stream
+            .read(&mut request)
+            .map_err(|error| error.to_string())?;
+        let response = format!(
+            "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .map_err(|error| error.to_string())
+    });
+    let result = run(format!("http://{address}/health"));
+    server
+        .join()
+        .map_err(|_| "health-bench-server-panicked".to_string())??;
+    result
 }
 
 fn serve_health_once<T>(

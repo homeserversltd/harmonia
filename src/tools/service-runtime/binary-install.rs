@@ -71,6 +71,12 @@ fn install_binary(
     }
     fs::rename(&tmp_install, install_bin)
         .map_err(|e| format!("{}-artifact-promote-failed: {e}", spec.op_prefix))?;
+    if !files_equal(artifact, install_bin)? {
+        return Err(format!(
+            "{}-installed-bytes-readback-mismatch",
+            spec.op_prefix
+        ));
+    }
     write_binary_install_receipt(receipt_dir, spec, artifact, install_bin, apply, true)?;
     Ok(OperationOutcome {
         ok: true,
