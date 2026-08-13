@@ -128,7 +128,9 @@ pub const ROUTINE_CONTRACT: ToolContract = ToolContract::new("routine", "Ordered
 pub const PULL_REPO_CONTRACT: ToolContract = ToolContract::new("pull-repo", "primitive repository acquisition adapter.", &[ToolPermutation::new("acquire", "acquire source", &[ToolArg::required("component", ToolArgKind::String), ToolArg::required("path", ToolArgKind::String), ToolArg::optional("bearer", ToolArgKind::String)])]);
 pub const BUILD_CRATE_CONTRACT: ToolContract = ToolContract::new("build-crate", "primitive crate build adapter.", &[ToolPermutation::new("build", "build crate", &[ToolArg::required("cwd", ToolArgKind::String), ToolArg::required("source_build_sha", ToolArgKind::String), ToolArg::required("installed_binary", ToolArgKind::String), ToolArg::optional("installed_build_sha", ToolArgKind::String), ToolArg::optional("environment", ToolArgKind::Json), ToolArg::optional("timeout_secs", ToolArgKind::Integer), ToolArg::optional("bearer", ToolArgKind::String)])]);
 pub const PLACE_FILE_CONTRACT: ToolContract = ToolContract::new("place-file", "primitive file placement adapter.", &[ToolPermutation::new("place", "place file", &[ToolArg::required("path", ToolArgKind::String), ToolArg::optional("source_path", ToolArgKind::String), ToolArg::optional("declared_bytes", ToolArgKind::String), ToolArg::optional("mode", ToolArgKind::Integer), ToolArg::optional("uid", ToolArgKind::Integer), ToolArg::optional("gid", ToolArgKind::Integer)])]);
-pub const ENABLE_UNIT_CONTRACT: ToolContract = ToolContract::new("enable-unit", "primitive systemd enable adapter.", &[ToolPermutation::new("enable", "enable unit", &[ToolArg::required("service", ToolArgKind::String), ToolArg::optional("user", ToolArgKind::Bool), ToolArg::optional("target_user", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer)])]);
+pub const ENABLE_UNIT_CONTRACT: ToolContract = ToolContract::new("enable-unit", "primitive systemd enable adapter.", &[ToolPermutation::new("enable", "enable unit", &[ToolArg::required("service", ToolArgKind::String), ToolArg::optional("user", ToolArgKind::Bool), ToolArg::optional("target_user", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer)]), ToolPermutation::new("service-epilogue", "reload, enable, conditionally restart, and prove active service state", &[ToolArg::required("service", ToolArgKind::String), ToolArg::required("service_material_changed", ToolArgKind::Bool), ToolArg::optional("user", ToolArgKind::Bool), ToolArg::optional("target_user", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer)])]);
+pub const BACKFILL_FILE_CONTRACT: ToolContract = ToolContract::new("backfill-file", "primitive declared-file backfill adapter.", &[ToolPermutation::new("backfill", "backfill one declared file", &[ToolArg::required("path", ToolArgKind::String), ToolArg::required("declared_bytes", ToolArgKind::String), ToolArg::optional("mode", ToolArgKind::Integer), ToolArg::optional("uid", ToolArgKind::Integer), ToolArg::optional("gid", ToolArgKind::Integer)])]);
+pub const CHECK_HEALTH_CONTRACT: ToolContract = ToolContract::new("check-health", "primitive observation-only health adapter.", &[ToolPermutation::new("probe", "observe one health endpoint", &[ToolArg::required("url", ToolArgKind::String), ToolArg::optional("expected_contains", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer), ToolArg::optional("retries", ToolArgKind::Integer)])]);
 
 pub const TOOLBELT: &[ToolContract] = &[
     ROUTINE_CONTRACT,
@@ -136,6 +138,8 @@ pub const TOOLBELT: &[ToolContract] = &[
     BUILD_CRATE_CONTRACT,
     PLACE_FILE_CONTRACT,
     ENABLE_UNIT_CONTRACT,
+    BACKFILL_FILE_CONTRACT,
+    CHECK_HEALTH_CONTRACT,
     artifact_lock::CONTRACT,
     aur::CONTRACT,
     command::CONTRACT,
@@ -157,7 +161,7 @@ pub fn get(name: &str) -> Option<&'static ToolContract> {
     TOOLBELT.iter().find(|tool| tool.name == name)
 }
 
-pub(crate) fn routine_summonable(name: &str) -> bool { matches!(name, "pull-repo" | "build-crate" | "place-file" | "enable-unit") }
+pub(crate) fn routine_summonable(name: &str) -> bool { matches!(name, "pull-repo" | "build-crate" | "place-file" | "enable-unit" | "backfill-file" | "check-health") }
 
 #[cfg(test)]
 mod tests {

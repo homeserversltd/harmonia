@@ -74,6 +74,8 @@ pub(crate) struct RoutineStep {
     pub name: String,
     pub tool: String,
     #[serde(default)]
+    pub permutation: Option<String>,
+    #[serde(default)]
     pub args: BTreeMap<String, Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -277,7 +279,14 @@ fn validate_routine(
                 defect: format!("routine-tool-not-summonable-{}", child.tool),
             });
         }
-        if child.extra.contains_key("program") || child.extra.contains_key("permutation") {
+        let contract = tools::get(&child.tool).ok_or_else(|| LadderValidationError {
+            step_id: step.step_id.clone(), defect: format!("routine-tool-not-found-{}", child.tool),
+        })?;
+        let permutation_name = child.permutation.as_deref().unwrap_or(contract.permutations.first().map(|p| p.name).unwrap_or(""));
+        if contract.permutation(permutation_name).is_none() {
+            return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-undeclared-permutation-{}-{}", child.tool, permutation_name) });
+        }
+        if child.extra.contains_key("program") {
             return Err(LadderValidationError {
                 step_id: step.step_id.clone(),
                 defect: format!("routine-child-key-forbidden-{}", child.name),
@@ -574,6 +583,8 @@ pub(crate) fn band_for_step(step: &ValidatedStep) -> Result<crate::bands::Band, 
         ("build-crate", _) => Band::RatchetBinaries,
         ("place-file", _) => Band::BackfillFiles,
         ("enable-unit", _) => Band::RestartServices,
+        ("backfill-file", _) => Band::BackfillFiles,
+        ("check-health", _) => Band::Compare,
         (tool, permutation) => {
             return Err(format!(
                 "unknown-tool-band tool={tool} permutation={permutation}"
@@ -591,6 +602,7 @@ pub(crate) fn execute_ladder_manifest_band(
     package_authority: Option<&crate::PackageAuthority>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
     module_changed_before_step: bool,
+    routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
 ) -> Result<ModuleExecution, String> {
     let steps = validate_ladder(manifest)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
@@ -603,9 +615,15 @@ pub(crate) fn execute_ladder_manifest_band(
         placements: Vec::new(),
     };
     for step in steps {
-        if band_for_step(&step)? != band {
-            continue;
-        }
+        if step.tool == "routine" {
+            let raw = manifest.ladder.iter().find(|candidate| candidate.step_id == step.step_id).ok_or_else(|| "routine-step-missing".to_string())?;
+            let has = raw.steps.iter().any(|child| {
+                let permutation = child.permutation.as_deref().or_else(|| tools::get(&child.tool).and_then(|c| c.permutations.first()).map(|p| p.name)).unwrap_or("");
+                let child_step = ValidatedStep { step_id: child.name.clone(), tool: child.tool.clone(), permutation: permutation.into(), args: child.args.clone(), on_failure: OnFailure::Stop };
+                band_for_step(&child_step).map(|b| b == band).unwrap_or(false)
+            });
+            if !has { continue; }
+        } else if band_for_step(&step)? != band { continue; }
         let precondition = if step.tool == "routine" {
             None
         } else {
@@ -640,6 +658,8 @@ pub(crate) fn execute_ladder_manifest_band(
                 package_authority,
                 software_authorization.is_some(),
                 invocation,
+                Some(routine_states),
+                band,
             )?
         } else {
             execute_validated_step(
@@ -652,7 +672,22 @@ pub(crate) fn execute_ladder_manifest_band(
                 invocation,
             )?
         };
-        result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}", band),"status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
+        if step.tool == "routine" {
+            if let Some(raw) = manifest.ladder.iter().find(|candidate| candidate.step_id == step.step_id) {
+                let routine = routine_states.get(step.step_id.as_str()).ok_or_else(|| "routine-state-missing".to_string())?;
+                for child in &raw.steps {
+                    let permutation = child.permutation.as_deref().or_else(|| tools::get(&child.tool).and_then(|c| c.permutations.first()).map(|p| p.name)).unwrap_or("");
+                    let child_step = ValidatedStep { step_id: child.name.clone(), tool: child.tool.clone(), permutation: permutation.into(), args: child.args.clone(), on_failure: OnFailure::Stop };
+                    if band_for_step(&child_step)? == band {
+                        let receipt = routine.children.iter().find(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str())).ok_or_else(|| format!("routine-child-receipt-missing-{}", child.name))?;
+                        let status = receipt.get("state").and_then(Value::as_str).unwrap_or("failed");
+                        result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":permutation,"band":format!("{:?}",band),"status":status,"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
+                    }
+                }
+            }
+        } else {
+            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}", band),"status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
+        }
         result.changed |= outcome.changed;
         if !outcome.ok {
             result.ok = false;
@@ -694,6 +729,8 @@ pub(crate) fn execute_ladder_manifest(
                 package_authority,
                 software_authorization.is_some(),
                 invocation,
+                None,
+                crate::bands::Band::ProposeEdits,
             )?;
             operation_count += 1;
             changed |= outcome.changed;
@@ -932,151 +969,55 @@ fn execute_routine(
     _package_authority: Option<&crate::PackageAuthority>,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    mut states: Option<&mut BTreeMap<String, crate::ModuleWalkState>>,
+    band: crate::bands::Band,
 ) -> Result<OperationOutcome, String> {
-    let source = manifest
-        .ladder
-        .iter()
-        .find(|s| s.step_id == step.step_id)
+    let source = manifest.ladder.iter().find(|s| s.step_id == step.step_id)
         .ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
     let routine_dir = module_dir.join(&source.step_id);
     fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
-    let mut context: BTreeMap<String, Value> = BTreeMap::new();
-    let mut children = Vec::new();
-    let mut ok = true;
-    let mut changed = false;
-    let mut first = None;
-    let mut blocked_by = None;
+    let local = states.is_none();
+    let mut owned;
+    let state = if let Some(map) = states.as_deref_mut() {
+        map.entry(source.step_id.clone()).or_insert_with(|| crate::ModuleWalkState {
+            context: BTreeMap::new(), children: Vec::new(), blocked_by: None,
+            ok: true, changed: false, first_missing_signal: None,
+        })
+    } else {
+        owned = crate::ModuleWalkState { context:BTreeMap::new(), children:Vec::new(), blocked_by:None, ok:true, changed:false, first_missing_signal:None };
+        &mut owned
+    };
     for child in &source.steps {
+        let child_band = crate::ladder::band_for_step(&ValidatedStep {
+            step_id: child.name.clone(), tool: child.tool.clone(), permutation: child.permutation.clone().or_else(|| tools::get(&child.tool).and_then(|c| c.permutations.first()).map(|p| p.name.to_string())).unwrap_or_default(), args: child.args.clone(), on_failure: OnFailure::Stop,
+        })?;
+        if !local && child_band != band { continue; }
+        if state.children.iter().any(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str())) { continue; }
         let child_dir = routine_dir.join(&child.name);
         fs::create_dir_all(&child_dir).map_err(|e| e.to_string())?;
-        let (state, child_ok, child_changed, outputs, extra) = if let Some(parent) =
-            blocked_by.clone()
-        {
-            (
-                "blocked",
-                false,
-                false,
-                BTreeMap::new(),
-                json!({"blocked_by":parent}),
-            )
+        if let Some(parent) = state.blocked_by.clone() {
+            let receipt=json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":parent});
+            crate::write_json(&child_dir.join("routine-child.json"), &receipt)?; state.children.push(receipt); continue;
+        }
+        let mut args=child.args.clone(); let mut missing=None;
+        for value in args.values_mut() { if let Value::Object(map)=value { if map.len()==1 { if let Some(reference)=map.get("from").and_then(Value::as_str) { match state.context.get(reference) {Some(v)=>*value=v.clone(),None=>missing=Some(reference.to_string())} } } } }
+        let (status, child_ok, child_changed, outputs, extra) = if let Some(reference)=missing {
+            let signal=format!("step_id={} defect=missing-stamp-{}",child.name,reference); state.ok=false; state.first_missing_signal.get_or_insert(signal.clone()); state.blocked_by=Some(child.name.clone()); ("missing",false,false,BTreeMap::new(),json!({"first_missing_signal":signal}))
         } else {
-            let mut args = child.args.clone();
-            let mut missing = None;
-            for value in args.values_mut() {
-                if let Value::Object(map) = value {
-                    if map.len() == 1 {
-                        if let Some(reference) = map.get("from").and_then(Value::as_str) {
-                            match context.get(reference) {
-                                Some(v) => *value = v.clone(),
-                                None => missing = Some(reference.to_string()),
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(reference) = missing {
-                let signal = format!("step_id={} defect=missing-stamp-{}", child.name, reference);
-                ok = false;
-                if first.is_none() {
-                    first = Some(signal.clone());
-                }
-                blocked_by = Some(child.name.clone());
-                crate::write_json(
-                    &child_dir.join("routine-step.json"),
-                    &json!({"schema":"harmonia.routine.step-receipt.v1","state":"missing","ok":false,"first_missing_signal":signal}),
-                )?;
-                (
-                    "missing",
-                    false,
-                    false,
-                    BTreeMap::new(),
-                    json!({"first_missing_signal":signal}),
-                )
-            } else {
-                match tools::module_steps::execute_routine_tool(
-                    &child.tool,
-                    &args,
-                    manifest,
-                    &child_dir,
-                    apply,
-                    invocation,
-                ) {
-                    Ok((outcome, outputs)) => {
-                        ok &= outcome.ok;
-                        changed |= outcome.changed;
-                        if !outcome.ok {
-                            let signal =
-                                format!("step_id={} defect={}", child.name, outcome.message);
-                            if first.is_none() {
-                                first = Some(signal);
-                            }
-                            blocked_by = Some(child.name.clone());
-                        }
-                        (
-                            if outcome.ok { "completed" } else { "failed" },
-                            outcome.ok,
-                            outcome.changed,
-                            outputs,
-                            json!({"skipped":outcome.skipped,"message":outcome.message}),
-                        )
-                    }
-                    Err(error) => {
-                        let signal = format!("step_id={} defect={}", child.name, error);
-                        ok = false;
-                        if first.is_none() {
-                            first = Some(signal);
-                        }
-                        blocked_by = Some(child.name.clone());
-                        crate::write_json(
-                            &child_dir.join("routine-step.json"),
-                            &json!({"schema":"harmonia.routine.step-receipt.v1","state":"failed","ok":false,"message":error}),
-                        )?;
-                        (
-                            "failed",
-                            false,
-                            false,
-                            BTreeMap::new(),
-                            json!({"message":error}),
-                        )
-                    }
-                }
+            match tools::module_steps::execute_routine_tool(&child.tool, child.permutation.as_deref(), &args,manifest,&child_dir,apply,invocation) {
+                Ok((outcome,outputs)) => { if !outcome.ok { state.ok=false; state.first_missing_signal.get_or_insert(format!("step_id={} defect={}",child.name,outcome.message)); state.blocked_by=Some(child.name.clone()); } state.changed |= outcome.changed; (if outcome.ok {"completed"} else {"failed"},outcome.ok,outcome.changed,outputs,json!({"skipped":outcome.skipped,"message":outcome.message})) }
+                Err(error) => { let signal=format!("step_id={} defect={}",child.name,error); state.ok=false; state.first_missing_signal.get_or_insert(signal); state.blocked_by=Some(child.name.clone()); ("failed",false,false,BTreeMap::new(),json!({"message":error})) }
             }
         };
-        if state == "blocked" {
-            crate::write_json(
-                &child_dir.join("routine-step.json"),
-                &json!({"schema":"harmonia.routine.step-receipt.v1","state":"blocked","ok":false,"blocked_by":extra.get("blocked_by")}),
-            )?;
-        }
+        if child_ok { for (key,value) in &outputs { state.context.entry(format!("{}.{}",child.name,key)).or_insert(value.clone()); } }
         let receipts = collect_routine_receipts(&child_dir)?;
-        let mut receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":state,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
-        if let (Some(obj), Some(extra_obj)) = (receipt.as_object_mut(), extra.as_object()) {
-            for (k, v) in extra_obj {
-                obj.insert(k.clone(), v.clone());
-            }
-        }
-        crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
-        children.push(receipt);
-        if child_ok {
-            for (key, value) in outputs {
-                context
-                    .entry(format!("{}.{}", child.name, key))
-                    .or_insert(value);
-            }
-        }
+        let mut receipt=json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":status,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
+        if let (Some(obj),Some(extra_obj))=(receipt.as_object_mut(),extra.as_object()) { for (k,v) in extra_obj {obj.insert(k.clone(),v.clone());} }
+        crate::write_json(&child_dir.join("routine-child.json"),&receipt)?; state.children.push(receipt);
     }
-    let aggregate = json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":ok,"changed":changed,"skipped":!apply,"first_missing_signal":first,"context":context,"children":children});
-    crate::write_json(
-        &module_dir.join(format!("{}.routine.json", source.step_id)),
-        &aggregate,
-    )?;
-    Ok(OperationOutcome {
-        ok,
-        changed,
-        skipped: !apply,
-        message: first.unwrap_or_else(|| "routine-complete".into()),
-        command: None,
-    })
+    let aggregate=json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":state.ok,"changed":state.changed,"skipped":!apply,"first_missing_signal":state.first_missing_signal,"context":state.context,"children":state.children});
+    crate::write_json(&module_dir.join(format!("{}.routine.json",source.step_id)),&aggregate)?;
+    Ok(OperationOutcome {ok:state.ok,changed:state.changed,skipped:!apply,message:state.first_missing_signal.clone().unwrap_or_else(||"routine-complete".into()),command:None})
 }
 
 fn string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> &'a str {

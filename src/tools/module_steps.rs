@@ -203,6 +203,7 @@ mod pacman_safety_tests {
 
 pub(crate) fn execute_routine_tool(
     tool: &str,
+    requested_permutation: Option<&str>,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
     manifest: &crate::ladder::LadderManifest,
     receipt_dir: &Path,
@@ -211,7 +212,7 @@ pub(crate) fn execute_routine_tool(
 ) -> Result<(OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
     if !crate::tools::routine_summonable(tool) { return Err(format!("routine-tool-not-summonable-{tool}")); }
     let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = contract.permutations.first().ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     for arg in permutation.args {
         if arg.required && !args.contains_key(arg.name) { return Err(format!("routine-arg-missing-{tool}-{}", arg.name)); }
         if let Some(value) = args.get(arg.name) { if !arg.kind.matches(value) { return Err(format!("routine-arg-type-{tool}-{}", arg.name)); } }
@@ -258,9 +259,29 @@ pub(crate) fn execute_routine_tool(
             write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":true,"changed":changed,"skipped":!apply}))?;
             Ok((OperationOutcome{ok:true,changed,skipped:!apply,message:"place-file".into(),command:None},[("path".into(),serde_json::json!(path)),("sha256".into(),serde_json::json!(crate::atoms::file_sha256(&bytes)))].into_iter().collect()))
         }
+        "backfill-file" => {
+            let path = Path::new(args.get("path").and_then(Value::as_str).ok_or("backfill-file-path-missing")?);
+            let bytes = args.get("declared_bytes").and_then(Value::as_str).ok_or("backfill-file-bytes-missing")?.as_bytes();
+            let request = crate::backfill_file::BackfillFileRequest { path, declared_bytes: bytes, mode: args.get("mode").and_then(Value::as_u64).map(|v| v as u32), ownership: crate::backfill_file::DeclaredOwnership { uid: args.get("uid").and_then(Value::as_u64).map(|v| v as u32), gid: args.get("gid").and_then(Value::as_u64).map(|v| v as u32) }, backup: crate::backfill_file::BackupPolicy::None, invocation };
+            let out = crate::backfill_file::execute(request)?;
+            write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":out.receipt.ok,"changed":out.movement.changed(),"skipped":!apply}))?;
+            Ok((OperationOutcome { ok: out.receipt.ok, changed: apply && out.movement.changed(), skipped: !apply, message: "backfill-file".into(), command: None }, [("path".into(), serde_json::json!(path)), ("sha256".into(), serde_json::json!(crate::atoms::file_sha256(bytes)))].into_iter().collect()))
+        }
+        "check-health" => {
+            let url = args.get("url").and_then(Value::as_str).ok_or("check-health-url-missing")?;
+            let request = crate::tools::health::ProbeRequest { url, retries: args.get("retries").and_then(Value::as_u64).unwrap_or(0) as usize, timeout_secs: args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(3), expected_contains: args.get("expected_contains").and_then(Value::as_str) };
+            let result = crate::check_health::probe(&request);
+            write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":result.ok,"changed":false,"skipped":!apply,"stdout":result.stdout,"stderr":result.stderr}))?;
+            Ok((OperationOutcome { ok: result.ok, changed: false, skipped: !apply, message: "check-health".into(), command: Some(result) }, [("url".into(), serde_json::json!(url))].into_iter().collect()))
+        }
         "enable-unit" => {
             let service=args.get("service").and_then(Value::as_str).ok_or("enable-unit-service-missing")?; let user=args.get("user").and_then(Value::as_bool).unwrap_or(false); let target=args.get("target_user").and_then(Value::as_str); let timeout=args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(30);
-            let o=crate::tools::systemd::run_action(receipt_dir,&name,"enable-now",Some(service),user,target,timeout,apply,false,invocation)?;
+            let o = if permutation.name == "service-epilogue" {
+                let material_changed = args.get("service_material_changed").and_then(Value::as_bool).unwrap_or(false);
+                crate::tools::systemd::run_service_epilogue(receipt_dir, &name, service, user, target, timeout, apply, material_changed, invocation)?
+            } else {
+                crate::tools::systemd::run_action(receipt_dir,&name,"enable-now",Some(service),user,target,timeout,apply,false,invocation)?
+            };
             Ok((o,[("service".into(),serde_json::json!(service)),("enabled".into(),serde_json::json!(true))].into_iter().collect()))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
