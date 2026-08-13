@@ -10,6 +10,7 @@ pub(crate) struct ModuleWalkState {
     pub(crate) ok: bool,
     pub(crate) changed: bool,
     pub(crate) first_missing_signal: Option<String>,
+    pub(crate) service_runtime: Option<crate::tools::service_runtime::ServiceRuntimeState>,
 }
 
 pub(crate) struct ModuleExecution {

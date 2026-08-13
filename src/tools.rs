@@ -161,7 +161,7 @@ pub fn get(name: &str) -> Option<&'static ToolContract> {
     TOOLBELT.iter().find(|tool| tool.name == name)
 }
 
-pub(crate) fn routine_summonable(name: &str) -> bool { matches!(name, "pull-repo" | "build-crate" | "place-file" | "enable-unit" | "backfill-file" | "check-health") }
+pub(crate) fn routine_summonable(name: &str) -> bool { matches!(name, "pull-repo" | "build-crate" | "place-file" | "enable-unit" | "backfill-file" | "check-health" | "service-runtime") }
 
 #[cfg(test)]
 mod tests {

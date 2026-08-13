@@ -563,9 +563,10 @@ pub(crate) fn band_for_step(step: &ValidatedStep) -> Result<crate::bands::Band, 
         | ("aur", "build-pinned") => Band::InstallPackages,
         ("git-artifact", "sync") => Band::PullSource,
         ("artifact-lock", "verify") | ("health", "probe") => Band::Compare,
-        ("service-runtime", "converge") | ("systemd", _) | ("household-time", _) => {
-            Band::RestartServices
-        }
+        ("service-runtime", "source-gate") => Band::PullSource,
+        ("service-runtime", "build") | ("service-runtime", "binary-install") => Band::RatchetBinaries,
+        ("service-runtime", "managed-files") => Band::BackfillFiles,
+        ("service-runtime", "converge") | ("service-runtime", "service-epilogue") | ("service-runtime", "health-proof") | ("systemd", _) | ("household-time", _) => { Band::RestartServices }
         ("files", "managed-files")
         | ("files", "managed-directories")
         | ("files", "validated-symlink")
@@ -981,10 +982,10 @@ fn execute_routine(
     let state = if let Some(map) = states.as_deref_mut() {
         map.entry(source.step_id.clone()).or_insert_with(|| crate::ModuleWalkState {
             context: BTreeMap::new(), children: Vec::new(), blocked_by: None,
-            ok: true, changed: false, first_missing_signal: None,
+            ok: true, changed: false, first_missing_signal: None, service_runtime: None,
         })
     } else {
-        owned = crate::ModuleWalkState { context:BTreeMap::new(), children:Vec::new(), blocked_by:None, ok:true, changed:false, first_missing_signal:None };
+        owned = crate::ModuleWalkState { context:BTreeMap::new(), children:Vec::new(), blocked_by:None, ok:true, changed:false, first_missing_signal:None, service_runtime:None };
         &mut owned
     };
     for child in &source.steps {
@@ -1004,7 +1005,7 @@ fn execute_routine(
         let (status, child_ok, child_changed, outputs, extra) = if let Some(reference)=missing {
             let signal=format!("step_id={} defect=missing-stamp-{}",child.name,reference); state.ok=false; state.first_missing_signal.get_or_insert(signal.clone()); state.blocked_by=Some(child.name.clone()); ("missing",false,false,BTreeMap::new(),json!({"first_missing_signal":signal}))
         } else {
-            match tools::module_steps::execute_routine_tool(&child.tool, child.permutation.as_deref(), &args,manifest,&child_dir,apply,invocation) {
+            match tools::module_steps::execute_routine_tool(&child.tool, child.permutation.as_deref(), &args,manifest,&child_dir,apply,invocation,&mut state.service_runtime) {
                 Ok((outcome,outputs)) => { if !outcome.ok { state.ok=false; state.first_missing_signal.get_or_insert(format!("step_id={} defect={}",child.name,outcome.message)); state.blocked_by=Some(child.name.clone()); } state.changed |= outcome.changed; (if outcome.ok {"completed"} else {"failed"},outcome.ok,outcome.changed,outputs,json!({"skipped":outcome.skipped,"message":outcome.message})) }
                 Err(error) => { let signal=format!("step_id={} defect={}",child.name,error); state.ok=false; state.first_missing_signal.get_or_insert(signal); state.blocked_by=Some(child.name.clone()); ("failed",false,false,BTreeMap::new(),json!({"message":error})) }
             }
