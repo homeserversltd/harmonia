@@ -704,7 +704,6 @@ fn execute_validated_step(
             command: None,
         }),
         ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_apply, invocation),
-        ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, false),
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
             aur_step(step, manifest, module_dir, software_apply, invocation)
         }
@@ -1646,23 +1645,6 @@ fn aur_step(
         ),
         other => Err(format!("aur-permutation-unsupported-{other}")),
     }
-}
-
-fn ai_coding_harness_step(
-    step: &ValidatedStep,
-    module_dir: &Path,
-    apply: bool,
-) -> Result<OperationOutcome, String> {
-    tools::ai_coding_harness::reconcile(
-        string_arg(&step.args, "owner"),
-        string_arg(&step.args, "claude_bin"),
-        string_arg(&step.args, "honcho_repo"),
-        string_arg(&step.args, "honcho_remote"),
-        string_arg(&step.args, "honcho_branch"),
-        integer_arg(&step.args, "timeout_secs", 900),
-        module_dir,
-        apply,
-    )
 }
 
 fn git_artifact_step(
