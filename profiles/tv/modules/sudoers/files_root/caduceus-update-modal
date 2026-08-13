@@ -1,2 +1,2 @@
-owner ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-update-modal
-Defaults!/usr/local/sbin/agathodaimon/caduceus-update-modal env_keep += "WAYLAND_DISPLAY XDG_RUNTIME_DIR DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS"
+owner ALL=(root) NOPASSWD: /usr/local/sbin/caduceus-update-modal
+Defaults!/usr/local/sbin/caduceus-update-modal env_keep += "WAYLAND_DISPLAY XDG_RUNTIME_DIR DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS"
