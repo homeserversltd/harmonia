@@ -120,13 +120,13 @@ pub(crate) struct SoftwareApplyAuthorization(());
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpdateMode {
     Observe,
-    ApplySoftware(SoftwareApplyAuthorization),
+    ApplySoftware(SoftwareApplyAuthorization, Option<crate::atoms::r#do::InvocationKey>),
 }
 
 impl UpdateMode {
-    pub(crate) fn from_apply_flag(apply: bool) -> Self {
+    pub(crate) fn from_apply_flag_with_invocation(apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Self {
         if apply {
-            Self::ApplySoftware(SoftwareApplyAuthorization(()))
+            Self::ApplySoftware(SoftwareApplyAuthorization(()), invocation)
         } else {
             Self::Observe
         }
@@ -135,8 +135,12 @@ impl UpdateMode {
     pub(crate) fn software_authorization(&self) -> Option<&SoftwareApplyAuthorization> {
         match self {
             Self::Observe => None,
-            Self::ApplySoftware(authorization) => Some(authorization),
+            Self::ApplySoftware(authorization, _) => Some(authorization),
         }
+    }
+
+    pub(crate) fn invocation(&self) -> Option<crate::atoms::r#do::InvocationKey> {
+        match self { Self::Observe => None, Self::ApplySoftware(_, key) => *key }
     }
 
     pub(crate) fn is_software_apply(&self) -> bool {
@@ -144,7 +148,7 @@ impl UpdateMode {
     }
 }
 
-fn parse_update_mode(args: &[String]) -> Result<UpdateMode, String> {
+fn parse_update_mode(args: &[String], invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<UpdateMode, String> {
     let mut apply = false;
     let mut index = 0;
     while index < args.len() {
@@ -157,13 +161,13 @@ fn parse_update_mode(args: &[String]) -> Result<UpdateMode, String> {
             _ => return Err("update accepts [--apply] and --receipt-dir only".to_string()),
         }
     }
-    Ok(UpdateMode::from_apply_flag(apply))
+    Ok(UpdateMode::from_apply_flag_with_invocation(apply, invocation))
 }
 
-pub(crate) fn update_from_certificate(args: &[String]) -> Result<(), String> {
+pub(crate) fn update_from_certificate(args: &[String], invocation: crate::Invocation) -> Result<(), String> {
     let receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
-    let mode = match parse_update_mode(args) {
+    let mode = match parse_update_mode(args, invocation.0) {
         Ok(mode) => mode,
         Err(reason) => {
             write_json(

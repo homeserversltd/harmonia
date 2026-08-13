@@ -156,6 +156,7 @@ fn rollback_file_symlink(
 /// from the non-empty action arm.
 pub(crate) fn execute(
     request: ValidatedFileSymlinkRequest<'_>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let run = crate::tools::comparison::execute(
         || observe_symlink(&request),
@@ -171,7 +172,7 @@ pub(crate) fn execute(
             }
         },
         |authorization, observation| {
-            let Some(invocation) = atoms::r#do::InvocationKey::from_apply_or_timer(request.apply)
+            let Some(invocation) = invocation
             else {
                 return write_receipt(&request, TerminalReceipt::no_change(true));
             };

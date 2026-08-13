@@ -20,9 +20,9 @@ struct Payload {
     owner: Option<String>,
 }
 
-pub(crate) fn run_profile_hotfixes(profile: &Profile, receipt_dir: &Path) {
+pub(crate) fn run_profile_hotfixes(profile: &Profile, receipt_dir: &Path, invocation: Option<crate::atoms::r#do::InvocationKey>) {
     for (ordinal, declaration) in profile.hotfixes.iter().enumerate() {
-        if let Err(blocker) = run_one(profile, receipt_dir, declaration) {
+        if let Err(blocker) = run_one(profile, receipt_dir, declaration, invocation) {
             // A Hotfix failure is terminal for that declaration, never for the
             // profile engine.  Receipt persistence is attempted independently
             // so a broken receipt destination cannot suppress sibling hotfixes.
@@ -31,7 +31,7 @@ pub(crate) fn run_profile_hotfixes(profile: &Profile, receipt_dir: &Path) {
     }
 }
 
-fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result<(), String> {
+fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
     let object = declaration
         .as_object()
         .ok_or_else(|| "hotfix-declaration-not-object".to_string())?;
@@ -77,7 +77,7 @@ fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value) -> Result
                     mode: payload.mode,
                     ownership,
                     backup: backup_policy,
-                    invocation: crate::atoms::r#do::InvocationKey::from_apply_or_timer(true),
+                    invocation: invocation,
                 })?;
             Ok(outcome.hotfix_receipt)
         },

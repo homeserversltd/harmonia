@@ -90,6 +90,7 @@ pub(crate) fn execute_ladder_step(
     receipt_dir: &Path,
     apply: bool,
     source_plan: &tools::git_artifact::SourcePlan,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     build_environment(args, None)?;
     let op_prefix = string_arg(args, "op_prefix")?;
@@ -129,6 +130,7 @@ pub(crate) fn execute_ladder_step(
         args.get("bearer").and_then(Value::as_str),
         args,
         source_plan,
+        invocation,
     )
 }
 
@@ -323,6 +325,7 @@ pub(crate) fn execute(
     bearer: Option<&str>,
     args: &BTreeMap<String, Value>,
     source_plan: &tools::git_artifact::SourcePlan,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     validate(module)?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -367,7 +370,7 @@ pub(crate) fn execute(
         },
         |_, _| {
             if apply {
-                Ok(tools::git_artifact::acquire_source(&source_plan))
+                Ok(tools::git_artifact::acquire_source(&source_plan, invocation))
             } else {
                 Ok(tools::git_artifact::SourceOutcome {
                     ok: true,
@@ -589,6 +592,7 @@ pub(crate) fn execute(
         &source_dir, &source_sha_value, installed_build_sha.as_deref(), &install_bin, apply,
         &environment, crate::tools::command::DEFAULT_TIMEOUT_SECS,
         &receipt_dir.join("harmonia-atoms.log"), &source_bearer,
+        invocation,
     )?;
     let install = if let Some(result) = build {
         let build = CmdResult { ok: result.ok, code: result.code.unwrap_or(-1), stdout: result.stdout, stderr: result.stderr };
@@ -668,6 +672,7 @@ pub(crate) fn execute(
         apply,
         managed.changed,
         install.changed,
+        invocation,
     )?;
     let health = tools::health::curl_probe(&tools::health::ProbeRequest::new(health_url));
     write_command_receipt(receipt_dir, spec.health_op, &health)?;
@@ -1078,6 +1083,7 @@ fn ensure_service_active(
     apply: bool,
     managed_files_changed: bool,
     binary_changed: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     if !apply {
         let active = tools::command::capture("/usr/bin/systemctl", &["is-active", service]);
@@ -1102,6 +1108,7 @@ fn ensure_service_active(
             30,
             apply,
             false,
+            invocation,
         )?;
         return Ok(OperationOutcome {
             ok: active.ok,
@@ -1122,6 +1129,7 @@ fn ensure_service_active(
             30,
             apply,
             true,
+            invocation,
         )?;
         if !daemon_reload.ok {
             return Ok(OperationOutcome {
@@ -1143,6 +1151,7 @@ fn ensure_service_active(
         30,
         apply,
         service_material_changed,
+        invocation,
     )?;
     let restart = if active_before.ok {
         Some(tools::systemd::run_permutation(
@@ -1155,6 +1164,7 @@ fn ensure_service_active(
             30,
             apply,
             service_material_changed,
+            invocation,
         )?)
     } else {
         None
@@ -1169,6 +1179,7 @@ fn ensure_service_active(
         30,
         apply,
         service_material_changed,
+        invocation,
     )?;
     Ok(OperationOutcome {
         ok: enable.ok && restart.as_ref().is_none_or(|outcome| outcome.ok) && active.ok,

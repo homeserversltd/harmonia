@@ -352,6 +352,7 @@ pub(crate) fn run_profile_engine_with_preflight(
     suite_debt: Option<&str>,
 ) -> Result<(), String> {
     let apply = mode.is_software_apply();
+    let invocation = mode.invocation();
     let run_started = Instant::now();
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
@@ -377,7 +378,7 @@ pub(crate) fn run_profile_engine_with_preflight(
     crate::bands::walk(|band| {
         match band {
             crate::bands::Band::RenewSelf => {
-            run_profile_hotfixes(profile, receipt_dir);
+            run_profile_hotfixes(profile, receipt_dir, invocation);
 
             if let Some(suite_debt) = suite_debt {
                 ok = false;
@@ -417,7 +418,7 @@ pub(crate) fn run_profile_engine_with_preflight(
             } else {
                 // Engine-plane self-update is automatic in every profile run. It has its
                 // own receipt and never derives from, nor widens, module hard consent.
-                let preflight = run_engine_preflight(module_root, receipt_dir, true)?;
+                let preflight = run_engine_preflight(module_root, receipt_dir, apply, invocation)?;
                 operation_count += preflight.operation_count;
                 if preflight.changed {
                     changed = true;
@@ -554,6 +555,7 @@ pub(crate) fn run_profile_engine_with_preflight(
                         receipt_dir,
                         mode.software_authorization(),
                         &harmonia_root,
+                        invocation,
                     ),
                     LoadedModule::Ladder(manifest) => {
                         let module_dir = receipt_dir.join("modules").join(&manifest.id);
@@ -569,6 +571,7 @@ pub(crate) fn run_profile_engine_with_preflight(
                             &module_dir,
                             mode.software_authorization(),
                             profile.package_authority.as_ref(),
+                            invocation,
                         )
                     }
                 };
@@ -819,7 +822,7 @@ where
         // The engine plane remains independent of update apply; it owns its
         // currentness ratchet and one re-exec guard without widening software
         // authority into configuration or identity.
-        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, true)?;
+        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, apply, mode.invocation())?;
         if !apply {
             prelude(&effective_receipt_dir)?;
             return run_profile_engine_with_preflight(

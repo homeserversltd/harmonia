@@ -25,6 +25,7 @@ pub(crate) fn install(
     package: &str,
     timeout_secs: u64,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Option<String>, OperationOutcome>, String> {
     comparison::execute(
         || Ok(observe::installed_version(package)),
@@ -36,7 +37,7 @@ pub(crate) fn install(
             }
         },
         |authorization, _| {
-            let invocation = crate::atoms::r#do::InvocationKey::from_apply_or_timer(apply)
+            let invocation = invocation
                 .ok_or_else(|| "ratchet-aur-package-install-invocation-key-missing".to_string())?;
             act::install(
                 authorization,
@@ -63,6 +64,7 @@ pub(crate) fn build_pinned(
     timeout_secs: u64,
     install: bool,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Observation, OperationOutcome>, String> {
     comparison::execute(
         || observe::ratchet(package, lock_path, None, install),
@@ -74,7 +76,7 @@ pub(crate) fn build_pinned(
             }
         },
         |authorization, observation| {
-            let invocation = crate::atoms::r#do::InvocationKey::from_apply_or_timer(apply)
+            let invocation = invocation
                 .ok_or_else(|| "ratchet-aur-package-build-invocation-key-missing".to_string())?;
             act::build_pinned(
                 authorization,
@@ -107,9 +109,8 @@ pub(crate) fn verify_artifact_lock(
     lock_path: &Path,
     profile: Option<&str>,
     receipt_dir: &Path,
-    apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let observation = observe::artifact_lock(lock_path, profile, receipt_dir, apply)?;
+    let observation = observe::artifact_lock(lock_path, profile, receipt_dir, false)?;
     let outcome = OperationOutcome {
         ok: observation.ok,
         changed: false,

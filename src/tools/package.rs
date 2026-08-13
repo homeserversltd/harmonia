@@ -390,7 +390,7 @@ pub(crate) fn package_tool_for_backend(
     packages: &[String],
     apply: bool,
     backend: PackageBackend,
-) -> Result<OperationOutcome, String> {
+    invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> {
     package_tool_with_policy_for_backend(
         receipt_dir,
         name,
@@ -401,6 +401,7 @@ pub(crate) fn package_tool_for_backend(
         &[],
         DEFAULT_PACKAGE_TIMEOUT_SECS,
         backend,
+        invocation,
     )
 }
 
@@ -415,7 +416,7 @@ pub(crate) fn package_tool_with_policy_for_backend(
     conflict_paths: &[String],
     timeout_secs: u64,
     backend: PackageBackend,
-) -> Result<OperationOutcome, String> {
+    invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> {
     match backend {
         PackageBackend::Pacman if action == "install" => crate::install_package::run(
             receipt_dir,
@@ -426,6 +427,7 @@ pub(crate) fn package_tool_with_policy_for_backend(
             conflict_paths,
             timeout_secs,
             &pacman_program(),
+            invocation,
         ),
         PackageBackend::Pacman => package_tool_with_policy(
             receipt_dir,

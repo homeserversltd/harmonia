@@ -314,7 +314,7 @@ pub(crate) fn execute_group_live_probe(
     let step = validate_group(group, &manifest.constants)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    execute_validated_step(&step, manifest, receipt_dir, None, None, false)
+    execute_validated_step(&step, manifest, receipt_dir, None, None, false, None)
 }
 
 fn resolve_args(
@@ -500,6 +500,7 @@ pub(crate) fn execute_ladder_manifest(
     module_dir: &Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     package_authority: Option<&crate::PackageAuthority>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     let steps = validate_ladder(manifest)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
@@ -517,6 +518,7 @@ pub(crate) fn execute_ladder_manifest(
                 software_authorization,
                 package_authority,
                 software_authorization.is_some(),
+                invocation,
             )?;
             operation_count += 1;
             changed |= outcome.changed;
@@ -551,6 +553,7 @@ pub(crate) fn execute_ladder_manifest(
             software_authorization,
             package_authority,
             changed,
+            invocation,
         )?;
         if outcome.changed {
             changed = true;
@@ -626,6 +629,7 @@ fn execute_validated_step(
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     package_authority: Option<&crate::PackageAuthority>,
     module_changed_before_step: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     // Apply is a SoftwarePlane capability. Configuration and identity steps
     // remain report-only; only these explicit software permutations receive it.
@@ -649,7 +653,7 @@ fn execute_validated_step(
         ("command", "capture") => command_capture_step(step, module_dir, software_apply),
         ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, false),
         ("health", "probe") => health_probe_step(step, module_dir, false),
-        ("household-time", _) => household_time_step(step, module_dir, false),
+        ("household-time", _) => household_time_step(step, module_dir, software_apply, invocation),
         ("files", "managed-files") => managed_files_step(step, manifest, module_dir, false),
         ("files", "managed-directories") => managed_directories_step(step, module_dir, false),
         ("files", "validated-symlink") => validated_symlink_step(step, module_dir, false),
@@ -657,10 +661,10 @@ fn execute_validated_step(
         ("files", "validated-file-symlink") => {
             validated_file_symlink_step(step, manifest, module_dir, false)
         }
-        ("files", "remove") => files_remove_step(step, module_dir, false),
+        ("files", "remove") => files_remove_step(step, module_dir, software_apply, invocation),
         ("files", "executable-present") => files_executable_present_step(step, module_dir),
         ("files", "source-shelf-sweep") => {
-            files_source_shelf_sweep_step(step, manifest, module_dir, software_apply)
+            files_source_shelf_sweep_step(step, manifest, module_dir, software_apply, invocation)
         }
         ("files", "validated-sudoers-converge") => {
             files_validated_sudoers_converge_step(step, manifest, module_dir, software_apply)
@@ -670,13 +674,14 @@ fn execute_validated_step(
             files_converge_step(step, manifest, module_dir, false)
         }
         ("venv", "converge") => {
-            tools::venv::execute_ladder_step(&step.args, module_dir, &step.step_id, software_apply)
+            tools::venv::execute_ladder_step(&step.args, module_dir, &step.step_id, software_apply, invocation)
         }
         ("systemd", _) => systemd_step(
             step,
             module_dir,
             software_authorization.is_some() && step.permutation.ends_with("restart"),
             module_changed_before_step,
+            invocation,
         ),
         ("service-runtime", "converge") => {
             let source_plan = routine_source_plan(step, manifest)?;
@@ -685,6 +690,7 @@ fn execute_validated_step(
                 module_dir,
                 software_apply,
                 &source_plan,
+                invocation,
             )
         }
         .map(|execution| OperationOutcome {
@@ -697,16 +703,16 @@ fn execute_validated_step(
             ),
             command: None,
         }),
-        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_apply),
+        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_apply, invocation),
         ("ai-coding-harness", "reconcile") => ai_coding_harness_step(step, module_dir, false),
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
-            aur_step(step, manifest, module_dir, software_apply)
+            aur_step(step, manifest, module_dir, software_apply, invocation)
         }
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
         | ("package", "keyring-repair") => {
-            package_step(step, module_dir, software_apply, package_authority)
+            package_step(step, module_dir, software_apply, package_authority, invocation)
         }
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
@@ -723,7 +729,7 @@ fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {
 
 fn execute_routine(
     step: &ValidatedStep, manifest: &LadderManifest, module_dir: &Path,
-    _software_authorization: Option<&crate::SoftwareApplyAuthorization>, _package_authority: Option<&crate::PackageAuthority>, apply: bool,
+    _software_authorization: Option<&crate::SoftwareApplyAuthorization>, _package_authority: Option<&crate::PackageAuthority>, apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source = manifest.ladder.iter().find(|s| s.step_id == step.step_id).ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
     let routine_dir = module_dir.join(&source.step_id); fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
@@ -739,7 +745,7 @@ fn execute_routine(
                 let signal = format!("step_id={} defect=missing-stamp-{}", child.name, reference); ok=false; if first.is_none(){first=Some(signal.clone());} blocked_by=Some(child.name.clone());
                 crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"missing","ok":false,"first_missing_signal":signal}))?;
                 ("missing", false, false, BTreeMap::new(), json!({"first_missing_signal":signal}))
-            } else { match tools::module_steps::execute_routine_tool(&child.tool, &args, manifest, &child_dir, apply) {
+            } else { match tools::module_steps::execute_routine_tool(&child.tool, &args, manifest, &child_dir, apply, invocation) {
                 Ok((outcome, outputs)) => { ok &= outcome.ok; changed |= outcome.changed; if !outcome.ok { let signal=format!("step_id={} defect={}",child.name,outcome.message); if first.is_none(){first=Some(signal);} blocked_by=Some(child.name.clone()); } (if outcome.ok{"completed"}else{"failed"}, outcome.ok, outcome.changed, outputs, json!({"skipped":outcome.skipped,"message":outcome.message})) }
                 Err(error) => { let signal=format!("step_id={} defect={}",child.name,error); ok=false; if first.is_none(){first=Some(signal);} blocked_by=Some(child.name.clone()); crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"failed","ok":false,"message":error}))?; ("failed",false,false,BTreeMap::new(),json!({"message":error})) }
             }}
@@ -789,7 +795,6 @@ fn artifact_lock_step(
         &PathBuf::from(string_arg(&step.args, "lock")),
         optional_string_arg(&step.args, "profile"),
         module_dir,
-        apply,
     )
 }
 
@@ -886,6 +891,7 @@ fn household_time_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     tools::household_time::execute(
         module_dir,
@@ -893,6 +899,7 @@ fn household_time_step(
         &step.permutation,
         &step.args,
         apply,
+        invocation,
     )
 }
 
@@ -1111,13 +1118,14 @@ fn validated_file_symlink_step(
         reload_args: &reload_args,
         timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
         apply,
-    })
+    }, None)
 }
 
 fn files_remove_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let outcome = crate::tools::files::remove_declared_files(
         &PathBuf::from(string_arg(&step.args, "target_root")),
@@ -1125,6 +1133,7 @@ fn files_remove_step(
         module_dir,
         &step.step_id,
         apply,
+        invocation,
     )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
@@ -1167,6 +1176,7 @@ fn files_source_shelf_sweep_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let request = crate::tools::files::SourceShelfSweepRequest {
         source_root: resolve_ladder_path(manifest, string_arg(&step.args, "source_root")),
@@ -1197,7 +1207,7 @@ fn files_source_shelf_sweep_step(
             .unwrap_or(false),
         receipt_name: step.step_id.clone(),
     };
-    let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply)?;
+    let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply, invocation)?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
@@ -1515,6 +1525,7 @@ fn systemd_step(
     module_dir: &Path,
     apply: bool,
     module_changed_before_step: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     tools::systemd::run_permutation(
         module_dir,
@@ -1526,6 +1537,7 @@ fn systemd_step(
         integer_arg(&step.args, "timeout_secs", 30),
         apply,
         module_changed_before_step,
+        invocation,
     )
 }
 
@@ -1534,6 +1546,7 @@ fn package_step(
     module_dir: &Path,
     apply: bool,
     package_authority: Option<&crate::PackageAuthority>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let backend = package_authority
         .ok_or_else(|| "profile-package-authority-missing".to_string())?
@@ -1548,6 +1561,7 @@ fn package_step(
             &packages,
             apply,
             backend,
+            invocation,
         ),
         "install" => {
             let conflict_paths = string_array_arg(&step.args, "conflict_paths");
@@ -1561,6 +1575,7 @@ fn package_step(
                 &conflict_paths,
                 timeout_secs,
                 backend,
+                invocation,
             )
         }
         "upgrade" => crate::tools::package::package_tool_with_policy_for_backend(
@@ -1573,6 +1588,7 @@ fn package_step(
             &[],
             timeout_secs,
             backend,
+            invocation,
         ),
         "keyring-repair" if backend == crate::PackageBackend::Pacman => {
             crate::tools::package::keyring_repair_tool(
@@ -1593,6 +1609,7 @@ fn aur_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let package = string_arg(&step.args, "package");
     match step.permutation.as_str() {
@@ -1602,6 +1619,7 @@ fn aur_step(
             package,
             integer_arg(&step.args, "timeout_secs", 3600),
             apply,
+            invocation,
         ),
         "check" => crate::tools::aur::check(
             module_dir,
@@ -1624,6 +1642,7 @@ fn aur_step(
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             apply,
+            invocation,
         ),
         other => Err(format!("aur-permutation-unsupported-{other}")),
     }
@@ -1651,10 +1670,11 @@ fn git_artifact_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_plan = routine_source_plan(step, manifest)?;
     let outcome = if apply {
-        tools::git_artifact::acquire_source(&source_plan)
+        tools::git_artifact::acquire_source(&source_plan, invocation)
     } else {
         tools::git_artifact::SourceOutcome {
             ok: true,

@@ -21,7 +21,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) struct InvocationKey(());
 
 impl InvocationKey {
-    pub(crate) fn from_apply_or_timer(apply_or_timer: bool) -> Option<Self> {
+    pub(crate) fn from_apply_or_timer(
+        apply_or_timer: bool,
+        _mint: crate::invocation_face::Mint,
+    ) -> Option<Self> {
         apply_or_timer.then_some(Self(()))
     }
 }

@@ -268,11 +268,28 @@ pub(crate) use receipts::*;
 pub(crate) use source_resolver::*;
 pub(crate) use subscription::*;
 
-pub fn main_entry() {
-    if let Err(err) = run(env::args().skip(1).collect()) {
+pub struct Invocation(Option<atoms::r#do::InvocationKey>);
+
+mod invocation_face {
+    pub(crate) struct Mint(());
+
+    pub(super) fn mint(args: &[String]) -> super::Invocation {
+        let applies = args.iter().any(|arg| arg == "--apply")
+            || args.first().is_some_and(|arg| arg == "acquire-source");
+        super::Invocation(super::atoms::r#do::InvocationKey::from_apply_or_timer(applies, Mint(())))
+    }
+}
+
+pub fn invoke(args: Vec<String>) {
+    let invocation = invocation_face::mint(&args);
+    if let Err(err) = run(args, invocation) {
         eprintln!("harmonia_error={}", err);
         process::exit(1);
     }
+}
+
+pub fn main_entry() {
+    invoke(env::args().skip(1).collect());
 }
 
 #[cfg(test)]
@@ -2647,13 +2664,13 @@ mod tests {
     }
 }
 
-pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
+pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("bench-update-set") => update_set::bench(&args[1..]),
         Some("interactable") | Some("config-proposal") => interactable_command(&args[1..]),
         Some("install-timer") => schedule::install_timer(&args[1..]),
         Some("uninstall-timer") => schedule::uninstall_timer(&args[1..]),
-        Some("update") => update_from_certificate(&args[1..]),
+        Some("update") => update_from_certificate(&args[1..], invocation),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
         Some("validate-ladder") => {
@@ -2757,7 +2774,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 expected_commit,
                 credential_scopes(&config),
             );
-            let outcome = tools::git_artifact::acquire_source(&acquisition);
+            let outcome = tools::git_artifact::acquire_source(&acquisition, invocation.0);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -2836,7 +2853,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("run-profile requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args)
                 .unwrap_or_else(|| PathBuf::from("target/harmonia-run-profile"));
-            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             if profile.id == "homeserver" && profile.identity == "homeserver" {
@@ -2912,7 +2929,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("homeserver-update requires <profile-index-json>")?;
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeserver_update_receipt_latest);
-            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
             verify_asserted_profile("homeserver")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
@@ -2924,7 +2941,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("homeconsole-update requires <profile-index-json>")?;
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeconsole_update_receipt_latest);
-            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
             verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
@@ -2935,7 +2952,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 .get(1)
                 .ok_or("tv-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
-            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
             verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
@@ -2948,7 +2965,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
                 PathBuf::from("/var/lib/harmonia/receipts/local-ai-runtime-latest")
             });
-            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
             let apply = mode.is_software_apply();
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
@@ -2968,6 +2985,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                     &receipt_dir,
                     mode.software_authorization(),
                     &harmonia_root,
+                    mode.invocation(),
                 )?;
             write_engine_run_receipt_with_duration(
                 &receipt_dir,
@@ -3015,7 +3033,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
                 PathBuf::from("/var/lib/harmonia/receipts/homeconsole-sync-latest")
             });
-            let mode = UpdateMode::from_apply_flag(args.iter().any(|arg| arg == "--apply"));
+            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
             let apply = mode.is_software_apply();
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             if profile.id != "homeconsole" || profile.identity != "homeconsole" {
@@ -3034,6 +3052,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 &receipt_dir,
                 mode.software_authorization(),
                 &harmonia_root,
+                mode.invocation(),
             )?;
             write_engine_run_receipt_with_duration(
                 &receipt_dir,
@@ -3123,6 +3142,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 &service,
                 apply,
                 source_sha.as_deref(),
+                invocation.0,
             )
         }
         Some("homeconsole-arcadia-gui-update") => {
@@ -3150,6 +3170,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                 &install_bin,
                 &service,
                 apply,
+                invocation.0,
             )
         }
         _ => usage(),
