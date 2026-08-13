@@ -609,9 +609,14 @@ fn package_differs(action: &str, packages: &[String], observation: &PackageObser
                 .lines()
                 .any(|line| line.split_whitespace().next() == Some(package))
         }),
-        "check" | "upgrade" | "update" => !result.stdout.trim().is_empty() || !result.ok,
+        "check" | "upgrade" | "update" => !pacman_update_query_is_empty(result),
         _ => true,
     }
+}
+
+fn pacman_update_query_is_empty(result: &crate::CmdResult) -> bool {
+    result.stdout.trim().is_empty()
+        && (result.code == 0 || (result.code == 1 && result.stderr.trim().is_empty()))
 }
 
 fn write_guard_receipts(
@@ -708,7 +713,11 @@ pub(crate) fn package_tool_with_policy(
         "install" => command::capture(&pacman, &["-Q"]),
         _ => command::capture(&pacman, &["-Qu"]),
     };
-    let observed_state = if observe_result.ok {
+    let observed_state = if matches!(action, "check" | "upgrade" | "update")
+        && pacman_update_query_is_empty(&observe_result)
+    {
+        String::new()
+    } else if observe_result.ok {
         observe_result.stdout.clone()
     } else {
         format!("probe-failed:{}", observe_result.code)
@@ -730,7 +739,11 @@ pub(crate) fn package_tool_with_policy(
                 "install" => command::capture(&pacman, &["-Q"]),
                 _ => command::capture(&pacman, &["-Qu"]),
             };
-            let observed_state = if result.ok {
+            let observed_state = if matches!(action, "check" | "upgrade" | "update")
+                && pacman_update_query_is_empty(&result)
+            {
+                String::new()
+            } else if result.ok {
                 result.stdout.clone()
             } else {
                 format!("probe-failed:{}", result.code)
