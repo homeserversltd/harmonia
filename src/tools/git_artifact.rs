@@ -1,4 +1,4 @@
-use super::{command, comparison, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
+use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 
 pub const NAME: &str = "git-artifact";
 pub const DESCRIPTION: &str = "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.";
@@ -1214,22 +1214,10 @@ pub(crate) fn legacy_acquire_source(plan: &SourcePlan) -> SourceOutcome {
                     .expected_commit
                     .as_deref()
                     .map_or(true, |expected| remote_commit.as_deref() == Some(expected));
-                let comparison = match comparison::execute(
-        "git-artifact",
-                    || Ok::<_, String>((destination_commit.clone(), remote_commit.clone())),
-                    |(destination, remote)| {
-                        if destination.is_some() && destination == remote && expected_matches {
-                            comparison::DiffDecision::Empty
-                        } else {
-                            comparison::DiffDecision::Different
-                        }
-                    },
-                    |_, _| Ok::<_, String>(()),
-                ) {
-                    Ok(comparison) => comparison,
-                    Err(detail) => return source_failure(attempts, &detail, precondition_changed),
-                };
-                if matches!(comparison, comparison::ComparisonRun::Current { .. }) {
+                let already_current = destination_commit.is_some()
+                    && destination_commit == remote_commit
+                    && expected_matches;
+                if already_current {
                     let commit = remote_commit.expect("empty comparison requires remote commit");
                     attempts.push(source_attempt(
                         index,

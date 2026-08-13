@@ -58,8 +58,25 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
     };
     report_home::outcome(outcome)
 }
-pub(crate) fn acquire_source(plan: &SourcePlan, invocation: Option<crate::atoms::r#do::InvocationKey>) -> SourceOutcome {
-    let Some(invocation) = invocation else { return SourceOutcome { ok:false, changed:false, receipt: git_artifact::SourceReceipt { attempts:Vec::new(), served_index:None, resolved_commit:None, promotion:"invocation-key-missing".into() } }; };
+pub(crate) fn acquire_source(
+    plan: &SourcePlan,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> SourceOutcome {
+    let Some(invocation) = invocation else {
+        return SourceOutcome {
+            ok: false,
+            changed: false,
+            receipt: git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: "invocation-key-missing".into(),
+            },
+        };
+    };
+    // The git-artifact owner supplies the fresh post-act identity observation.
+    // Preserve its movement so acquisition diagnostics survive a guard error.
+    let mut acted = None;
     let run = comparison::execute(
         "pull-repo",
         || Ok::<_, String>(observe::source(plan)),
@@ -70,7 +87,11 @@ pub(crate) fn acquire_source(plan: &SourcePlan, invocation: Option<crate::atoms:
                 DiffDecision::Different
             }
         },
-        |authorization, _| Ok(act::git_acquire(authorization, plan, invocation)),
+        |authorization, _| {
+            let outcome = act::git_acquire(authorization, plan, invocation);
+            acted = Some(outcome.clone());
+            Ok(outcome)
+        },
     );
     let outcome = match run {
         Ok(comparison::ComparisonRun::Current {
@@ -78,12 +99,10 @@ pub(crate) fn acquire_source(plan: &SourcePlan, invocation: Option<crate::atoms:
             ..
         }) => outcome,
         Ok(comparison::ComparisonRun::Moved { movement, .. }) => movement,
-        Ok(_) => git_artifact::legacy_acquire_source(plan),
-        Err(_) => git_artifact::legacy_acquire_source(plan),
+        Ok(_) | Err(_) => acted.unwrap_or_else(|| git_artifact::legacy_acquire_source(plan)),
     };
     report_home::source(outcome)
 }
-
 
 pub(crate) fn attest_source(log: &std::path::Path, value: &SourceOutcome) -> Result<(), String> {
     report_home::attest_source(log, value)
