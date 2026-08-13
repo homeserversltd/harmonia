@@ -1,6 +1,16 @@
 use crate::*;
 use std::fs;
 use std::path::Path;
+use std::collections::BTreeMap;
+
+pub(crate) struct ModuleWalkState {
+    pub(crate) context: BTreeMap<String, serde_json::Value>,
+    pub(crate) children: Vec<serde_json::Value>,
+    pub(crate) blocked_by: Option<String>,
+    pub(crate) ok: bool,
+    pub(crate) changed: bool,
+    pub(crate) first_missing_signal: Option<String>,
+}
 
 pub(crate) struct ModuleExecution {
     pub(crate) ok: bool,

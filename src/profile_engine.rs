@@ -340,6 +340,7 @@ fn execute_band_modules(
     mode: UpdateMode,
     disabled_modules: &BTreeSet<String>,
     states: &mut BTreeMap<String, ModuleExecution>,
+    routines: &mut BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>>,
     halted: &mut BTreeSet<String>,
     module_count: &mut usize,
     operation_count: &mut usize,
@@ -383,6 +384,7 @@ fn execute_band_modules(
                 profile.package_authority.as_ref(),
                 mode.invocation(),
                 states.get(module_id).map(|s| s.changed).unwrap_or(false),
+                routines.entry(module_id.clone()).or_default(),
             ),
             LoadedModule::Sidecar(_) => {
                 let mut state = ModuleExecution {
@@ -488,6 +490,7 @@ pub(crate) fn run_profile_engine_with_preflight(
     let mut operation_count = 0usize;
     let mut module_states: BTreeMap<String, ModuleExecution> = BTreeMap::new();
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
+    let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> = BTreeMap::new();
     let mut visited_bands = Vec::new();
     let device_module_policy = read_device_module_policy()?;
 
@@ -587,6 +590,23 @@ pub(crate) fn run_profile_engine_with_preflight(
                     &device_module_policy.disabled_modules,
                 )?;
                 group_losers = group_loser_winners(&group_selections);
+                execute_band_modules(
+                    band,
+                    profile,
+                    module_root,
+                    receipt_dir,
+                    mode,
+                    &device_module_policy.disabled_modules,
+                    &mut module_states,
+                    &mut routine_states,
+                    &mut halted_modules,
+                    &mut module_count,
+                    &mut operation_count,
+                    &mut changed,
+                    &mut ok,
+                    &mut first_missing_signal,
+                    &mut events,
+                )?;
             }
             crate::bands::Band::InstallPackages
             | crate::bands::Band::RatchetBinaries
@@ -601,6 +621,7 @@ pub(crate) fn run_profile_engine_with_preflight(
                     mode,
                     &device_module_policy.disabled_modules,
                     &mut module_states,
+                    &mut routine_states,
                     &mut halted_modules,
                     &mut module_count,
                     &mut operation_count,
