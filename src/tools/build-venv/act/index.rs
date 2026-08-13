@@ -23,7 +23,8 @@ pub(super) fn converge(
         ensure_ok(&result, request.python.to_string_lossy().as_ref())?;
         movement = "create-venv";
     }
-    if let Some(hash) = observation.dependency_sha256.as_deref() {
+    if observation.dependency_sha256 != observation.previous_dependency_sha256 {
+        if let Some(hash) = observation.dependency_sha256.as_deref() {
         let python = request.venv.join("bin/python");
         for file in &observation.dependency_files {
             let (args, cwd) = if file.file_name().and_then(|n| n.to_str()) == Some("pyproject.toml")
@@ -68,6 +69,7 @@ pub(super) fn converge(
             },
         )?;
         movement = "refresh-dependencies";
+        }
     }
     Ok(movement)
 }

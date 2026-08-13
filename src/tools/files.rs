@@ -708,6 +708,7 @@ pub(crate) fn converge_managed_directories(
         let desired_uid = resolve_uid(&directory.owner)?;
         let desired_gid = resolve_gid(&directory.group)?;
         let run = crate::tools::comparison::execute(
+        "files",
             || {
                 let metadata = fs::symlink_metadata(&path).ok();
                 if metadata
@@ -883,6 +884,7 @@ pub(crate) fn converge_managed_files(
     for file in request.files {
         let desired = file.content.as_bytes();
         let run = crate::tools::comparison::execute(
+        "files",
             || {
                 let path = PathBuf::from(&file.path);
                 let target_exists_before = fs::symlink_metadata(&path).is_ok();
@@ -1510,6 +1512,7 @@ pub fn ensure_files_present(
         let target = request.target_root.join(&spec.relative_path);
         reject_ssh_path(&target)?;
         let run = crate::tools::comparison::execute(
+        "files",
             || match fs::symlink_metadata(&target) {
                 Ok(metadata) if metadata.file_type().is_file() => Ok(true),
                 Ok(_) => Err(format!(
@@ -2992,6 +2995,7 @@ fn source_shelf_sweep_with_fault(
     }
 
     let run = crate::tools::comparison::execute(
+        "files",
         || Ok::<_, String>(drift),
         |different| {
             if *different {
@@ -4481,6 +4485,7 @@ pub(crate) fn symlink_converge(
         .transpose()
         .map_err(|error| format!("symlink-converge-group-resolution-failed: {error}"))?;
     let observation = crate::tools::comparison::execute(
+        "files",
         || {
             Ok::<_, String>(SymlinkComparisonObservation {
                 before: observe_symlink_path(&request.target)?,
@@ -4868,6 +4873,7 @@ pub(crate) fn validated_symlink(
     apply: bool,
 ) -> Result<crate::OperationOutcome, String> {
     let run = crate::tools::comparison::execute(
+        "files",
         || Ok::<_, String>((source.is_file(), fs::read_link(target).ok())),
         |(source_ok, current)| {
             if *source_ok && current.as_deref() == Some(source) {

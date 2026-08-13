@@ -72,6 +72,7 @@ pub(crate) fn execute(
     for relative_path in paths {
         let target = target_root.join(relative_path);
         let run = crate::tools::comparison::execute(
+        "remove-file",
             || observe::file(&target),
             |state| match state {
                 RemovalObservation::RegularFile => {

@@ -485,6 +485,7 @@ fn apt_package_tool(
         .as_ref()
         .is_some_and(|result| !result.ok || apt_stdout_indicates_change(&result.stdout));
     let run = comparison::execute(
+        "package",
         || Ok::<_, String>(observation.clone()),
         |_| {
             if desired_differs {
@@ -648,6 +649,7 @@ pub(crate) fn package_tool_with_policy(
         current: Some(observe_result),
     };
     let run = comparison::execute(
+        "package",
         || Ok::<_, String>(observation.clone()),
         |_| {
             if differs {
@@ -749,6 +751,7 @@ pub(crate) fn keyring_repair_tool(
             .as_ref()
             .is_some_and(|result| !result.ok);
     let run = comparison::execute(
+        "package",
         || Ok::<_, String>(observation.clone()),
         |_| {
             if differs {

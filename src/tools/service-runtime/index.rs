@@ -426,6 +426,7 @@ pub(crate) fn stage_source_gate(
     let source_plan = state.source_plan.clone();
     let source_bearer = state.source_bearer.clone();
     let source_gate = tools::comparison::execute(
+        "service-runtime",
         || {
             let remote_probe =
                 apply.then(|| tools::git_artifact::probe_declared_remote_head(&source_plan));
@@ -663,6 +664,8 @@ pub(crate) fn stage_build(
     }
     let build_environment = build_environment(args, Some(&source_sha_value))?;
 
+    let mut build_environment = build_environment;
+    build_environment.insert("CARGO_TARGET_DIR".into(), source_dir.join("target").to_string_lossy().into_owned());
     let environment: Vec<(String, String)> = build_environment.into_iter().collect();
     let build = crate::build_crate::run_build(
         &source_dir, &source_sha_value, installed_build_sha.as_deref(), &install_bin, apply,
@@ -782,7 +785,9 @@ pub(crate) fn stage_health_proof(
     spec: &ServiceRuntimeSpec,
     state: &mut ServiceRuntimeState,
 ) -> Result<(), String> {
-    let health = health_probe(&state.health_url, 5, 3);
+    let mut health = health_probe(&state.health_url, 5, 3);
+    let observed = health.ok.then(|| serde_json::from_str::<Value>(&health.stdout).ok()).flatten().and_then(|v| v.get("build_sha").and_then(Value::as_str).map(str::to_string));
+    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) { health.ok=false; health.code=1; health.stderr=format!("{}-act-did-not-converge expected_build_sha={} observed_build_sha={}",spec.op_prefix,state.source_sha_value,observed.as_deref().unwrap_or("unavailable")); }
     write_command_receipt(receipt_dir, spec.health_op, &health)?;
     state.health = Some(health);
     Ok(())

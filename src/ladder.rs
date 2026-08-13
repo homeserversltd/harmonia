@@ -1646,6 +1646,7 @@ fn files_converge_step(
             .unwrap_or(false)
     {
         let run = crate::tools::comparison::execute(
+        "ladder",
             || Ok::<_, String>((source_root.clone(), target_root.clone())),
             |_| crate::tools::comparison::DiffDecision::Empty,
             |_, _| Ok::<_, String>(()),

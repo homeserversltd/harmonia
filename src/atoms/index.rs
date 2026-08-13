@@ -174,7 +174,8 @@ pub(crate) fn compare<Movement>(
         Drift::Current => true,
     };
     comparison::execute(
-        || Ok(observation),
+        "atom",
+        || Ok(observation.clone()),
         |_| {
             if current {
                 DiffDecision::Empty

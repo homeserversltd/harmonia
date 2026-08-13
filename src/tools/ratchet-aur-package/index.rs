@@ -28,6 +28,7 @@ pub(crate) fn install(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Option<String>, OperationOutcome>, String> {
     comparison::execute(
+        "ratchet-aur-package",
         || Ok(observe::installed_version(package)),
         |installed| {
             if apply && installed.is_none() {
@@ -67,6 +68,7 @@ pub(crate) fn build_pinned(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Observation, OperationOutcome>, String> {
     comparison::execute(
+        "ratchet-aur-package",
         || observe::ratchet(package, lock_path, None, install),
         |observation| {
             if apply && observation.verdict == Verdict::BehindPin {

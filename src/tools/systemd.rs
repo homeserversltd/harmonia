@@ -615,6 +615,7 @@ pub(crate) fn run_action(
     let service = service.unwrap_or("");
     let restart_decision = decide_restart(service_material_changed);
     let run = comparison::execute(
+        "systemd",
         || {
             Ok::<_, String>(observe_systemd_state(
                 action,
