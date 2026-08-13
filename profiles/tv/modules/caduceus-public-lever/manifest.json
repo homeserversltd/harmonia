@@ -49,25 +49,6 @@
           }
         ]
       }
-    },
-    {
-      "step_id": "caduceus-staff-shelf-from-synced-source",
-      "tool": "files",
-      "permutation": "source-shelf-sweep",
-      "args": {
-        "source_root": "/opt/caduceus/source/data/staff-actuators",
-        "shelf_source": "caduceus_staff",
-        "target_shelf": "/usr/local/sbin/caduceus_staff",
-        "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
-        "launcher_target_root": "/usr/local/sbin",
-        "launcher_pattern": "caduceus-*",
-        "shelf_owner": "root",
-        "shelf_group": "root",
-        "shelf_directory_mode": 493,
-        "shelf_file_mode": 420,
-        "launcher_mode": 493,
-        "prune": true
-      }
     }
   ],
   "files_root": "files_root"
