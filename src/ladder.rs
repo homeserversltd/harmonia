@@ -54,15 +54,33 @@ pub(crate) struct LadderProbe {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct LadderStep {
     pub step_id: String,
     pub tool: String,
+    #[serde(default = "default_execute_permutation")]
     pub permutation: String,
     #[serde(default)]
     pub args: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub steps: Vec<RoutineStep>,
     #[serde(default = "default_on_failure")]
     pub on_failure: OnFailure,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct RoutineStep {
+    pub name: String,
+    pub tool: String,
+    #[serde(default)]
+    pub args: BTreeMap<String, Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn default_execute_permutation() -> String {
+    "execute".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -166,6 +184,17 @@ pub(crate) fn validate_ladder(
                 defect: "continue-optional-on-non-optional-module".into(),
             });
         }
+        if step.tool == "routine" {
+            validate_routine(step, manifest)?;
+            validated.push(ValidatedStep {
+                step_id: step.step_id.clone(),
+                tool: step.tool.clone(),
+                permutation: step.permutation.clone(),
+                args: step.args.clone(),
+                on_failure: step.on_failure,
+            });
+            continue;
+        }
         let Some(tool) = tools::get(&step.tool) else {
             return Err(LadderValidationError {
                 step_id: step.step_id.clone(),
@@ -210,6 +239,24 @@ pub(crate) fn validate_ladder(
         });
     }
     Ok(validated)
+}
+
+fn validate_routine(step: &LadderStep, _manifest: &LadderManifest) -> Result<(), LadderValidationError> {
+    if step.permutation != "execute" { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: "routine-permutation-must-be-execute".into() }); }
+    if step.steps.is_empty() { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: "routine-steps-empty".into() }); }
+    let mut names = BTreeSet::new();
+    for child in &step.steps {
+        if child.name.trim().is_empty() { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: "routine-child-name-blank".into() }); }
+        if !names.insert(child.name.clone()) { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("duplicate-routine-step-{}", child.name) }); }
+        if !tools::routine_summonable(&child.tool) { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-tool-not-summonable-{}", child.tool) }); }
+        if child.extra.contains_key("program") || child.extra.contains_key("permutation") { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-child-key-forbidden-{}", child.name) }); }
+        for value in child.args.values() {
+            if let Value::Object(map) = value {
+                if map.len() == 1 && map.contains_key("from") && !map.get("from").and_then(Value::as_str).is_some_and(|r| r.contains('.') && !r.starts_with('.') && !r.ends_with('.')) { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-reference-malformed-{}", child.name) }); }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_group(
@@ -393,12 +440,11 @@ fn validate_tool_semantics(
     args: &BTreeMap<String, Value>,
 ) -> Result<(), LadderValidationError> {
     match (tool, permutation) {
-        ("systemd", "enable-first-present-now") => {
-            tools::systemd::validate_candidate_units(args).map_err(|defect| LadderValidationError {
+        ("systemd", "enable-first-present-now") => tools::systemd::validate_candidate_units(args)
+            .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
                 defect,
-            })
-        }
+            }),
         ("service-runtime", "converge") => tools::service_runtime::validate_ladder_args(args)
             .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -406,11 +452,20 @@ fn validate_tool_semantics(
             }),
         ("aur", permutation) => {
             tools::aur::validate_ladder_args(permutation, args).map_err(|defect| {
-                LadderValidationError { step_id: step_id.into(), defect }
+                LadderValidationError {
+                    step_id: step_id.into(),
+                    defect,
+                }
             })
         }
-        ("household-time", permutation) => tools::household_time::validate_ladder_args(permutation, args)
-            .map_err(|defect| LadderValidationError { step_id: step_id.into(), defect }),
+        ("household-time", permutation) => {
+            tools::household_time::validate_ladder_args(permutation, args).map_err(|defect| {
+                LadderValidationError {
+                    step_id: step_id.into(),
+                    defect,
+                }
+            })
+        }
         ("files", "executable-present") => tools::files::validate_executable_present_args(args)
             .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -421,9 +476,12 @@ fn validate_tool_semantics(
                 step_id: step_id.into(),
                 defect,
             }),
-        ("venv", "converge") => tools::venv::validate_ladder_args(args).map_err(|defect| {
-            LadderValidationError { step_id: step_id.into(), defect }
-        }),
+        ("venv", "converge") => {
+            tools::venv::validate_ladder_args(args).map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            })
+        }
         _ => Ok(()),
     }
 }
@@ -451,6 +509,23 @@ pub(crate) fn execute_ladder_manifest(
     let mut first_missing_signal = None;
     let mut operation_count = 0usize;
     for step in steps {
+        if step.tool == "routine" {
+            let outcome = execute_routine(
+                &step,
+                manifest,
+                module_dir,
+                software_authorization,
+                package_authority,
+                software_authorization.is_some(),
+            )?;
+            operation_count += 1;
+            changed |= outcome.changed;
+            if !outcome.ok {
+                ok = false;
+                first_missing_signal = Some(outcome.message.clone());
+            }
+            continue;
+        }
         if let Some(precondition) = command_precondition(&step.args)? {
             operation_count += 1;
             let outcome = command_precondition_step(&step, &precondition, manifest, module_dir)?;
@@ -570,6 +645,7 @@ fn execute_validated_step(
                 | ("command", "capture")
         );
     match (step.tool.as_str(), step.permutation.as_str()) {
+        ("routine", "execute") => Err("routine-dispatch-internal".into()),
         ("command", "capture") => command_capture_step(step, module_dir, software_apply),
         ("artifact-lock", "verify") => artifact_lock_step(step, module_dir, false),
         ("health", "probe") => health_probe_step(step, module_dir, false),
@@ -593,12 +669,9 @@ fn execute_validated_step(
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, false)
         }
-        ("venv", "converge") => tools::venv::execute_ladder_step(
-            &step.args,
-            module_dir,
-            &step.step_id,
-            software_apply,
-        ),
+        ("venv", "converge") => {
+            tools::venv::execute_ladder_step(&step.args, module_dir, &step.step_id, software_apply)
+        }
         ("systemd", _) => systemd_step(
             step,
             module_dir,
@@ -606,7 +679,7 @@ fn execute_validated_step(
             module_changed_before_step,
         ),
         ("service-runtime", "converge") => {
-            let source_plan = source_plan_for_step(step, manifest)?;
+            let source_plan = routine_source_plan(step, manifest)?;
             tools::service_runtime::execute_ladder_step(
                 &step.args,
                 module_dir,
@@ -632,12 +705,54 @@ fn execute_validated_step(
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => package_step(step, module_dir, software_apply, package_authority),
+        | ("package", "keyring-repair") => {
+            package_step(step, module_dir, software_apply, package_authority)
+        }
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
         )),
     }
+}
+
+fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {
+    let mut paths = fs::read_dir(child_dir).map_err(|e| e.to_string())?.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().and_then(|v| v.to_str()) == Some("json")).filter(|p| p.file_name().and_then(|v| v.to_str()) != Some("routine-child.json")).collect::<Vec<_>>();
+    paths.sort();
+    paths.into_iter().map(|p| serde_json::from_slice(&fs::read(&p).map_err(|e| e.to_string())?).map_err(|e| format!("routine-receipt-parse-{}: {e}", p.display()))).collect()
+}
+
+fn execute_routine(
+    step: &ValidatedStep, manifest: &LadderManifest, module_dir: &Path,
+    _software_authorization: Option<&crate::SoftwareApplyAuthorization>, _package_authority: Option<&crate::PackageAuthority>, apply: bool,
+) -> Result<OperationOutcome, String> {
+    let source = manifest.ladder.iter().find(|s| s.step_id == step.step_id).ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
+    let routine_dir = module_dir.join(&source.step_id); fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
+    let mut context: BTreeMap<String, Value> = BTreeMap::new(); let mut children = Vec::new(); let mut ok = true; let mut changed = false; let mut first = None; let mut blocked_by = None;
+    for child in &source.steps {
+        let child_dir = routine_dir.join(&child.name); fs::create_dir_all(&child_dir).map_err(|e| e.to_string())?;
+        let (state, child_ok, child_changed, outputs, extra) = if let Some(parent) = blocked_by.clone() {
+            ("blocked", false, false, BTreeMap::new(), json!({"blocked_by":parent}))
+        } else {
+            let mut args = child.args.clone(); let mut missing = None;
+            for value in args.values_mut() { if let Value::Object(map) = value { if map.len() == 1 { if let Some(reference) = map.get("from").and_then(Value::as_str) { match context.get(reference) { Some(v) => *value = v.clone(), None => missing = Some(reference.to_string()) } } } } }
+            if let Some(reference) = missing {
+                let signal = format!("step_id={} defect=missing-stamp-{}", child.name, reference); ok=false; if first.is_none(){first=Some(signal.clone());} blocked_by=Some(child.name.clone());
+                crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"missing","ok":false,"first_missing_signal":signal}))?;
+                ("missing", false, false, BTreeMap::new(), json!({"first_missing_signal":signal}))
+            } else { match tools::module_steps::execute_routine_tool(&child.tool, &args, manifest, &child_dir, apply) {
+                Ok((outcome, outputs)) => { ok &= outcome.ok; changed |= outcome.changed; if !outcome.ok { let signal=format!("step_id={} defect={}",child.name,outcome.message); if first.is_none(){first=Some(signal);} blocked_by=Some(child.name.clone()); } (if outcome.ok{"completed"}else{"failed"}, outcome.ok, outcome.changed, outputs, json!({"skipped":outcome.skipped,"message":outcome.message})) }
+                Err(error) => { let signal=format!("step_id={} defect={}",child.name,error); ok=false; if first.is_none(){first=Some(signal);} blocked_by=Some(child.name.clone()); crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"failed","ok":false,"message":error}))?; ("failed",false,false,BTreeMap::new(),json!({"message":error})) }
+            }}
+        };
+        if state == "blocked" { crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"blocked","ok":false,"blocked_by":extra.get("blocked_by")}))?; }
+        let receipts = collect_routine_receipts(&child_dir)?;
+        let mut receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":state,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
+        if let (Some(obj), Some(extra_obj)) = (receipt.as_object_mut(), extra.as_object()) { for (k,v) in extra_obj { obj.insert(k.clone(),v.clone()); } }
+        crate::write_json(&child_dir.join("routine-child.json"), &receipt)?; children.push(receipt);
+        if child_ok { for (key,value) in outputs { context.entry(format!("{}.{}",child.name,key)).or_insert(value); } }
+    }
+    let aggregate=json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":ok,"changed":changed,"skipped":!apply,"first_missing_signal":first,"context":context,"children":children}); crate::write_json(&module_dir.join(format!("{}.routine.json",source.step_id)),&aggregate)?;
+    Ok(OperationOutcome{ok,changed,skipped:!apply,message:first.unwrap_or_else(||"routine-complete".into()),command:None})
 }
 
 fn string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> &'a str {
@@ -735,7 +850,11 @@ fn command_precondition_step(
         &argv_refs,
         tools::command::CaptureOptions::new()
             .cwd(precondition.cwd.as_deref())
-            .timeout_secs(precondition.timeout_secs.unwrap_or(tools::command::DEFAULT_TIMEOUT_SECS)),
+            .timeout_secs(
+                precondition
+                    .timeout_secs
+                    .unwrap_or(tools::command::DEFAULT_TIMEOUT_SECS),
+            ),
     );
     crate::write_json(
         &module_dir.join(format!("{}-precondition.json", step.step_id)),
@@ -768,7 +887,13 @@ fn household_time_step(
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    tools::household_time::execute(module_dir, &step.step_id, &step.permutation, &step.args, apply)
+    tools::household_time::execute(
+        module_dir,
+        &step.step_id,
+        &step.permutation,
+        &step.args,
+        apply,
+    )
 }
 
 fn health_probe_step(
@@ -974,21 +1099,19 @@ fn validated_file_symlink_step(
     let target = PathBuf::from(string_arg(&step.args, "target"));
     let validator_args = string_array_arg(&step.args, "validator_args");
     let reload_args = string_array_arg(&step.args, "reload_args");
-    crate::tools::make_symlink::execute(
-        crate::tools::make_symlink::ValidatedFileSymlinkRequest {
-            receipt_dir: module_dir,
-            name: &step.step_id,
-            desired_source: &desired_source,
-            source: &source,
-            target: &target,
-            validator_program: string_arg(&step.args, "validator_program"),
-            validator_args: &validator_args,
-            reload_program: optional_string_arg(&step.args, "reload_program"),
-            reload_args: &reload_args,
-            timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
-            apply,
-        },
-    )
+    crate::tools::make_symlink::execute(crate::tools::make_symlink::ValidatedFileSymlinkRequest {
+        receipt_dir: module_dir,
+        name: &step.step_id,
+        desired_source: &desired_source,
+        source: &source,
+        target: &target,
+        validator_program: string_arg(&step.args, "validator_program"),
+        validator_args: &validator_args,
+        reload_program: optional_string_arg(&step.args, "reload_program"),
+        reload_args: &reload_args,
+        timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
+        apply,
+    })
 }
 
 fn files_remove_step(
@@ -1067,7 +1190,11 @@ fn files_source_shelf_sweep_step(
             .unwrap_or(false),
         launcher_exclude: string_array_arg(&step.args, "launcher_exclude"),
         provenance_state: optional_string_arg(&step.args, "provenance_state").map(PathBuf::from),
-        owned_recursive: step.args.get("owned_recursive").and_then(Value::as_bool).unwrap_or(false),
+        owned_recursive: step
+            .args
+            .get("owned_recursive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         receipt_name: step.step_id.clone(),
     };
     let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply)?;
@@ -1525,7 +1652,7 @@ fn git_artifact_step(
     module_dir: &Path,
     apply: bool,
 ) -> Result<OperationOutcome, String> {
-    let source_plan = source_plan_for_step(step, manifest)?;
+    let source_plan = routine_source_plan(step, manifest)?;
     let outcome = if apply {
         tools::git_artifact::acquire_source(&source_plan)
     } else {
@@ -1565,19 +1692,26 @@ fn git_artifact_step(
         .ok_or_else(|| "git-artifact-receipt-not-object".to_string())?;
     object.insert(
         "attempts".into(),
-        json!(outcome.receipt.attempts.iter().map(|attempt| json!({
-            "index": attempt.index,
-            "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
-            "locator": attempt.locator,
-            "credential_selector": attempt.credential_selector,
-            "disposition": attempt.disposition,
-            "resolved_commit": attempt.resolved_commit,
-            "external_freshness": attempt.external_freshness,
-            "detail": attempt.detail,
-        })).collect::<Vec<_>>()),
+        json!(outcome
+            .receipt
+            .attempts
+            .iter()
+            .map(|attempt| json!({
+                "index": attempt.index,
+                "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
+                "locator": attempt.locator,
+                "credential_selector": attempt.credential_selector,
+                "disposition": attempt.disposition,
+                "resolved_commit": attempt.resolved_commit,
+                "external_freshness": attempt.external_freshness,
+                "detail": attempt.detail,
+            }))
+            .collect::<Vec<_>>()),
     );
     object.insert("served_index".into(), json!(outcome.receipt.served_index));
-    object.insert("resolved_commit".into(), json!(outcome.receipt.resolved_commit));
+    if let Some(commit) = &outcome.receipt.resolved_commit {
+        object.insert("resolved_commit".into(), json!(commit));
+    }
     object.insert("promotion".into(), json!(outcome.receipt.promotion));
     crate::write_json(&receipt_path, &receipt)?;
     Ok(OperationOutcome {
@@ -1589,27 +1723,39 @@ fn git_artifact_step(
     })
 }
 
-fn source_plan_for_step(
+pub(crate) fn routine_source_plan(
     step: &ValidatedStep,
     manifest: &LadderManifest,
 ) -> Result<tools::git_artifact::SourcePlan, String> {
     let component = string_arg(&step.args, "component");
     if component.trim().is_empty() {
-        return Err(format!("source-component-missing module={} step_id={}", manifest.id, step.step_id));
+        return Err(format!(
+            "source-component-missing module={} step_id={}",
+            manifest.id, step.step_id
+        ));
     }
     let destination = optional_string_arg(&step.args, "path")
         .or_else(|| optional_string_arg(&step.args, "source_dir"))
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("source-destination-missing module={} step_id={}", manifest.id, step.step_id))?;
+        .ok_or_else(|| {
+            format!(
+                "source-destination-missing module={} step_id={}",
+                manifest.id, step.step_id
+            )
+        })?;
     let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
     let certificate = crate::device_profile_certificate_path();
-    let certificate_resolution = crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
+    let certificate_resolution =
+        crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
     let resolution = match certificate_resolution.resolution {
         Some(resolution) => resolution,
         None if certificate_resolution
             .blocker
             .as_deref()
-            .is_some_and(|blocker| blocker == format!("source-component-undeclared component={component}")) => {
+            .is_some_and(|blocker| {
+                blocker == format!("source-component-undeclared component={component}")
+            }) =>
+        {
             let config = config.as_ref().ok_or_else(|| {
                 format!("source-resolution-blocked module={} step_id={} component={} blocker=engine-config-missing", manifest.id, step.step_id, component)
             })?;
@@ -1619,7 +1765,10 @@ fn source_plan_for_step(
             let blocker = certificate_resolution
                 .blocker
                 .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
-            return Err(format!("source-resolution-blocked module={} step_id={} component={} blocker={blocker}", manifest.id, step.step_id, component));
+            return Err(format!(
+                "source-resolution-blocked module={} step_id={} component={} blocker={blocker}",
+                manifest.id, step.step_id, component
+            ));
         }
     };
     let credentials = config
@@ -1635,7 +1784,9 @@ fn source_plan_for_step(
     Ok(crate::bridge_acquisition_plan(
         &resolution,
         PathBuf::from(destination),
-        optional_string_arg(&step.args, "bearer").unwrap_or("owner").to_string(),
+        optional_string_arg(&step.args, "bearer")
+            .unwrap_or("owner")
+            .to_string(),
         expected_commit,
         credentials,
     ))
@@ -1657,13 +1808,13 @@ fn engine_source_resolution(
         .map(|_| component)
         .unwrap_or_else(|| {
             config
-        .source_repo_url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .and_then(|segment| segment.rsplit(':').next())
-        .unwrap_or_default()
-        .trim_end_matches(".git")
+                .source_repo_url
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .and_then(|segment| segment.rsplit(':').next())
+                .unwrap_or_default()
+                .trim_end_matches(".git")
         });
     if source_component != component {
         return Err(format!(
@@ -1698,7 +1849,11 @@ fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdRe
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { 1 },
         stdout: outcome.receipt.promotion.clone(),
-        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
+        stderr: if outcome.ok {
+            String::new()
+        } else {
+            outcome.receipt.promotion.clone()
+        },
     }
 }
 

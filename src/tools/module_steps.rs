@@ -1,5 +1,6 @@
 use crate::*;
 use sha2::{Digest, Sha256};
+use serde_json::Value;
 use std::fs::{self};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -196,5 +197,71 @@ mod pacman_safety_tests {
             &["*".to_string()]
         )
         .is_none());
+    }
+}
+
+
+pub(crate) fn execute_routine_tool(
+    tool: &str,
+    args: &std::collections::BTreeMap<String, serde_json::Value>,
+    manifest: &crate::ladder::LadderManifest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<(OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
+    if !crate::tools::routine_summonable(tool) { return Err(format!("routine-tool-not-summonable-{tool}")); }
+    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = contract.permutations.first().ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+    for arg in permutation.args {
+        if arg.required && !args.contains_key(arg.name) { return Err(format!("routine-arg-missing-{tool}-{}", arg.name)); }
+        if let Some(value) = args.get(arg.name) { if !arg.kind.matches(value) { return Err(format!("routine-arg-type-{tool}-{}", arg.name)); } }
+    }
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let name = tool.to_string();
+    match tool {
+        "pull-repo" => {
+            let step = crate::ladder::ValidatedStep { step_id: name.clone(), tool: tool.into(), permutation: permutation.name.into(), args: args.clone(), on_failure: crate::ladder::OnFailure::Stop };
+            let plan = crate::ladder::routine_source_plan(&step, manifest)?;
+            let o = if apply { crate::pull_repo::acquire_source(&plan) } else { crate::tools::git_artifact::SourceOutcome { ok:true, changed:false, receipt: crate::tools::git_artifact::SourceReceipt { attempts:Vec::new(), served_index:None, resolved_commit:plan.expected_commit.clone(), promotion:"planned source acquisition".into() } } };
+            let mut out: std::collections::BTreeMap<String, serde_json::Value> = [("path".into(), serde_json::json!(plan.destination))].into_iter().collect();
+            if let Some(commit) = o.receipt.resolved_commit.clone() { out.insert("resolved_commit".into(), serde_json::json!(commit)); }
+            let result = OperationOutcome { ok:o.ok, changed:o.changed, skipped:!apply, message:o.receipt.promotion.clone(), command:None };
+            write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":o.ok,"changed":o.changed,"skipped":!apply,"promotion":o.receipt.promotion}))?;
+            Ok((result, out))
+        }
+        "build-crate" => {
+            let cwd = Path::new(args.get("cwd").and_then(|v|v.as_str()).ok_or("build-crate-cwd-missing")?);
+            let source_sha = args.get("source_build_sha").and_then(|v|v.as_str()).ok_or("build-crate-source-build-sha-missing")?;
+            let installed_sha = args.get("installed_build_sha").and_then(|v|v.as_str());
+            let binary = Path::new(args.get("installed_binary").and_then(|v|v.as_str()).ok_or("build-crate-installed-binary-missing")?);
+            let env_value = args.get("environment");
+            let env: Vec<(String,String)> = match env_value {
+                None => Vec::new(),
+                Some(Value::Object(m)) => m.iter().map(|(k,v)| v.as_str().map(|x|(k.clone(),x.to_string())).ok_or_else(|| format!("build-crate-environment-nonstring-{k}")).map_err(|e| e)).collect::<Result<Vec<_>,_>>()?,
+                Some(_) => return Err("build-crate-environment-not-object".into()),
+            };
+            let timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS);
+            let bearer = args.get("bearer").and_then(Value::as_str).unwrap_or("owner");
+            let moved = crate::build_crate::run_build(cwd, source_sha, installed_sha, binary, apply, &env, timeout, &receipt_dir.join("build-crate.log"), bearer)?;
+            let result = OperationOutcome { ok:moved.as_ref().map_or(true, |x|x.ok), changed:apply && moved.is_some(), skipped:!apply, message:"build-crate".into(), command:None };
+            write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":result.ok,"changed":result.changed,"skipped":!apply,"source_build_sha":source_sha}))?;
+            Ok((result, [("artifact".into(),serde_json::json!(binary)),("source_build_sha".into(),serde_json::json!(source_sha))].into_iter().collect()))
+        }
+        "place-file" => {
+            let path = Path::new(args.get("path").and_then(Value::as_str).ok_or("place-file-path-missing")?);
+            let source = args.get("source_path").and_then(Value::as_str);
+            let declared = args.get("declared_bytes").and_then(Value::as_str);
+            if source.is_some() == declared.is_some() { return Err("place-file-requires-exactly-one-source".into()); }
+            let bytes = if let Some(source) = source { fs::read(source).map_err(|e| format!("place-file-source-read:{e}"))? } else { declared.unwrap().as_bytes().to_vec() };
+            let request = crate::place_file::PlaceFileRequest { path, declared_bytes:&bytes, mode:args.get("mode").and_then(Value::as_u64).map(|x|x as u32), ownership:crate::place_file::DeclaredOwnership{uid:args.get("uid").and_then(Value::as_u64).map(|x|x as u32),gid:args.get("gid").and_then(Value::as_u64).map(|x|x as u32)}, backup:crate::place_file::BackupPolicy::None, invocation:crate::atoms::r#do::InvocationKey::from_apply_or_timer(apply) };
+            let placed=crate::place_file::execute(request)?; let changed=apply && placed.movement.changed();
+            write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":true,"changed":changed,"skipped":!apply}))?;
+            Ok((OperationOutcome{ok:true,changed,skipped:!apply,message:"place-file".into(),command:None},[("path".into(),serde_json::json!(path)),("sha256".into(),serde_json::json!(crate::atoms::file_sha256(&bytes)))].into_iter().collect()))
+        }
+        "enable-unit" => {
+            let service=args.get("service").and_then(Value::as_str).ok_or("enable-unit-service-missing")?; let user=args.get("user").and_then(Value::as_bool).unwrap_or(false); let target=args.get("target_user").and_then(Value::as_str); let timeout=args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(30);
+            let o=crate::tools::systemd::run_action(receipt_dir,&name,"enable-now",Some(service),user,target,timeout,apply,false)?;
+            Ok((o,[("service".into(),serde_json::json!(service)),("enabled".into(),serde_json::json!(true))].into_iter().collect()))
+        }
+        _ => Err(format!("routine-tool-not-summonable-{tool}")),
     }
 }

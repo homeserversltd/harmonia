@@ -18,7 +18,8 @@
       "name_today": "ai-coding-harness",
       "species": "routine",
       "chartered_target_name": "module-manifest routine",
-      "migration_status": "flat"
+      "migration_status": "routine-pending-spine",
+      "notes": "Routine grammar is landed; service-runtime.rs remains and managed-files/reload/conditional restart/health defer to the spine."
     },
     {
       "name_today": "artifact-lock",
@@ -111,7 +112,8 @@
       "name_today": "place-file",
       "species": "tool",
       "chartered_target_name": "place-file",
-      "migration_status": "landed"
+      "migration_status": "landed",
+      "delegation_note": "Primitive file placement remains canonical; routine adapter uses the landed organ."
     },
     {
       "name_today": "ratchet-aur-package",
@@ -124,8 +126,9 @@
       "name_today": "service-runtime",
       "species": "routine",
       "chartered_target_name": "module-manifest routine",
-      "migration_status": "flat",
-      "delegation_note": "Build step delegated; routine-ization pending."
+      "migration_status": "routine-pending-spine",
+      "delegation_note": "Build step delegated; routine-ization pending.",
+      "notes": "Routine grammar is landed; service-runtime.rs remains and managed-files/reload/conditional restart/health defer to the spine."
     },
     {
       "name_today": "systemd",
@@ -146,6 +149,33 @@
       "species": "tool",
       "chartered_target_name": "build-venv",
       "migration_status": "landed"
+    },
+    {
+      "name_today": "routine",
+      "species": "routine",
+      "chartered_target_name": "module-manifest routine",
+      "migration_status": "landed"
+    },
+    {
+      "name_today": "pull-repo",
+      "species": "tool",
+      "chartered_target_name": "pull-repo",
+      "migration_status": "landed",
+      "delegation_note": "Routine adapter"
+    },
+    {
+      "name_today": "build-crate",
+      "species": "tool",
+      "chartered_target_name": "build-crate",
+      "migration_status": "landed",
+      "delegation_note": "Routine adapter"
+    },
+    {
+      "name_today": "enable-unit",
+      "species": "tool",
+      "chartered_target_name": "enable-unit",
+      "migration_status": "landed",
+      "delegation_note": "Routine adapter"
     }
   ]
 }
