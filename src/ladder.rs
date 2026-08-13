@@ -1732,14 +1732,16 @@ fn files_converge_step(
         .iter()
         .any(|file| is_configuration_path(&request.target_root.join(&file.relative_path)));
     let tier_two = manifest.config_deploy.as_deref() == Some("interactable");
-    let outcome = crate::tools::files::converge_files_with_invocation(
+    let mut outcome = crate::tools::files::converge_files_with_invocation(
         &request,
         module_dir,
-        apply,
+        apply && !config_write && !tier_two,
         invocation,
     )?;
     if config_write || tier_two {
         crate::refresh_interactables_for_convergence(manifest, &request, &outcome)?;
+        outcome.changed = false;
+        outcome.ownership_changed = false;
     }
     if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
         let name = summary
