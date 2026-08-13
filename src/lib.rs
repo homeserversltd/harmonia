@@ -275,7 +275,8 @@ mod invocation_face {
 
     pub(super) fn mint(args: &[String]) -> super::Invocation {
         let applies = args.iter().any(|arg| arg == "--apply")
-            || args.first().is_some_and(|arg| arg == "acquire-source");
+            || args.first().is_some_and(|arg| arg == "acquire-source")
+            || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
         super::Invocation(super::atoms::r#do::InvocationKey::from_apply_or_timer(applies, Mint(())))
     }
 }
@@ -2667,7 +2668,9 @@ mod tests {
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("bench-update-set") => update_set::bench(&args[1..]),
-        Some("interactable") | Some("config-proposal") => interactable_command(&args[1..]),
+        Some("interactable") | Some("config-proposal") => {
+            interactable_command(&args[1..], invocation.0)
+        }
         Some("install-timer") => schedule::install_timer(&args[1..]),
         Some("uninstall-timer") => schedule::uninstall_timer(&args[1..]),
         Some("update") => update_from_certificate(&args[1..], invocation),

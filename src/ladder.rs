@@ -920,6 +920,8 @@ fn execute_validated_step(
                 | ("git-artifact", "sync")
                 | ("files", "source-shelf-sweep")
                 | ("files", "validated-sudoers-converge")
+                | ("files", "converge")
+                | ("files", "directory-sync")
                 | ("venv", "converge")
                 | ("aur", "install")
                 | ("aur", "build-pinned")
@@ -944,11 +946,17 @@ fn execute_validated_step(
             files_source_shelf_sweep_step(step, manifest, module_dir, software_apply, invocation)
         }
         ("files", "validated-sudoers-converge") => {
-            files_validated_sudoers_converge_step(step, manifest, module_dir, software_apply)
+            files_validated_sudoers_converge_step(
+                step,
+                manifest,
+                module_dir,
+                software_apply,
+                invocation,
+            )
         }
         ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, false),
         ("files", "converge") | ("files", "directory-sync") => {
-            files_converge_step(step, manifest, module_dir, false)
+            files_converge_step(step, manifest, module_dir, software_apply, invocation)
         }
         ("venv", "converge") => tools::venv::execute_ladder_step(
             &step.args,
@@ -1537,6 +1545,7 @@ fn files_validated_sudoers_converge_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
@@ -1602,7 +1611,12 @@ fn files_validated_sudoers_converge_step(
         owner: Some("root".to_string()),
         group: Some("root".to_string()),
     };
-    let outcome = crate::tools::files::converge_files(&request, module_dir, apply)?;
+    let outcome = crate::tools::files::converge_files_with_invocation(
+        &request,
+        module_dir,
+        apply,
+        invocation,
+    )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
@@ -1617,6 +1631,7 @@ fn files_converge_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
@@ -1717,10 +1732,11 @@ fn files_converge_step(
         .iter()
         .any(|file| is_configuration_path(&request.target_root.join(&file.relative_path)));
     let tier_two = manifest.config_deploy.as_deref() == Some("interactable");
-    let outcome = crate::tools::files::converge_files(
+    let outcome = crate::tools::files::converge_files_with_invocation(
         &request,
         module_dir,
         apply && !config_write && !tier_two,
+        invocation,
     )?;
     if config_write || tier_two {
         crate::refresh_interactables_for_convergence(manifest, &request, &outcome)?;
