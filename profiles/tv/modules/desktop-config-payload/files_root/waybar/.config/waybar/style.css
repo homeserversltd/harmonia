@@ -1,3 +1,5 @@
+@import url("badge-state.css");
+
 * {
     font-family: "MesloLGS Nerd Font", "Noto Sans", sans-serif;
     font-size: 14px;
@@ -142,16 +144,4 @@ window#waybar {
 #custom-harmonia-interactables {
     font-size: 18px;
     font-weight: 700;
-}
-
-#custom-harmonia-interactables.good {
-    color: #a3be8c;
-}
-
-#custom-harmonia-interactables.medium {
-    color: #ebcb8b;
-}
-
-#custom-harmonia-interactables.bad {
-    color: #bf616a;
 }

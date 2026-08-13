@@ -4,10 +4,12 @@ set -u
 readonly FEED_PATH="${HARMONIA_FEED_PATH:-/var/lib/harmonia/interactables.json}"
 readonly RECEIPT_DIR="${HARMONIA_RECEIPT_DIR:-/var/lib/harmonia/receipts/tv-update-latest}"
 readonly SUBSCRIPTION_PATH="${HARMONIA_SUBSCRIPTION_PATH:-/var/lib/harmonia/subscription.json}"
+readonly BADGE_STATE_CSS="${HARMONIA_BADGE_STATE_CSS:-${HOME}/.config/waybar/badge-state.css}"
 
-if ! rendered="$(HARMONIA_FEED_PATH="$FEED_PATH" HARMONIA_RECEIPT_DIR="$RECEIPT_DIR" HARMONIA_SUBSCRIPTION_PATH="$SUBSCRIPTION_PATH" python3 - <<'PY'
+if ! rendered="$(HARMONIA_FEED_PATH="$FEED_PATH" HARMONIA_RECEIPT_DIR="$RECEIPT_DIR" HARMONIA_SUBSCRIPTION_PATH="$SUBSCRIPTION_PATH" HARMONIA_BADGE_STATE_CSS="$BADGE_STATE_CSS" python3 - <<'PY'
 import json
 import os
+import tempfile
 from pathlib import Path
 
 ICON = "󰚰"
@@ -26,9 +28,43 @@ def item_name(value, fallback):
     return str(value.get("description") or value.get("name") or value.get("hotfix_id") or value.get("id") or fallback)
 
 
+def converge_badge_css(path):
+    declared = """#custom-harmonia-interactables.good {
+    color: #a3be8c;
+}
+
+#custom-harmonia-interactables.medium {
+    color: #ebcb8b;
+}
+
+#custom-harmonia-interactables.bad {
+    color: #bf616a;
+}
+"""
+    try:
+        if path.read_text(encoding="utf-8") == declared:
+            return
+    except OSError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(declared)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 feed_path = Path(os.environ["HARMONIA_FEED_PATH"])
 receipt_dir = Path(os.environ["HARMONIA_RECEIPT_DIR"])
 subscription_path = Path(os.environ["HARMONIA_SUBSCRIPTION_PATH"])
+converge_badge_css(Path(os.environ["HARMONIA_BADGE_STATE_CSS"]))
 
 feed = load_json(feed_path)
 rows = feed.get("interactables", []) if isinstance(feed, dict) else []
