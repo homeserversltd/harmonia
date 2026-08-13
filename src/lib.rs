@@ -1,4 +1,5 @@
 mod atoms;
+mod stillness_bench;
 #[path = "tools/build-venv/index.rs"]
 pub(crate) mod build_venv;
 #[path = "tools/build-crate/index.rs"]
@@ -2668,6 +2669,7 @@ mod tests {
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("bench-update-set") => update_set::bench(&args[1..]),
+        Some("bench-stillness") => stillness_bench::run(invocation.0),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
         }
