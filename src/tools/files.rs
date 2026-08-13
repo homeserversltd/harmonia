@@ -2996,7 +2996,32 @@ fn source_shelf_sweep_with_fault(
 
     let run = crate::tools::comparison::execute(
         "files",
-        || Ok::<_, String>(drift),
+        || {
+            let shelf_current_now = launcher_only || shelf_is_current(
+                &shelf_source, &request.target_shelf, &source_entries,
+                request.shelf_directory_mode, request.shelf_file_mode,
+                uid, gid, &request.launcher_exclude,
+            )?;
+            let target_launchers_now = target_pattern_files(
+                &request.launcher_target_root, &request.launcher_pattern,
+                &request.launcher_exclude,
+            )?;
+            let mut launcher_drift_now = false;
+            for name in launchers.keys() {
+                if !launcher_is_current(
+                    launchers.get(name).expect("launcher name comes from inventory"),
+                    &request.launcher_target_root.join(name), request.launcher_mode,
+                    uid, gid,
+                )? {
+                    launcher_drift_now = true;
+                    break;
+                }
+            }
+            let stale_now = target_launchers_now
+                .difference(&launchers.keys().cloned().collect()).next().is_some();
+            Ok::<_, String>((!launcher_only && !shelf_current_now)
+                || launcher_drift_now || (request.prune && stale_now))
+        },
         |different| {
             if *different {
                 crate::tools::comparison::DiffDecision::Different
@@ -4874,9 +4899,13 @@ pub(crate) fn validated_symlink(
 ) -> Result<crate::OperationOutcome, String> {
     let run = crate::tools::comparison::execute(
         "files",
-        || Ok::<_, String>((source.is_file(), fs::read_link(target).ok())),
-        |(source_ok, current)| {
-            if *source_ok && current.as_deref() == Some(source) {
+        || {
+            let source_exists = source.is_file();
+            let target_link = fs::read_link(target).ok();
+            Ok::<_, String>((source_exists, target_link))
+        },
+        |observed| {
+            if observed.0 && observed.1.as_deref() == Some(source) {
                 crate::tools::comparison::DiffDecision::Empty
             } else {
                 crate::tools::comparison::DiffDecision::Different
