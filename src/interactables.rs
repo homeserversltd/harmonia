@@ -223,10 +223,13 @@ fn refresh_interactables_at_path(
     save_feed(&path, &feed)
 }
 
-pub(crate) fn interactable_command(args: &[String]) -> Result<(), String> {
+pub(crate) fn interactable_command(
+    args: &[String],
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
-        Some("run") | Some("accept") => interactable_run(&args[1..]),
+        Some("run") | Some("accept") => interactable_run(&args[1..], invocation),
         _ => Err("config-proposal requires list [--json] or accept <id>".to_string()),
     }
 }
@@ -248,7 +251,10 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn interactable_run(args: &[String]) -> Result<(), String> {
+fn interactable_run(
+    args: &[String],
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
     if args.len() != 1 {
         return Err("config-proposal accept requires exactly one <id>".to_string());
     }
@@ -275,6 +281,7 @@ fn interactable_run(args: &[String]) -> Result<(), String> {
         item.owner.as_deref(),
         item.group.as_deref(),
         &backup_root,
+        invocation,
     )?;
     receipt["has_run"] = serde_json::Value::Bool(true);
     feed.interactables[position].has_run = true;

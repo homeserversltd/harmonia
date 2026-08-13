@@ -1151,6 +1151,15 @@ pub fn converge_files(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<FileConvergenceOutcome, String> {
+    converge_files_with_invocation(request, receipt_dir, apply, None)
+}
+
+pub(crate) fn converge_files_with_invocation(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
         return Err("files-converge-empty-request".to_string());
     }
@@ -1315,7 +1324,7 @@ pub fn converge_files(
             } else {
                 crate::place_file::BackupPolicy::None
             },
-            invocation: None,
+            invocation: apply.then_some(invocation).flatten(),
         });
         let (backed_up_to, wrote_content, truthful_changed) = match place {
             Ok(outcome) => {
@@ -3691,6 +3700,7 @@ pub(crate) fn hard_stamp_interactable(
     owner: Option<&str>,
     group: Option<&str>,
     backup_root: &Path,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     validate_interactable_target(target)?;
     if !source.is_file() {
@@ -3713,6 +3723,8 @@ pub(crate) fn hard_stamp_interactable(
     }
     let desired_uid = owner.map(resolve_uid).transpose()?;
     let desired_gid = group.map(resolve_gid).transpose()?;
+    let desired_bytes = fs::read(source)
+        .map_err(|error| format!("interactable-reference-source-read-failed {}: {error}", source.display()))?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().to_string())
@@ -3720,60 +3732,46 @@ pub(crate) fn hard_stamp_interactable(
     let backup = backup_root.join(id).join(format!(
         "{}-{}",
         stamp,
-        target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("target")
+        target.file_name().and_then(|name| name.to_str()).unwrap_or("target")
     ));
-    if let Some(parent) = backup.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "interactable-backup-parent-create-failed {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    fs::copy(target, &backup)
-        .map_err(|error| format!("interactable-backup-failed {}: {error}", target.display()))?;
-    let before_sha256 = format!(
-        "{:x}",
-        Sha256::digest(fs::read(&backup).map_err(|error| error.to_string())?)
-    );
-    let reference_sha256 = format!(
-        "{:x}",
-        Sha256::digest(fs::read(source).map_err(|error| error.to_string())?)
-    );
-    atomic_copy(
-        source,
-        target,
-        mode.or_else(|| source_mode(source).ok()),
-        desired_uid,
-        desired_gid,
-    )?;
+    let place = crate::place_file::execute(crate::place_file::PlaceFileRequest {
+        path: target,
+        declared_bytes: &desired_bytes,
+        mode: mode.or_else(|| source_mode(source).ok()),
+        ownership: crate::place_file::DeclaredOwnership { uid: desired_uid, gid: desired_gid },
+        backup: crate::place_file::BackupPolicy::To(&backup),
+        invocation,
+    })?;
+    let changed = place.movement.changed();
+    let backed_up_to = place.movement.backed_up;
+    let before_sha256 = backed_up_to.as_ref().map(|path| {
+        fs::read(path)
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+            .map_err(|error| error.to_string())
+    }).transpose()?;
+    let reference_sha256 = format!("{:x}", Sha256::digest(&desired_bytes));
     let target_sha256 = format!(
         "{:x}",
         Sha256::digest(fs::read(target).map_err(|error| error.to_string())?)
     );
     if target_sha256 != reference_sha256 {
-        return Err(format!(
-            "interactable-hard-stamp-readback-failed {}",
-            target.display()
-        ));
+        return Err(format!("interactable-hard-stamp-readback-failed {}", target.display()));
     }
     Ok(json!({
         "schema": "harmonia.interactables.hard_stamp.receipt.v1",
         "ok": true,
         "id": id,
         "kind": "hard-stamp",
-        "backup_path": backup,
+        "backup_path": backed_up_to,
+        "backed_up_to": backed_up_to,
         "before_sha256": before_sha256,
         "reference_sha256": reference_sha256,
         "target_sha256": target_sha256,
         "target": target,
         "reference_source": source,
+        "changed": changed,
     }))
 }
-
 fn validate_specs(specs: &[FileSpec]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     for spec in specs {
