@@ -127,6 +127,7 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
         .and_then(|mut manifest| {
             if manifest.schema == SCHEMA {
+                lower_service_runtime_steps(&mut manifest);
                 manifest.base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
                 Ok(manifest)
             } else {
@@ -137,6 +138,35 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
                 ))
             }
         })
+}
+
+fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
+    for step in &mut manifest.ladder {
+        if step.tool != "service-runtime" || step.permutation != "converge" {
+            continue;
+        }
+        let args = step.args.clone();
+        step.tool = "routine".into();
+        step.permutation = "execute".into();
+        step.args.clear();
+        step.steps = [
+            ("source-gate", "source-gate"),
+            ("build", "build"),
+            ("binary-install", "binary-install"),
+            ("service-epilogue", "service-epilogue"),
+            ("health-proof", "health-proof"),
+            ("managed-files", "managed-files"),
+        ]
+        .into_iter()
+        .map(|(name, permutation)| RoutineStep {
+            name: name.into(),
+            tool: "service-runtime".into(),
+            permutation: Some(permutation.into()),
+            args: args.clone(),
+            extra: BTreeMap::new(),
+        })
+        .collect();
+    }
 }
 
 pub(crate) fn is_ladder_manifest(path: &Path) -> bool {
@@ -854,7 +884,6 @@ fn execute_validated_step(
                 | ("package", "upgrade")
                 | ("package", "keyring-repair")
                 | ("git-artifact", "sync")
-                | ("service-runtime", "converge")
                 | ("files", "source-shelf-sweep")
                 | ("files", "validated-sudoers-converge")
                 | ("venv", "converge")
@@ -901,26 +930,6 @@ fn execute_validated_step(
             module_changed_before_step,
             invocation,
         ),
-        ("service-runtime", "converge") => {
-            let source_plan = routine_source_plan(step, manifest)?;
-            tools::service_runtime::execute_ladder_step(
-                &step.args,
-                module_dir,
-                software_apply,
-                &source_plan,
-                invocation,
-            )
-        }
-        .map(|execution| OperationOutcome {
-            ok: execution.ok,
-            changed: execution.changed,
-            skipped: false,
-            message: format!(
-                "service-runtime converge operations={}",
-                execution.operation_count
-            ),
-            command: None,
-        }),
         ("git-artifact", "sync") => {
             git_artifact_step(step, manifest, module_dir, software_apply, invocation)
         }
