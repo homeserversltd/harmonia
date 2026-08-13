@@ -226,6 +226,9 @@ fn derive_plan_inner(profile: &Profile, root: &Path) -> Result<UpdatePlan, Strin
                 if let Some(p) = text(&s.args, "target_shelf") {
                     add_target(&mut targets, p.into(), "agathodaimon")?;
                 }
+                if text(&s.args, "launcher_pattern").is_none() {
+                    continue;
+                }
                 let tr = text(&s.args, "launcher_target_root")
                     .map(PathBuf::from)
                     .ok_or("staff-target-root-missing")?;
