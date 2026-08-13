@@ -390,7 +390,8 @@ pub(crate) fn package_tool_for_backend(
     packages: &[String],
     apply: bool,
     backend: PackageBackend,
-    invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> {
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
     package_tool_with_policy_for_backend(
         receipt_dir,
         name,
@@ -416,7 +417,8 @@ pub(crate) fn package_tool_with_policy_for_backend(
     conflict_paths: &[String],
     timeout_secs: u64,
     backend: PackageBackend,
-    invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> {
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
     match backend {
         PackageBackend::Pacman if action == "install" => crate::install_package::run(
             receipt_dir,
@@ -480,15 +482,22 @@ fn apt_package_tool(
             timeout_secs,
         )),
     };
-    let desired_differs = observation
-        .current
-        .as_ref()
-        .is_some_and(|result| !result.ok || apt_stdout_indicates_change(&result.stdout));
-    let run = comparison::execute(
+    let run = comparison::execute_with_failure_receipt(
         "package",
-        || Ok::<_, String>(observation.clone()),
-        |_| {
-            if desired_differs {
+        || {
+            let current = command::capture_with_timeout(&program, &observe_refs, timeout_secs);
+            Ok(PackageObservation {
+                observed_state: "apt-current-state-observed".to_string(),
+                desired_state: format!("apt-{action}-declared"),
+                current: Some(current),
+            })
+        },
+        |current| {
+            if current
+                .current
+                .as_ref()
+                .is_some_and(|result| !result.ok || apt_stdout_indicates_change(&result.stdout))
+            {
                 DiffDecision::Different
             } else {
                 DiffDecision::Empty
@@ -513,6 +522,29 @@ fn apt_package_tool(
                 message: format!("apt package {action}"),
                 command: Some(result),
             })
+        },
+        |before, movement, after| {
+            let mut _receipt = package_receipt_fields(
+                before,
+                DiffDecision::Different,
+                Some(movement),
+                movement.changed,
+            );
+            if let Some(fields) = _receipt.as_object_mut() {
+                fields.insert(
+                    "observed_before".into(),
+                    serde_json::to_value(before).map_err(|e| e.to_string())?,
+                );
+                fields.insert(
+                    "act".into(),
+                    serde_json::json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command}),
+                );
+                fields.insert(
+                    "observed_after".into(),
+                    serde_json::to_value(after).map_err(|e| e.to_string())?,
+                );
+            }
+            write_guard_receipts(receipt_dir, name, before, movement, after)
         },
     )?;
     let (decision, movement) = match run {
@@ -564,6 +596,61 @@ pub(crate) fn non_arch_install(
     )?;
     write_package_receipt(receipt_dir, name, "install", &outcome)?;
     Ok(outcome)
+}
+
+fn package_differs(action: &str, packages: &[String], observation: &PackageObservation) -> bool {
+    let Some(result) = observation.current.as_ref() else {
+        return true;
+    };
+    match action {
+        "install" => packages.iter().any(|package| {
+            !result
+                .stdout
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some(package))
+        }),
+        "check" | "upgrade" | "update" => !result.stdout.trim().is_empty() || !result.ok,
+        _ => true,
+    }
+}
+
+fn write_guard_receipts(
+    receipt_dir: &Path,
+    name: &str,
+    before: &PackageObservation,
+    movement: &OperationOutcome,
+    after: &PackageObservation,
+) -> Result<(), String> {
+    let mut comparison = package_receipt_fields(
+        before,
+        DiffDecision::Different,
+        Some(movement),
+        movement.changed,
+    );
+    let fields = comparison
+        .as_object_mut()
+        .ok_or_else(|| "package-receipt-not-object".to_string())?;
+    fields.insert(
+        "observed_before".into(),
+        serde_json::to_value(before).map_err(|e| e.to_string())?,
+    );
+    fields.insert("act".into(), serde_json::json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command}));
+    fields.insert(
+        "observed_after".into(),
+        serde_json::to_value(after).map_err(|e| e.to_string())?,
+    );
+    fields.insert("converged".into(), serde_json::json!(false));
+    write_json(
+        &receipt_dir.join(format!("{name}.comparison.json")),
+        &comparison,
+    )?;
+    let mut standard = serde_json::json!({"schema":"harmonia.package_tool.v1","name":name,"tool":NAME,"ok":false,"changed":movement.changed,"skipped":movement.skipped,"message":movement.message,"command":movement.command});
+    if let Some(obj) = standard.as_object_mut() {
+        for key in ["observed_before", "act", "observed_after", "converged"] {
+            obj.insert(key.into(), comparison[key].clone());
+        }
+    }
+    write_json(&receipt_dir.join(format!("{name}.json")), &standard)
 }
 
 pub(crate) fn package_tool(
@@ -631,28 +718,31 @@ pub(crate) fn package_tool_with_policy(
         "check" | "upgrade" | "update" => "no-pending-updates".into(),
         other => format!("{other}-declared"),
     };
-    let differs = match action {
-        "install" => packages.iter().any(|package| {
-            !observe_result
-                .stdout
-                .lines()
-                .any(|line| line.split_whitespace().next() == Some(package))
-        }),
-        "check" | "upgrade" | "update" => {
-            !observe_result.stdout.trim().is_empty() || !observe_result.ok
-        }
-        _ => true,
-    };
     let observation = PackageObservation {
         observed_state,
-        desired_state,
+        desired_state: desired_state.clone(),
         current: Some(observe_result),
     };
-    let run = comparison::execute(
+    let run = comparison::execute_with_failure_receipt(
         "package",
-        || Ok::<_, String>(observation.clone()),
-        |_| {
-            if differs {
+        || {
+            let result = match action {
+                "install" => command::capture(&pacman, &["-Q"]),
+                _ => command::capture(&pacman, &["-Qu"]),
+            };
+            let observed_state = if result.ok {
+                result.stdout.clone()
+            } else {
+                format!("probe-failed:{}", result.code)
+            };
+            Ok(PackageObservation {
+                observed_state,
+                desired_state: desired_state.clone(),
+                current: Some(result),
+            })
+        },
+        |current| {
+            if package_differs(action, packages, current) {
                 DiffDecision::Different
             } else {
                 DiffDecision::Empty
@@ -697,7 +787,31 @@ pub(crate) fn package_tool_with_policy(
                 command: Some(result),
             })
         },
+        |before, movement, after| {
+            let mut _receipt = package_receipt_fields(
+                before,
+                DiffDecision::Different,
+                Some(movement),
+                movement.changed,
+            );
+            if let Some(fields) = _receipt.as_object_mut() {
+                fields.insert(
+                    "observed_before".into(),
+                    serde_json::to_value(before).map_err(|e| e.to_string())?,
+                );
+                fields.insert(
+                    "act".into(),
+                    serde_json::json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command}),
+                );
+                fields.insert(
+                    "observed_after".into(),
+                    serde_json::to_value(after).map_err(|e| e.to_string())?,
+                );
+            }
+            write_guard_receipts(receipt_dir, name, before, movement, after)
+        },
     )?;
+    let final_observation = run.observation().clone();
     let (decision, movement) = match run {
         comparison::ComparisonRun::Current { decision, .. } => (decision, None),
         comparison::ComparisonRun::Moved {
@@ -711,9 +825,27 @@ pub(crate) fn package_tool_with_policy(
         message: format!("package {action} already current"),
         command: observation.current.clone(),
     });
+    let mut comparison = package_receipt_fields(
+        &final_observation,
+        decision,
+        movement.as_ref(),
+        outcome.changed,
+    );
+    if let Some(fields) = comparison.as_object_mut() {
+        fields.insert(
+            "observed_before".into(),
+            serde_json::to_value(&observation).map_err(|e| e.to_string())?,
+        );
+        fields.insert("act".into(), serde_json::json!({"ok": outcome.ok, "changed": outcome.changed, "skipped": outcome.skipped, "message": outcome.message, "command": outcome.command}));
+        fields.insert(
+            "observed_after".into(),
+            serde_json::to_value(&final_observation).map_err(|e| e.to_string())?,
+        );
+        fields.insert("converged".into(), serde_json::json!(true));
+    }
     write_json(
         &receipt_dir.join(format!("{name}.comparison.json")),
-        &package_receipt_fields(&observation, decision, movement.as_ref(), outcome.changed),
+        &comparison,
     )?;
     write_package_receipt(receipt_dir, name, action, &outcome)?;
     Ok(outcome)
@@ -744,17 +876,25 @@ pub(crate) fn keyring_repair_tool(
         desired_state: format!("keyring-repaired:{package_name}"),
         current,
     };
-    let differs = !pacman_present
-        || !pacman_key_present
-        || observation
-            .current
-            .as_ref()
-            .is_some_and(|result| !result.ok);
-    let run = comparison::execute(
+    let run = comparison::execute_with_failure_receipt(
         "package",
-        || Ok::<_, String>(observation.clone()),
-        |_| {
-            if differs {
+        || {
+            let current = if pacman_present && pacman_key_present {
+                Some(command::capture(&pacman, &["-Q", package_name]))
+            } else {
+                None
+            };
+            Ok(PackageObservation {
+                observed_state: observation.observed_state.clone(),
+                desired_state: observation.desired_state.clone(),
+                current,
+            })
+        },
+        |current| {
+            if !pacman_present
+                || !pacman_key_present
+                || current.current.as_ref().is_some_and(|result| !result.ok)
+            {
                 DiffDecision::Different
             } else {
                 DiffDecision::Empty
@@ -762,6 +902,26 @@ pub(crate) fn keyring_repair_tool(
         },
         |_authorization, _| {
             keyring_repair_action(receipt_dir, name, package_name, apply, timeout_secs)
+        },
+        |before, movement, after| {
+            let mut _receipt = package_receipt_fields(
+                before,
+                DiffDecision::Different,
+                Some(movement),
+                movement.changed,
+            );
+            if let Some(fields) = _receipt.as_object_mut() {
+                fields.insert(
+                    "observed_before".into(),
+                    serde_json::to_value(before).map_err(|e| e.to_string())?,
+                );
+                fields.insert("act".into(), serde_json::json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command}));
+                fields.insert(
+                    "observed_after".into(),
+                    serde_json::to_value(after).map_err(|e| e.to_string())?,
+                );
+            }
+            write_guard_receipts(receipt_dir, name, before, movement, after)
         },
     )?;
     let (decision, movement) = match run {
@@ -930,6 +1090,10 @@ fn write_package_receipt_with_backend(
             "desired_state",
             "diff_decision",
             "movement",
+            "observed_before",
+            "act",
+            "observed_after",
+            "converged",
         ] {
             if let Some(value) = comparison.get(field) {
                 receipt[field] = value.clone();
@@ -973,6 +1137,10 @@ fn write_keyring_receipt(
             "desired_state",
             "diff_decision",
             "movement",
+            "observed_before",
+            "act",
+            "observed_after",
+            "converged",
         ] {
             if let Some(value) = comparison.get(field) {
                 receipt[field] = value.clone();

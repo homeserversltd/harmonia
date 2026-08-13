@@ -1,6 +1,7 @@
 use crate::tools::comparison::{self, ComparisonRun, DiffDecision};
 use serde_json::json;
 use std::cell::Cell;
+use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -18,12 +19,14 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
 
     let caduceus = caduceus_bench(&root)?;
     let venv = venv_bench(&root, invocation)?;
+    let package = package_bench(&root)?;
     let never = never_converge_bench()?;
     let receipt = json!({
         "schema": "harmonia.stillness-bench.v1",
         "ok": true,
         "caduceus": caduceus,
         "venv": venv,
+        "package": package,
         "never_converge": never,
     });
     println!(
@@ -127,6 +130,58 @@ fn venv_bench(
         "run1": {"ok": run1.ok, "changed": run1.changed, "message": run1.message},
         "run2": {"ok": run2.ok, "changed": run2.changed, "message": run2.message}
     }))
+}
+
+fn package_bench(root: &Path) -> Result<serde_json::Value, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = root.join("package");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let state = dir.join("state");
+    fs::write(&state, b"pending\n").map_err(|e| e.to_string())?;
+    let fake = dir.join("pacman");
+    fs::write(&fake, format!("#!/bin/sh\nstate='{}'\ncase \"$1\" in\n  -Qu) cat \"$state\" ;;\n  -Syu) if [ \"${{HARMONIA_BENCH_PERSIST:-0}}\" = 0 ]; then printf '' > \"$state\"; fi; printf 'upgrading bench\\n' ;;\n  -Q) printf 'bench 1\\n' ;;\nesac\n", state.display())).map_err(|e| e.to_string())?;
+    let mut perms = fs::metadata(&fake)
+        .map_err(|e| e.to_string())?
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake, perms).map_err(|e| e.to_string())?;
+    env::set_var("HARMONIA_PACMAN_PATH", &fake);
+    let first_dir = dir.join("first");
+    fs::create_dir_all(&first_dir).map_err(|e| e.to_string())?;
+    let first =
+        crate::tools::package::package_tool(&first_dir, "system-sync", "upgrade", &[], true)?;
+    let second_dir = dir.join("second");
+    fs::create_dir_all(&second_dir).map_err(|e| e.to_string())?;
+    let second =
+        crate::tools::package::package_tool(&second_dir, "system-sync", "upgrade", &[], true)?;
+    if !first.ok || !first.changed || !second.ok || second.changed {
+        return Err("package-bench-convergence-failed".into());
+    }
+    fs::write(&state, b"pending\n").map_err(|e| e.to_string())?;
+    env::set_var("HARMONIA_BENCH_PERSIST", "1");
+    let persistent_dir = dir.join("persistent");
+    fs::create_dir_all(&persistent_dir).map_err(|e| e.to_string())?;
+    let persistent =
+        crate::tools::package::package_tool(&persistent_dir, "system-sync", "upgrade", &[], true);
+    env::remove_var("HARMONIA_BENCH_PERSIST");
+    env::remove_var("HARMONIA_PACMAN_PATH");
+    let error = match persistent {
+        Err(e) if e == "package-act-did-not-converge" => e,
+        Ok(_) => return Err("package-persistent-upgrade-did-not-fail".into()),
+        Err(e) => return Err(e),
+    };
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &fs::read(persistent_dir.join("system-sync.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    for key in ["observed_before", "act", "observed_after", "converged"] {
+        if receipt.get(key).is_none() {
+            return Err(format!("package-receipt-missing-{key}"));
+        }
+    }
+    Ok(
+        json!({"first": {"ok": first.ok, "changed": first.changed}, "second": {"ok": second.ok, "changed": second.changed}, "persistent_upgrade_failure": {"ok": false, "signal": error, "receipt": receipt}}),
+    )
 }
 
 fn never_converge_bench() -> Result<serde_json::Value, String> {

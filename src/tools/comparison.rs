@@ -46,23 +46,49 @@ impl<Observed, Movement> ComparisonRun<Observed, Movement> {
 /// private `ActionAuthorization` after a nonempty comparison.
 pub(crate) fn execute<Observed, Movement, Error>(
     operation: &str,
+    observe: impl FnMut() -> Result<Observed, Error>,
+    compare: impl FnMut(&Observed) -> DiffDecision,
+    act: impl FnOnce(ActionAuthorization, &Observed) -> Result<Movement, Error>,
+) -> Result<ComparisonRun<Observed, Movement>, Error>
+where
+    Error: From<String>,
+{
+    execute_with_failure_receipt(
+        operation,
+        observe,
+        compare,
+        act,
+        |_before, _movement, _after| Ok(()),
+    )
+}
+
+/// Runs the comparison and gives the owner one last chance to persist the
+/// complete guard receipt before a persistent post-act mismatch is returned.
+pub(crate) fn execute_with_failure_receipt<Observed, Movement, Error>(
+    operation: &str,
     mut observe: impl FnMut() -> Result<Observed, Error>,
     mut compare: impl FnMut(&Observed) -> DiffDecision,
     act: impl FnOnce(ActionAuthorization, &Observed) -> Result<Movement, Error>,
+    write_failure_receipt: impl FnOnce(&Observed, &Movement, &Observed) -> Result<(), Error>,
 ) -> Result<ComparisonRun<Observed, Movement>, Error>
-where Error: From<String> {
-    let observation = observe()?;
-    match compare(&observation) {
+where
+    Error: From<String>,
+{
+    let observed_before = observe()?;
+    match compare(&observed_before) {
         DiffDecision::Empty => Ok(ComparisonRun::Current {
-            observation,
+            observation: observed_before,
             decision: DiffDecision::Empty,
         }),
         DiffDecision::Different => {
-            let movement = act(ActionAuthorization(()), &observation)?;
-            let post = observe()?;
-            if compare(&post) == DiffDecision::Different { return Err(format!("{operation}-act-did-not-converge").into()); }
+            let movement = act(ActionAuthorization(()), &observed_before)?;
+            let observed_after = observe()?;
+            if compare(&observed_after) == DiffDecision::Different {
+                write_failure_receipt(&observed_before, &movement, &observed_after)?;
+                return Err(format!("{operation}-act-did-not-converge").into());
+            }
             Ok(ComparisonRun::Moved {
-                observation,
+                observation: observed_after,
                 decision: DiffDecision::Different,
                 movement,
             })
