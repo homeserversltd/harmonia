@@ -166,12 +166,17 @@ pub(crate) fn run_permutation(
         );
     }
     let user = permutation.starts_with("user-");
+    let action = permutation.strip_prefix("user-").unwrap_or(permutation);
     if let Some(selected) = service {
-        if !is_unit_basename(selected) {
+        let valid = if matches!(action, "disable-stop" | "disable-stop-remove") {
+            is_removable_unit_basename(selected)
+        } else {
+            is_unit_basename(selected)
+        };
+        if !valid {
             return Err(format!("systemd-unit-name-invalid-{selected}"));
         }
     }
-    let action = permutation.strip_prefix("user-").unwrap_or(permutation);
     if action == "restart" {
         return run_restart(
             receipt_dir,
@@ -280,9 +285,33 @@ fn annotate_candidate_selection(
 }
 
 fn is_unit_basename(unit: &str) -> bool {
+    is_syntactic_unit_basename(unit) && unit.ends_with(".service")
+}
+
+fn is_removable_unit_basename(unit: &str) -> bool {
+    is_syntactic_unit_basename(unit)
+        && [
+            ".service",
+            ".socket",
+            ".target",
+            ".device",
+            ".mount",
+            ".automount",
+            ".swap",
+            ".path",
+            ".timer",
+            ".slice",
+            ".scope",
+            ".busname",
+            ".snapshot",
+        ]
+        .iter()
+        .any(|suffix| unit.ends_with(suffix))
+}
+
+fn is_syntactic_unit_basename(unit: &str) -> bool {
     let path = Path::new(unit);
     !unit.is_empty()
-        && unit.ends_with(".service")
         && !path.is_absolute()
         && path.components().count() == 1
         && path.file_name().is_some()
