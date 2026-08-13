@@ -2,7 +2,7 @@
 set -u -o pipefail
 
 readonly PROFILE_INDEX="${HARMONIA_PROFILE_INDEX:-/etc/harmonia/profiles/tv/index.json}"
-readonly TOGGLE_BIN="/usr/local/sbin/caduceus-harmonia-module-toggle"
+readonly TOGGLE_BIN="/usr/local/sbin/agathodaimon/caduceus-harmonia-module-toggle"
 
 notify() {
     command -v notify-send >/dev/null 2>&1 && notify-send "Harmonia updates" "$1"

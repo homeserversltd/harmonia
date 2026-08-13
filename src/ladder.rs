@@ -1499,21 +1499,30 @@ fn files_source_shelf_sweep_step(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
+    let target_shelf = PathBuf::from(string_arg(&step.args, "target_shelf"));
+    let launcher_source_root = optional_string_arg(&step.args, "launcher_source_root")
+        .map(|path| resolve_ladder_path(manifest, path))
+        .unwrap_or_else(|| source_root.clone());
+    let launcher_target_root = optional_string_arg(&step.args, "launcher_target_root")
+        .map(PathBuf::from)
+        .or_else(|| target_shelf.parent().map(Path::to_path_buf))
+        .ok_or_else(|| "source-shelf-sweep-target-shelf-parent-missing".to_string())?;
+    let shelf_file_mode = integer_arg(&step.args, "shelf_file_mode", 0) as u32;
     let request = crate::tools::files::SourceShelfSweepRequest {
-        source_root: resolve_ladder_path(manifest, string_arg(&step.args, "source_root")),
+        source_root,
         shelf_source: PathBuf::from(string_arg(&step.args, "shelf_source")),
-        target_shelf: PathBuf::from(string_arg(&step.args, "target_shelf")),
-        launcher_source_root: resolve_ladder_path(
-            manifest,
-            string_arg(&step.args, "launcher_source_root"),
-        ),
-        launcher_target_root: PathBuf::from(string_arg(&step.args, "launcher_target_root")),
-        launcher_pattern: string_arg(&step.args, "launcher_pattern").to_string(),
+        target_shelf,
+        launcher_source_root,
+        launcher_target_root,
+        launcher_pattern: optional_string_arg(&step.args, "launcher_pattern")
+            .unwrap_or(".harmonia-no-flat-launchers")
+            .to_string(),
         shelf_owner: string_arg(&step.args, "shelf_owner").to_string(),
         shelf_group: string_arg(&step.args, "shelf_group").to_string(),
         shelf_directory_mode: integer_arg(&step.args, "shelf_directory_mode", 0) as u32,
-        shelf_file_mode: integer_arg(&step.args, "shelf_file_mode", 0) as u32,
-        launcher_mode: integer_arg(&step.args, "launcher_mode", 0) as u32,
+        shelf_file_mode,
+        launcher_mode: integer_arg(&step.args, "launcher_mode", shelf_file_mode as u64) as u32,
         prune: step
             .args
             .get("prune")

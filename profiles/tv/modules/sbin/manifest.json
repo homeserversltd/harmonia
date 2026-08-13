@@ -39,23 +39,10 @@
         "source_root": "/opt/sbin/source",
         "shelf_source": "agathodaimon",
         "target_shelf": "/usr/local/sbin/agathodaimon",
-        "launcher_source_root": "/opt/sbin/source",
-        "launcher_target_root": "/usr/local/sbin",
-        "launcher_pattern": "caduceus-*",
-        "launcher_exclude": [
-          ".git*",
-          "README.md",
-          "LICENSE",
-          "VERSION",
-          "CONTRIBUTING.md",
-          "tests",
-          "agathodaimon"
-        ],
         "shelf_owner": "root",
         "shelf_group": "root",
         "shelf_directory_mode": 493,
         "shelf_file_mode": 493,
-        "launcher_mode": 493,
         "prune": true,
         "provenance_state": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
         "owned_recursive": true
