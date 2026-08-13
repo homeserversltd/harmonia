@@ -241,18 +241,61 @@ pub(crate) fn validate_ladder(
     Ok(validated)
 }
 
-fn validate_routine(step: &LadderStep, _manifest: &LadderManifest) -> Result<(), LadderValidationError> {
-    if step.permutation != "execute" { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: "routine-permutation-must-be-execute".into() }); }
-    if step.steps.is_empty() { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: "routine-steps-empty".into() }); }
+fn validate_routine(
+    step: &LadderStep,
+    _manifest: &LadderManifest,
+) -> Result<(), LadderValidationError> {
+    if step.permutation != "execute" {
+        return Err(LadderValidationError {
+            step_id: step.step_id.clone(),
+            defect: "routine-permutation-must-be-execute".into(),
+        });
+    }
+    if step.steps.is_empty() {
+        return Err(LadderValidationError {
+            step_id: step.step_id.clone(),
+            defect: "routine-steps-empty".into(),
+        });
+    }
     let mut names = BTreeSet::new();
     for child in &step.steps {
-        if child.name.trim().is_empty() { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: "routine-child-name-blank".into() }); }
-        if !names.insert(child.name.clone()) { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("duplicate-routine-step-{}", child.name) }); }
-        if !tools::routine_summonable(&child.tool) { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-tool-not-summonable-{}", child.tool) }); }
-        if child.extra.contains_key("program") || child.extra.contains_key("permutation") { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-child-key-forbidden-{}", child.name) }); }
+        if child.name.trim().is_empty() {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: "routine-child-name-blank".into(),
+            });
+        }
+        if !names.insert(child.name.clone()) {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: format!("duplicate-routine-step-{}", child.name),
+            });
+        }
+        if !tools::routine_summonable(&child.tool) {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: format!("routine-tool-not-summonable-{}", child.tool),
+            });
+        }
+        if child.extra.contains_key("program") || child.extra.contains_key("permutation") {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: format!("routine-child-key-forbidden-{}", child.name),
+            });
+        }
         for value in child.args.values() {
             if let Value::Object(map) = value {
-                if map.len() == 1 && map.contains_key("from") && !map.get("from").and_then(Value::as_str).is_some_and(|r| r.contains('.') && !r.starts_with('.') && !r.ends_with('.')) { return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-reference-malformed-{}", child.name) }); }
+                if map.len() == 1
+                    && map.contains_key("from")
+                    && !map.get("from").and_then(Value::as_str).is_some_and(|r| {
+                        r.contains('.') && !r.starts_with('.') && !r.ends_with('.')
+                    })
+                {
+                    return Err(LadderValidationError {
+                        step_id: step.step_id.clone(),
+                        defect: format!("routine-reference-malformed-{}", child.name),
+                    });
+                }
             }
         }
     }
@@ -495,6 +538,111 @@ pub(crate) struct ValidatedStep {
     pub on_failure: OnFailure,
 }
 
+pub(crate) fn band_for_step(step: &ValidatedStep) -> Result<crate::bands::Band, String> {
+    use crate::bands::Band;
+    if step.tool == "routine" {
+        return Ok(Band::ProposeEdits);
+    }
+    let band = match (step.tool.as_str(), step.permutation.as_str()) {
+        ("package", "check")
+        | ("package", "install")
+        | ("package", "upgrade")
+        | ("package", "keyring-repair")
+        | ("venv", "converge")
+        | ("aur", "install")
+        | ("aur", "check")
+        | ("aur", "build-pinned") => Band::InstallPackages,
+        ("git-artifact", "sync") => Band::PullSource,
+        ("artifact-lock", "verify") | ("health", "probe") => Band::Compare,
+        ("service-runtime", "converge") | ("systemd", _) | ("household-time", _) => {
+            Band::RestartServices
+        }
+        ("files", "managed-files")
+        | ("files", "managed-directories")
+        | ("files", "validated-symlink")
+        | ("files", "symlink-converge")
+        | ("files", "validated-file-symlink")
+        | ("files", "remove")
+        | ("files", "executable-present")
+        | ("files", "source-shelf-sweep")
+        | ("files", "validated-sudoers-converge")
+        | ("files", "ensure-present")
+        | ("files", "converge")
+        | ("files", "directory-sync") => Band::BackfillFiles,
+        ("command", "capture") => Band::ProposeEdits,
+        ("pull-repo", _) | ("build-crate", _) | ("place-file", _) | ("enable-unit", _) => {
+            Band::ProposeEdits
+        }
+        (tool, permutation) => {
+            return Err(format!(
+                "unknown-tool-band tool={tool} permutation={permutation}"
+            ))
+        }
+    };
+    Ok(band)
+}
+
+pub(crate) fn execute_ladder_manifest_band(
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    band: crate::bands::Band,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    package_authority: Option<&crate::PackageAuthority>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    module_changed_before_step: bool,
+) -> Result<ModuleExecution, String> {
+    let steps = validate_ladder(manifest)
+        .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
+    fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
+    let mut result = ModuleExecution {
+        ok: true,
+        changed: false,
+        operation_count: 0,
+        first_missing_signal: None,
+    };
+    for step in steps {
+        if band_for_step(&step)? != band {
+            continue;
+        }
+        result.operation_count += 1;
+        let outcome = if step.tool == "routine" {
+            execute_routine(
+                &step,
+                manifest,
+                module_dir,
+                software_authorization,
+                package_authority,
+                software_authorization.is_some(),
+                invocation,
+            )?
+        } else {
+            execute_validated_step(
+                &step,
+                manifest,
+                module_dir,
+                software_authorization,
+                package_authority,
+                module_changed_before_step || result.changed,
+                invocation,
+            )?
+        };
+        result.changed |= outcome.changed;
+        if !outcome.ok {
+            result.ok = false;
+            if result.first_missing_signal.is_none() {
+                result.first_missing_signal = Some(format!(
+                    "step_id={} defect={}",
+                    step.step_id, outcome.message
+                ));
+            }
+            if step.on_failure == OnFailure::Stop {
+                break;
+            }
+        }
+    }
+    Ok(result)
+}
+
 pub(crate) fn execute_ladder_manifest(
     manifest: &LadderManifest,
     module_dir: &Path,
@@ -673,9 +821,13 @@ fn execute_validated_step(
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, false)
         }
-        ("venv", "converge") => {
-            tools::venv::execute_ladder_step(&step.args, module_dir, &step.step_id, software_apply, invocation)
-        }
+        ("venv", "converge") => tools::venv::execute_ladder_step(
+            &step.args,
+            module_dir,
+            &step.step_id,
+            software_apply,
+            invocation,
+        ),
         ("systemd", _) => systemd_step(
             step,
             module_dir,
@@ -703,16 +855,22 @@ fn execute_validated_step(
             ),
             command: None,
         }),
-        ("git-artifact", "sync") => git_artifact_step(step, manifest, module_dir, software_apply, invocation),
+        ("git-artifact", "sync") => {
+            git_artifact_step(step, manifest, module_dir, software_apply, invocation)
+        }
         ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
             aur_step(step, manifest, module_dir, software_apply, invocation)
         }
         ("package", "check")
         | ("package", "install")
         | ("package", "upgrade")
-        | ("package", "keyring-repair") => {
-            package_step(step, module_dir, software_apply, package_authority, invocation)
-        }
+        | ("package", "keyring-repair") => package_step(
+            step,
+            module_dir,
+            software_apply,
+            package_authority,
+            invocation,
+        ),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
@@ -721,43 +879,176 @@ fn execute_validated_step(
 }
 
 fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {
-    let mut paths = fs::read_dir(child_dir).map_err(|e| e.to_string())?.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().and_then(|v| v.to_str()) == Some("json")).filter(|p| p.file_name().and_then(|v| v.to_str()) != Some("routine-child.json")).collect::<Vec<_>>();
+    let mut paths = fs::read_dir(child_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|v| v.to_str()) == Some("json"))
+        .filter(|p| p.file_name().and_then(|v| v.to_str()) != Some("routine-child.json"))
+        .collect::<Vec<_>>();
     paths.sort();
-    paths.into_iter().map(|p| serde_json::from_slice(&fs::read(&p).map_err(|e| e.to_string())?).map_err(|e| format!("routine-receipt-parse-{}: {e}", p.display()))).collect()
+    paths
+        .into_iter()
+        .map(|p| {
+            serde_json::from_slice(&fs::read(&p).map_err(|e| e.to_string())?)
+                .map_err(|e| format!("routine-receipt-parse-{}: {e}", p.display()))
+        })
+        .collect()
 }
 
 fn execute_routine(
-    step: &ValidatedStep, manifest: &LadderManifest, module_dir: &Path,
-    _software_authorization: Option<&crate::SoftwareApplyAuthorization>, _package_authority: Option<&crate::PackageAuthority>, apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>,
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    _software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    _package_authority: Option<&crate::PackageAuthority>,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    let source = manifest.ladder.iter().find(|s| s.step_id == step.step_id).ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
-    let routine_dir = module_dir.join(&source.step_id); fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
-    let mut context: BTreeMap<String, Value> = BTreeMap::new(); let mut children = Vec::new(); let mut ok = true; let mut changed = false; let mut first = None; let mut blocked_by = None;
+    let source = manifest
+        .ladder
+        .iter()
+        .find(|s| s.step_id == step.step_id)
+        .ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
+    let routine_dir = module_dir.join(&source.step_id);
+    fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
+    let mut context: BTreeMap<String, Value> = BTreeMap::new();
+    let mut children = Vec::new();
+    let mut ok = true;
+    let mut changed = false;
+    let mut first = None;
+    let mut blocked_by = None;
     for child in &source.steps {
-        let child_dir = routine_dir.join(&child.name); fs::create_dir_all(&child_dir).map_err(|e| e.to_string())?;
-        let (state, child_ok, child_changed, outputs, extra) = if let Some(parent) = blocked_by.clone() {
-            ("blocked", false, false, BTreeMap::new(), json!({"blocked_by":parent}))
+        let child_dir = routine_dir.join(&child.name);
+        fs::create_dir_all(&child_dir).map_err(|e| e.to_string())?;
+        let (state, child_ok, child_changed, outputs, extra) = if let Some(parent) =
+            blocked_by.clone()
+        {
+            (
+                "blocked",
+                false,
+                false,
+                BTreeMap::new(),
+                json!({"blocked_by":parent}),
+            )
         } else {
-            let mut args = child.args.clone(); let mut missing = None;
-            for value in args.values_mut() { if let Value::Object(map) = value { if map.len() == 1 { if let Some(reference) = map.get("from").and_then(Value::as_str) { match context.get(reference) { Some(v) => *value = v.clone(), None => missing = Some(reference.to_string()) } } } } }
+            let mut args = child.args.clone();
+            let mut missing = None;
+            for value in args.values_mut() {
+                if let Value::Object(map) = value {
+                    if map.len() == 1 {
+                        if let Some(reference) = map.get("from").and_then(Value::as_str) {
+                            match context.get(reference) {
+                                Some(v) => *value = v.clone(),
+                                None => missing = Some(reference.to_string()),
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(reference) = missing {
-                let signal = format!("step_id={} defect=missing-stamp-{}", child.name, reference); ok=false; if first.is_none(){first=Some(signal.clone());} blocked_by=Some(child.name.clone());
-                crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"missing","ok":false,"first_missing_signal":signal}))?;
-                ("missing", false, false, BTreeMap::new(), json!({"first_missing_signal":signal}))
-            } else { match tools::module_steps::execute_routine_tool(&child.tool, &args, manifest, &child_dir, apply, invocation) {
-                Ok((outcome, outputs)) => { ok &= outcome.ok; changed |= outcome.changed; if !outcome.ok { let signal=format!("step_id={} defect={}",child.name,outcome.message); if first.is_none(){first=Some(signal);} blocked_by=Some(child.name.clone()); } (if outcome.ok{"completed"}else{"failed"}, outcome.ok, outcome.changed, outputs, json!({"skipped":outcome.skipped,"message":outcome.message})) }
-                Err(error) => { let signal=format!("step_id={} defect={}",child.name,error); ok=false; if first.is_none(){first=Some(signal);} blocked_by=Some(child.name.clone()); crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"failed","ok":false,"message":error}))?; ("failed",false,false,BTreeMap::new(),json!({"message":error})) }
-            }}
+                let signal = format!("step_id={} defect=missing-stamp-{}", child.name, reference);
+                ok = false;
+                if first.is_none() {
+                    first = Some(signal.clone());
+                }
+                blocked_by = Some(child.name.clone());
+                crate::write_json(
+                    &child_dir.join("routine-step.json"),
+                    &json!({"schema":"harmonia.routine.step-receipt.v1","state":"missing","ok":false,"first_missing_signal":signal}),
+                )?;
+                (
+                    "missing",
+                    false,
+                    false,
+                    BTreeMap::new(),
+                    json!({"first_missing_signal":signal}),
+                )
+            } else {
+                match tools::module_steps::execute_routine_tool(
+                    &child.tool,
+                    &args,
+                    manifest,
+                    &child_dir,
+                    apply,
+                    invocation,
+                ) {
+                    Ok((outcome, outputs)) => {
+                        ok &= outcome.ok;
+                        changed |= outcome.changed;
+                        if !outcome.ok {
+                            let signal =
+                                format!("step_id={} defect={}", child.name, outcome.message);
+                            if first.is_none() {
+                                first = Some(signal);
+                            }
+                            blocked_by = Some(child.name.clone());
+                        }
+                        (
+                            if outcome.ok { "completed" } else { "failed" },
+                            outcome.ok,
+                            outcome.changed,
+                            outputs,
+                            json!({"skipped":outcome.skipped,"message":outcome.message}),
+                        )
+                    }
+                    Err(error) => {
+                        let signal = format!("step_id={} defect={}", child.name, error);
+                        ok = false;
+                        if first.is_none() {
+                            first = Some(signal);
+                        }
+                        blocked_by = Some(child.name.clone());
+                        crate::write_json(
+                            &child_dir.join("routine-step.json"),
+                            &json!({"schema":"harmonia.routine.step-receipt.v1","state":"failed","ok":false,"message":error}),
+                        )?;
+                        (
+                            "failed",
+                            false,
+                            false,
+                            BTreeMap::new(),
+                            json!({"message":error}),
+                        )
+                    }
+                }
+            }
         };
-        if state == "blocked" { crate::write_json(&child_dir.join("routine-step.json"), &json!({"schema":"harmonia.routine.step-receipt.v1","state":"blocked","ok":false,"blocked_by":extra.get("blocked_by")}))?; }
+        if state == "blocked" {
+            crate::write_json(
+                &child_dir.join("routine-step.json"),
+                &json!({"schema":"harmonia.routine.step-receipt.v1","state":"blocked","ok":false,"blocked_by":extra.get("blocked_by")}),
+            )?;
+        }
         let receipts = collect_routine_receipts(&child_dir)?;
         let mut receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":state,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
-        if let (Some(obj), Some(extra_obj)) = (receipt.as_object_mut(), extra.as_object()) { for (k,v) in extra_obj { obj.insert(k.clone(),v.clone()); } }
-        crate::write_json(&child_dir.join("routine-child.json"), &receipt)?; children.push(receipt);
-        if child_ok { for (key,value) in outputs { context.entry(format!("{}.{}",child.name,key)).or_insert(value); } }
+        if let (Some(obj), Some(extra_obj)) = (receipt.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
+        children.push(receipt);
+        if child_ok {
+            for (key, value) in outputs {
+                context
+                    .entry(format!("{}.{}", child.name, key))
+                    .or_insert(value);
+            }
+        }
     }
-    let aggregate=json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":ok,"changed":changed,"skipped":!apply,"first_missing_signal":first,"context":context,"children":children}); crate::write_json(&module_dir.join(format!("{}.routine.json",source.step_id)),&aggregate)?;
-    Ok(OperationOutcome{ok,changed,skipped:!apply,message:first.unwrap_or_else(||"routine-complete".into()),command:None})
+    let aggregate = json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":ok,"changed":changed,"skipped":!apply,"first_missing_signal":first,"context":context,"children":children});
+    crate::write_json(
+        &module_dir.join(format!("{}.routine.json", source.step_id)),
+        &aggregate,
+    )?;
+    Ok(OperationOutcome {
+        ok,
+        changed,
+        skipped: !apply,
+        message: first.unwrap_or_else(|| "routine-complete".into()),
+        command: None,
+    })
 }
 
 fn string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> &'a str {
@@ -1105,19 +1396,22 @@ fn validated_file_symlink_step(
     let target = PathBuf::from(string_arg(&step.args, "target"));
     let validator_args = string_array_arg(&step.args, "validator_args");
     let reload_args = string_array_arg(&step.args, "reload_args");
-    crate::tools::make_symlink::execute(crate::tools::make_symlink::ValidatedFileSymlinkRequest {
-        receipt_dir: module_dir,
-        name: &step.step_id,
-        desired_source: &desired_source,
-        source: &source,
-        target: &target,
-        validator_program: string_arg(&step.args, "validator_program"),
-        validator_args: &validator_args,
-        reload_program: optional_string_arg(&step.args, "reload_program"),
-        reload_args: &reload_args,
-        timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
-        apply,
-    }, None)
+    crate::tools::make_symlink::execute(
+        crate::tools::make_symlink::ValidatedFileSymlinkRequest {
+            receipt_dir: module_dir,
+            name: &step.step_id,
+            desired_source: &desired_source,
+            source: &source,
+            target: &target,
+            validator_program: string_arg(&step.args, "validator_program"),
+            validator_args: &validator_args,
+            reload_program: optional_string_arg(&step.args, "reload_program"),
+            reload_args: &reload_args,
+            timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
+            apply,
+        },
+        None,
+    )
 }
 
 fn files_remove_step(

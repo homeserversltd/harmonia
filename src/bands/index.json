@@ -63,7 +63,6 @@
       "movement_status": "fronted"
     }
   ],
-  "charter_order_debt": "Today’s rolling-update prelude and per-module executor interleave charter phases. Movement A preserves that order; charter-order convergence is deferred.",
   "effective_order": {
     "rolling_update": [
       "renew-self engine preflight",
