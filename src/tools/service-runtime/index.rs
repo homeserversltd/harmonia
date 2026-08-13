@@ -15,27 +15,61 @@ include!("health-proof.rs");
 
 pub const NAME: &str = "service-runtime";
 pub const DESCRIPTION: &str = "Rust service runtime convergence primitive for source sync, managed files, build, install, systemd, and health proof.";
-pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
-    "converge",
-    "converge a Rust service runtime from typed constants",
-    &[
-        ToolArg::optional("module_id", ToolArgKind::String),
-        ToolArg::required("component", ToolArgKind::String),
-        ToolArg::optional("bearer", ToolArgKind::String),
-        ToolArg::required("source_dir", ToolArgKind::String),
-        ToolArg::required("install_bin", ToolArgKind::String),
-        ToolArg::required("service", ToolArgKind::String),
-        ToolArg::required("url", ToolArgKind::String),
-        ToolArg::required("binary_name", ToolArgKind::String),
-        ToolArg::required("op_prefix", ToolArgKind::String),
-        ToolArg::required("run_schema", ToolArgKind::String),
-        ToolArg::required("managed_files_schema", ToolArgKind::String),
-        ToolArg::optional("managed_files", ToolArgKind::Json),
-        ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
-        ToolArg::optional("caduceus_commands", ToolArgKind::Json),
-        ToolArg::optional("build_environment", ToolArgKind::Json),
-    ],
-)];
+const SERVICE_RUNTIME_ARGS: &[ToolArg] = &[
+    ToolArg::optional("module_id", ToolArgKind::String),
+    ToolArg::required("component", ToolArgKind::String),
+    ToolArg::optional("bearer", ToolArgKind::String),
+    ToolArg::required("source_dir", ToolArgKind::String),
+    ToolArg::required("install_bin", ToolArgKind::String),
+    ToolArg::required("service", ToolArgKind::String),
+    ToolArg::required("url", ToolArgKind::String),
+    ToolArg::required("binary_name", ToolArgKind::String),
+    ToolArg::required("op_prefix", ToolArgKind::String),
+    ToolArg::required("run_schema", ToolArgKind::String),
+    ToolArg::required("managed_files_schema", ToolArgKind::String),
+    ToolArg::optional("managed_files", ToolArgKind::Json),
+    ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
+    ToolArg::optional("caduceus_commands", ToolArgKind::Json),
+    ToolArg::optional("build_environment", ToolArgKind::Json),
+];
+
+pub const PERMUTATIONS: &[ToolPermutation] = &[
+    ToolPermutation::new(
+        "converge",
+        "converge a Rust service runtime from typed constants",
+        SERVICE_RUNTIME_ARGS,
+    ),
+    ToolPermutation::new(
+        "source-gate",
+        "run the source-gate service-runtime stage",
+        SERVICE_RUNTIME_ARGS,
+    ),
+    ToolPermutation::new(
+        "managed-files",
+        "run the managed-files service-runtime stage",
+        SERVICE_RUNTIME_ARGS,
+    ),
+    ToolPermutation::new(
+        "build",
+        "run the build service-runtime stage",
+        SERVICE_RUNTIME_ARGS,
+    ),
+    ToolPermutation::new(
+        "binary-install",
+        "run the binary-install service-runtime stage",
+        SERVICE_RUNTIME_ARGS,
+    ),
+    ToolPermutation::new(
+        "service-epilogue",
+        "run the service-epilogue service-runtime stage",
+        SERVICE_RUNTIME_ARGS,
+    ),
+    ToolPermutation::new(
+        "health-proof",
+        "run the health-proof service-runtime stage",
+        SERVICE_RUNTIME_ARGS,
+    ),
+];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 fn string_arg(args: &BTreeMap<String, Value>, name: &str) -> Result<String, String> {
@@ -94,6 +128,193 @@ pub(crate) fn execute_ladder_step(
         source_plan,
         invocation,
     )
+}
+
+pub(crate) fn execute_routine_stage(
+    permutation: &str,
+    args: &BTreeMap<String, Value>,
+    manifest: &crate::ladder::LadderManifest,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    carried: &mut Option<ServiceRuntimeState>,
+) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
+    let op_prefix = string_arg(args, "op_prefix")?;
+    let make = |suffix: String| Box::leak(suffix.into_boxed_str()) as &'static str;
+    let spec = ServiceRuntimeSpec {
+        op_prefix: make(op_prefix.clone()),
+        run_schema: make(string_arg(args, "run_schema")?),
+        managed_files_schema: make(string_arg(args, "managed_files_schema")?),
+        source_op: make(format!("{op_prefix}-source-git-artifact")),
+        source_sha_op: make(format!("{op_prefix}-source-sha")),
+        managed_files_op: make(format!("{op_prefix}-managed-files")),
+        build_op: make(format!("{op_prefix}-cargo-build")),
+        binary_install_op: make(format!("{op_prefix}-binary-install")),
+        daemon_reload_op: make(format!("{op_prefix}-daemon-reload")),
+        service_enable_op: make(format!("{op_prefix}-service-enable")),
+        service_active_op: make(format!("{op_prefix}-service-active")),
+        service_op: make(format!("{op_prefix}-service")),
+        health_op: make(format!("{op_prefix}-health")),
+        binary_name: make(string_arg(args, "binary_name")?),
+    };
+    let module = module_from_args(args, &spec)?;
+    let result = |ok, changed, message: &str| OperationOutcome {
+        ok,
+        changed,
+        skipped: !apply,
+        message: message.into(),
+        command: None,
+    };
+    if permutation == "source-gate" {
+        validate(&module)?;
+        fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+        let source_step = crate::ladder::ValidatedStep {
+            step_id: "service-runtime-source-gate".into(),
+            tool: NAME.into(),
+            permutation: "converge".into(),
+            args: args.clone(),
+            on_failure: crate::ladder::OnFailure::Stop,
+        };
+        let mut source_plan = crate::ladder::routine_source_plan(&source_step, manifest)?;
+        if let Some(bearer) = args.get("bearer").and_then(Value::as_str) {
+            source_plan.bearer = bearer.into();
+        }
+        let mut state = ServiceRuntimeState {
+            source_dir: PathBuf::from(string_arg(args, "source_dir")?),
+            install_bin: PathBuf::from(string_arg(args, "install_bin")?),
+            service: string_arg(args, "service")?,
+            health_url: string_arg(args, "url")?,
+            source_bearer: source_plan.bearer.clone(),
+            source_plan,
+            git_outcome: None,
+            remote_probe: None,
+            installed_build_sha: None,
+            source_sha_ok: false,
+            source_sha_value: String::new(),
+            managed: None,
+            build: None,
+            install: None,
+            service_outcome: None,
+            health: None,
+        };
+        if let Some(early) =
+            stage_source_gate(&module, receipt_dir, apply, &spec, invocation, &mut state)?
+        {
+            return Ok((
+                result(early.ok, early.changed, "service-runtime source-gate"),
+                BTreeMap::new(),
+            ));
+        }
+        let changed = state.git_outcome.as_ref().is_some_and(|v| v.changed);
+        let outputs = [
+            ("source_sha".into(), json!(state.source_sha_value)),
+            ("source_dir".into(), json!(state.source_dir)),
+        ]
+        .into_iter()
+        .collect();
+        *carried = Some(state);
+        return Ok((
+            result(true, changed, "service-runtime source-gate"),
+            outputs,
+        ));
+    }
+    let state = carried
+        .as_mut()
+        .ok_or_else(|| format!("service-runtime-state-missing-{permutation}"))?;
+    match permutation {
+        "managed-files" => {
+            stage_managed_files(&module, receipt_dir, apply, &spec, state)?;
+            let managed = state.managed.as_ref().unwrap();
+            if let (Some(install), Some(service), Some(health)) = (
+                state.install.as_ref(),
+                state.service_outcome.as_ref(),
+                state.health.as_ref(),
+            ) {
+                let ok = managed.ok && install.ok && service.ok && health.ok;
+                let missing = if ok {
+                    "none".into()
+                } else if !managed.ok {
+                    format!("{}-managed-file-missing", spec.op_prefix)
+                } else if !install.ok {
+                    format!("{}-binary-install-failed", spec.op_prefix)
+                } else if !service.ok {
+                    format!("{}-service-not-active", spec.op_prefix)
+                } else {
+                    format!("{}-health-failed", spec.op_prefix)
+                };
+                let changed = state.git_outcome.as_ref().is_some_and(|v| v.changed)
+                    || managed.changed
+                    || install.changed
+                    || service.changed;
+                write_run_receipt(
+                    receipt_dir,
+                    &spec,
+                    apply,
+                    ok,
+                    changed,
+                    &missing,
+                    &state.source_plan.reference,
+                    &state.source_plan.reference,
+                    &state.source_dir,
+                    Some(&state.source_sha_value),
+                )?;
+            }
+            Ok((
+                result(managed.ok, managed.changed, "service-runtime managed-files"),
+                BTreeMap::new(),
+            ))
+        }
+        "build" => {
+            if let Some(v) =
+                stage_build(&module, receipt_dir, apply, &spec, args, invocation, state)?
+            {
+                return Ok((
+                    result(v.ok, v.changed, "service-runtime build"),
+                    BTreeMap::new(),
+                ));
+            }
+            Ok((
+                result(
+                    true,
+                    state.build.as_ref().is_some_and(|v| v.is_some()),
+                    "service-runtime build",
+                ),
+                BTreeMap::new(),
+            ))
+        }
+        "binary-install" => {
+            if let Some(v) = stage_binary_install(&module, receipt_dir, apply, &spec, state)? {
+                return Ok((
+                    result(v.ok, v.changed, "service-runtime binary-install"),
+                    BTreeMap::new(),
+                ));
+            }
+            let v = state.install.as_ref().unwrap();
+            Ok((
+                result(v.ok, v.changed, "service-runtime binary-install"),
+                BTreeMap::new(),
+            ))
+        }
+        "service-epilogue" => {
+            stage_service_epilogue(receipt_dir, apply, &spec, invocation, state)?;
+            let v = state.service_outcome.as_ref().unwrap();
+            Ok((
+                result(v.ok, v.changed, "service-runtime service-epilogue"),
+                BTreeMap::new(),
+            ))
+        }
+        "health-proof" => {
+            stage_health_proof(receipt_dir, &spec, state)?;
+            let health = state.health.as_ref().unwrap();
+            Ok((
+                result(health.ok, false, "service-runtime health-proof"),
+                BTreeMap::new(),
+            ))
+        }
+        other => Err(format!(
+            "service-runtime-routine-permutation-unsupported-{other}"
+        )),
+    }
 }
 
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {

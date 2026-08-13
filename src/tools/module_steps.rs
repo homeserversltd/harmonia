@@ -209,6 +209,7 @@ pub(crate) fn execute_routine_tool(
     receipt_dir: &Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    service_runtime: &mut Option<crate::tools::service_runtime::ServiceRuntimeState>,
 ) -> Result<(OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
     if !crate::tools::routine_summonable(tool) { return Err(format!("routine-tool-not-summonable-{tool}")); }
     let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
@@ -220,6 +221,7 @@ pub(crate) fn execute_routine_tool(
     fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let name = tool.to_string();
     match tool {
+        "service-runtime" => crate::tools::service_runtime::execute_routine_stage(permutation.name, args, manifest, receipt_dir, apply, invocation, service_runtime),
         "pull-repo" => {
             let step = crate::ladder::ValidatedStep { step_id: name.clone(), tool: tool.into(), permutation: permutation.name.into(), args: args.clone(), on_failure: crate::ladder::OnFailure::Stop };
             let plan = crate::ladder::routine_source_plan(&step, manifest)?;

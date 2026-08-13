@@ -577,7 +577,8 @@ pub(crate) fn run_profile_engine_with_preflight(
                 }
             }
             crate::bands::Band::PullSource => {
-                // Rolling-update source acquisition already ran in today's prelude.
+                // Primitive rolling-update acquisition already ran; routine children still visit this band.
+                execute_band_modules(band, profile, module_root, receipt_dir, mode, &device_module_policy.disabled_modules, &mut module_states, &mut routine_states, &mut halted_modules, &mut module_count, &mut operation_count, &mut changed, &mut ok, &mut first_missing_signal, &mut events)?;
             }
             crate::bands::Band::StageProfile => {
                 // Rolling-update profile materialization already ran in today's prelude.
