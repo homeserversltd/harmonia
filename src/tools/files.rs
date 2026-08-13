@@ -3970,7 +3970,7 @@ fn write_partial_failure_receipt(
     write_convergence_receipt(receipt_dir, request, &outcome, apply)
 }
 
-fn convergence_entry_receipt(entry: &FileConvergenceEntry) -> serde_json::Value {
+fn convergence_entry_receipt(entry: &FileConvergenceEntry, apply: bool) -> serde_json::Value {
     let mut receipt = serde_json::to_value(entry).expect("file convergence entry serializes");
     let object = receipt
         .as_object_mut()
@@ -3981,7 +3981,9 @@ fn convergence_entry_receipt(entry: &FileConvergenceEntry) -> serde_json::Value 
         && entry.mode_equal_before
         && !entry.ownership_changed;
     let diff_decision = if exact_before { "empty" } else { "different" };
-    let movement = if entry.changed {
+    let movement = if !apply {
+        "none"
+    } else if entry.changed {
         if entry.backed_up_to.is_some() || !entry.content_equal_before || !entry.mode_equal_before {
             "backup-and-atomic-copy"
         } else {
@@ -4009,7 +4011,12 @@ fn convergence_entry_receipt(entry: &FileConvergenceEntry) -> serde_json::Value 
     );
     object.insert("diff_decision".into(), json!(diff_decision));
     object.insert("movement".into(), json!(movement));
-    object.insert("truthful_changed".into(), json!(entry.changed));
+    object.insert("truthful_changed".into(), json!(apply && entry.changed));
+    object.insert(
+        "ok".into(),
+        json!(entry.source_exists
+            && if apply { entry.target_exists_after && entry.content_equal_after && entry.mode_equal_after } else { entry.target_exists_before }),
+    );
     receipt
 }
 
@@ -4032,11 +4039,11 @@ fn write_convergence_receipt(
         "checked": outcome.checked,
         "written": outcome.written,
         "backed_up": outcome.backed_up,
-        "changed": outcome.changed,
-        "ownership_changed": outcome.ownership_changed,
+        "changed": apply && outcome.changed,
+        "ownership_changed": apply && outcome.ownership_changed,
         "missing": outcome.missing,
         "missing_target_birth_debts": outcome.missing_target_birth_debts,
-        "entries": outcome.entries.iter().map(convergence_entry_receipt).collect::<Vec<_>>(),
+        "entries": outcome.entries.iter().map(|entry| convergence_entry_receipt(entry, apply)).collect::<Vec<_>>(),
         "first_missing_signal": if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
     });
     let mut receipt_name = request.receipt_name.clone();

@@ -133,7 +133,7 @@ fn save_feed(path: &Path, feed: &InteractablesFeed) -> Result<(), String> {
     #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o644))
         .map_err(|error| format!("interactables-feed-mode-failed {}: {error}", path.display()))?;
-    let proposal_root = path.parent().unwrap_or_else(|| Path::new(".")).join("config-proposals");
+    let proposal_root = path.parent().unwrap_or_else(|| Path::new(".")).join("proposals");
     fs::create_dir_all(&proposal_root).map_err(|error| error.to_string())?;
     let live_records = feed.interactables.iter().map(|item| format!("{}.json", item.id)).collect::<BTreeSet<_>>();
     for entry in fs::read_dir(&proposal_root).map_err(|error| error.to_string())? {
@@ -169,12 +169,6 @@ fn refresh_interactables_at_path(
     outcome: &FileConvergenceOutcome,
 ) -> Result<(), String> {
     let mut feed = load_feed(path)?;
-    let declared_targets: BTreeSet<PathBuf> = request.files.iter().map(|file| {
-        request.target_root.join(&file.relative_path)
-    }).collect();
-    feed.interactables.retain(|existing| {
-        existing.module_id != manifest.id || declared_targets.contains(&existing.target_path)
-    });
     let now = stamp();
     let available_at = iso8601_now();
     for entry in &outcome.entries {
