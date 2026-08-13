@@ -7,6 +7,7 @@ pub(crate) struct ModuleExecution {
     pub(crate) changed: bool,
     pub(crate) operation_count: usize,
     pub(crate) first_missing_signal: Option<String>,
+    pub(crate) placements: Vec<serde_json::Value>,
 }
 
 impl ModuleExecution {
@@ -33,6 +34,7 @@ impl ModuleExecution {
             changed,
             operation_count: outcomes.len(),
             first_missing_signal,
+            placements: Vec::new(),
         }
     }
 }
@@ -56,7 +58,13 @@ pub(crate) fn execute_profile_module(
                 manifest.id
             ));
         }
-        execute_ladder_manifest(&manifest, &module_dir, software_authorization, None, invocation)
+        execute_ladder_manifest(
+            &manifest,
+            &module_dir,
+            software_authorization,
+            None,
+            invocation,
+        )
     } else {
         Err(format!("module-unregistered-{}", module.id))
     }

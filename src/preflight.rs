@@ -940,6 +940,7 @@ pub(crate) fn run_engine_preflight(
             changed: false,
             operation_count: 0,
             first_missing_signal: Some(signal.into()),
+            placements: Vec::new(),
         });
     };
     if !config.enabled {
@@ -967,6 +968,7 @@ pub(crate) fn run_engine_preflight(
             changed: false,
             operation_count: 0,
             first_missing_signal: Some(signal.into()),
+            placements: Vec::new(),
         });
     }
 
@@ -1152,7 +1154,10 @@ pub(crate) fn run_engine_preflight(
                             config.git_https_credential_token_path.clone(),
                         );
                         let git_outcome = if apply {
-                            tools::git_artifact::apply(&request, invocation.ok_or("invocation-key-missing")?)
+                            tools::git_artifact::apply(
+                                &request,
+                                invocation.ok_or("invocation-key-missing")?,
+                            )
                         } else {
                             tools::git_artifact::plan(&request)
                         };
@@ -1367,7 +1372,10 @@ pub(crate) fn run_engine_preflight(
                 config.git_https_credential_token_path.clone(),
             );
             let git_outcome = if apply {
-                tools::git_artifact::apply(&git_request, invocation.ok_or("invocation-key-missing")?)
+                tools::git_artifact::apply(
+                    &git_request,
+                    invocation.ok_or("invocation-key-missing")?,
+                )
             } else {
                 tools::git_artifact::plan(&git_request)
             };

@@ -110,7 +110,7 @@ Illustrative — dissolution lands with the spine.
 Additive output stamps are keyed by `child.output`; a missing reference fails closed and blocks later children. Migration status is `routine-spine-landed`; managed-files/reload/conditional restart/health behavior remains owned by the service-runtime spine.
 ## Movement A — bands spine re-homing
 
-Movement A seats the ten production faces and makes `profile_engine` enter them in charter order without changing an event, receipt, key mint, or module execution order. Today’s source/profile prelude still runs before the profile-engine walk, and each profile module still executes its package, binary, service, file, and proposal operations as one indivisible item. The band index records that effective order as `charter_order_debt`; behavior preservation outranks reorder in this movement.
+Movement A seats the ten production faces and makes `profile_engine` enter them in charter order. Each module carries resumable state across the walk; validated steps are partitioned by owning band while declaration-relative order is preserved within each band. A required module failure halts only that module’s later bands, while other modules continue. Receipt schemas and InvocationKey minting remain unchanged; the additive band-walk diagnostic records the observed walk and module placements.
 
 | Band | Movement A | Existing behavior owner |
 |---|---|---|

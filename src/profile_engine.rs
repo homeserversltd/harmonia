@@ -55,8 +55,15 @@ fn read_device_module_policy() -> Result<DeviceModulePolicy, String> {
     let path = Path::new(APPLIANCE_CONFIG_PATH);
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(DeviceModulePolicy::default()),
-        Err(err) => return Err(format!("appliance-config-read-failed {}: {err}", path.display())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(DeviceModulePolicy::default())
+        }
+        Err(err) => {
+            return Err(format!(
+                "appliance-config-read-failed {}: {err}",
+                path.display()
+            ))
+        }
     };
     let config: serde_json::Value = serde_json::from_str(&text)
         .map_err(|err| format!("appliance-config-parse-failed {}: {err}", path.display()))?;
@@ -325,21 +332,131 @@ fn write_group_selection_receipt(
     )
 }
 
+fn execute_band_modules(
+    band: crate::bands::Band,
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: UpdateMode,
+    disabled_modules: &BTreeSet<String>,
+    states: &mut BTreeMap<String, ModuleExecution>,
+    halted: &mut BTreeSet<String>,
+    module_count: &mut usize,
+    operation_count: &mut usize,
+    changed: &mut bool,
+    ok: &mut bool,
+    first_missing_signal: &mut String,
+    events: &mut File,
+) -> Result<(), String> {
+    for module_id in &profile.modules {
+        if disabled_modules.contains(module_id) || halted.contains(module_id) {
+            continue;
+        }
+        let loaded = match load_profile_module(module_root, module_id) {
+            Ok(value) => value,
+            Err(err) => {
+                let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
+                    ok: true,
+                    changed: false,
+                    operation_count: 0,
+                    first_missing_signal: None,
+                    placements: Vec::new(),
+                });
+                state.ok = false;
+                state.first_missing_signal.get_or_insert(err.clone());
+                halted.insert(module_id.clone());
+                *ok = false;
+                if *first_missing_signal == "none" {
+                    *first_missing_signal = err.clone();
+                }
+                event(events, "module-rejected", false, &err)?;
+                continue;
+            }
+        };
+        *module_count = profile.modules.len();
+        let result = match loaded {
+            LoadedModule::Ladder(manifest) => execute_ladder_manifest_band(
+                &manifest,
+                &receipt_dir.join("modules").join(module_id),
+                band,
+                mode.software_authorization(),
+                profile.package_authority.as_ref(),
+                mode.invocation(),
+                states.get(module_id).map(|s| s.changed).unwrap_or(false),
+            ),
+            LoadedModule::Sidecar(_) => {
+                let mut state = ModuleExecution {
+                    ok: false,
+                    changed: false,
+                    operation_count: 0,
+                    first_missing_signal: Some("module-sidecar-not-band-executable".to_string()),
+                    placements: Vec::new(),
+                };
+                Ok(state)
+            }
+        };
+        let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
+            ok: true,
+            changed: false,
+            operation_count: 0,
+            first_missing_signal: None,
+            placements: Vec::new(),
+        });
+        match result {
+            Ok(part) => {
+                state.operation_count += part.operation_count;
+                state.changed |= part.changed;
+                state.placements.extend(part.placements);
+                if part.changed {
+                    *changed = true;
+                }
+                if !part.ok {
+                    state.ok = false;
+                    if state.first_missing_signal.is_none() {
+                        state.first_missing_signal = part.first_missing_signal;
+                    }
+                    *ok = false;
+                    halted.insert(module_id.clone());
+                    if *first_missing_signal == "none" {
+                        *first_missing_signal = state
+                            .first_missing_signal
+                            .clone()
+                            .unwrap_or_else(|| format!("module-failed-{module_id}"));
+                    }
+                }
+                *operation_count += part.operation_count;
+                event(
+                    events,
+                    "module-band",
+                    part.ok,
+                    &format!(
+                        "{} band={:?} steps={}",
+                        module_id, band, part.operation_count
+                    ),
+                )?;
+            }
+            Err(err) => {
+                state.ok = false;
+                state.first_missing_signal.get_or_insert(err.clone());
+                halted.insert(module_id.clone());
+                *ok = false;
+                if *first_missing_signal == "none" {
+                    *first_missing_signal = err.clone();
+                }
+                event(events, "module-rejected", false, &err)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_profile_engine(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode,
 ) -> Result<(), String> {
-    run_profile_engine_with_preflight(
-        profile,
-        module_root,
-        receipt_dir,
-        mode,
-        false,
-        None,
-        None,
-    )
+    run_profile_engine_with_preflight(profile, module_root, receipt_dir, mode, false, None, None)
 }
 
 pub(crate) fn run_profile_engine_with_preflight(
@@ -367,8 +484,11 @@ pub(crate) fn run_profile_engine_with_preflight(
     let mut suite_ok = true;
     let mut changed = false;
     let mut first_missing_signal = "none".to_string();
-    let mut module_count = 0usize;
+    let mut module_count = profile.modules.len();
     let mut operation_count = 0usize;
+    let mut module_states: BTreeMap<String, ModuleExecution> = BTreeMap::new();
+    let mut halted_modules: BTreeSet<String> = BTreeSet::new();
+    let mut visited_bands = Vec::new();
     let device_module_policy = read_device_module_policy()?;
 
     let harmonia_root = harmonia_root_from_module_root(module_root);
@@ -376,25 +496,51 @@ pub(crate) fn run_profile_engine_with_preflight(
     let mut group_losers = BTreeMap::new();
     let mut final_result = None;
     crate::bands::walk(|band| {
+        visited_bands.push(format!("{:?}", band));
         match band {
             crate::bands::Band::RenewSelf => {
-            run_profile_hotfixes(profile, receipt_dir, invocation);
+                run_profile_hotfixes(profile, receipt_dir, invocation);
 
-            if let Some(suite_debt) = suite_debt {
-                ok = false;
-                suite_ok = false;
-                first_missing_signal = suite_debt.to_string();
-                event(&mut events, "profile-suite-spine-debt", false, suite_debt)?;
-            }
+                if let Some(suite_debt) = suite_debt {
+                    ok = false;
+                    suite_ok = false;
+                    first_missing_signal = suite_debt.to_string();
+                    event(&mut events, "profile-suite-spine-debt", false, suite_debt)?;
+                }
 
-            if skip_preflight {
-                event(
-                    &mut events,
-                    "engine-preflight-skipped",
-                    true,
-                    "already completed by update suite",
-                )?;
-                if let Some(preflight) = completed_preflight.take() {
+                if skip_preflight {
+                    event(
+                        &mut events,
+                        "engine-preflight-skipped",
+                        true,
+                        "already completed by update suite",
+                    )?;
+                    if let Some(preflight) = completed_preflight.take() {
+                        operation_count += preflight.operation_count;
+                        if preflight.changed {
+                            changed = true;
+                        }
+                        if !preflight.ok {
+                            let preflight_signal = preflight
+                                .first_missing_signal
+                                .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
+                            event(
+                                &mut events,
+                                "engine-preflight-honest-staleness",
+                                false,
+                                &preflight_signal,
+                            )?;
+                            ok = false;
+                            if first_missing_signal == "none" {
+                                first_missing_signal = preflight_signal;
+                            }
+                        }
+                    }
+                } else {
+                    // Engine-plane self-update is automatic in every profile run. It has its
+                    // own receipt and never derives from, nor widens, module hard consent.
+                    let preflight =
+                        run_engine_preflight(module_root, receipt_dir, apply, invocation)?;
                     operation_count += preflight.operation_count;
                     if preflight.changed {
                         changed = true;
@@ -409,48 +555,23 @@ pub(crate) fn run_profile_engine_with_preflight(
                             false,
                             &preflight_signal,
                         )?;
-                        ok = false;
-                        if first_missing_signal == "none" {
+                        if apply {
+                            ok = false;
                             first_missing_signal = preflight_signal;
                         }
                     }
                 }
-            } else {
-                // Engine-plane self-update is automatic in every profile run. It has its
-                // own receipt and never derives from, nor widens, module hard consent.
-                let preflight = run_engine_preflight(module_root, receipt_dir, apply, invocation)?;
-                operation_count += preflight.operation_count;
-                if preflight.changed {
-                    changed = true;
-                }
-                if !preflight.ok {
-                    let preflight_signal = preflight
-                        .first_missing_signal
-                        .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
+
+                if profile.modules.is_empty() {
+                    ok = false;
+                    first_missing_signal = "profile-modules-empty".to_string();
                     event(
                         &mut events,
-                        "engine-preflight-honest-staleness",
+                        "profile-modules",
                         false,
-                        &preflight_signal,
+                        "profile module spine is empty",
                     )?;
-                    if apply {
-                        ok = false;
-                        first_missing_signal = preflight_signal;
-                    }
                 }
-            }
-
-            if profile.modules.is_empty() {
-                ok = false;
-                first_missing_signal = "profile-modules-empty".to_string();
-                event(
-                    &mut events,
-                    "profile-modules",
-                    false,
-                    "profile module spine is empty",
-                )?;
-            }
-
             }
             crate::bands::Band::PullSource => {
                 // Rolling-update source acquisition already ran in today's prelude.
@@ -459,224 +580,97 @@ pub(crate) fn run_profile_engine_with_preflight(
                 // Rolling-update profile materialization already ran in today's prelude.
             }
             crate::bands::Band::Compare => {
-            let group_selections = resolve_group_selections(
-                profile,
-                module_root,
-                receipt_dir,
-                &device_module_policy.disabled_modules,
-            )?;
-            group_losers = group_loser_winners(&group_selections);
-
+                let group_selections = resolve_group_selections(
+                    profile,
+                    module_root,
+                    receipt_dir,
+                    &device_module_policy.disabled_modules,
+                )?;
+                group_losers = group_loser_winners(&group_selections);
             }
-            crate::bands::Band::InstallPackages => {
-                // Today's module executor interleaves package, binary, service,
-                // file, and proposal work. Movement A enters it exactly once.
-            for module_id in &profile.modules {
-                if device_module_policy.disabled_modules.contains(module_id) {
-                    module_count += 1;
-                    let signal = "module-disabled-by-device";
-                    append_profile_ledger_entry(
-                        receipt_dir,
-                        profile,
-                        ProfileLedgerEntry {
-                            run_id: &run_id,
-                            module_id,
-                            ok: true,
-                            changed: false,
-                            operation_count: 0,
-                            first_missing_signal: signal,
-                            receipt_dir,
-                            module_version: None,
-                        },
-                    )?;
-                    event(
-                        &mut events,
-                        "module-skipped",
-                        true,
-                        &format!("{module_id} {signal}"),
-                    )?;
-                    continue;
-                }
-                let module = match load_profile_module(module_root, module_id) {
-                    Ok(m) => m,
-                    Err(err) => {
-                        ok = false;
-                        if first_missing_signal == "none" {
-                            first_missing_signal = format!("module-missing-{module_id}");
-                        }
-                        event(&mut events, "module-load", false, &err)?;
+            crate::bands::Band::InstallPackages
+            | crate::bands::Band::RatchetBinaries
+            | crate::bands::Band::RestartServices
+            | crate::bands::Band::BackfillFiles
+            | crate::bands::Band::ProposeEdits => {
+                execute_band_modules(
+                    band,
+                    profile,
+                    module_root,
+                    receipt_dir,
+                    mode,
+                    &device_module_policy.disabled_modules,
+                    &mut module_states,
+                    &mut halted_modules,
+                    &mut module_count,
+                    &mut operation_count,
+                    &mut changed,
+                    &mut ok,
+                    &mut first_missing_signal,
+                    &mut events,
+                )?;
+            }
+            crate::bands::Band::ReportHome => {
+                for module_id in &profile.modules {
+                    if let Some(state) = module_states.get(module_id) {
+                        let signal = state.first_missing_signal.as_deref().unwrap_or("none");
+                        let module = load_profile_module(module_root, module_id).ok();
                         append_profile_ledger_entry(
                             receipt_dir,
                             profile,
                             ProfileLedgerEntry {
                                 run_id: &run_id,
                                 module_id,
-                                ok: false,
-                                changed: false,
-                                operation_count: 0,
-                                first_missing_signal: &format!("module-missing-{module_id}"),
+                                ok: state.ok,
+                                changed: state.changed,
+                                operation_count: state.operation_count,
+                                first_missing_signal: signal,
                                 receipt_dir,
-                                module_version: None,
+                                module_version: module.as_ref().and_then(LoadedModule::version),
                             },
                         )?;
-                        continue;
-                    }
-                };
-                module_count += 1;
-                event(&mut events, "module-start", true, module.id())?;
-                if let Some(winner) = group_losers.get(module.id()) {
-                    let signal = format!("group-lost-to:{winner}");
-                    append_profile_ledger_entry(
-                        receipt_dir,
-                        profile,
-                        ProfileLedgerEntry {
-                            run_id: &run_id,
-                            module_id: module.id(),
-                            ok: true,
-                            changed: false,
-                            operation_count: 0,
-                            first_missing_signal: &signal,
-                            receipt_dir,
-                            module_version: module.version(),
-                        },
-                    )?;
-                    event(
-                        &mut events,
-                        "module-skipped",
-                        true,
-                        &format!("{} {signal}", module.id()),
-                    )?;
-                    continue;
-                }
-                let execution_result = match &module {
-                    LoadedModule::Sidecar(sidecar) => execute_profile_module(
-                        sidecar,
-                        module_root,
-                        receipt_dir,
-                        mode.software_authorization(),
-                        &harmonia_root,
-                        invocation,
-                    ),
-                    LoadedModule::Ladder(manifest) => {
-                        let module_dir = receipt_dir.join("modules").join(&manifest.id);
-                        let mut manifest = manifest.clone();
-                        compose_caduceus_commands_with_policy(
-                            profile,
-                            module_root,
-                            &mut manifest,
-                            &device_module_policy.disabled_modules,
-                        )?;
-                        execute_ladder_manifest(
-                            &manifest,
-                            &module_dir,
-                            mode.software_authorization(),
-                            profile.package_authority.as_ref(),
-                            invocation,
-                        )
-                    }
-                };
-                let execution = match execution_result {
-                    Ok(execution) => execution,
-                    Err(err) => {
-                        ok = false;
-                        if first_missing_signal == "none" {
-                            first_missing_signal = err.clone();
-                        }
-                        event(&mut events, "module-rejected", false, &err)?;
-                        append_profile_ledger_entry(
-                            receipt_dir,
-                            profile,
-                            ProfileLedgerEntry {
-                                run_id: &run_id,
-                                module_id: module.id(),
-                                ok: false,
-                                changed: false,
-                                operation_count: 0,
-                                first_missing_signal: &err,
-                                receipt_dir,
-                                module_version: module.version(),
-                            },
-                        )?;
-                        continue;
-                    }
-                };
-                operation_count += execution.operation_count;
-                if execution.changed {
-                    changed = true;
-                }
-                let module_signal = execution.first_missing_signal.as_deref().unwrap_or("none");
-                if !execution.ok {
-                    ok = false;
-                    if first_missing_signal == "none" {
-                        first_missing_signal = execution
-                            .first_missing_signal
-                            .clone()
-                            .unwrap_or_else(|| format!("module-failed-{module_id}"));
                     }
                 }
-                append_profile_ledger_entry(
+                write_json(
+                    &receipt_dir.join("band-walk.receipt.json"),
+                    &json!({
+                        "schema": "harmonia.band-walk.receipt.v1",
+                        "bands": visited_bands,
+                        "module_steps": module_states.iter().map(|(id, state)| json!({
+                            "module_id": id, "operation_count": state.operation_count,
+                            "ok": state.ok, "changed": state.changed,
+                            "first_missing_signal": state.first_missing_signal,
+                            "steps": state.placements,
+                        })).collect::<Vec<_>>(),
+                    }),
+                )?;
+                write_engine_run_receipt_with_duration(
                     receipt_dir,
                     profile,
-                    ProfileLedgerEntry {
-                        run_id: &run_id,
-                        module_id: module.id(),
-                        ok: execution.ok,
-                        changed: execution.changed,
-                        operation_count: execution.operation_count,
-                        first_missing_signal: module_signal,
-                        receipt_dir,
-                        module_version: module.version(),
-                    },
+                    apply,
+                    ok,
+                    changed,
+                    module_count,
+                    operation_count,
+                    &first_missing_signal,
+                    module_root,
+                    suite_ok,
+                    run_started.elapsed().as_millis(),
                 )?;
-                event(
-                    &mut events,
-                    "module-complete",
-                    execution.ok,
-                    &format!("{} operations={}", module.id(), execution.operation_count),
-                )?;
-            }
-
-            }
-            crate::bands::Band::RatchetBinaries => {
-                // Fronted by the indivisible module walk above.
-            }
-            crate::bands::Band::RestartServices => {
-                // Fronted by the indivisible module walk above.
-            }
-            crate::bands::Band::BackfillFiles => {
-                // Fronted by the indivisible module walk above.
-            }
-            crate::bands::Band::ProposeEdits => {
-                // Existing hotfix/proposal ordering remains in renew-self.
-            }
-            crate::bands::Band::ReportHome => {
-            write_engine_run_receipt_with_duration(
-                receipt_dir,
-                profile,
-                apply,
-                ok,
-                changed,
-                module_count,
-                operation_count,
-                &first_missing_signal,
-                module_root,
-                suite_ok,
-                run_started.elapsed().as_millis(),
-            )?;
-            println!("schema=harmonia.run_profile.v1");
-            hyalos::forward_receipt(
-                "schema=harmonia.run_profile.v1",
-                &format!("schema=harmonia.run_profile.v1 ok={}", ok),
-                Some(serde_json::json!({"schema": "harmonia.run_profile.v1", "ok": ok})),
-                Some(ok),
-            );
-            println!("ok={}", ok);
-            println!("changed={}", changed);
-            println!("profile_id={}", profile.id);
-            println!("module_count={}", module_count);
-            println!("operation_count={}", operation_count);
-            println!("first_missing_signal={}", first_missing_signal);
-            println!("receipt_dir={}", receipt_dir.display());
+                println!("schema=harmonia.run_profile.v1");
+                hyalos::forward_receipt(
+                    "schema=harmonia.run_profile.v1",
+                    &format!("schema=harmonia.run_profile.v1 ok={}", ok),
+                    Some(serde_json::json!({"schema": "harmonia.run_profile.v1", "ok": ok})),
+                    Some(ok),
+                );
+                println!("ok={}", ok);
+                println!("changed={}", changed);
+                println!("profile_id={}", profile.id);
+                println!("module_count={}", module_count);
+                println!("operation_count={}", operation_count);
+                println!("first_missing_signal={}", first_missing_signal);
+                println!("receipt_dir={}", receipt_dir.display());
                 // A report-only sweep is a census, not a systemd failure: its written
                 // aggregate receipt carries all drift/blocker/failure truth. Hard runs
                 // return failure only after that receipt has been emitted.
@@ -822,7 +816,12 @@ where
         // The engine plane remains independent of update apply; it owns its
         // currentness ratchet and one re-exec guard without widening software
         // authority into configuration or identity.
-        let preflight = run_engine_preflight(module_root, &effective_receipt_dir, apply, mode.invocation())?;
+        let preflight = run_engine_preflight(
+            module_root,
+            &effective_receipt_dir,
+            apply,
+            mode.invocation(),
+        )?;
         if !apply {
             prelude(&effective_receipt_dir)?;
             return run_profile_engine_with_preflight(
@@ -1064,13 +1063,35 @@ pub(crate) fn tv_update(
     )
 }
 
-pub(crate) fn profile_update(profile: &Profile, module_root: &Path, receipt_dir: &Path, mode: UpdateMode) -> Result<(), String> {
+pub(crate) fn profile_update(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: UpdateMode,
+) -> Result<(), String> {
     let suite_debt = enforce_update_suite(profile, module_root)?;
     let profile_id = profile.id.clone();
-    rolling_update_run(profile, module_root, receipt_dir, mode, suite_debt, profile_update_lock_path(&profile_id)?, materialize_profile_receipt_dir, try_acquire_homeconsole_update_lock, |effective_receipt_dir| {
-        let engine = load_engine_plane_config(&engine_config_path())?.ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-        sync_profile_from_source(&engine.source_dir, &profile_id, module_root, effective_receipt_dir, &engine.git_bearer)
-    })
+    rolling_update_run(
+        profile,
+        module_root,
+        receipt_dir,
+        mode,
+        suite_debt,
+        profile_update_lock_path(&profile_id)?,
+        materialize_profile_receipt_dir,
+        try_acquire_homeconsole_update_lock,
+        |effective_receipt_dir| {
+            let engine = load_engine_plane_config(&engine_config_path())?
+                .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
+            sync_profile_from_source(
+                &engine.source_dir,
+                &profile_id,
+                module_root,
+                effective_receipt_dir,
+                &engine.git_bearer,
+            )
+        },
+    )
 }
 
 pub(crate) fn normalize_homeserver_engine_branch() -> Result<(), String> {
