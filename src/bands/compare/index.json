@@ -1,0 +1,9 @@
+{
+  "schema": "harmonia.band-face.v1",
+  "id": "compare",
+  "charter_order": 4,
+  "deed": "Resolve profile and module comparison before execution.",
+  "movement_status": "fronted",
+  "behavior_owner": "existing profile/update orchestration",
+  "movement_a_rule": "The face calls the existing phase boundary; no event, receipt, key mint, or ordering is added."
+}
