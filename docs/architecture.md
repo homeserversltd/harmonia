@@ -101,13 +101,13 @@ A routine is a ladder parent with `tool: "routine"` and ordered sibling `steps`.
 
 Execution owns one BTreeMap context per routine. Successful child outputs are stamped additively as `child.output`; missing stamps fail closed, and later children are blocked with nested receipts. The aggregate receipt is `harmonia.routine.receipt.v1` at `<routine-id>.routine.json`, while primitive receipts remain beside their child receipt directories.
 
-Illustrative — dissolution lands with the spine.
+Illustrative — the service-runtime dissolution is landed through the routine spine.
 
 ```json
 {"step_id":"deploy","tool":"routine","permutation":"execute","steps":[{"name":"source","tool":"pull-repo","args":{"component":"example","path":"/var/lib/example/src"}},{"name":"build","tool":"build-crate","args":{"cwd":{"from":"source.path"},"source_build_sha":{"from":"source.resolved_commit"},"installed_binary":"/var/lib/example/src/target/release/example"}},{"name":"install","tool":"place-file","args":{"source_path":{"from":"build.artifact"},"path":"/usr/local/bin/example","mode":493}},{"name":"enable","tool":"enable-unit","args":{"service":"example.service"}}]}
 ```
 
-Additive output stamps are keyed by `child.output`; a missing reference fails closed and blocks later children. Migration status is `routine-spine-landed`; managed-files/reload/conditional restart/health behavior remains owned by the service-runtime spine.
+Additive output stamps are keyed by `child.output`; a missing reference fails closed and blocks later children. Legacy `service-runtime/converge` declarations lower at manifest load into six routine children. The band walk seats source gate in pull-source, build and binary install in ratchet-binaries, service epilogue and health proof in restart-services, and managed files in backfill-files. The sequential converge caller is retired from module execution; the retained stage implementations continue to own their legacy receipt families, with final `run.json` written on the last child visit.
 ## Movement A — bands spine re-homing
 
 Movement A seats the ten production faces and makes `profile_engine` enter them in charter order. Each module carries resumable state across the walk; validated steps are partitioned by owning band while declaration-relative order is preserved within each band. A required module failure halts only that module’s later bands, while other modules continue. Receipt schemas and InvocationKey minting remain unchanged; the additive band-walk diagnostic records the observed walk and module placements.
