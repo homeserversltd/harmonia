@@ -1,0 +1,9 @@
+{
+  "schema": "harmonia.band-face.v1",
+  "id": "stage-profile",
+  "charter_order": 3,
+  "deed": "Front profile materialization at its existing update prelude.",
+  "movement_status": "fronted",
+  "behavior_owner": "existing profile/update orchestration",
+  "movement_a_rule": "The face calls the existing phase boundary; no event, receipt, key mint, or ordering is added."
+}

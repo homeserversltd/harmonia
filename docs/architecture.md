@@ -104,3 +104,23 @@ Illustrative — dissolution lands with the spine.
 ```
 
 Additive output stamps are keyed by `child.output`; a missing reference fails closed and blocks later children. Migration status is `routine-spine-landed`; managed-files/reload/conditional restart/health behavior remains owned by the service-runtime spine.
+## Movement A — bands spine re-homing
+
+Movement A seats the ten production faces and makes `profile_engine` enter them in charter order without changing an event, receipt, key mint, or module execution order. Today’s source/profile prelude still runs before the profile-engine walk, and each profile module still executes its package, binary, service, file, and proposal operations as one indivisible item. The band index records that effective order as `charter_order_debt`; behavior preservation outranks reorder in this movement.
+
+| Band | Movement A | Existing behavior owner |
+|---|---|---|
+| renew-self | fronted | profile hotfix and engine preflight block |
+| pull-source | fronted | rolling-update source sync prelude |
+| stage-profile | fronted | rolling-update molt/profile sync prelude |
+| compare | fronted | profile validation and module-group selection |
+| install-packages | fronted | indivisible per-module executor, entered once here |
+| ratchet-binaries | fronted | interleaved per-module executor |
+| restart-services | fronted | interleaved per-module executor |
+| backfill-files | fronted | interleaved per-module executor |
+| propose-edits | fronted | existing hotfix and module execution positions |
+| report-home | fronted | existing run receipt, Hyalos forward, stdout, and result |
+
+No phase was marked `moved`: no complete phase item exists independently of the current rolling prelude or mixed per-module item. Each face is nevertheless live: `bands::walk` enters it in the production driver, and the face calls or fronts the existing boundary without emitting anything new.
+
+Movement B debts are explicit: single-mint `InvocationKey` threading through `src/atoms/do/index.rs` and all fourteen active minting sites under `src/tools/**`; charter-order convergence after mixed module items can be separated safely; interior purification of each fronted face; and dissolution of remaining compound/service-runtime ownership into declared routines and band interiors.

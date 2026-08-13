@@ -18,8 +18,8 @@
       "name_today": "ai-coding-harness",
       "species": "routine",
       "chartered_target_name": "module-manifest routine",
-      "migration_status": "routine-pending-spine",
-      "notes": "Routine grammar is landed; service-runtime.rs remains and managed-files/reload/conditional restart/health defer to the spine."
+      "migration_status": "routine-spine-landed-interior-dissolution-debt",
+      "notes": "Routine grammar and the Movement A band spine are landed; service-runtime.rs remains and managed-files/reload/conditional restart/health are named interior-dissolution debt."
     },
     {
       "name_today": "artifact-lock",
@@ -126,9 +126,9 @@
       "name_today": "service-runtime",
       "species": "routine",
       "chartered_target_name": "module-manifest routine",
-      "migration_status": "routine-pending-spine",
-      "delegation_note": "Build step delegated; routine-ization pending.",
-      "notes": "Routine grammar is landed; service-runtime.rs remains and managed-files/reload/conditional restart/health defer to the spine."
+      "migration_status": "routine-spine-landed-interior-dissolution-debt",
+      "delegation_note": "Build step delegated; remaining service-runtime dissolution is Movement B debt.",
+      "notes": "Routine grammar and the Movement A band spine are landed; service-runtime.rs remains and managed-files/reload/conditional restart/health are named interior-dissolution debt."
     },
     {
       "name_today": "systemd",

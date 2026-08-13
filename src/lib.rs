@@ -229,6 +229,8 @@ struct OperationOutcome {
 }
 
 pub mod application_presets;
+#[path = "bands/index.rs"]
+mod bands;
 mod arcadia_gui_runtime;
 mod pinned_artifacts_runtime;
 

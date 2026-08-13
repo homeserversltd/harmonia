@@ -1,0 +1,9 @@
+{
+  "schema": "harmonia.band-face.v1",
+  "id": "pull-source",
+  "charter_order": 2,
+  "deed": "Front source acquisition at its existing rolling-update boundary.",
+  "movement_status": "fronted",
+  "behavior_owner": "existing profile/update orchestration",
+  "movement_a_rule": "The face calls the existing phase boundary; no event, receipt, key mint, or ordering is added."
+}
