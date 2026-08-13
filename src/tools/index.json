@@ -57,7 +57,7 @@
       "species": "tool",
       "chartered_target_name": "make-symlink",
       "migration_status": "landed",
-      "act_purity_debt": true
+      "act_purity_debt": false
     },
     {
       "name_today": "files",
@@ -70,8 +70,8 @@
       "species": "tool",
       "chartered_target_name": "pull-repo",
       "migration_status": "landed",
-      "delegation_note": "Public Git operations delegate through pull-repo observe/act rungs; legacy acquisition remains the mutation fallback.",
-      "report_home_debt": true
+      "delegation_note": "Public Git operations delegate through pull-repo observe/act rungs; legacy acquisition remains only the keyed atom fallback; pull-repo.attest.jsonl cites pull-repo.json.",
+      "report_home_debt": false
     },
     {
       "name_today": "health",

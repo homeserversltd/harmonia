@@ -172,8 +172,7 @@ pub(crate) fn execute(
             }
         },
         |authorization, observation| {
-            let Some(invocation) = invocation
-            else {
+            let Some(invocation) = invocation else {
                 return write_receipt(&request, TerminalReceipt::no_change(true));
             };
             execute_action(authorization, invocation, request, observation)
@@ -193,6 +192,7 @@ pub(crate) fn execute(
                 desired_mode,
                 source: source_before,
                 link: link_before,
+                ..
             } = observation;
             let path = request.receipt_dir.join(format!("{}.json", request.name));
             let mut receipt: serde_json::Value =
@@ -234,6 +234,10 @@ fn execute_action(
     let desired_mode = observation.desired_mode;
     let source_before = observation.source.clone();
     let link_before = observation.link.clone();
+    let source_candidate = observation.source_candidate.clone();
+    let link_candidate = observation.link_candidate.clone();
+    let source_candidate_observed = observation.source_candidate_exists;
+    let link_candidate_observed = observation.link_candidate_exists;
     let source_current = source_before.bytes.as_deref() == Some(desired.as_slice())
         && source_before.mode == Some(desired_mode);
     let link_current = link_before.target.as_deref() == Some(request.source);
@@ -251,37 +255,18 @@ fn execute_action(
         .ok_or_else(|| "validated-file-symlink-target-parent-missing".to_string())?;
     atoms::r#do::create_dir_all(authorization, invocation, source_parent)?;
     atoms::r#do::create_dir_all(authorization, invocation, target_parent)?;
-    let pid = std::process::id();
-    let source_candidate = source_parent.join(format!(
-        ".{}.harmonia-source-candidate-{pid}",
-        request
-            .source
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or("source")
-    ));
-    let link_candidate = target_parent.join(format!(
-        "{}.harmonia-link-candidate-{pid}",
-        request
-            .target
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or("link")
-    ));
-    let clean = || {
-        if atoms::ask::path_kind(&source_candidate)
-            .ok()
-            .flatten()
-            .is_some()
+    let source_candidate_exists = std::cell::Cell::new(source_candidate_observed);
+    let link_candidate_exists = std::cell::Cell::new(link_candidate_observed);
+    let mut clean = || {
+        if source_candidate_exists.get()
+            && atoms::r#do::remove_file(authorization, invocation, &source_candidate).is_ok()
         {
-            let _ = atoms::r#do::remove_file(authorization, invocation, &source_candidate);
+            source_candidate_exists.set(false);
         }
-        if atoms::ask::path_kind(&link_candidate)
-            .ok()
-            .flatten()
-            .is_some()
+        if link_candidate_exists.get()
+            && atoms::r#do::remove_file(authorization, invocation, &link_candidate).is_ok()
         {
-            let _ = atoms::r#do::remove_file(authorization, invocation, &link_candidate);
+            link_candidate_exists.set(false);
         }
     };
     clean();
@@ -299,7 +284,9 @@ fn execute_action(
                 backup_to: None,
             },
         )
-        .map(|_| ())
+        .map(|_| {
+            source_candidate_exists.set(true);
+        })
     }) {
         clean();
         return write_receipt(
@@ -317,6 +304,9 @@ fn execute_action(
             &source_candidate,
             &link_candidate,
         )
+        .map(|_| {
+            link_candidate_exists.set(true);
+        })
     }) {
         clean();
         return write_receipt(
@@ -352,6 +342,7 @@ fn execute_action(
                 "validated-file-symlink-promote-source-failed: {error}"
             ));
         } else {
+            source_candidate_exists.set(false);
             mutations.push(FileSymlinkMutation::Source);
             if let Err(error) = file_symlink_fault(FileSymlinkFault::AfterSourcePromotion) {
                 promotion_error = Some(format!(
@@ -361,16 +352,17 @@ fn execute_action(
         }
     }
     if promotion_error.is_none() && !link_current {
-        if atoms::ask::path_kind(&link_candidate)
-            .ok()
-            .flatten()
-            .is_some()
+        if link_candidate_exists.get()
+            && atoms::r#do::remove_file(authorization, invocation, &link_candidate).is_ok()
         {
-            let _ = atoms::r#do::remove_file(authorization, invocation, &link_candidate);
+            link_candidate_exists.set(false);
         }
         #[cfg(unix)]
         if let Err(error) = file_symlink_fault(FileSymlinkFault::BeforeLinkRestage).and_then(|_| {
             atoms::r#do::symlink(authorization, invocation, request.source, &link_candidate)
+                .map(|_| {
+                    link_candidate_exists.set(true);
+                })
         }) {
             promotion_error = Some(format!(
                 "validated-file-symlink-restage-live-link-failed: {error}"
@@ -386,6 +378,7 @@ fn execute_action(
                     "validated-file-symlink-promote-link-failed: {error}"
                 ));
             } else {
+                link_candidate_exists.set(false);
                 mutations.push(FileSymlinkMutation::Link);
                 if let Err(error) = file_symlink_fault(FileSymlinkFault::AfterLinkPromotion) {
                     promotion_error = Some(format!(

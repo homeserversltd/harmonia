@@ -230,6 +230,7 @@ pub(crate) fn execute_routine_tool(
             if let Some(commit) = o.receipt.resolved_commit.clone() { out.insert("resolved_commit".into(), serde_json::json!(commit)); }
             let result = OperationOutcome { ok:o.ok, changed:o.changed, skipped:!apply, message:o.receipt.promotion.clone(), command:None };
             write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":o.ok,"changed":o.changed,"skipped":!apply,"promotion":o.receipt.promotion}))?;
+            crate::pull_repo::attest_source(&receipt_dir.join("pull-repo.attest.jsonl"), &o)?;
             Ok((result, out))
         }
         "build-crate" => {

@@ -81,3 +81,8 @@ pub(crate) fn acquire_source(plan: &SourcePlan, invocation: Option<crate::atoms:
     };
     report_home::source(outcome)
 }
+
+
+pub(crate) fn attest_source(log: &std::path::Path, value: &SourceOutcome) -> Result<(), String> {
+    report_home::attest_source(log, value)
+}
