@@ -221,29 +221,38 @@ pub(crate) fn validate(module: &ModuleManifest) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn execute(
+pub(crate) struct ServiceRuntimeState {
+    pub(crate) source_dir: PathBuf,
+    pub(crate) install_bin: PathBuf,
+    pub(crate) service: String,
+    pub(crate) health_url: String,
+    pub(crate) source_plan: tools::git_artifact::SourcePlan,
+    pub(crate) source_bearer: String,
+    pub(crate) git_outcome: Option<tools::git_artifact::SourceOutcome>,
+    pub(crate) remote_probe: Option<tools::git_artifact::RemoteHeadProbe>,
+    pub(crate) installed_build_sha: Option<String>,
+    pub(crate) source_sha_ok: bool,
+    pub(crate) source_sha_value: String,
+    pub(crate) managed: Option<OperationOutcome>,
+    pub(crate) build: Option<Option<crate::atoms::CommandObservation>>,
+    pub(crate) install: Option<OperationOutcome>,
+    pub(crate) service_outcome: Option<OperationOutcome>,
+    pub(crate) health: Option<CmdResult>,
+}
+
+pub(crate) fn stage_source_gate(
     module: &ModuleManifest,
     receipt_dir: &Path,
     apply: bool,
     spec: &ServiceRuntimeSpec,
-    bearer: Option<&str>,
-    args: &BTreeMap<String, Value>,
-    source_plan: &tools::git_artifact::SourcePlan,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<ModuleExecution, String> {
-    validate(module)?;
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-
-    let source_dir = PathBuf::from(require_path(module, &module.source_dir, "source_dir")?);
-    let install_bin = PathBuf::from(require_path(module, &module.install_bin, "install_bin")?);
-    let service = require_path(module, &module.service, "service")?;
-    let health_url = require_path(module, &module.url, "url")?;
-
-    let mut source_plan = source_plan.clone();
-    if let Some(bearer) = bearer {
-        source_plan.bearer = bearer.to_string();
-    }
-    let source_bearer = source_plan.bearer.clone();
+    state: &mut ServiceRuntimeState,
+) -> Result<Option<ModuleExecution>, String> {
+    let source_dir = state.source_dir.clone();
+    let install_bin = state.install_bin.clone();
+    let health_url = state.health_url.as_str();
+    let source_plan = state.source_plan.clone();
+    let source_bearer = state.source_bearer.clone();
     let source_gate = tools::comparison::execute(
         || {
             let remote_probe =
@@ -342,7 +351,7 @@ pub(crate) fn execute(
             &source_dir,
             None,
         )?;
-        return Ok(ModuleExecution::from_operations(
+        return Ok(Some(ModuleExecution::from_operations(
             vec![(
                 spec.source_op,
                 OperationOutcome {
@@ -354,7 +363,7 @@ pub(crate) fn execute(
                 },
             )],
             &module.id,
-        ));
+        )));
     }
 
     let source_sha = promoted_source_head
@@ -362,7 +371,22 @@ pub(crate) fn execute(
         .unwrap_or_else(|| tools::git_artifact::source_head(&source_dir, &source_bearer));
     write_source_sha_receipt(receipt_dir, spec.source_sha_op, &source_sha, &source_bearer)?;
     let source_sha_value = source_sha.stdout.trim().to_string();
+    state.git_outcome = Some(git_outcome);
+    state.remote_probe = remote_probe;
+    state.installed_build_sha = installed_build_sha;
+    state.source_sha_ok = source_sha.ok;
+    state.source_sha_value = source_sha_value;
+    Ok(None)
+}
 
+pub(crate) fn stage_managed_files(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+    spec: &ServiceRuntimeSpec,
+    state: &mut ServiceRuntimeState,
+) -> Result<(), String> {
+    let source_dir = state.source_dir.clone();
     let managed_files = effective_managed_files(module, &source_dir)?;
     // pali:harmonia-apply-ladder-law: SoftwareApplyAuthorization is structurally
     // bounded to SoftwarePlane; configuration paths can only be observed here.
@@ -419,49 +443,26 @@ pub(crate) fn execute(
             config_deploy: Some("interactable".to_string()), ladder: Vec::new(), base_dir: receipt_dir.to_path_buf() };
         crate::refresh_interactables_for_convergence(&manifest, &request, &outcome)?;
     }
+    state.managed = Some(managed);
+    Ok(())
+}
 
-    if !apply {
-        let managed_missing_signal = format!("{}-managed-file-missing", spec.op_prefix);
-        let first_missing = if managed.ok {
-            "none"
-        } else {
-            managed_missing_signal.as_str()
-        };
-        write_run_receipt(
-            receipt_dir,
-            spec,
-            apply,
-            managed.ok,
-            git_outcome.changed || managed.changed,
-            first_missing,
-            &source_plan.reference,
-            &source_plan.reference,
-            &source_dir,
-            if is_hex_sha(&source_sha_value) {
-                Some(source_sha_value.as_str())
-            } else {
-                None
-            },
-        )?;
-        return Ok(ModuleExecution::from_operations(
-            vec![
-                (
-                    spec.source_op,
-                    OperationOutcome {
-                        ok: true,
-                        changed: git_outcome.changed,
-                        skipped: false,
-                        message: format!("{} source planned", spec.op_prefix),
-                        command: None,
-                    },
-                ),
-                (spec.managed_files_op, managed),
-            ],
-            &module.id,
-        ));
-    }
-
-    if !source_sha.ok || !is_hex_sha(&source_sha_value) {
+pub(crate) fn stage_build(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+    spec: &ServiceRuntimeSpec,
+    args: &BTreeMap<String, Value>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    state: &mut ServiceRuntimeState,
+) -> Result<Option<ModuleExecution>, String> {
+    let source_dir = state.source_dir.clone();
+    let install_bin = state.install_bin.clone();
+    let source_plan = state.source_plan.clone();
+    let source_bearer = state.source_bearer.clone();
+    let source_sha_value = state.source_sha_value.clone();
+    let installed_build_sha = state.installed_build_sha.clone();
+    if !state.source_sha_ok || !is_hex_sha(&source_sha_value) {
         write_run_receipt(
             receipt_dir,
             spec,
@@ -474,7 +475,7 @@ pub(crate) fn execute(
             &source_dir,
             None,
         )?;
-        return Ok(ModuleExecution::from_operations(
+        return Ok(Some(ModuleExecution::from_operations(
             vec![(
                 spec.source_sha_op,
                 OperationOutcome {
@@ -486,9 +487,8 @@ pub(crate) fn execute(
                 },
             )],
             &module.id,
-        ));
+        )));
     }
-
     let build_environment = build_environment(args, Some(&source_sha_value))?;
 
     let environment: Vec<(String, String)> = build_environment.into_iter().collect();
@@ -498,10 +498,10 @@ pub(crate) fn execute(
         &receipt_dir.join("harmonia-atoms.log"), &source_bearer,
         invocation,
     )?;
-    let install = if let Some(result) = build {
-        let build = CmdResult { ok: result.ok, code: result.code.unwrap_or(-1), stdout: result.stdout, stderr: result.stderr };
-        write_command_receipt(receipt_dir, spec.build_op, &build)?;
-        if !build.ok {
+    if let Some(result) = &build {
+        let build_cmd = CmdResult { ok: result.ok, code: result.code.unwrap_or(-1), stdout: result.stdout.clone(), stderr: result.stderr.clone() };
+        write_command_receipt(receipt_dir, spec.build_op, &build_cmd)?;
+        if !build_cmd.ok {
             write_run_receipt(
                 receipt_dir,
                 spec,
@@ -514,7 +514,7 @@ pub(crate) fn execute(
                 &source_dir,
                 Some(&source_sha_value),
             )?;
-            return Ok(ModuleExecution::from_operations(
+            return Ok(Some(ModuleExecution::from_operations(
                 vec![(
                     spec.build_op,
                     OperationOutcome {
@@ -526,22 +526,35 @@ pub(crate) fn execute(
                     },
                 )],
                 &module.id,
-            ));
+            )));
         }
-
-        let artifact = source_dir.join("target/release").join(spec.binary_name);
-        install_binary(receipt_dir, spec, &artifact, &install_bin, apply)?
     } else {
         write_skipped_build_receipt(
             receipt_dir,
             spec,
             &source_sha_value,
-            remote_probe
+            state.remote_probe
                 .as_ref()
                 .and_then(|probe| probe.remote_sha.as_deref())
                 .unwrap_or_default(),
         )?;
-        write_skipped_binary_install_receipt(receipt_dir, spec, &install_bin, apply)?;
+    }
+    state.build = Some(build);
+    Ok(None)
+}
+
+pub(crate) fn stage_binary_install(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+    spec: &ServiceRuntimeSpec,
+    state: &mut ServiceRuntimeState,
+) -> Result<Option<ModuleExecution>, String> {
+    let install = if state.build.as_ref().map(|build| build.is_some()).unwrap_or(false) {
+        let artifact = state.source_dir.join("target/release").join(spec.binary_name);
+        install_binary(receipt_dir, spec, &artifact, &state.install_bin, apply)?
+    } else {
+        write_skipped_binary_install_receipt(receipt_dir, spec, &state.install_bin, apply)?;
         OperationOutcome {
             ok: true,
             changed: false,
@@ -558,29 +571,160 @@ pub(crate) fn execute(
             false,
             install.changed,
             &format!("{}-binary-install-failed", spec.op_prefix),
+            &state.source_plan.reference,
+            &state.source_plan.reference,
+            &state.source_dir,
+            Some(&state.source_sha_value),
+        )?;
+        return Ok(Some(ModuleExecution::from_operations(
+            vec![(spec.binary_install_op, install)],
+            &module.id,
+        )));
+    }
+    state.install = Some(install);
+    Ok(None)
+}
+
+pub(crate) fn stage_service_epilogue(
+    receipt_dir: &Path,
+    apply: bool,
+    spec: &ServiceRuntimeSpec,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    state: &mut ServiceRuntimeState,
+) -> Result<(), String> {
+    let service_outcome = ensure_service_active(
+        receipt_dir,
+        spec,
+        state.service.as_str(),
+        apply,
+        state.managed.as_ref().map(|managed| managed.changed).unwrap_or(false),
+        state.install.as_ref().map(|install| install.changed).unwrap_or(false),
+        invocation,
+    )?;
+    state.service_outcome = Some(service_outcome);
+    Ok(())
+}
+
+pub(crate) fn stage_health_proof(
+    receipt_dir: &Path,
+    spec: &ServiceRuntimeSpec,
+    state: &mut ServiceRuntimeState,
+) -> Result<(), String> {
+    let health = health_probe(&state.health_url, 5, 3);
+    write_command_receipt(receipt_dir, spec.health_op, &health)?;
+    state.health = Some(health);
+    Ok(())
+}
+
+pub(crate) fn execute(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    apply: bool,
+    spec: &ServiceRuntimeSpec,
+    bearer: Option<&str>,
+    args: &BTreeMap<String, Value>,
+    source_plan: &tools::git_artifact::SourcePlan,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<ModuleExecution, String> {
+    validate(module)?;
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+
+    let source_dir = PathBuf::from(require_path(module, &module.source_dir, "source_dir")?);
+    let install_bin = PathBuf::from(require_path(module, &module.install_bin, "install_bin")?);
+    let service = require_path(module, &module.service, "service")?;
+    let health_url = require_path(module, &module.url, "url")?;
+
+    let mut source_plan = source_plan.clone();
+    if let Some(bearer) = bearer {
+        source_plan.bearer = bearer.to_string();
+    }
+    let source_bearer = source_plan.bearer.clone();
+    let mut state = ServiceRuntimeState {
+        source_dir,
+        install_bin,
+        service: service.to_string(),
+        health_url: health_url.to_string(),
+        source_plan,
+        source_bearer,
+        git_outcome: None,
+        remote_probe: None,
+        installed_build_sha: None,
+        source_sha_ok: false,
+        source_sha_value: String::new(),
+        managed: None,
+        build: None,
+        install: None,
+        service_outcome: None,
+        health: None,
+    };
+
+    if let Some(early) = stage_source_gate(module, receipt_dir, apply, spec, invocation, &mut state)? {
+        return Ok(early);
+    }
+    stage_managed_files(module, receipt_dir, apply, spec, &mut state)?;
+
+    let git_changed = state.git_outcome.as_ref().map(|outcome| outcome.changed).unwrap_or(false);
+    if !apply {
+        let managed = state.managed.take().expect("managed stage ran");
+        let source_plan = state.source_plan.clone();
+        let source_dir = state.source_dir.clone();
+        let source_sha_value = state.source_sha_value.clone();
+        let managed_missing_signal = format!("{}-managed-file-missing", spec.op_prefix);
+        let first_missing = if managed.ok {
+            "none"
+        } else {
+            managed_missing_signal.as_str()
+        };
+        write_run_receipt(
+            receipt_dir,
+            spec,
+            apply,
+            managed.ok,
+            git_changed || managed.changed,
+            first_missing,
             &source_plan.reference,
             &source_plan.reference,
             &source_dir,
-            Some(&source_sha_value),
+            if is_hex_sha(&source_sha_value) {
+                Some(source_sha_value.as_str())
+            } else {
+                None
+            },
         )?;
         return Ok(ModuleExecution::from_operations(
-            vec![(spec.binary_install_op, install)],
+            vec![
+                (
+                    spec.source_op,
+                    OperationOutcome {
+                        ok: true,
+                        changed: git_changed,
+                        skipped: false,
+                        message: format!("{} source planned", spec.op_prefix),
+                        command: None,
+                    },
+                ),
+                (spec.managed_files_op, managed),
+            ],
             &module.id,
         ));
     }
 
-    let service_outcome = ensure_service_active(
-        receipt_dir,
-        spec,
-        service,
-        apply,
-        managed.changed,
-        install.changed,
-        invocation,
-    )?;
-    let health = health_probe(health_url, 5, 3);
-    write_command_receipt(receipt_dir, spec.health_op, &health)?;
+    if let Some(early) = stage_build(module, receipt_dir, apply, spec, args, invocation, &mut state)? {
+        return Ok(early);
+    }
+    if let Some(early) = stage_binary_install(module, receipt_dir, apply, spec, &mut state)? {
+        return Ok(early);
+    }
+    stage_service_epilogue(receipt_dir, apply, spec, invocation, &mut state)?;
+    stage_health_proof(receipt_dir, spec, &mut state)?;
 
+    let managed = state.managed.take().expect("managed stage ran");
+    let install = state.install.take().expect("install stage ran");
+    let service_outcome = state.service_outcome.take().expect("service stage ran");
+    let health = state.health.take().expect("health stage ran");
+    let git_outcome_changed = git_changed;
+    let source_sha_value = state.source_sha_value.clone();
+    let health_url = state.health_url.clone();
     let ok = managed.ok && install.ok && service_outcome.ok && health.ok;
     let first_missing_signal = if ok {
         "none".to_string()
@@ -594,7 +738,7 @@ pub(crate) fn execute(
         format!("{}-health-failed", spec.op_prefix)
     };
     let changed =
-        git_outcome.changed || managed.changed || install.changed || service_outcome.changed;
+        git_outcome_changed || managed.changed || install.changed || service_outcome.changed;
     write_run_receipt(
         receipt_dir,
         spec,
@@ -602,9 +746,9 @@ pub(crate) fn execute(
         ok,
         changed,
         &first_missing_signal,
-        &source_plan.reference,
-        &source_plan.reference,
-        &source_dir,
+        &state.source_plan.reference,
+        &state.source_plan.reference,
+        &state.source_dir,
         Some(&source_sha_value),
     )?;
 
@@ -622,7 +766,7 @@ pub(crate) fn execute(
                 spec.source_op,
                 OperationOutcome {
                     ok: true,
-                    changed: git_outcome.changed,
+                    changed: git_outcome_changed,
                     skipped: false,
                     message: format!("{} source synced", spec.op_prefix),
                     command: None,
