@@ -31,6 +31,7 @@ pub struct UpdatePlan {
     pub services: Vec<ServiceBinding>,
     pub gui_face: String,
     pub gui_member: String,
+    pub caduceus_count: usize,
 }
 #[derive(Clone, Debug)]
 enum Kind {
@@ -126,14 +127,12 @@ fn resolved_steps(m: &LadderManifest) -> Result<Vec<crate::ladder::ValidatedStep
 }
 fn gui_module(m: &LadderManifest, face: &str) -> bool {
     if face != "Hyprland" {
-        return resolved_steps(m).ok().is_some_and(|steps| {
-            steps.iter().any(|s| {
-                s.tool == "service-runtime"
-                    && s.args
-                        .get("component")
-                        .and_then(Value::as_str)
-                        .and_then(component_face)
-                        == Some(face)
+        return m.ladder.iter().any(|step| {
+            crate::ladder::service_runtime_converge_args(step).is_some_and(|args| {
+                args.get("component")
+                    .and_then(Value::as_str)
+                    .and_then(component_face)
+                    == Some(face)
             })
         });
     }
@@ -152,9 +151,8 @@ fn derive_plan_inner(profile: &Profile, root: &Path) -> Result<UpdatePlan, Strin
     let runtime_faces: Vec<String> = manifests
         .iter()
         .flat_map(|(_, m)| m.ladder.iter())
-        .filter(|s| s.tool == "service-runtime")
-        .filter_map(|s| {
-            s.args
+        .filter_map(|step| {
+            crate::ladder::service_runtime_converge_args(step)?
                 .get("component")
                 .and_then(Value::as_str)
                 .and_then(component_face)
@@ -179,48 +177,52 @@ fn derive_plan_inner(profile: &Profile, root: &Path) -> Result<UpdatePlan, Strin
     for (_, m) in &manifests {
         let steps = resolved_steps(m)?;
         let is_gui = gui_module(m, &face);
-        for s in &steps {
-            if s.tool == "service-runtime" && s.permutation == "converge" {
-                let component = s
-                    .args
-                    .get("component")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let member = if component == "caduceus" {
-                    caduceus_count += 1;
-                    "caduceus"
-                } else if component_face(component) == Some(face.as_str()) {
-                    face.as_str()
-                } else {
-                    continue;
-                };
-                if let Some(p) = text(&s.args, "install_bin") {
-                    add_target(&mut targets, p.into(), member)?;
-                }
-                if let Some(a) = s.args.get("managed_files").and_then(Value::as_array) {
-                    for x in a {
-                        if let Some(p) = value_path(x, "path") {
-                            add_target(&mut targets, p, member)?;
-                        }
+        for args in m
+            .ladder
+            .iter()
+            .filter_map(crate::ladder::service_runtime_converge_args)
+        {
+            let component = args
+                .get("component")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let member = if component == "caduceus" {
+                caduceus_count += 1;
+                "caduceus"
+            } else if component_face(component) == Some(face.as_str()) {
+                face.as_str()
+            } else {
+                continue;
+            };
+            if let Some(p) = text(args, "install_bin") {
+                add_target(&mut targets, p.into(), member)?;
+            }
+            if let Some(a) = args.get("managed_files").and_then(Value::as_array) {
+                for x in a {
+                    if let Some(p) = value_path(x, "path") {
+                        add_target(&mut targets, p, member)?;
                     }
                 }
-                if let Some(p) = s
-                    .args
-                    .get("caduceus_profile_source")
-                    .and_then(|x| value_path(x, "path"))
-                {
-                    add_target(&mut targets, p, member)?;
-                }
-                if let Some(name) = text(&s.args, "service") {
-                    add_service(&mut services, name, false, None, member);
-                }
             }
+            if let Some(p) = args
+                .get("caduceus_profile_source")
+                .and_then(|x| value_path(x, "path"))
+            {
+                add_target(&mut targets, p, member)?;
+            }
+            if let Some(name) = text(args, "service") {
+                add_service(&mut services, name, false, None, member);
+            }
+        }
+        for s in &steps {
             if s.tool == "files"
                 && s.permutation == "source-shelf-sweep"
                 && (m.id == "sbin"
-                    || steps.iter().any(|x| {
-                        x.tool == "service-runtime"
-                            && x.args.get("component").and_then(Value::as_str) == Some("caduceus")
+                    || m.ladder.iter().any(|step| {
+                        crate::ladder::service_runtime_converge_args(step)
+                            .and_then(|args| args.get("component"))
+                            .and_then(Value::as_str)
+                            == Some("caduceus")
                     }))
             {
                 if let Some(p) = text(&s.args, "target_shelf") {
@@ -319,6 +321,7 @@ fn derive_plan_inner(profile: &Profile, root: &Path) -> Result<UpdatePlan, Strin
         services,
         gui_face: face.clone(),
         gui_member: face,
+        caduceus_count,
     })
 }
 fn glob(pattern: &str, name: &str) -> bool {
@@ -576,6 +579,33 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
             Some(&root.join("profile-projection")),
         )?;
         bindings.push(format!("{}={}", profile_id, source_plan.gui_face));
+        if profile_id == "tv" {
+            let agathodaimon_targets = source_plan
+                .targets
+                .iter()
+                .filter(|target| target.member == "agathodaimon")
+                .map(|target| target.path.display().to_string())
+                .collect::<Vec<_>>();
+            let gui_targets = source_plan
+                .targets
+                .iter()
+                .filter(|target| target.member == source_plan.gui_member)
+                .map(|target| target.path.display().to_string())
+                .collect::<Vec<_>>();
+            let gui_services = source_plan
+                .services
+                .iter()
+                .map(|service| service.name.clone())
+                .collect::<Vec<_>>();
+            println!(
+                "profile_update_set=tv caduceus_count={} agathodaimon_targets={} gui_face={} gui_targets={} gui_services={}",
+                source_plan.caduceus_count,
+                agathodaimon_targets.join(","),
+                source_plan.gui_face,
+                gui_targets.join(","),
+                gui_services.join(",")
+            );
+        }
     }
     let plan = derive_plan(&p, &modules, Some(&root))?;
     let snap = snapshot(&plan.targets)?;

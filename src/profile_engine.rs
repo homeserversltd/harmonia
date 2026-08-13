@@ -290,8 +290,10 @@ fn compose_caduceus_commands_with_policy(
     disabled_modules: &BTreeSet<String>,
 ) -> Result<(), String> {
     let is_caduceus = manifest.ladder.iter().any(|step| {
-        step.tool == "service-runtime"
-            && step.args.get("component").and_then(|value| value.as_str()) == Some("caduceus")
+        crate::ladder::service_runtime_converge_args(step)
+            .and_then(|args| args.get("component"))
+            .and_then(|value| value.as_str())
+            == Some("caduceus")
     });
     if !is_caduceus {
         return Ok(());
@@ -302,6 +304,12 @@ fn compose_caduceus_commands_with_policy(
         if step.tool == "service-runtime" && step.permutation == "converge" {
             step.args
                 .insert("caduceus_commands".to_string(), json!(commands));
+        } else if crate::ladder::is_lowered_service_runtime_converge(step) {
+            for child in &mut step.steps {
+                child
+                    .args
+                    .insert("caduceus_commands".to_string(), json!(commands));
+            }
         }
     }
     Ok(())

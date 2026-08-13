@@ -169,6 +169,40 @@ fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
     }
 }
 
+pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
+    const STAGES: [(&str, &str); 6] = [
+        ("source-gate", "source-gate"),
+        ("build", "build"),
+        ("binary-install", "binary-install"),
+        ("service-epilogue", "service-epilogue"),
+        ("health-proof", "health-proof"),
+        ("managed-files", "managed-files"),
+    ];
+    step.tool == "routine"
+        && step.permutation == "execute"
+        && step.steps.len() == STAGES.len()
+        && step.steps.iter().zip(STAGES).all(|(child, (name, permutation))| {
+            child.name == name
+                && child.tool == "service-runtime"
+                && child.permutation.as_deref() == Some(permutation)
+        })
+        && step.steps.first().is_some_and(|first| {
+            step.steps.iter().all(|child| child.args == first.args)
+        })
+}
+
+pub(crate) fn service_runtime_converge_args(
+    step: &LadderStep,
+) -> Option<&BTreeMap<String, Value>> {
+    if step.tool == "service-runtime" && step.permutation == "converge" {
+        Some(&step.args)
+    } else if is_lowered_service_runtime_converge(step) {
+        step.steps.first().map(|child| &child.args)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn is_ladder_manifest(path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return false;
