@@ -4,6 +4,10 @@ struct SymlinkObservation {
     desired_mode: u32,
     source: SavedFile,
     link: SavedLink,
+    source_candidate: PathBuf,
+    link_candidate: PathBuf,
+    source_candidate_exists: bool,
+    link_candidate_exists: bool,
 }
 
 fn observe_symlink(
@@ -13,12 +17,51 @@ fn observe_symlink(
         .map(|observation| observation.bytes)
         .map_err(|_| "validated-file-symlink-desired-source-missing".to_string())?;
     let desired_mode = atoms::ask::file_mode(request.desired_source)?;
+    let (source_candidate, link_candidate) = candidate_paths(request)?;
+    let source_candidate_exists = atoms::ask::path_kind(&source_candidate)?.is_some();
+    let link_candidate_exists = atoms::ask::path_kind(&link_candidate)?.is_some();
     Ok(SymlinkObservation {
         desired,
         desired_mode,
         source: save_file(request.source)?,
         link: save_link(request.target)?,
+        source_candidate,
+        link_candidate,
+        source_candidate_exists,
+        link_candidate_exists,
     })
+}
+
+fn candidate_paths(
+    request: &ValidatedFileSymlinkRequest<'_>,
+) -> Result<(PathBuf, PathBuf), String> {
+    let pid = std::process::id();
+    let source_parent = request
+        .source
+        .parent()
+        .ok_or_else(|| "validated-file-symlink-source-parent-missing".to_string())?;
+    let target_parent = request
+        .target
+        .parent()
+        .ok_or_else(|| "validated-file-symlink-target-parent-missing".to_string())?;
+    Ok((
+        source_parent.join(format!(
+            ".{}.harmonia-source-candidate-{pid}",
+            request
+                .source
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or("source")
+        )),
+        target_parent.join(format!(
+            "{}.harmonia-link-candidate-{pid}",
+            request
+                .target
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or("link")
+        )),
+    ))
 }
 
 #[derive(Clone)]
