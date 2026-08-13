@@ -2440,8 +2440,13 @@ fn write_sweep_receipts(
             .replace(['/', '\\'], "_")
             .trim_matches('_')
             .to_string();
+        let lane = if matches!(entry.kind.as_str(), "launcher" | "stale-launcher") {
+            "launcher"
+        } else {
+            "file"
+        };
         crate::write_json(
-            &receipt_dir.join(format!("{base}-file-{index:04}-{safe}.json")),
+            &receipt_dir.join(format!("{base}-{lane}-{index:04}-{safe}.json")),
             &json!({
                 "schema": "harmonia.files.source_shelf_sweep.file.v1",
                 "ok": outcome.ok && entry.readback_ok,
@@ -2516,7 +2521,81 @@ pub fn source_shelf_sweep(
         return Err("source-shelf-sweep-invocation-key-missing".into());
     }
     if request.owned_recursive {
-        return source_shelf_owned_recursive_sweep(request, receipt_dir, apply, invocation);
+        let shelf_outcome =
+            source_shelf_owned_recursive_sweep(request, receipt_dir, apply, invocation)?;
+        if request.launcher_pattern == ".harmonia-no-flat-launchers" {
+            return Ok(shelf_outcome);
+        }
+
+        // Recursive shelf entries and flat launchers have different ownership
+        // shapes. Preserve the shelf pass, then run the declared launcher lane
+        // through the established launcher-only transaction.
+        let mut launcher_request = request.clone();
+        launcher_request.source_root = request.launcher_source_root.clone();
+        launcher_request.shelf_source = PathBuf::from(".");
+        launcher_request.target_shelf = request.launcher_target_root.clone();
+        launcher_request.owned_recursive = false;
+        launcher_request.receipt_name = format!("{}-launcher-pass", request.receipt_name);
+        let launcher_outcome = source_shelf_sweep_with_fault(
+            &launcher_request,
+            receipt_dir,
+            apply,
+            SourceShelfSweepFault::default(),
+        )?;
+        let mut outcome = SourceShelfSweepOutcome {
+            ok: shelf_outcome.ok && launcher_outcome.ok,
+            changed: shelf_outcome.changed || launcher_outcome.changed,
+            current: shelf_outcome.current && launcher_outcome.current,
+            source_inventory_count: shelf_outcome.source_inventory_count
+                + launcher_outcome.source_inventory_count,
+            target_inventory_count_before: shelf_outcome.target_inventory_count_before
+                + launcher_outcome.target_inventory_count_before,
+            target_inventory_count_after: shelf_outcome.target_inventory_count_after
+                + launcher_outcome.target_inventory_count_after,
+            promoted_count: shelf_outcome.promoted_count + launcher_outcome.promoted_count,
+            removed_count: shelf_outcome.removed_count + launcher_outcome.removed_count,
+            transaction_state: if shelf_outcome.changed || launcher_outcome.changed {
+                "committed"
+            } else if shelf_outcome.current && launcher_outcome.current {
+                "unchanged"
+            } else {
+                "planned"
+            }
+            .into(),
+            rollback_state: if shelf_outcome.rollback_state == "not-needed"
+                && launcher_outcome.rollback_state == "not-needed"
+            {
+                "not-needed".into()
+            } else {
+                format!(
+                    "shelf={};launchers={}",
+                    shelf_outcome.rollback_state, launcher_outcome.rollback_state
+                )
+            },
+            first_blocker: "none".into(),
+            entries: shelf_outcome.entries,
+            message: "owned recursive source shelf and flat launchers observed".into(),
+        };
+        outcome.entries.extend(launcher_outcome.entries);
+        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        let launcher_pass_prefix = format!(
+            "{}-launcher-pass",
+            request.receipt_name.trim_end_matches(".json")
+        );
+        for entry in fs::read_dir(receipt_dir).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&launcher_pass_prefix) && name.ends_with(".json") {
+                fs::remove_file(entry.path()).map_err(|error| {
+                    format!(
+                        "source-shelf-sweep-launcher-pass-receipt-cleanup-failed {}: {error}",
+                        entry.path().display()
+                    )
+                })?;
+            }
+        }
+        sync_directory(receipt_dir)?;
+        return Ok(outcome);
     }
     match source_shelf_sweep_with_fault(
         request,
@@ -2876,17 +2955,6 @@ fn source_shelf_sweep_with_fault(
         .map(|path| load_sweep_provenance(path))
         .transpose()?
         .unwrap_or_default();
-    if request.provenance_state.is_some() {
-        for name in launcher_drift.iter().chain(stale.iter()) {
-            let target = request.launcher_target_root.join(name);
-            if target.exists() && !provenance.paths.contains(&target.display().to_string()) {
-                return Err(format!(
-                    "source-shelf-sweep-provenance-refused-unowned-target {}",
-                    target.display()
-                ));
-            }
-        }
-    }
     let drift =
         !shelf_current || !launcher_drift.is_empty() || (request.prune && !stale.is_empty());
     let planned_entries = build_sweep_entries(
@@ -3072,6 +3140,23 @@ fn source_shelf_sweep_with_fault(
                         .expect("launcher drift names come from inventory");
                     let target = request.launcher_target_root.join(name);
                     if target.exists() {
+                        let backup = receipt_dir.join("backups").join(name);
+                        if let Some(parent) = backup.parent() {
+                            fs::create_dir_all(parent).map_err(|error| {
+                                format!(
+                                    "source-shelf-sweep-launcher-backup-parent-failed {}: {error}",
+                                    parent.display()
+                                )
+                            })?;
+                        }
+                        atomic_copy(&target, &backup, None, None, None).map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-launcher-backup-failed {} -> {}: {error}",
+                                target.display(),
+                                backup.display()
+                            )
+                        })?;
+                        sync_directory(backup.parent().expect("launcher backup has parent"))?;
                         fs::create_dir_all(&quarantine).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-quarantine-create-failed {}: {error}",
