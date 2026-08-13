@@ -224,7 +224,7 @@ fn derive_plan_inner(profile: &Profile, root: &Path) -> Result<UpdatePlan, Strin
                     }))
             {
                 if let Some(p) = text(&s.args, "target_shelf") {
-                    add_target(&mut targets, p.into(), "caduceus_staff")?;
+                    add_target(&mut targets, p.into(), "agathodaimon")?;
                 }
                 let tr = text(&s.args, "launcher_target_root")
                     .map(PathBuf::from)
@@ -248,7 +248,7 @@ fn derive_plan_inner(profile: &Profile, root: &Path) -> Result<UpdatePlan, Strin
                     }
                 }
                 for n in names {
-                    add_target(&mut targets, tr.join(n), "caduceus_staff")?;
+                    add_target(&mut targets, tr.join(n), "agathodaimon")?;
                 }
             }
             if is_gui && s.tool == "files" && s.permutation == "converge" {
@@ -512,7 +512,7 @@ pub(crate) fn update_set_receipt(
     failed: Option<&str>,
     failed_step: Option<&str>,
 ) -> Result<(), String> {
-    let ms=["caduceus","caduceus_staff",face].into_iter().map(|m|json!({"member":m,"status":if verdict=="ok"{"ok"}else if failed==Some(m){"failed"}else{"rolled-back"}})).collect::<Vec<_>>();
+    let ms=["caduceus","agathodaimon",face].into_iter().map(|m|json!({"member":m,"status":if verdict=="ok"{"ok"}else if failed==Some(m){"failed"}else{"rolled-back"}})).collect::<Vec<_>>();
     let mut v = json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","gui":face,"set_verdict":verdict,"members":ms});
     if let Some(x) = failed_step {
         v["failed_step"] = json!(x);
@@ -531,7 +531,7 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
     ));
     let modules = root.join("modules");
     fs::create_dir_all(&modules).map_err(|e| e.to_string())?;
-    let shelf = root.join("usr/local/sbin/caduceus_staff");
+    let shelf = root.join("usr/local/sbin/agathodaimon");
     fs::create_dir_all(shelf.join("child")).map_err(|e| e.to_string())?;
     fs::write(shelf.join("child/prior"), b"prior").map_err(|e| e.to_string())?;
     let bin = root.join("usr/local/bin/caduceus");
@@ -540,7 +540,7 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
     for (id, manifest) in [
         (
             "caduceus",
-            json!({"schema":"harmonia.module.ladder.v1","id":"caduceus","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"caduceus","component":"caduceus","source_dir":"/opt/caduceus/source","install_bin":"/usr/local/bin/caduceus","service":"caduceus.service","url":"http://127.0.0.1:1/","binary_name":"caduceus","op_prefix":"caduceus","run_schema":"bench.caduceus.v1","managed_files_schema":"bench.caduceus.files.v1","managed_files":[]}},{"step_id":"s","tool":"files","permutation":"source-shelf-sweep","args":{"source_root":"/nonexistent","shelf_source":"caduceus_staff","target_shelf":"/usr/local/sbin/caduceus_staff","launcher_target_root":"/usr/local/sbin","launcher_source_root":"/nonexistent","launcher_pattern":"caduceus-*","shelf_owner":"root","shelf_group":"root","shelf_directory_mode":493,"shelf_file_mode":420,"launcher_mode":493,"prune":true}}]}),
+            json!({"schema":"harmonia.module.ladder.v1","id":"caduceus","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"caduceus","component":"caduceus","source_dir":"/opt/caduceus/source","install_bin":"/usr/local/bin/caduceus","service":"caduceus.service","url":"http://127.0.0.1:1/","binary_name":"caduceus","op_prefix":"caduceus","run_schema":"bench.caduceus.v1","managed_files_schema":"bench.caduceus.files.v1","managed_files":[]}},{"step_id":"s","tool":"files","permutation":"source-shelf-sweep","args":{"source_root":"/nonexistent","shelf_source":"agathodaimon","target_shelf":"/usr/local/sbin/agathodaimon","launcher_target_root":"/usr/local/sbin","launcher_source_root":"/nonexistent","launcher_pattern":"caduceus-*","shelf_owner":"root","shelf_group":"root","shelf_directory_mode":493,"shelf_file_mode":420,"launcher_mode":493,"prune":true}}]}),
         ),
         (
             "arcadia-gui-runtime",
