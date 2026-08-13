@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus-public-lever",
   "version": "1.1.1",
-  "description": "TV Caduceus public lever: sync/build/install caduceus from main (dual-snake cert face), converge profile/routes, install additive caduceus_staff house_ca Python snake, stand up caduceus.service.",
+  "description": "TV Caduceus public lever: sync/build/install caduceus from main (dual-snake cert face), converge profile/routes, install additive agathodaimon house_ca Python snake, stand up caduceus.service.",
   "optional": false,
   "constants": {},
   "ladder": [
@@ -48,25 +48,6 @@
             "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n"
           }
         ]
-      }
-    },
-    {
-      "step_id": "caduceus-staff-shelf-from-synced-source",
-      "tool": "files",
-      "permutation": "source-shelf-sweep",
-      "args": {
-        "source_root": "/opt/caduceus/source/data/staff-actuators",
-        "shelf_source": "caduceus_staff",
-        "target_shelf": "/usr/local/sbin/caduceus_staff",
-        "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
-        "launcher_target_root": "/usr/local/sbin",
-        "launcher_pattern": "caduceus-*",
-        "shelf_owner": "root",
-        "shelf_group": "root",
-        "shelf_directory_mode": 493,
-        "shelf_file_mode": 420,
-        "launcher_mode": 493,
-        "prune": true
       }
     }
   ],

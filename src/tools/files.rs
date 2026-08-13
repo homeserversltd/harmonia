@@ -5423,8 +5423,8 @@ mod managed_ownership_tests {
     fn sweep_test_request(scratch: &Path) -> SourceShelfSweepRequest {
         SourceShelfSweepRequest {
             source_root: scratch.join("source"),
-            shelf_source: PathBuf::from("caduceus_staff"),
-            target_shelf: scratch.join("target/caduceus_staff"),
+            shelf_source: PathBuf::from("agathodaimon"),
+            target_shelf: scratch.join("target/agathodaimon"),
             launcher_source_root: scratch.join("source"),
             launcher_target_root: scratch.join("target"),
             launcher_pattern: "caduceus-*".into(),
@@ -5448,15 +5448,15 @@ mod managed_ownership_tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&scratch);
-        fs::create_dir_all(scratch.join("source/caduceus_staff/nested")).unwrap();
-        fs::create_dir_all(scratch.join("target/caduceus_staff")).unwrap();
+        fs::create_dir_all(scratch.join("source/agathodaimon/nested")).unwrap();
+        fs::create_dir_all(scratch.join("target/agathodaimon")).unwrap();
         fs::write(
-            scratch.join("source/caduceus_staff/nested/module.py"),
+            scratch.join("source/agathodaimon/nested/module.py"),
             b"desired\n",
         )
         .unwrap();
         fs::write(scratch.join("source/caduceus-current"), b"new launcher\n").unwrap();
-        fs::write(scratch.join("target/caduceus_staff/old.py"), b"old shelf\n").unwrap();
+        fs::write(scratch.join("target/agathodaimon/old.py"), b"old shelf\n").unwrap();
         fs::write(scratch.join("target/caduceus-current"), b"old launcher\n").unwrap();
         fs::write(scratch.join("target/caduceus-stale"), b"stale launcher\n").unwrap();
         fs::write(scratch.join("target/not-owned"), b"preserve\n").unwrap();
@@ -5471,7 +5471,7 @@ mod managed_ownership_tests {
         assert_eq!(applied.first_blocker, "none");
         assert_eq!(applied.removed_count, 1);
         assert_eq!(
-            fs::read(scratch.join("target/caduceus_staff/nested/module.py")).unwrap(),
+            fs::read(scratch.join("target/agathodaimon/nested/module.py")).unwrap(),
             b"desired\n"
         );
         assert_eq!(
@@ -5488,7 +5488,7 @@ mod managed_ownership_tests {
             0o755
         );
         assert_eq!(
-            file_mode(&scratch.join("target/caduceus_staff/nested/module.py")).unwrap(),
+            file_mode(&scratch.join("target/agathodaimon/nested/module.py")).unwrap(),
             0o644
         );
         let receipt: serde_json::Value =
@@ -5520,7 +5520,7 @@ mod managed_ownership_tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&scratch);
-        fs::create_dir_all(scratch.join("source/caduceus_staff")).unwrap();
+        fs::create_dir_all(scratch.join("source/agathodaimon")).unwrap();
         fs::create_dir_all(scratch.join("outside")).unwrap();
         fs::create_dir_all(scratch.join("target")).unwrap();
         fs::write(scratch.join("source/caduceus-one"), b"one\n").unwrap();
@@ -5556,16 +5556,16 @@ mod managed_ownership_tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&scratch);
-        fs::create_dir_all(scratch.join("source/caduceus_staff")).unwrap();
-        fs::create_dir_all(scratch.join("target/caduceus_staff")).unwrap();
+        fs::create_dir_all(scratch.join("source/agathodaimon")).unwrap();
+        fs::create_dir_all(scratch.join("target/agathodaimon")).unwrap();
         fs::write(
-            scratch.join("source/caduceus_staff/module.py"),
+            scratch.join("source/agathodaimon/module.py"),
             b"new shelf\n",
         )
         .unwrap();
         fs::write(scratch.join("source/caduceus-current"), b"new launcher\n").unwrap();
         fs::write(
-            scratch.join("target/caduceus_staff/module.py"),
+            scratch.join("target/agathodaimon/module.py"),
             b"old shelf\n",
         )
         .unwrap();
@@ -5609,7 +5609,7 @@ mod managed_ownership_tests {
         assert!(error.contains("injected-promotion-failure"));
         assert!(error.contains("prior state restored"));
         assert_eq!(
-            fs::read(scratch.join("target/caduceus_staff/module.py")).unwrap(),
+            fs::read(scratch.join("target/agathodaimon/module.py")).unwrap(),
             b"old shelf\n"
         );
         assert_eq!(
@@ -5659,7 +5659,7 @@ mod managed_ownership_tests {
             "same-directory temp write, file fsync, atomic rename, parent-directory fsync"
         );
         assert_eq!(
-            fs::read(scratch.join("target/caduceus_staff/module.py")).unwrap(),
+            fs::read(scratch.join("target/agathodaimon/module.py")).unwrap(),
             b"new shelf\n"
         );
         let _ = fs::remove_dir_all(&scratch);

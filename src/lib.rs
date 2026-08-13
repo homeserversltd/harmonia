@@ -1259,10 +1259,10 @@ mod tests {
             staff_step.args["source_root"],
             "/opt/caduceus/source/data/staff-actuators"
         );
-        assert_eq!(staff_step.args["shelf_source"], "caduceus_staff");
+        assert_eq!(staff_step.args["shelf_source"], "agathodaimon");
         assert_eq!(
             staff_step.args["target_shelf"],
-            "/usr/local/sbin/caduceus_staff"
+            "/usr/local/sbin/agathodaimon"
         );
         assert_eq!(staff_step.args["launcher_pattern"], "caduceus-*");
         assert_eq!(staff_step.args["shelf_directory_mode"], 0o755);
@@ -1274,7 +1274,7 @@ mod tests {
             .join("profiles/homeserver/modules/caduceus/files_root/etc/sudoers.d/caduceus-keyman")
             .is_file());
         assert!(!root
-            .join("profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/caduceus_staff")
+            .join("profiles/homeserver/modules/caduceus/files_root/usr/local/sbin/agathodaimon")
             .exists());
     }
 
