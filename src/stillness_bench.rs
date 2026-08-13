@@ -139,7 +139,7 @@ fn package_bench(root: &Path) -> Result<serde_json::Value, String> {
     let state = dir.join("state");
     fs::write(&state, b"pending\n").map_err(|e| e.to_string())?;
     let fake = dir.join("pacman");
-    fs::write(&fake, format!("#!/bin/sh\nstate='{}'\ncase \"$1\" in\n  -Qu) cat \"$state\" ;;\n  -Syu) if [ \"${{HARMONIA_BENCH_PERSIST:-0}}\" = 0 ]; then printf '' > \"$state\"; fi; printf 'upgrading bench\\n' ;;\n  -Q) printf 'bench 1\\n' ;;\nesac\n", state.display())).map_err(|e| e.to_string())?;
+    fs::write(&fake, format!("#!/bin/sh\nstate='{}'\ncase \"$1\" in\n  -Qu) if [ -s \"$state\" ]; then cat \"$state\"; exit 0; else exit 1; fi ;;\n  -Syu) if [ \"${{HARMONIA_BENCH_PERSIST:-0}}\" = 0 ]; then printf '' > \"$state\"; fi; printf 'upgrading bench\\n' ;;\n  -Q) printf 'bench 1\\n' ;;\nesac\n", state.display())).map_err(|e| e.to_string())?;
     let mut perms = fs::metadata(&fake)
         .map_err(|e| e.to_string())?
         .permissions();
@@ -156,6 +156,22 @@ fn package_bench(root: &Path) -> Result<serde_json::Value, String> {
         crate::tools::package::package_tool(&second_dir, "system-sync", "upgrade", &[], true)?;
     if !first.ok || !first.changed || !second.ok || second.changed {
         return Err("package-bench-convergence-failed".into());
+    }
+    let second_receipt: serde_json::Value = serde_json::from_slice(
+        &fs::read(second_dir.join("system-sync.comparison.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if second_receipt["observed_after"]["current"]["code"] != 1
+        || !second_receipt["observed_after"]["current"]["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+        || !second_receipt["observed_after"]["current"]["stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    {
+        return Err("package-empty-exit-one-not-observed".into());
     }
     fs::write(&state, b"pending\n").map_err(|e| e.to_string())?;
     env::set_var("HARMONIA_BENCH_PERSIST", "1");
@@ -180,7 +196,7 @@ fn package_bench(root: &Path) -> Result<serde_json::Value, String> {
         }
     }
     Ok(
-        json!({"first": {"ok": first.ok, "changed": first.changed}, "second": {"ok": second.ok, "changed": second.changed}, "persistent_upgrade_failure": {"ok": false, "signal": error, "receipt": receipt}}),
+        json!({"first": {"ok": first.ok, "changed": first.changed, "pending_set": "pending"}, "second": {"ok": second.ok, "changed": second.changed, "pending_set": [], "pacman_exit": 1}, "persistent_upgrade_failure": {"ok": false, "signal": error, "receipt": receipt}}),
     )
 }
 
