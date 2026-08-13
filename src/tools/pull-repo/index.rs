@@ -16,6 +16,7 @@ pub(crate) fn plan(request: &Request) -> Outcome {
 }
 pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
     let run = comparison::execute(
+        "pull-repo",
         || Ok::<_, String>(observe::request(request)),
         |current| {
             if current.is_some() {
@@ -60,6 +61,7 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
 pub(crate) fn acquire_source(plan: &SourcePlan, invocation: Option<crate::atoms::r#do::InvocationKey>) -> SourceOutcome {
     let Some(invocation) = invocation else { return SourceOutcome { ok:false, changed:false, receipt: git_artifact::SourceReceipt { attempts:Vec::new(), served_index:None, resolved_commit:None, promotion:"invocation-key-missing".into() } }; };
     let run = comparison::execute(
+        "pull-repo",
         || Ok::<_, String>(observe::source(plan)),
         |current| {
             if current.is_some() {

@@ -34,6 +34,7 @@ pub(crate) fn run_build(
     invocation: Option<atoms::r#do::InvocationKey>,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
     let run = comparison::execute(
+        "build-crate",
         || observe::build_identity(source_build_sha, installed_build_sha, installed_binary),
         |observation| {
             if apply && !observation.identity_matches() {

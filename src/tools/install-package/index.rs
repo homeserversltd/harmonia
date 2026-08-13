@@ -45,6 +45,7 @@ pub(crate) fn run(
         }),
     };
     let run = comparison::execute(
+        "install-package",
         || Ok::<_, String>(observation.clone()),
         |_| {
             if differs {

@@ -148,6 +148,7 @@ pub(crate) fn execute(request: BackfillFileRequest<'_>) -> Result<BackfillFileOu
         BackupPolicy::None => None,
     };
     let run = crate::tools::comparison::execute(
+        "backfill-file",
         || {
             observe::file(
                 request.path,

@@ -20,6 +20,7 @@ pub(crate) struct Request<'a> {
 }
 pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> {
     let run = comparison::execute(
+        "build-venv",
         || observe::venv(request),
         |o| {
             if apply && o.different() {

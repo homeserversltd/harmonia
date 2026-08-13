@@ -61,7 +61,8 @@ pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::
         _ => true,
     };
     let run = comparison::execute(
-        || Ok::<_, String>(observation),
+        "set-clock",
+        || Ok::<_, String>(observation.clone()),
         |_| {
             if differs {
                 DiffDecision::Different

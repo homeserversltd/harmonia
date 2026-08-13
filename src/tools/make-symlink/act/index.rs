@@ -159,6 +159,7 @@ pub(crate) fn execute(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let run = crate::tools::comparison::execute(
+        "make-symlink",
         || observe_symlink(&request),
         |observation| {
             if observation.desired.as_slice()

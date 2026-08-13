@@ -63,6 +63,7 @@ fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value, invocatio
         tools::comparison::DiffDecision::Empty
     };
     let run = tools::comparison::execute(
+        "hotfix",
         || Ok::<_, String>(()),
         |_| decision,
         |_, _| {

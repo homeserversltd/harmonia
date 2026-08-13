@@ -237,7 +237,8 @@ fn keyed_arcadia_command(authorization: crate::tools::comparison::ActionAuthoriz
 pub(crate) fn homeconsole_arcadia_update(profile: &Profile, receipt_dir: &Path, artifact: &Path, install_bin: &Path, service: &str, apply: bool, source_sha: Option<&str>, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
     if !apply { return homeconsole_arcadia_update_check(profile, receipt_dir, artifact, install_bin, service, false, source_sha); }
     let key = invocation.ok_or("homeconsole-arcadia-update-invocation-key-missing")?;
-    let run = crate::tools::comparison::execute(|| Ok::<_, String>(()), |_| crate::tools::comparison::DiffDecision::Different, move |authorization, _| homeconsole_arcadia_update_apply(profile, receipt_dir, artifact, install_bin, service, true, source_sha, authorization, key))?;
+    let run = crate::tools::comparison::execute(
+        "arcadia-update",|| Ok::<_, String>(()), |_| crate::tools::comparison::DiffDecision::Different, move |authorization, _| homeconsole_arcadia_update_apply(profile, receipt_dir, artifact, install_bin, service, true, source_sha, authorization, key))?;
     match run { crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement), crate::tools::comparison::ComparisonRun::Current { .. } => Err("arcadia-update-apply-boundary-empty".into()) }
 }
 

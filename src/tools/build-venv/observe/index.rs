@@ -35,7 +35,7 @@ pub(super) fn venv(request: &super::Request<'_>) -> Result<Observation, String> 
         if selected
             && matches!(
                 atoms::ask::path_kind(&path)?,
-                Some(atoms::ask::PathKind::RegularFile)
+                Some(atoms::ask::PathKind::RegularFile | atoms::ask::PathKind::Symlink)
             )
         {
             files.push(path);
@@ -65,7 +65,7 @@ pub(super) fn venv(request: &super::Request<'_>) -> Result<Observation, String> 
         });
     let venv_valid = matches!(
         atoms::ask::path_kind(&request.venv.join("bin/python"))?,
-        Some(atoms::ask::PathKind::RegularFile)
+        Some(atoms::ask::PathKind::RegularFile | atoms::ask::PathKind::Symlink)
     );
     Ok(Observation {
         dependency_files: files,

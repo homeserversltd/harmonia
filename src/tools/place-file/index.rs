@@ -75,6 +75,7 @@ pub(crate) struct PlaceFileOutcome {
 
 pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome, String> {
     let run = crate::tools::comparison::execute(
+        "place-file",
         || {
             observe::file(
                 request.path,

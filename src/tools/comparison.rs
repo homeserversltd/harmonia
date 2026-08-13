@@ -45,10 +45,12 @@ impl<Observed, Movement> ComparisonRun<Observed, Movement> {
 /// from the empty branch: it can run only when this executor constructs the
 /// private `ActionAuthorization` after a nonempty comparison.
 pub(crate) fn execute<Observed, Movement, Error>(
-    observe: impl FnOnce() -> Result<Observed, Error>,
-    compare: impl FnOnce(&Observed) -> DiffDecision,
+    operation: &str,
+    mut observe: impl FnMut() -> Result<Observed, Error>,
+    mut compare: impl FnMut(&Observed) -> DiffDecision,
     act: impl FnOnce(ActionAuthorization, &Observed) -> Result<Movement, Error>,
-) -> Result<ComparisonRun<Observed, Movement>, Error> {
+) -> Result<ComparisonRun<Observed, Movement>, Error>
+where Error: From<String> {
     let observation = observe()?;
     match compare(&observation) {
         DiffDecision::Empty => Ok(ComparisonRun::Current {
@@ -57,6 +59,8 @@ pub(crate) fn execute<Observed, Movement, Error>(
         }),
         DiffDecision::Different => {
             let movement = act(ActionAuthorization(()), &observation)?;
+            let post = observe()?;
+            if compare(&post) == DiffDecision::Different { return Err(format!("{operation}-act-did-not-converge").into()); }
             Ok(ComparisonRun::Moved {
                 observation,
                 decision: DiffDecision::Different,

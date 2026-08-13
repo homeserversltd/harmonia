@@ -426,6 +426,7 @@ pub(crate) fn stage_source_gate(
     let source_plan = state.source_plan.clone();
     let source_bearer = state.source_bearer.clone();
     let source_gate = tools::comparison::execute(
+        "service-runtime",
         || {
             let remote_probe =
                 apply.then(|| tools::git_artifact::probe_declared_remote_head(&source_plan));
@@ -663,6 +664,8 @@ pub(crate) fn stage_build(
     }
     let build_environment = build_environment(args, Some(&source_sha_value))?;
 
+    let mut build_environment = build_environment;
+    build_environment.insert("CARGO_TARGET_DIR".into(), source_dir.join("target").to_string_lossy().into_owned());
     let environment: Vec<(String, String)> = build_environment.into_iter().collect();
     let build = crate::build_crate::run_build(
         &source_dir, &source_sha_value, installed_build_sha.as_deref(), &install_bin, apply,
@@ -782,10 +785,88 @@ pub(crate) fn stage_health_proof(
     spec: &ServiceRuntimeSpec,
     state: &mut ServiceRuntimeState,
 ) -> Result<(), String> {
-    let health = health_probe(&state.health_url, 5, 3);
+    let mut health = health_probe(&state.health_url, 5, 3);
+    let observed = health.ok.then(|| serde_json::from_str::<Value>(&health.stdout).ok()).flatten().and_then(|v| v.get("build_sha").and_then(Value::as_str).map(str::to_string));
+    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) { health.ok=false; health.code=1; health.stderr=format!("{}-act-did-not-converge expected_build_sha={} observed_build_sha={}",spec.op_prefix,state.source_sha_value,observed.as_deref().unwrap_or("unavailable")); }
     write_command_receipt(receipt_dir, spec.health_op, &health)?;
     state.health = Some(health);
     Ok(())
+}
+
+pub(crate) fn bench_binary_install(
+    receipt_dir: &Path,
+    artifact: &Path,
+    install_bin: &Path,
+) -> Result<OperationOutcome, String> {
+    let spec = ServiceRuntimeSpec {
+        op_prefix: "caduceus-bench",
+        run_schema: "harmonia.stillness-bench.caduceus.v1",
+        managed_files_schema: "harmonia.stillness-bench.files.v1",
+        source_op: "caduceus-bench-source",
+        source_sha_op: "caduceus-bench-source-sha",
+        managed_files_op: "caduceus-bench-managed-files",
+        build_op: "caduceus-bench-build",
+        binary_install_op: "caduceus-bench-binary-install",
+        daemon_reload_op: "caduceus-bench-daemon-reload",
+        service_enable_op: "caduceus-bench-service-enable",
+        service_active_op: "caduceus-bench-service-active",
+        service_op: "caduceus-bench-service",
+        health_op: "caduceus-bench-health",
+        binary_name: "caduceus",
+    };
+    install_binary(receipt_dir, &spec, artifact, install_bin, true)
+}
+
+pub(crate) fn bench_health_identity(
+    receipt_dir: &Path,
+    health_url: String,
+    source_sha: String,
+) -> Result<CmdResult, String> {
+    let spec = ServiceRuntimeSpec {
+        op_prefix: "caduceus-bench",
+        run_schema: "harmonia.stillness-bench.caduceus.v1",
+        managed_files_schema: "harmonia.stillness-bench.files.v1",
+        source_op: "caduceus-bench-source",
+        source_sha_op: "caduceus-bench-source-sha",
+        managed_files_op: "caduceus-bench-managed-files",
+        build_op: "caduceus-bench-build",
+        binary_install_op: "caduceus-bench-binary-install",
+        daemon_reload_op: "caduceus-bench-daemon-reload",
+        service_enable_op: "caduceus-bench-service-enable",
+        service_active_op: "caduceus-bench-service-active",
+        service_op: "caduceus-bench-service",
+        health_op: "caduceus-bench-health",
+        binary_name: "caduceus",
+    };
+    let mut state = ServiceRuntimeState {
+        source_dir: PathBuf::new(),
+        install_bin: PathBuf::new(),
+        service: String::new(),
+        health_url,
+        source_plan: tools::git_artifact::SourcePlan {
+            candidates: Vec::new(),
+            reference: String::new(),
+            destination: PathBuf::new(),
+            expected_commit: None,
+            bearer: String::new(),
+            credentials: BTreeMap::new(),
+        },
+        source_bearer: String::new(),
+        git_outcome: None,
+        remote_probe: None,
+        installed_build_sha: None,
+        source_sha_ok: true,
+        source_sha_value: source_sha,
+        managed: None,
+        build: None,
+        install: None,
+        service_outcome: None,
+        health: None,
+    };
+    stage_health_proof(receipt_dir, &spec, &mut state)?;
+    state
+        .health
+        .ok_or_else(|| "caduceus-bench-health-missing".to_string())
 }
 
 fn write_run_receipt(

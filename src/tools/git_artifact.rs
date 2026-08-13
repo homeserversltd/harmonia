@@ -1215,6 +1215,7 @@ pub(crate) fn legacy_acquire_source(plan: &SourcePlan) -> SourceOutcome {
                     .as_deref()
                     .map_or(true, |expected| remote_commit.as_deref() == Some(expected));
                 let comparison = match comparison::execute(
+        "git-artifact",
                     || Ok::<_, String>((destination_commit.clone(), remote_commit.clone())),
                     |(destination, remote)| {
                         if destination.is_some() && destination == remote && expected_matches {
