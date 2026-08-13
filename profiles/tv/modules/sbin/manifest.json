@@ -37,11 +37,11 @@
       "permutation": "source-shelf-sweep",
       "args": {
         "source_root": "/opt/sbin/source",
-        "shelf_source": ".",
-        "target_shelf": "/usr/local/sbin",
+        "shelf_source": "agathodaimon",
+        "target_shelf": "/usr/local/sbin/agathodaimon",
         "launcher_source_root": "/opt/sbin/source",
         "launcher_target_root": "/usr/local/sbin",
-        "launcher_pattern": "*",
+        "launcher_pattern": "caduceus-*",
         "launcher_exclude": [
           ".git*",
           "README.md",
@@ -49,7 +49,7 @@
           "VERSION",
           "CONTRIBUTING.md",
           "tests",
-          "caduceus"
+          "agathodaimon"
         ],
         "shelf_owner": "root",
         "shelf_group": "root",

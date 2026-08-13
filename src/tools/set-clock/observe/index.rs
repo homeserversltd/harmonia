@@ -57,7 +57,7 @@ fn backend_query(request: &super::Request<'_>) -> CmdResult {
             args.extend([
                 "/usr/bin/python3".into(),
                 "-m".into(),
-                "caduceus_staff.household_time".into(),
+                "agathodaimon.household_time".into(),
                 "state".into(),
             ]);
             atoms::ask::read_only_command_with_timeout(

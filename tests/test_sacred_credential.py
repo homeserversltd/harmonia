@@ -58,8 +58,8 @@ class CaduceusStaffShelfManifestTests(unittest.TestCase):
                     staff["args"],
                     {
                         "source_root": "/opt/caduceus/source/data/staff-actuators",
-                        "shelf_source": "caduceus_staff",
-                        "target_shelf": "/usr/local/sbin/caduceus_staff",
+                        "shelf_source": "agathodaimon",
+                        "target_shelf": "/usr/local/sbin/agathodaimon",
                         "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
                         "launcher_target_root": "/usr/local/sbin",
                         "launcher_pattern": "caduceus-*",
@@ -146,7 +146,7 @@ class CaduceusStaffShelfManifestTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, bootstrap_bytes)
 
-    def test_manifests_do_not_embed_caduceus_staff_programs(self) -> None:
+    def test_manifests_do_not_embed_agathodaimon_programs(self) -> None:
         for module in CADUCEUS_MODULES:
             with self.subTest(module=module):
                 manifest = json.loads((module / "manifest.json").read_text(encoding="utf-8"))

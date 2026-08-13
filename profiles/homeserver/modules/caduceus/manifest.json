@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
   "version": "1.3.4",
-  "description": "HOMESERVER Caduceus public lever with a provisioned caduceus_staff Python environment and sudoers refresh consumer declaration.",
+  "description": "HOMESERVER Caduceus public lever with a provisioned agathodaimon Python environment and sudoers refresh consumer declaration.",
   "constants": {
     "staff_venv": "/var/lib/caduceus/venv",
     "staff_module_root": "/usr/local/sbin"

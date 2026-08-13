@@ -55,7 +55,7 @@ fn command(
             args.extend([
                 "/usr/bin/python3".into(),
                 "-m".into(),
-                "caduceus_staff.household_time".into(),
+                "agathodaimon.household_time".into(),
                 operation.into(),
             ]);
             if let Some(zone) = timezone {
