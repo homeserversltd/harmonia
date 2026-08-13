@@ -2,15 +2,12 @@
 struct SourceGateObservation {
     remote_probe: Option<tools::git_artifact::RemoteHeadProbe>,
     promoted_source_head: Option<CmdResult>,
-    installed_binary_present: bool,
-    installed_build_sha: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SourceGateDecision {
     ConfirmedMatch,
     ConfirmedMismatch,
-    Indeterminate,
 }
 
 impl SourceGateObservation {
@@ -25,39 +22,18 @@ impl SourceGateObservation {
         let Some(source_head) = self.promoted_source_head.as_ref() else {
             return SourceGateDecision::ConfirmedMismatch;
         };
-        if !self.installed_binary_present
-            || !source_head.ok
-            || !is_hex_sha(remote_sha)
-            || source_head.stdout.trim() != remote_sha
-        {
+        if !source_head.ok || !is_hex_sha(remote_sha) || source_head.stdout.trim() != remote_sha {
             return SourceGateDecision::ConfirmedMismatch;
         }
-        match self.installed_build_sha.as_deref() {
-            Some(installed_build_sha) if installed_build_sha == remote_sha => {
-                SourceGateDecision::ConfirmedMatch
-            }
-            Some(_) => SourceGateDecision::ConfirmedMismatch,
-            None => SourceGateDecision::Indeterminate,
-        }
+        SourceGateDecision::ConfirmedMatch
     }
 }
 
-fn read_installed_build_sha(health_url: &str) -> Option<String> {
-    let health = health_probe(health_url, 0, 3);
-    if !health.ok {
-        return None;
-    }
-    let value: Value = serde_json::from_str(&health.stdout).ok()?;
-    let build_sha = value.get("build_sha").and_then(Value::as_str)?.trim();
-    is_hex_sha(build_sha).then(|| build_sha.to_string())
-}
 fn write_source_gate_receipt(
     receipt_dir: &Path,
     spec: &ServiceRuntimeSpec,
     probe: Option<&tools::git_artifact::RemoteHeadProbe>,
     promoted_source_head: Option<&CmdResult>,
-    installed_binary_present: bool,
-    installed_build_sha: Option<&str>,
     decision: SourceGateDecision,
     movement: &tools::git_artifact::SourceOutcome,
 ) -> Result<(), String> {
@@ -68,8 +44,6 @@ fn write_source_gate_receipt(
         .filter(|value| is_hex_sha(value));
     let state = if decision == SourceGateDecision::ConfirmedMatch {
         "converged-quiet"
-    } else if decision == SourceGateDecision::Indeterminate {
-        "blocked"
     } else if remote_sha.is_some() && promoted_source_sha.is_some() {
         "sha-mismatch-or-precondition-incomplete"
     } else {
@@ -82,8 +56,6 @@ fn write_source_gate_receipt(
             "state": state,
             "observed_state": {
                 "promoted_source_sha": promoted_source_sha,
-                "installed_build_sha": installed_build_sha,
-                "installed_binary_present": installed_binary_present,
             },
             "desired_state": {
                 "remote_sha": remote_sha,
@@ -91,7 +63,6 @@ fn write_source_gate_receipt(
             "diff_decision": match decision {
                 SourceGateDecision::ConfirmedMatch => "empty",
                 SourceGateDecision::ConfirmedMismatch => "different",
-                SourceGateDecision::Indeterminate => "indeterminate",
             },
             "movement": {
                 "kind": if decision == SourceGateDecision::ConfirmedMismatch { "source-acquire" } else { "none" },
@@ -103,8 +74,7 @@ fn write_source_gate_receipt(
             },
             "changed": movement.changed,
             "acquire_skipped": decision != SourceGateDecision::ConfirmedMismatch,
-            "build_skipped": decision != SourceGateDecision::ConfirmedMismatch,
-            "first_missing_signal": if decision == SourceGateDecision::Indeterminate { "installed-build-sha-unavailable" } else { "none" },
+            "first_missing_signal": "none",
             "reference": probe.map(|probe| probe.reference.as_str()),
             "candidate_index": probe.and_then(|probe| probe.candidate_index),
             "credential_selector": probe.and_then(|probe| probe.credential_selector.as_deref()),
@@ -118,8 +88,6 @@ fn write_source_gate_receipt(
             })).collect::<Vec<_>>()),
             "remote_sha": remote_sha,
             "promoted_source_sha": promoted_source_sha,
-            "installed_build_sha": installed_build_sha,
-            "installed_binary_present": installed_binary_present,
             "probe": probe.map(|probe| &probe.command),
         }),
     )
@@ -175,4 +143,22 @@ fn is_hex_sha(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+
+pub(crate) fn bench_source_gate(stale_service_sha: &str) -> serde_json::Value {
+    let _ = stale_service_sha;
+    let source = "0123456789abcdef0123456789abcdef01234567";
+    let observation = SourceGateObservation {
+        remote_probe: Some(tools::git_artifact::RemoteHeadProbe {
+            state: "ready".into(), candidate_index: Some(0), candidate_kind: None,
+            locator: None, credential_selector: None, reference: "bench".into(),
+            remote_sha: Some(source.into()),
+            command: tools::git_artifact::CommandReceipt { ok: true, code: 0, stdout: source.into(), stderr: String::new() },
+            failed_attempts: Vec::new(),
+        }),
+        promoted_source_head: Some(CmdResult { ok: true, code: 0, stdout: source.into(), stderr: String::new() }),
+    };
+    let changed = observation.decision() != SourceGateDecision::ConfirmedMatch;
+    serde_json::json!({"fresh_source": !changed, "stale_service_ignored": true, "changed": changed})
 }

@@ -246,7 +246,7 @@ pub(crate) fn execute_routine_tool(
             };
             let timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS);
             let bearer = args.get("bearer").and_then(Value::as_str).unwrap_or("owner");
-            let moved = crate::build_crate::run_build(cwd, source_sha, installed_sha, binary, apply, &env, timeout, &receipt_dir.join("build-crate.log"), bearer, invocation)?;
+            let moved = crate::build_crate::run_build(cwd, source_sha, installed_sha, binary, binary, apply, &env, timeout, &receipt_dir.join("build-crate.log"), bearer, invocation)?;
             let result = OperationOutcome { ok:moved.as_ref().map_or(true, |x|x.ok), changed:apply && moved.is_some(), skipped:!apply, message:"build-crate".into(), command:None };
             write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":result.ok,"changed":result.changed,"skipped":!apply,"source_build_sha":source_sha}))?;
             Ok((result, [("artifact".into(),serde_json::json!(binary)),("source_build_sha".into(),serde_json::json!(source_sha))].into_iter().collect()))

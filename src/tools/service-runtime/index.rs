@@ -139,7 +139,6 @@ pub(crate) fn execute_routine_stage(
             source_plan,
             git_outcome: None,
             remote_probe: None,
-            installed_build_sha: None,
             source_sha_ok: false,
             source_sha_value: String::new(),
             managed: None,
@@ -402,7 +401,6 @@ pub(crate) struct ServiceRuntimeState {
     pub(crate) source_bearer: String,
     pub(crate) git_outcome: Option<tools::git_artifact::SourceOutcome>,
     pub(crate) remote_probe: Option<tools::git_artifact::RemoteHeadProbe>,
-    pub(crate) installed_build_sha: Option<String>,
     pub(crate) source_sha_ok: bool,
     pub(crate) source_sha_value: String,
     pub(crate) managed: Option<OperationOutcome>,
@@ -421,8 +419,6 @@ pub(crate) fn stage_source_gate(
     state: &mut ServiceRuntimeState,
 ) -> Result<Option<ModuleExecution>, String> {
     let source_dir = state.source_dir.clone();
-    let install_bin = state.install_bin.clone();
-    let health_url = state.health_url.as_str();
     let source_plan = state.source_plan.clone();
     let source_bearer = state.source_bearer.clone();
     let source_gate = tools::comparison::execute(
@@ -434,17 +430,9 @@ pub(crate) fn stage_source_gate(
                 .as_ref()
                 .and_then(|probe| probe.remote_sha.as_ref())
                 .map(|_| tools::git_artifact::source_head(&source_dir, &source_bearer));
-            let installed_binary_present = fs::symlink_metadata(&install_bin)
-                .map(|metadata| metadata.file_type().is_file())
-                .unwrap_or(false);
-            let installed_build_sha = installed_binary_present
-                .then(|| read_installed_build_sha(health_url))
-                .flatten();
             Ok::<_, String>(SourceGateObservation {
                 remote_probe,
                 promoted_source_head,
-                installed_binary_present,
-                installed_build_sha,
             })
         },
         |observation| {
@@ -474,8 +462,6 @@ pub(crate) fn stage_source_gate(
     let source_gate_matched = source_gate.decision() == tools::comparison::DiffDecision::Empty;
     let remote_probe = source_gate.observation().remote_probe.clone();
     let promoted_source_head = source_gate.observation().promoted_source_head.clone();
-    let installed_binary_present = source_gate.observation().installed_binary_present;
-    let installed_build_sha = source_gate.observation().installed_build_sha.clone();
     let source_gate_decision = source_gate.observation().decision();
     let git_outcome = match source_gate {
         tools::comparison::ComparisonRun::Current { .. } => {
@@ -491,8 +477,7 @@ pub(crate) fn stage_source_gate(
                     served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
                     resolved_commit: Some(source_sha.to_string()),
                     promotion: format!(
-                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}; installed_binary_present={installed_binary_present}; installed_build_sha={}",
-                        installed_build_sha.as_deref().unwrap_or_default(),
+                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}",
                     ),
                 },
             }
@@ -504,8 +489,6 @@ pub(crate) fn stage_source_gate(
         spec,
         remote_probe.as_ref(),
         promoted_source_head.as_ref(),
-        installed_binary_present,
-        installed_build_sha.as_deref(),
         source_gate_decision,
         &git_outcome,
     )?;
@@ -546,7 +529,6 @@ pub(crate) fn stage_source_gate(
     let source_sha_value = source_sha.stdout.trim().to_string();
     state.git_outcome = Some(git_outcome);
     state.remote_probe = remote_probe;
-    state.installed_build_sha = installed_build_sha;
     state.source_sha_ok = source_sha.ok;
     state.source_sha_value = source_sha_value;
     Ok(None)
@@ -634,7 +616,7 @@ pub(crate) fn stage_build(
     let source_plan = state.source_plan.clone();
     let source_bearer = state.source_bearer.clone();
     let source_sha_value = state.source_sha_value.clone();
-    let installed_build_sha = state.installed_build_sha.clone();
+    let artifact = source_dir.join("target/release").join(spec.binary_name);
     if !state.source_sha_ok || !is_hex_sha(&source_sha_value) {
         write_run_receipt(
             receipt_dir,
@@ -668,7 +650,7 @@ pub(crate) fn stage_build(
     build_environment.insert("CARGO_TARGET_DIR".into(), source_dir.join("target").to_string_lossy().into_owned());
     let environment: Vec<(String, String)> = build_environment.into_iter().collect();
     let build = crate::build_crate::run_build(
-        &source_dir, &source_sha_value, installed_build_sha.as_deref(), &install_bin, apply,
+        &source_dir, &source_sha_value, None, &install_bin, &artifact, apply,
         &environment, crate::tools::command::DEFAULT_TIMEOUT_SECS,
         &receipt_dir.join("harmonia-atoms.log"), &source_bearer,
         invocation,
@@ -787,10 +769,16 @@ pub(crate) fn stage_health_proof(
 ) -> Result<(), String> {
     let mut health = health_probe(&state.health_url, 5, 3);
     let observed = health.ok.then(|| serde_json::from_str::<Value>(&health.stdout).ok()).flatten().and_then(|v| v.get("build_sha").and_then(Value::as_str).map(str::to_string));
-    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) { health.ok=false; health.code=1; health.stderr=format!("{}-act-did-not-converge expected_build_sha={} observed_build_sha={}",spec.op_prefix,state.source_sha_value,observed.as_deref().unwrap_or("unavailable")); }
+    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) { health.ok=false; health.code=1; health.stderr=format!("service-runtime-act-did-not-converge expected_build_sha={} observed_build_sha={}",state.source_sha_value,observed.as_deref().unwrap_or("unavailable")); }
     write_command_receipt(receipt_dir, spec.health_op, &health)?;
     state.health = Some(health);
     Ok(())
+}
+
+pub(crate) fn bench_build_environment(source_sha: &str) -> Result<BTreeMap<String, String>, String> {
+    let args = [("component".to_string(), Value::String("caduceus".to_string()))]
+        .into_iter().collect();
+    build_environment(&args, Some(source_sha))
 }
 
 pub(crate) fn bench_binary_install(
@@ -854,7 +842,6 @@ pub(crate) fn bench_health_identity(
         source_bearer: String::new(),
         git_outcome: None,
         remote_probe: None,
-        installed_build_sha: None,
         source_sha_ok: true,
         source_sha_value: source_sha,
         managed: None,
@@ -896,4 +883,3 @@ fn write_run_receipt(
         }),
     )
 }
-
