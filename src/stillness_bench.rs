@@ -1,11 +1,13 @@
 use crate::tools::comparison::{self, ComparisonRun, DiffDecision};
 use serde_json::json;
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
+use std::process::Command;
 use std::thread;
 
 pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
@@ -17,6 +19,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     ));
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
 
+    let git_artifact = git_artifact_bench(&root, invocation)?;
     let caduceus = caduceus_bench(&root)?;
     let source_gate = crate::tools::service_runtime::bench_source_gate("stale-service-sha");
     let venv = venv_bench(&root, invocation)?;
@@ -25,6 +28,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     let receipt = json!({
         "schema": "harmonia.stillness-bench.v1",
         "ok": true,
+        "git_artifact": git_artifact,
         "caduceus": caduceus,
         "source_gate": source_gate,
         "venv": venv,
@@ -37,6 +41,99 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     );
     fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn git_artifact_bench(
+    root: &Path,
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<serde_json::Value, String> {
+    fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+        let o = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !o.status.success() {
+            return Err(format!(
+                "git setup failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).trim().into())
+    }
+    let dir = root.join("git-artifact");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let seed = dir.join("seed");
+    let bare = dir.join("remote.git");
+    let dst = dir.join("destination");
+    fs::create_dir_all(&seed).map_err(|e| e.to_string())?;
+    git(&seed, &["init", "-b", "main"])?;
+    git(&seed, &["config", "user.email", "bench@example.invalid"])?;
+    git(&seed, &["config", "user.name", "bench"])?;
+    fs::write(seed.join("state"), "one\n").map_err(|e| e.to_string())?;
+    git(&seed, &["add", "state"])?;
+    git(&seed, &["commit", "-m", "one"])?;
+    let c1 = git(&seed, &["rev-parse", "HEAD"])?;
+    git(&dir, &["init", "--bare", "remote.git"])?;
+    git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()])?;
+    git(&seed, &["push", "-u", "origin", "main"])?;
+    git(&dir, &["clone", "--branch", "main", bare.to_str().unwrap(), "destination"])?;
+    fs::write(seed.join("state"), "two\n").map_err(|e| e.to_string())?;
+    git(&seed, &["add", "state"])?;
+    git(&seed, &["commit", "-m", "two"])?;
+    git(&seed, &["push", "origin", "main"])?;
+    let remote = git(&seed, &["rev-parse", "HEAD"])?;
+    let before = git(&dst, &["rev-parse", "HEAD"])?;
+    let mut creds = BTreeMap::new();
+    creds.insert(
+        "owner".into(),
+        crate::tools::git_artifact::CredentialScope {
+            ssh_key_path: None,
+            https_host: None,
+            https_token_path: None,
+        },
+    );
+    let plan = crate::tools::git_artifact::SourcePlan {
+        candidates: vec![crate::tools::git_artifact::SourceCandidate {
+            kind: crate::tools::git_artifact::SourceCandidateKind::Git,
+            locator: bare.to_string_lossy().into(),
+            credential_selector: Some("owner".into()),
+        }],
+        reference: "main".into(),
+        destination: dst.clone(),
+        expected_commit: None,
+        bearer: "owner".into(),
+        credentials: creds,
+    };
+    let r1 = crate::tools::git_artifact::acquire_source(&plan, Some(invocation));
+    let head = git(&dst, &["rev-parse", "HEAD"])?;
+    let r2 = crate::tools::git_artifact::acquire_source(&plan, Some(invocation));
+    let bad = crate::tools::git_artifact::SourcePlan {
+        candidates: vec![crate::tools::git_artifact::SourceCandidate {
+            kind: crate::tools::git_artifact::SourceCandidateKind::Git,
+            locator: dir.join("missing.git").to_string_lossy().into(),
+            credential_selector: None,
+        }],
+        reference: "main".into(),
+        destination: dir.join("bad-dst"),
+        expected_commit: None,
+        bearer: "owner".into(),
+        credentials: BTreeMap::new(),
+    };
+    let ru = crate::tools::git_artifact::acquire_source(&bad, Some(invocation));
+    if !r1.ok
+        || !r1.changed
+        || head != remote
+        || !r2.ok
+        || r2.changed
+        || ru.ok
+        || ru.receipt.attempts.is_empty()
+    {
+        return Err("git-artifact-three-case-bench-failed".into());
+    }
+    Ok(
+        json!({"setup":{"commit_1":c1,"destination_before":before,"commit_2_remote_head":remote,"setup_checked":true},"run1":{"ok":r1.ok,"changed":r1.changed,"destination_head":head,"declared_remote_head":remote,"attempts":r1.receipt.attempts.len(),"promotion":r1.receipt.promotion},"run2":{"ok":r2.ok,"changed":r2.changed,"attempts":r2.receipt.attempts.len(),"promotion":r2.receipt.promotion},"unreachable":{"ok":ru.ok,"changed":ru.changed,"attempts_count":ru.receipt.attempts.len(),"dispositions":ru.receipt.attempts.iter().map(|a|a.disposition.clone()).collect::<Vec<_>>(),"promotion":ru.receipt.promotion}}),
+    )
 }
 
 fn caduceus_bench(root: &Path) -> Result<serde_json::Value, String> {
@@ -81,8 +178,11 @@ fn caduceus_bench(root: &Path) -> Result<serde_json::Value, String> {
     let build_environment = crate::tools::service_runtime::bench_build_environment(&source_sha)?;
     let artifact_path = artifact.to_string_lossy().to_string();
     if wrong_health.ok
-        || !wrong_health.stderr.starts_with("service-runtime-act-did-not-converge")
-        || build_environment.get("CADUCEUS_BUILD_SHA") != Some(&source_sha) {
+        || !wrong_health
+            .stderr
+            .starts_with("service-runtime-act-did-not-converge")
+        || build_environment.get("CADUCEUS_BUILD_SHA") != Some(&source_sha)
+    {
         return Err("caduceus-identity-guard-bench-failed".to_string());
     }
     if !run1.ok || !run1.changed || !health1.ok || run2.changed || !run2.ok || !health2.ok {

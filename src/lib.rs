@@ -276,7 +276,9 @@ mod invocation_face {
 
     pub(super) fn mint(args: &[String]) -> super::Invocation {
         let applies = args.iter().any(|arg| arg == "--apply")
-            || args.first().is_some_and(|arg| arg == "acquire-source")
+            || args
+                .first()
+                .is_some_and(|arg| matches!(arg.as_str(), "acquire-source" | "bench-stillness"))
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
         super::Invocation(super::atoms::r#do::InvocationKey::from_apply_or_timer(applies, Mint(())))
     }
