@@ -75,25 +75,6 @@
           "append": "profile: homeserver\nmode: homeserver\ncapability:\n  household_verifying_key:\n  default_ttl_seconds: 60\nharmonia_profile: /etc/harmonia/profiles/homeserver/index.json\nservices:\n  ledger: /var/lib/harmonia/receipts/homeserver-ledger.jsonl\n  update:\n    timer: harmonia.timer\n    latest_receipt: /var/lib/harmonia/receipts/update-latest/run.json\n  coronatio:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/coronatio/run.json\n  caduceus:\n    latest_receipt: /var/lib/harmonia/receipts/homeserver-activate-latest/modules/caduceus/run.json\nharmonia_routes:\n  update_now:\n    bin: /usr/local/bin/harmonia\n    args:\n    - homeserver-update\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --apply\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/update-latest\n  update_check:\n    bin: /usr/local/bin/harmonia\n    args:\n    - homeserver-update\n    - /etc/harmonia/profiles/homeserver/index.json\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/update-latest\noperator_aliases:\n  update: caduceus update now\n  update-check: caduceus update check\n  update-status: caduceus update status\n  receipts: caduceus receipts latest\n  health: caduceus health\n"
         }
       }
-    },
-    {
-      "step_id": "caduceus-staff-shelf-from-synced-source",
-      "tool": "files",
-      "permutation": "source-shelf-sweep",
-      "args": {
-        "source_root": "/opt/caduceus/source/data/staff-actuators",
-        "shelf_source": "caduceus_staff",
-        "target_shelf": "/usr/local/sbin/caduceus_staff",
-        "launcher_source_root": "/opt/caduceus/source/data/staff-actuators",
-        "launcher_target_root": "/usr/local/sbin",
-        "launcher_pattern": "caduceus-*",
-        "shelf_owner": "root",
-        "shelf_group": "root",
-        "shelf_directory_mode": 493,
-        "shelf_file_mode": 420,
-        "launcher_mode": 493,
-        "prune": true
-      }
     }
   ]
 }

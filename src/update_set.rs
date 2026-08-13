@@ -217,10 +217,11 @@ fn derive_plan_inner(profile: &Profile, root: &Path) -> Result<UpdatePlan, Strin
             }
             if s.tool == "files"
                 && s.permutation == "source-shelf-sweep"
-                && steps.iter().any(|x| {
-                    x.tool == "service-runtime"
-                        && x.args.get("component").and_then(Value::as_str) == Some("caduceus")
-                })
+                && (m.id == "sbin"
+                    || steps.iter().any(|x| {
+                        x.tool == "service-runtime"
+                            && x.args.get("component").and_then(Value::as_str) == Some("caduceus")
+                    }))
             {
                 if let Some(p) = text(&s.args, "target_shelf") {
                     add_target(&mut targets, p.into(), "caduceus_staff")?;
