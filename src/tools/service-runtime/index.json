@@ -1,0 +1,15 @@
+{
+  "schema": "harmonia.tool.v1",
+  "name": "service-runtime",
+  "state": "fronted",
+  "legacy_path": "src/tools/service_runtime.rs",
+  "stages": [
+    "source-gate",
+    "managed-files",
+    "build",
+    "binary-install",
+    "service-epilogue",
+    "health-proof"
+  ],
+  "migration_status": "routine-spine-landed-interior-dissolution-debt"
+}
