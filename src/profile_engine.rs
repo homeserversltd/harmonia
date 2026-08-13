@@ -360,6 +360,7 @@ fn execute_band_modules(
                     changed: false,
                     operation_count: 0,
                     first_missing_signal: None,
+                    placements: Vec::new(),
                 });
                 state.ok = false;
                 state.first_missing_signal.get_or_insert(err.clone());
@@ -389,6 +390,7 @@ fn execute_band_modules(
                     changed: false,
                     operation_count: 0,
                     first_missing_signal: Some("module-sidecar-not-band-executable".to_string()),
+                    placements: Vec::new(),
                 };
                 Ok(state)
             }
@@ -398,11 +400,13 @@ fn execute_band_modules(
             changed: false,
             operation_count: 0,
             first_missing_signal: None,
+            placements: Vec::new(),
         });
         match result {
             Ok(part) => {
                 state.operation_count += part.operation_count;
                 state.changed |= part.changed;
+                state.placements.extend(part.placements);
                 if part.changed {
                     *changed = true;
                 }
@@ -636,6 +640,7 @@ pub(crate) fn run_profile_engine_with_preflight(
                             "module_id": id, "operation_count": state.operation_count,
                             "ok": state.ok, "changed": state.changed,
                             "first_missing_signal": state.first_missing_signal,
+                            "steps": state.placements,
                         })).collect::<Vec<_>>(),
                     }),
                 )?;

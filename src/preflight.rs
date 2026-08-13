@@ -1218,6 +1218,7 @@ pub(crate) fn run_engine_preflight(
             changed: false,
             operation_count: 0,
             first_missing_signal: Some(signal.into()),
+            placements: Vec::new(),
         });
     };
     if !config.enabled {
@@ -1245,6 +1246,7 @@ pub(crate) fn run_engine_preflight(
             changed: false,
             operation_count: 0,
             first_missing_signal: Some(signal.into()),
+            placements: Vec::new(),
         });
     }
 
@@ -1430,7 +1432,10 @@ pub(crate) fn run_engine_preflight(
                             config.git_https_credential_token_path.clone(),
                         );
                         let git_outcome = if apply {
-                            tools::git_artifact::apply(&request, invocation.ok_or("invocation-key-missing")?)
+                            tools::git_artifact::apply(
+                                &request,
+                                invocation.ok_or("invocation-key-missing")?,
+                            )
                         } else {
                             tools::git_artifact::plan(&request)
                         };
@@ -1645,7 +1650,10 @@ pub(crate) fn run_engine_preflight(
                 config.git_https_credential_token_path.clone(),
             );
             let git_outcome = if apply {
-                tools::git_artifact::apply(&git_request, invocation.ok_or("invocation-key-missing")?)
+                tools::git_artifact::apply(
+                    &git_request,
+                    invocation.ok_or("invocation-key-missing")?,
+                )
             } else {
                 tools::git_artifact::plan(&git_request)
             };
@@ -1704,23 +1712,26 @@ pub(crate) fn run_engine_preflight(
     operation_count += 1;
     changed |= caduceus_source_possession.changed;
 
-    let caduceus_staff_shelf =
-        match converge_caduceus_staff_shelf(&preflight_dir, apply, caduceus_source_ready, invocation) {
-            Ok(outcome) => outcome,
-            Err(error) => OperationOutcome {
-                ok: false,
-                changed: false,
-                skipped: true,
-                message: error,
-                command: None,
-            },
-        };
+    let caduceus_staff_shelf = match converge_caduceus_staff_shelf(
+        &preflight_dir,
+        apply,
+        caduceus_source_ready,
+        invocation,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: error,
+            command: None,
+        },
+    };
     operation_count += 1;
     changed |= caduceus_staff_shelf.changed;
     if !caduceus_staff_shelf.ok && first_missing_signal == "none" {
         first_missing_signal = "caduceus-staff-shelf-sweep-failed".into();
     }
-
 
     if first_missing_signal == "none"
         && matches!(lane.as_str(), "source-fallback" | "local-checkout")

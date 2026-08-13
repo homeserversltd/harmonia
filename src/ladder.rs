@@ -570,9 +570,10 @@ pub(crate) fn band_for_step(step: &ValidatedStep) -> Result<crate::bands::Band, 
         | ("files", "converge")
         | ("files", "directory-sync") => Band::BackfillFiles,
         ("command", "capture") => Band::ProposeEdits,
-        ("pull-repo", _) | ("build-crate", _) | ("place-file", _) | ("enable-unit", _) => {
-            Band::ProposeEdits
-        }
+        ("pull-repo", _) => Band::PullSource,
+        ("build-crate", _) => Band::RatchetBinaries,
+        ("place-file", _) => Band::BackfillFiles,
+        ("enable-unit", _) => Band::RestartServices,
         (tool, permutation) => {
             return Err(format!(
                 "unknown-tool-band tool={tool} permutation={permutation}"
@@ -599,10 +600,35 @@ pub(crate) fn execute_ladder_manifest_band(
         changed: false,
         operation_count: 0,
         first_missing_signal: None,
+        placements: Vec::new(),
     };
     for step in steps {
         if band_for_step(&step)? != band {
             continue;
+        }
+        let precondition = if step.tool == "routine" {
+            None
+        } else {
+            command_precondition(&step.args)?
+        };
+        if let Some(precondition) = precondition {
+            result.operation_count += 1;
+            let probe = command_precondition_step(&step, &precondition, manifest, module_dir)?;
+            if !probe.ok {
+                result.ok = false;
+                let probe_error = probe
+                    .command
+                    .as_ref()
+                    .map(|r| format!("exit_code={} stderr={}", r.code, r.stderr))
+                    .unwrap_or_else(|| probe.message.clone());
+                let signal = format!(
+                    "step_id={} state=blocked probe_error={probe_error}",
+                    step.step_id
+                );
+                result.first_missing_signal.get_or_insert(signal.clone());
+                result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}", band),"status":"blocked","module":manifest.id}));
+                break;
+            }
         }
         result.operation_count += 1;
         let outcome = if step.tool == "routine" {
@@ -626,6 +652,7 @@ pub(crate) fn execute_ladder_manifest_band(
                 invocation,
             )?
         };
+        result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}", band),"status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
         result.changed |= outcome.changed;
         if !outcome.ok {
             result.ok = false;
@@ -730,6 +757,7 @@ pub(crate) fn execute_ladder_manifest(
         changed,
         operation_count,
         first_missing_signal,
+        placements: Vec::new(),
     })
 }
 
@@ -2587,6 +2615,7 @@ mod tests {
                     changed: false,
                     operation_count: 1,
                     first_missing_signal: None,
+                    placements: Vec::new(),
                 })
             },
         )
