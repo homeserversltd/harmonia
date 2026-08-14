@@ -58,12 +58,43 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         .iter()
         .filter(|r| r["disposition"] == "Proposed")
         .count();
+    let refused_rows_preserved = rows
+        .iter()
+        .filter(|r| r["disposition"] == "Refused")
+        .all(|r| {
+            r["before"] == r["after"]
+                && r["parent_before"] == r["parent_after"]
+                && r["written"] == 0
+        });
+    let sentinel_parent_rows_preserved = rows
+        .iter()
+        .filter(|r| {
+            matches!(
+                r["permutation"].as_str(),
+                Some("desktop-config") | Some("protected-path")
+            )
+        })
+        .all(|r| r["parent_before"] == "absent" && r["parent_after"] == "absent");
     let ok = rows.len() == names.len() + 4
         && rows
             .iter()
             .all(|r| r["before"] == r["after"] && r["changed"] == false)
+        && refused_rows_preserved
+        && sentinel_parent_rows_preserved
         && proposal_count == 1;
     let receipt = json!({"schema":"harmonia.bench-structural-wall.v3","ok":ok,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r|r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r|r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r|r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r|r["proposal_id"].as_str()),"rows":rows});
+    let matrix_path =
+        PathBuf::from("/var/opt/hermes/workspace/slice-9-structural-wall-matrix.json");
+    fs::write(
+        &matrix_path,
+        serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| {
+        format!(
+            "structural-wall-matrix-write-failed {}: {e}",
+            matrix_path.display()
+        )
+    })?;
     println!(
         "{}",
         serde_json::to_string(&receipt).map_err(|e| e.to_string())?
@@ -183,9 +214,12 @@ fn row(
     let target = if interactable {
         root.join("interactable-dir")
     } else if name == "desktop-config" {
-        PathBuf::from("/home/owner/.config/hermes-slice-9")
+        PathBuf::from(format!(
+            "/home/owner/.config/hermes-slice-9-{}/nested/desktop-config",
+            std::process::id()
+        ))
     } else if name == "protected-path" {
-        root.join("id_slice9.key")
+        root.join("absent-protected-parent").join("id_slice9.key")
     } else {
         PathBuf::from(format!(
             "/etc/hermes-slice-9-{}/{}",
@@ -224,13 +258,19 @@ fn row(
             root.join("interactables.json"),
         );
     }
-    let result = crate::ladder::structural_wall_dispatch(
-        &step,
+    let mut routine_states = BTreeMap::new();
+    let band = crate::ladder::placement_for_step(&step)?;
+    let result = crate::ladder::execute_ladder_manifest_band(
         &manifest(root, interactable),
         &root.join("receipts"),
+        band,
         Some(auth),
         None,
         Some(inv),
+        false,
+        &mut routine_states,
+        std::slice::from_ref(&step),
+        &BTreeMap::new(),
     );
     let proposal = if interactable {
         match crate::interactables::load_feed(&root.join("interactables.json")) {

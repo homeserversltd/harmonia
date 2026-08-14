@@ -810,6 +810,7 @@ pub(crate) fn execute_ladder_manifest_band(
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
 ) -> Result<ModuleExecution, String> {
     let steps = projected_steps.to_vec();
+    preflight_file_targets(manifest, &steps, projected_routines, Some(band))?;
     fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
     let mut result = ModuleExecution {
         ok: true,
@@ -934,6 +935,8 @@ pub(crate) fn execute_ladder_manifest(
 ) -> Result<ModuleExecution, String> {
     let steps = validate_ladder(manifest)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
+    let projected_routines = project_manifest_routines(manifest, &steps)?;
+    preflight_file_targets(manifest, &steps, &projected_routines, None)?;
     fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
     let mut ok = true;
     let mut changed = false;
@@ -1098,6 +1101,30 @@ fn structural_file_blocker(step: &ValidatedStep, manifest: &LadderManifest) -> O
     None
 }
 
+fn project_manifest_routines(manifest: &LadderManifest, steps: &[ValidatedStep]) -> Result<BTreeMap<String, Vec<ProjectedRoutineChild>>, String> {
+    let mut projected = BTreeMap::new();
+    for step in steps.iter().filter(|step| step.tool == "routine") {
+        let source = manifest.ladder.iter().find(|candidate| candidate.step_id == step.step_id).ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
+        let children = project_routine_children(source, &manifest.constants).map_err(|error| format!("module-invalid {}", error.first_missing_signal()))?;
+        projected.insert(step.step_id.clone(), children);
+    }
+    Ok(projected)
+}
+fn preflight_file_targets(manifest: &LadderManifest, steps: &[ValidatedStep], projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>, band: Option<crate::bands::Band>) -> Result<(), String> {
+    for step in steps {
+        if step.tool != "routine" {
+            if band.is_none() || placement_for_step(step)? == band.unwrap() { if let Some(blocker) = structural_file_blocker(step, manifest) { return Err(blocker); } }
+            continue;
+        }
+        for child in projected_routines.get(&step.step_id).map(Vec::as_slice).unwrap_or(&[]) {
+            if band.is_none() || child.band == band.unwrap() {
+                let child_step = ValidatedStep { step_id: child.name.clone(), tool: child.tool.clone(), permutation: child.permutation.clone(), args: child.args.clone(), on_failure: child.on_failure };
+                if let Some(blocker) = structural_file_blocker(&child_step, manifest) { return Err(blocker); }
+            }
+        }
+    }
+    Ok(())
+}
 pub(crate) fn structural_wall_dispatch(step: &ValidatedStep, manifest: &LadderManifest, module_dir: &Path, authorization: Option<&crate::SoftwareApplyAuthorization>, package_authority: Option<&crate::PackageAuthority>, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> { execute_validated_step(step, manifest, module_dir, authorization, package_authority, false, invocation) }
 
 fn execute_validated_step(
@@ -1210,6 +1237,9 @@ pub(crate) fn execute_routine(
         .iter()
         .find(|s| s.step_id == step.step_id)
         .ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
+    let mut projected = BTreeMap::new();
+    projected.insert(step.step_id.clone(), projected_children.to_vec());
+    preflight_file_targets(manifest, std::slice::from_ref(step), &projected, Some(band))?;
     let routine_dir = module_dir.join(&source.step_id);
     fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
     let local = states.is_none();
