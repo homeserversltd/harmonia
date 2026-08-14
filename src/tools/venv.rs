@@ -15,7 +15,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("source_patterns", ToolArgKind::StringArray),
         ToolArg::optional("python", ToolArgKind::String),
     ],
-)];
+).in_band(crate::tools::Placement::InstallPackages)];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 fn safe_absolute_path(value: &str) -> bool {

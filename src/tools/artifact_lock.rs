@@ -12,7 +12,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::required("lock", ToolArgKind::String),
         ToolArg::optional("profile", ToolArgKind::String),
     ],
-)];
+).in_band(crate::tools::Placement::Compare)];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 pub(crate) fn verify(

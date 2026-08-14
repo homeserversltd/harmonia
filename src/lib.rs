@@ -290,6 +290,7 @@ mod invocation_face {
             profile: "production".into(),
             face: args.first().cloned().unwrap_or_else(|| "invoke".into()),
             key,
+            carrier: std::rc::Rc::new(std::cell::RefCell::new(crate::atoms::r#do::transaction::RunCarrier::default())),
         });
         super::Invocation(key, context)
     }

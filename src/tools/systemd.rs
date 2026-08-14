@@ -14,7 +14,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         "daemon-reload",
         "reload the system systemd manager only when this module changed managed material",
         &[ToolArg::optional("timeout_secs", ToolArgKind::Integer)],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "service-epilogue",
         "reload, enable, conditionally restart, and prove active service state",
@@ -25,7 +25,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("target_user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "enable-now",
         "enable and start a system unit",
@@ -33,7 +33,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "enable-first-present-now",
         "select the first present system unit from an ordered typed candidate list, then enable and start it",
@@ -41,7 +41,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("candidate_units", ToolArgKind::StringArray),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "unit-present",
         "assert that a system unit is loaded without enabling or starting it",
@@ -49,7 +49,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "disable-stop-remove",
         "disable and stop a system unit, then remove its unit file",
@@ -57,7 +57,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "disable-stop",
         "disable and stop a system unit while preserving its unit file",
@@ -65,7 +65,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "restart",
         "restart a system unit only when this module changed managed material",
@@ -73,7 +73,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "is-active-probe",
         "probe active state for a system unit",
@@ -81,7 +81,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("service", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "user-daemon-reload",
         "reload the user systemd manager only when this module changed managed material",
@@ -89,7 +89,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "user-enable-now",
         "enable and start a user unit",
@@ -98,7 +98,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "user-restart",
         "restart a user unit only when this module changed managed material",
@@ -107,7 +107,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "user-is-active-probe",
         "probe active state for a user unit",
@@ -116,7 +116,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("user", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 

@@ -16,7 +16,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("state_path", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "set-timezone",
         "validate and apply one IANA timezone through the selected backend",
@@ -26,7 +26,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("state_path", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "watch-and-set",
         "read a fresh resolver fact and apply its validated timezone or preserve the local clock",
@@ -36,7 +36,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("state_path", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 

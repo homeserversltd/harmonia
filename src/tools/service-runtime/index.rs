@@ -38,37 +38,37 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         "converge",
         "converge a Rust service runtime from typed constants",
         SERVICE_RUNTIME_ARGS,
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "source-gate",
         "run the source-gate service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ),
+    ).in_band(crate::tools::Placement::PullSource),
     ToolPermutation::new(
         "managed-files",
         "run the managed-files service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "build",
         "run the build service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ),
+    ).in_band(crate::tools::Placement::RatchetBinaries),
     ToolPermutation::new(
         "binary-install",
         "run the binary-install service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ),
+    ).in_band(crate::tools::Placement::RatchetBinaries),
     ToolPermutation::new(
         "service-epilogue",
         "run the service-epilogue service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "health-proof",
         "run the health-proof service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ),
+    ).in_band(crate::tools::Placement::RestartServices),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 

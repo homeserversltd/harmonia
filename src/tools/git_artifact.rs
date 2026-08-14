@@ -11,7 +11,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         // Source Git runs as the declared non-root bearer.
         ToolArg::optional("bearer", ToolArgKind::String),
     ],
-)];
+).in_band(crate::tools::Placement::PullSource)];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 use serde::{Deserialize, Serialize};

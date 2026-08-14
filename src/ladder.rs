@@ -420,6 +420,15 @@ pub(crate) fn validate_group(
     })
 }
 
+pub(crate) fn execute_group_live_probe_validated(
+    manifest: &LadderManifest,
+    step: &ValidatedStep,
+    receipt_dir: &Path,
+) -> Result<OperationOutcome, String> {
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    execute_validated_step(step, manifest, receipt_dir, None, None, false, None)
+}
+
 pub(crate) fn execute_group_live_probe(
     manifest: &LadderManifest,
     receipt_dir: &Path,
@@ -429,8 +438,7 @@ pub(crate) fn execute_group_live_probe(
     };
     let step = validate_group(group, &manifest.constants)
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    execute_validated_step(&step, manifest, receipt_dir, None, None, false, None)
+    execute_group_live_probe_validated(manifest, &step, receipt_dir)
 }
 
 fn resolve_args(
@@ -611,52 +619,33 @@ pub(crate) struct ValidatedStep {
     pub on_failure: OnFailure,
 }
 
-pub(crate) fn band_for_step(step: &ValidatedStep) -> Result<crate::bands::Band, String> {
-    use crate::bands::Band;
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectedRoutineChild { pub name: String, pub tool: String, pub permutation: String, pub args: BTreeMap<String, Value>, pub on_failure: OnFailure, pub band: crate::bands::Band }
+
+pub(crate) fn project_routine_children(step: &LadderStep, constants: &BTreeMap<String, Value>) -> Result<Vec<ProjectedRoutineChild>, LadderValidationError> {
+    step.steps.iter().map(|child| {
+        let contract = tools::get(&child.tool).ok_or_else(|| LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-tool-not-found-{}", child.tool) })?;
+        let permutation = child.permutation.as_deref().or_else(|| contract.permutations.first().map(|p| p.name)).unwrap_or("");
+        let declaration = contract.permutation(permutation).ok_or_else(|| LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-undeclared-permutation-{}-{}", child.tool, permutation) })?;
+        let args = resolve_args(&child.args, constants).map_err(|defect| LadderValidationError { step_id: step.step_id.clone(), defect })?;
+        validate_args(&step.step_id, declaration, &args)?;
+        validate_tool_semantics(&step.step_id, &child.tool, permutation, &args)?;
+        validate_command_precondition(&step.step_id, &child.tool, permutation, &args)?;
+        let band = declaration.placement.map(crate::tools::Placement::band).ok_or_else(|| LadderValidationError { step_id: step.step_id.clone(), defect: format!("unknown-tool-band tool={} permutation={}", child.tool, permutation) })?;
+        Ok(ProjectedRoutineChild { name: child.name.clone(), tool: child.tool.clone(), permutation: permutation.into(), args, on_failure: step.on_failure, band })
+    }).collect()
+}
+
+pub(crate) fn placement_for_step(step: &ValidatedStep) -> Result<crate::bands::Band, String> {
     if step.tool == "routine" {
-        return Ok(Band::ProposeEdits);
+        return Err(format!("routine-has-no-band step_id={}", step.step_id));
     }
-    let band = match (step.tool.as_str(), step.permutation.as_str()) {
-        ("package", "check")
-        | ("package", "install")
-        | ("package", "upgrade")
-        | ("package", "keyring-repair")
-        | ("venv", "converge")
-        | ("aur", "install")
-        | ("aur", "check")
-        | ("aur", "build-pinned") => Band::InstallPackages,
-        ("git-artifact", "sync") => Band::PullSource,
-        ("artifact-lock", "verify") | ("health", "probe") => Band::Compare,
-        ("service-runtime", "source-gate") => Band::PullSource,
-        ("service-runtime", "build") | ("service-runtime", "binary-install") => Band::RatchetBinaries,
-        ("service-runtime", "managed-files") => Band::BackfillFiles,
-        ("service-runtime", "converge") | ("service-runtime", "service-epilogue") | ("service-runtime", "health-proof") | ("systemd", _) | ("household-time", _) => { Band::RestartServices }
-        ("files", "managed-files")
-        | ("files", "managed-directories")
-        | ("files", "validated-symlink")
-        | ("files", "symlink-converge")
-        | ("files", "validated-file-symlink")
-        | ("files", "remove")
-        | ("files", "executable-present")
-        | ("files", "source-shelf-sweep")
-        | ("files", "validated-sudoers-converge")
-        | ("files", "ensure-present")
-        | ("files", "converge")
-        | ("files", "directory-sync") => Band::BackfillFiles,
-        ("command", "capture") => Band::ProposeEdits,
-        ("pull-repo", _) => Band::PullSource,
-        ("build-crate", _) => Band::RatchetBinaries,
-        ("place-file", _) => Band::BackfillFiles,
-        ("enable-unit", _) => Band::RestartServices,
-        ("backfill-file", _) => Band::BackfillFiles,
-        ("check-health", _) => Band::Compare,
-        (tool, permutation) => {
-            return Err(format!(
-                "unknown-tool-band tool={tool} permutation={permutation}"
-            ))
-        }
-    };
-    Ok(band)
+    let permutation = tools::get(&step.tool)
+        .and_then(|tool| tool.permutation(&step.permutation))
+        .ok_or_else(|| format!("unknown-tool-band tool={} permutation={}", step.tool, step.permutation))?;
+    permutation.placement
+        .map(crate::tools::Placement::band)
+        .ok_or_else(|| format!("unknown-tool-band tool={} permutation={}", step.tool, step.permutation))
 }
 
 pub(crate) fn execute_ladder_manifest_band(
@@ -668,9 +657,10 @@ pub(crate) fn execute_ladder_manifest_band(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
     module_changed_before_step: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
+    projected_steps: &[ValidatedStep],
+    projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
 ) -> Result<ModuleExecution, String> {
-    let steps = validate_ladder(manifest)
-        .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
+    let steps = projected_steps.to_vec();
     fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
     let mut result = ModuleExecution {
         ok: true,
@@ -681,14 +671,9 @@ pub(crate) fn execute_ladder_manifest_band(
     };
     for step in steps {
         if step.tool == "routine" {
-            let raw = manifest.ladder.iter().find(|candidate| candidate.step_id == step.step_id).ok_or_else(|| "routine-step-missing".to_string())?;
-            let has = raw.steps.iter().any(|child| {
-                let permutation = child.permutation.as_deref().or_else(|| tools::get(&child.tool).and_then(|c| c.permutations.first()).map(|p| p.name)).unwrap_or("");
-                let child_step = ValidatedStep { step_id: child.name.clone(), tool: child.tool.clone(), permutation: permutation.into(), args: child.args.clone(), on_failure: OnFailure::Stop };
-                band_for_step(&child_step).map(|b| b == band).unwrap_or(false)
-            });
-            if !has { continue; }
-        } else if band_for_step(&step)? != band { continue; }
+            let children = projected_routines.get(&step.step_id).ok_or_else(|| "routine-step-missing".to_string())?;
+            if !children.iter().any(|child| child.band == band) { continue; }
+        } else if placement_for_step(&step)? != band { continue; }
         let precondition = if step.tool == "routine" {
             None
         } else {
@@ -725,6 +710,7 @@ pub(crate) fn execute_ladder_manifest_band(
                 invocation,
                 Some(routine_states),
                 band,
+                projected_routines.get(&step.step_id).map(Vec::as_slice).unwrap_or(&[]),
             )?
         } else {
             execute_validated_step(
@@ -738,16 +724,12 @@ pub(crate) fn execute_ladder_manifest_band(
             )?
         };
         if step.tool == "routine" {
-            if let Some(raw) = manifest.ladder.iter().find(|candidate| candidate.step_id == step.step_id) {
-                let routine = routine_states.get(step.step_id.as_str()).ok_or_else(|| "routine-state-missing".to_string())?;
-                for child in &raw.steps {
-                    let permutation = child.permutation.as_deref().or_else(|| tools::get(&child.tool).and_then(|c| c.permutations.first()).map(|p| p.name)).unwrap_or("");
-                    let child_step = ValidatedStep { step_id: child.name.clone(), tool: child.tool.clone(), permutation: permutation.into(), args: child.args.clone(), on_failure: OnFailure::Stop };
-                    if band_for_step(&child_step)? == band {
-                        let receipt = routine.children.iter().find(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str())).ok_or_else(|| format!("routine-child-receipt-missing-{}", child.name))?;
-                        let status = receipt.get("state").and_then(Value::as_str).unwrap_or("failed");
-                        result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":permutation,"band":format!("{:?}",band),"status":status,"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
-                    }
+            let routine = routine_states.get(step.step_id.as_str()).ok_or_else(|| "routine-state-missing".to_string())?;
+            for child in projected_routines.get(&step.step_id).map(Vec::as_slice).unwrap_or(&[]) {
+                if child.band == band {
+                    let receipt = routine.children.iter().find(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str())).ok_or_else(|| format!("routine-child-receipt-missing-{}", child.name))?;
+                    let status = receipt.get("state").and_then(Value::as_str).unwrap_or("failed");
+                    result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":format!("{:?}",band),"status":status,"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
                 }
             }
         } else {
@@ -796,6 +778,7 @@ pub(crate) fn execute_ladder_manifest(
                 invocation,
                 None,
                 crate::bands::Band::ProposeEdits,
+                &[],
             )?;
             operation_count += 1;
             changed |= outcome.changed;
@@ -1023,6 +1006,7 @@ fn execute_routine(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
     mut states: Option<&mut BTreeMap<String, crate::ModuleWalkState>>,
     band: crate::bands::Band,
+    projected_children: &[ProjectedRoutineChild],
 ) -> Result<OperationOutcome, String> {
     let source = manifest.ladder.iter().find(|s| s.step_id == step.step_id)
         .ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
@@ -1039,11 +1023,8 @@ fn execute_routine(
         owned = crate::ModuleWalkState { context:BTreeMap::new(), children:Vec::new(), blocked_by:None, ok:true, changed:false, first_missing_signal:None, service_runtime:None };
         &mut owned
     };
-    for child in &source.steps {
-        let child_band = crate::ladder::band_for_step(&ValidatedStep {
-            step_id: child.name.clone(), tool: child.tool.clone(), permutation: child.permutation.clone().or_else(|| tools::get(&child.tool).and_then(|c| c.permutations.first()).map(|p| p.name.to_string())).unwrap_or_default(), args: child.args.clone(), on_failure: OnFailure::Stop,
-        })?;
-        if !local && child_band != band { continue; }
+    for child in projected_children {
+        if !local && child.band != band { continue; }
         if state.children.iter().any(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str())) { continue; }
         let child_dir = routine_dir.join(&child.name);
         fs::create_dir_all(&child_dir).map_err(|e| e.to_string())?;
@@ -1056,7 +1037,7 @@ fn execute_routine(
         let (status, child_ok, child_changed, outputs, extra) = if let Some(reference)=missing {
             let signal=format!("step_id={} defect=missing-stamp-{}",child.name,reference); state.ok=false; state.first_missing_signal.get_or_insert(signal.clone()); state.blocked_by=Some(child.name.clone()); ("missing",false,false,BTreeMap::new(),json!({"first_missing_signal":signal}))
         } else {
-            match tools::module_steps::execute_routine_tool(&child.tool, child.permutation.as_deref(), &args,manifest,&child_dir,apply,invocation,&mut state.service_runtime) {
+            match tools::module_steps::execute_routine_tool(&child.tool, Some(child.permutation.as_str()), &args,manifest,&child_dir,apply,invocation,&mut state.service_runtime) {
                 Ok((outcome,outputs)) => { if !outcome.ok { state.ok=false; state.first_missing_signal.get_or_insert(format!("step_id={} defect={}",child.name,outcome.message)); state.blocked_by=Some(child.name.clone()); } state.changed |= outcome.changed; (if outcome.ok {"completed"} else {"failed"},outcome.ok,outcome.changed,outputs,json!({"skipped":outcome.skipped,"message":outcome.message})) }
                 Err(error) => { let signal=format!("step_id={} defect={}",child.name,error); state.ok=false; state.first_missing_signal.get_or_insert(signal); state.blocked_by=Some(child.name.clone()); ("failed",false,false,BTreeMap::new(),json!({"message":error})) }
             }

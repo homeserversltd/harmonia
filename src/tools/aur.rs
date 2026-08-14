@@ -21,7 +21,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("package", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::InstallPackages),
     ToolPermutation::new(
         "check",
         "compare a ratchet lock pin against observed AUR upstream state without mutation",
@@ -30,7 +30,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("lock", ToolArgKind::String),
             ToolArg::optional("upstream_state", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::InstallPackages),
     ToolPermutation::new(
         "build-pinned",
         "build exactly the pinned AUR PKGBUILD git commit through an unprivileged builder",
@@ -43,7 +43,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
             ToolArg::optional("install", ToolArgKind::Bool),
         ],
-    ),
+    ).in_band(crate::tools::Placement::InstallPackages),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
