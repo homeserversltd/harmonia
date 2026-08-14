@@ -165,6 +165,7 @@ fn parse_update_mode(args: &[String], invocation: Option<crate::atoms::r#do::Inv
 }
 
 pub(crate) fn update_from_certificate(args: &[String], invocation: crate::Invocation) -> Result<(), String> {
+    let context = invocation.1.clone();
     let receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
     let mode = match parse_update_mode(args, invocation.0) {
@@ -270,5 +271,5 @@ pub(crate) fn update_from_certificate(args: &[String], invocation: crate::Invoca
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
     let module_root = default_module_root(&profile_path);
-    rolling_update_from_certificate(&profile, &module_root, &receipt_dir, mode)
+    rolling_update_from_certificate_with_context(&profile, &module_root, &receipt_dir, mode, context)
 }

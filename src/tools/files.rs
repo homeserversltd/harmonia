@@ -27,12 +27,12 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("owner", ToolArgKind::String),
             ToolArg::optional("group", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "managed-directories",
         "converge managed directory declarations with mode and ownership readback",
         &[ToolArg::required("directories", ToolArgKind::Json)],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "converge",
         "converge a source file tree into a target root",
@@ -46,7 +46,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("owner", ToolArgKind::String),
             ToolArg::optional("group", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "ensure-present",
         "create declared seed files only when absent; preserve existing regular-file bytes and ownership",
@@ -58,12 +58,12 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("owner", ToolArgKind::String),
             ToolArg::optional("group", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "hotfix-file-backfill",
         "comparison-gated primitive that atomically backfills declared file bytes",
         &[ToolArg::required("file_bytes", ToolArgKind::Json), ToolArg::required("target_path", ToolArgKind::String), ToolArg::optional("mode", ToolArgKind::Integer), ToolArg::optional("owner", ToolArgKind::String)],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "remove",
         "remove only declared regular files beneath a target root and receipt their prior and final state",
@@ -71,7 +71,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("target_root", ToolArgKind::String),
             ToolArg::required("paths", ToolArgKind::StringArray),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "directory-sync",
         "verify or copy a source directory tree into a target directory",
@@ -85,7 +85,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("owner", ToolArgKind::String),
             ToolArg::optional("group", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "validated-sudoers-converge",
         "validate and atomically converge only declared estate-owned sudoers.d fragments",
@@ -100,7 +100,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::required("group", ToolArgKind::String),
             ToolArg::optional("receipt_name", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "source-shelf-sweep",
         "converge one source shelf and, when declared, pattern-selected flat launchers with per-path atomic, all-or-restored semantics",
@@ -121,7 +121,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("provenance_state", ToolArgKind::String),
             ToolArg::optional("owned_recursive", ToolArgKind::Bool),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "executable-present",
         "prove one declared executable is runnable in a kernel-owned fixed search scope",
@@ -130,7 +130,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("search_scope", ToolArgKind::String),
             ToolArg::optional("receipt_label", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "symlink-converge",
         "converge one declared symlink from a validated source without program-bearing arguments",
@@ -142,7 +142,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("owner", ToolArgKind::String),
             ToolArg::optional("group", ToolArgKind::String),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "validated-symlink",
         "validate a candidate symlink before atomically promoting declared link ownership",
@@ -155,7 +155,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("reload_args", ToolArgKind::StringArray),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "validated-file-symlink",
         "validate staged file and include-visible link candidates before reversible promotion",
@@ -169,7 +169,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("reload_args", ToolArgKind::StringArray),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::BackfillFiles),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 

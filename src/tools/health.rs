@@ -13,7 +13,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ToolArg::optional("retries", ToolArgKind::Integer),
     ],
-)];
+).in_band(crate::tools::Placement::Compare)];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]

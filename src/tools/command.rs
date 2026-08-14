@@ -24,7 +24,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::optional("cwd", ToolArgKind::String),
         ToolArg::optional("timeout_secs", ToolArgKind::Integer),
     ],
-)];
+).in_band(crate::tools::Placement::ProposeEdits)];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const TERMINATION_GRACE_SECS: u64 = 3;

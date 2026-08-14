@@ -15,12 +15,21 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
 };
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RunCarrier {
+    pub projection: Option<crate::profile_engine::ProfileProjection>,
+    pub update_plan: Option<crate::update_set::UpdatePlan>,
+}
+
+pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
+
 #[derive(Clone, Debug)]
 pub(crate) struct RunContext {
     pub run_id: String,
     pub profile: String,
     pub face: String,
     pub(crate) key: InvocationKey,
+    pub(crate) carrier: RunCarrierRef,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RunIdentity {

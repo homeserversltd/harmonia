@@ -16,7 +16,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         "check",
         "check package database/update state without mutation",
         &[ToolArg::optional("packages", ToolArgKind::StringArray)],
-    ),
+    ).in_band(crate::tools::Placement::InstallPackages),
     ToolPermutation::new(
         "install",
         "install declared packages using pacman --needed semantics",
@@ -26,12 +26,12 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("conflict_paths", ToolArgKind::StringArray),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::InstallPackages),
     ToolPermutation::new(
         "upgrade",
         "run full pacman -Syu upgrade lane",
         &[ToolArg::optional("timeout_secs", ToolArgKind::Integer)],
-    ),
+    ).in_band(crate::tools::Placement::InstallPackages),
     ToolPermutation::new(
         "keyring-repair",
         "repair Arch pacman keyring with pacman-key init/populate/refresh/updatedb and archlinux-keyring install",
@@ -39,7 +39,7 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
             ToolArg::optional("package", ToolArgKind::String),
             ToolArg::optional("timeout_secs", ToolArgKind::Integer),
         ],
-    ),
+    ).in_band(crate::tools::Placement::InstallPackages),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
