@@ -275,7 +275,10 @@ pub(crate) fn execute_routine_tool(
                 message: o.receipt.promotion.clone(),
                 command: None,
             };
-            write_json(&receipt_dir.join(format!("{name}.json")), &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":o.ok,"changed":o.changed,"skipped":!apply,"promotion":o.receipt.promotion}))?;
+            write_json(
+                &receipt_dir.join(format!("{name}.json")),
+                &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":o.ok,"changed":o.changed,"skipped":!apply,"promotion":o.receipt.promotion}),
+            )?;
             crate::pull_repo::attest_source(&receipt_dir.join("pull-repo.attest.jsonl"), &o)?;
             Ok((result, out))
         }
@@ -290,11 +293,21 @@ pub(crate) fn execute_routine_tool(
                 .and_then(|v| v.as_str())
                 .ok_or("build-crate-source-build-sha-missing")?;
             let installed_sha = args.get("installed_build_sha").and_then(|v| v.as_str());
-            let binary = Path::new(
-                args.get("installed_binary")
-                    .and_then(|v| v.as_str())
-                    .ok_or("build-crate-installed-binary-missing")?,
-            );
+            let binary_path = args
+                .get("installed_binary")
+                .and_then(|v| v.as_str())
+                .ok_or("build-crate-installed-binary-missing")?;
+            let binary = Path::new(binary_path);
+            let artifact_path = args
+                .get("artifact")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .or_else(|| {
+                    args.get("artifact_name")
+                        .and_then(Value::as_str)
+                        .map(|name| cwd.join("target/release").join(name))
+                })
+                .unwrap_or_else(|| binary.to_path_buf());
             let env_value = args.get("environment");
             let env: Vec<(String, String)> = match env_value {
                 None => Vec::new(),
@@ -322,14 +335,22 @@ pub(crate) fn execute_routine_tool(
                 source_sha,
                 installed_sha,
                 binary,
-                binary,
+                &artifact_path,
                 apply,
                 &env,
                 timeout,
-                &receipt_dir.join("build-crate.log"),
+                &receipt_dir.join("harmonia-atoms.log"),
                 bearer,
                 invocation,
             )?;
+            if let Some(legacy_name) = args.get("legacy_build_receipt").and_then(Value::as_str) {
+                if let Some(observation) = &moved {
+                    let command = CmdResult { ok: observation.ok, code: observation.code.unwrap_or(-1), stdout: observation.stdout.clone(), stderr: observation.stderr.clone() };
+                    crate::write_command_receipt(receipt_dir, legacy_name, &command)?;
+                } else {
+                    crate::write_json(&receipt_dir.join(format!("{legacy_name}.json")), &serde_json::json!({"schema":"harmonia.service-runtime.cargo-build.v1","state":"converged-quiet","ok":true,"changed":false,"invoked":false,"reason":"source-sha-matches-promoted-source-and-installed-binary","remote_sha":"","promoted_source_sha":source_sha}))?;
+                }
+            }
             let result = OperationOutcome {
                 ok: moved.as_ref().map_or(true, |x| x.ok),
                 changed: apply && moved.is_some(),
@@ -337,15 +358,14 @@ pub(crate) fn execute_routine_tool(
                 message: "build-crate".into(),
                 command: None,
             };
-            write_json(
-                &receipt_dir.join(format!("{name}.json")),
-                &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":result.ok,"changed":result.changed,"skipped":!apply,"source_build_sha":source_sha}),
-            )?;
+            let result_changed = result.changed;
+            // Legacy cargo-build receipt is authoritative; avoid a duplicate routine-tool writer.
             Ok((
                 result,
                 [
-                    ("artifact".into(), serde_json::json!(binary)),
+                    ("artifact".into(), serde_json::json!(artifact_path)),
                     ("source_build_sha".into(), serde_json::json!(source_sha)),
+                    ("changed".into(), serde_json::json!(result_changed)),
                 ]
                 .into_iter()
                 .collect(),
@@ -367,6 +387,7 @@ pub(crate) fn execute_routine_tool(
             } else {
                 declared.unwrap().as_bytes().to_vec()
             };
+            let default_backup = receipt_dir.join("backups/prior-binary");
             let request = crate::place_file::PlaceFileRequest {
                 path,
                 declared_bytes: &bytes,
@@ -375,14 +396,31 @@ pub(crate) fn execute_routine_tool(
                     uid: args.get("uid").and_then(Value::as_u64).map(|x| x as u32),
                     gid: args.get("gid").and_then(Value::as_u64).map(|x| x as u32),
                 },
-                backup: crate::place_file::BackupPolicy::None,
+                backup: args
+                    .get("backup_path")
+                    .and_then(Value::as_str)
+                    .map(Path::new)
+                    .map(crate::place_file::BackupPolicy::To)
+                    .unwrap_or(crate::place_file::BackupPolicy::To(&default_backup)),
                 invocation: invocation,
             };
             let placed = crate::place_file::execute(request)?;
             let changed = apply && placed.movement.changed();
+            if permutation.name == "binary-promotion" {
+                if let Some(legacy_name) = args.get("legacy_binary_install_receipt").and_then(Value::as_str) {
+                    let mut legacy = serde_json::json!({"schema":"harmonia.service-runtime.binary-install.v1","artifact":source.unwrap_or(""),"install_bin":path,"apply":apply,"ok":placed.receipt.ok,"changed":changed,"state":if changed { "binary-swapped" } else { "converged-quiet" }});
+            if !changed {
+                if let Some(object) = legacy.as_object_mut() {
+                    object.remove("artifact");
+                    object.insert("reason".into(), serde_json::json!("source-sha-gate-preserved-installed-binary"));
+                }
+            }
+            crate::write_json(&receipt_dir.join(format!("{legacy_name}.json")), &legacy)?;
+                }
+            }
             write_json(
                 &receipt_dir.join(format!("{name}.json")),
-                &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":true,"changed":changed,"skipped":!apply}),
+                &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up}}),
             )?;
             Ok((
                 OperationOutcome {
@@ -394,6 +432,7 @@ pub(crate) fn execute_routine_tool(
                 },
                 [
                     ("path".into(), serde_json::json!(path)),
+                    ("changed".into(), serde_json::json!(changed)),
                     (
                         "sha256".into(),
                         serde_json::json!(crate::atoms::file_sha256(&bytes)),
