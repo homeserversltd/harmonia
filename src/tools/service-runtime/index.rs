@@ -44,6 +44,12 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
     )
     .in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
+        "configuration-proposal",
+        "propose configuration-only service-runtime files without writing targets",
+        SERVICE_RUNTIME_ARGS,
+    )
+    .in_band(crate::tools::Placement::ProposeEdits),
+    ToolPermutation::new(
         "build",
         "run the build service-runtime stage",
         SERVICE_RUNTIME_ARGS,
@@ -155,6 +161,19 @@ pub(crate) fn execute_routine_stage(
             }
             Ok((
                 result(managed.ok, managed.changed, "service-runtime managed-files"),
+                BTreeMap::new(),
+            ))
+        }
+        "configuration-proposal" => {
+            stage_configuration_proposal(&module, receipt_dir, &spec, args, state)?;
+            Ok((
+                OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: "service-runtime configuration proposal".into(),
+                    command: None,
+                },
                 BTreeMap::new(),
             ))
         }
@@ -383,13 +402,41 @@ pub(crate) fn stage_managed_files(
     spec: &ServiceRuntimeSpec,
     state: &mut ServiceRuntimeState,
 ) -> Result<(), String> {
-    let source_dir = state.source_dir.clone();
-    let managed_files = effective_managed_files(module, &source_dir)?;
-    // pali:harmonia-apply-ladder-law: SoftwareApplyAuthorization is structurally
-    // bounded to SoftwarePlane; configuration paths can only be observed here.
-    let config_write = managed_files
-        .iter()
-        .any(|file| crate::ladder::is_configuration_path(Path::new(&file.path)));
+    // Configuration declarations belong exclusively to the proposal lane. The
+    // legacy managed-files actuator must retain software files only; otherwise
+    // a direct invocation can write configuration paths.
+    let managed_files = effective_managed_files(module, &state.source_dir)?
+        .into_iter()
+        .filter(|file| !crate::ladder::is_configuration_path(Path::new(&file.path)))
+        .collect::<Vec<_>>();
+    if managed_files.is_empty() {
+        fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+        crate::write_json(
+            &receipt_dir.join(format!("{}-managed-files.json", spec.op_prefix)),
+            &serde_json::json!({
+                "schema": spec.managed_files_schema,
+                "ok": true,
+                "module": module.id,
+                "drift": [],
+                "missing_target_birth_debts": [],
+                "written": [],
+                "owner": null,
+                "group": null,
+                "apply": apply,
+                "changed": false,
+                "entries": [],
+                "first_missing_signal": "none"
+            }),
+        )?;
+        state.managed = Some(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "converged-quiet (no software managed files)".into(),
+            command: None,
+        });
+        return Ok(());
+    }
     let managed = tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: &module.id,
@@ -401,112 +448,177 @@ pub(crate) fn stage_managed_files(
             first_missing_signal: &format!("{}-managed-file-missing", spec.op_prefix),
         },
         receipt_dir,
-        apply && !config_write,
+        apply,
     )?;
-    if config_write {
-        let source_root = receipt_dir.join(format!("{}-config-proposal-sources", spec.op_prefix));
-        let mut files = Vec::new();
-        let mut entries = Vec::new();
-        for file in managed_files
-            .iter()
-            .filter(|file| crate::ladder::is_configuration_path(Path::new(&file.path)))
-        {
-            let relative = PathBuf::from(file.path.trim_start_matches('/'));
-            let source = source_root.join(&relative);
-            if let Some(parent) = source.parent() {
-                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-            }
-            fs::write(&source, file.content.as_bytes()).map_err(|error| error.to_string())?;
-            let target = PathBuf::from(&file.path);
-            let target_bytes = fs::read(&target).ok();
-            let target_exists = target_bytes.is_some();
-            let content_equal = target_bytes.as_deref() == Some(file.content.as_bytes());
-            let final_mode = file.mode.or(Some(0o644));
-            let mode_equal = target
-                .metadata()
-                .ok()
-                .map(|metadata| {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        metadata.permissions().mode() & 0o7777 == final_mode.unwrap_or(0o644)
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true
-                    }
-                })
-                .unwrap_or(false);
-            files.push(tools::files::FileSpec {
-                relative_path: relative.clone(),
-                mode: final_mode,
-            });
-            entries.push(tools::files::FileConvergenceEntry {
-                relative_path: relative.to_string_lossy().into_owned(),
-                source,
-                target,
-                source_exists: true,
-                target_exists_before: target_exists,
-                content_equal_before: content_equal,
-                mode_equal_before: mode_equal,
-                target_exists_after: target_exists,
-                content_equal_after: content_equal,
-                mode_equal_after: mode_equal,
-                changed: false,
-                backed_up_to: None,
-                final_mode,
-                ownership_source: "unchanged".to_string(),
-                observed_uid_before: None,
-                observed_gid_before: None,
-                observed_uid_after: None,
-                observed_gid_after: None,
-                ownership_changed: false,
-                observed_uid: None,
-                observed_gid: None,
-                diff: None,
-                diff_omitted: None,
-            });
-        }
-        let request = tools::files::FileConvergenceRequest {
-            source_root,
-            target_root: PathBuf::from("/"),
-            files,
-            backup_existing: false,
-            receipt_name: format!("{}-managed-files", spec.op_prefix),
-            owner: None,
-            group: None,
-        };
-        let outcome = tools::files::FileConvergenceOutcome {
-            ok: managed.ok,
-            changed: false,
-            ownership_changed: false,
-            checked: entries.len(),
-            written: 0,
-            backed_up: 0,
-            missing: Vec::new(),
-            missing_target_birth_debts: Vec::new(),
-            entries,
-            message: managed.message.clone(),
-        };
-        let manifest = crate::ladder::LadderManifest {
-            schema: crate::ladder::SCHEMA.to_string(),
-            id: module.id.clone(),
-            version: "0.0.0".to_string(),
-            description: module.description.clone(),
-            role: None,
-            optional: false,
-            optional_warning: None,
-            group: None,
-            constants: BTreeMap::new(),
-            caduceus_commands: Vec::new(),
-            files_root: None,
-            config_deploy: Some("interactable".to_string()),
-            ladder: Vec::new(),
-            base_dir: receipt_dir.to_path_buf(),
-        };
-        crate::refresh_interactables_for_convergence(&manifest, &request, &outcome)?;
-    }
     state.managed = Some(managed);
+    Ok(())
+}
+
+fn stage_configuration_proposal(
+    module: &ModuleManifest,
+    receipt_dir: &Path,
+    spec: &ServiceRuntimeSpec,
+    args: &BTreeMap<String, Value>,
+    state: &mut ServiceRuntimeState,
+) -> Result<(), String> {
+    use sha2::Digest;
+    let admitted: Vec<ManagedFileManifest> = args
+        .get("managed_files")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("service-runtime-proposal-managed-files-invalid: {e}"))?
+        .unwrap_or_default();
+    let admitted_paths: std::collections::BTreeSet<&str> =
+        admitted.iter().map(|file| file.path.as_str()).collect();
+    let files = effective_managed_files(module, &state.source_dir)?
+        .into_iter()
+        .filter(|file| {
+            admitted_paths.contains(file.path.as_str())
+                && crate::ladder::is_configuration_path(Path::new(&file.path))
+        })
+        .collect::<Vec<_>>();
+    let source_root = receipt_dir.join(format!("{}-config-proposal-sources", spec.op_prefix));
+    let mut entries = Vec::new();
+    let mut proposal_entries = Vec::new();
+    let mut missing = Vec::new();
+    for file in &files {
+        let relative = PathBuf::from(file.path.trim_start_matches('/'));
+        let source = source_root.join(&relative);
+        if let Some(parent) = source.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&source, file.content.as_bytes()).map_err(|e| e.to_string())?;
+        let target = PathBuf::from(&file.path);
+        let meta = fs::symlink_metadata(&target).ok();
+        let target_bytes = fs::read(&target).ok();
+        let exists = meta.is_some();
+        if !exists {
+            missing.push(file.path.clone());
+        }
+        let content_equal = target_bytes.as_deref() == Some(file.content.as_bytes());
+        let mode = file.mode.unwrap_or(0o644);
+        let mode_equal = meta
+            .as_ref()
+            .map(|m| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    m.permissions().mode() & 0o7777 == mode
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            })
+            .unwrap_or(false);
+        proposal_entries.push(tools::files::FileConvergenceEntry {
+            relative_path: relative.to_string_lossy().into_owned(),
+            source: source.clone(),
+            target: target.clone(),
+            source_exists: true,
+            target_exists_before: exists,
+            content_equal_before: content_equal,
+            mode_equal_before: mode_equal,
+            target_exists_after: exists,
+            content_equal_after: content_equal,
+            mode_equal_after: mode_equal,
+            changed: false,
+            backed_up_to: None,
+            final_mode: Some(mode),
+            ownership_source: "unchanged".into(),
+            observed_uid_before: None,
+            observed_gid_before: None,
+            observed_uid_after: None,
+            observed_gid_after: None,
+            ownership_changed: false,
+            observed_uid: None,
+            observed_gid: None,
+            diff: None,
+            diff_omitted: None,
+        });
+        let state_name = if exists { "observed" } else { "missing-target-birth-debt" };
+        let drift_detected = exists && (!content_equal || !mode_equal);
+        entries.push(serde_json::json!({
+            "path": file.path, "target_exists_before": exists,
+            "state": state_name,
+            "mode": mode, "content_equal_before": content_equal, "mode_equal_before": mode_equal,
+            "owner": Value::Null, "group": Value::Null, "owner_equal_before": true, "group_equal_before": true,
+            "changed": false, "drift_detected": drift_detected, "written": false,
+            "observed_state": {"target_exists": exists, "state": state_name,
+                "content_equal": content_equal, "mode_equal": mode_equal,
+                "owner_equal": true, "group_equal": true},
+            "desired_state": {"content_sha256": format!("{:x}", sha2::Sha256::digest(file.content.as_bytes())),
+                "mode": mode, "uid": null, "gid": null},
+            "diff_decision": if exists && content_equal && mode_equal { "empty" } else { "different" },
+            "movement": "report-only", "truthful_changed": false,
+        }));
+    }
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::write_json(
+        &receipt_dir.join(format!("{}-managed-files.json", spec.op_prefix)),
+        &serde_json::json!({
+            "schema": spec.managed_files_schema, "ok": true, "module": module.id,
+            "drift": entries.iter().filter(|e| e.get("drift_detected").and_then(Value::as_bool).unwrap_or(false)).filter_map(|e| e.get("path").cloned()).collect::<Vec<_>>(),
+            "missing_target_birth_debts": missing, "written": [], "owner": null, "group": null,
+            "apply": false, "changed": false, "entries": entries, "first_missing_signal": "none",
+        }),
+    )?;
+    for entry in &entries {
+        let path = entry.get("path").and_then(Value::as_str).unwrap_or("file");
+        crate::write_json(
+            &receipt_dir.join(format!(
+                "{}-managed-files-{}.json",
+                spec.op_prefix,
+                path.replace("/", "_").trim_start_matches("_")
+            )),
+            &serde_json::json!({"schema": "harmonia.files.managed_file.v1", "ok": true, "module": module.id, "path": path, "mode": entry.get("mode"), "owner": entry.get("owner"), "group": entry.get("group"), "owner_equal_before": entry.get("owner_equal_before"), "group_equal_before": entry.get("group_equal_before"), "apply": false, "target_exists_before": entry.get("target_exists_before"), "state": entry.get("state"), "changed": false, "drift_detected": entry.get("drift_detected"), "written": false, "observed_state": entry.get("observed_state"), "desired_state": entry.get("desired_state"), "diff_decision": entry.get("diff_decision"), "movement": "report-only", "truthful_changed": false, "first_missing_signal": "none"}),
+        )?;
+    }
+    let request = tools::files::FileConvergenceRequest {
+        source_root,
+        target_root: PathBuf::from("/"),
+        files: files
+            .iter()
+            .map(|file| tools::files::FileSpec {
+                relative_path: PathBuf::from(file.path.trim_start_matches('/')),
+                mode: file.mode.or(Some(0o644)),
+            })
+            .collect(),
+        backup_existing: false,
+        receipt_name: format!("{}-managed-files", spec.op_prefix),
+        owner: None,
+        group: None,
+    };
+    let outcome = tools::files::FileConvergenceOutcome {
+        ok: true,
+        changed: false,
+        ownership_changed: false,
+        checked: files.len(),
+        written: 0,
+        backed_up: 0,
+        missing: Vec::new(),
+        missing_target_birth_debts: Vec::new(),
+        entries: proposal_entries,
+        message: "configuration proposal emitted".into(),
+    };
+    let manifest = crate::ladder::LadderManifest {
+        schema: crate::ladder::SCHEMA.to_string(),
+        id: module.id.clone(),
+        version: "0.0.0".into(),
+        description: module.description.clone(),
+        role: None,
+        optional: false,
+        optional_warning: None,
+        group: None,
+        constants: BTreeMap::new(),
+        caduceus_commands: Vec::new(),
+        files_root: None,
+        config_deploy: Some("interactable".into()),
+        ladder: Vec::new(),
+        base_dir: receipt_dir.to_path_buf(),
+    };
+    crate::refresh_interactables_for_convergence(&manifest, &request, &outcome)?;
     Ok(())
 }
 
