@@ -2,6 +2,34 @@
 use crate::atoms::r#do::InvocationKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RefreshedProfileIdentity {
+    pub profile_id: String,
+    pub identity: String,
+    pub source_head: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ModuleRootConsistency {
+    pub source_root: String,
+    pub installed_root: String,
+    pub source_tree_sha256: String,
+    pub installed_tree_sha256: String,
+    pub matches: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TransactionCensus {
+    pub profile_id: String,
+    pub profile_identity: String,
+    pub source_head: String,
+    pub target_count: usize,
+    pub service_count: usize,
+    pub caduceus_count: usize,
+    pub gui_face: String,
+    pub gui_member: String,
+}
+
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -19,6 +47,12 @@ use std::{
 pub(crate) struct RunCarrier {
     pub projection: Option<crate::profile_engine::ProfileProjection>,
     pub update_plan: Option<crate::update_set::UpdatePlan>,
+    pub refreshed_profile: Option<RefreshedProfileIdentity>,
+    pub module_root_consistency: Option<ModuleRootConsistency>,
+    pub transaction_census: Option<TransactionCensus>,
+    pub refreshed_profile_value: Option<crate::Profile>,
+    pub sealed_snapshot: Option<crate::update_set::Snapshot>,
+    pub sealed_services: Option<Vec<crate::tools::systemd::ServiceStateSnapshot>>,
 }
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
