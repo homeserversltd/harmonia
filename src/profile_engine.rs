@@ -286,7 +286,7 @@ fn projection_glob(pattern: &str, name: &str) -> bool {
         pattern == name
     }
 }
-fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, Value>> { projected.steps.iter().filter(|s| s.tool == "service-runtime" && s.permutation == "converge").map(|s| &s.args).chain(projected.routines.values().flatten().filter(|c| c.tool == "service-runtime" && c.name == "source-gate").map(|c| &c.args)).collect() }
+fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, Value>> { projected.steps.iter().filter(|s| s.tool == "service-runtime" && s.permutation == "converge").map(|s| &s.args).chain(projected.routines.values().flatten().filter(|c| c.tool == "service-runtime" && c.name == "build").map(|c| &c.args)).collect() }
 fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool { match &projected.loaded { LoadedModule::Ladder(m) => { if face != "Hyprland" { projected_runtime_args(projected).iter().any(|a| a.get("component").and_then(Value::as_str).and_then(projection_component_face) == Some(face)) } else { let mut h=m.id.to_ascii_lowercase(); if let Some(x)=m.constants.get("meaning").and_then(Value::as_str) { h.push_str(&x.to_ascii_lowercase()); } h.contains("hyprland") || h.contains("desktop config") || h.contains("user session") } }, LoadedModule::Sidecar(_) => false } }
 
 impl LoadedModule {
@@ -573,9 +573,9 @@ fn compose_caduceus_commands_with_policy(
                 .insert("caduceus_commands".to_string(), json!(commands));
         } else if crate::ladder::is_lowered_service_runtime_converge(step) {
             for child in &mut step.steps {
-                child
-                    .args
-                    .insert("caduceus_commands".to_string(), json!(commands));
+                if child.tool == "service-runtime" {
+                    child.args.insert("caduceus_commands".to_string(), json!(commands));
+                }
             }
         }
     }

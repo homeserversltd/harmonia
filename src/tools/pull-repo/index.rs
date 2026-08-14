@@ -104,6 +104,10 @@ pub(crate) fn acquire_source(
     report_home::source(outcome)
 }
 
+pub(crate) fn observe_source(plan: &SourcePlan) -> Option<SourceOutcome> {
+    observe::source(plan)
+}
+
 pub(crate) fn attest_source(log: &std::path::Path, value: &SourceOutcome) -> Result<(), String> {
     report_home::attest_source(log, value)
 }

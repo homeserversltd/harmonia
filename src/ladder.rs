@@ -146,62 +146,80 @@ fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             continue;
         }
         let args = step.args.clone();
+        let mut pull_repo_args = BTreeMap::new();
+        if let Some(value) = args.get("component") {
+            pull_repo_args.insert("component".into(), value.clone());
+        }
+        pull_repo_args.insert(
+            "bearer".into(),
+            args.get("bearer")
+                .cloned()
+                .unwrap_or_else(|| Value::String("owner".into())),
+        );
+        pull_repo_args.insert(
+            "path".into(),
+            args.get("source_dir")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new())),
+        );
+        let stages = [
+            ("pull-repo", "pull-repo", "acquire"),
+            ("build", "service-runtime", "build"),
+            ("binary-install", "service-runtime", "binary-install"),
+            ("service-epilogue", "service-runtime", "service-epilogue"),
+            ("health-proof", "service-runtime", "health-proof"),
+            ("managed-files", "service-runtime", "managed-files"),
+        ];
         step.tool = "routine".into();
         step.permutation = "execute".into();
         step.args.clear();
-        step.steps = [
-            ("source-gate", "source-gate"),
-            ("build", "build"),
-            ("binary-install", "binary-install"),
-            ("service-epilogue", "service-epilogue"),
-            ("health-proof", "health-proof"),
-            ("managed-files", "managed-files"),
-        ]
-        .into_iter()
-        .map(|(name, permutation)| RoutineStep {
-            name: name.into(),
-            tool: "service-runtime".into(),
-            permutation: Some(permutation.into()),
-            args: args.clone(),
-            extra: BTreeMap::new(),
-        })
-        .collect();
+        step.steps = stages
+            .into_iter()
+            .map(|(name, tool, permutation)| {
+                let child_args = if name == "pull-repo" {
+                    pull_repo_args.clone()
+                } else {
+                    let mut child_args = args.clone();
+                    child_args.insert(
+                        "source_dir".into(),
+                        serde_json::json!({"from":"pull-repo.path"}),
+                    );
+                    child_args.insert(
+                        "source_sha".into(),
+                        serde_json::json!({"from":"pull-repo.resolved_commit"}),
+                    );
+                    child_args.insert("source_reference".into(), serde_json::json!({"from":"pull-repo.source_reference"}));
+                    child_args.insert("source_remote".into(), serde_json::json!({"from":"pull-repo.source_remote"}));
+                    child_args.insert(
+                        "source_changed".into(),
+                        serde_json::json!({"from":"pull-repo.changed"}),
+                    );
+                    child_args
+                };
+                RoutineStep {
+                    name: name.into(),
+                    tool: tool.into(),
+                    permutation: Some(permutation.into()),
+                    args: child_args,
+                    extra: BTreeMap::new(),
+                }
+            })
+            .collect();
     }
 }
 
 pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
-    const STAGES: [(&str, &str); 6] = [
-        ("source-gate", "source-gate"),
-        ("build", "build"),
-        ("binary-install", "binary-install"),
-        ("service-epilogue", "service-epilogue"),
-        ("health-proof", "health-proof"),
-        ("managed-files", "managed-files"),
-    ];
-    step.tool == "routine"
-        && step.permutation == "execute"
-        && step.steps.len() == STAGES.len()
-        && step.steps.iter().zip(STAGES).all(|(child, (name, permutation))| {
-            child.name == name
-                && child.tool == "service-runtime"
-                && child.permutation.as_deref() == Some(permutation)
-        })
-        && step.steps.first().is_some_and(|first| {
-            step.steps.iter().all(|child| child.args == first.args)
-        })
+    let stages = [("pull-repo","pull-repo","acquire"),("build","service-runtime","build"),("binary-install","service-runtime","binary-install"),("service-epilogue","service-runtime","service-epilogue"),("health-proof","service-runtime","health-proof"),("managed-files","service-runtime","managed-files")];
+    if step.tool != "routine" || step.permutation != "execute" || step.steps.len() != stages.len() { return false; }
+    let service=&step.steps[1..]; let shared=&service[0].args;
+    let deferred=[("source_dir",serde_json::json!({"from":"pull-repo.path"})),("source_sha",serde_json::json!({"from":"pull-repo.resolved_commit"})),("source_changed",serde_json::json!({"from":"pull-repo.changed"})),("source_reference",serde_json::json!({"from":"pull-repo.source_reference"})),("source_remote",serde_json::json!({"from":"pull-repo.source_remote"}))];
+    if service.iter().any(|c| c.tool!="service-runtime" || c.args!=*shared || deferred.iter().any(|(k,v)| c.args.get(*k)!=Some(v))) { return false; }
+    let Some(component)=shared.get("component") else { return false; }; let bearer=shared.get("bearer").cloned().unwrap_or_else(||Value::String("owner".into()));
+    if shared.get("source_dir") != Some(&serde_json::json!({"from":"pull-repo.path"})) { return false; } let Some(path)=step.steps[0].args.get("path") else { return false; };
+    let expected=[("component".into(),component.clone()),("path".into(),path.clone()),("bearer".into(),bearer)].into_iter().collect::<BTreeMap<_,_>>();
+    step.steps.iter().zip(stages).all(|(c,(n,t,p))| c.name==n && c.tool==t && c.permutation.as_deref()==Some(p) && (n!="pull-repo" || c.args==expected))
 }
-
-pub(crate) fn service_runtime_converge_args(
-    step: &LadderStep,
-) -> Option<&BTreeMap<String, Value>> {
-    if step.tool == "service-runtime" && step.permutation == "converge" {
-        Some(&step.args)
-    } else if is_lowered_service_runtime_converge(step) {
-        step.steps.first().map(|child| &child.args)
-    } else {
-        None
-    }
-}
+pub(crate) fn service_runtime_converge_args(step:&LadderStep)->Option<&BTreeMap<String,Value>> { if step.tool=="service-runtime" && step.permutation=="converge" { Some(&step.args) } else if is_lowered_service_runtime_converge(step) { step.steps.iter().find(|c| c.name=="build").map(|c|&c.args) } else { None } }
 
 pub(crate) fn is_ladder_manifest(path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
@@ -344,11 +362,21 @@ fn validate_routine(
             });
         }
         let contract = tools::get(&child.tool).ok_or_else(|| LadderValidationError {
-            step_id: step.step_id.clone(), defect: format!("routine-tool-not-found-{}", child.tool),
+            step_id: step.step_id.clone(),
+            defect: format!("routine-tool-not-found-{}", child.tool),
         })?;
-        let permutation_name = child.permutation.as_deref().unwrap_or(contract.permutations.first().map(|p| p.name).unwrap_or(""));
+        let permutation_name = child
+            .permutation
+            .as_deref()
+            .unwrap_or(contract.permutations.first().map(|p| p.name).unwrap_or(""));
         if contract.permutation(permutation_name).is_none() {
-            return Err(LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-undeclared-permutation-{}-{}", child.tool, permutation_name) });
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: format!(
+                    "routine-undeclared-permutation-{}-{}",
+                    child.tool, permutation_name
+                ),
+            });
         }
         if child.extra.contains_key("program") {
             return Err(LadderValidationError {
@@ -500,6 +528,12 @@ fn validate_args(
             });
         }
         if let Some(value) = args.get(arg.name) {
+            if value
+                .as_object()
+                .is_some_and(|map| map.len() == 1 && map.contains_key("from"))
+            {
+                continue;
+            }
             if !arg.kind.matches(value) {
                 return Err(LadderValidationError {
                     step_id: step_id.into(),
@@ -620,20 +654,69 @@ pub(crate) struct ValidatedStep {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ProjectedRoutineChild { pub name: String, pub tool: String, pub permutation: String, pub args: BTreeMap<String, Value>, pub on_failure: OnFailure, pub band: crate::bands::Band }
+pub(crate) struct ProjectedRoutineChild {
+    pub name: String,
+    pub tool: String,
+    pub permutation: String,
+    pub args: BTreeMap<String, Value>,
+    pub on_failure: OnFailure,
+    pub band: crate::bands::Band,
+}
 
-pub(crate) fn project_routine_children(step: &LadderStep, constants: &BTreeMap<String, Value>) -> Result<Vec<ProjectedRoutineChild>, LadderValidationError> {
-    step.steps.iter().map(|child| {
-        let contract = tools::get(&child.tool).ok_or_else(|| LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-tool-not-found-{}", child.tool) })?;
-        let permutation = child.permutation.as_deref().or_else(|| contract.permutations.first().map(|p| p.name)).unwrap_or("");
-        let declaration = contract.permutation(permutation).ok_or_else(|| LadderValidationError { step_id: step.step_id.clone(), defect: format!("routine-undeclared-permutation-{}-{}", child.tool, permutation) })?;
-        let args = resolve_args(&child.args, constants).map_err(|defect| LadderValidationError { step_id: step.step_id.clone(), defect })?;
-        validate_args(&step.step_id, declaration, &args)?;
-        validate_tool_semantics(&step.step_id, &child.tool, permutation, &args)?;
-        validate_command_precondition(&step.step_id, &child.tool, permutation, &args)?;
-        let band = declaration.placement.map(crate::tools::Placement::band).ok_or_else(|| LadderValidationError { step_id: step.step_id.clone(), defect: format!("unknown-tool-band tool={} permutation={}", child.tool, permutation) })?;
-        Ok(ProjectedRoutineChild { name: child.name.clone(), tool: child.tool.clone(), permutation: permutation.into(), args, on_failure: step.on_failure, band })
-    }).collect()
+pub(crate) fn project_routine_children(
+    step: &LadderStep,
+    constants: &BTreeMap<String, Value>,
+) -> Result<Vec<ProjectedRoutineChild>, LadderValidationError> {
+    step.steps
+        .iter()
+        .map(|child| {
+            let contract = tools::get(&child.tool).ok_or_else(|| LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: format!("routine-tool-not-found-{}", child.tool),
+            })?;
+            let permutation = child
+                .permutation
+                .as_deref()
+                .or_else(|| contract.permutations.first().map(|p| p.name))
+                .unwrap_or("");
+            let declaration =
+                contract
+                    .permutation(permutation)
+                    .ok_or_else(|| LadderValidationError {
+                        step_id: step.step_id.clone(),
+                        defect: format!(
+                            "routine-undeclared-permutation-{}-{}",
+                            child.tool, permutation
+                        ),
+                    })?;
+            let args =
+                resolve_args(&child.args, constants).map_err(|defect| LadderValidationError {
+                    step_id: step.step_id.clone(),
+                    defect,
+                })?;
+            validate_args(&step.step_id, declaration, &args)?;
+            validate_tool_semantics(&step.step_id, &child.tool, permutation, &args)?;
+            validate_command_precondition(&step.step_id, &child.tool, permutation, &args)?;
+            let band = declaration
+                .placement
+                .map(crate::tools::Placement::band)
+                .ok_or_else(|| LadderValidationError {
+                    step_id: step.step_id.clone(),
+                    defect: format!(
+                        "unknown-tool-band tool={} permutation={}",
+                        child.tool, permutation
+                    ),
+                })?;
+            Ok(ProjectedRoutineChild {
+                name: child.name.clone(),
+                tool: child.tool.clone(),
+                permutation: permutation.into(),
+                args,
+                on_failure: step.on_failure,
+                band,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn placement_for_step(step: &ValidatedStep) -> Result<crate::bands::Band, String> {
@@ -642,10 +725,21 @@ pub(crate) fn placement_for_step(step: &ValidatedStep) -> Result<crate::bands::B
     }
     let permutation = tools::get(&step.tool)
         .and_then(|tool| tool.permutation(&step.permutation))
-        .ok_or_else(|| format!("unknown-tool-band tool={} permutation={}", step.tool, step.permutation))?;
-    permutation.placement
+        .ok_or_else(|| {
+            format!(
+                "unknown-tool-band tool={} permutation={}",
+                step.tool, step.permutation
+            )
+        })?;
+    permutation
+        .placement
         .map(crate::tools::Placement::band)
-        .ok_or_else(|| format!("unknown-tool-band tool={} permutation={}", step.tool, step.permutation))
+        .ok_or_else(|| {
+            format!(
+                "unknown-tool-band tool={} permutation={}",
+                step.tool, step.permutation
+            )
+        })
 }
 
 pub(crate) fn execute_ladder_manifest_band(
@@ -671,9 +765,15 @@ pub(crate) fn execute_ladder_manifest_band(
     };
     for step in steps {
         if step.tool == "routine" {
-            let children = projected_routines.get(&step.step_id).ok_or_else(|| "routine-step-missing".to_string())?;
-            if !children.iter().any(|child| child.band == band) { continue; }
-        } else if placement_for_step(&step)? != band { continue; }
+            let children = projected_routines
+                .get(&step.step_id)
+                .ok_or_else(|| "routine-step-missing".to_string())?;
+            if !children.iter().any(|child| child.band == band) {
+                continue;
+            }
+        } else if placement_for_step(&step)? != band {
+            continue;
+        }
         let precondition = if step.tool == "routine" {
             None
         } else {
@@ -710,7 +810,10 @@ pub(crate) fn execute_ladder_manifest_band(
                 invocation,
                 Some(routine_states),
                 band,
-                projected_routines.get(&step.step_id).map(Vec::as_slice).unwrap_or(&[]),
+                projected_routines
+                    .get(&step.step_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
             )?
         } else {
             execute_validated_step(
@@ -724,11 +827,26 @@ pub(crate) fn execute_ladder_manifest_band(
             )?
         };
         if step.tool == "routine" {
-            let routine = routine_states.get(step.step_id.as_str()).ok_or_else(|| "routine-state-missing".to_string())?;
-            for child in projected_routines.get(&step.step_id).map(Vec::as_slice).unwrap_or(&[]) {
+            let routine = routine_states
+                .get(step.step_id.as_str())
+                .ok_or_else(|| "routine-state-missing".to_string())?;
+            for child in projected_routines
+                .get(&step.step_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+            {
                 if child.band == band {
-                    let receipt = routine.children.iter().find(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str())).ok_or_else(|| format!("routine-child-receipt-missing-{}", child.name))?;
-                    let status = receipt.get("state").and_then(Value::as_str).unwrap_or("failed");
+                    let receipt = routine
+                        .children
+                        .iter()
+                        .find(|r| {
+                            r.get("name").and_then(Value::as_str) == Some(child.name.as_str())
+                        })
+                        .ok_or_else(|| format!("routine-child-receipt-missing-{}", child.name))?;
+                    let status = receipt
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .unwrap_or("failed");
                     result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":format!("{:?}",band),"status":status,"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
                 }
             }
@@ -928,15 +1046,13 @@ fn execute_validated_step(
         ("files", "source-shelf-sweep") => {
             files_source_shelf_sweep_step(step, manifest, module_dir, software_apply, invocation)
         }
-        ("files", "validated-sudoers-converge") => {
-            files_validated_sudoers_converge_step(
-                step,
-                manifest,
-                module_dir,
-                software_apply,
-                invocation,
-            )
-        }
+        ("files", "validated-sudoers-converge") => files_validated_sudoers_converge_step(
+            step,
+            manifest,
+            module_dir,
+            software_apply,
+            invocation,
+        ),
         ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, false),
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, software_apply, invocation)
@@ -1008,49 +1124,160 @@ fn execute_routine(
     band: crate::bands::Band,
     projected_children: &[ProjectedRoutineChild],
 ) -> Result<OperationOutcome, String> {
-    let source = manifest.ladder.iter().find(|s| s.step_id == step.step_id)
+    let source = manifest
+        .ladder
+        .iter()
+        .find(|s| s.step_id == step.step_id)
         .ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
     let routine_dir = module_dir.join(&source.step_id);
     fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
     let local = states.is_none();
     let mut owned;
     let state = if let Some(map) = states.as_deref_mut() {
-        map.entry(source.step_id.clone()).or_insert_with(|| crate::ModuleWalkState {
-            context: BTreeMap::new(), children: Vec::new(), blocked_by: None,
-            ok: true, changed: false, first_missing_signal: None, service_runtime: None,
-        })
+        map.entry(source.step_id.clone())
+            .or_insert_with(|| crate::ModuleWalkState {
+                context: BTreeMap::new(),
+                children: Vec::new(),
+                blocked_by: None,
+                ok: true,
+                changed: false,
+                first_missing_signal: None,
+                service_runtime: None,
+            })
     } else {
-        owned = crate::ModuleWalkState { context:BTreeMap::new(), children:Vec::new(), blocked_by:None, ok:true, changed:false, first_missing_signal:None, service_runtime:None };
+        owned = crate::ModuleWalkState {
+            context: BTreeMap::new(),
+            children: Vec::new(),
+            blocked_by: None,
+            ok: true,
+            changed: false,
+            first_missing_signal: None,
+            service_runtime: None,
+        };
         &mut owned
     };
     for child in projected_children {
-        if !local && child.band != band { continue; }
-        if state.children.iter().any(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str())) { continue; }
+        if !local && child.band != band {
+            continue;
+        }
+        if state
+            .children
+            .iter()
+            .any(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str()))
+        {
+            continue;
+        }
         let child_dir = routine_dir.join(&child.name);
         fs::create_dir_all(&child_dir).map_err(|e| e.to_string())?;
         if let Some(parent) = state.blocked_by.clone() {
-            let receipt=json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":parent});
-            crate::write_json(&child_dir.join("routine-child.json"), &receipt)?; state.children.push(receipt); continue;
+            let receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":parent});
+            crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
+            state.children.push(receipt);
+            continue;
         }
-        let mut args=child.args.clone(); let mut missing=None;
-        for value in args.values_mut() { if let Value::Object(map)=value { if map.len()==1 { if let Some(reference)=map.get("from").and_then(Value::as_str) { match state.context.get(reference) {Some(v)=>*value=v.clone(),None=>missing=Some(reference.to_string())} } } } }
-        let (status, child_ok, child_changed, outputs, extra) = if let Some(reference)=missing {
-            let signal=format!("step_id={} defect=missing-stamp-{}",child.name,reference); state.ok=false; state.first_missing_signal.get_or_insert(signal.clone()); state.blocked_by=Some(child.name.clone()); ("missing",false,false,BTreeMap::new(),json!({"first_missing_signal":signal}))
+        let mut args = child.args.clone();
+        let mut missing = None;
+        for value in args.values_mut() {
+            if let Value::Object(map) = value {
+                if map.len() == 1 {
+                    if let Some(reference) = map.get("from").and_then(Value::as_str) {
+                        match state.context.get(reference) {
+                            Some(v) => *value = v.clone(),
+                            None => missing = Some(reference.to_string()),
+                        }
+                    }
+                }
+            }
+        }
+        let (status, child_ok, child_changed, outputs, extra) = if let Some(reference) = missing {
+            let signal = format!("step_id={} defect=missing-stamp-{}", child.name, reference);
+            state.ok = false;
+            state.first_missing_signal.get_or_insert(signal.clone());
+            state.blocked_by = Some(child.name.clone());
+            (
+                "missing",
+                false,
+                false,
+                BTreeMap::new(),
+                json!({"first_missing_signal":signal}),
+            )
         } else {
-            match tools::module_steps::execute_routine_tool(&child.tool, Some(child.permutation.as_str()), &args,manifest,&child_dir,apply,invocation,&mut state.service_runtime) {
-                Ok((outcome,outputs)) => { if !outcome.ok { state.ok=false; state.first_missing_signal.get_or_insert(format!("step_id={} defect={}",child.name,outcome.message)); state.blocked_by=Some(child.name.clone()); } state.changed |= outcome.changed; (if outcome.ok {"completed"} else {"failed"},outcome.ok,outcome.changed,outputs,json!({"skipped":outcome.skipped,"message":outcome.message})) }
-                Err(error) => { let signal=format!("step_id={} defect={}",child.name,error); state.ok=false; state.first_missing_signal.get_or_insert(signal); state.blocked_by=Some(child.name.clone()); ("failed",false,false,BTreeMap::new(),json!({"message":error})) }
+            match tools::module_steps::execute_routine_tool(
+                &child.tool,
+                Some(child.permutation.as_str()),
+                &args,
+                manifest,
+                &child_dir,
+                apply,
+                invocation,
+                &mut state.service_runtime,
+            ) {
+                Ok((outcome, outputs)) => {
+                    if !outcome.ok {
+                        state.ok = false;
+                        state.first_missing_signal.get_or_insert(format!(
+                            "step_id={} defect={}",
+                            child.name, outcome.message
+                        ));
+                        state.blocked_by = Some(child.name.clone());
+                    }
+                    state.changed |= outcome.changed;
+                    (
+                        if outcome.ok { "completed" } else { "failed" },
+                        outcome.ok,
+                        outcome.changed,
+                        outputs,
+                        json!({"skipped":outcome.skipped,"message":outcome.message}),
+                    )
+                }
+                Err(error) => {
+                    let signal = format!("step_id={} defect={}", child.name, error);
+                    state.ok = false;
+                    state.first_missing_signal.get_or_insert(signal);
+                    state.blocked_by = Some(child.name.clone());
+                    (
+                        "failed",
+                        false,
+                        false,
+                        BTreeMap::new(),
+                        json!({"message":error}),
+                    )
+                }
             }
         };
-        if child_ok { for (key,value) in &outputs { state.context.entry(format!("{}.{}",child.name,key)).or_insert(value.clone()); } }
+        if child_ok {
+            for (key, value) in &outputs {
+                state
+                    .context
+                    .entry(format!("{}.{}", child.name, key))
+                    .or_insert(value.clone());
+            }
+        }
         let receipts = collect_routine_receipts(&child_dir)?;
-        let mut receipt=json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":status,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
-        if let (Some(obj),Some(extra_obj))=(receipt.as_object_mut(),extra.as_object()) { for (k,v) in extra_obj {obj.insert(k.clone(),v.clone());} }
-        crate::write_json(&child_dir.join("routine-child.json"),&receipt)?; state.children.push(receipt);
+        let mut receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":status,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
+        if let (Some(obj), Some(extra_obj)) = (receipt.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
+        state.children.push(receipt);
     }
-    let aggregate=json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":state.ok,"changed":state.changed,"skipped":!apply,"first_missing_signal":state.first_missing_signal,"context":state.context,"children":state.children});
-    crate::write_json(&module_dir.join(format!("{}.routine.json",source.step_id)),&aggregate)?;
-    Ok(OperationOutcome {ok:state.ok,changed:state.changed,skipped:!apply,message:state.first_missing_signal.clone().unwrap_or_else(||"routine-complete".into()),command:None})
+    let aggregate = json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":state.ok,"changed":state.changed,"skipped":!apply,"first_missing_signal":state.first_missing_signal,"context":state.context,"children":state.children});
+    crate::write_json(
+        &module_dir.join(format!("{}.routine.json", source.step_id)),
+        &aggregate,
+    )?;
+    Ok(OperationOutcome {
+        ok: state.ok,
+        changed: state.changed,
+        skipped: !apply,
+        message: state
+            .first_missing_signal
+            .clone()
+            .unwrap_or_else(|| "routine-complete".into()),
+        command: None,
+    })
 }
 
 fn string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> &'a str {
@@ -1593,10 +1820,7 @@ fn files_validated_sudoers_converge_step(
         group: Some("root".to_string()),
     };
     let outcome = crate::tools::files::converge_files_with_invocation(
-        &request,
-        module_dir,
-        apply,
-        invocation,
+        &request, module_dir, apply, invocation,
     )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
@@ -1627,7 +1851,7 @@ fn files_converge_step(
             .unwrap_or(false)
     {
         let run = crate::tools::comparison::execute(
-        "ladder",
+            "ladder",
             || Ok::<_, String>((source_root.clone(), target_root.clone())),
             |_| crate::tools::comparison::DiffDecision::Empty,
             |_, _| Ok::<_, String>(()),

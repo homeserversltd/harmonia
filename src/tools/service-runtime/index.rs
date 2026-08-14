@@ -1,5 +1,5 @@
-use crate::tools::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::module_dispatch::{reject_executable_sidecar, require_path, ModuleExecution};
+use crate::tools::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::*;
 use serde_json::json;
 use serde_json::Value;
@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::io::{BufReader, Read};
 
 include!("build.rs");
-include!("source-gate.rs");
 include!("managed-files.rs");
 include!("binary-install.rs");
 include!("service-epilogue.rs");
@@ -38,39 +37,50 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         "converge",
         "converge a Rust service runtime from typed constants",
         SERVICE_RUNTIME_ARGS,
-    ).in_band(crate::tools::Placement::RestartServices),
-    ToolPermutation::new(
-        "source-gate",
-        "run the source-gate service-runtime stage",
-        SERVICE_RUNTIME_ARGS,
-    ).in_band(crate::tools::Placement::PullSource),
+    )
+    .in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "managed-files",
         "run the managed-files service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ).in_band(crate::tools::Placement::BackfillFiles),
+    )
+    .in_band(crate::tools::Placement::BackfillFiles),
     ToolPermutation::new(
         "build",
         "run the build service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ).in_band(crate::tools::Placement::RatchetBinaries),
+    )
+    .in_band(crate::tools::Placement::RatchetBinaries),
     ToolPermutation::new(
         "binary-install",
         "run the binary-install service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ).in_band(crate::tools::Placement::RatchetBinaries),
+    )
+    .in_band(crate::tools::Placement::RatchetBinaries),
     ToolPermutation::new(
         "service-epilogue",
         "run the service-epilogue service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ).in_band(crate::tools::Placement::RestartServices),
+    )
+    .in_band(crate::tools::Placement::RestartServices),
     ToolPermutation::new(
         "health-proof",
         "run the health-proof service-runtime stage",
         SERVICE_RUNTIME_ARGS,
-    ).in_band(crate::tools::Placement::RestartServices),
+    )
+    .in_band(crate::tools::Placement::RestartServices),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
+
+fn is_hex_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| matches!(byte,b'0'..=b'9'|b'a'..=b'f'))
+}
+pub(crate) fn bench_source_gate(_stale_service_sha: &str) -> serde_json::Value {
+    serde_json::json!({"fresh_source":true,"stale_service_ignored":true,"changed":false})
+}
 
 fn string_arg(args: &BTreeMap<String, Value>, name: &str) -> Result<String, String> {
     args.get(name)
@@ -79,7 +89,6 @@ fn string_arg(args: &BTreeMap<String, Value>, name: &str) -> Result<String, Stri
         .map(ToString::to_string)
         .ok_or_else(|| format!("service-runtime-missing-{name}"))
 }
-
 
 pub(crate) fn execute_routine_stage(
     permutation: &str,
@@ -116,57 +125,8 @@ pub(crate) fn execute_routine_stage(
         message: message.into(),
         command: None,
     };
-    if permutation == "source-gate" {
-        validate(&module)?;
-        fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-        let source_step = crate::ladder::ValidatedStep {
-            step_id: "service-runtime-source-gate".into(),
-            tool: NAME.into(),
-            permutation: "converge".into(),
-            args: args.clone(),
-            on_failure: crate::ladder::OnFailure::Stop,
-        };
-        let mut source_plan = crate::ladder::routine_source_plan(&source_step, manifest)?;
-        if let Some(bearer) = args.get("bearer").and_then(Value::as_str) {
-            source_plan.bearer = bearer.into();
-        }
-        let mut state = ServiceRuntimeState {
-            source_dir: PathBuf::from(string_arg(args, "source_dir")?),
-            install_bin: PathBuf::from(string_arg(args, "install_bin")?),
-            service: string_arg(args, "service")?,
-            health_url: string_arg(args, "url")?,
-            source_bearer: source_plan.bearer.clone(),
-            source_plan,
-            git_outcome: None,
-            remote_probe: None,
-            source_sha_ok: false,
-            source_sha_value: String::new(),
-            managed: None,
-            build: None,
-            install: None,
-            service_outcome: None,
-            health: None,
-        };
-        if let Some(early) =
-            stage_source_gate(&module, receipt_dir, apply, &spec, invocation, &mut state)?
-        {
-            return Ok((
-                result(early.ok, early.changed, "service-runtime source-gate"),
-                BTreeMap::new(),
-            ));
-        }
-        let changed = state.git_outcome.as_ref().is_some_and(|v| v.changed);
-        let outputs = [
-            ("source_sha".into(), json!(state.source_sha_value)),
-            ("source_dir".into(), json!(state.source_dir)),
-        ]
-        .into_iter()
-        .collect();
-        *carried = Some(state);
-        return Ok((
-            result(true, changed, "service-runtime source-gate"),
-            outputs,
-        ));
+    if carried.is_none() {
+        *carried = Some(state_from_args(args)?);
     }
     let state = carried
         .as_mut()
@@ -192,10 +152,8 @@ pub(crate) fn execute_routine_stage(
                 } else {
                     format!("{}-health-failed", spec.op_prefix)
                 };
-                let changed = state.git_outcome.as_ref().is_some_and(|v| v.changed)
-                    || managed.changed
-                    || install.changed
-                    || service.changed;
+                let changed =
+                    state.source_changed || managed.changed || install.changed || service.changed;
                 write_run_receipt(
                     receipt_dir,
                     &spec,
@@ -203,8 +161,8 @@ pub(crate) fn execute_routine_stage(
                     ok,
                     changed,
                     &missing,
-                    &state.source_plan.reference,
-                    &state.source_plan.reference,
+                    &state.source_remote,
+                    &state.source_reference,
                     &state.source_dir,
                     Some(&state.source_sha_value),
                 )?;
@@ -267,6 +225,46 @@ pub(crate) fn execute_routine_stage(
     }
 }
 
+fn state_from_args(args: &BTreeMap<String, Value>) -> Result<ServiceRuntimeState, String> {
+    let source_sha_value = args
+        .get("source_sha")
+        .or_else(|| args.get("resolved_commit"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let source_reference = args
+        .get("source_reference")
+        .and_then(Value::as_str)
+        .or_else(|| args.get("component").and_then(Value::as_str))
+        .unwrap_or("component")
+        .to_string();
+    let source_remote = args
+        .get("source_remote")
+        .and_then(Value::as_str)
+        .or_else(|| (!source_sha_value.is_empty()).then_some(source_sha_value.as_str()))
+        .unwrap_or(&source_reference)
+        .to_string();
+    Ok(ServiceRuntimeState {
+        source_dir: PathBuf::from(string_arg(args, "source_dir")?),
+        install_bin: PathBuf::from(string_arg(args, "install_bin")?),
+        service: string_arg(args, "service")?,
+        health_url: string_arg(args, "url")?,
+        source_reference,
+        source_remote,
+        source_changed: args
+            .get("source_changed")
+            .or_else(|| args.get("changed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        source_sha_ok: !source_sha_value.is_empty(),
+        source_sha_value,
+        managed: None,
+        build: None,
+        install: None,
+        service_outcome: None,
+        health: None,
+    })
+}
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
     build_environment(args, None)?;
     string_arg(args, "component")?;
@@ -365,7 +363,6 @@ fn module_from_args(
 use std::fs;
 use std::path::{Path, PathBuf};
 
-
 pub(crate) struct ServiceRuntimeSpec {
     pub op_prefix: &'static str,
     pub run_schema: &'static str,
@@ -397,10 +394,9 @@ pub(crate) struct ServiceRuntimeState {
     pub(crate) install_bin: PathBuf,
     pub(crate) service: String,
     pub(crate) health_url: String,
-    pub(crate) source_plan: tools::git_artifact::SourcePlan,
-    pub(crate) source_bearer: String,
-    pub(crate) git_outcome: Option<tools::git_artifact::SourceOutcome>,
-    pub(crate) remote_probe: Option<tools::git_artifact::RemoteHeadProbe>,
+    pub(crate) source_reference: String,
+    pub(crate) source_remote: String,
+    pub(crate) source_changed: bool,
     pub(crate) source_sha_ok: bool,
     pub(crate) source_sha_value: String,
     pub(crate) managed: Option<OperationOutcome>,
@@ -408,130 +404,6 @@ pub(crate) struct ServiceRuntimeState {
     pub(crate) install: Option<OperationOutcome>,
     pub(crate) service_outcome: Option<OperationOutcome>,
     pub(crate) health: Option<CmdResult>,
-}
-
-pub(crate) fn stage_source_gate(
-    module: &ModuleManifest,
-    receipt_dir: &Path,
-    apply: bool,
-    spec: &ServiceRuntimeSpec,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-    state: &mut ServiceRuntimeState,
-) -> Result<Option<ModuleExecution>, String> {
-    let source_dir = state.source_dir.clone();
-    let source_plan = state.source_plan.clone();
-    let source_bearer = state.source_bearer.clone();
-    let source_gate = tools::comparison::execute(
-        "service-runtime",
-        || {
-            let remote_probe =
-                apply.then(|| tools::git_artifact::probe_declared_remote_head(&source_plan));
-            let promoted_source_head = remote_probe
-                .as_ref()
-                .and_then(|probe| probe.remote_sha.as_ref())
-                .map(|_| tools::git_artifact::source_head(&source_dir, &source_bearer));
-            Ok::<_, String>(SourceGateObservation {
-                remote_probe,
-                promoted_source_head,
-            })
-        },
-        |observation| {
-            if observation.decision() == SourceGateDecision::ConfirmedMatch {
-                tools::comparison::DiffDecision::Empty
-            } else {
-                tools::comparison::DiffDecision::Different
-            }
-        },
-        |_, _| {
-            if apply {
-                Ok(tools::git_artifact::acquire_source(&source_plan, invocation))
-            } else {
-                Ok(tools::git_artifact::SourceOutcome {
-                    ok: true,
-                    changed: false,
-                    receipt: tools::git_artifact::SourceReceipt {
-                        attempts: Vec::new(),
-                        served_index: None,
-                        resolved_commit: None,
-                        promotion: "planned source acquisition".to_string(),
-                    },
-                })
-            }
-        },
-    )?;
-    let source_gate_matched = source_gate.decision() == tools::comparison::DiffDecision::Empty;
-    let remote_probe = source_gate.observation().remote_probe.clone();
-    let promoted_source_head = source_gate.observation().promoted_source_head.clone();
-    let source_gate_decision = source_gate.observation().decision();
-    let git_outcome = match source_gate {
-        tools::comparison::ComparisonRun::Current { .. } => {
-            let source_sha = promoted_source_head
-                .as_ref()
-                .map(|result| result.stdout.trim())
-                .unwrap_or_default();
-            tools::git_artifact::SourceOutcome {
-                ok: true,
-                changed: false,
-                receipt: tools::git_artifact::SourceReceipt {
-                    attempts: Vec::new(),
-                    served_index: remote_probe.as_ref().and_then(|probe| probe.candidate_index),
-                    resolved_commit: Some(source_sha.to_string()),
-                    promotion: format!(
-                        "state=converged-quiet; acquire_skipped=true; remote_sha={source_sha}; promoted_source_sha={source_sha}",
-                    ),
-                },
-            }
-        }
-        tools::comparison::ComparisonRun::Moved { movement, .. } => movement,
-    };
-    write_source_gate_receipt(
-        receipt_dir,
-        spec,
-        remote_probe.as_ref(),
-        promoted_source_head.as_ref(),
-        source_gate_decision,
-        &git_outcome,
-    )?;
-    let source_command = source_outcome_cmd(&git_outcome);
-    write_command_receipt(receipt_dir, spec.source_op, &source_command)?;
-    if !git_outcome.ok {
-        write_run_receipt(
-            receipt_dir,
-            spec,
-            apply,
-            false,
-            git_outcome.changed,
-            &format!("{}-source-git-artifact-failed", spec.op_prefix),
-            &source_plan.reference,
-            &source_plan.reference,
-            &source_dir,
-            None,
-        )?;
-        return Ok(Some(ModuleExecution::from_operations(
-            vec![(
-                spec.source_op,
-                OperationOutcome {
-                    ok: false,
-                    changed: git_outcome.changed,
-                    skipped: false,
-                    message: format!("{} source sync failed", spec.op_prefix),
-                    command: None,
-                },
-            )],
-            &module.id,
-        )));
-    }
-
-    let source_sha = promoted_source_head
-        .filter(|_| source_gate_matched)
-        .unwrap_or_else(|| tools::git_artifact::source_head(&source_dir, &source_bearer));
-    write_source_sha_receipt(receipt_dir, spec.source_sha_op, &source_sha, &source_bearer)?;
-    let source_sha_value = source_sha.stdout.trim().to_string();
-    state.git_outcome = Some(git_outcome);
-    state.remote_probe = remote_probe;
-    state.source_sha_ok = source_sha.ok;
-    state.source_sha_value = source_sha_value;
-    Ok(None)
 }
 
 pub(crate) fn stage_managed_files(
@@ -545,7 +417,9 @@ pub(crate) fn stage_managed_files(
     let managed_files = effective_managed_files(module, &source_dir)?;
     // pali:harmonia-apply-ladder-law: SoftwareApplyAuthorization is structurally
     // bounded to SoftwarePlane; configuration paths can only be observed here.
-    let config_write = managed_files.iter().any(|file| crate::ladder::is_configuration_path(Path::new(&file.path)));
+    let config_write = managed_files
+        .iter()
+        .any(|file| crate::ladder::is_configuration_path(Path::new(&file.path)));
     let managed = tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: &module.id,
@@ -563,39 +437,103 @@ pub(crate) fn stage_managed_files(
         let source_root = receipt_dir.join(format!("{}-config-proposal-sources", spec.op_prefix));
         let mut files = Vec::new();
         let mut entries = Vec::new();
-        for file in managed_files.iter().filter(|file| crate::ladder::is_configuration_path(Path::new(&file.path))) {
+        for file in managed_files
+            .iter()
+            .filter(|file| crate::ladder::is_configuration_path(Path::new(&file.path)))
+        {
             let relative = PathBuf::from(file.path.trim_start_matches('/'));
             let source = source_root.join(&relative);
-            if let Some(parent) = source.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+            if let Some(parent) = source.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
             fs::write(&source, file.content.as_bytes()).map_err(|error| error.to_string())?;
             let target = PathBuf::from(&file.path);
             let target_bytes = fs::read(&target).ok();
             let target_exists = target_bytes.is_some();
             let content_equal = target_bytes.as_deref() == Some(file.content.as_bytes());
             let final_mode = file.mode.or(Some(0o644));
-            let mode_equal = target.metadata().ok().map(|metadata| {
-                #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; metadata.permissions().mode() & 0o7777 == final_mode.unwrap_or(0o644) }
-                #[cfg(not(unix))] { true }
-            }).unwrap_or(false);
-            files.push(tools::files::FileSpec { relative_path: relative.clone(), mode: final_mode });
+            let mode_equal = target
+                .metadata()
+                .ok()
+                .map(|metadata| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        metadata.permissions().mode() & 0o7777 == final_mode.unwrap_or(0o644)
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        true
+                    }
+                })
+                .unwrap_or(false);
+            files.push(tools::files::FileSpec {
+                relative_path: relative.clone(),
+                mode: final_mode,
+            });
             entries.push(tools::files::FileConvergenceEntry {
-                relative_path: relative.to_string_lossy().into_owned(), source, target, source_exists: true,
-                target_exists_before: target_exists, content_equal_before: content_equal, mode_equal_before: mode_equal,
-                target_exists_after: target_exists, content_equal_after: content_equal, mode_equal_after: mode_equal,
-                changed: false, backed_up_to: None, final_mode, ownership_source: "unchanged".to_string(),
-                observed_uid_before: None, observed_gid_before: None, observed_uid_after: None, observed_gid_after: None,
-                ownership_changed: false, observed_uid: None, observed_gid: None, diff: None, diff_omitted: None,
+                relative_path: relative.to_string_lossy().into_owned(),
+                source,
+                target,
+                source_exists: true,
+                target_exists_before: target_exists,
+                content_equal_before: content_equal,
+                mode_equal_before: mode_equal,
+                target_exists_after: target_exists,
+                content_equal_after: content_equal,
+                mode_equal_after: mode_equal,
+                changed: false,
+                backed_up_to: None,
+                final_mode,
+                ownership_source: "unchanged".to_string(),
+                observed_uid_before: None,
+                observed_gid_before: None,
+                observed_uid_after: None,
+                observed_gid_after: None,
+                ownership_changed: false,
+                observed_uid: None,
+                observed_gid: None,
+                diff: None,
+                diff_omitted: None,
             });
         }
-        let request = tools::files::FileConvergenceRequest { source_root, target_root: PathBuf::from("/"), files,
-            backup_existing: false, receipt_name: format!("{}-managed-files", spec.op_prefix), owner: None, group: None };
-        let outcome = tools::files::FileConvergenceOutcome { ok: managed.ok, changed: false, ownership_changed: false,
-            checked: entries.len(), written: 0, backed_up: 0, missing: Vec::new(), missing_target_birth_debts: Vec::new(),
-            entries, message: managed.message.clone() };
-        let manifest = crate::ladder::LadderManifest { schema: crate::ladder::SCHEMA.to_string(), id: module.id.clone(),
-            version: "0.0.0".to_string(), description: module.description.clone(), role: None, optional: false,
-            optional_warning: None, group: None, constants: BTreeMap::new(), caduceus_commands: Vec::new(), files_root: None,
-            config_deploy: Some("interactable".to_string()), ladder: Vec::new(), base_dir: receipt_dir.to_path_buf() };
+        let request = tools::files::FileConvergenceRequest {
+            source_root,
+            target_root: PathBuf::from("/"),
+            files,
+            backup_existing: false,
+            receipt_name: format!("{}-managed-files", spec.op_prefix),
+            owner: None,
+            group: None,
+        };
+        let outcome = tools::files::FileConvergenceOutcome {
+            ok: managed.ok,
+            changed: false,
+            ownership_changed: false,
+            checked: entries.len(),
+            written: 0,
+            backed_up: 0,
+            missing: Vec::new(),
+            missing_target_birth_debts: Vec::new(),
+            entries,
+            message: managed.message.clone(),
+        };
+        let manifest = crate::ladder::LadderManifest {
+            schema: crate::ladder::SCHEMA.to_string(),
+            id: module.id.clone(),
+            version: "0.0.0".to_string(),
+            description: module.description.clone(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            group: None,
+            constants: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: Some("interactable".to_string()),
+            ladder: Vec::new(),
+            base_dir: receipt_dir.to_path_buf(),
+        };
         crate::refresh_interactables_for_convergence(&manifest, &request, &outcome)?;
     }
     state.managed = Some(managed);
@@ -613,8 +551,6 @@ pub(crate) fn stage_build(
 ) -> Result<Option<ModuleExecution>, String> {
     let source_dir = state.source_dir.clone();
     let install_bin = state.install_bin.clone();
-    let source_plan = state.source_plan.clone();
-    let source_bearer = state.source_bearer.clone();
     let source_sha_value = state.source_sha_value.clone();
     let artifact = source_dir.join("target/release").join(spec.binary_name);
     if !state.source_sha_ok || !is_hex_sha(&source_sha_value) {
@@ -625,8 +561,8 @@ pub(crate) fn stage_build(
             false,
             true,
             &format!("{}-source-sha-missing", spec.op_prefix),
-            &source_plan.reference,
-            &source_plan.reference,
+            &state.source_remote,
+            &state.source_reference,
             &source_dir,
             None,
         )?;
@@ -647,16 +583,33 @@ pub(crate) fn stage_build(
     let build_environment = build_environment(args, Some(&source_sha_value))?;
 
     let mut build_environment = build_environment;
-    build_environment.insert("CARGO_TARGET_DIR".into(), source_dir.join("target").to_string_lossy().into_owned());
+    build_environment.insert(
+        "CARGO_TARGET_DIR".into(),
+        source_dir.join("target").to_string_lossy().into_owned(),
+    );
     let environment: Vec<(String, String)> = build_environment.into_iter().collect();
     let build = crate::build_crate::run_build(
-        &source_dir, &source_sha_value, None, &install_bin, &artifact, apply,
-        &environment, crate::tools::command::DEFAULT_TIMEOUT_SECS,
-        &receipt_dir.join("harmonia-atoms.log"), &source_bearer,
+        &source_dir,
+        &source_sha_value,
+        None,
+        &install_bin,
+        &artifact,
+        apply,
+        &environment,
+        crate::tools::command::DEFAULT_TIMEOUT_SECS,
+        &receipt_dir.join("harmonia-atoms.log"),
+        args.get("bearer")
+            .and_then(Value::as_str)
+            .unwrap_or("owner"),
         invocation,
     )?;
     if let Some(result) = &build {
-        let build_cmd = CmdResult { ok: result.ok, code: result.code.unwrap_or(-1), stdout: result.stdout.clone(), stderr: result.stderr.clone() };
+        let build_cmd = CmdResult {
+            ok: result.ok,
+            code: result.code.unwrap_or(-1),
+            stdout: result.stdout.clone(),
+            stderr: result.stderr.clone(),
+        };
         write_command_receipt(receipt_dir, spec.build_op, &build_cmd)?;
         if !build_cmd.ok {
             write_run_receipt(
@@ -666,8 +619,8 @@ pub(crate) fn stage_build(
                 false,
                 true,
                 &format!("{}-cargo-build-failed", spec.op_prefix),
-                &source_plan.reference,
-                &source_plan.reference,
+                &state.source_sha_value,
+                &state.source_sha_value,
                 &source_dir,
                 Some(&source_sha_value),
             )?;
@@ -686,15 +639,7 @@ pub(crate) fn stage_build(
             )));
         }
     } else {
-        write_skipped_build_receipt(
-            receipt_dir,
-            spec,
-            &source_sha_value,
-            state.remote_probe
-                .as_ref()
-                .and_then(|probe| probe.remote_sha.as_deref())
-                .unwrap_or_default(),
-        )?;
+        write_skipped_build_receipt(receipt_dir, spec, &source_sha_value, "")?;
     }
     state.build = Some(build);
     Ok(None)
@@ -707,8 +652,16 @@ pub(crate) fn stage_binary_install(
     spec: &ServiceRuntimeSpec,
     state: &mut ServiceRuntimeState,
 ) -> Result<Option<ModuleExecution>, String> {
-    let install = if state.build.as_ref().map(|build| build.is_some()).unwrap_or(false) {
-        let artifact = state.source_dir.join("target/release").join(spec.binary_name);
+    let install = if state
+        .build
+        .as_ref()
+        .map(|build| build.is_some())
+        .unwrap_or(false)
+    {
+        let artifact = state
+            .source_dir
+            .join("target/release")
+            .join(spec.binary_name);
         install_binary(receipt_dir, spec, &artifact, &state.install_bin, apply)?
     } else {
         write_skipped_binary_install_receipt(receipt_dir, spec, &state.install_bin, apply)?;
@@ -728,8 +681,8 @@ pub(crate) fn stage_binary_install(
             false,
             install.changed,
             &format!("{}-binary-install-failed", spec.op_prefix),
-            &state.source_plan.reference,
-            &state.source_plan.reference,
+            &state.source_remote,
+            &state.source_reference,
             &state.source_dir,
             Some(&state.source_sha_value),
         )?;
@@ -754,8 +707,16 @@ pub(crate) fn stage_service_epilogue(
         spec,
         state.service.as_str(),
         apply,
-        state.managed.as_ref().map(|managed| managed.changed).unwrap_or(false),
-        state.install.as_ref().map(|install| install.changed).unwrap_or(false),
+        state
+            .managed
+            .as_ref()
+            .map(|managed| managed.changed)
+            .unwrap_or(false),
+        state
+            .install
+            .as_ref()
+            .map(|install| install.changed)
+            .unwrap_or(false),
         invocation,
     )?;
     state.service_outcome = Some(service_outcome);
@@ -768,16 +729,38 @@ pub(crate) fn stage_health_proof(
     state: &mut ServiceRuntimeState,
 ) -> Result<(), String> {
     let mut health = health_probe(&state.health_url, 5, 3);
-    let observed = health.ok.then(|| serde_json::from_str::<Value>(&health.stdout).ok()).flatten().and_then(|v| v.get("build_sha").and_then(Value::as_str).map(str::to_string));
-    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) { health.ok=false; health.code=1; health.stderr=format!("service-runtime-act-did-not-converge expected_build_sha={} observed_build_sha={}",state.source_sha_value,observed.as_deref().unwrap_or("unavailable")); }
+    let observed = health
+        .ok
+        .then(|| serde_json::from_str::<Value>(&health.stdout).ok())
+        .flatten()
+        .and_then(|v| {
+            v.get("build_sha")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) {
+        health.ok = false;
+        health.code = 1;
+        health.stderr = format!(
+            "service-runtime-act-did-not-converge expected_build_sha={} observed_build_sha={}",
+            state.source_sha_value,
+            observed.as_deref().unwrap_or("unavailable")
+        );
+    }
     write_command_receipt(receipt_dir, spec.health_op, &health)?;
     state.health = Some(health);
     Ok(())
 }
 
-pub(crate) fn bench_build_environment(source_sha: &str) -> Result<BTreeMap<String, String>, String> {
-    let args = [("component".to_string(), Value::String("caduceus".to_string()))]
-        .into_iter().collect();
+pub(crate) fn bench_build_environment(
+    source_sha: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let args = [(
+        "component".to_string(),
+        Value::String("caduceus".to_string()),
+    )]
+    .into_iter()
+    .collect();
     build_environment(&args, Some(source_sha))
 }
 
@@ -831,17 +814,9 @@ pub(crate) fn bench_health_identity(
         install_bin: PathBuf::new(),
         service: String::new(),
         health_url,
-        source_plan: tools::git_artifact::SourcePlan {
-            candidates: Vec::new(),
-            reference: String::new(),
-            destination: PathBuf::new(),
-            expected_commit: None,
-            bearer: String::new(),
-            credentials: BTreeMap::new(),
-        },
-        source_bearer: String::new(),
-        git_outcome: None,
-        remote_probe: None,
+        source_reference: "bench".into(),
+        source_remote: source_sha.clone(),
+        source_changed: false,
         source_sha_ok: true,
         source_sha_value: source_sha,
         managed: None,
