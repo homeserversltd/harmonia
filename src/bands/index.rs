@@ -20,7 +20,18 @@ pub(crate) mod restart_services;
 pub(crate) mod stage_profile;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Band { RenewSelf, PullSource, StageProfile, Compare, InstallPackages, RatchetBinaries, RestartServices, BackfillFiles, ProposeEdits, ReportHome }
+pub(crate) enum Band {
+    RenewSelf,
+    PullSource,
+    StageProfile,
+    Compare,
+    InstallPackages,
+    RatchetBinaries,
+    RestartServices,
+    BackfillFiles,
+    ProposeEdits,
+    ReportHome,
+}
 
 pub(crate) fn walk(mut enter: impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     renew_self::enter(&mut enter)?;
@@ -29,8 +40,8 @@ pub(crate) fn walk(mut enter: impl FnMut(Band) -> Result<(), String>) -> Result<
     compare::enter(&mut enter)?;
     install_packages::enter(&mut enter)?;
     ratchet_binaries::enter(&mut enter)?;
-    restart_services::enter(&mut enter)?;
     backfill_files::enter(&mut enter)?;
+    restart_services::enter(&mut enter)?;
     propose_edits::enter(&mut enter)?;
     report_home::enter(&mut enter)?;
     Ok(())

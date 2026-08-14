@@ -142,6 +142,7 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
 
 fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
     crate::bands::restart_services::lower_service_runtime_steps(manifest);
+    crate::bands::backfill_files::lower_service_runtime_steps(manifest);
 }
 
 pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
@@ -156,14 +157,65 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
         ("service-active", "systemd", "is-active-probe"),
         ("health-proof", "check-health", "probe"),
     ];
-    if step.tool != "routine" || step.permutation != "execute" || step.steps.len() != stages.len() {
+    // The managed-files proposal is optional: the bounded shape is either
+    // pull/build/install + suffix, or the same with one proposal child.
+    if step.tool != "routine"
+        || step.permutation != "execute"
+        || step.steps.len() < stages.len() - 1
+    {
         return false;
     }
     if !step
         .steps
         .iter()
-        .zip(stages)
-        .all(|(c, (n, t, p))| c.name == n && c.tool == t && c.permutation.as_deref() == Some(p))
+        .take(3)
+        .zip(stages.iter().take(3))
+        .all(|(c, (n, t, p))| c.name == *n && c.tool == *t && c.permutation.as_deref() == Some(*p))
+    {
+        return false;
+    }
+    let suffix_start = step
+        .steps
+        .iter()
+        .position(|c| c.name == stages[4].0)
+        .unwrap_or(usize::MAX);
+    if suffix_start == usize::MAX || suffix_start < 3 {
+        return false;
+    }
+    let has_proposal = step.steps.last().is_some_and(|child| {
+        child.name == "managed-files"
+            && child.tool == "service-runtime"
+            && child.permutation.as_deref() == Some("configuration-proposal")
+    });
+    let suffix_end = if has_proposal {
+        step.steps.len() - 1
+    } else {
+        step.steps.len()
+    };
+    if suffix_end != suffix_start + 5 {
+        return false;
+    }
+    let mut config_count = 0;
+    for child in &step.steps[3..suffix_start] {
+        if child.name == "managed-files"
+            && child.tool == "service-runtime"
+            && child.permutation.as_deref() == Some("managed-files")
+        {
+            config_count += 1;
+        } else if !(child.name.starts_with("managed-file-")
+            && child.tool == "place-file"
+            && child.permutation.as_deref() == Some("place"))
+        {
+            return false;
+        }
+    }
+    if config_count > 1
+        || !step.steps[suffix_start..]
+            .iter()
+            .zip(stages.iter().skip(4))
+            .all(|(c, (n, t, p))| {
+                c.name == *n && c.tool == *t && c.permutation.as_deref() == Some(*p)
+            })
     {
         return false;
     }
@@ -1250,6 +1302,24 @@ pub(crate) fn execute_routine(
                     .context
                     .entry(format!("{}.{}", child.name, key))
                     .or_insert(value.clone());
+            }
+            if child.name == "managed-files" || child.name.starts_with("managed-file-") {
+                let aggregate_changed = state.children.iter().any(|receipt| {
+                    receipt
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| {
+                            name == "managed-files" || name.starts_with("managed-file-")
+                        })
+                        && receipt
+                            .get("changed")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                }) || child_changed;
+                state.context.insert(
+                    "managed-files.changed".into(),
+                    Value::Bool(aggregate_changed),
+                );
             }
         }
         let receipts = collect_routine_receipts(&child_dir)?;
