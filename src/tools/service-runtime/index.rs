@@ -204,7 +204,7 @@ pub(crate) fn execute_routine_stage(
             ))
         }
         "service-epilogue" => {
-            stage_service_epilogue(receipt_dir, apply, &spec, invocation, state)?;
+            stage_service_epilogue(receipt_dir, apply, &spec, invocation, args, state)?;
             let v = state.service_outcome.as_ref().unwrap();
             Ok((
                 result(v.ok, v.changed, "service-runtime service-epilogue"),
@@ -700,23 +700,20 @@ pub(crate) fn stage_service_epilogue(
     apply: bool,
     spec: &ServiceRuntimeSpec,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    args: &BTreeMap<String, Value>,
     state: &mut ServiceRuntimeState,
 ) -> Result<(), String> {
+    let binary_changed = args
+        .get("binary_changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let service_outcome = ensure_service_active(
         receipt_dir,
         spec,
         state.service.as_str(),
         apply,
-        state
-            .managed
-            .as_ref()
-            .map(|managed| managed.changed)
-            .unwrap_or(false),
-        state
-            .install
-            .as_ref()
-            .map(|install| install.changed)
-            .unwrap_or(false),
+        false,
+        binary_changed,
         invocation,
     )?;
     state.service_outcome = Some(service_outcome);
