@@ -1,6 +1,6 @@
+use crate::update_set::{ServiceBinding, Target, UpdatePlan};
 use crate::*;
 use serde_json::{json, Value};
-use crate::update_set::{Target, ServiceBinding, UpdatePlan};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self};
@@ -33,7 +33,7 @@ impl ProfileProjection {
     }
 }
 
-fn load_profile_projection(profile: &Profile, module_root: &Path, disabled: &BTreeSet<String>) -> Result<ProfileProjection, String> {
+pub(crate) fn load_profile_projection(profile: &Profile, module_root: &Path, disabled: &BTreeSet<String>) -> Result<ProfileProjection, String> {
     let mut modules = BTreeMap::new();
     let mut errors = BTreeMap::new();
     for id in &profile.modules {
@@ -132,14 +132,39 @@ fn projection_add_service(
         });
     }
 }
-fn projection_derive_plan_inner(self_: &ProfileProjection, profile: &Profile, _module_root: &Path) -> Result<UpdatePlan, String> {
-    let projected: Vec<(&String, &ProjectedModule)> = profile.modules.iter().filter_map(|id| self_.modules.get_key_value(id)).collect();
-    let runtime_faces: Vec<String> = projected.iter().flat_map(|(_, p)| { let mut faces = Vec::new(); for args in projected_runtime_args(p) { if let Some(face) = args.get("component").and_then(Value::as_str).and_then(projection_component_face) { faces.push(face.to_owned()); } } faces }).collect();
+fn projection_derive_plan_inner(
+    self_: &ProfileProjection,
+    profile: &Profile,
+    _module_root: &Path,
+) -> Result<UpdatePlan, String> {
+    let projected: Vec<(&String, &ProjectedModule)> = profile
+        .modules
+        .iter()
+        .filter_map(|id| self_.modules.get_key_value(id))
+        .collect();
+    let runtime_faces: Vec<String> = projected
+        .iter()
+        .flat_map(|(_, p)| {
+            let mut faces = Vec::new();
+            for args in projected_runtime_args(p) {
+                if let Some(face) = args
+                    .get("component")
+                    .and_then(Value::as_str)
+                    .and_then(projection_component_face)
+                {
+                    faces.push(face.to_owned());
+                }
+            }
+            faces
+        })
+        .collect();
     let faces: BTreeSet<String> = runtime_faces.into_iter().collect();
     let face = if faces.len() == 1 {
         faces.iter().next().unwrap().clone()
     } else if faces.is_empty()
-        && projected.iter().any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("hyprland"))
+        && projected
+            .iter()
+            .any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("hyprland"))
     {
         "Hyprland".into()
     } else {
@@ -149,16 +174,15 @@ fn projection_derive_plan_inner(self_: &ProfileProjection, profile: &Profile, _m
     let mut services = Vec::new();
     let mut caduceus_count = 0;
     for (_, projected) in &projected {
-        let constants = match &projected.loaded { LoadedModule::Ladder(m) => Some(&m.constants), LoadedModule::Sidecar(_) => None };
+        let constants = match &projected.loaded {
+            LoadedModule::Ladder(m) => Some(&m.constants),
+            LoadedModule::Sidecar(_) => None,
+        };
         let module_id = projected.loaded.id();
         let steps = &projected.steps;
         let is_gui = projected_gui_module(projected, &face);
-        for args in projected_runtime_args(projected)
-        {
-            let component = args
-                .get("component")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+        for args in projected_runtime_args(projected) {
+            let component = args.get("component").and_then(Value::as_str).unwrap_or("");
             let member = if component == "caduceus" {
                 caduceus_count += 1;
                 "caduceus"
@@ -191,7 +215,9 @@ fn projection_derive_plan_inner(self_: &ProfileProjection, profile: &Profile, _m
             if s.tool == "files"
                 && s.permutation == "source-shelf-sweep"
                 && (module_id == "sbin"
-                    || projected_runtime_args(projected).iter().any(|args| args.get("component").and_then(Value::as_str) == Some("caduceus")))
+                    || projected_runtime_args(projected).iter().any(|args| {
+                        args.get("component").and_then(Value::as_str) == Some("caduceus")
+                    }))
             {
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
                     projection_add_target(&mut targets, p.into(), "agathodaimon")?;
@@ -205,7 +231,8 @@ fn projection_derive_plan_inner(self_: &ProfileProjection, profile: &Profile, _m
                 let sr = projection_text(&s.args, "launcher_source_root")
                     .map(PathBuf::from)
                     .ok_or("staff-source-root-missing")?;
-                let pat = projection_text(&s.args, "launcher_pattern").ok_or("staff-pattern-missing")?;
+                let pat =
+                    projection_text(&s.args, "launcher_pattern").ok_or("staff-pattern-missing")?;
                 let mut names = BTreeSet::new();
                 for r in [&tr, &sr] {
                     if r.is_dir() {
@@ -247,17 +274,32 @@ fn projection_derive_plan_inner(self_: &ProfileProjection, profile: &Profile, _m
                 .and_then(|c| c.get("target_dir"))
                 .and_then(Value::as_str)
                 .map(PathBuf::from);
-            if let Some(a) = constants.and_then(|c| c.get("expected_files")).and_then(Value::as_array) {
+            if let Some(a) = constants
+                .and_then(|c| c.get("expected_files"))
+                .and_then(Value::as_array)
+            {
                 for f in a.iter().filter_map(Value::as_str) {
                     let p = PathBuf::from(f);
-                    let p = if p.is_absolute() { p } else if let Some(r) = &target_root { r.join(p) } else { continue };
+                    let p = if p.is_absolute() {
+                        p
+                    } else if let Some(r) = &target_root {
+                        r.join(p)
+                    } else {
+                        continue;
+                    };
                     projection_add_target(&mut targets, p, &face)?;
                 }
             }
             for (key, user) in [("services", false), ("user_services", true)] {
                 if let Some(a) = constants.and_then(|c| c.get(key)).and_then(Value::as_array) {
                     for name in a.iter().filter_map(Value::as_str) {
-                        projection_add_service(&mut services, name.into(), user, if user { Some("owner".into()) } else { None }, &face);
+                        projection_add_service(
+                            &mut services,
+                            name.into(),
+                            user,
+                            if user { Some("owner".into()) } else { None },
+                            &face,
+                        );
                     }
                 }
             }
@@ -286,8 +328,43 @@ fn projection_glob(pattern: &str, name: &str) -> bool {
         pattern == name
     }
 }
-fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, Value>> { projected.steps.iter().filter(|s| s.tool == "service-runtime" && s.permutation == "converge").map(|s| &s.args).chain(projected.routines.values().flatten().filter(|c| c.tool == "service-runtime" && c.name == "build").map(|c| &c.args)).collect() }
-fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool { match &projected.loaded { LoadedModule::Ladder(m) => { if face != "Hyprland" { projected_runtime_args(projected).iter().any(|a| a.get("component").and_then(Value::as_str).and_then(projection_component_face) == Some(face)) } else { let mut h=m.id.to_ascii_lowercase(); if let Some(x)=m.constants.get("meaning").and_then(Value::as_str) { h.push_str(&x.to_ascii_lowercase()); } h.contains("hyprland") || h.contains("desktop config") || h.contains("user session") } }, LoadedModule::Sidecar(_) => false } }
+fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, Value>> {
+    projected
+        .steps
+        .iter()
+        .filter(|s| s.tool == "service-runtime" && s.permutation == "converge")
+        .map(|s| &s.args)
+        .chain(
+            projected
+                .routines
+                .values()
+                .flatten()
+                .filter(|c| c.tool == "service-runtime" && c.name == "build")
+                .map(|c| &c.args),
+        )
+        .collect()
+}
+fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool {
+    match &projected.loaded {
+        LoadedModule::Ladder(m) => {
+            if face != "Hyprland" {
+                projected_runtime_args(projected).iter().any(|a| {
+                    a.get("component")
+                        .and_then(Value::as_str)
+                        .and_then(projection_component_face)
+                        == Some(face)
+                })
+            } else {
+                let mut h = m.id.to_ascii_lowercase();
+                if let Some(x) = m.constants.get("meaning").and_then(Value::as_str) {
+                    h.push_str(&x.to_ascii_lowercase());
+                }
+                h.contains("hyprland") || h.contains("desktop config") || h.contains("user session")
+            }
+        }
+        LoadedModule::Sidecar(_) => false,
+    }
+}
 
 impl LoadedModule {
     fn id(&self) -> &str {
@@ -432,10 +509,19 @@ fn resolve_group_selections(
 ) -> Result<BTreeMap<String, GroupSelection>, String> {
     let mut groups: BTreeMap<String, Vec<(String, LadderManifest)>> = BTreeMap::new();
     for module_id in &profile.modules {
-        let Some(projected) = projection.modules.get(module_id) else { continue };
-        let LoadedModule::Ladder(module) = &projected.loaded else { continue };
-        let Some(group_id) = module.group.as_ref().map(|group| group.group_id.clone()) else { continue };
-        groups.entry(group_id).or_default().push((module_id.clone(), module.clone()));
+        let Some(projected) = projection.modules.get(module_id) else {
+            continue;
+        };
+        let LoadedModule::Ladder(module) = &projected.loaded else {
+            continue;
+        };
+        let Some(group_id) = module.group.as_ref().map(|group| group.group_id.clone()) else {
+            continue;
+        };
+        groups
+            .entry(group_id)
+            .or_default()
+            .push((module_id.clone(), module.clone()));
     }
 
     let mut selections = BTreeMap::new();
@@ -463,9 +549,16 @@ fn resolve_group_selections(
         for (module_id, manifest) in &members {
             let group = manifest.group.as_ref().expect("grouped manifest");
             let probe_dir = group_receipt_dir.join("probes").join(module_id);
-            let projected = projection.modules.get(module_id).ok_or_else(|| format!("module-not-in-projection-{module_id}"))?;
-            let probe = projected.group_probe.as_ref().ok_or_else(|| format!("module-{}-has-no-group", module_id))?;
-            let outcome = crate::ladder::execute_group_live_probe_validated(manifest, probe, &probe_dir)?;
+            let projected = projection
+                .modules
+                .get(module_id)
+                .ok_or_else(|| format!("module-not-in-projection-{module_id}"))?;
+            let probe = projected
+                .group_probe
+                .as_ref()
+                .ok_or_else(|| format!("module-{}-has-no-group", module_id))?;
+            let outcome =
+                crate::ladder::execute_group_live_probe_validated(manifest, probe, &probe_dir)?;
             let signal = if outcome.ok {
                 "probe-live".to_string()
             } else {
@@ -574,7 +667,9 @@ fn compose_caduceus_commands_with_policy(
         } else if crate::ladder::is_lowered_service_runtime_converge(step) {
             for child in &mut step.steps {
                 if child.tool == "service-runtime" {
-                    child.args.insert("caduceus_commands".to_string(), json!(commands));
+                    child
+                        .args
+                        .insert("caduceus_commands".to_string(), json!(commands));
                 }
             }
         }
@@ -632,7 +727,11 @@ fn execute_band_modules(
         let loaded = match projection.modules.get(module_id).map(|p| p.loaded.clone()) {
             Some(value) => value,
             None => {
-                let err = projection.errors.get(module_id).cloned().unwrap_or_else(|| format!("module-not-in-projection-{module_id}"));
+                let err = projection
+                    .errors
+                    .get(module_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("module-not-in-projection-{module_id}"));
                 let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
                     ok: true,
                     changed: false,
@@ -662,8 +761,16 @@ fn execute_band_modules(
                 mode.invocation(),
                 states.get(module_id).map(|s| s.changed).unwrap_or(false),
                 routines.entry(module_id.clone()).or_default(),
-                projection.modules.get(module_id).map(|p| p.steps.as_slice()).unwrap_or(&[]),
-                &projection.modules.get(module_id).expect("projected module").routines,
+                projection
+                    .modules
+                    .get(module_id)
+                    .map(|p| p.steps.as_slice())
+                    .unwrap_or(&[]),
+                &projection
+                    .modules
+                    .get(module_id)
+                    .expect("projected module")
+                    .routines,
             ),
             LoadedModule::Sidecar(_) => {
                 let mut state = ModuleExecution {
@@ -751,7 +858,19 @@ pub(crate) fn run_profile_engine_with_preflight(
 ) -> Result<(), String> {
     let policy = read_device_module_policy()?;
     let projection = load_profile_projection(profile, module_root, &policy.disabled_modules)?;
-    run_profile_engine_with_projection(profile, module_root, receipt_dir, mode, skip_preflight, completed_preflight, suite_debt, &projection)
+    run_profile_engine_with_projection(
+        profile,
+        module_root,
+        receipt_dir,
+        mode,
+        skip_preflight,
+        completed_preflight,
+        suite_debt,
+        &projection,
+        None,
+        None,
+        false,
+    )
 }
 
 pub(crate) fn run_profile_engine_with_projection(
@@ -763,7 +882,12 @@ pub(crate) fn run_profile_engine_with_projection(
     mut completed_preflight: Option<ModuleExecution>,
     suite_debt: Option<&str>,
     projection: &ProfileProjection,
+    context: Option<&crate::RunContext>,
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
+    materialize_on_stage: bool,
 ) -> Result<(), String> {
+    let mut active_profile = profile.clone();
+    let mut active_projection = projection.clone();
     let apply = mode.is_software_apply();
     let invocation = mode.invocation();
     let run_started = Instant::now();
@@ -773,18 +897,19 @@ pub(crate) fn run_profile_engine_with_projection(
         &mut events,
         "engine-start",
         true,
-        &format!("profile {}", profile.id),
+        &format!("profile {}", active_profile.id),
     )?;
     let run_id = run_id_from_stamp();
     let mut ok = true;
     let mut suite_ok = true;
     let mut changed = false;
     let mut first_missing_signal = "none".to_string();
-    let mut module_count = profile.modules.len();
+    let mut module_count = active_profile.modules.len();
     let mut operation_count = 0usize;
     let mut module_states: BTreeMap<String, ModuleExecution> = BTreeMap::new();
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
-    let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> = BTreeMap::new();
+    let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> =
+        BTreeMap::new();
     let mut visited_bands = Vec::new();
     let device_module_policy = read_device_module_policy()?;
     let harmonia_root = harmonia_root_from_module_root(module_root);
@@ -858,7 +983,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     }
                 }
 
-                if profile.modules.is_empty() {
+                if active_profile.modules.is_empty() {
                     ok = false;
                     first_missing_signal = "profile-modules-empty".to_string();
                     event(
@@ -871,27 +996,81 @@ pub(crate) fn run_profile_engine_with_projection(
             }
             crate::bands::Band::PullSource => {
                 // Primitive rolling-update acquisition already ran; routine children still visit this band.
-                execute_band_modules(band, profile, module_root, receipt_dir, mode, &device_module_policy.disabled_modules, &projection, &mut module_states, &mut routine_states, &mut halted_modules, &mut module_count, &mut operation_count, &mut changed, &mut ok, &mut first_missing_signal, &mut events)?;
-            }
-            crate::bands::Band::StageProfile => {
-                // Rolling-update profile materialization already ran in today's prelude.
-            }
-            crate::bands::Band::Compare => {
-                let group_selections = resolve_group_selections(
-                    profile,
-                    module_root,
-                    receipt_dir,
-                    &projection,
-                )?;
-                group_losers = group_loser_winners(&group_selections);
                 execute_band_modules(
                     band,
-                    profile,
+                    &active_profile,
                     module_root,
                     receipt_dir,
                     mode,
                     &device_module_policy.disabled_modules,
-                    &projection,
+                    &active_projection,
+                    &mut module_states,
+                    &mut routine_states,
+                    &mut halted_modules,
+                    &mut module_count,
+                    &mut operation_count,
+                    &mut changed,
+                    &mut ok,
+                    &mut first_missing_signal,
+                    &mut events,
+                )?;
+            }
+            crate::bands::Band::StageProfile => {
+                if apply && materialize_on_stage {
+                    let engine = load_engine_plane_config(&engine_config_path())?
+                        .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
+                    let refreshed = crate::bands::stage_profile::materialize(
+                        &engine.source_dir,
+                        &active_profile.id,
+                        module_root,
+                        receipt_dir,
+                        &engine.git_bearer,
+                        context,
+                        carrier,
+                    )?;
+                    active_profile = refreshed;
+                    let target_carrier = carrier.or_else(|| context.map(|value| &value.carrier));
+                    let Some(target_carrier) = target_carrier else {
+                        return Err("stage-profile-transaction-carrier-missing".to_string());
+                    };
+                    let value = target_carrier.borrow();
+                    active_profile = value
+                        .refreshed_profile_value
+                        .clone()
+                        .unwrap_or(active_profile.clone());
+                    active_projection = value
+                        .projection
+                        .clone()
+                        .ok_or_else(|| "stage-profile-projection-not-sealed".to_string())?;
+                }
+            }
+            crate::bands::Band::Compare => {
+                if let Some(target_carrier) =
+                    carrier.or_else(|| context.map(|value| &value.carrier))
+                {
+                    let value = target_carrier.borrow();
+                    if let Some(refreshed) = value.refreshed_profile_value.as_ref() {
+                        active_profile = refreshed.clone();
+                    }
+                    if let Some(refreshed) = value.projection.as_ref() {
+                        active_projection = refreshed.clone();
+                    }
+                }
+                let group_selections = resolve_group_selections(
+                    &active_profile,
+                    module_root,
+                    receipt_dir,
+                    &active_projection,
+                )?;
+                group_losers = group_loser_winners(&group_selections);
+                execute_band_modules(
+                    band,
+                    &active_profile,
+                    module_root,
+                    receipt_dir,
+                    mode,
+                    &device_module_policy.disabled_modules,
+                    &active_projection,
                     &mut module_states,
                     &mut routine_states,
                     &mut halted_modules,
@@ -910,12 +1089,12 @@ pub(crate) fn run_profile_engine_with_projection(
             | crate::bands::Band::ProposeEdits => {
                 execute_band_modules(
                     band,
-                    profile,
+                    &active_profile,
                     module_root,
                     receipt_dir,
                     mode,
                     &device_module_policy.disabled_modules,
-                    &projection,
+                    &active_projection,
                     &mut module_states,
                     &mut routine_states,
                     &mut halted_modules,
@@ -928,13 +1107,13 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::ReportHome => {
-                for module_id in &profile.modules {
+                for module_id in &active_profile.modules {
                     if let Some(state) = module_states.get(module_id) {
                         let signal = state.first_missing_signal.as_deref().unwrap_or("none");
-                        let module = projection.modules.get(module_id).map(|p| &p.loaded);
+                        let module = active_projection.modules.get(module_id).map(|p| &p.loaded);
                         append_profile_ledger_entry(
                             receipt_dir,
-                            profile,
+                            &active_profile,
                             ProfileLedgerEntry {
                                 run_id: &run_id,
                                 module_id,
@@ -963,7 +1142,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
                 write_engine_run_receipt_with_duration(
                     receipt_dir,
-                    profile,
+                    &active_profile,
                     apply,
                     ok,
                     changed,
@@ -983,7 +1162,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 );
                 println!("ok={}", ok);
                 println!("changed={}", changed);
-                println!("profile_id={}", profile.id);
+                println!("profile_id={}", active_profile.id);
                 println!("module_count={}", module_count);
                 println!("operation_count={}", operation_count);
                 println!("first_missing_signal={}", first_missing_signal);
@@ -1053,65 +1232,7 @@ pub(crate) fn normalize_engine_branch_upstream() -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn sync_profile_from_source(
-    source_root: &Path,
-    profile_id: &str,
-    installed_module_root: &Path,
-    receipt_dir: &Path,
-    git_bearer: &str,
-) -> Result<(), String> {
-    let installed_root = installed_module_root
-        .parent()
-        .ok_or_else(|| format!("{profile_id}-config-root-missing"))?;
-    molt(
-        source_root,
-        profile_id,
-        installed_root,
-        receipt_dir,
-        MoltMode::Copy,
-    )?;
-    let profile = load_profile(&source_root.join(format!("profiles/{profile_id}/index.json")))
-        .map_err(|e| format!("{profile_id}-profile-source-read-failed: {e}"))?;
-    let modules = profile
-        .modules
-        .iter()
-        .map(|id| {
-            let module_dir = source_root
-                .join(format!("profiles/{profile_id}/modules"))
-                .join(id);
-            Ok(SubscriptionModuleUpdate {
-                id: id.clone(),
-                version: installed_module_version(&module_dir)
-                    .unwrap_or_else(|| "sidecar".to_string()),
-                tree_sha256: module_tree_sha256(&module_dir)?,
-                received_at_run_id: run_id_from_stamp(),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let head = tools::command::capture_with_cwd_as_bearer(
-        "git",
-        &["rev-parse", "HEAD"],
-        source_root.to_str(),
-        git_bearer,
-    );
-    if !head.ok {
-        return Err(format!("{profile_id}-source-head-failed {}", head.stderr));
-    }
-    update_subscription_record(
-        &subscription_path(),
-        SubscriptionUpdate {
-            lane: preserve_existing_lane_or_default(&subscription_path()),
-            source: source_root.display().to_string(),
-            ref_name: head.stdout.trim().to_string(),
-            selected_profile: profile.id,
-            engine_version_received: VERSION.to_string(),
-            modules,
-        },
-    )?;
-    Ok(())
-}
-
-fn rolling_update_run<F>(
+fn rolling_update_run(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
@@ -1121,25 +1242,21 @@ fn rolling_update_run<F>(
     lock_path: PathBuf,
     materialize_receipt: fn(&Path, &str) -> Result<PathBuf, String>,
     try_acquire_lock: fn(&Path) -> Result<ConvergenceLockGuard, ConvergenceLockBusy>,
-    prelude: F,
-) -> Result<(), String>
-where
-    F: FnOnce(&Path) -> Result<(), String>,
-{
+) -> Result<(), String> {
     let apply = mode.is_software_apply();
     let run_id = run_id_from_stamp();
     let effective_receipt_dir = materialize_receipt(receipt_dir, &run_id)?;
     fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
     let run = || {
-        // The engine plane remains independent of update apply; it owns its
-        // currentness ratchet and one re-exec guard without widening software
-        // authority into configuration or identity.
+        let carrier = context
+            .map(|value| value.carrier.clone())
+            .unwrap_or_else(|| {
+                std::rc::Rc::new(std::cell::RefCell::new(
+                    crate::atoms::r#do::transaction::RunCarrier::default(),
+                ))
+            });
         let projection = load_profile_projection(profile, module_root, &BTreeSet::new())?;
-        let initial_plan = projection.derive_update_plan(profile, module_root)?;
-        if let Some(context) = context { let mut carrier = context.carrier.borrow_mut(); carrier.projection = Some(projection.clone()); carrier.update_plan = Some(initial_plan.clone()); }
-        let execution_projection = context
-            .and_then(|c| c.carrier.borrow().projection.clone())
-            .unwrap_or(projection);
+        let execution_projection = projection.clone();
         let preflight = run_engine_preflight(
             module_root,
             &effective_receipt_dir,
@@ -1147,7 +1264,6 @@ where
             mode.invocation(),
         )?;
         if !apply {
-            prelude(&effective_receipt_dir)?;
             return run_profile_engine_with_projection(
                 profile,
                 module_root,
@@ -1157,30 +1273,13 @@ where
                 Some(preflight),
                 suite_debt.as_deref(),
                 &execution_projection,
+                context,
+                Some(&carrier),
+                false,
             );
         }
-        let plan = initial_plan;
-        let saved = crate::update_set::snapshot(&plan.targets)?;
-        let service_states = crate::update_set::snapshot_services(&plan)?;
-        let transaction = (|| -> Result<(), String> {
-            prelude(&effective_receipt_dir)?;
-            let profile_path = module_root
-                .parent()
-                .ok_or_else(|| format!("{}-profile-root-missing", profile.id))?
-                .join("index.json");
-            let refreshed_profile = load_profile(&profile_path).map_err(|e| e.to_string())?;
-            let refreshed_projection = load_profile_projection(&refreshed_profile, module_root, &BTreeSet::new())?;
-            let refreshed_plan = refreshed_projection.derive_update_plan(&refreshed_profile, module_root)?;
-            if let Some(context) = context {
-                let mut carrier = context.carrier.borrow_mut();
-                carrier.projection = Some(refreshed_projection.clone());
-                carrier.update_plan = Some(refreshed_plan.clone());
-            }
-            let execution_projection = context
-                .and_then(|c| c.carrier.borrow().projection.clone())
-                .unwrap_or(refreshed_projection);
-            run_profile_engine_with_projection(
-                &refreshed_profile,
+        let transaction = run_profile_engine_with_projection(
+            profile,
                 module_root,
                 &effective_receipt_dir,
                 mode,
@@ -1188,9 +1287,25 @@ where
                 Some(preflight),
                 suite_debt.as_deref(),
                 &execution_projection,
-            )
-        })();
+            context,
+            Some(&carrier),
+            true,
+        );
+        let value = carrier.borrow();
+        let census = value.transaction_census.clone();
+        let saved = value.sealed_snapshot.clone();
+        let service_states = value.sealed_services.clone();
+        drop(value);
         if let Err(error) = transaction {
+            let Some(saved) = saved else {
+                return Err(error);
+            };
+            let Some(service_states) = service_states else {
+                return Err(error);
+            };
+            let Some(census) = census else {
+                return Err(error);
+            };
             let artifact_rollback = crate::update_set::restore(&saved);
             let service_rollback = crate::update_set::restore_services(&service_states);
             let rollback_ok = artifact_rollback.is_ok() && service_rollback.is_ok();
@@ -1201,16 +1316,18 @@ where
             };
             crate::update_set::update_set_receipt(
                 &effective_receipt_dir,
-                &plan.gui_face,
+                &census.gui_face,
                 verdict,
-                Some(&plan.gui_member),
+                Some(&census.gui_member),
                 Some(&error),
             )?;
             return Err(error);
         }
+        let census =
+            census.ok_or_else(|| "stage-profile-transaction-census-missing".to_string())?;
         crate::update_set::update_set_receipt(
             &effective_receipt_dir,
-            &plan.gui_face,
+            &census.gui_face,
             "ok",
             None,
             None,
@@ -1239,8 +1356,13 @@ where
 }
 
 pub(crate) fn rolling_update_from_certificate(
-    profile: &Profile, module_root: &Path, receipt_dir: &Path, mode: UpdateMode,
-) -> Result<(), String> { rolling_update_from_certificate_with_context(profile,module_root,receipt_dir,mode,None) }
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: UpdateMode,
+) -> Result<(), String> {
+    rolling_update_from_certificate_with_context(profile, module_root, receipt_dir, mode, None)
+}
 
 pub(crate) fn rolling_update_from_certificate_with_context(
     profile: &Profile,
@@ -1249,7 +1371,6 @@ pub(crate) fn rolling_update_from_certificate_with_context(
     mode: UpdateMode,
     context: Option<crate::RunContext>,
 ) -> Result<(), String> {
-    let apply_software = mode.is_software_apply();
     rolling_update_run(
         profile,
         module_root,
@@ -1260,20 +1381,6 @@ pub(crate) fn rolling_update_from_certificate_with_context(
         engine_run_lock_path(),
         materialize_tv_receipt_dir,
         try_acquire_homeconsole_update_lock,
-        |effective_receipt_dir| {
-            if !apply_software {
-                return Ok(());
-            }
-            let engine = load_engine_plane_config(&engine_config_path())?
-                .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_profile_from_source(
-                &engine.source_dir,
-                &profile.id,
-                module_root,
-                effective_receipt_dir,
-                &engine.git_bearer,
-            )
-        },
     )
 }
 
@@ -1300,16 +1407,6 @@ pub(crate) fn homeconsole_update(
         homeconsole_update_lock_path(),
         materialize_homeconsole_receipt_dir,
         try_acquire_homeconsole_update_lock,
-        |effective_receipt_dir| {
-            let engine = load_engine_plane_config(&engine_config_path())?
-                .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_homeconsole_profile_as_bearer(
-                &engine.source_dir,
-                module_root,
-                effective_receipt_dir,
-                &engine.git_bearer,
-            )
-        },
     )
 }
 
@@ -1359,16 +1456,6 @@ pub(crate) fn homeserver_update(
         homeserver_update_lock_path(),
         materialize_homeserver_receipt_dir,
         try_acquire_homeserver_update_lock,
-        |effective_receipt_dir| {
-            let engine = load_engine_plane_config(&engine_config_path())?
-                .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_homeserver_profile_as_bearer(
-                &engine.source_dir,
-                module_root,
-                effective_receipt_dir,
-                &engine.git_bearer,
-            )
-        },
     )
 }
 
@@ -1395,16 +1482,6 @@ pub(crate) fn tv_update(
         tv_update_lock_path(),
         materialize_tv_receipt_dir,
         try_acquire_tv_update_lock,
-        |effective_receipt_dir| {
-            let engine = load_engine_plane_config(&engine_config_path())?
-                .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_tv_profile_as_bearer(
-                &engine.source_dir,
-                module_root,
-                effective_receipt_dir,
-                &engine.git_bearer,
-            )
-        },
     )
 }
 
@@ -1426,17 +1503,6 @@ pub(crate) fn profile_update(
         profile_update_lock_path(&profile_id)?,
         materialize_profile_receipt_dir,
         try_acquire_homeconsole_update_lock,
-        |effective_receipt_dir| {
-            let engine = load_engine_plane_config(&engine_config_path())?
-                .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
-            sync_profile_from_source(
-                &engine.source_dir,
-                &profile_id,
-                module_root,
-                effective_receipt_dir,
-                &engine.git_bearer,
-            )
-        },
     )
 }
 
@@ -1458,13 +1524,16 @@ fn sync_homeserver_profile_as_bearer(
     receipt_dir: &Path,
     git_bearer: &str,
 ) -> Result<(), String> {
-    sync_profile_from_source(
+    crate::bands::stage_profile::materialize(
         source_root,
         "homeserver",
         installed_module_root,
         receipt_dir,
         git_bearer,
+        None,
+        None,
     )
+    .map(|_| ())
 }
 
 pub(crate) fn sync_homeconsole_profile(
@@ -1481,13 +1550,16 @@ fn sync_homeconsole_profile_as_bearer(
     receipt_dir: &Path,
     git_bearer: &str,
 ) -> Result<(), String> {
-    sync_profile_from_source(
+    crate::bands::stage_profile::materialize(
         source_root,
         "homeconsole",
         installed_module_root,
         receipt_dir,
         git_bearer,
+        None,
+        None,
     )
+    .map(|_| ())
 }
 
 pub(crate) fn sync_tv_profile(
@@ -1504,13 +1576,16 @@ fn sync_tv_profile_as_bearer(
     receipt_dir: &Path,
     git_bearer: &str,
 ) -> Result<(), String> {
-    sync_profile_from_source(
+    crate::bands::stage_profile::materialize(
         source_root,
         "tv",
         installed_module_root,
         receipt_dir,
         git_bearer,
+        None,
+        None,
     )
+    .map(|_| ())
 }
 
 pub(crate) fn homeserver_module_root() -> PathBuf {
