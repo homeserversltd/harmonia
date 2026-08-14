@@ -4,7 +4,7 @@
   "state": "fronted",
   "legacy_path": "src/tools/service_runtime.rs",
   "stages": [
-    "source-gate",
+    "pull-repo",
     "managed-files",
     "build",
     "binary-install",
