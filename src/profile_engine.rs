@@ -8,23 +8,23 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
-enum LoadedModule {
+pub(crate) enum LoadedModule {
     Sidecar(ModuleManifest),
     Ladder(LadderManifest),
 }
 
 #[derive(Clone, Debug)]
-struct ProjectedModule {
-    loaded: LoadedModule,
-    steps: Vec<crate::ladder::ValidatedStep>,
+pub(crate) struct ProjectedModule {
+    pub(crate) loaded: LoadedModule,
+    pub(crate) steps: Vec<crate::ladder::ValidatedStep>,
     group_probe: Option<crate::ladder::ValidatedStep>,
-    routines: BTreeMap<String, Vec<crate::ladder::ProjectedRoutineChild>>,
+    pub(crate) routines: BTreeMap<String, Vec<crate::ladder::ProjectedRoutineChild>>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProfileProjection {
-    modules: BTreeMap<String, ProjectedModule>,
-    errors: BTreeMap<String, String>,
+    pub(crate) modules: BTreeMap<String, ProjectedModule>,
+    pub(crate) errors: BTreeMap<String, String>,
 }
 
 impl ProfileProjection {
@@ -1082,8 +1082,25 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut events,
                 )?;
             }
-            crate::bands::Band::InstallPackages
-            | crate::bands::Band::RatchetBinaries
+            crate::bands::Band::InstallPackages => {
+                crate::bands::install_packages::execute_manifest_modules(
+                    &active_profile,
+                    receipt_dir,
+                    mode,
+                    &device_module_policy.disabled_modules,
+                    &active_projection,
+                    &mut module_states,
+                    &mut routine_states,
+                    &mut halted_modules,
+                    &mut module_count,
+                    &mut operation_count,
+                    &mut changed,
+                    &mut ok,
+                    &mut first_missing_signal,
+                    &mut events,
+                )?;
+            }
+            crate::bands::Band::RatchetBinaries
             | crate::bands::Band::RestartServices
             | crate::bands::Band::BackfillFiles
             | crate::bands::Band::ProposeEdits => {
