@@ -9,8 +9,6 @@ use std::io::{BufReader, Read};
 include!("build.rs");
 include!("managed-files.rs");
 include!("binary-install.rs");
-include!("service-epilogue.rs");
-include!("health-proof.rs");
 
 pub const NAME: &str = "service-runtime";
 pub const DESCRIPTION: &str = "Rust service runtime convergence primitive for source sync, managed files, build, install, systemd, and health proof.";
@@ -57,18 +55,6 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[
         SERVICE_RUNTIME_ARGS,
     )
     .in_band(crate::tools::Placement::RatchetBinaries),
-    ToolPermutation::new(
-        "service-epilogue",
-        "run the service-epilogue service-runtime stage",
-        SERVICE_RUNTIME_ARGS,
-    )
-    .in_band(crate::tools::Placement::RestartServices),
-    ToolPermutation::new(
-        "health-proof",
-        "run the health-proof service-runtime stage",
-        SERVICE_RUNTIME_ARGS,
-    )
-    .in_band(crate::tools::Placement::RestartServices),
 ];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
@@ -200,22 +186,6 @@ pub(crate) fn execute_routine_stage(
             let v = state.install.as_ref().unwrap();
             Ok((
                 result(v.ok, v.changed, "service-runtime binary-install"),
-                BTreeMap::new(),
-            ))
-        }
-        "service-epilogue" => {
-            stage_service_epilogue(receipt_dir, apply, &spec, invocation, args, state)?;
-            let v = state.service_outcome.as_ref().unwrap();
-            Ok((
-                result(v.ok, v.changed, "service-runtime service-epilogue"),
-                BTreeMap::new(),
-            ))
-        }
-        "health-proof" => {
-            stage_health_proof(receipt_dir, &spec, state)?;
-            let health = state.health.as_ref().unwrap();
-            Ok((
-                result(health.ok, false, "service-runtime health-proof"),
                 BTreeMap::new(),
             ))
         }
@@ -695,60 +665,6 @@ pub(crate) fn stage_binary_install(
     Ok(None)
 }
 
-pub(crate) fn stage_service_epilogue(
-    receipt_dir: &Path,
-    apply: bool,
-    spec: &ServiceRuntimeSpec,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-    args: &BTreeMap<String, Value>,
-    state: &mut ServiceRuntimeState,
-) -> Result<(), String> {
-    let binary_changed = args
-        .get("binary_changed")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let service_outcome = ensure_service_active(
-        receipt_dir,
-        spec,
-        state.service.as_str(),
-        apply,
-        false,
-        binary_changed,
-        invocation,
-    )?;
-    state.service_outcome = Some(service_outcome);
-    Ok(())
-}
-
-pub(crate) fn stage_health_proof(
-    receipt_dir: &Path,
-    spec: &ServiceRuntimeSpec,
-    state: &mut ServiceRuntimeState,
-) -> Result<(), String> {
-    let mut health = health_probe(&state.health_url, 5, 3);
-    let observed = health
-        .ok
-        .then(|| serde_json::from_str::<Value>(&health.stdout).ok())
-        .flatten()
-        .and_then(|v| {
-            v.get("build_sha")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
-    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) {
-        health.ok = false;
-        health.code = 1;
-        health.stderr = format!(
-            "service-runtime-act-did-not-converge expected_build_sha={} observed_build_sha={}",
-            state.source_sha_value,
-            observed.as_deref().unwrap_or("unavailable")
-        );
-    }
-    write_command_receipt(receipt_dir, spec.health_op, &health)?;
-    state.health = Some(health);
-    Ok(())
-}
-
 pub(crate) fn bench_build_environment(
     source_sha: &str,
 ) -> Result<BTreeMap<String, String>, String> {
@@ -822,9 +738,35 @@ pub(crate) fn bench_health_identity(
         service_outcome: None,
         health: None,
     };
-    stage_health_proof(receipt_dir, &spec, &mut state)?;
+    let mut health = crate::check_health::probe(&crate::tools::health::ProbeRequest {
+        url: &state.health_url,
+        retries: 5,
+        timeout_secs: 3,
+        expected_contains: None,
+    });
+    let observed = health
+        .ok
+        .then(|| serde_json::from_str::<Value>(&health.stdout).ok())
+        .flatten()
+        .and_then(|v| {
+            v.get("build_sha")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    if health.ok && observed.as_deref() != Some(state.source_sha_value.as_str()) {
+        health.ok = false;
+        health.code = 1;
+        health.stderr = format!(
+            "service-runtime-act-did-not-converge expected_build_sha={} observed_build_sha={}",
+            state.source_sha_value,
+            observed.as_deref().unwrap_or("unavailable")
+        );
+    }
+    write_command_receipt(receipt_dir, spec.health_op, &health)?;
+    state.health = Some(health);
     state
         .health
+        .take()
         .ok_or_else(|| "caduceus-bench-health-missing".to_string())
 }
 

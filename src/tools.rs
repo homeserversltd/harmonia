@@ -1,6 +1,32 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Placement { RenewSelf, PullSource, StageProfile, Compare, InstallPackages, RatchetBinaries, RestartServices, BackfillFiles, ProposeEdits, ReportHome }
-impl Placement { pub const fn band(self) -> crate::bands::Band { match self { Self::RenewSelf=>crate::bands::Band::RenewSelf, Self::PullSource=>crate::bands::Band::PullSource, Self::StageProfile=>crate::bands::Band::StageProfile, Self::Compare=>crate::bands::Band::Compare, Self::InstallPackages=>crate::bands::Band::InstallPackages, Self::RatchetBinaries=>crate::bands::Band::RatchetBinaries, Self::RestartServices=>crate::bands::Band::RestartServices, Self::BackfillFiles=>crate::bands::Band::BackfillFiles, Self::ProposeEdits=>crate::bands::Band::ProposeEdits, Self::ReportHome=>crate::bands::Band::ReportHome } } }
+pub enum Placement {
+    RenewSelf,
+    PullSource,
+    StageProfile,
+    Compare,
+    InstallPackages,
+    RatchetBinaries,
+    RestartServices,
+    BackfillFiles,
+    ProposeEdits,
+    ReportHome,
+}
+impl Placement {
+    pub const fn band(self) -> crate::bands::Band {
+        match self {
+            Self::RenewSelf => crate::bands::Band::RenewSelf,
+            Self::PullSource => crate::bands::Band::PullSource,
+            Self::StageProfile => crate::bands::Band::StageProfile,
+            Self::Compare => crate::bands::Band::Compare,
+            Self::InstallPackages => crate::bands::Band::InstallPackages,
+            Self::RatchetBinaries => crate::bands::Band::RatchetBinaries,
+            Self::RestartServices => crate::bands::Band::RestartServices,
+            Self::BackfillFiles => crate::bands::Band::BackfillFiles,
+            Self::ProposeEdits => crate::bands::Band::ProposeEdits,
+            Self::ReportHome => crate::bands::Band::ReportHome,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolContract {
@@ -124,24 +150,133 @@ pub mod files;
 pub mod git_artifact;
 pub mod health;
 pub mod household_time;
-pub(crate) mod module_steps;
 #[path = "tools/make-symlink.rs"]
 pub(crate) mod make_symlink;
+pub(crate) mod module_steps;
 pub mod package;
 pub(crate) mod service_runtime;
 pub mod systemd;
 pub mod venv;
 
 pub const ROUTINE_PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
-    "execute", "execute an ordered primitive routine", &[ToolArg::required("steps", ToolArgKind::Json)]
+    "execute",
+    "execute an ordered primitive routine",
+    &[ToolArg::required("steps", ToolArgKind::Json)],
 )];
-pub const ROUTINE_CONTRACT: ToolContract = ToolContract::new("routine", "Ordered primitive routine grammar and execution.", ROUTINE_PERMUTATIONS);
-pub const PULL_REPO_CONTRACT: ToolContract = ToolContract::new("pull-repo", "primitive repository acquisition adapter.", &[ToolPermutation::new("acquire", "acquire source", &[ToolArg::required("component", ToolArgKind::String), ToolArg::required("path", ToolArgKind::String), ToolArg::optional("bearer", ToolArgKind::String)]).in_band(Placement::PullSource)]);
-pub const BUILD_CRATE_CONTRACT: ToolContract = ToolContract::new("build-crate", "primitive crate build adapter.", &[ToolPermutation::new("build", "build crate", &[ToolArg::required("cwd", ToolArgKind::String), ToolArg::required("source_build_sha", ToolArgKind::String), ToolArg::required("installed_binary", ToolArgKind::String), ToolArg::optional("installed_build_sha", ToolArgKind::String), ToolArg::optional("environment", ToolArgKind::Json), ToolArg::optional("timeout_secs", ToolArgKind::Integer), ToolArg::optional("bearer", ToolArgKind::String)]).in_band(Placement::RatchetBinaries)]);
-pub const PLACE_FILE_CONTRACT: ToolContract = ToolContract::new("place-file", "primitive file placement adapter.", &[ToolPermutation::new("place", "place file", &[ToolArg::required("path", ToolArgKind::String), ToolArg::optional("source_path", ToolArgKind::String), ToolArg::optional("declared_bytes", ToolArgKind::String), ToolArg::optional("mode", ToolArgKind::Integer), ToolArg::optional("uid", ToolArgKind::Integer), ToolArg::optional("gid", ToolArgKind::Integer)]).in_band(Placement::BackfillFiles), ToolPermutation::new("binary-promotion", "promote one built binary atomically", &[ToolArg::required("path", ToolArgKind::String), ToolArg::required("source_path", ToolArgKind::String), ToolArg::optional("mode", ToolArgKind::Integer), ToolArg::optional("uid", ToolArgKind::Integer), ToolArg::optional("gid", ToolArgKind::Integer)]).in_band(Placement::RatchetBinaries)]);
-pub const ENABLE_UNIT_CONTRACT: ToolContract = ToolContract::new("enable-unit", "primitive systemd enable adapter.", &[ToolPermutation::new("enable", "enable unit", &[ToolArg::required("service", ToolArgKind::String), ToolArg::optional("user", ToolArgKind::Bool), ToolArg::optional("target_user", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer)]).in_band(Placement::RestartServices), ToolPermutation::new("service-epilogue", "reload, enable, conditionally restart, and prove active service state", &[ToolArg::required("service", ToolArgKind::String), ToolArg::required("service_material_changed", ToolArgKind::Bool), ToolArg::optional("user", ToolArgKind::Bool), ToolArg::optional("target_user", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer)]).in_band(Placement::RestartServices)]);
-pub const BACKFILL_FILE_CONTRACT: ToolContract = ToolContract::new("backfill-file", "primitive declared-file backfill adapter.", &[ToolPermutation::new("backfill", "backfill one declared file", &[ToolArg::required("path", ToolArgKind::String), ToolArg::required("declared_bytes", ToolArgKind::String), ToolArg::optional("mode", ToolArgKind::Integer), ToolArg::optional("uid", ToolArgKind::Integer), ToolArg::optional("gid", ToolArgKind::Integer)]).in_band(Placement::BackfillFiles)]);
-pub const CHECK_HEALTH_CONTRACT: ToolContract = ToolContract::new("check-health", "primitive observation-only health adapter.", &[ToolPermutation::new("probe", "observe one health endpoint", &[ToolArg::required("url", ToolArgKind::String), ToolArg::optional("expected_contains", ToolArgKind::String), ToolArg::optional("timeout_secs", ToolArgKind::Integer), ToolArg::optional("retries", ToolArgKind::Integer)]).in_band(Placement::Compare)]);
+pub const ROUTINE_CONTRACT: ToolContract = ToolContract::new(
+    "routine",
+    "Ordered primitive routine grammar and execution.",
+    ROUTINE_PERMUTATIONS,
+);
+pub const PULL_REPO_CONTRACT: ToolContract = ToolContract::new(
+    "pull-repo",
+    "primitive repository acquisition adapter.",
+    &[ToolPermutation::new(
+        "acquire",
+        "acquire source",
+        &[
+            ToolArg::required("component", ToolArgKind::String),
+            ToolArg::required("path", ToolArgKind::String),
+            ToolArg::optional("bearer", ToolArgKind::String),
+        ],
+    )
+    .in_band(Placement::PullSource)],
+);
+pub const BUILD_CRATE_CONTRACT: ToolContract = ToolContract::new(
+    "build-crate",
+    "primitive crate build adapter.",
+    &[ToolPermutation::new(
+        "build",
+        "build crate",
+        &[
+            ToolArg::required("cwd", ToolArgKind::String),
+            ToolArg::required("source_build_sha", ToolArgKind::String),
+            ToolArg::required("installed_binary", ToolArgKind::String),
+            ToolArg::optional("installed_build_sha", ToolArgKind::String),
+            ToolArg::optional("environment", ToolArgKind::Json),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+            ToolArg::optional("bearer", ToolArgKind::String),
+        ],
+    )
+    .in_band(Placement::RatchetBinaries)],
+);
+pub const PLACE_FILE_CONTRACT: ToolContract = ToolContract::new(
+    "place-file",
+    "primitive file placement adapter.",
+    &[
+        ToolPermutation::new(
+            "place",
+            "place file",
+            &[
+                ToolArg::required("path", ToolArgKind::String),
+                ToolArg::optional("source_path", ToolArgKind::String),
+                ToolArg::optional("declared_bytes", ToolArgKind::String),
+                ToolArg::optional("mode", ToolArgKind::Integer),
+                ToolArg::optional("uid", ToolArgKind::Integer),
+                ToolArg::optional("gid", ToolArgKind::Integer),
+            ],
+        )
+        .in_band(Placement::BackfillFiles),
+        ToolPermutation::new(
+            "binary-promotion",
+            "promote one built binary atomically",
+            &[
+                ToolArg::required("path", ToolArgKind::String),
+                ToolArg::required("source_path", ToolArgKind::String),
+                ToolArg::optional("mode", ToolArgKind::Integer),
+                ToolArg::optional("uid", ToolArgKind::Integer),
+                ToolArg::optional("gid", ToolArgKind::Integer),
+            ],
+        )
+        .in_band(Placement::RatchetBinaries),
+    ],
+);
+pub const ENABLE_UNIT_CONTRACT: ToolContract = ToolContract::new(
+    "enable-unit",
+    "primitive systemd enable adapter.",
+    &[ToolPermutation::new(
+        "enable",
+        "enable unit",
+        &[
+            ToolArg::required("service", ToolArgKind::String),
+            ToolArg::optional("user", ToolArgKind::Bool),
+            ToolArg::optional("target_user", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+        ],
+    )
+    .in_band(Placement::RestartServices)],
+);
+pub const BACKFILL_FILE_CONTRACT: ToolContract = ToolContract::new(
+    "backfill-file",
+    "primitive declared-file backfill adapter.",
+    &[ToolPermutation::new(
+        "backfill",
+        "backfill one declared file",
+        &[
+            ToolArg::required("path", ToolArgKind::String),
+            ToolArg::required("declared_bytes", ToolArgKind::String),
+            ToolArg::optional("mode", ToolArgKind::Integer),
+            ToolArg::optional("uid", ToolArgKind::Integer),
+            ToolArg::optional("gid", ToolArgKind::Integer),
+        ],
+    )
+    .in_band(Placement::BackfillFiles)],
+);
+pub const CHECK_HEALTH_CONTRACT: ToolContract = ToolContract::new(
+    "check-health",
+    "primitive observation-only health adapter.",
+    &[ToolPermutation::new(
+        "probe",
+        "observe one health endpoint",
+        &[
+            ToolArg::required("url", ToolArgKind::String),
+            ToolArg::optional("expected_contains", ToolArgKind::String),
+            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
+            ToolArg::optional("retries", ToolArgKind::Integer),
+        ],
+    )
+    .in_band(Placement::RestartServices)],
+);
 
 pub const TOOLBELT: &[ToolContract] = &[
     ROUTINE_CONTRACT,
@@ -172,7 +307,19 @@ pub fn get(name: &str) -> Option<&'static ToolContract> {
     TOOLBELT.iter().find(|tool| tool.name == name)
 }
 
-pub(crate) fn routine_summonable(name: &str) -> bool { matches!(name, "pull-repo" | "build-crate" | "place-file" | "enable-unit" | "backfill-file" | "check-health" | "service-runtime") }
+pub(crate) fn routine_summonable(name: &str) -> bool {
+    matches!(
+        name,
+        "pull-repo"
+            | "build-crate"
+            | "place-file"
+            | "enable-unit"
+            | "systemd"
+            | "backfill-file"
+            | "check-health"
+            | "service-runtime"
+    )
+}
 
 #[cfg(test)]
 mod tests {

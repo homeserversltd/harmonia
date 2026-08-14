@@ -7,9 +7,7 @@
     "pull-repo",
     "managed-files",
     "build",
-    "binary-install",
-    "service-epilogue",
-    "health-proof"
+    "binary-install"
   ],
   "migration_status": "routine-spine-landed-interior-dissolution-debt"
 }
