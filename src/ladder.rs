@@ -1072,6 +1072,34 @@ pub(crate) fn shadow_diff_receipt_families(
         .collect())
 }
 
+fn structural_file_blocker(step: &ValidatedStep, manifest: &LadderManifest) -> Option<String> {
+    if step.tool != "files" { return None; }
+    let mut targets = Vec::new();
+    for key in ["target_root", "target", "target_path", "target_shelf", "launcher_target_root"] {
+        if let Some(value) = step.args.get(key).and_then(Value::as_str) { targets.push(PathBuf::from(value)); }
+    }
+    if let Some(value) = step.args.get("files").and_then(Value::as_array) {
+        for item in value {
+            if let Some(path) = item.as_str() { targets.push(PathBuf::from(path)); }
+            if let Some(path) = item.get("path").and_then(Value::as_str) { targets.push(PathBuf::from(path)); }
+        }
+    }
+    if let Some(value) = step.args.get("directories").and_then(Value::as_array) {
+        for item in value { if let Some(path) = item.get("path").and_then(Value::as_str) { targets.push(PathBuf::from(path)); } }
+    }
+    // Interactable configuration candidates use the ordinary propose-edits path.
+    for target in targets {
+        match crate::tools::files::classify_target(&target) {
+            crate::tools::files::TargetClass::Config => return Some(format!("configuration-actuator-authority-refused {}", target.display())),
+            crate::tools::files::TargetClass::Refused(reason) => return Some(reason),
+            crate::tools::files::TargetClass::Software => {}
+        }
+    }
+    None
+}
+
+pub(crate) fn structural_wall_dispatch(step: &ValidatedStep, manifest: &LadderManifest, module_dir: &Path, authorization: Option<&crate::SoftwareApplyAuthorization>, package_authority: Option<&crate::PackageAuthority>, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<OperationOutcome, String> { execute_validated_step(step, manifest, module_dir, authorization, package_authority, false, invocation) }
+
 fn execute_validated_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -1081,6 +1109,7 @@ fn execute_validated_step(
     module_changed_before_step: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    if let Some(blocker) = structural_file_blocker(step, manifest) { return Err(blocker); }
     // Apply is a SoftwarePlane capability. Configuration and identity steps
     // remain report-only; only these explicit software permutations receive it.
     let software_apply = software_authorization.is_some()
@@ -1121,12 +1150,13 @@ fn execute_validated_step(
             step,
             manifest,
             module_dir,
-            software_apply,
+            software_authorization,
             invocation,
         ),
         ("files", "ensure-present") => files_ensure_present_step(step, manifest, module_dir, false),
+        ("files", "hotfix-file-backfill") => files_converge_step(step, manifest, module_dir, software_authorization, invocation),
         ("files", "converge") | ("files", "directory-sync") => {
-            files_converge_step(step, manifest, module_dir, software_apply, invocation)
+            files_converge_step(step, manifest, module_dir, software_authorization, invocation)
         }
         ("systemd", _) => systemd_step(
             step,
@@ -1253,16 +1283,11 @@ pub(crate) fn execute_routine(
                 json!({"first_missing_signal":signal}),
             )
         } else {
-            match tools::module_steps::execute_routine_tool(
-                &child.tool,
-                Some(child.permutation.as_str()),
-                &args,
-                manifest,
-                &child_dir,
-                apply,
-                invocation,
-                &mut state.service_runtime,
-            ) {
+            let child_step = ValidatedStep { step_id: child.name.clone(), tool: child.tool.clone(), permutation: child.permutation.clone(), args: args.clone(), on_failure: child.on_failure };
+            match structural_file_blocker(&child_step, manifest)
+                .map_or_else(|| tools::module_steps::execute_routine_tool(
+                    &child.tool, Some(child.permutation.as_str()), &args, manifest, &child_dir, apply, invocation, &mut state.service_runtime,
+                ), |error| Err(error)) {
                 Ok((outcome, outputs)) => {
                     if !outcome.ok {
                         state.ok = false;
@@ -1537,7 +1562,7 @@ fn managed_files_step(
     };
     let config_write = files
         .iter()
-        .any(|file| is_configuration_path(Path::new(&file.path)));
+        .any(|file| matches!(crate::tools::files::classify_target(Path::new(&file.path)), crate::tools::files::TargetClass::Config));
     tools::files::converge_managed_files(
         &tools::files::ManagedFilesRequest {
             module_id: "ladder",
@@ -1551,6 +1576,11 @@ fn managed_files_step(
         module_dir,
         apply && !config_write,
     )
+}
+
+pub(crate) use crate::tools::files::TargetClass;
+pub(crate) fn classify_target(path: &Path) -> TargetClass {
+    crate::tools::files::classify_target(path)
 }
 
 pub(crate) fn is_configuration_path(path: &Path) -> bool {
@@ -1821,7 +1851,7 @@ fn files_validated_sudoers_converge_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
     module_dir: &Path,
-    apply: bool,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
@@ -1888,13 +1918,13 @@ fn files_validated_sudoers_converge_step(
         owner: Some("root".to_string()),
         group: Some("root".to_string()),
     };
-    let outcome = crate::tools::files::converge_files_with_invocation(
-        &request, module_dir, apply, invocation,
+    let outcome = crate::tools::files::converge_files_authorized(
+        &request, module_dir, authorization, invocation,
     )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
-        skipped: !apply,
+        skipped: !authorization.is_some(),
         message: outcome.message,
         command: None,
     })
@@ -1904,11 +1934,12 @@ fn files_converge_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
     module_dir: &Path,
-    apply: bool,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
+    let apply = software_authorization.is_some();
     if step.permutation == "directory-sync"
         && source_root == target_root
         && !step.args.contains_key("owner")
@@ -2002,19 +2033,18 @@ fn files_converge_step(
         owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
         group: optional_string_arg(&step.args, "group").map(ToString::to_string),
     };
-    let config_write = request
-        .files
-        .iter()
-        .any(|file| is_configuration_path(&request.target_root.join(&file.relative_path)));
+    let classes = request.files.iter().map(|file| crate::tools::files::classify_target(&request.target_root.join(&file.relative_path))).collect::<Vec<_>>();
+    if let Some(reason) = classes.iter().find_map(|class| match class { crate::tools::files::TargetClass::Refused(reason) => Some(reason.clone()), _ => None }) { return Err(reason); }
+    let config_write = classes.iter().any(|class| matches!(class, crate::tools::files::TargetClass::Config));
     let tier_two = manifest.config_deploy.as_deref() == Some("interactable");
-    let mut outcome = crate::tools::files::converge_files_with_invocation(
+    let mut outcome = crate::tools::files::converge_files_authorized(
         &request,
         module_dir,
-        apply && !config_write && !tier_two,
+        if config_write || tier_two { None } else { software_authorization },
         invocation,
     )?;
     if config_write || tier_two {
-        crate::refresh_interactables_for_convergence(manifest, &request, &outcome)?;
+        crate::bands::propose_edits::refresh_interactables_for_convergence(manifest, &request, &outcome)?;
         outcome.changed = false;
         outcome.ownership_changed = false;
     }

@@ -33,7 +33,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             let Some(path) = declaration.get("path").and_then(Value::as_str) else {
                 continue;
             };
-            if crate::ladder::is_configuration_path(Path::new(path)) {
+            if matches!(crate::tools::files::classify_target(Path::new(path)), crate::tools::files::TargetClass::Config) {
                 configuration.push(declaration);
                 continue;
             }
@@ -61,7 +61,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
         }
         if let Some(source) = original.args.get("caduceus_profile_source") {
             if let Some(path) = source.get("path").and_then(Value::as_str) {
-                if crate::ladder::is_configuration_path(Path::new(path)) {
+                if matches!(crate::tools::files::classify_target(Path::new(path)), crate::tools::files::TargetClass::Config) {
                     configuration.push(serde_json::json!({
                         "path": path,
                         "content": "",
