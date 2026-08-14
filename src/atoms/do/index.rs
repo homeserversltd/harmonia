@@ -1,5 +1,7 @@
 //! Authorized mutation atom. Every operation consumes both keys.
 #![allow(dead_code)]
+#[path = "transaction.rs"]
+pub(crate) mod transaction;
 
 use super::{CommandObservation, Receipt};
 use crate::tools::comparison::ActionAuthorization;
