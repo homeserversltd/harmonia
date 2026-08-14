@@ -87,7 +87,7 @@ fn default_execute_permutation() -> String {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CommandPrecondition {
+pub(crate) struct CommandPrecondition {
     program: String,
     #[serde(default)]
     args: Vec<String>,
@@ -545,7 +545,7 @@ fn validate_args(
     Ok(())
 }
 
-fn command_precondition(
+pub(crate) fn command_precondition(
     args: &BTreeMap<String, Value>,
 ) -> Result<Option<CommandPrecondition>, String> {
     let Some(value) = args.get("precondition") else {
@@ -924,15 +924,31 @@ pub(crate) fn execute_ladder_manifest(
             }
         }
         operation_count += 1;
-        let outcome = execute_validated_step(
-            &step,
-            manifest,
-            module_dir,
-            software_authorization,
-            package_authority,
-            changed,
-            invocation,
-        )?;
+        let outcome = if matches!(
+            (step.tool.as_str(), step.permutation.as_str()),
+            ("package", _) | ("aur", _) | ("venv", "converge")
+        ) {
+            // Legacy full-manifest entry remains a thin compatibility route;
+            // package-family execution is owned by the InstallPackages band.
+            crate::bands::install_packages::execute_step(
+                &step,
+                manifest,
+                module_dir,
+                software_authorization,
+                package_authority,
+                invocation,
+            )?
+        } else {
+            execute_validated_step(
+                &step,
+                manifest,
+                module_dir,
+                software_authorization,
+                package_authority,
+                changed,
+                invocation,
+            )?
+        };
         if outcome.changed {
             changed = true;
         }
@@ -1057,13 +1073,6 @@ fn execute_validated_step(
         ("files", "converge") | ("files", "directory-sync") => {
             files_converge_step(step, manifest, module_dir, software_apply, invocation)
         }
-        ("venv", "converge") => tools::venv::execute_ladder_step(
-            &step.args,
-            module_dir,
-            &step.step_id,
-            software_apply,
-            invocation,
-        ),
         ("systemd", _) => systemd_step(
             step,
             module_dir,
@@ -1074,19 +1083,6 @@ fn execute_validated_step(
         ("git-artifact", "sync") => {
             git_artifact_step(step, manifest, module_dir, software_apply, invocation)
         }
-        ("aur", "install") | ("aur", "check") | ("aur", "build-pinned") => {
-            aur_step(step, manifest, module_dir, software_apply, invocation)
-        }
-        ("package", "check")
-        | ("package", "install")
-        | ("package", "upgrade")
-        | ("package", "keyring-repair") => package_step(
-            step,
-            module_dir,
-            software_apply,
-            package_authority,
-            invocation,
-        ),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
@@ -1112,7 +1108,7 @@ fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {
         .collect()
 }
 
-fn execute_routine(
+pub(crate) fn execute_routine(
     step: &ValidatedStep,
     manifest: &LadderManifest,
     module_dir: &Path,
@@ -1362,7 +1358,7 @@ fn command_capture_step(
     })
 }
 
-fn command_precondition_step(
+pub(crate) fn command_precondition_step(
     step: &ValidatedStep,
     precondition: &CommandPrecondition,
     manifest: &LadderManifest,
@@ -2078,113 +2074,6 @@ fn systemd_step(
         module_changed_before_step,
         invocation,
     )
-}
-
-fn package_step(
-    step: &ValidatedStep,
-    module_dir: &Path,
-    apply: bool,
-    package_authority: Option<&crate::PackageAuthority>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
-    let backend = package_authority
-        .ok_or_else(|| "profile-package-authority-missing".to_string())?
-        .backend()?;
-    let packages = string_array_arg(&step.args, "packages");
-    let timeout_secs = integer_arg(&step.args, "timeout_secs", 1800);
-    match step.permutation.as_str() {
-        "check" => crate::tools::package::package_tool_for_backend(
-            module_dir,
-            &step.step_id,
-            "check",
-            &packages,
-            apply,
-            backend,
-            invocation,
-        ),
-        "install" => {
-            let conflict_paths = string_array_arg(&step.args, "conflict_paths");
-            crate::tools::package::package_tool_with_policy_for_backend(
-                module_dir,
-                &step.step_id,
-                "install",
-                &packages,
-                apply,
-                optional_string_arg(&step.args, "conflict_policy"),
-                &conflict_paths,
-                timeout_secs,
-                backend,
-                invocation,
-            )
-        }
-        "upgrade" => crate::tools::package::package_tool_with_policy_for_backend(
-            module_dir,
-            &step.step_id,
-            "upgrade",
-            &[],
-            apply,
-            None,
-            &[],
-            timeout_secs,
-            backend,
-            invocation,
-        ),
-        "keyring-repair" if backend == crate::PackageBackend::Pacman => {
-            crate::tools::package::keyring_repair_tool(
-                module_dir,
-                &step.step_id,
-                optional_string_arg(&step.args, "package").unwrap_or("archlinux-keyring"),
-                apply,
-                timeout_secs,
-            )
-        }
-        "keyring-repair" => Err("package-keyring-repair-backend-unsupported".to_string()),
-        other => Err(format!("package-permutation-unsupported-{other}")),
-    }
-}
-
-fn aur_step(
-    step: &ValidatedStep,
-    manifest: &LadderManifest,
-    module_dir: &Path,
-    apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
-    let package = string_arg(&step.args, "package");
-    match step.permutation.as_str() {
-        "install" => crate::tools::aur::install(
-            module_dir,
-            &step.step_id,
-            package,
-            integer_arg(&step.args, "timeout_secs", 3600),
-            apply,
-            invocation,
-        ),
-        "check" => crate::tools::aur::check(
-            module_dir,
-            &step.step_id,
-            package,
-            &resolve_ladder_path(manifest, string_arg(&step.args, "lock")),
-            optional_string_arg(&step.args, "upstream_state"),
-        ),
-        "build-pinned" => crate::tools::aur::build_pinned(
-            module_dir,
-            &step.step_id,
-            package,
-            &resolve_ladder_path(manifest, string_arg(&step.args, "lock")),
-            &PathBuf::from(string_arg(&step.args, "build_root")),
-            optional_string_arg(&step.args, "source_dir"),
-            optional_string_arg(&step.args, "builder_user"),
-            integer_arg(&step.args, "timeout_secs", 3600),
-            step.args
-                .get("install")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            apply,
-            invocation,
-        ),
-        other => Err(format!("aur-permutation-unsupported-{other}")),
-    }
 }
 
 fn git_artifact_step(
