@@ -345,10 +345,18 @@ pub(crate) fn execute_routine_tool(
             )?;
             if let Some(legacy_name) = args.get("legacy_build_receipt").and_then(Value::as_str) {
                 if let Some(observation) = &moved {
-                    let command = CmdResult { ok: observation.ok, code: observation.code.unwrap_or(-1), stdout: observation.stdout.clone(), stderr: observation.stderr.clone() };
+                    let command = CmdResult {
+                        ok: observation.ok,
+                        code: observation.code.unwrap_or(-1),
+                        stdout: observation.stdout.clone(),
+                        stderr: observation.stderr.clone(),
+                    };
                     crate::write_command_receipt(receipt_dir, legacy_name, &command)?;
                 } else {
-                    crate::write_json(&receipt_dir.join(format!("{legacy_name}.json")), &serde_json::json!({"schema":"harmonia.service-runtime.cargo-build.v1","state":"converged-quiet","ok":true,"changed":false,"invoked":false,"reason":"source-sha-matches-promoted-source-and-installed-binary","remote_sha":"","promoted_source_sha":source_sha}))?;
+                    crate::write_json(
+                        &receipt_dir.join(format!("{legacy_name}.json")),
+                        &serde_json::json!({"schema":"harmonia.service-runtime.cargo-build.v1","state":"converged-quiet","ok":true,"changed":false,"invoked":false,"reason":"source-sha-matches-promoted-source-and-installed-binary","remote_sha":"","promoted_source_sha":source_sha}),
+                    )?;
                 }
             }
             let result = OperationOutcome {
@@ -407,15 +415,21 @@ pub(crate) fn execute_routine_tool(
             let placed = crate::place_file::execute(request)?;
             let changed = apply && placed.movement.changed();
             if permutation.name == "binary-promotion" {
-                if let Some(legacy_name) = args.get("legacy_binary_install_receipt").and_then(Value::as_str) {
+                if let Some(legacy_name) = args
+                    .get("legacy_binary_install_receipt")
+                    .and_then(Value::as_str)
+                {
                     let mut legacy = serde_json::json!({"schema":"harmonia.service-runtime.binary-install.v1","artifact":source.unwrap_or(""),"install_bin":path,"apply":apply,"ok":placed.receipt.ok,"changed":changed,"state":if changed { "binary-swapped" } else { "converged-quiet" }});
-            if !changed {
-                if let Some(object) = legacy.as_object_mut() {
-                    object.remove("artifact");
-                    object.insert("reason".into(), serde_json::json!("source-sha-gate-preserved-installed-binary"));
-                }
-            }
-            crate::write_json(&receipt_dir.join(format!("{legacy_name}.json")), &legacy)?;
+                    if !changed {
+                        if let Some(object) = legacy.as_object_mut() {
+                            object.remove("artifact");
+                            object.insert(
+                                "reason".into(),
+                                serde_json::json!("source-sha-gate-preserved-installed-binary"),
+                            );
+                        }
+                    }
+                    crate::write_json(&receipt_dir.join(format!("{legacy_name}.json")), &legacy)?;
                 }
             }
             write_json(
@@ -503,6 +517,9 @@ pub(crate) fn execute_routine_tool(
                 expected_contains: args.get("expected_contains").and_then(Value::as_str),
             };
             let result = crate::check_health::probe(&request);
+            if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
+                crate::write_command_receipt(receipt_dir, legacy, &result)?;
+            }
             write_json(
                 &receipt_dir.join(format!("{name}.json")),
                 &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":result.ok,"changed":false,"skipped":!apply,"stdout":result.stdout,"stderr":result.stderr}),
@@ -520,6 +537,61 @@ pub(crate) fn execute_routine_tool(
                     .collect(),
             ))
         }
+        "systemd" => {
+            let service = args.get("service").and_then(Value::as_str);
+            let user = args.get("user").and_then(Value::as_bool).unwrap_or(false);
+            let target = args.get("target_user").and_then(Value::as_str);
+            let timeout = args
+                .get("timeout_secs")
+                .and_then(Value::as_u64)
+                .unwrap_or(30);
+            let binary_changed = args
+                .get("binary_changed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let managed_files_changed = args
+                .get("managed_files_changed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let material_changed = match permutation.name {
+                "daemon-reload" => managed_files_changed,
+                "restart" => binary_changed || managed_files_changed,
+                _ => false,
+            };
+            let restart_policy = args.get("restart_policy").and_then(Value::as_str);
+            let effective = if user {
+                format!("user-{}", permutation.name)
+            } else {
+                permutation.name.to_string()
+            };
+            let observation_only = matches!(permutation.name, "is-active-probe");
+            let o = crate::tools::systemd::run_permutation_with_policy(
+                receipt_dir,
+                &name,
+                &effective,
+                service,
+                &[],
+                target,
+                timeout,
+                if observation_only { false } else { apply },
+                material_changed,
+                restart_policy,
+                invocation,
+            )?;
+            if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
+                fs::copy(
+                    receipt_dir.join(format!("{name}.json")),
+                    receipt_dir.join(format!("{legacy}.json")),
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok((
+                o,
+                [("service".into(), serde_json::json!(service.unwrap_or("")))]
+                    .into_iter()
+                    .collect(),
+            ))
+        }
         "enable-unit" => {
             let service = args
                 .get("service")
@@ -531,36 +603,25 @@ pub(crate) fn execute_routine_tool(
                 .get("timeout_secs")
                 .and_then(Value::as_u64)
                 .unwrap_or(30);
-            let o = if permutation.name == "service-epilogue" {
-                let material_changed = args
-                    .get("service_material_changed")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                crate::tools::systemd::run_service_epilogue(
-                    receipt_dir,
-                    &name,
-                    service,
-                    user,
-                    target,
-                    timeout,
-                    apply,
-                    material_changed,
-                    invocation,
-                )?
-            } else {
-                crate::tools::systemd::run_action(
-                    receipt_dir,
-                    &name,
-                    "enable-now",
-                    Some(service),
-                    user,
-                    target,
-                    timeout,
-                    apply,
-                    false,
-                    invocation,
-                )?
-            };
+            let o = crate::tools::systemd::run_action(
+                receipt_dir,
+                &name,
+                "enable",
+                Some(service),
+                user,
+                target,
+                timeout,
+                apply,
+                false,
+                invocation,
+            )?;
+            if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
+                fs::copy(
+                    receipt_dir.join(format!("{name}.json")),
+                    receipt_dir.join(format!("{legacy}.json")),
+                )
+                .map_err(|e| e.to_string())?;
+            }
             Ok((
                 o,
                 [

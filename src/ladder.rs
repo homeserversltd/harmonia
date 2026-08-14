@@ -141,34 +141,87 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
 }
 
 fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
-    crate::bands::ratchet_binaries::lower_service_runtime_steps(manifest);
+    crate::bands::restart_services::lower_service_runtime_steps(manifest);
 }
 
 pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
-    let stages = [("pull-repo", "pull-repo", "acquire"), ("build", "build-crate", "build"), ("binary-install", "place-file", "binary-promotion"), ("service-epilogue", "service-runtime", "service-epilogue"), ("health-proof", "service-runtime", "health-proof"), ("managed-files", "service-runtime", "managed-files")];
-    if step.tool != "routine" || step.permutation != "execute" || step.steps.len() != stages.len() { return false; }
-    if !step.steps.iter().zip(stages).all(|(c, (n,t,p))| c.name == n && c.tool == t && c.permutation.as_deref() == Some(p)) { return false; }
-    let (Some(pull), Some(build), Some(install), Some(epilogue)) = (step.steps.get(0), step.steps.get(1), step.steps.get(2), step.steps.get(3)) else { return false; };
-    let required = ["component", "source_dir", "install_bin", "service", "url", "binary_name", "op_prefix", "run_schema", "managed_files_schema"];
-    if required.iter().any(|key| !epilogue.args.contains_key(*key)) { return false; }
+    let stages = [
+        ("pull-repo", "pull-repo", "acquire"),
+        ("build", "build-crate", "build"),
+        ("binary-install", "place-file", "binary-promotion"),
+        ("managed-files", "service-runtime", "managed-files"),
+        ("service-daemon-reload", "systemd", "daemon-reload"),
+        ("service-enable", "enable-unit", "enable"),
+        ("service-restart", "systemd", "restart"),
+        ("service-active", "systemd", "is-active-probe"),
+        ("health-proof", "check-health", "probe"),
+    ];
+    if step.tool != "routine" || step.permutation != "execute" || step.steps.len() != stages.len() {
+        return false;
+    }
+    if !step
+        .steps
+        .iter()
+        .zip(stages)
+        .all(|(c, (n, t, p))| c.name == n && c.tool == t && c.permutation.as_deref() == Some(p))
+    {
+        return false;
+    }
+    let (Some(pull), Some(build), Some(install), Some(epilogue)) = (
+        step.steps.get(0),
+        step.steps.get(1),
+        step.steps.get(2),
+        step.steps.get(5),
+    ) else {
+        return false;
+    };
+    let required = [
+        "component",
+        "source_dir",
+        "install_bin",
+        "service",
+        "url",
+        "binary_name",
+        "op_prefix",
+        "run_schema",
+        "managed_files_schema",
+    ];
+    if required.iter().any(|key| !epilogue.args.contains_key(*key)) {
+        return false;
+    }
     pull.args.get("component") == epilogue.args.get("component")
         && pull.args.get("bearer") == epilogue.args.get("bearer")
-        && pull.args.get("path").and_then(Value::as_str).is_some_and(|value| !value.trim().is_empty())
+        && pull
+            .args
+            .get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
         && build.args.get("cwd") == Some(&serde_json::json!({"from":"pull-repo.path"}))
-        && build.args.get("source_build_sha") == Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
+        && build.args.get("source_build_sha")
+            == Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
         && install.args.get("source_path") == Some(&serde_json::json!({"from":"build.artifact"}))
         && epilogue.args.get("source_dir") == Some(&serde_json::json!({"from":"pull-repo.path"}))
-        && epilogue.args.get("source_sha") == Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
-        && epilogue.args.get("source_changed") == Some(&serde_json::json!({"from":"pull-repo.changed"}))
-        && epilogue.args.get("binary_changed") == Some(&serde_json::json!({"from":"binary-install.changed"}))
+        && epilogue.args.get("source_sha")
+            == Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
+        && epilogue.args.get("source_changed")
+            == Some(&serde_json::json!({"from":"pull-repo.changed"}))
+        && epilogue.args.get("binary_changed")
+            == Some(&serde_json::json!({"from":"binary-install.changed"}))
         && build.args.get("op_prefix") == epilogue.args.get("op_prefix")
         && install.args.get("install_bin") == epilogue.args.get("install_bin")
 }
 
 pub(crate) fn service_runtime_converge_args(step: &LadderStep) -> Option<&BTreeMap<String, Value>> {
-    if step.tool == "service-runtime" && step.permutation == "converge" { Some(&step.args) }
-    else if is_lowered_service_runtime_converge(step) { step.steps.iter().find(|c| c.name == "service-epilogue").map(|c| &c.args) }
-    else { None }
+    if step.tool == "service-runtime" && step.permutation == "converge" {
+        Some(&step.args)
+    } else if is_lowered_service_runtime_converge(step) {
+        step.steps
+            .iter()
+            .find(|c| c.name == "service-enable")
+            .map(|c| &c.args)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn is_ladder_manifest(path: &Path) -> bool {

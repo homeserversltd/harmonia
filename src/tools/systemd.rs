@@ -3,6 +3,7 @@ use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::{write_json, CmdResult, OperationOutcome};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -155,6 +156,35 @@ pub(crate) fn run_permutation(
     module_changed_before_step: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    run_permutation_with_policy(
+        receipt_dir,
+        name,
+        permutation,
+        service,
+        candidate_units,
+        target_user,
+        timeout_secs,
+        apply,
+        module_changed_before_step,
+        None,
+        invocation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_permutation_with_policy(
+    receipt_dir: &Path,
+    name: &str,
+    permutation: &str,
+    service: Option<&str>,
+    candidate_units: &[String],
+    target_user: Option<&str>,
+    timeout_secs: u64,
+    apply: bool,
+    module_changed_before_step: bool,
+    restart_policy: Option<&str>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
     if permutation == "enable-first-present-now" {
         return run_enable_first_present_now(
             receipt_dir,
@@ -187,6 +217,7 @@ pub(crate) fn run_permutation(
             timeout_secs,
             apply,
             module_changed_before_step,
+            restart_policy,
             invocation,
         );
     }
@@ -338,6 +369,35 @@ fn decide_restart(service_material_changed: bool) -> RestartDecision {
     }
 }
 
+fn decide_restart_for_observation(
+    observation: &SystemdObservation,
+    material: bool,
+    policy: Option<&str>,
+) -> RestartDecision {
+    match observation.active.as_deref() {
+        Some("active") if policy == Some("always") => RestartDecision {
+            execute: true,
+            reason: "restart-policy-always",
+        },
+        Some("active") if material => RestartDecision {
+            execute: true,
+            reason: "service-material-changed",
+        },
+        Some("active") => RestartDecision {
+            execute: false,
+            reason: "service-material-unchanged",
+        },
+        Some("inactive") | Some("failed") | Some("not-found") => RestartDecision {
+            execute: true,
+            reason: "unit-not-active",
+        },
+        _ => RestartDecision {
+            execute: false,
+            reason: "service-state-unknown",
+        },
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceStateSnapshot {
     pub name: String,
@@ -432,6 +492,7 @@ pub(crate) struct SystemdObservation {
 #[derive(Clone)]
 struct SystemdMovement {
     outcome: OperationOutcome,
+    before: SystemdObservation,
     after: SystemdObservation,
 }
 
@@ -446,8 +507,16 @@ fn observe_systemd_state(
         return crate::enable_unit::observe(service, user, target_user, timeout_secs);
     }
     if matches!(action, "disable-stop" | "disable-stop-remove") {
-        let path = (action == "disable-stop-remove").then(|| unit_file_path(service)).flatten();
-        return crate::remove_unit::observe(service, path.as_deref(), user, target_user, timeout_secs);
+        let path = (action == "disable-stop-remove")
+            .then(|| unit_file_path(service))
+            .flatten();
+        return crate::remove_unit::observe(
+            service,
+            path.as_deref(),
+            user,
+            target_user,
+            timeout_secs,
+        );
     }
     let probe = matches!(action, "unit-present" | "is-active-probe")
         .then(|| systemctl(action, service, user, target_user, timeout_secs));
@@ -522,13 +591,19 @@ fn decide_action(
     action: &str,
     observation: &SystemdObservation,
     service_material_changed: bool,
+    restart_policy: Option<&str>,
 ) -> DiffDecision {
     let unit_absent = observation.load_state.as_deref() == Some("not-found")
         || observation.unit_file_state.as_deref() == Some("not-found");
     let different = match action {
         "unit-present" | "is-active-probe" => false,
-        "daemon-reload" | "restart" => service_material_changed,
+        "daemon-reload" => service_material_changed,
+        "restart" => {
+            decide_restart_for_observation(observation, service_material_changed, restart_policy)
+                .execute
+        }
         "stop" => service_material_changed && !unit_absent,
+        "enable" => observation.enabled.as_deref() != Some("enabled"),
         "enable-now" => {
             observation.enabled.as_deref() != Some("enabled")
                 || observation.active.as_deref() != Some("active")
@@ -560,17 +635,94 @@ pub(crate) fn run_service_epilogue(
     service_material_changed: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    let active_before = run_action(receipt_dir, &format!("{name}-active-before"), "is-active-probe", Some(service), user, target_user, timeout_secs, false, false, invocation)?;
+    let active_before = run_action(
+        receipt_dir,
+        &format!("{name}-active-before"),
+        "is-active-probe",
+        Some(service),
+        user,
+        target_user,
+        timeout_secs,
+        false,
+        false,
+        invocation,
+    )?;
     if service_material_changed {
-        let reload = run_action(receipt_dir, &format!("{name}-daemon-reload"), if user { "user-daemon-reload" } else { "daemon-reload" }, Some(service), user, target_user, timeout_secs, apply, true, invocation)?;
-        if !reload.ok { return Ok(reload); }
+        let reload = run_action(
+            receipt_dir,
+            &format!("{name}-daemon-reload"),
+            if user {
+                "user-daemon-reload"
+            } else {
+                "daemon-reload"
+            },
+            Some(service),
+            user,
+            target_user,
+            timeout_secs,
+            apply,
+            true,
+            invocation,
+        )?;
+        if !reload.ok {
+            return Ok(reload);
+        }
     }
-    let enable = run_action(receipt_dir, &format!("{name}-service-enable"), if user { "user-enable-now" } else { "enable-now" }, Some(service), user, target_user, timeout_secs, apply, service_material_changed, invocation)?;
+    let enable = run_action(
+        receipt_dir,
+        &format!("{name}-service-enable"),
+        if user {
+            "user-enable-now"
+        } else {
+            "enable-now"
+        },
+        Some(service),
+        user,
+        target_user,
+        timeout_secs,
+        apply,
+        service_material_changed,
+        invocation,
+    )?;
     let restart = if service_material_changed && active_before.ok {
-        Some(run_action(receipt_dir, &format!("{name}-service-restart"), if user { "user-restart" } else { "restart" }, Some(service), user, target_user, timeout_secs, apply, true, invocation)?)
-    } else { None };
-    let active_after = run_action(receipt_dir, &format!("{name}-service-active"), if user { "user-is-active-probe" } else { "is-active-probe" }, Some(service), user, target_user, timeout_secs, false, service_material_changed, invocation)?;
-    Ok(OperationOutcome { ok: !apply || (enable.ok && restart.as_ref().is_none_or(|r| r.ok) && active_after.ok), changed: enable.changed || restart.as_ref().is_some_and(|r| r.changed), skipped: !apply, message: "service-epilogue-complete".into(), command: None })
+        Some(run_action(
+            receipt_dir,
+            &format!("{name}-service-restart"),
+            if user { "user-restart" } else { "restart" },
+            Some(service),
+            user,
+            target_user,
+            timeout_secs,
+            apply,
+            true,
+            invocation,
+        )?)
+    } else {
+        None
+    };
+    let active_after = run_action(
+        receipt_dir,
+        &format!("{name}-service-active"),
+        if user {
+            "user-is-active-probe"
+        } else {
+            "is-active-probe"
+        },
+        Some(service),
+        user,
+        target_user,
+        timeout_secs,
+        false,
+        service_material_changed,
+        invocation,
+    )?;
+    Ok(OperationOutcome {
+        ok: !apply || (enable.ok && restart.as_ref().is_none_or(|r| r.ok) && active_after.ok),
+        changed: enable.changed || restart.as_ref().is_some_and(|r| r.changed),
+        skipped: !apply,
+        message: "service-epilogue-complete".into(),
+        command: None,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -583,9 +735,10 @@ fn run_restart(
     timeout_secs: u64,
     apply: bool,
     service_material_changed: bool,
+    restart_policy: Option<&str>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    run_action(
+    run_action_with_policy(
         receipt_dir,
         name,
         "restart",
@@ -595,6 +748,7 @@ fn run_restart(
         timeout_secs,
         apply,
         service_material_changed,
+        restart_policy,
         invocation,
     )
 }
@@ -612,8 +766,39 @@ pub(crate) fn run_action(
     service_material_changed: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    run_action_with_policy(
+        receipt_dir,
+        name,
+        action,
+        service,
+        user,
+        target_user,
+        timeout_secs,
+        apply,
+        service_material_changed,
+        None,
+        invocation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_action_with_policy(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    service: Option<&str>,
+    user: bool,
+    target_user: Option<&str>,
+    timeout_secs: u64,
+    apply: bool,
+    service_material_changed: bool,
+    restart_policy: Option<&str>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
-    let restart_decision = decide_restart(service_material_changed);
+    // Edge-trigger actions are consumed only within this comparison run.
+    let edge_triggered = matches!(action, "daemon-reload" | "restart");
+    let acted = Cell::new(false);
     let run = comparison::execute(
         "systemd",
         || {
@@ -625,32 +810,84 @@ pub(crate) fn run_action(
                 timeout_secs,
             ))
         },
-        |observation| decide_action(action, observation, service_material_changed),
-        |authorization, before| {
-            let result = if apply {
-                if action == "enable-now" {
-                    crate::enable_unit::act(authorization, invocation.ok_or("invocation-key-missing")?, service, user, target_user, timeout_secs)?
-                } else if matches!(action, "disable-stop" | "disable-stop-remove") {
-                    crate::remove_unit::act(authorization, invocation.ok_or("invocation-key-missing")?, service, action, unit_file_path(service).as_deref(), user, target_user, timeout_secs)?
-                } else {
-                    keyed_systemctl(authorization, invocation.ok_or("invocation-key-missing")?, action, service, user, target_user, timeout_secs)?
-                }
+        |observation| {
+            if edge_triggered && acted.get() {
+                DiffDecision::Empty
             } else {
-                CmdResult {
+                decide_action(
+                    action,
+                    observation,
+                    service_material_changed,
+                    restart_policy,
+                )
+            }
+        },
+        |authorization, before| {
+            let result: Result<CmdResult, String> = if apply {
+                let command = if action == "enable-now" {
+                    crate::enable_unit::act(
+                        authorization,
+                        invocation.ok_or("invocation-key-missing")?,
+                        service,
+                        user,
+                        target_user,
+                        timeout_secs,
+                    )
+                } else if matches!(action, "disable-stop" | "disable-stop-remove") {
+                    crate::remove_unit::act(
+                        authorization,
+                        invocation.ok_or("invocation-key-missing")?,
+                        service,
+                        action,
+                        unit_file_path(service).as_deref(),
+                        user,
+                        target_user,
+                        timeout_secs,
+                    )
+                } else {
+                    keyed_systemctl(
+                        authorization,
+                        invocation.ok_or("invocation-key-missing")?,
+                        action,
+                        service,
+                        user,
+                        target_user,
+                        timeout_secs,
+                    )
+                };
+                if edge_triggered {
+                    // Consume the edge even when the command failed, so the
+                    // command outcome is returned rather than reclassified.
+                    acted.set(true);
+                }
+                command
+            } else {
+                if edge_triggered {
+                    acted.set(true);
+                }
+                Ok(CmdResult {
                     ok: true,
                     code: 0,
                     stdout: format!("planned systemd {action} {service}"),
                     stderr: String::new(),
-                }
+                })
             };
+            let result = result?;
             let after = observe_systemd_state(action, service, user, target_user, timeout_secs);
+            let restart_decision =
+                decide_restart_for_observation(before, service_material_changed, restart_policy);
             let changed = apply
                 && result.ok
                 && (before.enabled != after.enabled
                     || before.active != after.active
                     || before.unit_file_state != after.unit_file_state
                     || before.unit_file_exists != after.unit_file_exists
-                    || (matches!(action, "daemon-reload" | "restart") && service_material_changed));
+                    || (matches!(action, "daemon-reload" | "restart") && service_material_changed)
+                    || (action == "restart"
+                        && restart_decision.execute
+                        && (service_material_changed
+                            || restart_policy == Some("always")
+                            || restart_decision.reason == "unit-not-active")));
             Ok(SystemdMovement {
                 outcome: OperationOutcome {
                     ok: result.ok,
@@ -666,13 +903,14 @@ pub(crate) fn run_action(
                     },
                     command: Some(result),
                 },
+                before: before.clone(),
                 after,
             })
         },
     )?;
     let observation = run.observation().clone();
     let decision = run.decision();
-    let (outcome, after, movement) = match run {
+    let (outcome, before, after, movement) = match run {
         comparison::ComparisonRun::Current { .. } => {
             let probe = observation.probe.clone().map(|result| {
                 if action == "unit-present" {
@@ -697,14 +935,19 @@ pub(crate) fn run_action(
                     command: probe,
                 },
                 observation.clone(),
+                observation,
                 None,
             )
         }
         comparison::ComparisonRun::Moved { movement, .. } => {
+            let before = movement.before.clone();
             let after = movement.after.clone();
-            (movement.outcome.clone(), after, Some(movement.outcome))
+            (movement.outcome.clone(), before, after, Some(movement.outcome))
         }
     };
+    let restart_decision = (action == "restart").then(|| {
+        decide_restart_for_observation(&before, service_material_changed, restart_policy)
+    });
     let command = outcome.command.clone().unwrap_or(CmdResult {
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { -1 },
@@ -719,20 +962,20 @@ pub(crate) fn run_action(
         user,
         apply,
         &command,
-        observation.enabled.as_deref(),
-        observation.active.as_deref(),
+        before.enabled.as_deref(),
+        before.active.as_deref(),
         after.enabled.as_deref(),
         after.active.as_deref(),
         outcome.changed,
         target_user,
-        (action == "restart").then_some(restart_decision),
+        restart_decision,
         service_material_changed,
     )?;
     augment_comparison_receipt(
         receipt_dir,
         name,
         comparison_fields(
-            &observation,
+            &before,
             desired_state(action, service_material_changed),
             decision,
             movement.as_ref(),
@@ -740,9 +983,17 @@ pub(crate) fn run_action(
         ),
     )?;
     if action == "enable-now" {
-        crate::enable_unit::report_home(service, &receipt_dir.join("harmonia-atoms.log"), &command)?;
+        crate::enable_unit::report_home(
+            service,
+            &receipt_dir.join("harmonia-atoms.log"),
+            &command,
+        )?;
     } else if matches!(action, "disable-stop" | "disable-stop-remove") {
-        crate::remove_unit::report_home(service, &receipt_dir.join("harmonia-atoms.log"), &command)?;
+        crate::remove_unit::report_home(
+            service,
+            &receipt_dir.join("harmonia-atoms.log"),
+            &command,
+        )?;
     }
     Ok(outcome)
 }
@@ -759,11 +1010,23 @@ fn keyed_systemctl(
     let mut args: Vec<String> = systemctl_scope_args(user, target_user);
     match action {
         "daemon-reload" => args.push("daemon-reload".to_string()),
+        "enable" => args.extend(["enable".to_string(), service.to_string()]),
         "restart" | "stop" => args.extend([action.to_string(), service.to_string()]),
         _ => return Err(format!("systemd-keyed-action-unsupported-{action}")),
     }
-    let result = crate::atoms::r#do::command_with_timeout(authorization, invocation, "/usr/bin/systemctl", &args, std::time::Duration::from_secs(timeout_secs))?;
-    Ok(CmdResult { ok: result.ok, code: result.code.unwrap_or(if result.ok { 0 } else { -1 }), stdout: result.stdout, stderr: result.stderr })
+    let result = crate::atoms::r#do::command_with_timeout(
+        authorization,
+        invocation,
+        "/usr/bin/systemctl",
+        &args,
+        std::time::Duration::from_secs(timeout_secs),
+    )?;
+    Ok(CmdResult {
+        ok: result.ok,
+        code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+        stdout: result.stdout,
+        stderr: result.stderr,
+    })
 }
 
 fn systemctl(
@@ -776,6 +1039,7 @@ fn systemctl(
     let mut args: Vec<String> = systemctl_scope_args(user, target_user);
     match action {
         "daemon-reload" => args.push("daemon-reload".to_string()),
+        "enable" => args.extend(["enable".to_string(), service.to_string()]),
         "enable-now" => {
             args.extend([
                 "enable".to_string(),
