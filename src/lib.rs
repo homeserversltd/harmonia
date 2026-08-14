@@ -255,6 +255,7 @@ mod schedule;
 mod source_resolver;
 mod subscription;
 
+pub(crate) use atoms::r#do::transaction::RunContext;
 pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
 pub(crate) use device_profile::*;
@@ -269,18 +270,28 @@ pub(crate) use receipts::*;
 pub(crate) use source_resolver::*;
 pub(crate) use subscription::*;
 
-pub struct Invocation(Option<atoms::r#do::InvocationKey>);
+pub struct Invocation(Option<atoms::r#do::InvocationKey>, Option<RunContext>);
 
 mod invocation_face {
     pub(crate) struct Mint(());
 
     pub(super) fn mint(args: &[String]) -> super::Invocation {
         let applies = args.iter().any(|arg| arg == "--apply")
-            || args
-                .first()
-                .is_some_and(|arg| matches!(arg.as_str(), "acquire-source" | "bench-stillness"))
+            || args.first().is_some_and(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "acquire-source" | "bench-stillness" | "bench-harmonia-foundation"
+                )
+            })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
-        super::Invocation(super::atoms::r#do::InvocationKey::from_apply_or_timer(applies, Mint(())))
+        let key = super::atoms::r#do::InvocationKey::from_apply_or_timer(applies, Mint(()));
+        let context = key.map(|key| super::RunContext {
+            run_id: super::run_id_from_stamp(),
+            profile: "production".into(),
+            face: args.first().cloned().unwrap_or_else(|| "invoke".into()),
+            key,
+        });
+        super::Invocation(key, context)
     }
 }
 
@@ -2671,6 +2682,13 @@ mod tests {
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("bench-update-set") => update_set::bench(&args[1..]),
+        Some("bench-harmonia-foundation") => atoms::r#do::transaction::bench(
+            &args[1..],
+            invocation
+                .1
+                .clone()
+                .ok_or_else(|| "foundation-invocation-key-missing".to_string())?,
+        ),
         Some("bench-stillness") => stillness_bench::run(invocation.0),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
