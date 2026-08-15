@@ -1,5 +1,8 @@
 //! One-call receipt custody: redact, serialize locally, then forward the same redacted value.
 #![allow(dead_code)]
+#[path = "convergence-receipts.rs"]
+pub(crate) mod convergence_receipts;
+
 use super::{append_appliance_log, Receipt};
 use crate::hyalos;
 use std::fs::{self, File, OpenOptions};
