@@ -234,12 +234,11 @@ pub mod application_presets;
 mod arcadia_gui_runtime;
 #[path = "bands/index.rs"]
 mod bands;
-mod pinned_artifacts_runtime;
 
 pub(crate) use arcadia_gui_runtime::{
     homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
 };
-pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
+pub(crate) use ratchet_aur_package::pinned_artifacts_command;
 
 mod capsule;
 mod convergence_lock;
