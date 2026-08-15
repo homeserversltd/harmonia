@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
@@ -17,6 +21,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         .join(format!("structural-wall-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let slice2 = slice2_proof(&root, authorization, invocation)?;
     let source = root.join("source");
     fs::create_dir_all(&source).map_err(|e| e.to_string())?;
     fs::write(source.join("sentinel"), b"desired").map_err(|e| e.to_string())?;
@@ -83,7 +88,8 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         && refused_rows_preserved
         && sentinel_parent_rows_preserved
         && proposal_count == 1;
-    let receipt = json!({"schema":"harmonia.bench-structural-wall.v3","ok":ok,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r|r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r|r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r|r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r|r["proposal_id"].as_str()),"rows":rows});
+    let ok = ok && slice2["ok"] == true;
+    let receipt = json!({"schema":"harmonia.bench-structural-wall.v4","ok":ok,"slice2":slice2,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r|r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r|r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r|r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r|r["proposal_id"].as_str()),"rows":rows});
     let matrix_path =
         PathBuf::from("/var/opt/hermes/workspace/slice-9-structural-wall-matrix.json");
     fs::write(
@@ -107,6 +113,172 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         Err("structural-wall-authority-proof-failed".into())
     }
 }
+
+fn slice2_proof(
+    root: &Path,
+    _auth: &crate::SoftwareApplyAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<Value, String> {
+    let tree = root.join("slice2-tree");
+    fs::create_dir_all(tree.join("nested")).map_err(|e| e.to_string())?;
+    let file = tree.join("nested/file");
+    fs::write(&file, b"non-utf8\0payload").map_err(|e| e.to_string())?;
+    let xattr_supported = set_slice2_xattr(&file)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(tree.join("nested"), fs::Permissions::from_mode(0o751))
+            .map_err(|e| e.to_string())?;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink("nested/file", tree.join("link")).map_err(|e| e.to_string())?;
+    }
+    let image = crate::atoms::r#do::remove_dir::capture(&tree)?;
+    crate::atoms::r#do::remove_dir::remove(&tree)?;
+    crate::atoms::r#do::remove_dir::restore(&tree, &image)?;
+    let restored = crate::atoms::r#do::remove_dir::capture(&tree)?;
+    let nested = b"nested";
+    let file = b"nested/file";
+    let link = b"link";
+    let image_nested = find_node(&image.root, nested);
+    let restored_nested = find_node(&restored.root, nested);
+    let image_file = find_node(&image.root, file);
+    let restored_file = find_node(&restored.root, file);
+    let image_link = find_node(&image.root, link);
+    let restored_link = find_node(&restored.root, link);
+    let kinds = matches!(
+        (&image.root.kind, &restored.root.kind),
+        (
+            crate::atoms::r#do::remove_dir::Kind::Directory,
+            crate::atoms::r#do::remove_dir::Kind::Directory
+        )
+    ) && matches!((image_nested, restored_nested), (Some(a), Some(b))
+        if a.kind == crate::atoms::r#do::remove_dir::Kind::Directory
+            && b.kind == crate::atoms::r#do::remove_dir::Kind::Directory)
+        && matches!((image_file, restored_file), (Some(a), Some(b))
+            if a.kind == crate::atoms::r#do::remove_dir::Kind::File
+                && b.kind == crate::atoms::r#do::remove_dir::Kind::File)
+        && matches!((image_link, restored_link), (Some(a), Some(b))
+            if a.kind == crate::atoms::r#do::remove_dir::Kind::Symlink
+                && b.kind == crate::atoms::r#do::remove_dir::Kind::Symlink);
+    let bytes = matches!((image_file, restored_file), (Some(a), Some(b)) if a.bytes == b.bytes);
+    let links = matches!((image_link, restored_link), (Some(a), Some(b)) if a.link == b.link);
+    let modes = [b"".as_slice(), nested, file, link].iter().all(|relative| {
+        match (
+            find_node(&image.root, relative),
+            find_node(&restored.root, relative),
+        ) {
+            (Some(a), Some(b)) => a.mode == b.mode,
+            _ => false,
+        }
+    });
+    let uid_gid = paired_metadata_equal(&image.root, &restored.root, false);
+    let xattrs = paired_metadata_equal(&image.root, &restored.root, true)
+        && (!xattr_supported
+            || image_file.is_some_and(|n| {
+                n.xattrs
+                    .values
+                    .iter()
+                    .any(|x| x.name == b"user.harmonia_slice2" && x.value == b"slice2")
+            }));
+    let receipt_path = root.join("slice2-replace.json");
+    let plan = crate::atoms::r#do::replace_process::Plan {
+        successor: PathBuf::from("/bin/true"),
+        argv: vec!["--slice2".into(), "exact".into()],
+        guard_name: "HARMONIA_SLICE2_GUARD".into(),
+        guard_value: "1".into(),
+        receipt_path,
+    };
+    let proof = crate::atoms::r#do::replace_process::proof(&plan, invocation)?;
+    let persisted: crate::atoms::r#do::replace_process::Receipt =
+        serde_json::from_slice(&fs::read(&plan.receipt_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let canonical = fs::canonicalize(&plan.successor).map_err(|e| e.to_string())?;
+    let meta = fs::symlink_metadata(&canonical).map_err(|e| e.to_string())?;
+    let identity_ok = persisted.successor_canonical == canonical.display().to_string()
+        && persisted.successor_dev == meta.dev()
+        && persisted.successor_ino == meta.ino();
+    let before = fs::read(&plan.receipt_path).map_err(|e| e.to_string())?;
+    let previous_guard = std::env::var_os(&plan.guard_name);
+    std::env::set_var(&plan.guard_name, &plan.guard_value);
+    let refused = crate::atoms::r#do::replace_process::proof(&plan, invocation).is_err();
+    let after = fs::read(&plan.receipt_path).map_err(|e| e.to_string())?;
+    if let Some(value) = previous_guard {
+        std::env::set_var(&plan.guard_name, value);
+    } else {
+        std::env::remove_var(&plan.guard_name);
+    }
+    let receipt_ok = persisted.proof
+        && persisted.synced
+        && proof.argv == plan.argv
+        && proof.successor == "/bin/true"
+        && identity_ok
+        && refused
+        && before == after;
+    let all = kinds && bytes && links && modes && uid_gid && xattrs && receipt_ok;
+    Ok(json!({
+        "ok": all, "kinds": kinds, "bytes": bytes, "links": links, "modes": modes,
+        "uid_gid": uid_gid, "xattrs": xattrs, "xattr_supported": xattr_supported,
+        "xattr_unsupported": !xattr_supported, "all": all,
+        "replace": {"proof": persisted.proof, "synced": persisted.synced,
+            "canonical_identity": identity_ok, "exact_argv": proof.argv == plan.argv,
+            "guard_refusal": refused, "stable_bytes": before == after}
+    }))
+}
+
+fn find_node<'a>(
+    node: &'a crate::atoms::r#do::remove_dir::Node,
+    relative: &[u8],
+) -> Option<&'a crate::atoms::r#do::remove_dir::Node> {
+    if node.relative == relative {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_node(child, relative))
+}
+
+fn paired_metadata_equal(
+    a: &crate::atoms::r#do::remove_dir::Node,
+    b: &crate::atoms::r#do::remove_dir::Node,
+    xattrs: bool,
+) -> bool {
+    a.relative == b.relative
+        && a.uid == b.uid
+        && a.gid == b.gid
+        && (!xattrs || a.xattrs == b.xattrs)
+        && a.children.len() == b.children.len()
+        && a.children.iter().all(|left| {
+            b.children
+                .iter()
+                .find(|right| right.relative == left.relative)
+                .is_some_and(|right| paired_metadata_equal(left, right, xattrs))
+        })
+}
+
+fn set_slice2_xattr(path: &Path) -> Result<bool, String> {
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    let name = std::ffi::CString::new("user.harmonia_slice2").unwrap();
+    let value = b"slice2";
+    let result = unsafe {
+        libc::lsetxattr(
+            c.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr() as *const _,
+            value.len(),
+            0,
+        )
+    };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(libc::EOPNOTSUPP)) {
+        Ok(false)
+    } else {
+        Err(error.to_string())
+    }
+}
+
 fn hash(p: &Path) -> String {
     fn walk(p: &Path, h: &mut Sha256) {
         let Ok(m) = fs::symlink_metadata(p) else {
@@ -263,8 +435,6 @@ fn row(
             root.join("interactables.json"),
         );
     }
-    let mut routine_states: BTreeMap<String, crate::ModuleWalkState> = BTreeMap::new();
-    let band = crate::tools::routine::placement_for_step(&step)?;
     let bench_manifest = manifest(root, interactable);
     let result = crate::tools::routine::execute_validated_step(
         &step,
