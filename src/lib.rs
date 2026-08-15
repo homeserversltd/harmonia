@@ -9,7 +9,7 @@ pub(crate) mod build_venv;
 pub(crate) mod check_health;
 #[path = "tools/enable-unit/index.rs"]
 pub(crate) mod enable_unit;
-pub(crate) mod hyalos;
+pub(crate) use atoms::attest::hyalos;
 #[path = "tools/install-package/index.rs"]
 pub(crate) mod install_package;
 #[path = "tools/place-file/index.rs"]
