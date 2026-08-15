@@ -245,27 +245,34 @@ mod interactables;
 mod ladder;
 mod module_dispatch;
 mod preflight;
-mod profile_engine;
 mod receipts;
 mod schedule;
 mod source_resolver;
 mod subscription;
 
+pub(crate) use atoms::attest::convergence_receipts::*;
+pub(crate) use atoms::r#do::convergence_lock::*;
 pub(crate) use atoms::r#do::transaction::RunContext;
 pub(crate) use bands::stage_profile::capsule::*;
-pub(crate) use atoms::r#do::convergence_lock::*;
-pub(crate) use atoms::attest::convergence_receipts::*;
+pub(crate) use bands::stage_profile::groups::*;
+pub(crate) use bands::stage_profile::molt::*;
+pub(crate) use bands::stage_profile::projection::*;
+pub(crate) use bands::{
+    run_profile_engine, run_profile_engine_with_preflight, run_profile_engine_with_projection,
+};
 pub(crate) use device_profile::*;
 pub(crate) use hotfix::*;
 pub(crate) use interactables::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
-pub(crate) use bands::stage_profile::molt::*;
 pub(crate) use preflight::*;
-pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;
 pub(crate) use source_resolver::*;
 pub(crate) use subscription::*;
+pub(crate) use tools::command::harmonia_root_from_module_root;
+pub(crate) use tools::command::{
+    command_capture, command_capture_with_cwd, command_capture_with_timeout,
+};
 
 pub struct Invocation(Option<atoms::r#do::InvocationKey>, Option<RunContext>);
 
@@ -305,10 +312,6 @@ pub fn invoke(args: Vec<String>) {
         eprintln!("harmonia_error={}", err);
         process::exit(1);
     }
-}
-
-pub fn main_entry() {
-    invoke(env::args().skip(1).collect());
 }
 
 #[cfg(test)]

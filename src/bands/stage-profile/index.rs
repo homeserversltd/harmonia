@@ -10,6 +10,13 @@ pub(crate) mod molt;
 pub(crate) use capsule::*;
 pub(crate) use molt::*;
 
+#[path = "groups.rs"]
+pub(crate) mod groups;
+#[path = "projection.rs"]
+pub(crate) mod projection;
+pub(crate) use groups::*;
+pub(crate) use projection::*;
+
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::StageProfile)
 }
@@ -30,7 +37,7 @@ pub(crate) fn materialize(
     let refreshed = load_profile(&source_profile_path)
         .map_err(|e| format!("{profile_id}-profile-source-read-failed: {e}"))?;
     let source_modules_root = source_root.join(format!("profiles/{}/modules", refreshed.id));
-    let projection = crate::profile_engine::load_profile_projection(
+    let projection = crate::bands::stage_profile::projection::load_profile_projection(
         &refreshed,
         &source_modules_root,
         &std::collections::BTreeSet::new(),
