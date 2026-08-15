@@ -62,6 +62,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return install(args)
     if command == "uninstall":
         return uninstall(args)
+    if command == "install-timer":
+        return install_timer(args)
+    if command == "uninstall-timer":
+        return uninstall_timer(args)
     parser.print_help()
     return 2
 
@@ -82,6 +86,9 @@ Common paths:
   sudo ./cli.py install --apply    Build, install binary/config/assets, and optionally systemd units.
   ./cli.py status                  Read installed shape.
   sudo ./cli.py uninstall --apply  Remove installed Harmonia surfaces.
+  ./cli.py install-timer             Dry-run timer-only installation.
+  sudo ./cli.py install-timer --apply  Install and enable only the Harmonia timer.
+  sudo ./cli.py uninstall-timer --apply  Disable and remove only the Harmonia timer units.
 
 Install contract:
   The repo owns its own install instructions. External automation may call this
@@ -126,6 +133,16 @@ Install contract:
     uninstall_p.add_argument("--keep-config", action="store_true", help="Preserve /etc/harmonia config.")
     uninstall_p.add_argument("--with-systemd", action="store_true", help="Remove harmonia service/timer units too.")
 
+    timer_install_p = sub.add_parser("install-timer", help="Install and enable only harmonia.service/harmonia.timer.")
+    add_timer_path_args(timer_install_p)
+    timer_install_p.add_argument("--apply", action="store_true", help="Actually write units and enable the timer. Omit for dry-run.")
+    timer_install_p.add_argument("--dry-run", action="store_true", help="Compatibility spelling for the default non-mutating plan.")
+
+    timer_uninstall_p = sub.add_parser("uninstall-timer", help="Disable and remove only harmonia.service/harmonia.timer.")
+    add_timer_path_args(timer_uninstall_p)
+    timer_uninstall_p.add_argument("--apply", action="store_true", help="Actually disable/remove units. Omit for dry-run.")
+    timer_uninstall_p.add_argument("--dry-run", action="store_true", help="Compatibility spelling for the default non-mutating plan.")
+
     status_p = sub.add_parser("status", help="Read the current installed shape.")
     add_common_path_args(status_p)
     return parser
@@ -140,12 +157,21 @@ def add_common_path_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--systemd-dir", default=str(DEFAULT_SYSTEMD_DIR), help=f"Systemd unit dir (default {DEFAULT_SYSTEMD_DIR}).")
 
 
+def add_timer_path_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--systemd-dir", "--systemd-root", dest="systemd_dir", default=str(DEFAULT_SYSTEMD_DIR),
+        help=f"Systemd unit directory (default {DEFAULT_SYSTEMD_DIR}; --systemd-root is a compatibility alias).",
+    )
+
+
 def print_menu() -> None:
     print("Harmonia repo-local installer menu")
     print("  help       full help and examples")
     print("  build      cargo build -p harmonia from this repo")
     print("  install    dry-run or apply binary/config/profile install")
     print("  uninstall  dry-run or apply removal")
+    print("  install-timer    dry-run or apply timer-only install")
+    print("  uninstall-timer  dry-run or apply timer-only removal")
     print("  status     read installed binary/config/state shape")
 
 
@@ -317,6 +343,61 @@ def uninstall(args: argparse.Namespace) -> int:
     print(f"state_preserved={str(not purge_state).lower()}")
     return 0
 
+
+def install_timer(args: argparse.Namespace) -> int:
+    root = Path(args.systemd_dir)
+    apply = bool(args.apply) and not bool(getattr(args, "dry_run", False))
+    service = root / "harmonia.service"
+    timer = root / "harmonia.timer"
+    host = root == DEFAULT_SYSTEMD_DIR
+    emit_plan("harmonia.installer.timer_plan.v1", apply, [
+        f"install unit -> {service}",
+        f"install unit -> {timer}",
+        *( ["daemon-reload", "enable --now harmonia.timer"] if host else [] ),
+    ])
+    if not apply:
+        return 0
+    if os.geteuid() != 0 and host:
+        print("harmonia timer apply requires root for the host systemd directory", file=sys.stderr)
+        return 1
+    paths = InstallPaths(DEFAULT_BIN, DEFAULT_CONFIG_DIR, DEFAULT_STATE_DIR, DEFAULT_LOG_DIR, DEFAULT_RECEIPT_DIR, root)
+    install_systemd_units(paths)
+    if host:
+        code = run_checked(["systemctl", "daemon-reload"], cwd=SOURCE_ROOT, allow_missing=True)
+        if code != 0:
+            return code
+        return run_checked(["systemctl", "enable", "--now", "harmonia.timer"], cwd=SOURCE_ROOT, allow_missing=True)
+    return 0
+
+
+def uninstall_timer(args: argparse.Namespace) -> int:
+    root = Path(args.systemd_dir)
+    apply = bool(args.apply) and not bool(getattr(args, "dry_run", False))
+    service = root / "harmonia.service"
+    timer = root / "harmonia.timer"
+    host = root == DEFAULT_SYSTEMD_DIR
+    emit_plan("harmonia.installer.timer_plan.v1", apply, [
+        *( ["disable --now harmonia.timer", "daemon-reload"] if host else [] ),
+        f"remove unit -> {timer}",
+        f"remove unit -> {service}",
+    ])
+    if not apply:
+        return 0
+    if os.geteuid() != 0 and host:
+        print("harmonia timer uninstall requires root for the host systemd directory", file=sys.stderr)
+        return 1
+    if host:
+        code = run_checked(["systemctl", "disable", "--now", "harmonia.timer"], cwd=SOURCE_ROOT, allow_missing=True)
+        if code != 0:
+            return code
+    for path in (timer, service):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    if host:
+        return run_checked(["systemctl", "daemon-reload"], cwd=SOURCE_ROOT, allow_missing=True)
+    return 0
 
 def emit_plan(schema: str, apply: bool, lines: Iterable[str]) -> None:
     print(f"schema={schema}")

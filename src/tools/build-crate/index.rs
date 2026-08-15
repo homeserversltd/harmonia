@@ -2,6 +2,7 @@
 mod act;
 #[path = "observe/index.rs"]
 mod observe;
+pub(crate) use observe::IdentityMode;
 #[path = "report-home/index.rs"]
 mod report_home;
 
@@ -34,9 +35,46 @@ pub(crate) fn run_build(
     bearer: &str,
     invocation: Option<atoms::r#do::InvocationKey>,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
+    run_build_with_mode(
+        cwd,
+        source_build_sha,
+        installed_build_sha,
+        installed_binary,
+        artifact,
+        apply,
+        environment,
+        timeout_secs,
+        log,
+        bearer,
+        invocation,
+        IdentityMode::EmbeddedSourceSha,
+    )
+}
+
+pub(crate) fn run_build_with_mode(
+    cwd: &Path,
+    source_build_sha: &str,
+    installed_build_sha: Option<&str>,
+    installed_binary: &Path,
+    artifact: &Path,
+    apply: bool,
+    environment: &[(String, String)],
+    timeout_secs: u64,
+    log: &Path,
+    bearer: &str,
+    invocation: Option<atoms::r#do::InvocationKey>,
+    identity_mode: IdentityMode,
+) -> Result<Option<crate::atoms::CommandObservation>, String> {
     let run = comparison::execute_with_failure_receipt(
         "build-crate",
-        || observe::build_identity(source_build_sha, installed_build_sha, artifact),
+        || {
+            observe::build_identity_with_mode(
+                source_build_sha,
+                installed_build_sha,
+                artifact,
+                identity_mode,
+            )
+        },
         |observation| {
             if apply && !observation.identity_matches() {
                 comparison::DiffDecision::Different
@@ -134,7 +172,10 @@ pub(crate) fn run(
     .is_none_or(|result| result.ok))
 }
 
-pub(crate) fn bench_build_guard(root: &Path, source_build_sha: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn bench_build_guard(
+    root: &Path,
+    source_build_sha: &str,
+) -> Result<serde_json::Value, String> {
     use std::cell::Cell;
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let artifact = root.join("target/release/caduceus");
@@ -144,8 +185,18 @@ pub(crate) fn bench_build_guard(root: &Path, source_build_sha: &str) -> Result<s
         let run = comparison::execute(
             "bench-build-crate",
             || observe::build_identity(source_build_sha, None, &artifact),
-            |observation| if observation.identity_matches() { comparison::DiffDecision::Empty } else { comparison::DiffDecision::Different },
-            |_, _| { action_count.set(action_count.get() + 1); std::fs::write(&artifact, format!("bench artifact {source_build_sha}\n")).map_err(|e| e.to_string()) },
+            |observation| {
+                if observation.identity_matches() {
+                    comparison::DiffDecision::Empty
+                } else {
+                    comparison::DiffDecision::Different
+                }
+            },
+            |_, _| {
+                action_count.set(action_count.get() + 1);
+                std::fs::write(&artifact, format!("bench artifact {source_build_sha}\n"))
+                    .map_err(|e| e.to_string())
+            },
         )?;
         Ok(matches!(run, comparison::ComparisonRun::Moved { .. }))
     };
@@ -153,6 +204,10 @@ pub(crate) fn bench_build_guard(root: &Path, source_build_sha: &str) -> Result<s
     let ops1 = action_count.get();
     let changed2 = run_once(&action_count)?;
     let ops2 = action_count.get() - ops1;
-    if !changed1 || changed2 || ops1 != 1 || ops2 != 0 { return Err("build-guard-bench-failed".into()); }
-    Ok(serde_json::json!({"run1":{"changed":changed1,"action_count":ops1},"run2":{"changed":changed2,"operations":ops2},"artifact":artifact,"environment":{"CADUCEUS_BUILD_SHA":source_build_sha}}))
+    if !changed1 || changed2 || ops1 != 1 || ops2 != 0 {
+        return Err("build-guard-bench-failed".into());
+    }
+    Ok(
+        serde_json::json!({"run1":{"changed":changed1,"action_count":ops1},"run2":{"changed":changed2,"operations":ops2},"artifact":artifact,"environment":{"CADUCEUS_BUILD_SHA":source_build_sha}}),
+    )
 }

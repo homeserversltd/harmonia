@@ -28,41 +28,91 @@ pub(crate) struct ProfileProjection {
 }
 
 impl ProfileProjection {
-    pub(crate) fn derive_update_plan(&self, profile: &Profile, module_root: &Path) -> Result<crate::update_set::UpdatePlan, String> {
+    pub(crate) fn derive_update_plan(
+        &self,
+        profile: &Profile,
+        module_root: &Path,
+    ) -> Result<crate::update_set::UpdatePlan, String> {
         projection_derive_plan_inner(self, profile, module_root)
     }
 }
 
-pub(crate) fn load_profile_projection(profile: &Profile, module_root: &Path, disabled: &BTreeSet<String>) -> Result<ProfileProjection, String> {
+pub(crate) fn load_profile_projection(
+    profile: &Profile,
+    module_root: &Path,
+    disabled: &BTreeSet<String>,
+) -> Result<ProfileProjection, String> {
     let mut modules = BTreeMap::new();
     let mut errors = BTreeMap::new();
     for id in &profile.modules {
-        if disabled.contains(id) { continue; }
-        let loaded = match load_profile_module(module_root, id) { Ok(v) => v, Err(e) => { errors.insert(id.clone(), e); continue; } };
+        if disabled.contains(id) {
+            continue;
+        }
+        let loaded = match load_profile_module(module_root, id) {
+            Ok(v) => v,
+            Err(e) => {
+                errors.insert(id.clone(), e);
+                continue;
+            }
+        };
         let (steps, group_probe, routines) = match &loaded {
             LoadedModule::Ladder(m) => {
                 let steps = match crate::ladder::validate_ladder(m) {
                     Ok(steps) => steps,
-                    Err(e) => { errors.insert(id.clone(), format!("module-invalid {}", e.first_missing_signal())); continue; }
+                    Err(e) => {
+                        errors.insert(
+                            id.clone(),
+                            format!("module-invalid {}", e.first_missing_signal()),
+                        );
+                        continue;
+                    }
                 };
-                let group_probe = match m.group.as_ref().map(|g| crate::ladder::validate_group(g, &m.constants)).transpose() {
+                let group_probe = match m
+                    .group
+                    .as_ref()
+                    .map(|g| crate::ladder::validate_group(g, &m.constants))
+                    .transpose()
+                {
                     Ok(probe) => probe,
-                    Err(e) => { errors.insert(id.clone(), format!("module-invalid {}", e.first_missing_signal())); continue; }
+                    Err(e) => {
+                        errors.insert(
+                            id.clone(),
+                            format!("module-invalid {}", e.first_missing_signal()),
+                        );
+                        continue;
+                    }
                 };
                 let mut routines = BTreeMap::new();
                 let mut routine_error = None;
                 for step in m.ladder.iter().filter(|step| step.tool == "routine") {
                     match crate::ladder::project_routine_children(step, &m.constants) {
-                        Ok(children) => { routines.insert(step.step_id.clone(), children); }
-                        Err(e) => { routine_error = Some(format!("module-invalid {}", e.first_missing_signal())); break; }
+                        Ok(children) => {
+                            routines.insert(step.step_id.clone(), children);
+                        }
+                        Err(e) => {
+                            routine_error =
+                                Some(format!("module-invalid {}", e.first_missing_signal()));
+                            break;
+                        }
                     }
                 }
-                if let Some(error) = routine_error { errors.insert(id.clone(), error); continue; }
+                if let Some(error) = routine_error {
+                    errors.insert(id.clone(), error);
+                    continue;
+                }
                 (steps, group_probe, routines)
             }
             LoadedModule::Sidecar(_) => (Vec::new(), None, BTreeMap::new()),
         };
-        modules.insert(id.clone(), ProjectedModule { loaded, steps, group_probe, routines });
+        modules.insert(
+            id.clone(),
+            ProjectedModule {
+                loaded,
+                steps,
+                group_probe,
+                routines,
+            },
+        );
     }
     Ok(ProfileProjection { modules, errors })
 }
@@ -920,7 +970,7 @@ pub(crate) fn run_profile_engine_with_projection(
         visited_bands.push(format!("{:?}", band));
         match band {
             crate::bands::Band::RenewSelf => {
-                run_profile_hotfixes(profile, receipt_dir, invocation);
+                crate::bands::renew_self::select_hotfixes(profile, receipt_dir, invocation);
 
                 if let Some(suite_debt) = suite_debt {
                     ok = false;
@@ -961,7 +1011,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     // Engine-plane self-update is automatic in every profile run. It has its
                     // own receipt and never derives from, nor widens, module hard consent.
                     let preflight =
-                        run_engine_preflight(module_root, receipt_dir, apply, invocation)?;
+                        crate::bands::renew_self::run(module_root, receipt_dir, apply, invocation)?;
                     operation_count += preflight.operation_count;
                     if preflight.changed {
                         changed = true;
@@ -1024,7 +1074,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         &active_profile.id,
                         module_root,
                         receipt_dir,
-                        &engine.git_bearer,
+                        "owner",
                         context,
                         carrier,
                     )?;
@@ -1274,7 +1324,7 @@ fn rolling_update_run(
             });
         let projection = load_profile_projection(profile, module_root, &BTreeSet::new())?;
         let execution_projection = projection.clone();
-        let preflight = run_engine_preflight(
+        let preflight = crate::bands::renew_self::run(
             module_root,
             &effective_receipt_dir,
             apply,
@@ -1297,13 +1347,13 @@ fn rolling_update_run(
         }
         let transaction = run_profile_engine_with_projection(
             profile,
-                module_root,
-                &effective_receipt_dir,
-                mode,
-                true,
-                Some(preflight),
-                suite_debt.as_deref(),
-                &execution_projection,
+            module_root,
+            &effective_receipt_dir,
+            mode,
+            true,
+            Some(preflight),
+            suite_debt.as_deref(),
+            &execution_projection,
             context,
             Some(&carrier),
             true,
