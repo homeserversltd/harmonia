@@ -240,14 +240,12 @@ pub(crate) use arcadia_gui_runtime::{
 };
 pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 
-mod capsule;
 mod convergence_lock;
 pub mod device_profile;
 mod hotfix;
 mod interactables;
 mod ladder;
 mod module_dispatch;
-mod molt;
 mod preflight;
 mod profile_engine;
 mod receipts;
@@ -256,14 +254,14 @@ mod source_resolver;
 mod subscription;
 
 pub(crate) use atoms::r#do::transaction::RunContext;
-pub(crate) use capsule::*;
+pub(crate) use bands::stage_profile::capsule::*;
 pub(crate) use convergence_lock::*;
 pub(crate) use device_profile::*;
 pub(crate) use hotfix::*;
 pub(crate) use interactables::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
-pub(crate) use molt::*;
+pub(crate) use bands::stage_profile::molt::*;
 pub(crate) use preflight::*;
 pub(crate) use profile_engine::*;
 pub(crate) use receipts::*;

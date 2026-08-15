@@ -2,6 +2,14 @@ use super::Band;
 use crate::*;
 use std::path::Path;
 
+#[path = "capsule/index.rs"]
+pub(crate) mod capsule;
+#[path = "molt/index.rs"]
+pub(crate) mod molt;
+
+pub(crate) use capsule::*;
+pub(crate) use molt::*;
+
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::StageProfile)
 }
