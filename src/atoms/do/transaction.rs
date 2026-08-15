@@ -875,6 +875,45 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         println!("config_skipped_census_sealed=true");
         return Ok(());
     }
+    if args.iter().any(|arg| arg == "--gui-converge-config-census") {
+        let manifest_path = modules.join("arcadia-gui-runtime/manifest.json");
+        let gui_manifest = fs::read_to_string(&manifest_path)
+            .map_err(|e| e.to_string())?
+            .replace(
+                "\"version\":\"1\"",
+                "\"version\":\"1\",\"constants\":{\"target_dir\":\"/home/owner\",\"expected_files\":[\".config/hypr/autostart.conf\"]}",
+            )
+            .replace(
+                r##""ladder":[{"##,
+                r##""ladder":[{"step_id":"g","tool":"files","permutation":"converge","args":{"source_root":"/opt/arcadia/source","target_root":"/home/owner/.config/hypr","files":["harmonia.conf"]}},{"##,
+            );
+        fs::write(&manifest_path, gui_manifest).map_err(|e| e.to_string())?;
+        let caduceus_manifest_path = modules.join("caduceus/manifest.json");
+        let caduceus_manifest = fs::read_to_string(&caduceus_manifest_path)
+            .map_err(|e| e.to_string())?
+            .replace(
+                "\"service\":\"caduceus.service\"",
+                "\"service\":\"caduceus.service\",\"caduceus_profile_source\":{\"path\":\"/home/owner/.config/hypr/profile.conf\"}",
+            );
+        fs::write(&caduceus_manifest_path, caduceus_manifest)
+            .map_err(|e| e.to_string())?;
+        let plan = derive_plan(&p, &modules, None)?;
+        let _sealed = seal_projection(&plan, "bench", "bench", "bench")?;
+        let expected_files_config_skipped = !plan.targets.iter().any(|target| {
+            target.path == PathBuf::from("/home/owner/.config/hypr/autostart.conf")
+        });
+        let service_census_preserved = plan
+            .services
+            .iter()
+            .any(|service| service.name == "caduceus.service");
+        if !expected_files_config_skipped || !service_census_preserved {
+            return Err("config census proof failed".into());
+        }
+        println!("gui_converge_config_skipped=true");
+        println!("expected_files_config_skipped={expected_files_config_skipped}");
+        println!("service_census_preserved={service_census_preserved}");
+        return Ok(());
+    }
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut bindings = Vec::new();
     for profile_id in ["tv", "homeconsole", "homeserver"] {
