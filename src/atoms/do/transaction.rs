@@ -875,6 +875,20 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         println!("config_skipped_census_sealed=true");
         return Ok(());
     }
+    if args.iter().any(|arg| arg == "--gui-converge-config-census") {
+        let manifest_path = modules.join("arcadia-gui-runtime/manifest.json");
+        let gui_manifest = fs::read_to_string(&manifest_path)
+            .map_err(|e| e.to_string())?
+            .replace(
+                r##""ladder":[{"##,
+                r##""ladder":[{"step_id":"g","tool":"files","permutation":"converge","args":{"source_root":"/opt/arcadia/source","target_root":"/home/owner/.config/hypr","files":["harmonia.conf"]}},{"##,
+            );
+        fs::write(&manifest_path, gui_manifest).map_err(|e| e.to_string())?;
+        let plan = derive_plan(&p, &modules, Some(&root))?;
+        let _sealed = seal_projection(&plan, "bench", "bench", "bench")?;
+        println!("gui_converge_config_skipped=true");
+        return Ok(());
+    }
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut bindings = Vec::new();
     for profile_id in ["tv", "homeconsole", "homeserver"] {

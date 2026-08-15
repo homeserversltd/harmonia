@@ -272,6 +272,13 @@ fn projection_derive_plan_inner(
                 .get("caduceus_profile_source")
                 .and_then(|x| projection_value_path(x, "path"))
             {
+                if matches!(
+                    crate::tools::files::classify_target(&p),
+                    crate::tools::files::TargetClass::Config
+                ) {
+                    println!("census-config-skip path={}", p.display());
+                    continue;
+                }
                 projection_add_target(&mut targets, p, member)?;
             }
             if let Some(name) = projection_text(args, "service") {
@@ -324,7 +331,15 @@ fn projection_derive_plan_inner(
                     s.args.get("files").and_then(Value::as_array),
                 ) {
                     for f in files.iter().filter_map(Value::as_str) {
-                        projection_add_target(&mut targets, PathBuf::from(&r).join(f), &face)?;
+                        let p = PathBuf::from(&r).join(f);
+                        if matches!(
+                            crate::tools::files::classify_target(&p),
+                            crate::tools::files::TargetClass::Config
+                        ) {
+                            println!("census-config-skip path={}", p.display());
+                            continue;
+                        }
+                        projection_add_target(&mut targets, p, &face)?;
                     }
                 }
             }
