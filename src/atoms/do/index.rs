@@ -1,9 +1,11 @@
 //! Authorized mutation atom. Every operation consumes both keys.
 #![allow(dead_code)]
-#[path = "transaction.rs"]
-pub(crate) mod transaction;
 #[path = "convergence-lock.rs"]
 pub(crate) mod convergence_lock;
+#[path = "ritual.rs"]
+pub(crate) mod ritual;
+#[path = "transaction.rs"]
+pub(crate) mod transaction;
 
 use super::{CommandObservation, Receipt};
 use crate::tools::comparison::ActionAuthorization;
