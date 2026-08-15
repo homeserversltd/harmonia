@@ -278,3 +278,154 @@ pub(crate) fn execute_group_live_probe(
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
     execute_group_live_probe_validated(manifest, &step, receipt_dir)
 }
+
+
+// Arcadia fast-check ownership: preserve the legacy CLI surface while keeping
+// source comparison and SHA probes in the Compare band.
+use serde_json::json;
+use std::process::Command;
+use std::time::Instant;
+use crate::{CmdResult, hyalos};
+use crate::{write_command_receipt, write_json};
+
+
+pub(crate) fn homeconsole_arcadia_check(
+    profile: &Profile,
+    receipt_dir: &Path,
+    repo: &str,
+    branch: &str,
+    current_sha_file: &Path,
+    upstream_sha_file: Option<&Path>,
+    insecure_tls: bool,
+) -> Result<(), String> {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
+        return Err(format!(
+            "homeconsole-arcadia-check requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let current_sha = fs::read_to_string(current_sha_file)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let refspec = format!("refs/heads/{branch}");
+    let file_upstream = upstream_sha_file
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| is_hex_sha(s));
+    let remote = if file_upstream.is_some() {
+        CmdResult {
+            ok: true,
+            code: 0,
+            stdout: file_upstream.clone().unwrap_or_default(),
+            stderr: String::new(),
+        }
+    } else {
+        git_ls_remote(repo, &refspec, insecure_tls)
+    };
+    let upstream_sha = if let Some(sha) = file_upstream {
+        Some(sha)
+    } else {
+        remote
+            .stdout
+            .split_whitespace()
+            .next()
+            .map(|s| s.to_string())
+            .filter(|s| is_hex_sha(s))
+    };
+    let ok = remote.ok && upstream_sha.is_some() && current_sha.is_some();
+    let first_missing_signal = if !remote.ok {
+        "upstream-sha-unreadable"
+    } else if upstream_sha.is_none() {
+        "upstream-sha-missing"
+    } else if current_sha.is_none() {
+        "current-sha-missing"
+    } else {
+        "none"
+    };
+    let update_available = match (&current_sha, &upstream_sha) {
+        (Some(current), Some(upstream)) => current != upstream,
+        _ => false,
+    };
+    let elapsed_ms = started.elapsed().as_millis();
+    write_command_receipt(receipt_dir, "arcadia-upstream-sha", &remote)?;
+    write_json(
+        &receipt_dir.join("run.json"),
+        &json!({
+            "schema": "harmonia.arcadia_fast_check.v1",
+            "ok": ok,
+            "mutation": false,
+            "profile_id": profile.id,
+            "profile_family": profile.identity,
+            "repo": repo,
+            "branch": branch,
+            "current_sha_file": current_sha_file,
+            "current_sha": current_sha,
+            "upstream_sha": upstream_sha,
+            "update_available": update_available,
+            "first_missing_signal": first_missing_signal,
+            "elapsed_ms": elapsed_ms,
+        }),
+    )?;
+    println!("schema=harmonia.arcadia_fast_check.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.arcadia_fast_check.v1",
+        &format!("schema=harmonia.arcadia_fast_check.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.arcadia_fast_check.v1", "ok": ok})),
+        Some(ok),
+    );
+    println!("ok={}", ok);
+    println!("update_available={}", update_available);
+    println!(
+        "current_sha={}",
+        current_sha.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "upstream_sha={}",
+        upstream_sha.as_deref().unwrap_or("unknown")
+    );
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("elapsed_ms={}", elapsed_ms);
+    println!("receipt_dir={}", receipt_dir.display());
+    if ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal.to_string())
+    }
+}
+
+pub(crate) fn git_ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> CmdResult {
+    let mut cmd = Command::new("/usr/bin/git");
+    if insecure_tls {
+        cmd.arg("-c").arg("http.sslVerify=false");
+    }
+    cmd.arg("ls-remote").arg(repo).arg(refspec);
+    match cmd.output() {
+        Ok(output) => CmdResult {
+            ok: output.status.success(),
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        },
+        Err(err) => CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: err.to_string(),
+        },
+    }
+}
+
+pub(crate) fn is_hex_sha(s: &str) -> bool {
+    s.len() >= 7 && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub(crate) fn observe_arcadia_source_sha(source_dir: &Path) -> CmdResult {
+    crate::command_capture_with_cwd(
+        "/usr/bin/git",
+        &["rev-parse", "HEAD"],
+        source_dir.to_str(),
+    )
+}
