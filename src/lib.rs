@@ -239,7 +239,6 @@ pub(crate) use bands::restart_services::{
 };
 pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 
-mod convergence_lock;
 pub mod device_profile;
 mod hotfix;
 mod interactables;
@@ -254,7 +253,8 @@ mod subscription;
 
 pub(crate) use atoms::r#do::transaction::RunContext;
 pub(crate) use bands::stage_profile::capsule::*;
-pub(crate) use convergence_lock::*;
+pub(crate) use atoms::r#do::convergence_lock::*;
+pub(crate) use atoms::attest::convergence_receipts::*;
 pub(crate) use device_profile::*;
 pub(crate) use hotfix::*;
 pub(crate) use interactables::*;

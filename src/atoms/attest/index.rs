@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 #[path = "hyalos.rs"]
 pub(crate) mod hyalos;
+#[path = "convergence-receipts.rs"]
+pub(crate) mod convergence_receipts;
 use super::{append_appliance_log, Receipt};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
