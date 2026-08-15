@@ -1,22 +1,8 @@
-use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::OperationOutcome;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
-pub const NAME: &str = "venv";
-pub const DESCRIPTION: &str = "Change-gated Python virtual-environment convergence primitive.";
-pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
-    "converge",
-    "ensure a declared virtual environment and refresh declared dependencies only on content change",
-    &[
-        ToolArg::required("venv", ToolArgKind::String),
-        ToolArg::required("source_root", ToolArgKind::String),
-        ToolArg::required("source_patterns", ToolArgKind::StringArray),
-        ToolArg::optional("python", ToolArgKind::String),
-    ],
-).in_band(crate::tools::Placement::InstallPackages)];
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 fn safe_absolute_path(value: &str) -> bool {
     let path = Path::new(value);

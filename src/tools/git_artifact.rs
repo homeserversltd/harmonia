@@ -1,18 +1,5 @@
-use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
+use super::command;
 
-pub const NAME: &str = "git-artifact";
-pub const DESCRIPTION: &str = "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.";
-pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
-    "sync",
-    "clone or fast-forward a repository artifact",
-    &[
-        ToolArg::required("component", ToolArgKind::String),
-        ToolArg::required("path", ToolArgKind::String),
-        // Source Git runs as the declared non-root bearer.
-        ToolArg::optional("bearer", ToolArgKind::String),
-    ],
-).in_band(crate::tools::Placement::PullSource)];
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

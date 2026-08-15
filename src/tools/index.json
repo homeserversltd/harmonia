@@ -1,174 +1,1527 @@
 {
   "schema": "harmonia.tool-registry.v1",
-  "species_vocabulary": [
-    "tool",
-    "routine",
-    "gate",
-    "registry",
-    "atom",
-    "rung"
-  ],
-  "status_meaning": {
-    "flat": "the current source remains flat and has not migrated",
-    "nested": "the target shape exists or is adopted, but the old source still stands",
-    "landed": "the old path actually migrated to the chartered target"
-  },
+  "registry_authority": "embedded JSON tool registry",
   "entries": [
     {
-      "name_today": "artifact-lock",
-      "species": "rung",
-      "chartered_target_name": "ratchet-aur-package",
-      "migration_status": "landed",
-      "delegation_note": "Absorbed into the ratchet-aur-package observe rung; the legacy verify signature remains a thin compatibility forward."
+      "name": "routine",
+      "description": "Ordered primitive routine grammar and execution.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "execute",
+          "description": "execute an ordered primitive routine",
+          "args": [
+            {
+              "name": "steps",
+              "kind": "json",
+              "required": true
+            }
+          ],
+          "placement": null
+        }
+      ]
     },
     {
-      "name_today": "aur",
-      "species": "tool",
-      "chartered_target_name": "ratchet-aur-package",
-      "migration_status": "landed",
-      "delegation_note": "Check, current-head install, and pinned build/install delegate through ratchet-aur-package while legacy receipt writers remain authoritative."
+      "name": "pull-repo",
+      "description": "primitive repository acquisition adapter.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "acquire",
+          "description": "acquire source",
+          "args": [
+            {
+              "name": "component",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "bearer",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "PullSource"
+        }
+      ]
     },
     {
-      "name_today": "command",
-      "species": "atom",
-      "chartered_target_name": "atoms::ask + atoms::do",
-      "migration_status": "flat"
+      "name": "build-crate",
+      "description": "primitive crate build adapter.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "build",
+          "description": "build crate",
+          "args": [
+            {
+              "name": "cwd",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_build_sha",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "installed_binary",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "installed_build_sha",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "environment",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "bearer",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "RatchetBinaries"
+        }
+      ]
     },
     {
-      "name_today": "comparison",
-      "species": "gate",
-      "chartered_target_name": "the observe→act shape of every tool",
-      "migration_status": "nested"
+      "name": "place-file",
+      "description": "primitive file placement adapter.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "place",
+          "description": "place file",
+          "args": [
+            {
+              "name": "path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_path",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "declared_bytes",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "uid",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "gid",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "binary-promotion",
+          "description": "promote one built binary atomically",
+          "args": [
+            {
+              "name": "path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "uid",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "gid",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RatchetBinaries"
+        }
+      ]
     },
     {
-      "name_today": "files",
-      "species": "tool",
-      "chartered_target_name": "place-file",
-      "migration_status": "landed"
+      "name": "enable-unit",
+      "description": "primitive systemd enable adapter.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "enable",
+          "description": "enable unit",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "user",
+              "kind": "bool",
+              "required": false
+            },
+            {
+              "name": "target_user",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        }
+      ]
     },
     {
-      "name_today": "files",
-      "species": "tool",
-      "chartered_target_name": "remove-file",
-      "migration_status": "landed"
+      "name": "backfill-file",
+      "description": "primitive declared-file backfill adapter.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "backfill",
+          "description": "backfill one declared file",
+          "args": [
+            {
+              "name": "path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "declared_bytes",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "uid",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "gid",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        }
+      ]
     },
     {
-      "name_today": "files",
-      "species": "tool",
-      "chartered_target_name": "make-symlink",
-      "migration_status": "landed",
-      "act_purity_debt": false
+      "name": "check-health",
+      "description": "primitive observation-only health adapter.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "probe",
+          "description": "observe one health endpoint",
+          "args": [
+            {
+              "name": "url",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "expected_contains",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "retries",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        }
+      ]
     },
     {
-      "name_today": "files",
-      "species": "tool",
-      "chartered_target_name": "backfill-file",
-      "migration_status": "landed"
+      "name": "artifact-lock",
+      "description": "Compatibility entry point for artifact integrity observation owned by ratchet-aur-package.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "verify",
+          "description": "forward declared artifact lock verification to ratchet-aur-package observe",
+          "args": [
+            {
+              "name": "lock",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "profile",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "Compare"
+        }
+      ]
     },
     {
-      "name_today": "git-artifact",
-      "species": "tool",
-      "chartered_target_name": "pull-repo",
-      "migration_status": "landed",
-      "delegation_note": "Public Git operations delegate through pull-repo observe/act rungs; legacy acquisition remains only the keyed atom fallback; pull-repo.attest.jsonl cites pull-repo.json.",
-      "report_home_debt": false
+      "name": "aur",
+      "description": "AUR package primitive for regular installs and optional pinned-state receipts.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "install",
+          "description": "build and install the current AUR package without a pin or upstream check cycle",
+          "args": [
+            {
+              "name": "package",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        },
+        {
+          "name": "check",
+          "description": "compare a ratchet lock pin against observed AUR upstream state without mutation",
+          "args": [
+            {
+              "name": "package",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "lock",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "upstream_state",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        },
+        {
+          "name": "build-pinned",
+          "description": "build exactly the pinned AUR PKGBUILD git commit through an unprivileged builder",
+          "args": [
+            {
+              "name": "package",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "lock",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "build_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_dir",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "builder_user",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "install",
+              "kind": "bool",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        }
+      ]
     },
     {
-      "name_today": "health",
-      "species": "tool",
-      "chartered_target_name": "check-health",
-      "migration_status": "landed",
-      "delegation_note": "The health probe core delegates through the observe-only check-health organ; no act rung or action authority exists."
+      "name": "command",
+      "description": "Host command execution primitive with cwd/env/timeout/exit capture; every subprocess produces a command receipt.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "capture",
+          "description": "capture a host command with optional args/cwd/timeout",
+          "args": [
+            {
+              "name": "program",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "args",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "cwd",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "ProposeEdits"
+        }
+      ]
     },
     {
-      "name_today": "household-time",
-      "species": "tool",
-      "chartered_target_name": "set-clock",
-      "migration_status": "landed",
-      "delegation_note": "Household timezone and time synchronization delegate through observe/compare/act/report-home with both action keys."
+      "name": "files",
+      "description": "Staged file/template/directory/symlink primitive with atomic promotion.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "managed-files",
+          "description": "converge managed file declarations from typed JSON",
+          "args": [
+            {
+              "name": "files",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "managed-directories",
+          "description": "converge managed directory declarations with mode and ownership readback",
+          "args": [
+            {
+              "name": "directories",
+              "kind": "json",
+              "required": true
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "converge",
+          "description": "converge a source file tree into a target root",
+          "args": [
+            {
+              "name": "source_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "files",
+              "kind": "string_array",
+              "required": true
+            },
+            {
+              "name": "backup_existing",
+              "kind": "bool",
+              "required": false
+            },
+            {
+              "name": "receipt_name",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "summary_receipt",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "ensure-present",
+          "description": "create declared seed files only when absent; preserve existing regular-file bytes and ownership",
+          "args": [
+            {
+              "name": "source_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "files",
+              "kind": "string_array",
+              "required": true
+            },
+            {
+              "name": "receipt_name",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "hotfix-file-backfill",
+          "description": "comparison-gated primitive that atomically backfills declared file bytes",
+          "args": [
+            {
+              "name": "file_bytes",
+              "kind": "json",
+              "required": true
+            },
+            {
+              "name": "target_path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "remove",
+          "description": "remove only declared regular files beneath a target root and receipt their prior and final state",
+          "args": [
+            {
+              "name": "target_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "paths",
+              "kind": "string_array",
+              "required": true
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "directory-sync",
+          "description": "verify or copy a source directory tree into a target directory",
+          "args": [
+            {
+              "name": "source_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "files",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "backup_existing",
+              "kind": "bool",
+              "required": false
+            },
+            {
+              "name": "receipt_name",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "allow_same_root",
+              "kind": "bool",
+              "required": false
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "validated-sudoers-converge",
+          "description": "validate and atomically converge only declared estate-owned sudoers.d fragments",
+          "args": [
+            {
+              "name": "source_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "files",
+              "kind": "string_array",
+              "required": true
+            },
+            {
+              "name": "owned_prefix",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "validator_program",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "validator_args",
+              "kind": "string_array",
+              "required": true
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "receipt_name",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "source-shelf-sweep",
+          "description": "converge one source shelf and, when declared, pattern-selected flat launchers with per-path atomic, all-or-restored semantics",
+          "args": [
+            {
+              "name": "source_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "shelf_source",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target_shelf",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "launcher_source_root",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "launcher_target_root",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "launcher_pattern",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "shelf_owner",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "shelf_group",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "shelf_directory_mode",
+              "kind": "integer",
+              "required": true
+            },
+            {
+              "name": "shelf_file_mode",
+              "kind": "integer",
+              "required": true
+            },
+            {
+              "name": "launcher_mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "prune",
+              "kind": "bool",
+              "required": true
+            },
+            {
+              "name": "launcher_exclude",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "provenance_state",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "owned_recursive",
+              "kind": "bool",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "executable-present",
+          "description": "prove one declared executable is runnable in a kernel-owned fixed search scope",
+          "args": [
+            {
+              "name": "executable",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "search_scope",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "receipt_label",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "symlink-converge",
+          "description": "converge one declared symlink from a validated source without program-bearing arguments",
+          "args": [
+            {
+              "name": "source",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "required_source_kind",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "conflict_policy",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "validated-symlink",
+          "description": "validate a candidate symlink before atomically promoting declared link ownership",
+          "args": [
+            {
+              "name": "source",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "validator_program",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "validator_args",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "reload_program",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "reload_args",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
+          "name": "validated-file-symlink",
+          "description": "validate staged file and include-visible link candidates before reversible promotion",
+          "args": [
+            {
+              "name": "desired_source",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "validator_program",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "validator_args",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "reload_program",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "reload_args",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "BackfillFiles"
+        }
+      ]
     },
     {
-      "name_today": "module_steps",
-      "species": "registry",
-      "chartered_target_name": "build-crate",
-      "migration_status": "landed",
-      "delegation_note": "The lowered service-runtime build, binary promotion, service, enable, and health children use their owning primitive tools; routine retains only routine dispatch and compatibility receipt routing."
+      "name": "git-artifact",
+      "description": "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "sync",
+          "description": "clone or fast-forward a repository artifact",
+          "args": [
+            {
+              "name": "component",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "bearer",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "PullSource"
+        }
+      ]
     },
     {
-      "name_today": "package",
-      "species": "tool",
-      "chartered_target_name": "install-package",
-      "migration_status": "landed",
-      "delegation_note": "Install delegates observe/act/report-home through typed package atoms."
+      "name": "health",
+      "description": "HTTP health probe primitive with curl-backed retry and timeout controls.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "probe",
+          "description": "probe an HTTP endpoint with optional expected content and retry controls",
+          "args": [
+            {
+              "name": "url",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "expected_contains",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "retries",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "Compare"
+        }
+      ]
     },
     {
-      "name_today": "place-file",
-      "species": "tool",
-      "chartered_target_name": "place-file",
-      "migration_status": "landed",
-      "delegation_note": "Primitive file placement remains canonical; routine adapter uses the landed organ."
+      "name": "household-time",
+      "description": "Household timezone fact primitive with typed resolver, watched application, debounce-preserving timezone actuation, and audit receipts.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "resolve",
+          "description": "resolve and retain one household timezone fact",
+          "args": [
+            {
+              "name": "backend",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "state_path",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "set-timezone",
+          "description": "validate and apply one IANA timezone through the selected backend",
+          "args": [
+            {
+              "name": "backend",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timezone",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "state_path",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "watch-and-set",
+          "description": "read a fresh resolver fact and apply its validated timezone or preserve the local clock",
+          "args": [
+            {
+              "name": "backend",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "state_url",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "state_path",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        }
+      ]
     },
     {
-      "name_today": "ratchet-aur-package",
-      "species": "tool",
-      "chartered_target_name": "ratchet-aur-package",
-      "migration_status": "landed",
-      "delegation_note": "Owns AUR lock observation, typed verdict, nudge-only upstream movement, keyed behind-pin actuation, and report-home attestation."
+      "name": "package",
+      "description": "System package manager primitive for pacman check, install, upgrade, and keyring repair permutations.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "check",
+          "description": "check package database/update state without mutation",
+          "args": [
+            {
+              "name": "packages",
+              "kind": "string_array",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        },
+        {
+          "name": "install",
+          "description": "install declared packages using pacman --needed semantics",
+          "args": [
+            {
+              "name": "packages",
+              "kind": "string_array",
+              "required": true
+            },
+            {
+              "name": "conflict_policy",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "conflict_paths",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        },
+        {
+          "name": "upgrade",
+          "description": "run full pacman -Syu upgrade lane",
+          "args": [
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        },
+        {
+          "name": "keyring-repair",
+          "description": "repair Arch pacman keyring with pacman-key init/populate/refresh/updatedb and archlinux-keyring install",
+          "args": [
+            {
+              "name": "package",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        }
+      ]
     },
     {
-      "name_today": "service-runtime",
-      "species": "routine",
-      "chartered_target_name": "module-manifest routine",
-      "migration_status": "orchestration-dissolved-children-band-seated",
-      "delegation_note": "Declaration and validation only; pre-execution lowering deletes the service-runtime execution surface and emits owning primitive children.",
-      "notes": "Lowered primitive owners execute pull-repo, build-crate, place-file, files, systemd, enable-unit, and check-health."
+      "name": "service-runtime",
+      "description": "declaration-only service runtime lowered to owning primitive tools before execution.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "converge",
+          "description": "declare a Rust service runtime for pre-execution primitive lowering",
+          "args": [
+            {
+              "name": "module_id",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "component",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "bearer",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "source_dir",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "install_bin",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "url",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "binary_name",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "op_prefix",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "run_schema",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "managed_files_schema",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "managed_files",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "caduceus_profile_source",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "caduceus_commands",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "build_environment",
+              "kind": "json",
+              "required": false
+            }
+          ],
+          "placement": null
+        }
+      ]
     },
     {
-      "name_today": "systemd",
-      "species": "tool",
-      "chartered_target_name": "enable-unit",
-      "migration_status": "landed",
-      "delegation_note": "Delegates enable-now through the typed systemd breath."
+      "name": "systemd",
+      "description": "Systemd unit lifecycle primitive with observed is-enabled/is-active before/after receipts.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "daemon-reload",
+          "description": "reload the system systemd manager only when this module changed managed material",
+          "args": [
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "service-epilogue",
+          "description": "reload, enable, conditionally restart, and prove active service state",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "service_material_changed",
+              "kind": "bool",
+              "required": true
+            },
+            {
+              "name": "user",
+              "kind": "bool",
+              "required": false
+            },
+            {
+              "name": "target_user",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "enable-now",
+          "description": "enable and start a system unit",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "enable-first-present-now",
+          "description": "select the first present system unit from an ordered typed candidate list, then enable and start it",
+          "args": [
+            {
+              "name": "candidate_units",
+              "kind": "string_array",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "unit-present",
+          "description": "assert that a system unit is loaded without enabling or starting it",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "disable-stop-remove",
+          "description": "disable and stop a system unit, then remove its unit file",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "disable-stop",
+          "description": "disable and stop a system unit while preserving its unit file",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "restart",
+          "description": "restart a system unit only when this module changed managed material",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "is-active-probe",
+          "description": "probe active state for a system unit",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "user-daemon-reload",
+          "description": "reload the user systemd manager only when this module changed managed material",
+          "args": [
+            {
+              "name": "user",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "user-enable-now",
+          "description": "enable and start a user unit",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "user",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "user-restart",
+          "description": "restart a user unit only when this module changed managed material",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "user",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "user-is-active-probe",
+          "description": "probe active state for a user unit",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "user",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        }
+      ]
     },
     {
-      "name_today": "systemd",
-      "species": "tool",
-      "chartered_target_name": "remove-unit",
-      "migration_status": "landed",
-      "delegation_note": "Delegates disable-stop-remove through the typed systemd breath."
-    },
-    {
-      "name_today": "venv",
-      "species": "tool",
-      "chartered_target_name": "build-venv",
-      "migration_status": "landed"
-    },
-    {
-      "name_today": "routine",
-      "species": "routine",
-      "chartered_target_name": "module-manifest routine",
-      "migration_status": "landed"
-    },
-    {
-      "name_today": "pull-repo",
-      "species": "tool",
-      "chartered_target_name": "pull-repo",
-      "migration_status": "landed",
-      "delegation_note": "Routine adapter"
-    },
-    {
-      "name_today": "build-crate",
-      "species": "tool",
-      "chartered_target_name": "build-crate",
-      "migration_status": "landed",
-      "delegation_note": "Routine adapter"
-    },
-    {
-      "name_today": "enable-unit",
-      "species": "tool",
-      "chartered_target_name": "enable-unit",
-      "migration_status": "landed",
-      "delegation_note": "Routine adapter"
+      "name": "venv",
+      "description": "Change-gated Python virtual-environment convergence primitive.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "converge",
+          "description": "ensure a declared virtual environment and refresh declared dependencies only on content change",
+          "args": [
+            {
+              "name": "venv",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_patterns",
+              "kind": "string_array",
+              "required": true
+            },
+            {
+              "name": "python",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "InstallPackages"
+        }
+      ]
     }
   ]
 }

@@ -20,7 +20,8 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     let source = root.join("source");
     fs::create_dir_all(&source).map_err(|e| e.to_string())?;
     fs::write(source.join("sentinel"), b"desired").map_err(|e| e.to_string())?;
-    let names: Vec<&str> = crate::tools::files::CONTRACT
+    let names: Vec<&str> = crate::tools::get("files")
+        .expect("files tool registered")
         .permutations
         .iter()
         .map(|p| p.name)
@@ -239,7 +240,11 @@ fn row(
     let parent = observed.parent().unwrap_or(root);
     let before = hash(&observed);
     let parent_before = hash(parent);
-    let dispatch = if crate::tools::files::CONTRACT.permutation(name).is_some() {
+    let dispatch = if crate::tools::get("files")
+        .expect("files tool registered")
+        .permutation(name)
+        .is_some()
+    {
         name
     } else {
         "converge"
