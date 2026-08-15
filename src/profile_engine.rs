@@ -277,9 +277,9 @@ fn projection_derive_plan_inner(
                     crate::tools::files::TargetClass::Config
                 ) {
                     println!("census-config-skip path={}", p.display());
-                    continue;
+                } else {
+                    projection_add_target(&mut targets, p, member)?;
                 }
-                projection_add_target(&mut targets, p, member)?;
             }
             if let Some(name) = projection_text(args, "service") {
                 projection_add_service(&mut services, name, false, None, member);
@@ -369,6 +369,13 @@ fn projection_derive_plan_inner(
                     } else {
                         continue;
                     };
+                    if matches!(
+                        crate::tools::files::classify_target(&p),
+                        crate::tools::files::TargetClass::Config
+                    ) {
+                        println!("census-config-skip path={}", p.display());
+                        continue;
+                    }
                     projection_add_target(&mut targets, p, &face)?;
                 }
             }
