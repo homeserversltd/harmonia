@@ -1,7 +1,6 @@
 use crate::CmdResult;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -12,20 +11,22 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// Typed boundary for guarded same-argv process replacement.
+#[allow(dead_code)]
 pub(crate) fn exec_same_argv(
     program: &Path,
     args: &[String],
     guard_name: &str,
     guard_value: &str,
 ) -> Result<(), String> {
-    let mut command = Command::new(program);
-    command.args(args).env(guard_name, guard_value);
-    let error = command.exec();
-    Err(format!(
-        "command-exec-failed {}: {error}",
-        program.display()
-    ))
+    crate::atoms::r#do::replace_process::compatibility_exec(
+        program,
+        args,
+        guard_name,
+        guard_value,
+        None,
+    )
 }
+
 const TERMINATION_GRACE_SECS: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,7 +296,7 @@ pub(crate) fn capture_with_options(
         let uid = bearer.uid;
         let gid = bearer.gid;
         unsafe {
-            cmd.pre_exec(move || {
+            std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
                 if libc::setgroups(0, std::ptr::null()) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }

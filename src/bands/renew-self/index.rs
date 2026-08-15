@@ -1374,14 +1374,14 @@ pub(crate) fn run_engine_preflight(
             &json!({"schema":"harmonia.runtime.self_update_reexec.v1","ok":true,"install_bin":config.install_bin,"reason":"engine pre-flight promoted a proved Harmonia successor; re-exec same argv before module convergence"}),
         )?;
         let args: Vec<String> = env::args().skip(1).collect();
-        return crate::tools::command::exec_same_argv(
-            &config.install_bin,
-            &args,
-            SELF_UPDATE_REEXEC_ENV,
-            "1",
-        )
-        .map(|_| unreachable!())
-        .map_err(|err| format!("harmonia-self-update-reexec-failed: {err}"));
+        let key = invocation.ok_or_else(|| "harmonia-self-update-reexec-invocation-missing".to_string())?;
+        let plan = crate::atoms::r#do::replace_process::Plan {
+            successor: config.install_bin.clone(), argv: args, guard_name: SELF_UPDATE_REEXEC_ENV.into(),
+            guard_value: "1".into(), receipt_path: preflight_dir.join("harmonia-self-update-reexec.json"),
+        };
+        return crate::atoms::r#do::replace_process::replace(&plan, key)
+            .map(|_| unreachable!())
+            .map_err(|err| format!("harmonia-self-update-reexec-failed: {err}"));
     }
     Ok(execution)
 }
