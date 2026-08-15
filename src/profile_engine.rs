@@ -424,7 +424,7 @@ impl LoadedModule {
         }
     }
 
-    fn version(&self) -> Option<&str> {
+    pub(crate) fn version(&self) -> Option<&str> {
         match self {
             Self::Sidecar(_) => None,
             Self::Ladder(manifest) => Some(&manifest.version),
@@ -950,32 +950,39 @@ pub(crate) fn run_profile_engine_with_projection(
         &format!("profile {}", active_profile.id),
     )?;
     let run_id = run_id_from_stamp();
-    let mut ok = true;
-    let mut suite_ok = true;
-    let mut changed = false;
-    let mut first_missing_signal = "none".to_string();
-    let mut module_count = active_profile.modules.len();
-    let mut operation_count = 0usize;
-    let mut module_states: BTreeMap<String, ModuleExecution> = BTreeMap::new();
+    let mut state = crate::bands::report_home::RunState {
+        run_id: run_id.clone(),
+        apply,
+        ok: true,
+        suite_ok: true,
+        changed: false,
+        first_missing_signal: "none".to_string(),
+        module_count: active_profile.modules.len(),
+        operation_count: 0,
+        module_states: BTreeMap::new(),
+        visited_bands: Vec::new(),
+        run_started,
+        transaction_state: serde_json::Value::Null,
+        settlement: None,
+    };
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
     let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> =
         BTreeMap::new();
-    let mut visited_bands = Vec::new();
+    let mut group_losers: BTreeMap<String, String> = BTreeMap::new();
+    let mut final_result: Option<Result<(), String>> = None;
     let device_module_policy = read_device_module_policy()?;
     let harmonia_root = harmonia_root_from_module_root(module_root);
 
-    let mut group_losers = BTreeMap::new();
-    let mut final_result = None;
     crate::bands::walk(|band| {
-        visited_bands.push(format!("{:?}", band));
+        state.visited_bands.push(format!("{:?}", band));
         match band {
             crate::bands::Band::RenewSelf => {
                 crate::bands::renew_self::select_hotfixes(profile, receipt_dir, invocation);
 
                 if let Some(suite_debt) = suite_debt {
-                    ok = false;
-                    suite_ok = false;
-                    first_missing_signal = suite_debt.to_string();
+                    state.ok = false;
+                    state.suite_ok = false;
+                    state.first_missing_signal = suite_debt.to_string();
                     event(&mut events, "profile-suite-spine-debt", false, suite_debt)?;
                 }
 
@@ -987,9 +994,9 @@ pub(crate) fn run_profile_engine_with_projection(
                         "already completed by update suite",
                     )?;
                     if let Some(preflight) = completed_preflight.take() {
-                        operation_count += preflight.operation_count;
+                        state.operation_count += preflight.operation_count;
                         if preflight.changed {
-                            changed = true;
+                            state.changed = true;
                         }
                         if !preflight.ok {
                             let preflight_signal = preflight
@@ -1001,9 +1008,9 @@ pub(crate) fn run_profile_engine_with_projection(
                                 false,
                                 &preflight_signal,
                             )?;
-                            ok = false;
-                            if first_missing_signal == "none" {
-                                first_missing_signal = preflight_signal;
+                            state.ok = false;
+                            if state.first_missing_signal == "none" {
+                                state.first_missing_signal = preflight_signal;
                             }
                         }
                     }
@@ -1012,9 +1019,9 @@ pub(crate) fn run_profile_engine_with_projection(
                     // own receipt and never derives from, nor widens, module hard consent.
                     let preflight =
                         crate::bands::renew_self::run(module_root, receipt_dir, apply, invocation)?;
-                    operation_count += preflight.operation_count;
+                    state.operation_count += preflight.operation_count;
                     if preflight.changed {
-                        changed = true;
+                        state.changed = true;
                     }
                     if !preflight.ok {
                         let preflight_signal = preflight
@@ -1027,15 +1034,15 @@ pub(crate) fn run_profile_engine_with_projection(
                             &preflight_signal,
                         )?;
                         if apply {
-                            ok = false;
-                            first_missing_signal = preflight_signal;
+                            state.ok = false;
+                            state.first_missing_signal = preflight_signal;
                         }
                     }
                 }
 
                 if active_profile.modules.is_empty() {
-                    ok = false;
-                    first_missing_signal = "profile-modules-empty".to_string();
+                    state.ok = false;
+                    state.first_missing_signal = "profile-modules-empty".to_string();
                     event(
                         &mut events,
                         "profile-modules",
@@ -1054,14 +1061,14 @@ pub(crate) fn run_profile_engine_with_projection(
                     mode,
                     &device_module_policy.disabled_modules,
                     &active_projection,
-                    &mut module_states,
+                    &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
-                    &mut module_count,
-                    &mut operation_count,
-                    &mut changed,
-                    &mut ok,
-                    &mut first_missing_signal,
+                    &mut state.module_count,
+                    &mut state.operation_count,
+                    &mut state.changed,
+                    &mut state.ok,
+                    &mut state.first_missing_signal,
                     &mut events,
                 )?;
             }
@@ -1121,14 +1128,14 @@ pub(crate) fn run_profile_engine_with_projection(
                     mode,
                     &device_module_policy.disabled_modules,
                     &active_projection,
-                    &mut module_states,
+                    &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
-                    &mut module_count,
-                    &mut operation_count,
-                    &mut changed,
-                    &mut ok,
-                    &mut first_missing_signal,
+                    &mut state.module_count,
+                    &mut state.operation_count,
+                    &mut state.changed,
+                    &mut state.ok,
+                    &mut state.first_missing_signal,
                     &mut events,
                 )?;
             }
@@ -1139,14 +1146,14 @@ pub(crate) fn run_profile_engine_with_projection(
                     mode,
                     &device_module_policy.disabled_modules,
                     &active_projection,
-                    &mut module_states,
+                    &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
-                    &mut module_count,
-                    &mut operation_count,
-                    &mut changed,
-                    &mut ok,
-                    &mut first_missing_signal,
+                    &mut state.module_count,
+                    &mut state.operation_count,
+                    &mut state.changed,
+                    &mut state.ok,
+                    &mut state.first_missing_signal,
                     &mut events,
                 )?;
             }
@@ -1162,86 +1169,55 @@ pub(crate) fn run_profile_engine_with_projection(
                     mode,
                     &device_module_policy.disabled_modules,
                     &active_projection,
-                    &mut module_states,
+                    &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
-                    &mut module_count,
-                    &mut operation_count,
-                    &mut changed,
-                    &mut ok,
-                    &mut first_missing_signal,
+                    &mut state.module_count,
+                    &mut state.operation_count,
+                    &mut state.changed,
+                    &mut state.ok,
+                    &mut state.first_missing_signal,
                     &mut events,
                 )?;
             }
             crate::bands::Band::ReportHome => {
-                for module_id in &active_profile.modules {
-                    if let Some(state) = module_states.get(module_id) {
-                        let signal = state.first_missing_signal.as_deref().unwrap_or("none");
-                        let module = active_projection.modules.get(module_id).map(|p| &p.loaded);
-                        append_profile_ledger_entry(
-                            receipt_dir,
-                            &active_profile,
-                            ProfileLedgerEntry {
-                                run_id: &run_id,
-                                module_id,
-                                ok: state.ok,
-                                changed: state.changed,
-                                operation_count: state.operation_count,
-                                first_missing_signal: signal,
-                                receipt_dir,
-                                module_version: module.as_ref().and_then(|loaded| loaded.version()),
-                            },
-                        )?;
-                    }
-                }
-                write_json(
-                    &receipt_dir.join("band-walk.receipt.json"),
-                    &json!({
-                        "schema": "harmonia.band-walk.receipt.v1",
-                        "bands": visited_bands,
-                        "module_steps": module_states.iter().map(|(id, state)| json!({
-                            "module_id": id, "operation_count": state.operation_count,
-                            "ok": state.ok, "changed": state.changed,
-                            "first_missing_signal": state.first_missing_signal,
-                            "steps": state.placements,
-                        })).collect::<Vec<_>>(),
-                    }),
-                )?;
-                write_engine_run_receipt_with_duration(
-                    receipt_dir,
-                    &active_profile,
-                    apply,
-                    ok,
-                    changed,
-                    module_count,
-                    operation_count,
-                    &first_missing_signal,
-                    module_root,
-                    suite_ok,
-                    run_started.elapsed().as_millis(),
-                )?;
-                println!("schema=harmonia.run_profile.v1");
-                hyalos::forward_receipt(
-                    "schema=harmonia.run_profile.v1",
-                    &format!("schema=harmonia.run_profile.v1 ok={}", ok),
-                    Some(serde_json::json!({"schema": "harmonia.run_profile.v1", "ok": ok})),
-                    Some(ok),
-                );
-                println!("ok={}", ok);
-                println!("changed={}", changed);
-                println!("profile_id={}", active_profile.id);
-                println!("module_count={}", module_count);
-                println!("operation_count={}", operation_count);
-                println!("first_missing_signal={}", first_missing_signal);
-                println!("receipt_dir={}", receipt_dir.display());
-                // A report-only sweep is a census, not a systemd failure: its written
-                // aggregate receipt carries all drift/blocker/failure truth. Hard runs
-                // return failure only after that receipt has been emitted.
-                final_result = Some(if ok || !apply {
-                    Ok(())
+                let target_carrier = carrier.or_else(|| context.map(|value| &value.carrier));
+                state.transaction_state =
+                    crate::bands::report_home::serialize_transaction_state(target_carrier)?;
+                state.settlement = Some(if state.ok {
+                    crate::bands::report_home::SettlementOutcome::Success
+                } else if !state.apply {
+                    crate::bands::report_home::SettlementOutcome::ReportOnlyFailure
                 } else {
-                    Err(first_missing_signal.clone())
+                    crate::bands::report_home::SettlementOutcome::ApplyFailure(
+                        state.first_missing_signal.clone(),
+                    )
                 });
+                let report_state = std::mem::replace(
+                    &mut state,
+                    crate::bands::report_home::RunState {
+                        run_id: String::new(),
+                        apply: false,
+                        ok: false,
+                        suite_ok: false,
+                        changed: false,
+                        first_missing_signal: String::new(),
+                        module_count: 0,
+                        operation_count: 0,
+                        module_states: BTreeMap::new(),
+                        visited_bands: Vec::new(),
+                        run_started: Instant::now(),
+                        transaction_state: serde_json::Value::Null,
+                        settlement: None,
+                    },
+                );
+                final_result = Some(crate::bands::report_home::settle(
+                    report_state,
+                    &active_profile,
+                    &active_projection,
+                    module_root,
+                    receipt_dir,
+                ));
             }
         }
         Ok(())

@@ -30,6 +30,33 @@ pub(crate) struct TransactionCensus {
     pub gui_member: String,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct TransactionCensusSnapshot {
+    pub profile_id: String,
+    pub profile_identity: String,
+    pub source_head: String,
+    pub target_count: usize,
+    pub service_count: usize,
+    pub caduceus_count: usize,
+    pub gui_face: String,
+    pub gui_member: String,
+}
+
+impl From<&TransactionCensus> for TransactionCensusSnapshot {
+    fn from(value: &TransactionCensus) -> Self {
+        Self {
+            profile_id: value.profile_id.clone(),
+            profile_identity: value.profile_identity.clone(),
+            source_head: value.source_head.clone(),
+            target_count: value.target_count,
+            service_count: value.service_count,
+            caduceus_count: value.caduceus_count,
+            gui_face: value.gui_face.clone(),
+            gui_member: value.gui_member.clone(),
+        }
+    }
+}
+
 use std::{
     cell::RefCell,
     collections::BTreeMap,
