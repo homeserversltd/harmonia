@@ -232,13 +232,12 @@ struct OperationOutcome {
 
 #[path = "bands/index.rs"]
 mod bands;
-mod pinned_artifacts_runtime;
 
 pub(crate) use bands::compare::homeconsole_arcadia_check;
 pub(crate) use bands::restart_services::{
     homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
 };
-pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
+pub(crate) use ratchet_aur_package::pinned_artifacts_command;
 
 pub mod device_profile;
 mod hotfix;
