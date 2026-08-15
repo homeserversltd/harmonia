@@ -1,5 +1,5 @@
 use super::comparison::{self, DiffDecision};
-use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
+use super::command;
 use crate::{write_json, CmdResult, OperationOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,42 +10,6 @@ use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const NAME: &str = "aur";
-pub const DESCRIPTION: &str =
-    "AUR package primitive for regular installs and optional pinned-state receipts.";
-pub const PERMUTATIONS: &[ToolPermutation] = &[
-    ToolPermutation::new(
-        "install",
-        "build and install the current AUR package without a pin or upstream check cycle",
-        &[
-            ToolArg::required("package", ToolArgKind::String),
-            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-        ],
-    ).in_band(crate::tools::Placement::InstallPackages),
-    ToolPermutation::new(
-        "check",
-        "compare a ratchet lock pin against observed AUR upstream state without mutation",
-        &[
-            ToolArg::required("package", ToolArgKind::String),
-            ToolArg::required("lock", ToolArgKind::String),
-            ToolArg::optional("upstream_state", ToolArgKind::String),
-        ],
-    ).in_band(crate::tools::Placement::InstallPackages),
-    ToolPermutation::new(
-        "build-pinned",
-        "build exactly the pinned AUR PKGBUILD git commit through an unprivileged builder",
-        &[
-            ToolArg::required("package", ToolArgKind::String),
-            ToolArg::required("lock", ToolArgKind::String),
-            ToolArg::required("build_root", ToolArgKind::String),
-            ToolArg::optional("source_dir", ToolArgKind::String),
-            ToolArg::optional("builder_user", ToolArgKind::String),
-            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-            ToolArg::optional("install", ToolArgKind::Bool),
-        ],
-    ).in_band(crate::tools::Placement::InstallPackages),
-];
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 const DEFAULT_AUR_BASE_URL: &str = "https://aur.archlinux.org";

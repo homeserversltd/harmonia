@@ -1,44 +1,10 @@
-use super::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
 use crate::{CmdResult, OperationOutcome};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const NAME: &str = "household-time";
-pub const DESCRIPTION: &str = "Household timezone fact primitive with typed resolver, watched application, debounce-preserving timezone actuation, and audit receipts.";
-pub const PERMUTATIONS: &[ToolPermutation] = &[
-    ToolPermutation::new(
-        "resolve",
-        "resolve and retain one household timezone fact",
-        &[
-            ToolArg::required("backend", ToolArgKind::String),
-            ToolArg::optional("state_path", ToolArgKind::String),
-            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-        ],
-    ).in_band(crate::tools::Placement::RestartServices),
-    ToolPermutation::new(
-        "set-timezone",
-        "validate and apply one IANA timezone through the selected backend",
-        &[
-            ToolArg::required("backend", ToolArgKind::String),
-            ToolArg::required("timezone", ToolArgKind::String),
-            ToolArg::optional("state_path", ToolArgKind::String),
-            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-        ],
-    ).in_band(crate::tools::Placement::RestartServices),
-    ToolPermutation::new(
-        "watch-and-set",
-        "read a fresh resolver fact and apply its validated timezone or preserve the local clock",
-        &[
-            ToolArg::required("backend", ToolArgKind::String),
-            ToolArg::required("state_url", ToolArgKind::String),
-            ToolArg::optional("state_path", ToolArgKind::String),
-            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-        ],
-    ).in_band(crate::tools::Placement::RestartServices),
-];
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
+const NAME: &str = "household-time";
 
 pub(crate) fn validate_ladder_args(
     permutation: &str,
