@@ -1,8 +1,12 @@
 use crate::tools::aur::{self, AurRatchetLock, AurUpstreamState};
+use crate::{hyalos, PinnedArtifactStatus, PinnedArtifactsLock, Profile};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
@@ -129,7 +133,7 @@ pub(super) fn artifact_lock(
             first_missing_signal = format!("pinned-artifact-{name}-drift");
         }
         ok &= entry_ok;
-        crate::write_json(
+        super::report_home::write_pinned_artifacts_receipt(
             &receipt_dir.join(format!("artifact-lock-{}.json", sanitize(name))),
             &json!({
                 "schema":"harmonia.artifact_lock.artifact.v1", "ok":entry_ok, "apply":apply,
@@ -140,7 +144,7 @@ pub(super) fn artifact_lock(
         )?;
         entries.push(json!({"name":name,"version":artifact.version,"path":artifact.path,"ok":entry_ok,"exists":actual.is_some(),"policy":artifact.policy}));
     }
-    crate::write_json(
+    super::report_home::write_pinned_artifacts_receipt(
         &receipt_dir.join("run.json"),
         &json!({
             "schema":"harmonia.artifact_lock.verify.v1", "ok":ok, "apply":apply, "mutation":false,
@@ -166,4 +170,100 @@ fn sanitize(value: &str) -> String {
             }
         })
         .collect()
+}
+
+pub(super) fn load_pinned_lock(lock_path: &Path) -> Result<PinnedArtifactsLock, String> {
+    let text = fs::read_to_string(lock_path)
+        .map_err(|e| format!("pinned-lock-read-failed {}: {e}", lock_path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|e| format!("pinned-lock-parse-failed {}: {e}", lock_path.display()))
+}
+
+pub(super) fn pinned_artifacts_status(lock: &PinnedArtifactsLock) -> Vec<PinnedArtifactStatus> {
+    let mut statuses = Vec::new();
+    for (name, artifact) in &lock.artifacts {
+        let path = Path::new(&artifact.path);
+        let actual = sha256_file(path).ok();
+        let exists = path.exists();
+        let ok = actual
+            .as_deref()
+            .map(|sha| sha.eq_ignore_ascii_case(&artifact.sha256))
+            .unwrap_or(false);
+        statuses.push(PinnedArtifactStatus {
+            name: name.clone(),
+            version: artifact.version.clone(),
+            path: artifact.path.clone(),
+            expected_sha256: artifact.sha256.clone(),
+            actual_sha256: actual,
+            exists,
+            ok,
+            policy: artifact.policy.clone(),
+        });
+    }
+    statuses.sort_by(|a, b| a.name.cmp(&b.name));
+    statuses
+}
+
+pub(super) fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file =
+        File::open(path).map_err(|e| format!("sha256-open-failed {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub(super) fn pinned_artifacts_check(
+    profile: &Profile,
+    lock_path: &Path,
+    receipt_dir: &Path,
+) -> Result<(), String> {
+    let lock = load_pinned_lock(lock_path)?;
+    let statuses = pinned_artifacts_status(&lock);
+    let ok = lock.profile == profile.id && statuses.iter().all(|status| status.ok);
+    let first_missing_signal = if lock.profile != profile.id {
+        "pinned-lock-profile-mismatch".to_string()
+    } else {
+        statuses
+            .iter()
+            .find(|status| !status.ok)
+            .map(|status| format!("pinned-artifact-{}-drift", status.name))
+            .unwrap_or_else(|| "none".to_string())
+    };
+    super::report_home::write_pinned_artifacts_receipt(
+        &receipt_dir.join("run.json"),
+        &json!({
+            "schema": "harmonia.pinned_artifacts.check.v1",
+            "ok": ok,
+            "mutation": false,
+            "profile_id": profile.id,
+            "lock_path": lock_path,
+            "artifact_count": statuses.len(),
+            "first_missing_signal": first_missing_signal,
+            "artifacts": statuses,
+        }),
+    )?;
+    println!("schema=harmonia.pinned_artifacts.check.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.pinned_artifacts.check.v1",
+        &format!("schema=harmonia.pinned_artifacts.check.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.pinned_artifacts.check.v1", "ok": ok})),
+        Some(ok),
+    );
+    println!("ok={}", ok);
+    println!("profile_id={}", profile.id);
+    println!("artifact_count={}", lock.artifacts.len());
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("receipt_dir={}", receipt_dir.display());
+    if ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal)
+    }
 }

@@ -1,5 +1,5 @@
 use crate::tools::comparison::{self, DiffDecision};
-use crate::OperationOutcome;
+use crate::{OperationOutcome, Profile};
 use std::path::Path;
 
 #[path = "act/index.rs"]
@@ -125,4 +125,20 @@ pub(crate) fn verify_artifact_lock(
         &observation,
     )?;
     Ok(outcome)
+}
+
+pub(crate) fn pinned_artifacts_command(
+    action: &str,
+    profile: &Profile,
+    lock_path: &Path,
+    receipt_dir: &Path,
+    args: &[String],
+) -> Result<(), String> {
+    std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    match action {
+        "check" => observe::pinned_artifacts_check(profile, lock_path, receipt_dir),
+        "nudge" => act::pinned_artifacts_nudge(profile, lock_path, receipt_dir, args),
+        "bless" => act::pinned_artifacts_bless(profile, lock_path, receipt_dir, args),
+        other => Err(format!("unsupported pinned-artifacts action {other}")),
+    }
 }
