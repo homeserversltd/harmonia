@@ -55,7 +55,7 @@ pub(super) fn build_identity_with_mode(
     identity_mode: IdentityMode,
 ) -> Result<Observation, String> {
     let source_build_sha = source_build_sha.trim().to_string();
-    if !crate::arcadia_gui_runtime::is_hex_sha(&source_build_sha) {
+    if !crate::bands::compare::is_hex_sha(&source_build_sha) {
         return Err("build-crate-source-build-sha-invalid".into());
     }
     let artifact_present = matches!(

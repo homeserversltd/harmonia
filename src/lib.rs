@@ -229,13 +229,13 @@ struct OperationOutcome {
     command: Option<CmdResult>,
 }
 
-mod arcadia_gui_runtime;
 #[path = "bands/index.rs"]
 mod bands;
 mod pinned_artifacts_runtime;
 
-pub(crate) use arcadia_gui_runtime::{
-    homeconsole_arcadia_check, homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
+pub(crate) use bands::compare::homeconsole_arcadia_check;
+pub(crate) use bands::restart_services::{
+    homeconsole_arcadia_gui_update, homeconsole_arcadia_update,
 };
 pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 

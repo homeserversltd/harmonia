@@ -954,6 +954,15 @@ fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdRe
 }
 
 
+pub(crate) fn acquire_arcadia_source(plan: &tools::git_artifact::SourcePlan, apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> tools::git_artifact::SourceOutcome {
+    if apply {
+        tools::git_artifact::acquire_source(plan, invocation)
+    } else {
+        tools::git_artifact::SourceOutcome { ok: true, changed: false, receipt: tools::git_artifact::SourceReceipt { attempts: Vec::new(), served_index: None, resolved_commit: None, promotion: "planned source acquisition".to_string() } }
+    }
+}
+
+
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -1004,5 +1013,16 @@ pub(crate) fn execute_routine_child(
             Ok((result, out))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
+    }
+}
+
+
+// Arcadia source acquisition receipt conversion.
+pub(crate) fn source_outcome_cmd(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
+    CmdResult {
+        ok: outcome.ok,
+        code: if outcome.ok { 0 } else { 1 },
+        stdout: outcome.receipt.promotion.clone(),
+        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
     }
 }
