@@ -26,6 +26,7 @@ pub(crate) mod remove_unit;
 pub(crate) mod set_clock;
 mod stillness_bench;
 mod structural_wall_bench;
+#[path = "tools/index.rs"]
 pub mod tools;
 
 use serde::{Deserialize, Serialize};

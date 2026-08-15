@@ -1,36 +1,7 @@
-use crate::tools::{ToolArg, ToolArgKind, ToolContract, ToolPermutation};
+pub(crate) const DEFAULT_BEARER: &str = "owner";
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const NAME: &str = "service-runtime";
-pub const DESCRIPTION: &str =
-    "declaration-only service runtime lowered to owning primitive tools before execution.";
-pub(crate) const DEFAULT_BEARER: &str = "owner";
-
-const SERVICE_RUNTIME_ARGS: &[ToolArg] = &[
-    ToolArg::optional("module_id", ToolArgKind::String),
-    ToolArg::required("component", ToolArgKind::String),
-    ToolArg::optional("bearer", ToolArgKind::String),
-    ToolArg::required("source_dir", ToolArgKind::String),
-    ToolArg::required("install_bin", ToolArgKind::String),
-    ToolArg::required("service", ToolArgKind::String),
-    ToolArg::required("url", ToolArgKind::String),
-    ToolArg::required("binary_name", ToolArgKind::String),
-    ToolArg::required("op_prefix", ToolArgKind::String),
-    ToolArg::required("run_schema", ToolArgKind::String),
-    ToolArg::required("managed_files_schema", ToolArgKind::String),
-    ToolArg::optional("managed_files", ToolArgKind::Json),
-    ToolArg::optional("caduceus_profile_source", ToolArgKind::Json),
-    ToolArg::optional("caduceus_commands", ToolArgKind::Json),
-    ToolArg::optional("build_environment", ToolArgKind::Json),
-];
-
-pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
-    "converge",
-    "declare a Rust service runtime for pre-execution primitive lowering",
-    SERVICE_RUNTIME_ARGS,
-)];
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 
 fn string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> Result<&'a str, String> {
     args.get(name)

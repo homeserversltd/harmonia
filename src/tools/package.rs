@@ -1,5 +1,5 @@
 use super::comparison::{self, DiffDecision};
-use super::{command, ToolArg, ToolArgKind, ToolContract, ToolPermutation};
+use super::command;
 use crate::{write_json, CmdResult, OperationOutcome, PackageBackend};
 use serde::Serialize;
 #[cfg(test)]
@@ -9,39 +9,7 @@ use std::fs;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
-pub const NAME: &str = "package";
-pub const DESCRIPTION: &str = "System package manager primitive for pacman check, install, upgrade, and keyring repair permutations.";
-pub const PERMUTATIONS: &[ToolPermutation] = &[
-    ToolPermutation::new(
-        "check",
-        "check package database/update state without mutation",
-        &[ToolArg::optional("packages", ToolArgKind::StringArray)],
-    ).in_band(crate::tools::Placement::InstallPackages),
-    ToolPermutation::new(
-        "install",
-        "install declared packages using pacman --needed semantics",
-        &[
-            ToolArg::required("packages", ToolArgKind::StringArray),
-            ToolArg::optional("conflict_policy", ToolArgKind::String),
-            ToolArg::optional("conflict_paths", ToolArgKind::StringArray),
-            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-        ],
-    ).in_band(crate::tools::Placement::InstallPackages),
-    ToolPermutation::new(
-        "upgrade",
-        "run full pacman -Syu upgrade lane",
-        &[ToolArg::optional("timeout_secs", ToolArgKind::Integer)],
-    ).in_band(crate::tools::Placement::InstallPackages),
-    ToolPermutation::new(
-        "keyring-repair",
-        "repair Arch pacman keyring with pacman-key init/populate/refresh/updatedb and archlinux-keyring install",
-        &[
-            ToolArg::optional("package", ToolArgKind::String),
-            ToolArg::optional("timeout_secs", ToolArgKind::Integer),
-        ],
-    ).in_band(crate::tools::Placement::InstallPackages),
-];
-pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
+const NAME: &str = "package";
 
 const HARMONIA_PACMAN_PATH_ENV: &str = "HARMONIA_PACMAN_PATH";
 const HARMONIA_PACMAN_KEY_PATH_ENV: &str = "HARMONIA_PACMAN_KEY_PATH";
