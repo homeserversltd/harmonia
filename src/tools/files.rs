@@ -214,6 +214,34 @@ pub struct FileConvergenceRequest {
     pub group: Option<String>,
 }
 
+/// Classification is performed at the shared file membrane, before any
+/// observation is promoted to an actuator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TargetClass { Software, Config, Refused(String) }
+
+pub(crate) fn is_protected_path(path: &Path) -> bool {
+    let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+    name.starts_with("id_") || name.ends_with(".pem") || name.ends_with(".key")
+        || name.ends_with(".p12") || name.ends_with(".pfx")
+        || path.components().any(|component| matches!(component,
+            Component::Normal(value) if matches!(value.to_str(), Some(".ssh") | Some("key") |
+            Some("keys") | Some("private") | Some("credentials") | Some("secrets"))))
+}
+
+pub(crate) fn classify_target(path: &Path) -> TargetClass {
+    if is_protected_path(path) { return TargetClass::Refused(format!("credential-boundary-refused {}", path.display())); }
+    let text = path.to_string_lossy();
+    if text == "/etc" || text.starts_with("/etc/") || text == "/home" || text.starts_with("/home/")
+        || text == "/root" || text.starts_with("/root/") || text == "$HOME" || text.starts_with("$HOME/")
+        || text.contains("config_deploy:interactable") { TargetClass::Config } else { TargetClass::Software }
+}
+
+fn classify_request(request: &FileConvergenceRequest) -> Result<Vec<TargetClass>, String> {
+    request.files.iter().map(|file| match classify_target(&request.target_root.join(&file.relative_path)) {
+        TargetClass::Refused(reason) => Err(reason), class => Ok(class)
+    }).collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct HotfixFileBackfillRequest {
     pub target: PathBuf,
@@ -870,6 +898,9 @@ pub(crate) fn converge_managed_files(
     apply: bool,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(request.receipt_name)?;
+    let classes = request.files.iter().map(|file| classify_target(Path::new(&file.path))).collect::<Vec<_>>();
+    if let Some(reason) = classes.iter().find_map(|class| match class { TargetClass::Refused(reason) => Some(reason.clone()), _ => None }) { return Err(reason); }
+    let apply = apply && classes.iter().all(|class| matches!(class, TargetClass::Software));
     for file in request.files {
         reject_ssh_path(Path::new(&file.path))?;
     }
@@ -1153,7 +1184,8 @@ pub fn converge_files(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<FileConvergenceOutcome, String> {
-    converge_files_with_invocation(request, receipt_dir, apply, None)
+    if apply { return Err("software-authorization-required".into()); }
+    converge_files_authorized(request, receipt_dir, None, None)
 }
 
 pub(crate) fn converge_files_with_invocation(
@@ -1162,11 +1194,25 @@ pub(crate) fn converge_files_with_invocation(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
+    if apply { return Err("software-authorization-required".into()); }
+    converge_files_authorized(request, receipt_dir, None, invocation)
+}
+
+pub(crate) fn converge_files_authorized(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
         return Err("files-converge-empty-request".to_string());
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
+    let classes = classify_request(request)?;
+    let apply = authorization.is_some() && classes.iter().all(|class| matches!(class, TargetClass::Software));
+    // InvocationKey is an actuator bearer, never an observation/proposal bearer.
+    let actuation_invocation = apply.then_some(invocation).flatten();
     for spec in &request.files {
         reject_ssh_path(&request.target_root.join(&spec.relative_path))?;
     }
@@ -1313,6 +1359,21 @@ pub(crate) fn converge_files_with_invocation(
         let desired_bytes = fs::read(&source)
             .map_err(|error| format!("files-source-read-failed {}: {error}", source.display()))?;
         let backup_path = receipt_dir.join("backups").join(&spec.relative_path);
+        if !apply {
+            // Observe/compare/propose is a terminal lane: no actuator call and no
+            // InvocationKey may cross into a mutation-capable descendant.
+            entries.push(FileConvergenceEntry {
+                relative_path, source, target, source_exists, target_exists_before,
+                content_equal_before, mode_equal_before, target_exists_after: target_exists_before,
+                content_equal_after: content_equal_before, mode_equal_after: mode_equal_before,
+                changed: entry_changed, backed_up_to: None, final_mode,
+                ownership_source: ownership_source.to_string(), observed_uid_before, observed_gid_before,
+                observed_uid_after: observed_uid_before, observed_gid_after: observed_gid_before,
+                ownership_changed, observed_uid: observed_uid_before, observed_gid: observed_gid_before,
+                diff: file_diff.text, diff_omitted: file_diff.omitted,
+            });
+            continue;
+        }
         let place = crate::place_file::execute(crate::place_file::PlaceFileRequest {
             path: &target,
             declared_bytes: &desired_bytes,
@@ -1326,7 +1387,7 @@ pub(crate) fn converge_files_with_invocation(
             } else {
                 crate::place_file::BackupPolicy::None
             },
-            invocation: apply.then_some(invocation).flatten(),
+            invocation: actuation_invocation,
         });
         let (backed_up_to, wrote_content, truthful_changed) = match place {
             Ok(outcome) => {
@@ -3784,20 +3845,7 @@ fn reject_ssh_path(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn validate_interactable_target(path: &Path) -> Result<(), String> {
-    reject_ssh_path(path)?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    let key_shaped = name.starts_with("id_")
-        || name.ends_with(".key")
-        || name.ends_with(".pem")
-        || name.ends_with(".p12")
-        || name.ends_with(".pfx")
-        || path.components().any(|component| {
-            matches!(component, Component::Normal(value) if matches!(value.to_str(), Some("key") | Some("keys") | Some("private") | Some("credentials") | Some("secrets")))
-        });
-    if key_shaped {
+    if is_protected_path(path) {
         return Err(format!(
             "credential-boundary-refused: {} is key-shaped, Harmonia never hard-stamps credential material",
             path.display()

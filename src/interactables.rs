@@ -1,93 +1,66 @@
-use crate::ladder::LadderManifest;
-use crate::tools::files::{FileConvergenceOutcome, FileConvergenceRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn iso8601_now() -> String {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let timestamp = seconds.min(i64::MAX as u64) as libc::time_t;
-    let mut utc: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::gmtime_r(&timestamp, &mut utc) }.is_null() {
-        return "1970-01-01T00:00:00Z".to_string();
-    }
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        utc.tm_year + 1900,
-        utc.tm_mon + 1,
-        utc.tm_mday,
-        utc.tm_hour,
-        utc.tm_min,
-        utc.tm_sec
-    )
-}
 
 const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct InteractablesFeed {
+pub(crate) struct InteractablesFeed {
     schema: String,
     #[serde(default)]
-    interactables: Vec<Interactable>,
+    pub(crate) interactables: Vec<Interactable>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Interactable {
-    id: String,
-    module_id: String,
-    name: String,
+pub(crate) struct Interactable {
+    pub(crate) id: String,
+    pub(crate) module_id: String,
+    pub(crate) name: String,
     #[serde(default)]
-    description: String,
-    kind: String,
-    target_path: PathBuf,
-    reference_source_path: PathBuf,
-    drift: DriftSummary,
-    created_at: String,
-    refreshed_at: String,
+    pub(crate) description: String,
+    pub(crate) kind: String,
+    pub(crate) target_path: PathBuf,
+    pub(crate) reference_source_path: PathBuf,
+    pub(crate) drift: DriftSummary,
+    pub(crate) created_at: String,
+    pub(crate) refreshed_at: String,
     /// UTC time when this item became available, or was last re-reported.
     /// Legacy rows omit this field and deserialize as null.
     #[serde(default)]
-    available_at: Option<String>,
-    has_run: bool,
+    pub(crate) available_at: Option<String>,
+    pub(crate) has_run: bool,
     #[serde(default)]
-    mode: Option<u32>,
+    pub(crate) mode: Option<u32>,
     #[serde(default)]
-    owner: Option<String>,
+    pub(crate) owner: Option<String>,
     #[serde(default)]
-    group: Option<String>,
+    pub(crate) group: Option<String>,
     /// Local source commit compared with `target_sha` for source-shaped items.
     /// File convergence proposals have no source-commit authority, so this
     /// remains null without changing their existing shape.
     #[serde(default)]
-    source_sha: Option<String>,
+    pub(crate) source_sha: Option<String>,
     /// Observed target commit for source-shaped items, when the possession lane
     /// can observe it without a separate source acquisition.
     #[serde(default)]
-    target_sha: Option<String>,
+    pub(crate) target_sha: Option<String>,
     /// Number of commits from `source_sha` to `target_sha`; null means the
     /// source lane did not establish a comparable Git pair.
     #[serde(default)]
-    commits_behind: Option<u64>,
+    pub(crate) commits_behind: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DriftSummary {
-    content: bool,
-    mode: bool,
-    ownership: bool,
+pub(crate) struct DriftSummary {
+    pub(crate) content: bool,
+    pub(crate) mode: bool,
+    pub(crate) ownership: bool,
 }
 
 fn feed_path() -> PathBuf {
@@ -96,19 +69,12 @@ fn feed_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FEED_PATH))
 }
 
-fn stamp() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string())
-}
-
 fn stable_id(module_id: &str, target: &Path) -> String {
     let digest = Sha256::digest(format!("{module_id}:{}", target.display()).as_bytes());
     format!("config-proposal-{}", &format!("{digest:x}")[..16])
 }
 
-fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
+pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
     match fs::read_to_string(path) {
         Ok(text) => {
             let feed: InteractablesFeed = serde_json::from_str(&text)
@@ -126,95 +92,13 @@ fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
     }
 }
 
-fn save_feed(path: &Path, feed: &InteractablesFeed) -> Result<(), String> {
-    let value = serde_json::to_value(feed)
-        .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?;
-    crate::write_json(path, &value)?;
-    #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o644))
-        .map_err(|error| format!("interactables-feed-mode-failed {}: {error}", path.display()))?;
-    let proposal_root = path.parent().unwrap_or_else(|| Path::new(".")).join("proposals");
-    fs::create_dir_all(&proposal_root).map_err(|error| error.to_string())?;
-    let live_records = feed.interactables.iter().map(|item| format!("{}.json", item.id)).collect::<BTreeSet<_>>();
-    for entry in fs::read_dir(&proposal_root).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name();
-        if entry.file_type().map_err(|error| error.to_string())?.is_file() && name.to_str().is_some_and(|name| name.starts_with("config-proposal-") && name.ends_with(".json") && !live_records.contains(name)) {
-            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
-        }
-    }
-    for item in &feed.interactables {
-        crate::write_json(&proposal_root.join(format!("{}.json", item.id)), &serde_json::to_value(item).map_err(|error| error.to_string())?)?;
-    }
-    Ok(())
+#[cfg(test)]
+pub(crate) fn save_feed(path: &Path, feed: &InteractablesFeed) -> Result<(), String> {
+    crate::bands::propose_edits::persist_feed(path, feed)
 }
 
 pub(crate) fn pending_config_proposal_count() -> usize {
     load_feed(&feed_path()).map(|feed| feed.interactables.len()).unwrap_or(0)
-}
-
-pub(crate) fn refresh_interactables_for_convergence(
-    manifest: &LadderManifest,
-    request: &FileConvergenceRequest,
-    outcome: &FileConvergenceOutcome,
-) -> Result<(), String> {
-    let path = feed_path();
-    refresh_interactables_at_path(&path, manifest, request, outcome)
-}
-
-fn refresh_interactables_at_path(
-    path: &Path,
-    manifest: &LadderManifest,
-    request: &FileConvergenceRequest,
-    outcome: &FileConvergenceOutcome,
-) -> Result<(), String> {
-    let mut feed = load_feed(path)?;
-    let now = stamp();
-    let available_at = iso8601_now();
-    for entry in &outcome.entries {
-        let id = stable_id(&manifest.id, &entry.target);
-        let created_at = feed
-            .interactables
-            .iter()
-            .find(|existing| existing.id == id)
-            .map(|existing| existing.created_at.clone())
-            .unwrap_or_else(|| now.clone());
-        feed.interactables.retain(|existing| existing.id != id);
-        if !entry.source_exists || !entry.target_exists_before {
-            continue;
-        }
-        let drift = DriftSummary {
-            content: !entry.content_equal_before,
-            mode: !entry.mode_equal_before,
-            ownership: entry.ownership_changed,
-        };
-        if !drift.content && !drift.mode && !drift.ownership {
-            continue;
-        }
-        crate::tools::files::validate_interactable_target(&entry.target)?;
-        feed.interactables.push(Interactable {
-            id,
-            module_id: manifest.id.clone(),
-            name: format!("{}: {}", manifest.id, entry.relative_path),
-            description: manifest.description.clone(),
-            kind: "hard-stamp".to_string(),
-            target_path: entry.target.clone(),
-            reference_source_path: entry.source.clone(),
-            drift,
-            created_at,
-            refreshed_at: now.clone(),
-            available_at: Some(available_at.clone()),
-            has_run: false,
-            mode: entry.final_mode,
-            owner: request.owner.clone(),
-            group: request.group.clone(),
-            source_sha: None,
-            target_sha: None,
-            commits_behind: None,
-        });
-    }
-    feed.interactables.sort_by(|left, right| left.id.cmp(&right.id));
-    save_feed(&path, &feed)
 }
 
 pub(crate) fn interactable_command(
@@ -280,16 +164,22 @@ fn interactable_run(
     receipt["has_run"] = serde_json::Value::Bool(true);
     feed.interactables[position].has_run = true;
     feed.interactables.remove(position);
-    save_feed(&path, &feed)?;
+    crate::bands::propose_edits::persist_feed(&path, &feed)?;
     println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
     Ok(())
 }
 
 
 #[cfg(test)]
+fn refresh_interactables_at_path(path: &Path, manifest: &crate::ladder::LadderManifest, request: &crate::tools::files::FileConvergenceRequest, outcome: &crate::tools::files::FileConvergenceOutcome) -> Result<(), String> {
+    crate::bands::propose_edits::refresh_interactables_at_path(path, manifest, request, outcome)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::files::FileSpec;
+    use crate::ladder::LadderManifest;
+    use crate::tools::files::{FileConvergenceOutcome, FileConvergenceRequest, FileSpec};
     use std::collections::BTreeMap;
 
     fn item(module_id: &str, target: PathBuf) -> Interactable {

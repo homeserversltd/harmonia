@@ -407,7 +407,7 @@ pub(crate) fn stage_managed_files(
     // a direct invocation can write configuration paths.
     let managed_files = effective_managed_files(module, &state.source_dir)?
         .into_iter()
-        .filter(|file| !crate::ladder::is_configuration_path(Path::new(&file.path)))
+        .filter(|file| !matches!(crate::tools::files::classify_target(Path::new(&file.path)), crate::tools::files::TargetClass::Config))
         .collect::<Vec<_>>();
     if managed_files.is_empty() {
         fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
@@ -475,7 +475,7 @@ fn stage_configuration_proposal(
         .into_iter()
         .filter(|file| {
             admitted_paths.contains(file.path.as_str())
-                && crate::ladder::is_configuration_path(Path::new(&file.path))
+                && matches!(crate::tools::files::classify_target(Path::new(&file.path)), crate::tools::files::TargetClass::Config)
         })
         .collect::<Vec<_>>();
     let source_root = receipt_dir.join(format!("{}-config-proposal-sources", spec.op_prefix));
@@ -618,7 +618,7 @@ fn stage_configuration_proposal(
         ladder: Vec::new(),
         base_dir: receipt_dir.to_path_buf(),
     };
-    crate::refresh_interactables_for_convergence(&manifest, &request, &outcome)?;
+    crate::bands::propose_edits::refresh_interactables_for_convergence(&manifest, &request, &outcome)?;
     Ok(())
 }
 

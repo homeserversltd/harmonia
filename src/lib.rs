@@ -1,5 +1,6 @@
 mod atoms;
 mod stillness_bench;
+mod structural_wall_bench;
 #[path = "tools/build-venv/index.rs"]
 pub(crate) mod build_venv;
 #[path = "tools/build-crate/index.rs"]
@@ -280,7 +281,7 @@ mod invocation_face {
             || args.first().is_some_and(|arg| {
                 matches!(
                     arg.as_str(),
-                    "acquire-source" | "bench-stillness" | "bench-harmonia-foundation"
+                    "acquire-source" | "bench-stillness" | "bench-structural-wall" | "bench-harmonia-foundation"
                 )
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
@@ -2691,6 +2692,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or_else(|| "foundation-invocation-key-missing".to_string())?,
         ),
         Some("bench-stillness") => stillness_bench::run(invocation.0),
+        Some("bench-structural-wall") => structural_wall_bench::run(invocation.0),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
         }

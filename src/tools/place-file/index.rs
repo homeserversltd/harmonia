@@ -74,6 +74,13 @@ pub(crate) struct PlaceFileOutcome {
 }
 
 pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome, String> {
+    match crate::tools::files::classify_target(request.path) {
+        crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
+        crate::tools::files::TargetClass::Config if request.invocation.is_some() => {
+            return Err("configuration-actuator-authority-refused".into())
+        }
+        _ => {}
+    }
     let run = crate::tools::comparison::execute(
         "place-file",
         || {
