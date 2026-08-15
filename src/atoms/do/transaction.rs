@@ -697,36 +697,40 @@ fn restore_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
     }
     Ok(())
 }
+fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String> {
+    let mut current = Vec::new();
+    capture_tree(root, &mut current)?;
+    let mut wanted = expected.iter().filter(|node| node.path == root || node.path.starts_with(root.join(""))).cloned().collect::<Vec<_>>();
+    current.sort_by(|a, b| a.path.cmp(&b.path));
+    wanted.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(current.len() == wanted.len() && current.iter().zip(&wanted).all(|(a, b)| a.path == b.path && a.mode == b.mode && a.uid == b.uid && a.gid == b.gid && std::mem::discriminant(&a.kind) == std::mem::discriminant(&b.kind) && match (&a.kind, &b.kind) { (Kind::File(x), Kind::File(y)) => x == y, (Kind::Symlink(x), Kind::Symlink(y)) => x == y, _ => true }))
+}
+
 pub(crate) fn restore(s: &Snapshot) -> Result<(), String> {
-    for r in s.roots.iter().rev() {
-        safe_target(r)?;
-        rm(r)?;
+    let mut changed = Vec::new();
+    for root in &s.roots {
+        safe_target(root)?;
+        if !root_matches_snapshot(root, &s.nodes)? { changed.push(root.clone()); }
     }
+    let changed_roots = changed.clone();
+    changed.retain(|root| !changed_roots.iter().any(|parent| parent != root && root.starts_with(parent)));
+    for root in changed.iter().rev() { rm(root)?; }
     for n in &s.nodes {
+        if !changed.iter().any(|root| n.path == *root || n.path.starts_with(root.join(""))) { continue; }
         match &n.kind {
             Kind::Missing => continue,
             Kind::Dir => fs::create_dir_all(&n.path).map_err(|e| e.to_string())?,
-            Kind::File(b) => {
-                if let Some(p) = n.path.parent() {
-                    fs::create_dir_all(p).map_err(|e| e.to_string())?;
-                }
-                crate::tools::files::atomic_write_bytes(&n.path, b, Some(n.mode & 0o7777))?
-            }
-            Kind::Symlink(t) => {
-                if let Some(p) = n.path.parent() {
-                    fs::create_dir_all(p).map_err(|e| e.to_string())?;
-                }
-                std::os::unix::fs::symlink(t, &n.path).map_err(|e| e.to_string())?
-            }
+            Kind::File(b) => { if let Some(p) = n.path.parent() { fs::create_dir_all(p).map_err(|e| e.to_string())?; } crate::tools::files::atomic_write_bytes(&n.path, b, Some(n.mode & 0o7777))? }
+            Kind::Symlink(t) => { if let Some(p) = n.path.parent() { fs::create_dir_all(p).map_err(|e| e.to_string())?; } std::os::unix::fs::symlink(t, &n.path).map_err(|e| e.to_string())? }
         }
         if !matches!(n.kind, Kind::Symlink(_)) {
             restore_owner(&n.path, n.uid, n.gid)?;
-            fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777))
-                .map_err(|e| e.to_string())?;
+            fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777)).map_err(|e| e.to_string())?;
         }
     }
     verify(s)
 }
+
 fn verify(s: &Snapshot) -> Result<(), String> {
     let mut got = Vec::new();
     for r in &s.roots {
@@ -768,8 +772,11 @@ pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSna
         .collect()
 }
 pub(crate) fn restore_services(states: &[ServiceStateSnapshot]) -> Result<(), String> {
-    for s in states {
-        crate::tools::systemd::restore_service_state(s)?;
+    for sealed in states {
+        let observed = crate::tools::systemd::snapshot_service_state(&sealed.name, sealed.user, sealed.target_user.as_deref())?;
+        if observed.enabled != sealed.enabled || observed.active != sealed.active {
+            crate::tools::systemd::restore_service_state(sealed)?;
+        }
     }
     Ok(())
 }
@@ -839,6 +846,21 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         modules: vec!["caduceus".into(), "arcadia-gui-runtime".into()],
         hotfixes: vec![],
     };
+    if args.iter().any(|arg| arg == "--config-census") {
+        let manifest_path = modules.join("caduceus/manifest.json");
+        let config_manifest = fs::read_to_string(&manifest_path)
+            .map_err(|e| e.to_string())?
+            .replace("/usr/local/bin/caduceus", "/home/owner/.config/hypr/harmonia.conf");
+        fs::write(&manifest_path, config_manifest).map_err(|e| e.to_string())?;
+        match derive_plan(&p, &modules, None) {
+            Err(error) if error.starts_with("configuration-actuator-authority-refused ") => {
+                println!("no_config_in_census={error}");
+                return Ok(());
+            }
+            Ok(_) => return Err("config target admitted into update census".into()),
+            Err(error) => return Err(format!("unexpected config census result: {error}")),
+        }
+    }
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut bindings = Vec::new();
     for profile_id in ["tv", "homeconsole", "homeserver"] {
@@ -848,11 +870,18 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
             .join("index.json");
         let source_profile = crate::load_profile(&profile_path).map_err(|e| e.to_string())?;
         let source_modules = profile_path.parent().unwrap().join("modules");
-        let source_plan = derive_plan(
+        let source_plan = match derive_plan(
             &source_profile,
             &source_modules,
             Some(&root.join("profile-projection")),
-        )?;
+        ) {
+            Ok(plan) => plan,
+            Err(error) if error.starts_with("configuration-actuator-authority-refused ") => {
+                bindings.push(format!("{}=configuration-refused", profile_id));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         bindings.push(format!("{}={}", profile_id, source_plan.gui_face));
         if profile_id == "tv" {
             let agathodaimon_targets = source_plan
@@ -890,6 +919,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         .count();
     println!("pre_absent_targets={pre_absent}");
     let snap = crate::atoms::r#do::transaction::snapshot(&plan.targets)?;
+    let failed_member_identity = fail.as_deref().map(|member| plan.targets.iter().filter(|target| target.member == member).filter_map(|target| fs::symlink_metadata(&target.path).ok().map(|m| (target.path.clone(), m.ino(), m.mtime(), m.mtime_nsec()))).collect::<Vec<_>>());
     for t in &plan.targets {
         if fail.as_deref() != Some(t.member.as_str()) {
             if matches!(fs::symlink_metadata(&t.path),Ok(m)if m.is_file()) {
@@ -913,11 +943,13 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         fail.as_ref().map(|_| "gui-forced"),
     )?;
     let receipt = fs::read_to_string(dir.join("update-set.json")).map_err(|e| e.to_string())?;
+    let failed_member_unchanged = failed_member_identity.as_ref().map(|before| before.iter().all(|(path, ino, mtime, mtime_nsec)| fs::symlink_metadata(path).map(|m| m.ino() == *ino && m.mtime() == *mtime && m.mtime_nsec() == *mtime_nsec).unwrap_or(false))).unwrap_or(true);
     println!(
-        "update-set-bench root={} receipt={} rollback_verified={} receipt_line={}",
+        "update-set-bench root={} receipt={} rollback_verified={} failed_member_unchanged={} receipt_line={}",
         root.display(),
         dir.join("update-set.json").display(),
-        fail.is_none() || verdict == "failed-rolled-back",
+        (fail.is_none() || verdict == "failed-rolled-back") && failed_member_unchanged,
+        failed_member_unchanged,
         receipt.replace('\n', "")
     );
     println!("profile_gui_bindings={}", bindings.join(","));

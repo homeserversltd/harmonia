@@ -157,6 +157,16 @@ fn projection_safe_target(path: &Path) -> Result<(), String> {
     Ok(())
 }
 fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> Result<(), String> {
+    match crate::tools::files::classify_target(&path) {
+        crate::tools::files::TargetClass::Software => {}
+        crate::tools::files::TargetClass::Config => {
+            return Err(format!(
+                "configuration-actuator-authority-refused {}",
+                path.display()
+            ))
+        }
+        crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
+    }
     projection_safe_target(&path)?;
     out.push(Target {
         path,
