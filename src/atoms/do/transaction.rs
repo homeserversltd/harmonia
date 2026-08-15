@@ -1,9 +1,7 @@
 //! Durable transactional atom: capsule first, ordered JSONL journal, guarded rollback.
 use crate::atoms::r#do::InvocationKey;
 use crate::Profile;
-use crate::update_set::{derive_plan, update_set_receipt};
 use crate::tools::systemd::ServiceStateSnapshot;
-use crate::update_set::{Target, UpdatePlan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 #[derive(Clone, Debug, Default)]
@@ -75,10 +73,51 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
 };
+
+#[derive(Clone, Debug)]
+pub(crate) struct Target {
+    pub path: PathBuf,
+    pub member: String,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct ServiceBinding {
+    pub name: String,
+    pub user: bool,
+    pub target_user: Option<String>,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct UpdatePlan {
+    pub targets: Vec<Target>,
+    pub services: Vec<ServiceBinding>,
+    pub gui_face: String,
+    pub gui_member: String,
+    pub caduceus_count: usize,
+}
+pub(crate) fn derive_plan(
+    profile: &Profile,
+    module_root: &Path,
+    projection_root: Option<&Path>,
+) -> Result<UpdatePlan, String> {
+    let projection =
+        crate::profile_engine::load_profile_projection(profile, module_root, &BTreeSet::new())?;
+    let mut plan = projection.derive_update_plan(profile, module_root)?;
+    if let Some(scratch) = projection_root {
+        for target in &mut plan.targets {
+            let rel = target
+                .path
+                .strip_prefix("/")
+                .map_err(|_| "projection-target-not-absolute")?;
+            target.path = scratch.join(rel);
+        }
+        plan.services.clear();
+    }
+    Ok(plan)
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunCarrier {
     pub projection: Option<crate::profile_engine::ProfileProjection>,
-    pub update_plan: Option<crate::update_set::UpdatePlan>,
+    pub update_plan: Option<UpdatePlan>,
     pub refreshed_profile: Option<RefreshedProfileIdentity>,
     pub module_root_consistency: Option<ModuleRootConsistency>,
     pub transaction_census: Option<TransactionCensus>,
@@ -988,7 +1027,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
     } else {
         "ok"
     };
-    update_set_receipt(
+    crate::atoms::attest::update_set_receipt(
         &dir,
         &plan.gui_face,
         verdict,

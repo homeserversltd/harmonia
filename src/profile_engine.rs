@@ -1,4 +1,4 @@
-use crate::update_set::{ServiceBinding, Target, UpdatePlan};
+use crate::atoms::r#do::transaction::{ServiceBinding, Target, UpdatePlan};
 use crate::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,7 +32,7 @@ impl ProfileProjection {
         &self,
         profile: &Profile,
         module_root: &Path,
-    ) -> Result<crate::update_set::UpdatePlan, String> {
+    ) -> Result<UpdatePlan, String> {
         projection_derive_plan_inner(self, profile, module_root)
     }
 }
@@ -1198,7 +1198,7 @@ fn rolling_update_run(
                 return Err(error);
             };
             if let Ok(receipt) = crate::atoms::r#do::transaction::rollback_projection(&mut txn) {
-                crate::update_set::write_transaction_receipt(
+                crate::atoms::attest::write_transaction_receipt(
                     &effective_receipt_dir,
                     &receipt,
                     Some(&error),
@@ -1217,7 +1217,7 @@ fn rolling_update_run(
             return Err("stage-profile-invocation-missing".to_string());
         }
         let receipt = crate::atoms::r#do::transaction::commit_projection(&mut txn)?;
-        crate::update_set::write_transaction_receipt(&effective_receipt_dir, &receipt, None)?;
+        crate::atoms::attest::write_transaction_receipt(&effective_receipt_dir, &receipt, None)?;
         Ok(())
     };
     if apply {

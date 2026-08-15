@@ -10,6 +10,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static JSON_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) fn update_set_receipt(dir: &Path, face: &str, verdict: &str, failed: Option<&str>, failed_step: Option<&str>) -> Result<(), String> {
+    let ms = ["caduceus", "agathodaimon", face].into_iter().map(|m| serde_json::json!({"member":m,"status":if verdict=="ok"{"ok"}else if failed==Some(m){"failed"}else{"rolled-back"}})).collect::<Vec<_>>();
+    let mut value = serde_json::json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","gui":face,"set_verdict":verdict,"members":ms});
+    if let Some(step) = failed_step { value["failed_step"] = serde_json::json!(step); }
+    write_json_atomic(&dir.join("update-set.json"), &value)
+}
+
+pub(crate) fn write_transaction_receipt(dir: &Path, receipt: &crate::atoms::r#do::transaction::TransactionReceipt, failed_step: Option<&str>) -> Result<(), String> {
+    let mut value = crate::atoms::r#do::transaction::project_update_set_v1(receipt);
+    if let Some(step) = failed_step { value["failed_step"] = serde_json::json!(step); }
+    write_json_atomic(&dir.join("update-set.json"), &value)
+}
+
 /// Persist a JSON receipt through the attest durability membrane.
 fn is_backup_path(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == "backups")

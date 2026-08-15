@@ -27,7 +27,6 @@ pub(crate) mod set_clock;
 mod stillness_bench;
 mod structural_wall_bench;
 pub mod tools;
-mod update_set;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
