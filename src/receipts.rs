@@ -3,96 +3,10 @@ use serde_json::json;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-static RECEIPT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-const RECEIPT_TREE_ROOT: &str = "/var/lib/harmonia/receipts";
-
-fn is_backup_path(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == "backups")
-}
-
-fn make_receipt_tree_readable(path: &Path) -> Result<(), String> {
-    let root = Path::new(RECEIPT_TREE_ROOT);
-    let Ok(relative) = path.strip_prefix(root) else {
-        return Ok(());
-    };
-    if is_backup_path(relative) {
-        return Ok(());
-    }
-    let mut current = root.to_path_buf();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&current, fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("receipt-directory-mode-failed {}: {error}", current.display()))?;
-        for component in relative.components() {
-            current.push(component);
-            fs::set_permissions(&current, fs::Permissions::from_mode(0o755)).map_err(|error| {
-                format!("receipt-directory-mode-failed {}: {error}", current.display())
-            })?;
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("receipt-parent-missing {}", path.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("receipt-parent-create-failed {}: {error}", parent.display()))?;
-    make_receipt_tree_readable(parent)?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("receipt-name-invalid {}", path.display()))?;
-    let sequence = RECEIPT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(
-        ".{name}.harmonia-receipt-{}-{sequence}.tmp",
-        std::process::id()
-    ));
-    let result = (|| -> Result<(), String> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|error| format!("receipt-temp-create-failed {}: {error}", temp.display()))?;
-        serde_json::to_writer_pretty(&mut file, value).map_err(|error| {
-            format!("receipt-temp-serialize-failed {}: {error}", temp.display())
-        })?;
-        writeln!(file)
-            .map_err(|error| format!("receipt-temp-write-failed {}: {error}", temp.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("receipt-temp-sync-failed {}: {error}", temp.display()))?;
-        drop(file);
-        fs::rename(&temp, path).map_err(|error| {
-            format!(
-                "receipt-atomic-promote-failed {} -> {}: {error}",
-                temp.display(),
-                path.display()
-            )
-        })?;
-        if !is_backup_path(path) {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o644))
-                    .map_err(|error| format!("receipt-mode-failed {}: {error}", path.display()))?;
-            }
-        }
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("receipt-parent-sync-failed {}: {error}", parent.display()))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    crate::atoms::attest::write_json_atomic(path, value)
 }
 
 pub(crate) fn run_id_from_stamp() -> String {
@@ -390,8 +304,7 @@ pub(crate) fn write_plan_receipts(
                         manifest.id
                     ));
                 }
-                let steps = validate_ladder(&manifest)
-                    .map_err(|err| err.first_missing_signal())?;
+                let steps = validate_ladder(&manifest).map_err(|err| err.first_missing_signal())?;
                 for step in steps {
                     writeln!(
                         events,
