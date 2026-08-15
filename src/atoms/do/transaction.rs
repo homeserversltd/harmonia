@@ -861,6 +861,20 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
             Err(error) => return Err(format!("unexpected config census result: {error}")),
         }
     }
+    if args.iter().any(|arg| arg == "--managed-config-census") {
+        let manifest_path = modules.join("caduceus/manifest.json");
+        let managed_manifest = fs::read_to_string(&manifest_path)
+            .map_err(|e| e.to_string())?
+            .replace(
+                "\"managed_files\":[]",
+                "\"managed_files\":[{\"path\":\"/home/owner/.config/hypr/harmonia.conf\",\"content\":\"bench\"}]",
+            );
+        fs::write(&manifest_path, managed_manifest).map_err(|e| e.to_string())?;
+        let plan = derive_plan(&p, &modules, Some(&root))?;
+        let _sealed = seal_projection(&plan, "bench", "bench", "bench")?;
+        println!("config_skipped_census_sealed=true");
+        return Ok(());
+    }
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut bindings = Vec::new();
     for profile_id in ["tv", "homeconsole", "homeserver"] {

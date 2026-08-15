@@ -257,6 +257,13 @@ fn projection_derive_plan_inner(
             if let Some(a) = args.get("managed_files").and_then(Value::as_array) {
                 for x in a {
                     if let Some(p) = projection_value_path(x, "path") {
+                        if matches!(
+                            crate::tools::files::classify_target(&p),
+                            crate::tools::files::TargetClass::Config
+                        ) {
+                            println!("census-config-skip path={}", p.display());
+                            continue;
+                        }
                         projection_add_target(&mut targets, p, member)?;
                     }
                 }
