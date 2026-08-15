@@ -1,7 +1,8 @@
 //! One-call receipt custody: redact, serialize locally, then forward the same redacted value.
 #![allow(dead_code)]
+#[path = "hyalos.rs"]
+pub(crate) mod hyalos;
 use super::{append_appliance_log, Receipt};
-use crate::hyalos;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
