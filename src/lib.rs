@@ -1,31 +1,31 @@
 mod atoms;
-mod stillness_bench;
-mod structural_wall_bench;
-#[path = "tools/build-venv/index.rs"]
-pub(crate) mod build_venv;
-#[path = "tools/build-crate/index.rs"]
-pub(crate) mod build_crate;
-#[path = "tools/install-package/index.rs"]
-pub(crate) mod install_package;
-#[path = "tools/pull-repo/index.rs"]
-pub(crate) mod pull_repo;
 #[path = "tools/backfill-file/index.rs"]
 mod backfill_file;
-#[path = "tools/place-file/index.rs"]
-mod place_file;
-#[path = "tools/remove-file/index.rs"]
-mod remove_file;
+#[path = "tools/build-crate/index.rs"]
+pub(crate) mod build_crate;
+#[path = "tools/build-venv/index.rs"]
+pub(crate) mod build_venv;
+#[path = "tools/check-health/index.rs"]
+pub(crate) mod check_health;
 #[path = "tools/enable-unit/index.rs"]
 pub(crate) mod enable_unit;
+pub(crate) mod hyalos;
+#[path = "tools/install-package/index.rs"]
+pub(crate) mod install_package;
+#[path = "tools/place-file/index.rs"]
+mod place_file;
+#[path = "tools/pull-repo/index.rs"]
+pub(crate) mod pull_repo;
+#[path = "tools/ratchet-aur-package/index.rs"]
+pub(crate) mod ratchet_aur_package;
+#[path = "tools/remove-file/index.rs"]
+mod remove_file;
 #[path = "tools/remove-unit/index.rs"]
 pub(crate) mod remove_unit;
 #[path = "tools/set-clock/index.rs"]
 pub(crate) mod set_clock;
-#[path = "tools/check-health/index.rs"]
-pub(crate) mod check_health;
-#[path = "tools/ratchet-aur-package/index.rs"]
-pub(crate) mod ratchet_aur_package;
-pub(crate) mod hyalos;
+mod stillness_bench;
+mod structural_wall_bench;
 pub mod tools;
 mod update_set;
 
@@ -231,9 +231,9 @@ struct OperationOutcome {
 }
 
 pub mod application_presets;
+mod arcadia_gui_runtime;
 #[path = "bands/index.rs"]
 mod bands;
-mod arcadia_gui_runtime;
 mod pinned_artifacts_runtime;
 
 pub(crate) use arcadia_gui_runtime::{
@@ -244,8 +244,8 @@ pub(crate) use pinned_artifacts_runtime::pinned_artifacts_command;
 mod capsule;
 mod convergence_lock;
 pub mod device_profile;
-mod interactables;
 mod hotfix;
+mod interactables;
 mod ladder;
 mod module_dispatch;
 mod molt;
@@ -260,8 +260,8 @@ pub(crate) use atoms::r#do::transaction::RunContext;
 pub(crate) use capsule::*;
 pub(crate) use convergence_lock::*;
 pub(crate) use device_profile::*;
-pub(crate) use interactables::*;
 pub(crate) use hotfix::*;
+pub(crate) use interactables::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use molt::*;
@@ -281,7 +281,10 @@ mod invocation_face {
             || args.first().is_some_and(|arg| {
                 matches!(
                     arg.as_str(),
-                    "acquire-source" | "bench-stillness" | "bench-structural-wall" | "bench-harmonia-foundation"
+                    "acquire-source"
+                        | "bench-stillness"
+                        | "bench-structural-wall"
+                        | "bench-harmonia-foundation"
                 )
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
@@ -291,7 +294,9 @@ mod invocation_face {
             profile: "production".into(),
             face: args.first().cloned().unwrap_or_else(|| "invoke".into()),
             key,
-            carrier: std::rc::Rc::new(std::cell::RefCell::new(crate::atoms::r#do::transaction::RunCarrier::default())),
+            carrier: std::rc::Rc::new(std::cell::RefCell::new(
+                crate::atoms::r#do::transaction::RunCarrier::default(),
+            )),
         });
         super::Invocation(key, context)
     }
@@ -480,7 +485,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-
     #[test]
     fn artifact_promote_detects_equal_length_byte_change_by_sha256() {
         let scratch = std::env::temp_dir().join(format!("harmonia-artifact-sha-{}", process::id()));
@@ -600,7 +604,6 @@ mod tests {
         .contains("homeserver/homeserver"));
     }
 
-
     #[test]
     fn homeserver_profile_sync_advances_subscription_module_digest() {
         let root = repo_root();
@@ -653,7 +656,6 @@ mod tests {
         .unwrap_err()
         .contains("tv/arch-tv"));
     }
-
 
     #[test]
     fn tv_profile_sync_advances_subscription_module_digest() {
@@ -2103,9 +2105,7 @@ mod tests {
         assert!(!output
             .join("modules/homeconsole-update-runtime/files_root")
             .exists());
-        assert!(output
-            .join("locks/pinned-artifacts.json")
-            .exists());
+        assert!(output.join("locks/pinned-artifacts.json").exists());
         assert!(receipts.join("molt.json").exists());
         let receipt = fs::read_to_string(receipts.join("molt.json")).unwrap();
         assert!(receipt.contains("harmonia.molt.v1"));
@@ -2113,9 +2113,7 @@ mod tests {
         assert!(receipt.contains("module-ladder-manifest"));
         assert!(receipt.contains("profile-lock"));
         assert!(
-            !output
-                .join("modules/arcadia-gui-runtime/index.rs")
-                .exists(),
+            !output.join("modules/arcadia-gui-runtime/index.rs").exists(),
             "molt carries constants, not module code"
         );
         let _ = fs::remove_dir_all(scratch);
@@ -2124,24 +2122,59 @@ mod tests {
     #[test]
     fn molt_uses_the_same_flat_profile_layout_for_absent_and_existing_output_roots() {
         fn relative_file_bytes(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
-            fn collect(root: &Path, current: &Path, files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            fn collect(
+                root: &Path,
+                current: &Path,
+                files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+            ) {
                 for entry in fs::read_dir(current).unwrap() {
-                    let entry = entry.unwrap(); let path = entry.path();
-                    if entry.file_type().unwrap().is_dir() { collect(root, &path, files); }
-                    else { files.insert(path.strip_prefix(root).unwrap().to_path_buf(), fs::read(path).unwrap()); }
+                    let entry = entry.unwrap();
+                    let path = entry.path();
+                    if entry.file_type().unwrap().is_dir() {
+                        collect(root, &path, files);
+                    } else {
+                        files.insert(
+                            path.strip_prefix(root).unwrap().to_path_buf(),
+                            fs::read(path).unwrap(),
+                        );
+                    }
                 }
             }
-            let mut files = std::collections::BTreeMap::new(); collect(root, root, &mut files); files
+            let mut files = std::collections::BTreeMap::new();
+            collect(root, root, &mut files);
+            files
         }
         let scratch = std::env::temp_dir().join(format!("harmonia-molt-layout-{}", process::id()));
-        let root = scratch.join("root"); let absent_output = scratch.join("absent-output"); let existing_output = scratch.join("existing-output");
+        let root = scratch.join("root");
+        let absent_output = scratch.join("absent-output");
+        let existing_output = scratch.join("existing-output");
         write_molt_fixture(&root);
-        molt_at_subscription_path(&root, "fixture", &absent_output, &scratch.join("absent-receipts"), &scratch.join("absent-subscription.json"), MoltMode::Copy).unwrap();
+        molt_at_subscription_path(
+            &root,
+            "fixture",
+            &absent_output,
+            &scratch.join("absent-receipts"),
+            &scratch.join("absent-subscription.json"),
+            MoltMode::Copy,
+        )
+        .unwrap();
         fs::create_dir_all(&existing_output).unwrap();
-        molt_at_subscription_path(&root, "fixture", &existing_output, &scratch.join("existing-receipts"), &scratch.join("existing-subscription.json"), MoltMode::Copy).unwrap();
-        assert!(absent_output.join("index.json").is_file()); assert!(absent_output.join("modules/alpha/manifest.json").is_file());
+        molt_at_subscription_path(
+            &root,
+            "fixture",
+            &existing_output,
+            &scratch.join("existing-receipts"),
+            &scratch.join("existing-subscription.json"),
+            MoltMode::Copy,
+        )
+        .unwrap();
+        assert!(absent_output.join("index.json").is_file());
+        assert!(absent_output.join("modules/alpha/manifest.json").is_file());
         assert!(!absent_output.join("profiles/fixture").exists());
-        assert_eq!(relative_file_bytes(&absent_output), relative_file_bytes(&existing_output));
+        assert_eq!(
+            relative_file_bytes(&absent_output),
+            relative_file_bytes(&existing_output)
+        );
         let _ = fs::remove_dir_all(scratch);
     }
 
@@ -2428,7 +2461,6 @@ mod tests {
                     ("systemd", "is-active-probe"),
                 ],
             ),
-
         ];
         for (profile, module, expected) in cases {
             let dir = root
@@ -2698,6 +2730,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         }
         Some("install-timer") => schedule::install_timer(&args[1..]),
         Some("uninstall-timer") => schedule::uninstall_timer(&args[1..]),
+        Some("renew-self") => renew_self_command(&args[1..], invocation),
         Some("update") => update_from_certificate(&args[1..], invocation),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
@@ -2712,7 +2745,9 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     hyalos::forward_receipt(
                         "schema=harmonia.ladder.validate.v1",
                         &format!("schema=harmonia.ladder.validate.v1 ok={}", true),
-                        Some(serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": true})),
+                        Some(
+                            serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": true}),
+                        ),
                         Some(true),
                     );
                     println!("ok=true");
@@ -2727,7 +2762,9 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     hyalos::forward_receipt(
                         "schema=harmonia.ladder.validate.v1",
                         &format!("schema=harmonia.ladder.validate.v1 ok={}", false),
-                        Some(serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": false})),
+                        Some(
+                            serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": false}),
+                        ),
                         Some(false),
                     );
                     println!("ok=false");
@@ -2793,14 +2830,14 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or("source-acquisition-plan-missing")?;
             let config = load_engine_plane_config(&engine_config)?
                 .ok_or_else(|| format!("engine-config-missing {}", engine_config.display()))?;
-            let bearer = value_arg_string(&args, "--bearer").unwrap_or(config.git_bearer.clone());
+            let bearer = value_arg_string(&args, "--bearer").unwrap_or_else(|| "owner".to_string());
             let expected_commit = value_arg_string(&args, "--expected-commit");
             let acquisition = bridge_acquisition_plan(
                 &plan,
                 destination,
                 bearer,
                 expected_commit,
-                credential_scopes(&config),
+                std::collections::BTreeMap::new(),
             );
             let outcome = tools::git_artifact::acquire_source(&acquisition, invocation.0);
             println!(
@@ -2881,7 +2918,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or("run-profile requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args)
                 .unwrap_or_else(|| PathBuf::from("target/harmonia-run-profile"));
-            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
+            let mode = UpdateMode::from_apply_flag_with_invocation(
+                args.iter().any(|arg| arg == "--apply"),
+                invocation.0,
+            );
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             if profile.id == "homeserver" && profile.identity == "homeserver" {
@@ -2957,7 +2997,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or("homeserver-update requires <profile-index-json>")?;
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeserver_update_receipt_latest);
-            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
+            let mode = UpdateMode::from_apply_flag_with_invocation(
+                args.iter().any(|arg| arg == "--apply"),
+                invocation.0,
+            );
             verify_asserted_profile("homeserver")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
@@ -2969,7 +3012,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or("homeconsole-update requires <profile-index-json>")?;
             let receipt_dir =
                 receipt_dir_arg(&args).unwrap_or_else(homeconsole_update_receipt_latest);
-            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
+            let mode = UpdateMode::from_apply_flag_with_invocation(
+                args.iter().any(|arg| arg == "--apply"),
+                invocation.0,
+            );
             verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
@@ -2980,7 +3026,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .get(1)
                 .ok_or("tv-update requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
-            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
+            let mode = UpdateMode::from_apply_flag_with_invocation(
+                args.iter().any(|arg| arg == "--apply"),
+                invocation.0,
+            );
             verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
@@ -2993,7 +3042,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
                 PathBuf::from("/var/lib/harmonia/receipts/local-ai-runtime-latest")
             });
-            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
+            let mode = UpdateMode::from_apply_flag_with_invocation(
+                args.iter().any(|arg| arg == "--apply"),
+                invocation.0,
+            );
             let apply = mode.is_software_apply();
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
@@ -3006,15 +3058,14 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let module = load_module(&module_root.join("local-ai-runtime").join("sidecar.json"))?;
             let harmonia_root = harmonia_root_from_module_root(&module_root);
             let run_started = std::time::Instant::now();
-            let execution =
-                execute_profile_module(
-                    &module,
-                    &module_root,
-                    &receipt_dir,
-                    mode.software_authorization(),
-                    &harmonia_root,
-                    mode.invocation(),
-                )?;
+            let execution = execute_profile_module(
+                &module,
+                &module_root,
+                &receipt_dir,
+                mode.software_authorization(),
+                &harmonia_root,
+                mode.invocation(),
+            )?;
             write_engine_run_receipt_with_duration(
                 &receipt_dir,
                 &profile,
@@ -3032,7 +3083,9 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             hyalos::forward_receipt(
                 "schema=harmonia.local_ai_runtime.v1",
                 &format!("schema=harmonia.local_ai_runtime.v1 ok={}", execution.ok),
-                Some(serde_json::json!({"schema": "harmonia.local_ai_runtime.v1", "ok": execution.ok})),
+                Some(
+                    serde_json::json!({"schema": "harmonia.local_ai_runtime.v1", "ok": execution.ok}),
+                ),
                 Some(execution.ok),
             );
             println!("ok={}", execution.ok);
@@ -3061,7 +3114,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| {
                 PathBuf::from("/var/lib/harmonia/receipts/homeconsole-sync-latest")
             });
-            let mode = UpdateMode::from_apply_flag_with_invocation(args.iter().any(|arg| arg == "--apply"), invocation.0);
+            let mode = UpdateMode::from_apply_flag_with_invocation(
+                args.iter().any(|arg| arg == "--apply"),
+                invocation.0,
+            );
             let apply = mode.is_software_apply();
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             if profile.id != "homeconsole" || profile.identity != "homeconsole" {
@@ -3280,6 +3336,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia resolve-source <component> --certificate <path> [--owner-module <id>] [--step-id <id>]");
     println!("  harmonia acquire-source <component> --certificate <path> --engine-config <path> --destination <path> [--bearer <name>] [--expected-commit <sha>]");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
+    println!("  harmonia renew-self (--plan|--apply) --receipt-dir <path> [--module-root <path>]");
     println!("  harmonia update [--apply] [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia subscription show");
@@ -3296,6 +3353,30 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia homeconsole-arcadia-update <profiles/homeconsole/index.json> --artifact <path> [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha <sha>] [--source-sha-file <path>] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-gui-update <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--source-dir /opt/arcadia/source] [--apply] [--install-bin <path>] [--service arcadia.service] [--source-sha-file <path>] [--receipt-dir <path>]");
     Ok(())
+}
+
+fn renew_self_command(args: &[String], invocation: Invocation) -> Result<(), String> {
+    if args == ["--help"] {
+        println!("usage: harmonia renew-self (--plan|--apply) --receipt-dir <path> [--module-root <path>]");
+        return Ok(());
+    }
+    let apply = args.iter().any(|a| a == "--apply");
+    let receipt_dir =
+        value_arg(args, "--receipt-dir").ok_or("renew-self-requires---receipt-dir-<path>")?;
+    let module_root = value_arg(args, "--module-root").unwrap_or_default();
+    let execution = bands::renew_self::run(&module_root, &receipt_dir, apply, invocation.0)?;
+    let output = json!({"schema": bands::renew_self::PREFLIGHT_SCHEMA, "ok": execution.ok, "apply": apply, "changed": execution.changed, "operation_count": execution.operation_count, "first_missing_signal": execution.first_missing_signal.as_deref().unwrap_or("none"), "receipt_dir": receipt_dir, "module_root": module_root, "authority": "engine-preflight-only", "module_bands": false});
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?
+    );
+    if execution.ok {
+        Ok(())
+    } else {
+        Err(execution
+            .first_missing_signal
+            .unwrap_or_else(|| "engine-preflight-failed".into()))
+    }
 }
 
 pub(crate) fn receipt_dir_arg(args: &[String]) -> Option<PathBuf> {

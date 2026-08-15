@@ -24,9 +24,26 @@ pub const PERMUTATIONS: &[ToolPermutation] = &[ToolPermutation::new(
         ToolArg::optional("cwd", ToolArgKind::String),
         ToolArg::optional("timeout_secs", ToolArgKind::Integer),
     ],
-).in_band(crate::tools::Placement::ProposeEdits)];
+)
+.in_band(crate::tools::Placement::ProposeEdits)];
 pub const CONTRACT: ToolContract = ToolContract::new(NAME, DESCRIPTION, PERMUTATIONS);
 pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
+
+/// Typed boundary for guarded same-argv process replacement.
+pub(crate) fn exec_same_argv(
+    program: &Path,
+    args: &[String],
+    guard_name: &str,
+    guard_value: &str,
+) -> Result<(), String> {
+    let mut command = Command::new(program);
+    command.args(args).env(guard_name, guard_value);
+    let error = command.exec();
+    Err(format!(
+        "command-exec-failed {}: {error}",
+        program.display()
+    ))
+}
 const TERMINATION_GRACE_SECS: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
