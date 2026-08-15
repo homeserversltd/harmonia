@@ -1,6 +1,6 @@
 use super::Band;
+use crate::bands::stage_profile::ProfileProjection;
 use crate::module_dispatch::ModuleExecution;
-use crate::profile_engine::ProfileProjection;
 use crate::receipts::{
     append_profile_ledger_entry, write_engine_run_receipt_with_duration, write_json,
     ProfileLedgerEntry,

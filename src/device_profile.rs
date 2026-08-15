@@ -120,11 +120,17 @@ pub(crate) struct SoftwareApplyAuthorization(());
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpdateMode {
     Observe,
-    ApplySoftware(SoftwareApplyAuthorization, Option<crate::atoms::r#do::InvocationKey>),
+    ApplySoftware(
+        SoftwareApplyAuthorization,
+        Option<crate::atoms::r#do::InvocationKey>,
+    ),
 }
 
 impl UpdateMode {
-    pub(crate) fn from_apply_flag_with_invocation(apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Self {
+    pub(crate) fn from_apply_flag_with_invocation(
+        apply: bool,
+        invocation: Option<crate::atoms::r#do::InvocationKey>,
+    ) -> Self {
         if apply {
             Self::ApplySoftware(SoftwareApplyAuthorization(()), invocation)
         } else {
@@ -140,7 +146,10 @@ impl UpdateMode {
     }
 
     pub(crate) fn invocation(&self) -> Option<crate::atoms::r#do::InvocationKey> {
-        match self { Self::Observe => None, Self::ApplySoftware(_, key) => *key }
+        match self {
+            Self::Observe => None,
+            Self::ApplySoftware(_, key) => *key,
+        }
     }
 
     pub(crate) fn is_software_apply(&self) -> bool {
@@ -148,7 +157,10 @@ impl UpdateMode {
     }
 }
 
-fn parse_update_mode(args: &[String], invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<UpdateMode, String> {
+fn parse_update_mode(
+    args: &[String],
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<UpdateMode, String> {
     let mut apply = false;
     let mut index = 0;
     while index < args.len() {
@@ -161,10 +173,15 @@ fn parse_update_mode(args: &[String], invocation: Option<crate::atoms::r#do::Inv
             _ => return Err("update accepts [--apply] and --receipt-dir only".to_string()),
         }
     }
-    Ok(UpdateMode::from_apply_flag_with_invocation(apply, invocation))
+    Ok(UpdateMode::from_apply_flag_with_invocation(
+        apply, invocation,
+    ))
 }
 
-pub(crate) fn update_from_certificate(args: &[String], invocation: crate::Invocation) -> Result<(), String> {
+pub(crate) fn update_from_certificate(
+    args: &[String],
+    invocation: crate::Invocation,
+) -> Result<(), String> {
     let context = invocation.1.clone();
     let receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
@@ -271,5 +288,108 @@ pub(crate) fn update_from_certificate(args: &[String], invocation: crate::Invoca
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
     let module_root = default_module_root(&profile_path);
-    rolling_update_from_certificate_with_context(&profile, &module_root, &receipt_dir, mode, context)
+    crate::atoms::r#do::transaction::rolling_update_from_certificate_with_context(
+        &profile,
+        &module_root,
+        &receipt_dir,
+        mode,
+        context,
+    )
+}
+
+pub(crate) fn homeconsole_update(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: UpdateMode,
+) -> Result<(), String> {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
+        return Err(format!(
+            "homeconsole-update requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    let suite_debt = enforce_update_suite(profile, module_root)?;
+    crate::atoms::r#do::transaction::rolling_update_run(
+        profile,
+        module_root,
+        receipt_dir,
+        mode,
+        None,
+        suite_debt,
+        homeconsole_update_lock_path(),
+        materialize_homeconsole_receipt_dir,
+        try_acquire_homeconsole_update_lock,
+    )
+}
+
+pub(crate) fn lawful_module_manifest_exists(module_dir: &Path) -> bool {
+    (module_dir.join("index.rs").exists() && module_dir.join("sidecar.json").exists())
+        || module_dir.join("manifest.json").exists()
+}
+
+pub(crate) fn enforce_update_suite(
+    profile: &Profile,
+    module_root: &Path,
+) -> Result<Option<String>, String> {
+    Ok(profile.modules.iter().find_map(|module_id| {
+        (!lawful_module_manifest_exists(&module_root.join(module_id))).then(|| {
+            format!(
+                "profile-module-manifest-missing module_root={} module_id={module_id}",
+                module_root.display(),
+            )
+        })
+    }))
+}
+
+pub(crate) fn homeserver_update(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: UpdateMode,
+) -> Result<(), String> {
+    if profile.id != "homeserver" || profile.identity != "homeserver" {
+        return Err(format!(
+            "homeserver-update requires homeserver/homeserver profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    let suite_debt = enforce_update_suite(profile, module_root)?;
+    crate::atoms::r#do::transaction::rolling_update_run(
+        profile,
+        module_root,
+        receipt_dir,
+        mode,
+        None,
+        suite_debt,
+        homeserver_update_lock_path(),
+        materialize_homeserver_receipt_dir,
+        try_acquire_homeserver_update_lock,
+    )
+}
+
+pub(crate) fn tv_update(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: UpdateMode,
+) -> Result<(), String> {
+    if profile.id != "tv" || profile.identity != "arch-tv" {
+        return Err(format!(
+            "tv-update requires tv/arch-tv profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    let suite_debt = enforce_update_suite(profile, module_root)?;
+    crate::atoms::r#do::transaction::rolling_update_run(
+        profile,
+        module_root,
+        receipt_dir,
+        mode,
+        None,
+        suite_debt,
+        tv_update_lock_path(),
+        materialize_tv_receipt_dir,
+        try_acquire_tv_update_lock,
+    )
 }
