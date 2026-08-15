@@ -65,7 +65,7 @@ pub(crate) fn execute_step(
         ("package", p) => package_step(s, d, apply, pa, key, p),
         ("aur", p) => aur_step(s, m, d, apply, key, p),
         ("venv", "converge") => {
-            crate::tools::venv::execute_ladder_step(&s.args, d, &s.step_id, apply, key)
+            crate::tools::venv::execute_step(&s.args, d, &s.step_id, apply, key)
         }
         _ => Err(format!(
             "install-packages-unsupported-{}-{}",
@@ -182,6 +182,7 @@ pub(crate) fn execute_manifest_band(
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
     key: Option<crate::atoms::r#do::InvocationKey>,
+    mode_apply: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
@@ -205,16 +206,18 @@ pub(crate) fn execute_manifest_band(
             {
                 continue;
             }
-        } else if crate::ladder::placement_for_step(step)? != crate::bands::Band::InstallPackages {
+        } else if crate::tools::routine::placement_for_step(step)?
+            != crate::bands::Band::InstallPackages
+        {
             continue;
         }
         if let Some(precondition) = if step.tool == "routine" {
             None
         } else {
-            crate::ladder::command_precondition(&step.args)?
+            crate::tools::routine::command_precondition(&step.args)?
         } {
             result.operation_count += 1;
-            let probe = crate::ladder::command_precondition_step(
+            let probe = crate::bands::compare::execute_command_precondition(
                 step,
                 &precondition,
                 manifest,
@@ -238,13 +241,13 @@ pub(crate) fn execute_manifest_band(
         }
         result.operation_count += 1;
         let outcome = if step.tool == "routine" {
-            crate::ladder::execute_routine(
+            crate::tools::routine::execute_routine(
                 step,
                 manifest,
                 module_dir,
                 auth,
                 pa,
-                auth.is_some(),
+                mode_apply,
                 key,
                 Some(routine_states),
                 crate::bands::Band::InstallPackages,
@@ -300,6 +303,7 @@ pub(crate) fn execute_manifest_modules(
     profile: &Profile,
     receipt_dir: &Path,
     mode: UpdateMode,
+    mode_apply: bool,
     disabled_modules: &BTreeSet<String>,
     projection: &ProfileProjection,
     states: &mut BTreeMap<String, ModuleExecution>,
@@ -347,6 +351,7 @@ pub(crate) fn execute_manifest_modules(
                 mode.software_authorization(),
                 profile.package_authority.as_ref(),
                 mode.invocation(),
+                mode_apply,
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,

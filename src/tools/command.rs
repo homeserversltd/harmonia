@@ -437,6 +437,30 @@ fn redact(text: &str, redactions: &BTreeSet<String>) -> String {
     })
 }
 
+
+pub(crate) fn execute_validated_step(
+    step: &crate::ladder::ValidatedStep,
+    module_dir: &std::path::Path,
+    apply: bool,
+) -> Result<crate::OperationOutcome, String> {
+    let program = step.args.get("program").and_then(serde_json::Value::as_str).unwrap_or("");
+    let argv: Vec<String> = step.args.get("args").and_then(serde_json::Value::as_array)
+        .map(|items| items.iter().filter_map(serde_json::Value::as_str).map(ToString::to_string).collect())
+        .unwrap_or_default();
+    let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let result = if apply {
+        capture_with_options(program, &argv_refs, CaptureOptions::new()
+            .cwd(step.args.get("cwd").and_then(serde_json::Value::as_str))
+            .timeout_secs(step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_SECS)))
+    } else {
+        crate::CmdResult { ok: true, code: 0, stdout: format!("planned command {}", program), stderr: String::new() }
+    };
+    crate::write_command_receipt_with_request(module_dir, &step.step_id, program, &argv,
+        step.args.get("cwd").and_then(serde_json::Value::as_str), &result)?;
+    Ok(crate::OperationOutcome { ok: result.ok, changed: false, skipped: !apply,
+        message: format!("command capture {}", program), command: Some(result) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

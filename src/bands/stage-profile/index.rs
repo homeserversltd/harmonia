@@ -28,8 +28,6 @@ pub(crate) fn materialize(
         &std::collections::BTreeSet::new(),
     )?;
     let update_plan = projection.derive_update_plan(&refreshed, &source_modules_root)?;
-    let saved = crate::update_set::snapshot(&update_plan.targets)?;
-    let service_states = crate::update_set::snapshot_services(&update_plan)?;
     let head = tools::command::capture_with_cwd_as_bearer(
         "git",
         &["rev-parse", "HEAD"],
@@ -43,6 +41,12 @@ pub(crate) fn materialize(
     if source_head.is_empty() {
         return Err(format!("{profile_id}-source-head-empty"));
     }
+    let sealed_projection = crate::atoms::r#do::transaction::seal_projection(
+        &update_plan,
+        &refreshed.id,
+        &refreshed.identity,
+        &source_head,
+    )?;
     let refreshed_identity = crate::atoms::r#do::transaction::RefreshedProfileIdentity {
         profile_id: refreshed.id.clone(),
         identity: refreshed.identity.clone(),
@@ -63,8 +67,7 @@ pub(crate) fn materialize(
         value.refreshed_profile_value = Some(refreshed.clone());
         value.projection = Some(projection.clone());
         value.update_plan = Some(update_plan.clone());
-        value.sealed_snapshot = Some(saved);
-        value.sealed_services = Some(service_states);
+        value.sealed_projection = Some(sealed_projection);
         value.refreshed_profile = Some(refreshed_identity);
         value.transaction_census = Some(transaction_census);
     }

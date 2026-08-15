@@ -1270,6 +1270,11 @@ fn write_systemd_receipt(
     )
 }
 
+
+pub(crate) fn execute_validated_step(step: &crate::ladder::ValidatedStep, module_dir: &std::path::Path, apply: bool, changed: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<crate::OperationOutcome, String> {
+    let units: Vec<String> = step.args.get("candidate_units").and_then(serde_json::Value::as_array).map(|xs| xs.iter().filter_map(serde_json::Value::as_str).map(ToString::to_string).collect()).unwrap_or_default();
+    run_permutation(module_dir, &step.step_id, &step.permutation, step.args.get("service").and_then(serde_json::Value::as_str), &units, step.args.get("user").and_then(serde_json::Value::as_str), step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(30), apply, changed, invocation)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

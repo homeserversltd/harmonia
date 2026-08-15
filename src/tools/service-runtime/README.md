@@ -1,5 +1,3 @@
 # service-runtime
 
-Behavior-preserving front for the legacy service-runtime routine. The compatibility path delegates here; the six stage files retain the existing execution order, receipts, outcomes, and invocation-key carrier.
-
-Stages: source gate, managed files, build, binary install, service epilogue, and health proof.
+Declaration-only compatibility contract. A service-runtime converge declaration is lowered before execution into pull-repo, build-crate, place-file, files, systemd, enable-unit, and check-health primitive children. No service-runtime execution adapter or stage implementation remains.

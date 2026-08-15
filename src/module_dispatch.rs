@@ -1,7 +1,8 @@
+use crate::tools::routine::project_manifest_routines;
 use crate::*;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::collections::BTreeMap;
 
 pub(crate) struct ModuleWalkState {
     pub(crate) context: BTreeMap<String, serde_json::Value>,
@@ -10,7 +11,6 @@ pub(crate) struct ModuleWalkState {
     pub(crate) ok: bool,
     pub(crate) changed: bool,
     pub(crate) first_missing_signal: Option<String>,
-    pub(crate) service_runtime: Option<crate::tools::service_runtime::ServiceRuntimeState>,
 }
 
 pub(crate) struct ModuleExecution {
@@ -69,54 +69,22 @@ pub(crate) fn execute_profile_module(
                 manifest.id
             ));
         }
-        execute_ladder_manifest(
+        let steps = validate_ladder(&manifest)
+            .map_err(|error| format!("module-invalid {}", error.first_missing_signal()))?;
+        let projected = project_manifest_routines(&manifest, &steps)?;
+        let mut routine_states = BTreeMap::new();
+        crate::bands::propose_edits::execute_manifest_band(
             &manifest,
             &module_dir,
             software_authorization,
             None,
             invocation,
+            software_authorization.is_some(),
+            &mut routine_states,
+            &steps,
+            &projected,
         )
     } else {
         Err(format!("module-unregistered-{}", module.id))
     }
-}
-
-pub(crate) fn is_registered_module_id(_module_id: &str) -> bool {
-    false
-}
-
-pub(crate) fn validate_registered_module(module: &ModuleManifest) -> Result<(), String> {
-    let manifest_path = std::path::Path::new("profiles/homeconsole/modules")
-        .join(&module.id)
-        .join("manifest.json");
-    if manifest_path.exists() {
-        Ok(())
-    } else {
-        Err(format!("module-unregistered-{}", module.id))
-    }
-}
-
-pub(crate) fn reject_executable_sidecar(module: &ModuleManifest) -> Result<(), String> {
-    if module.command.is_some() || !module.args.is_empty() || module.cwd.is_some() {
-        return Err(format!("module-executable-sidecar-rejected-{}", module.id));
-    }
-    Ok(())
-}
-
-pub(crate) fn require_path<'a>(
-    module: &'a ModuleManifest,
-    value: &'a Option<String>,
-    name: &str,
-) -> Result<&'a str, String> {
-    value
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| format!("module-sidecar-missing-{}-{}", module.id, name))
-}
-
-pub(crate) fn require_packages(module: &ModuleManifest) -> Result<(), String> {
-    if module.packages.is_empty() {
-        return Err(format!("module-sidecar-missing-{}-packages", module.id));
-    }
-    Ok(())
 }

@@ -258,19 +258,17 @@ fn row(
             root.join("interactables.json"),
         );
     }
-    let mut routine_states = BTreeMap::new();
-    let band = crate::ladder::placement_for_step(&step)?;
-    let result = crate::ladder::execute_ladder_manifest_band(
-        &manifest(root, interactable),
+    let mut routine_states: BTreeMap<String, crate::ModuleWalkState> = BTreeMap::new();
+    let band = crate::tools::routine::placement_for_step(&step)?;
+    let bench_manifest = manifest(root, interactable);
+    let result = crate::tools::routine::execute_validated_step(
+        &step,
+        &bench_manifest,
         &root.join("receipts"),
-        band,
         Some(auth),
         None,
-        Some(inv),
         false,
-        &mut routine_states,
-        std::slice::from_ref(&step),
-        &BTreeMap::new(),
+        Some(inv),
     );
     let proposal = if interactable {
         match crate::interactables::load_feed(&root.join("interactables.json")) {
@@ -356,7 +354,7 @@ fn routine_row(
         ..manifest(root, false)
     };
     let children =
-        crate::ladder::project_routine_children(&manifest.ladder[0], &manifest.constants)
+        crate::tools::routine::project_routine_children(&manifest.ladder[0], &manifest.constants)
             .map_err(|e| e.defect)?;
     let step = crate::ladder::ValidatedStep {
         step_id: "bench-routine".into(),
@@ -365,21 +363,25 @@ fn routine_row(
         args: BTreeMap::new(),
         on_failure: crate::ladder::OnFailure::Stop,
     };
-    let mut states = BTreeMap::new();
-    let mut projected = BTreeMap::new();
+    let mut states: BTreeMap<String, crate::ModuleWalkState> = BTreeMap::new();
+    let mut projected: BTreeMap<String, Vec<crate::ladder::ProjectedRoutineChild>> =
+        BTreeMap::new();
     projected.insert("bench-routine".into(), children);
     let band = crate::tools::Placement::BackfillFiles.band();
-    let execution = crate::ladder::execute_ladder_manifest_band(
+    let execution = crate::tools::routine::execute_routine(
+        &step,
         &manifest,
         &root.join("routine"),
-        band,
         Some(auth),
         None,
-        Some(inv),
         false,
-        &mut states,
-        &[step],
-        &projected,
+        Some(inv),
+        Some(&mut states),
+        band,
+        projected
+            .get("bench-routine")
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
     );
     let after = hash(&target);
     let parent_after = hash(parent);
