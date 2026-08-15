@@ -55,7 +55,7 @@ pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn execute_ladder_step(
+pub(crate) fn execute_step(
     args: &BTreeMap<String, Value>,
     receipt_dir: &Path,
     receipt_name: &str,

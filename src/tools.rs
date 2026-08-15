@@ -152,8 +152,9 @@ pub mod health;
 pub mod household_time;
 #[path = "tools/make-symlink.rs"]
 pub(crate) mod make_symlink;
-pub(crate) mod module_steps;
 pub mod package;
+pub(crate) mod routine;
+#[path = "tools/service-runtime/index.rs"]
 pub(crate) mod service_runtime;
 pub mod systemd;
 pub mod venv;
@@ -315,9 +316,9 @@ pub(crate) fn routine_summonable(name: &str) -> bool {
             | "place-file"
             | "enable-unit"
             | "systemd"
+            | "files"
             | "backfill-file"
             | "check-health"
-            | "service-runtime"
     )
 }
 

@@ -78,3 +78,10 @@ impl<'a> ProbeRequest<'a> {
 pub(crate) fn curl_probe(request: &ProbeRequest<'_>) -> CmdResult {
     crate::check_health::probe(request)
 }
+
+pub(crate) fn execute_validated_step(step: &crate::ladder::ValidatedStep, module_dir: &std::path::Path, apply: bool) -> Result<crate::OperationOutcome, String> {
+    let url = step.args.get("url").and_then(serde_json::Value::as_str).unwrap_or("");
+    let result = if apply { let mut request = ProbeRequest::new(url); request.expected_contains = step.args.get("expected_contains").and_then(serde_json::Value::as_str); request.timeout_secs = step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(3); request.retries = step.args.get("retries").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize; curl_probe(&request) } else { crate::CmdResult { ok:true, code:0, stdout:format!("planned health probe {}",url), stderr:String::new() } };
+    crate::write_command_receipt(module_dir, &step.step_id, &result)?;
+    Ok(crate::OperationOutcome { ok:result.ok, changed:false, skipped:!apply, message:format!("health probe {}",url), command:Some(result) })
+}

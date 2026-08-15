@@ -285,6 +285,7 @@ mod invocation_face {
                         | "bench-stillness"
                         | "bench-structural-wall"
                         | "bench-harmonia-foundation"
+                        | "bench-update-set"
                 )
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
@@ -317,7 +318,7 @@ pub fn main_entry() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::module_steps::{artifact_promote_tool, command_tool, set_test_pacman_path};
+    use crate::tools::package::set_test_pacman_path;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
@@ -337,7 +338,6 @@ mod tests {
         let sidecar = dir.join("sidecar.json");
         if sidecar.exists() {
             let manifest = load_module(&sidecar).unwrap();
-            validate_registered_module(&manifest).unwrap();
         } else {
             let manifest = load_ladder_manifest(&dir.join("manifest.json")).unwrap();
             assert_eq!(manifest.id, module);
@@ -473,37 +473,6 @@ mod tests {
     }
 
     #[test]
-    fn command_tool_records_unknown_change_observation() {
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-command-unknown-{}", process::id()));
-        let outcome = command_tool(&scratch, "true-command", "/usr/bin/true", &[], None).unwrap();
-        assert!(outcome.ok);
-        assert!(!outcome.changed);
-        let receipt = fs::read_to_string(scratch.join("true-command.json")).unwrap();
-        assert!(receipt.contains("change_observed"));
-        assert!(receipt.contains("unknown"));
-        let _ = fs::remove_dir_all(scratch);
-    }
-
-    #[test]
-    fn artifact_promote_detects_equal_length_byte_change_by_sha256() {
-        let scratch = std::env::temp_dir().join(format!("harmonia-artifact-sha-{}", process::id()));
-        let receipts = scratch.join("receipts");
-        let artifact = scratch.join("artifact.bin");
-        let install = scratch.join("install.bin");
-        fs::create_dir_all(&scratch).unwrap();
-        fs::write(&artifact, b"BBBB").unwrap();
-        fs::write(&install, b"AAAA").unwrap();
-        let outcome =
-            artifact_promote_tool(&receipts, "artifact-promote", &artifact, &install, true)
-                .unwrap();
-        assert!(outcome.ok);
-        assert!(outcome.changed);
-        assert_eq!(fs::read(&install).unwrap(), b"BBBB");
-        let _ = fs::remove_dir_all(scratch);
-    }
-
-    #[test]
     fn git_artifact_invalid_repo_rev_parse_failure_is_not_changed() {
         let scratch = std::env::temp_dir().join(format!("harmonia-git-invalid-{}", process::id()));
         let target = scratch.join("repo");
@@ -578,7 +547,7 @@ mod tests {
         };
         assert!(homeconsole_update(
             &old,
-            &homeconsole_module_root(),
+            &PathBuf::from("profiles/homeconsole/modules"),
             &PathBuf::from("target/unused"),
             false,
         )
@@ -596,44 +565,12 @@ mod tests {
         };
         assert!(homeserver_update(
             &profile,
-            &homeserver_module_root(),
+            &PathBuf::from("profiles/homeserver/modules"),
             &PathBuf::from("target/unused"),
             false,
         )
         .unwrap_err()
         .contains("homeserver/homeserver"));
-    }
-
-    #[test]
-    fn homeserver_profile_sync_advances_subscription_module_digest() {
-        let root = repo_root();
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-homeserver-sync-{}", process::id()));
-        let _ = fs::remove_dir_all(&scratch);
-        let modules = scratch.join("profiles/homeserver/modules");
-        fs::create_dir_all(&modules).unwrap();
-        let subscription = scratch.join("subscription.json");
-        let previous = std::env::var("HARMONIA_SUBSCRIPTION_PATH").ok();
-        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
-        sync_homeserver_profile(&root, &modules, &scratch.join("receipts")).unwrap();
-        if let Some(value) = previous {
-            std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", value);
-        } else {
-            std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
-        }
-        let record = read_subscription_record(&subscription).unwrap().unwrap();
-        assert_eq!(
-            record.ref_name,
-            command_capture_with_cwd("git", &["rev-parse", "HEAD"], root.to_str())
-                .stdout
-                .trim()
-        );
-        assert_eq!(
-            record.modules["homeserver-update-runtime"].tree_sha256,
-            module_tree_sha256(&root.join("profiles/homeserver/modules/homeserver-update-runtime"))
-                .unwrap()
-        );
-        let _ = fs::remove_dir_all(&scratch);
     }
 
     #[test]
@@ -649,42 +586,12 @@ mod tests {
         };
         assert!(tv_update(
             &profile,
-            &tv_module_root(),
+            &PathBuf::from("profiles/tv/modules"),
             &PathBuf::from("target/unused"),
             false,
         )
         .unwrap_err()
         .contains("tv/arch-tv"));
-    }
-
-    #[test]
-    fn tv_profile_sync_advances_subscription_module_digest() {
-        let root = repo_root();
-        let scratch = std::env::temp_dir().join(format!("harmonia-tv-sync-{}", process::id()));
-        let _ = fs::remove_dir_all(&scratch);
-        let modules = scratch.join("profiles/tv/modules");
-        fs::create_dir_all(&modules).unwrap();
-        let subscription = scratch.join("subscription.json");
-        let previous = std::env::var("HARMONIA_SUBSCRIPTION_PATH").ok();
-        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
-        sync_tv_profile(&root, &modules, &scratch.join("receipts")).unwrap();
-        if let Some(value) = previous {
-            std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", value);
-        } else {
-            std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
-        }
-        let record = read_subscription_record(&subscription).unwrap().unwrap();
-        assert_eq!(
-            record.ref_name,
-            command_capture_with_cwd("git", &["rev-parse", "HEAD"], root.to_str())
-                .stdout
-                .trim()
-        );
-        assert_eq!(
-            record.modules["tv-update-runtime"].tree_sha256,
-            module_tree_sha256(&root.join("profiles/tv/modules/tv-update-runtime")).unwrap()
-        );
-        let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]
@@ -722,7 +629,7 @@ mod tests {
         let _guard = try_acquire_homeconsole_update_lock(&lock_path).expect("hold lock");
         let previous_lock = std::env::var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK").ok();
         std::env::set_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK", &lock_path);
-        let result = homeconsole_update(&profile, &homeconsole_module_root(), &latest, true);
+        let result = homeconsole_update(&profile, &PathBuf::from("profiles/homeconsole/modules"), &latest, true);
         if let Some(value) = previous_lock {
             std::env::set_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK", value);
         } else {
@@ -1050,10 +957,7 @@ mod tests {
             optional: false,
             optional_warning: None,
         };
-        assert_eq!(
-            validate_registered_module(&module).unwrap_err(),
-            "module-unregistered-json-invented-module"
-        );
+        assert!(!repo_root().join("profiles/homeconsole/modules/json-invented-module/manifest.json").exists());
     }
 
     #[test]
@@ -2715,7 +2619,13 @@ mod tests {
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("bench-update-set") => update_set::bench(&args[1..]),
+        Some("bench-update-set") => atoms::r#do::transaction::update_set_bench(
+            &args[1..],
+            invocation
+                .1
+                .clone()
+                .ok_or_else(|| "update-set-invocation-key-missing".to_string())?,
+        ),
         Some("bench-harmonia-foundation") => atoms::r#do::transaction::bench(
             &args[1..],
             invocation

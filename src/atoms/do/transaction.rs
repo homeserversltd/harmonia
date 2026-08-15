@@ -1,5 +1,9 @@
 //! Durable transactional atom: capsule first, ordered JSONL journal, guarded rollback.
 use crate::atoms::r#do::InvocationKey;
+use crate::Profile;
+use crate::update_set::{derive_plan, update_set_receipt};
+use crate::tools::systemd::ServiceStateSnapshot;
+use crate::update_set::{Target, UpdatePlan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 #[derive(Clone, Debug, Default)]
@@ -59,13 +63,14 @@ impl From<&TransactionCensus> for TransactionCensusSnapshot {
 
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::{CString, OsStr},
     fs::{self, File, OpenOptions},
     io::Write,
     os::unix::{
         ffi::OsStrExt,
-        fs::{MetadataExt, PermissionsExt},
+        fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        io::AsRawFd,
     },
     path::{Path, PathBuf},
     rc::Rc,
@@ -78,8 +83,9 @@ pub(crate) struct RunCarrier {
     pub module_root_consistency: Option<ModuleRootConsistency>,
     pub transaction_census: Option<TransactionCensus>,
     pub refreshed_profile_value: Option<crate::Profile>,
-    pub sealed_snapshot: Option<crate::update_set::Snapshot>,
+    pub sealed_snapshot: Option<Snapshot>,
     pub sealed_services: Option<Vec<crate::tools::systemd::ServiceStateSnapshot>>,
+    pub sealed_projection: Option<ProjectionTransaction>,
 }
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
@@ -306,7 +312,7 @@ fn capsule(p: &Path, v: &RestorationImage) -> Result<(), String> {
     f.sync_all().map_err(|e| e.to_string())?;
     sync(p)
 }
-fn restore(i: &RestorationImage, s: &mut dyn ServiceState) -> Result<(), String> {
+fn restore_image(i: &RestorationImage, s: &mut dyn ServiceState) -> Result<(), String> {
     let p = Path::new(&i.path);
     if i.exists {
         if fs::symlink_metadata(p).is_ok() {
@@ -470,7 +476,7 @@ impl Transaction {
             return Err("foreign".into());
         }
         let a = RollbackAuthority(self.old.clone());
-        restore(&a.0, &mut *self.service)?;
+        restore_image(&a.0, &mut *self.service)?;
         append(
             &self.journal,
             &Event {
@@ -509,7 +515,7 @@ fn recover_open(j: &Path, c: &Path, s: &mut dyn ServiceState) -> Result<(), Stri
             )?;
             return Err("recovery-rollback-incomplete".into());
         }
-        restore(&old, s)?;
+        restore_image(&old, s)?;
         append(
             j,
             &Event {
@@ -558,6 +564,370 @@ impl ServiceState for BenchService {
         Ok(())
     }
 }
+
+// Exact target custody is owned by the admitted atom.
+#[derive(Clone, Debug)]
+enum Kind {
+    Missing,
+    File(Vec<u8>),
+    Symlink(PathBuf),
+    Dir,
+}
+#[derive(Clone, Debug)]
+struct Node {
+    path: PathBuf,
+    kind: Kind,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct Snapshot {
+    roots: Vec<PathBuf>,
+    nodes: Vec<Node>,
+}
+fn safe_target(path: &Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("update-set-target-invalid {}", path.display()));
+    }
+    for broad in [
+        "/",
+        "/etc",
+        "/home",
+        "/home/owner",
+        "/usr",
+        "/usr/local",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/var",
+        "/var/lib",
+    ] {
+        if path == Path::new(broad) {
+            return Err(format!("update-set-target-too-broad {}", path.display()));
+        }
+    }
+    Ok(())
+}
+fn capture_tree(p: &Path, n: &mut Vec<Node>) -> Result<(), String> {
+    let m = match fs::symlink_metadata(p) {
+        Ok(x) => x,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            n.push(Node {
+                path: p.into(),
+                kind: Kind::Missing,
+                mode: 0,
+                uid: 0,
+                gid: 0,
+            });
+            return Ok(());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let kind = if m.file_type().is_symlink() {
+        Kind::Symlink(fs::read_link(p).map_err(|e| e.to_string())?)
+    } else if m.is_dir() {
+        Kind::Dir
+    } else {
+        Kind::File(fs::read(p).map_err(|e| e.to_string())?)
+    };
+    let dir = matches!(kind, Kind::Dir);
+    n.push(Node {
+        path: p.into(),
+        kind,
+        mode: m.mode(),
+        uid: m.uid(),
+        gid: m.gid(),
+    });
+    if dir {
+        for e in fs::read_dir(p).map_err(|e| e.to_string())? {
+            capture_tree(&e.map_err(|e| e.to_string())?.path(), n)?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn snapshot(ts: &[Target]) -> Result<Snapshot, String> {
+    let mut roots = BTreeSet::new();
+    for t in ts {
+        safe_target(&t.path)?;
+        roots.insert(t.path.clone());
+    }
+    let mut nodes = Vec::new();
+    for r in &roots {
+        capture_tree(r, &mut nodes)?;
+    }
+    Ok(Snapshot {
+        roots: roots.into_iter().collect(),
+        nodes,
+    })
+}
+fn rm(p: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(p) {
+        Ok(m) => {
+            if m.is_dir() && !m.file_type().is_symlink() {
+                fs::remove_dir_all(p)
+            } else {
+                fs::remove_file(p)
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+    .map_err(|e| e.to_string())
+}
+fn restore_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+    let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if m.uid() == uid && m.gid() == gid {
+        return Ok(());
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|e| format!("ownership-restore-open-failed {}: {e}", path.display()))?;
+    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+        return Err(format!(
+            "ownership-restore-failed {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn restore(s: &Snapshot) -> Result<(), String> {
+    for r in s.roots.iter().rev() {
+        safe_target(r)?;
+        rm(r)?;
+    }
+    for n in &s.nodes {
+        match &n.kind {
+            Kind::Missing => continue,
+            Kind::Dir => fs::create_dir_all(&n.path).map_err(|e| e.to_string())?,
+            Kind::File(b) => {
+                if let Some(p) = n.path.parent() {
+                    fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                }
+                crate::tools::files::atomic_write_bytes(&n.path, b, Some(n.mode & 0o7777))?
+            }
+            Kind::Symlink(t) => {
+                if let Some(p) = n.path.parent() {
+                    fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                }
+                std::os::unix::fs::symlink(t, &n.path).map_err(|e| e.to_string())?
+            }
+        }
+        if !matches!(n.kind, Kind::Symlink(_)) {
+            restore_owner(&n.path, n.uid, n.gid)?;
+            fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    verify(s)
+}
+fn verify(s: &Snapshot) -> Result<(), String> {
+    let mut got = Vec::new();
+    for r in &s.roots {
+        capture_tree(r, &mut got)?;
+    }
+    got.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut expected = s.nodes.clone();
+    expected.sort_by(|a, b| a.path.cmp(&b.path));
+    if got.len() != expected.len() {
+        return Err("rollback-tree-mismatch".into());
+    }
+    for (a, b) in got.iter().zip(&expected) {
+        if a.path != b.path
+            || a.mode != b.mode
+            || a.uid != b.uid
+            || a.gid != b.gid
+            || std::mem::discriminant(&a.kind) != std::mem::discriminant(&b.kind)
+        {
+            return Err(format!("rollback-metadata-mismatch {}", a.path.display()));
+        }
+        match (&a.kind, &b.kind) {
+            (Kind::File(x), Kind::File(y)) if x != y => {
+                return Err("rollback-bytes-mismatch".into())
+            }
+            (Kind::Symlink(x), Kind::Symlink(y)) if x != y => {
+                return Err("rollback-symlink-target-mismatch".into())
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSnapshot>, String> {
+    plan.services
+        .iter()
+        .map(|s| {
+            crate::tools::systemd::snapshot_service_state(&s.name, s.user, s.target_user.as_deref())
+        })
+        .collect()
+}
+pub(crate) fn restore_services(states: &[ServiceStateSnapshot]) -> Result<(), String> {
+    for s in states {
+        crate::tools::systemd::restore_service_state(s)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum TransactionState { Open, Applied, Committed, RolledBack, RollbackIncomplete, RefusedForeignPostImage }
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ProjectionChild { pub ordinal: usize, pub member: String, pub target_indices: Vec<usize>, pub service_indices: Vec<usize> }
+#[derive(Clone, Debug)]
+pub(crate) struct SealedProjection { pub profile_id: String, pub profile_identity: String, pub source_head: String, pub children: Vec<ProjectionChild>, pub snapshot: Snapshot, pub services: Vec<ServiceStateSnapshot>, pub gui_face: String, pub gui_member: String, pub caduceus_count: usize }
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectionTransaction { pub sealed: SealedProjection, pub state: TransactionState }
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TransactionReceipt { pub schema: &'static str, pub state: TransactionState, pub profile_id: String, pub profile_identity: String, pub source_head: String, pub gui: String, pub children: Vec<ProjectionChild>, pub target_count: usize, pub service_count: usize, pub caduceus_count: usize }
+pub(crate) fn validate_exact_root(path: &Path) -> Result<(), String> { safe_target(path)?; let mut cur=PathBuf::from("/"); for c in path.components().skip(1) { cur.push(c.as_os_str()); if let Ok(m)=fs::symlink_metadata(&cur) { if m.file_type().is_symlink() { return Err(format!("update-set-root-symlink {}",cur.display())); } } } Ok(()) }
+pub(crate) fn seal_projection(plan: &UpdatePlan, profile_id: &str, profile_identity: &str, source_head: &str) -> Result<ProjectionTransaction, String> { if plan.gui_member.is_empty() || plan.gui_face.is_empty() { return Err("sealed-projection-gui-missing".into()); } for t in &plan.targets { validate_exact_root(&t.path)?; } let snapshot=snapshot(&plan.targets)?; let services=snapshot_services(plan)?; let mut members=Vec::new(); for t in &plan.targets { if !members.contains(&t.member) { members.push(t.member.clone()); } } for m in ["caduceus","agathodaimon",plan.gui_member.as_str()] { if !members.iter().any(|x| x==m) { members.push(m.to_string()); } } let children=members.into_iter().enumerate().map(|(ordinal,member)| ProjectionChild { ordinal, target_indices: plan.targets.iter().enumerate().filter_map(|(i,t)|(t.member==member).then_some(i)).collect(), service_indices: plan.services.iter().enumerate().filter_map(|(i,s)|(s.name==member).then_some(i)).collect(), member }).collect(); Ok(ProjectionTransaction { sealed: SealedProjection { profile_id:profile_id.into(), profile_identity:profile_identity.into(), source_head:source_head.into(), children, snapshot, services, gui_face:plan.gui_face.clone(), gui_member:plan.gui_member.clone(), caduceus_count:plan.caduceus_count }, state:TransactionState::Open }) }
+pub(crate) fn apply_projection(txn: &mut ProjectionTransaction, child: usize, _key: InvocationKey) -> Result<(), String> { if txn.state!=TransactionState::Open { return Err("transaction-not-open".into()); } if child>=txn.sealed.children.len() { return Err("sealed-child-out-of-range".into()); } txn.state=TransactionState::Applied; Ok(()) }
+fn receipt_for(t:&ProjectionTransaction)->TransactionReceipt { TransactionReceipt { schema:"harmonia.transaction.v1", state:t.state.clone(), profile_id:t.sealed.profile_id.clone(), profile_identity:t.sealed.profile_identity.clone(), source_head:t.sealed.source_head.clone(), gui:t.sealed.gui_face.clone(), children:t.sealed.children.clone(), target_count:t.sealed.snapshot.roots.len(), service_count:t.sealed.services.len(), caduceus_count:t.sealed.caduceus_count } }
+pub(crate) fn commit_projection(t:&mut ProjectionTransaction)->Result<TransactionReceipt,String> { if t.state==TransactionState::Committed { return Ok(receipt_for(t)); } if t.state!=TransactionState::Applied { return Err("transaction-not-applied".into()); } t.state=TransactionState::Committed; Ok(receipt_for(t)) }
+pub(crate) fn rollback_projection(t:&mut ProjectionTransaction)->Result<TransactionReceipt,String> { if t.state==TransactionState::RolledBack { return Ok(receipt_for(t)); } if t.state==TransactionState::Committed { return Err("committed-transaction-not-rollbackable".into()); } let a=restore(&t.sealed.snapshot); let b=restore_services(&t.sealed.services); if a.is_ok() && b.is_ok() { t.state=TransactionState::RolledBack; Ok(receipt_for(t)) } else { t.state=TransactionState::RollbackIncomplete; Err("rollback-incomplete".into()) } }
+pub(crate) fn project_update_set_v1(r:&TransactionReceipt)->Value { let verdict=match r.state { TransactionState::Committed=>"ok", TransactionState::RolledBack=>"failed-rolled-back", TransactionState::RollbackIncomplete=>"failed-rollback-incomplete", TransactionState::RefusedForeignPostImage=>"refused-foreign-post-image", _=>"failed" }; json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count}) }
+
+pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), String> {
+    if args.iter().any(|arg| arg == "--broad-parent") {
+        let error = crate::atoms::r#do::transaction::snapshot(&[Target {
+            path: PathBuf::from("/etc"),
+            member: "bench".into(),
+        }])
+        .expect_err("broad parent must be refused");
+        println!("no_broad_parent={error}");
+        return Ok(());
+    }
+    let fail = args
+        .windows(2)
+        .find(|w| w[0] == "--fail")
+        .map(|w| w[1].clone());
+    let root = std::env::temp_dir().join(format!(
+        "harmonia-update-set-bench-{}",
+        crate::run_id_from_stamp()
+    ));
+    let modules = root.join("modules");
+    fs::create_dir_all(&modules).map_err(|e| e.to_string())?;
+    let shelf = root.join("usr/local/sbin/agathodaimon");
+    fs::create_dir_all(shelf.join("child")).map_err(|e| e.to_string())?;
+    fs::write(shelf.join("child/prior"), b"prior").map_err(|e| e.to_string())?;
+    let bin = root.join("usr/local/bin/caduceus");
+    fs::create_dir_all(bin.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::write(&bin, b"old").map_err(|e| e.to_string())?;
+    for (id, manifest) in [
+        (
+            "caduceus",
+            json!({"schema":"harmonia.module.ladder.v1","id":"caduceus","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"caduceus","component":"caduceus","source_dir":"/opt/caduceus/source","install_bin":"/usr/local/bin/caduceus","service":"caduceus.service","url":"http://127.0.0.1:1/","binary_name":"caduceus","op_prefix":"caduceus","run_schema":"bench.caduceus.v1","managed_files_schema":"bench.caduceus.files.v1","managed_files":[]}},{"step_id":"s","tool":"files","permutation":"source-shelf-sweep","args":{"source_root":"/nonexistent","shelf_source":"agathodaimon","target_shelf":"/usr/local/sbin/agathodaimon","launcher_target_root":"/usr/local/sbin","launcher_source_root":"/nonexistent","launcher_pattern":"caduceus-*","shelf_owner":"root","shelf_group":"root","shelf_directory_mode":493,"shelf_file_mode":420,"launcher_mode":493,"prune":true}}]}),
+        ),
+        (
+            "arcadia-gui-runtime",
+            json!({"schema":"harmonia.module.ladder.v1","id":"arcadia-gui-runtime","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"arcadia-gui-runtime","component":"arcadia","source_dir":"/opt/arcadia/source","install_bin":"/usr/local/bin/arcadia","service":"arcadia.service","url":"http://127.0.0.1:2/","binary_name":"arcadia","op_prefix":"arcadia","run_schema":"bench.arcadia.v1","managed_files_schema":"bench.arcadia.files.v1","managed_files":[]}}]}),
+        ),
+    ] {
+        let d = modules.join(id);
+        fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+        fs::write(d.join("manifest.json"), manifest.to_string()).map_err(|e| e.to_string())?;
+    }
+    let p = Profile {
+        id: "bench".into(),
+        identity: "bench".into(),
+        package_authority: None,
+        modules: vec!["caduceus".into(), "arcadia-gui-runtime".into()],
+        hotfixes: vec![],
+    };
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut bindings = Vec::new();
+    for profile_id in ["tv", "homeconsole", "homeserver"] {
+        let profile_path = source_root
+            .join("profiles")
+            .join(profile_id)
+            .join("index.json");
+        let source_profile = crate::load_profile(&profile_path).map_err(|e| e.to_string())?;
+        let source_modules = profile_path.parent().unwrap().join("modules");
+        let source_plan = derive_plan(
+            &source_profile,
+            &source_modules,
+            Some(&root.join("profile-projection")),
+        )?;
+        bindings.push(format!("{}={}", profile_id, source_plan.gui_face));
+        if profile_id == "tv" {
+            let agathodaimon_targets = source_plan
+                .targets
+                .iter()
+                .filter(|target| target.member == "agathodaimon")
+                .map(|target| target.path.display().to_string())
+                .collect::<Vec<_>>();
+            let gui_targets = source_plan
+                .targets
+                .iter()
+                .filter(|target| target.member == source_plan.gui_member)
+                .map(|target| target.path.display().to_string())
+                .collect::<Vec<_>>();
+            let gui_services = source_plan
+                .services
+                .iter()
+                .map(|service| service.name.clone())
+                .collect::<Vec<_>>();
+            println!(
+                "profile_update_set=tv caduceus_count={} agathodaimon_targets={} gui_face={} gui_targets={} gui_services={}",
+                source_plan.caduceus_count,
+                agathodaimon_targets.join(","),
+                source_plan.gui_face,
+                gui_targets.join(","),
+                gui_services.join(",")
+            );
+        }
+    }
+    let plan = derive_plan(&p, &modules, Some(&root))?;
+    let pre_absent = plan
+        .targets
+        .iter()
+        .filter(|target| fs::symlink_metadata(&target.path).is_err())
+        .count();
+    println!("pre_absent_targets={pre_absent}");
+    let snap = crate::atoms::r#do::transaction::snapshot(&plan.targets)?;
+    for t in &plan.targets {
+        if fail.as_deref() != Some(t.member.as_str()) {
+            if matches!(fs::symlink_metadata(&t.path),Ok(m)if m.is_file()) {
+                crate::tools::files::atomic_write_bytes(&t.path, b"mutated", None)?;
+            }
+        }
+    }
+    let dir = root.join("receipts");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let verdict = if fail.is_some() {
+        crate::atoms::r#do::transaction::restore(&snap)?;
+        "failed-rolled-back"
+    } else {
+        "ok"
+    };
+    update_set_receipt(
+        &dir,
+        &plan.gui_face,
+        verdict,
+        fail.as_deref(),
+        fail.as_ref().map(|_| "gui-forced"),
+    )?;
+    let receipt = fs::read_to_string(dir.join("update-set.json")).map_err(|e| e.to_string())?;
+    println!(
+        "update-set-bench root={} receipt={} rollback_verified={} receipt_line={}",
+        root.display(),
+        dir.join("update-set.json").display(),
+        fail.is_none() || verdict == "failed-rolled-back",
+        receipt.replace('\n', "")
+    );
+    println!("profile_gui_bindings={}", bindings.join(","));
+    if fail.is_some() {
+        Err("forced GUI failure".into())
+    } else {
+        Ok(())
+    }
+}
+
 
 pub(crate) fn bench(args: &[String], ctx: RunContext) -> Result<(), String> {
     let root = PathBuf::from(args.first().cloned().unwrap_or_else(|| {

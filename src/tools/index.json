@@ -92,7 +92,7 @@
       "species": "registry",
       "chartered_target_name": "build-crate",
       "migration_status": "landed",
-      "delegation_note": "The service-runtime cargo-build core delegates through build-crate; the unused generic cargo helper is not a shared production caller."
+      "delegation_note": "The lowered service-runtime build, binary promotion, service, enable, and health children use their owning primitive tools; routine retains only routine dispatch and compatibility receipt routing."
     },
     {
       "name_today": "package",
@@ -120,8 +120,8 @@
       "species": "routine",
       "chartered_target_name": "module-manifest routine",
       "migration_status": "orchestration-dissolved-children-band-seated",
-      "delegation_note": "Legacy service-runtime declarations lower at manifest load into the six stage children; the production band walk executes each child in its chartered band through the retained stage implementation and writer.",
-      "notes": "Sequential converge orchestration is retired from module execution. Source gate, build, binary install, service epilogue, health proof, and managed files are seated as routine children; legacy receipt families and final run.json remain writer-authoritative."
+      "delegation_note": "Declaration and validation only; pre-execution lowering deletes the service-runtime execution surface and emits owning primitive children.",
+      "notes": "Lowered primitive owners execute pull-repo, build-crate, place-file, files, systemd, enable-unit, and check-health."
     },
     {
       "name_today": "systemd",

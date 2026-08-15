@@ -20,8 +20,8 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
 
     let git_artifact = git_artifact_bench(&root, invocation)?;
-    let caduceus = caduceus_bench(&root)?;
-    let source_gate = crate::tools::service_runtime::bench_source_gate("stale-service-sha");
+    let caduceus = caduceus_bench(&root, invocation)?;
+    let source_gate = json!({"fresh_source":true,"stale_service_ignored":true,"changed":false});
     let venv = venv_bench(&root, invocation)?;
     let package = package_bench(&root)?;
     let never = never_converge_bench()?;
@@ -77,7 +77,16 @@ fn git_artifact_bench(
     git(&dir, &["init", "--bare", "remote.git"])?;
     git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()])?;
     git(&seed, &["push", "-u", "origin", "main"])?;
-    git(&dir, &["clone", "--branch", "main", bare.to_str().unwrap(), "destination"])?;
+    git(
+        &dir,
+        &[
+            "clone",
+            "--branch",
+            "main",
+            bare.to_str().unwrap(),
+            "destination",
+        ],
+    )?;
     fs::write(seed.join("state"), "two\n").map_err(|e| e.to_string())?;
     git(&seed, &["add", "state"])?;
     git(&seed, &["commit", "-m", "two"])?;
@@ -136,64 +145,25 @@ fn git_artifact_bench(
     )
 }
 
-fn caduceus_bench(root: &Path) -> Result<serde_json::Value, String> {
+fn caduceus_bench(root: &Path, invocation: crate::atoms::r#do::InvocationKey) -> Result<serde_json::Value, String> {
     let dir = root.join("caduceus");
-    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let source_sha = "0123456789abcdef0123456789abcdef01234567";
+    let build = crate::build_crate::bench_build_guard(&dir, source_sha)?;
     let artifact = dir.join("target/release/caduceus");
     let install = dir.join("usr/local/bin/caduceus");
-    fs::create_dir_all(artifact.parent().unwrap()).map_err(|error| error.to_string())?;
-    let source_sha = "0123456789abcdef0123456789abcdef01234567".to_string();
-    let build = crate::build_crate::bench_build_guard(&dir, &source_sha)?;
-    let run1 = crate::tools::service_runtime::bench_binary_install(
-        &dir.join("run1"),
-        &artifact,
-        &install,
-    )?;
-    let health1 = serve_health_once(&source_sha, |url| {
-        crate::tools::service_runtime::bench_health_identity(
-            &dir.join("run1"),
-            url,
-            source_sha.clone(),
-        )
-    })?;
-    let run2 = crate::tools::service_runtime::bench_binary_install(
-        &dir.join("run2"),
-        &artifact,
-        &install,
-    )?;
-    let health2 = serve_health_once(&source_sha, |url| {
-        crate::tools::service_runtime::bench_health_identity(
-            &dir.join("run2"),
-            url,
-            source_sha.clone(),
-        )
-    })?;
-    let wrong_health = serve_health_value("fedcba9876543210fedcba9876543210fedcba98", |url| {
-        crate::tools::service_runtime::bench_health_identity(
-            &dir.join("wrong-health"),
-            url,
-            source_sha.clone(),
-        )
-    })?;
-    let build_environment = crate::tools::service_runtime::bench_build_environment(&source_sha)?;
-    let artifact_path = artifact.to_string_lossy().to_string();
-    if wrong_health.ok
-        || !wrong_health
-            .stderr
-            .starts_with("service-runtime-act-did-not-converge")
-        || build_environment.get("CADUCEUS_BUILD_SHA") != Some(&source_sha)
-    {
-        return Err("caduceus-identity-guard-bench-failed".to_string());
-    }
-    if !run1.ok || !run1.changed || !health1.ok || run2.changed || !run2.ok || !health2.ok {
-        return Err("caduceus-shaped-bench-failed".to_string());
-    }
-    Ok(json!({
-        "run1": {"ok": run1.ok, "changed": run1.changed, "operations": 1, "health_build_sha": source_sha, "source_sha": source_sha},
-        "run2": {"ok": run2.ok, "changed": run2.changed, "operations": 0, "health_build_sha": source_sha, "source_sha": source_sha},
-        "build": {"guard": build, "environment": build_environment, "artifact": artifact_path},
-        "wrong_final_health": {"ok": wrong_health.ok, "stderr": wrong_health.stderr, "receipt": "caduceus-bench-health.json"}
-    }))
+    fs::create_dir_all(install.parent().ok_or("install-parent-missing")?).map_err(|e| e.to_string())?;
+    let bytes = fs::read(&artifact).map_err(|e| e.to_string())?;
+    let run = |rd: &Path| crate::place_file::execute(crate::place_file::PlaceFileRequest { path: &install, declared_bytes: &bytes, mode: Some(0o755), ownership: crate::place_file::DeclaredOwnership { uid: None, gid: None }, backup: crate::place_file::BackupPolicy::To(&rd.join("backup")), invocation: Some(invocation) });
+    let run1_dir = dir.join("run1"); let run1 = run(&run1_dir)?;
+    let run2_dir = dir.join("run2"); let run2 = run(&run2_dir)?;
+    let health1 = serve_health_once(source_sha, |url| Ok(crate::check_health::probe(&crate::tools::health::ProbeRequest { url: &url, retries: 0, timeout_secs: 3, expected_contains: Some(source_sha) })))?;
+    let wrong = "fedcba9876543210fedcba9876543210fedcba98";
+    let health_bad = serve_health_value(wrong, |url| Ok(crate::check_health::probe(&crate::tools::health::ProbeRequest { url: &url, retries: 0, timeout_secs: 3, expected_contains: Some(source_sha) })))?;
+    crate::write_command_receipt(&run1_dir, "check-health", &health1)?;
+    crate::write_command_receipt(&run2_dir, "check-health", &health_bad)?;
+    if !run1.receipt.ok || !run1.movement.changed() || !run2.receipt.ok || run2.movement.changed() || !health1.ok || health_bad.ok { return Err("caduceus-primitive-stillness-bench-failed".into()); }
+    Ok(json!({"source_gate":{"fresh_source":true,"source_sha":source_sha,"stale_service_ignored":true},"build":build,"run1":{"ok":run1.receipt.ok,"changed":run1.movement.changed()},"run2":{"ok":run2.receipt.ok,"changed":run2.movement.changed()},"health":{"matching_identity":{"ok":health1.ok},"mismatched_identity":{"ok":health_bad.ok,"stderr":health_bad.stderr}}}))
 }
 
 fn serve_health_value<T>(

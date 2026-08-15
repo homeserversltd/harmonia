@@ -16,9 +16,9 @@ pub(crate) enum LoadedModule {
 #[derive(Clone, Debug)]
 pub(crate) struct ProjectedModule {
     pub(crate) loaded: LoadedModule,
-    pub(crate) steps: Vec<crate::ladder::ValidatedStep>,
-    group_probe: Option<crate::ladder::ValidatedStep>,
-    pub(crate) routines: BTreeMap<String, Vec<crate::ladder::ProjectedRoutineChild>>,
+    pub(crate) steps: Vec<crate::tools::routine::ValidatedStep>,
+    group_probe: Option<crate::tools::routine::ValidatedStep>,
+    pub(crate) routines: BTreeMap<String, Vec<crate::tools::routine::ProjectedRoutineChild>>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,7 +85,7 @@ pub(crate) fn load_profile_projection(
                 let mut routines = BTreeMap::new();
                 let mut routine_error = None;
                 for step in m.ladder.iter().filter(|step| step.tool == "routine") {
-                    match crate::ladder::project_routine_children(step, &m.constants) {
+                    match crate::tools::routine::project_routine_children(step, &m.constants) {
                         Ok(children) => {
                             routines.insert(step.step_id.clone(), children);
                         }
@@ -379,20 +379,44 @@ fn projection_glob(pattern: &str, name: &str) -> bool {
     }
 }
 fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, Value>> {
-    projected
-        .steps
-        .iter()
-        .filter(|s| s.tool == "service-runtime" && s.permutation == "converge")
-        .map(|s| &s.args)
-        .chain(
-            projected
-                .routines
-                .values()
-                .flatten()
-                .filter(|c| c.tool == "service-runtime" && c.name == "build")
+    let mut out = Vec::new();
+    if let LoadedModule::Ladder(manifest) = &projected.loaded {
+        out.extend(
+            manifest
+                .ladder
+                .iter()
+                .filter_map(crate::ladder::service_runtime_converge_args),
+        );
+    }
+    for children in projected.routines.values() {
+        out.extend(
+            children
+                .iter()
+                .filter(|c| {
+                    c.args.contains_key("component")
+                        && c.args.contains_key("op_prefix")
+                        && c.args.contains_key("install_bin")
+                        && matches!(
+                            c.tool.as_str(),
+                            "pull-repo"
+                                | "build-crate"
+                                | "place-file"
+                                | "service-runtime"
+                                | "enable-unit"
+                                | "systemd"
+                                | "check-health"
+                        )
+                })
                 .map(|c| &c.args),
-        )
-        .collect()
+        );
+    }
+    let mut seen = BTreeSet::new();
+    out.retain(|args| {
+        args.get("component")
+            .and_then(Value::as_str)
+            .is_some_and(|component| seen.insert(component.to_string()))
+    });
+    out
 }
 fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool {
     match &projected.loaded {
@@ -553,7 +577,7 @@ fn load_profile_module(module_root: &Path, module_id: &str) -> Result<LoadedModu
 
 fn resolve_group_selections(
     profile: &Profile,
-    module_root: &Path,
+    _module_root: &Path,
     receipt_dir: &Path,
     projection: &ProfileProjection,
 ) -> Result<BTreeMap<String, GroupSelection>, String> {
@@ -607,8 +631,9 @@ fn resolve_group_selections(
                 .group_probe
                 .as_ref()
                 .ok_or_else(|| format!("module-{}-has-no-group", module_id))?;
-            let outcome =
-                crate::ladder::execute_group_live_probe_validated(manifest, probe, &probe_dir)?;
+            let outcome = crate::bands::compare::execute_group_live_probe_validated(
+                manifest, probe, &probe_dir,
+            )?;
             let signal = if outcome.ok {
                 "probe-live".to_string()
             } else {
@@ -656,77 +681,6 @@ fn group_loser_winners(selections: &BTreeMap<String, GroupSelection>) -> BTreeMa
     losers
 }
 
-fn caduceus_commands_for_profile(
-    profile: &Profile,
-    module_root: &Path,
-) -> Result<Vec<String>, String> {
-    caduceus_commands_for_profile_with_policy(profile, module_root, &BTreeSet::new())
-}
-
-fn caduceus_commands_for_profile_with_policy(
-    profile: &Profile,
-    module_root: &Path,
-    disabled_modules: &BTreeSet<String>,
-) -> Result<Vec<String>, String> {
-    let mut commands = Vec::new();
-    for module_id in &profile.modules {
-        if disabled_modules.contains(module_id) {
-            continue;
-        }
-        let Ok(LoadedModule::Ladder(module)) = load_profile_module(module_root, module_id) else {
-            continue;
-        };
-        for command in module.caduceus_commands {
-            if !commands.contains(&command) {
-                commands.push(command);
-            }
-        }
-    }
-    Ok(commands)
-}
-
-fn compose_caduceus_commands(
-    profile: &Profile,
-    module_root: &Path,
-    manifest: &mut LadderManifest,
-) -> Result<(), String> {
-    compose_caduceus_commands_with_policy(profile, module_root, manifest, &BTreeSet::new())
-}
-
-fn compose_caduceus_commands_with_policy(
-    profile: &Profile,
-    module_root: &Path,
-    manifest: &mut LadderManifest,
-    disabled_modules: &BTreeSet<String>,
-) -> Result<(), String> {
-    let is_caduceus = manifest.ladder.iter().any(|step| {
-        crate::ladder::service_runtime_converge_args(step)
-            .and_then(|args| args.get("component"))
-            .and_then(|value| value.as_str())
-            == Some("caduceus")
-    });
-    if !is_caduceus {
-        return Ok(());
-    }
-    let commands =
-        caduceus_commands_for_profile_with_policy(profile, module_root, disabled_modules)?;
-    for step in &mut manifest.ladder {
-        if step.tool == "service-runtime" && step.permutation == "converge" {
-            step.args
-                .insert("caduceus_commands".to_string(), json!(commands));
-        } else if crate::ladder::is_lowered_service_runtime_converge(step) {
-            for child in &mut step.steps {
-                if child.tool == "service-runtime" {
-                    child
-                        .args
-                        .insert("caduceus_commands".to_string(), json!(commands));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn write_group_selection_receipt(
     receipt_dir: &Path,
     selection: &GroupSelection,
@@ -750,142 +704,6 @@ fn write_group_selection_receipt(
             "losers": selection.losers,
         }),
     )
-}
-
-fn execute_band_modules(
-    band: crate::bands::Band,
-    profile: &Profile,
-    module_root: &Path,
-    receipt_dir: &Path,
-    mode: UpdateMode,
-    disabled_modules: &BTreeSet<String>,
-    projection: &ProfileProjection,
-    states: &mut BTreeMap<String, ModuleExecution>,
-    routines: &mut BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>>,
-    halted: &mut BTreeSet<String>,
-    module_count: &mut usize,
-    operation_count: &mut usize,
-    changed: &mut bool,
-    ok: &mut bool,
-    first_missing_signal: &mut String,
-    events: &mut File,
-) -> Result<(), String> {
-    for module_id in &profile.modules {
-        if disabled_modules.contains(module_id) || halted.contains(module_id) {
-            continue;
-        }
-        let loaded = match projection.modules.get(module_id).map(|p| p.loaded.clone()) {
-            Some(value) => value,
-            None => {
-                let err = projection
-                    .errors
-                    .get(module_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("module-not-in-projection-{module_id}"));
-                let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
-                    ok: true,
-                    changed: false,
-                    operation_count: 0,
-                    first_missing_signal: None,
-                    placements: Vec::new(),
-                });
-                state.ok = false;
-                state.first_missing_signal.get_or_insert(err.clone());
-                halted.insert(module_id.clone());
-                *ok = false;
-                if *first_missing_signal == "none" {
-                    *first_missing_signal = err.clone();
-                }
-                event(events, "module-rejected", false, &err)?;
-                continue;
-            }
-        };
-        *module_count = profile.modules.len();
-        let result = match loaded {
-            LoadedModule::Ladder(manifest) => execute_ladder_manifest_band(
-                &manifest,
-                &receipt_dir.join("modules").join(module_id),
-                band,
-                mode.software_authorization(),
-                profile.package_authority.as_ref(),
-                mode.invocation(),
-                states.get(module_id).map(|s| s.changed).unwrap_or(false),
-                routines.entry(module_id.clone()).or_default(),
-                projection
-                    .modules
-                    .get(module_id)
-                    .map(|p| p.steps.as_slice())
-                    .unwrap_or(&[]),
-                &projection
-                    .modules
-                    .get(module_id)
-                    .expect("projected module")
-                    .routines,
-            ),
-            LoadedModule::Sidecar(_) => {
-                let mut state = ModuleExecution {
-                    ok: false,
-                    changed: false,
-                    operation_count: 0,
-                    first_missing_signal: Some("module-sidecar-not-band-executable".to_string()),
-                    placements: Vec::new(),
-                };
-                Ok(state)
-            }
-        };
-        let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
-            ok: true,
-            changed: false,
-            operation_count: 0,
-            first_missing_signal: None,
-            placements: Vec::new(),
-        });
-        match result {
-            Ok(part) => {
-                state.operation_count += part.operation_count;
-                state.changed |= part.changed;
-                state.placements.extend(part.placements);
-                if part.changed {
-                    *changed = true;
-                }
-                if !part.ok {
-                    state.ok = false;
-                    if state.first_missing_signal.is_none() {
-                        state.first_missing_signal = part.first_missing_signal;
-                    }
-                    *ok = false;
-                    halted.insert(module_id.clone());
-                    if *first_missing_signal == "none" {
-                        *first_missing_signal = state
-                            .first_missing_signal
-                            .clone()
-                            .unwrap_or_else(|| format!("module-failed-{module_id}"));
-                    }
-                }
-                *operation_count += part.operation_count;
-                event(
-                    events,
-                    "module-band",
-                    part.ok,
-                    &format!(
-                        "{} band={:?} steps={}",
-                        module_id, band, part.operation_count
-                    ),
-                )?;
-            }
-            Err(err) => {
-                state.ok = false;
-                state.first_missing_signal.get_or_insert(err.clone());
-                halted.insert(module_id.clone());
-                *ok = false;
-                if *first_missing_signal == "none" {
-                    *first_missing_signal = err.clone();
-                }
-                event(events, "module-rejected", false, &err)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn run_profile_engine(
@@ -971,7 +789,6 @@ pub(crate) fn run_profile_engine_with_projection(
     let mut group_losers: BTreeMap<String, String> = BTreeMap::new();
     let mut final_result: Option<Result<(), String>> = None;
     let device_module_policy = read_device_module_policy()?;
-    let harmonia_root = harmonia_root_from_module_root(module_root);
 
     crate::bands::walk(|band| {
         state.visited_bands.push(format!("{:?}", band));
@@ -1053,12 +870,11 @@ pub(crate) fn run_profile_engine_with_projection(
             }
             crate::bands::Band::PullSource => {
                 // Primitive rolling-update acquisition already ran; routine children still visit this band.
-                execute_band_modules(
-                    band,
+                crate::bands::pull_source::execute_manifest_modules(
                     &active_profile,
-                    module_root,
                     receipt_dir,
                     mode,
+                    apply,
                     &device_module_policy.disabled_modules,
                     &active_projection,
                     &mut state.module_states,
@@ -1120,12 +936,11 @@ pub(crate) fn run_profile_engine_with_projection(
                     &active_projection,
                 )?;
                 group_losers = group_loser_winners(&group_selections);
-                execute_band_modules(
-                    band,
+                crate::bands::compare::execute_manifest_modules(
                     &active_profile,
-                    module_root,
                     receipt_dir,
                     mode,
+                    apply,
                     &device_module_policy.disabled_modules,
                     &active_projection,
                     &mut state.module_states,
@@ -1144,6 +959,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &active_profile,
                     receipt_dir,
                     mode,
+                    apply,
                     &device_module_policy.disabled_modules,
                     &active_projection,
                     &mut state.module_states,
@@ -1157,16 +973,69 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut events,
                 )?;
             }
-            crate::bands::Band::RatchetBinaries
-            | crate::bands::Band::RestartServices
-            | crate::bands::Band::BackfillFiles
-            | crate::bands::Band::ProposeEdits => {
-                execute_band_modules(
-                    band,
+            crate::bands::Band::RestartServices => {
+                crate::bands::restart_services::execute_manifest_modules(
                     &active_profile,
-                    module_root,
                     receipt_dir,
                     mode,
+                    apply,
+                    &device_module_policy.disabled_modules,
+                    &active_projection,
+                    &mut state.module_states,
+                    &mut routine_states,
+                    &mut halted_modules,
+                    &mut state.module_count,
+                    &mut state.operation_count,
+                    &mut state.changed,
+                    &mut state.ok,
+                    &mut state.first_missing_signal,
+                    &mut events,
+                )?;
+            }
+            crate::bands::Band::RatchetBinaries => {
+                crate::bands::ratchet_binaries::execute_manifest_modules(
+                    &active_profile,
+                    receipt_dir,
+                    mode,
+                    apply,
+                    &device_module_policy.disabled_modules,
+                    &active_projection,
+                    &mut state.module_states,
+                    &mut routine_states,
+                    &mut halted_modules,
+                    &mut state.module_count,
+                    &mut state.operation_count,
+                    &mut state.changed,
+                    &mut state.ok,
+                    &mut state.first_missing_signal,
+                    &mut events,
+                )?;
+            }
+            crate::bands::Band::BackfillFiles => {
+                crate::bands::backfill_files::execute_manifest_modules(
+                    &active_profile,
+                    receipt_dir,
+                    mode,
+                    apply,
+                    &device_module_policy.disabled_modules,
+                    &active_projection,
+                    &mut state.module_states,
+                    &mut routine_states,
+                    &mut halted_modules,
+                    &mut state.module_count,
+                    &mut state.operation_count,
+                    &mut state.changed,
+                    &mut state.ok,
+                    &mut state.first_missing_signal,
+                    &mut events,
+                )?;
+            }
+            crate::bands::Band::ProposeEdits => {
+                crate::bands::propose_edits::execute_manifest_modules(
+                    &active_profile,
+                    receipt_dir,
+                    mode,
+                    apply,
                     &device_module_policy.disabled_modules,
                     &active_projection,
                     &mut state.module_states,
@@ -1223,56 +1092,6 @@ pub(crate) fn run_profile_engine_with_projection(
         Ok(())
     })?;
     final_result.unwrap_or_else(|| Err("band-walk-report-home-missing".to_string()))
-}
-
-const DEFAULT_HARMONIA_SOURCE_REPO: &str = "https://github.com/homeserversltd/harmonia.git";
-const DEFAULT_HARMONIA_INSTALL_BIN: &str = "/usr/local/bin/harmonia";
-
-pub(crate) fn ensure_engine_config_for_rolling() -> Result<(), String> {
-    let engine_path = engine_config_path();
-    if engine_path.exists() {
-        return Ok(());
-    }
-    let ratchet_lock = engine_path
-        .parent()
-        .map(|parent| parent.join("engine-ratchet-lock.json"))
-        .unwrap_or_else(|| PathBuf::from("/etc/harmonia/engine-ratchet-lock.json"));
-    write_json_value_atomic(
-        &engine_path,
-        &json!({
-            "source_repo_url": DEFAULT_HARMONIA_SOURCE_REPO,
-            "branch": "main",
-            "source_dir": SOURCE_ROOT,
-            "install_bin": DEFAULT_HARMONIA_INSTALL_BIN,
-            "enabled": true,
-            "ratchet_lock": ratchet_lock,
-        }),
-    )
-}
-
-pub(crate) fn normalize_engine_branch_upstream() -> Result<(), String> {
-    if preserve_existing_lane_or_default(&subscription_path()) != "upstream" {
-        return Ok(());
-    }
-    let engine_path = engine_config_path();
-    if !engine_path.exists() {
-        return Ok(());
-    }
-    let text = fs::read_to_string(&engine_path)
-        .map_err(|e| format!("engine-config-read-failed {}: {e}", engine_path.display()))?;
-    let mut engine: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("engine-config-parse-failed {}: {e}", engine_path.display()))?;
-    let object = engine.as_object_mut().ok_or_else(|| {
-        format!(
-            "engine-config-parse-failed {}: root-not-object",
-            engine_path.display()
-        )
-    })?;
-    if object.get("branch").and_then(serde_json::Value::as_str) != Some("main") {
-        object.insert("branch".to_string(), json!("main"));
-        write_json_value_atomic(&engine_path, &engine)?;
-    }
-    Ok(())
 }
 
 fn rolling_update_run(
@@ -1334,47 +1153,32 @@ fn rolling_update_run(
             Some(&carrier),
             true,
         );
-        let value = carrier.borrow();
-        let census = value.transaction_census.clone();
-        let saved = value.sealed_snapshot.clone();
-        let service_states = value.sealed_services.clone();
-        drop(value);
+        let transaction_guard = carrier.borrow_mut().sealed_projection.take();
         if let Err(error) = transaction {
-            let Some(saved) = saved else {
+            let Some(mut txn) = transaction_guard else {
                 return Err(error);
             };
-            let Some(service_states) = service_states else {
-                return Err(error);
-            };
-            let Some(census) = census else {
-                return Err(error);
-            };
-            let artifact_rollback = crate::update_set::restore(&saved);
-            let service_rollback = crate::update_set::restore_services(&service_states);
-            let rollback_ok = artifact_rollback.is_ok() && service_rollback.is_ok();
-            let verdict = if rollback_ok {
-                "failed-rolled-back"
-            } else {
-                "failed-rollback-incomplete"
-            };
-            crate::update_set::update_set_receipt(
-                &effective_receipt_dir,
-                &census.gui_face,
-                verdict,
-                Some(&census.gui_member),
-                Some(&error),
-            )?;
+            if let Ok(receipt) = crate::atoms::r#do::transaction::rollback_projection(&mut txn) {
+                crate::update_set::write_transaction_receipt(
+                    &effective_receipt_dir,
+                    &receipt,
+                    Some(&error),
+                )?;
+            }
             return Err(error);
         }
-        let census =
-            census.ok_or_else(|| "stage-profile-transaction-census-missing".to_string())?;
-        crate::update_set::update_set_receipt(
-            &effective_receipt_dir,
-            &census.gui_face,
-            "ok",
-            None,
-            None,
-        )?;
+        let Some(mut txn) = transaction_guard else {
+            return Err("stage-profile-transaction-missing".to_string());
+        };
+        if let Some(key) = mode.invocation() {
+            for child in 0..txn.sealed.children.len() {
+                crate::atoms::r#do::transaction::apply_projection(&mut txn, child, key)?;
+            }
+        } else {
+            return Err("stage-profile-invocation-missing".to_string());
+        }
+        let receipt = crate::atoms::r#do::transaction::commit_projection(&mut txn)?;
+        crate::update_set::write_transaction_receipt(&effective_receipt_dir, &receipt, None)?;
         Ok(())
     };
     if apply {
@@ -1396,15 +1200,6 @@ fn rolling_update_run(
     } else {
         run()
     }
-}
-
-pub(crate) fn rolling_update_from_certificate(
-    profile: &Profile,
-    module_root: &Path,
-    receipt_dir: &Path,
-    mode: UpdateMode,
-) -> Result<(), String> {
-    rolling_update_from_certificate_with_context(profile, module_root, receipt_dir, mode, None)
 }
 
 pub(crate) fn rolling_update_from_certificate_with_context(
@@ -1451,10 +1246,6 @@ pub(crate) fn homeconsole_update(
         materialize_homeconsole_receipt_dir,
         try_acquire_homeconsole_update_lock,
     )
-}
-
-pub(crate) fn homeconsole_module_root() -> std::path::PathBuf {
-    Path::new("profiles/homeconsole/modules").to_path_buf()
 }
 
 pub(crate) fn lawful_module_manifest_exists(module_dir: &Path) -> bool {
@@ -1528,117 +1319,6 @@ pub(crate) fn tv_update(
     )
 }
 
-pub(crate) fn profile_update(
-    profile: &Profile,
-    module_root: &Path,
-    receipt_dir: &Path,
-    mode: UpdateMode,
-) -> Result<(), String> {
-    let suite_debt = enforce_update_suite(profile, module_root)?;
-    let profile_id = profile.id.clone();
-    rolling_update_run(
-        profile,
-        module_root,
-        receipt_dir,
-        mode,
-        None,
-        suite_debt,
-        profile_update_lock_path(&profile_id)?,
-        materialize_profile_receipt_dir,
-        try_acquire_homeconsole_update_lock,
-    )
-}
-
-pub(crate) fn normalize_homeserver_engine_branch() -> Result<(), String> {
-    normalize_engine_branch_upstream()
-}
-
-pub(crate) fn sync_homeserver_profile(
-    source_root: &Path,
-    installed_module_root: &Path,
-    receipt_dir: &Path,
-) -> Result<(), String> {
-    sync_homeserver_profile_as_bearer(source_root, installed_module_root, receipt_dir, "owner")
-}
-
-fn sync_homeserver_profile_as_bearer(
-    source_root: &Path,
-    installed_module_root: &Path,
-    receipt_dir: &Path,
-    git_bearer: &str,
-) -> Result<(), String> {
-    crate::bands::stage_profile::materialize(
-        source_root,
-        "homeserver",
-        installed_module_root,
-        receipt_dir,
-        git_bearer,
-        None,
-        None,
-    )
-    .map(|_| ())
-}
-
-pub(crate) fn sync_homeconsole_profile(
-    source_root: &Path,
-    installed_module_root: &Path,
-    receipt_dir: &Path,
-) -> Result<(), String> {
-    sync_homeconsole_profile_as_bearer(source_root, installed_module_root, receipt_dir, "owner")
-}
-
-fn sync_homeconsole_profile_as_bearer(
-    source_root: &Path,
-    installed_module_root: &Path,
-    receipt_dir: &Path,
-    git_bearer: &str,
-) -> Result<(), String> {
-    crate::bands::stage_profile::materialize(
-        source_root,
-        "homeconsole",
-        installed_module_root,
-        receipt_dir,
-        git_bearer,
-        None,
-        None,
-    )
-    .map(|_| ())
-}
-
-pub(crate) fn sync_tv_profile(
-    source_root: &Path,
-    installed_module_root: &Path,
-    receipt_dir: &Path,
-) -> Result<(), String> {
-    sync_tv_profile_as_bearer(source_root, installed_module_root, receipt_dir, "owner")
-}
-
-fn sync_tv_profile_as_bearer(
-    source_root: &Path,
-    installed_module_root: &Path,
-    receipt_dir: &Path,
-    git_bearer: &str,
-) -> Result<(), String> {
-    crate::bands::stage_profile::materialize(
-        source_root,
-        "tv",
-        installed_module_root,
-        receipt_dir,
-        git_bearer,
-        None,
-        None,
-    )
-    .map(|_| ())
-}
-
-pub(crate) fn homeserver_module_root() -> PathBuf {
-    Path::new("profiles/homeserver/modules").to_path_buf()
-}
-
-pub(crate) fn tv_module_root() -> PathBuf {
-    Path::new("profiles/tv/modules").to_path_buf()
-}
-
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {
     tools::command::capture(program, args)
 }
@@ -1661,78 +1341,12 @@ pub(crate) fn command_capture_with_cwd(
 }
 
 pub(crate) fn harmonia_root_from_module_root(module_root: &Path) -> PathBuf {
-    module_root
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+    module_root.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(test)]
 mod profile_authority_tests {
     use super::*;
-
-    #[test]
-    fn homeserver_caduceus_runtime_composes_firewall_commands_exactly_once() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let profile = load_profile(&root.join("profiles/homeserver/index.json")).unwrap();
-        let module_root = root.join("profiles/homeserver/modules");
-        let existing = caduceus_commands_for_profile(&profile, &module_root).unwrap();
-        let mut caduceus =
-            load_ladder_manifest(&module_root.join("caduceus/manifest.json")).unwrap();
-
-        compose_caduceus_commands(&profile, &module_root, &mut caduceus).unwrap();
-
-        let runtime = caduceus
-            .ladder
-            .iter()
-            .find(|step| step.tool == "service-runtime" && step.permutation == "converge")
-            .expect("homeserver caduceus service-runtime step");
-        let commands = runtime.args["caduceus_commands"]
-            .as_array()
-            .expect("composed caduceus commands array");
-        for command in [
-            "caduceus.network.firewall.read",
-            "caduceus.network.firewall.put",
-            "caduceus.network.firewall.delete",
-        ] {
-            assert_eq!(
-                commands
-                    .iter()
-                    .filter(|value| value.as_str() == Some(command))
-                    .count(),
-                1,
-                "{command} must appear exactly once in service-runtime args"
-            );
-        }
-        for command in existing {
-            assert_eq!(
-                commands
-                    .iter()
-                    .filter(|value| value.as_str() == Some(command.as_str()))
-                    .count(),
-                1,
-                "existing composed command {command} must remain exactly once"
-            );
-        }
-    }
-
-    #[test]
-    fn module_root_yields_absolute_installed_harmonia_root() {
-        assert_eq!(
-            harmonia_root_from_module_root(Path::new("/etc/harmonia/profiles/tv/modules")),
-            PathBuf::from("/etc/harmonia")
-        );
-    }
-
-    #[test]
-    fn module_root_yields_relative_repo_harmonia_root() {
-        assert_eq!(
-            harmonia_root_from_module_root(Path::new("profiles/tv/modules")),
-            PathBuf::from("")
-        );
-    }
 
     #[test]
     fn command_timeout_kills_sleeping_child() {

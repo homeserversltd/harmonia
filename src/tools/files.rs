@@ -217,29 +217,124 @@ pub struct FileConvergenceRequest {
 /// Classification is performed at the shared file membrane, before any
 /// observation is promoted to an actuator.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TargetClass { Software, Config, Refused(String) }
+pub(crate) enum TargetClass {
+    Software,
+    Config,
+    Refused(String),
+}
 
 pub(crate) fn is_protected_path(path: &Path) -> bool {
     let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
-    name.starts_with("id_") || name.ends_with(".pem") || name.ends_with(".key")
-        || name.ends_with(".p12") || name.ends_with(".pfx")
-        || path.components().any(|component| matches!(component,
+    name.starts_with("id_")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+        || name.ends_with(".p12")
+        || name.ends_with(".pfx")
+        || path.components().any(|component| {
+            matches!(component,
             Component::Normal(value) if matches!(value.to_str(), Some(".ssh") | Some("key") |
-            Some("keys") | Some("private") | Some("credentials") | Some("secrets"))))
+            Some("keys") | Some("private") | Some("credentials") | Some("secrets")))
+        })
+}
+
+pub(crate) fn structural_file_blocker(
+    step: &crate::tools::routine::ValidatedStep,
+    _manifest: &crate::ladder::LadderManifest,
+) -> Option<String> {
+    if step.tool != "files" {
+        return None;
+    }
+    let mut targets = Vec::new();
+    for key in [
+        "target_root",
+        "target",
+        "target_path",
+        "target_shelf",
+        "launcher_target_root",
+    ] {
+        if let Some(value) = step.args.get(key).and_then(serde_json::Value::as_str) {
+            targets.push(PathBuf::from(value));
+        }
+    }
+    if let Some(value) = step.args.get("files").and_then(serde_json::Value::as_array) {
+        for item in value {
+            if let Some(path) = item.as_str() {
+                targets.push(PathBuf::from(path));
+            }
+            if let Some(path) = item.get("path").and_then(serde_json::Value::as_str) {
+                targets.push(PathBuf::from(path));
+            }
+        }
+    }
+    if let Some(value) = step
+        .args
+        .get("directories")
+        .and_then(serde_json::Value::as_array)
+    {
+        for item in value {
+            if let Some(path) = item.get("path").and_then(serde_json::Value::as_str) {
+                targets.push(PathBuf::from(path));
+            }
+        }
+    }
+    for target in targets {
+        match classify_target(&target) {
+            TargetClass::Config => {
+                return Some(format!(
+                    "configuration-actuator-authority-refused {}",
+                    target.display()
+                ))
+            }
+            TargetClass::Refused(reason) => return Some(reason),
+            TargetClass::Software => {}
+        }
+    }
+    None
+}
+
+/// Classify a routine file target at the final membrane immediately before
+/// dispatching a file actuator.
+pub(crate) fn authorize_routine_target(path: &Path, apply: bool) -> Result<TargetClass, String> {
+    let class = classify_target(path);
+    match (&class, apply) {
+        (TargetClass::Refused(reason), _) => Err(reason.clone()),
+        (TargetClass::Config, true) => Err(format!("configuration-actuator-authority-refused {}", path.display())),
+        _ => Ok(class),
+    }
 }
 
 pub(crate) fn classify_target(path: &Path) -> TargetClass {
-    if is_protected_path(path) { return TargetClass::Refused(format!("credential-boundary-refused {}", path.display())); }
+    if is_protected_path(path) {
+        return TargetClass::Refused(format!("credential-boundary-refused {}", path.display()));
+    }
     let text = path.to_string_lossy();
-    if text == "/etc" || text.starts_with("/etc/") || text == "/home" || text.starts_with("/home/")
-        || text == "/root" || text.starts_with("/root/") || text == "$HOME" || text.starts_with("$HOME/")
-        || text.contains("config_deploy:interactable") { TargetClass::Config } else { TargetClass::Software }
+    if text == "/etc"
+        || text.starts_with("/etc/")
+        || text == "/home"
+        || text.starts_with("/home/")
+        || text == "/root"
+        || text.starts_with("/root/")
+        || text == "$HOME"
+        || text.starts_with("$HOME/")
+        || text.contains("config_deploy:interactable")
+    {
+        TargetClass::Config
+    } else {
+        TargetClass::Software
+    }
 }
 
 fn classify_request(request: &FileConvergenceRequest) -> Result<Vec<TargetClass>, String> {
-    request.files.iter().map(|file| match classify_target(&request.target_root.join(&file.relative_path)) {
-        TargetClass::Refused(reason) => Err(reason), class => Ok(class)
-    }).collect()
+    request
+        .files
+        .iter()
+        .map(
+            |file| match classify_target(&request.target_root.join(&file.relative_path)) {
+                TargetClass::Refused(reason) => Err(reason),
+                class => Ok(class),
+            },
+        )
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -421,10 +516,16 @@ fn unified_file_diff(source: &Path, target: &Path) -> Result<UnifiedFileDiff, St
         });
     }
     let Ok(current) = String::from_utf8(current) else {
-        return Ok(UnifiedFileDiff { text: None, omitted: Some("binary".to_string()) });
+        return Ok(UnifiedFileDiff {
+            text: None,
+            omitted: Some("binary".to_string()),
+        });
     };
     let Ok(declared) = String::from_utf8(declared) else {
-        return Ok(UnifiedFileDiff { text: None, omitted: Some("binary".to_string()) });
+        return Ok(UnifiedFileDiff {
+            text: None,
+            omitted: Some("binary".to_string()),
+        });
     };
     Ok(UnifiedFileDiff {
         text: Some(
@@ -455,11 +556,18 @@ fn write_unified_diff_receipt(
     let safe_path = relative_path.replace('/', "_").replace('\\', "_");
     let stem = receipt_name.trim_end_matches(".json");
     fs::create_dir_all(receipt_dir).map_err(|error| {
-        format!("files-diff-receipt-directory-create-failed {}: {error}", receipt_dir.display())
+        format!(
+            "files-diff-receipt-directory-create-failed {}: {error}",
+            receipt_dir.display()
+        )
     })?;
     let path = receipt_dir.join(format!("{stem}-{safe_path}.diff"));
-    fs::write(&path, diff)
-        .map_err(|error| format!("files-diff-receipt-write-failed {}: {error}", path.display()))
+    fs::write(&path, diff).map_err(|error| {
+        format!(
+            "files-diff-receipt-write-failed {}: {error}",
+            path.display()
+        )
+    })
 }
 
 pub use crate::remove_file::{FileRemovalEntry, FileRemovalOutcome};
@@ -736,7 +844,7 @@ pub(crate) fn converge_managed_directories(
         let desired_uid = resolve_uid(&directory.owner)?;
         let desired_gid = resolve_gid(&directory.group)?;
         let run = crate::tools::comparison::execute(
-        "files",
+            "files",
             || {
                 let metadata = fs::symlink_metadata(&path).ok();
                 if metadata
@@ -898,9 +1006,21 @@ pub(crate) fn converge_managed_files(
     apply: bool,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(request.receipt_name)?;
-    let classes = request.files.iter().map(|file| classify_target(Path::new(&file.path))).collect::<Vec<_>>();
-    if let Some(reason) = classes.iter().find_map(|class| match class { TargetClass::Refused(reason) => Some(reason.clone()), _ => None }) { return Err(reason); }
-    let apply = apply && classes.iter().all(|class| matches!(class, TargetClass::Software));
+    let classes = request
+        .files
+        .iter()
+        .map(|file| classify_target(Path::new(&file.path)))
+        .collect::<Vec<_>>();
+    if let Some(reason) = classes.iter().find_map(|class| match class {
+        TargetClass::Refused(reason) => Some(reason.clone()),
+        _ => None,
+    }) {
+        return Err(reason);
+    }
+    let apply = apply
+        && classes
+            .iter()
+            .all(|class| matches!(class, TargetClass::Software));
     for file in request.files {
         reject_ssh_path(Path::new(&file.path))?;
     }
@@ -915,7 +1035,7 @@ pub(crate) fn converge_managed_files(
     for file in request.files {
         let desired = file.content.as_bytes();
         let run = crate::tools::comparison::execute(
-        "files",
+            "files",
             || {
                 let path = PathBuf::from(&file.path);
                 let target_exists_before = fs::symlink_metadata(&path).is_ok();
@@ -1184,7 +1304,9 @@ pub fn converge_files(
     receipt_dir: &Path,
     apply: bool,
 ) -> Result<FileConvergenceOutcome, String> {
-    if apply { return Err("software-authorization-required".into()); }
+    if apply {
+        return Err("software-authorization-required".into());
+    }
     converge_files_authorized(request, receipt_dir, None, None)
 }
 
@@ -1194,7 +1316,9 @@ pub(crate) fn converge_files_with_invocation(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
-    if apply { return Err("software-authorization-required".into()); }
+    if apply {
+        return Err("software-authorization-required".into());
+    }
     converge_files_authorized(request, receipt_dir, None, invocation)
 }
 
@@ -1210,7 +1334,10 @@ pub(crate) fn converge_files_authorized(
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
     let classes = classify_request(request)?;
-    let apply = authorization.is_some() && classes.iter().all(|class| matches!(class, TargetClass::Software));
+    let apply = authorization.is_some()
+        && classes
+            .iter()
+            .all(|class| matches!(class, TargetClass::Software));
     // InvocationKey is an actuator bearer, never an observation/proposal bearer.
     let actuation_invocation = apply.then_some(invocation).flatten();
     for spec in &request.files {
@@ -1280,7 +1407,12 @@ pub(crate) fn converge_files_authorized(
             missing_target_birth_debts.push(relative_path.clone());
             let file_diff = unified_file_diff(&source, &target)?;
             if let Some(diff) = file_diff.text.as_deref() {
-                write_unified_diff_receipt(receipt_dir, &request.receipt_name, &relative_path, diff)?;
+                write_unified_diff_receipt(
+                    receipt_dir,
+                    &request.receipt_name,
+                    &relative_path,
+                    diff,
+                )?;
             }
             entries.push(FileConvergenceEntry {
                 relative_path,
@@ -1363,14 +1495,29 @@ pub(crate) fn converge_files_authorized(
             // Observe/compare/propose is a terminal lane: no actuator call and no
             // InvocationKey may cross into a mutation-capable descendant.
             entries.push(FileConvergenceEntry {
-                relative_path, source, target, source_exists, target_exists_before,
-                content_equal_before, mode_equal_before, target_exists_after: target_exists_before,
-                content_equal_after: content_equal_before, mode_equal_after: mode_equal_before,
-                changed: entry_changed, backed_up_to: None, final_mode,
-                ownership_source: ownership_source.to_string(), observed_uid_before, observed_gid_before,
-                observed_uid_after: observed_uid_before, observed_gid_after: observed_gid_before,
-                ownership_changed, observed_uid: observed_uid_before, observed_gid: observed_gid_before,
-                diff: file_diff.text, diff_omitted: file_diff.omitted,
+                relative_path,
+                source,
+                target,
+                source_exists,
+                target_exists_before,
+                content_equal_before,
+                mode_equal_before,
+                target_exists_after: target_exists_before,
+                content_equal_after: content_equal_before,
+                mode_equal_after: mode_equal_before,
+                changed: entry_changed,
+                backed_up_to: None,
+                final_mode,
+                ownership_source: ownership_source.to_string(),
+                observed_uid_before,
+                observed_gid_before,
+                observed_uid_after: observed_uid_before,
+                observed_gid_after: observed_gid_before,
+                ownership_changed,
+                observed_uid: observed_uid_before,
+                observed_gid: observed_gid_before,
+                diff: file_diff.text,
+                diff_omitted: file_diff.omitted,
             });
             continue;
         }
@@ -1573,7 +1720,7 @@ pub fn ensure_files_present(
         let target = request.target_root.join(&spec.relative_path);
         reject_ssh_path(&target)?;
         let run = crate::tools::comparison::execute(
-        "files",
+            "files",
             || match fs::symlink_metadata(&target) {
                 Ok(metadata) if metadata.file_type().is_file() => Ok(true),
                 Ok(_) => Err(format!(
@@ -1856,69 +2003,121 @@ fn source_shelf_excluded(patterns: &[String], relative: &Path) -> bool {
     let relative = relative.to_string_lossy();
     patterns.iter().any(|pattern| {
         basename_pattern_matches(pattern, &relative)
-            || relative.split('/').any(|part| basename_pattern_matches(pattern, part))
+            || relative
+                .split('/')
+                .any(|part| basename_pattern_matches(pattern, part))
     })
 }
 
-
 fn carry_excluded_shelf_entries(
-    shelf_backup: &Path, promoted_shelf: &Path, exclude: &[String],
+    shelf_backup: &Path,
+    promoted_shelf: &Path,
+    exclude: &[String],
 ) -> Result<Vec<(PathBuf, PathBuf)>, String> {
-    fn carry(shelf_backup: &Path, promoted_shelf: &Path, path: &Path, exclude: &[String], carried: &mut Vec<(PathBuf, PathBuf)>) -> Result<(), String> {
-        let mut children = fs::read_dir(path).map_err(|error| format!(
-            "source-shelf-sweep-excluded-backup-read-failed {}: {error}", path.display()
-        ))?.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    fn carry(
+        shelf_backup: &Path,
+        promoted_shelf: &Path,
+        path: &Path,
+        exclude: &[String],
+        carried: &mut Vec<(PathBuf, PathBuf)>,
+    ) -> Result<(), String> {
+        let mut children = fs::read_dir(path)
+            .map_err(|error| {
+                format!(
+                    "source-shelf-sweep-excluded-backup-read-failed {}: {error}",
+                    path.display()
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
             let backup_path = child.path();
-            let relative_path = backup_path.strip_prefix(shelf_backup).map_err(|error| error.to_string())?.to_path_buf();
+            let relative_path = backup_path
+                .strip_prefix(shelf_backup)
+                .map_err(|error| error.to_string())?
+                .to_path_buf();
             validate_relative_path(&relative_path)?;
             let promoted_path = promoted_shelf.join(&relative_path);
             if source_shelf_excluded(exclude, &relative_path) {
                 match fs::symlink_metadata(&promoted_path) {
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        fs::rename(&backup_path, &promoted_path).map_err(|error| format!(
-                            "source-shelf-sweep-excluded-carry-failed {} -> {}: {error}", backup_path.display(), promoted_path.display()
-                        ))?;
+                        fs::rename(&backup_path, &promoted_path).map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-excluded-carry-failed {} -> {}: {error}",
+                                backup_path.display(),
+                                promoted_path.display()
+                            )
+                        })?;
                         carried.push((backup_path, promoted_path));
                     }
-                    Err(error) => return Err(format!(
-                        "source-shelf-sweep-excluded-stage-metadata-failed {}: {error}", promoted_path.display()
-                    )),
+                    Err(error) => {
+                        return Err(format!(
+                            "source-shelf-sweep-excluded-stage-metadata-failed {}: {error}",
+                            promoted_path.display()
+                        ))
+                    }
                 }
                 continue;
             }
-            if child.file_type().map_err(|error| format!("source-shelf-sweep-excluded-entry-type-failed: {error}"))?.is_dir() {
+            if child
+                .file_type()
+                .map_err(|error| format!("source-shelf-sweep-excluded-entry-type-failed: {error}"))?
+                .is_dir()
+            {
                 carry(shelf_backup, promoted_shelf, &backup_path, exclude, carried)?;
             }
         }
         Ok(())
     }
     let mut carried = Vec::new();
-    carry(shelf_backup, promoted_shelf, shelf_backup, exclude, &mut carried)?;
+    carry(
+        shelf_backup,
+        promoted_shelf,
+        shelf_backup,
+        exclude,
+        &mut carried,
+    )?;
     Ok(carried)
 }
 
 fn load_sweep_provenance(path: &Path) -> Result<SourceShelfSweepProvenance, String> {
     match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| format!(
-            "source-shelf-sweep-provenance-parse-failed {}: {error}", path.display()
-        )),
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "source-shelf-sweep-provenance-parse-failed {}: {error}",
+                path.display()
+            )
+        }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
-        Err(error) => Err(format!("source-shelf-sweep-provenance-read-failed {}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "source-shelf-sweep-provenance-read-failed {}: {error}",
+            path.display()
+        )),
     }
 }
 
-fn write_sweep_provenance(path: &Path, provenance: &SourceShelfSweepProvenance) -> Result<(), String> {
-    let parent = path.parent().ok_or_else(|| "source-shelf-sweep-provenance-parent-missing".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| format!(
-        "source-shelf-sweep-provenance-parent-create-failed {}: {error}", parent.display()
-    ))?;
-    crate::write_json(path, &json!({
-        "schema":"harmonia.files.source_shelf_sweep.provenance.v1",
-        "paths": provenance.paths,
-    }))
+fn write_sweep_provenance(
+    path: &Path,
+    provenance: &SourceShelfSweepProvenance,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "source-shelf-sweep-provenance-parent-missing".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "source-shelf-sweep-provenance-parent-create-failed {}: {error}",
+            parent.display()
+        )
+    })?;
+    crate::write_json(
+        path,
+        &json!({
+            "schema":"harmonia.files.source_shelf_sweep.provenance.v1",
+            "paths": provenance.paths,
+        }),
+    )
 }
 
 fn inventory_sweep_tree(root: &Path, exclude: &[String]) -> Result<Vec<SweepTreeEntry>, String> {
@@ -1938,7 +2137,12 @@ fn inventory_sweep_tree(root: &Path, exclude: &[String]) -> Result<Vec<SweepTree
         relative_path: PathBuf::from("."),
         is_dir: true,
     }];
-    fn walk(root: &Path, path: &Path, exclude: &[String], entries: &mut Vec<SweepTreeEntry>) -> Result<(), String> {
+    fn walk(
+        root: &Path,
+        path: &Path,
+        exclude: &[String],
+        entries: &mut Vec<SweepTreeEntry>,
+    ) -> Result<(), String> {
         let mut children = fs::read_dir(path)
             .map_err(|error| {
                 format!(
@@ -1983,7 +2187,10 @@ fn inventory_sweep_tree(root: &Path, exclude: &[String]) -> Result<Vec<SweepTree
     Ok(entries)
 }
 
-fn inventory_sweep_tree_if_present(root: &Path, exclude: &[String]) -> Result<Vec<SweepTreeEntry>, String> {
+fn inventory_sweep_tree_if_present(
+    root: &Path,
+    exclude: &[String],
+) -> Result<Vec<SweepTreeEntry>, String> {
     match fs::symlink_metadata(root) {
         Ok(_) => inventory_sweep_tree(root, exclude),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -2679,7 +2886,12 @@ pub fn source_shelf_sweep(
                 let stale = fs::read(&receipt_path)
                     .ok()
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .and_then(|receipt| receipt.get("first_blocker").and_then(serde_json::Value::as_str).map(str::to_string))
+                    .and_then(|receipt| {
+                        receipt
+                            .get("first_blocker")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
                     .is_none_or(|first_blocker| first_blocker != blocker);
                 if !receipt_path.exists() || stale {
                     let outcome = SourceShelfSweepOutcome {
@@ -2732,32 +2944,60 @@ fn source_shelf_owned_recursive_sweep(
     reject_ssh_path(&request.target_shelf)?;
     reject_symlink_components(&request.target_shelf)?;
     let source_root = request.source_root.canonicalize().map_err(|error| {
-        format!("source-shelf-sweep-source-root-invalid {}: {error}", request.source_root.display())
+        format!(
+            "source-shelf-sweep-source-root-invalid {}: {error}",
+            request.source_root.display()
+        )
     })?;
-    let shelf_source = source_root.join(&request.shelf_source).canonicalize().map_err(|error| {
-        format!("source-shelf-sweep-shelf-source-invalid {}: {error}", request.shelf_source.display())
-    })?;
+    let shelf_source = source_root
+        .join(&request.shelf_source)
+        .canonicalize()
+        .map_err(|error| {
+            format!(
+                "source-shelf-sweep-shelf-source-invalid {}: {error}",
+                request.shelf_source.display()
+            )
+        })?;
     shelf_source.strip_prefix(&source_root).map_err(|_| {
-        format!("source-shelf-sweep-shelf-source-outside-root {}", shelf_source.display())
+        format!(
+            "source-shelf-sweep-shelf-source-outside-root {}",
+            shelf_source.display()
+        )
     })?;
     let uid = resolve_uid(&request.shelf_owner)
         .map_err(|error| format!("source-shelf-sweep-owner-resolution-failed: {error}"))?;
     let gid = resolve_gid(&request.shelf_group)
         .map_err(|error| format!("source-shelf-sweep-group-resolution-failed: {error}"))?;
-    let desired: Vec<SweepTreeEntry> = inventory_sweep_tree(&shelf_source, &request.launcher_exclude)?
-        .into_iter()
-        .filter(|entry| entry.relative_path != Path::new("."))
-        .collect();
-    let desired_paths: BTreeSet<String> = desired.iter()
-        .map(|entry| request.target_shelf.join(&entry.relative_path).display().to_string())
+    let desired: Vec<SweepTreeEntry> =
+        inventory_sweep_tree(&shelf_source, &request.launcher_exclude)?
+            .into_iter()
+            .filter(|entry| entry.relative_path != Path::new("."))
+            .collect();
+    let desired_paths: BTreeSet<String> = desired
+        .iter()
+        .map(|entry| {
+            request
+                .target_shelf
+                .join(&entry.relative_path)
+                .display()
+                .to_string()
+        })
         .collect();
     let mut provenance = load_sweep_provenance(provenance_path)?;
-    let mut stale: Vec<PathBuf> = provenance.paths.iter().filter_map(|path| {
-        let absolute = PathBuf::from(path);
-        absolute.strip_prefix(&request.target_shelf).ok().and_then(|relative| {
-            (!relative.as_os_str().is_empty() && !desired_paths.contains(path)).then(|| relative.to_path_buf())
+    let mut stale: Vec<PathBuf> = provenance
+        .paths
+        .iter()
+        .filter_map(|path| {
+            let absolute = PathBuf::from(path);
+            absolute
+                .strip_prefix(&request.target_shelf)
+                .ok()
+                .and_then(|relative| {
+                    (!relative.as_os_str().is_empty() && !desired_paths.contains(path))
+                        .then(|| relative.to_path_buf())
+                })
         })
-    }).collect();
+        .collect();
     stale.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     let mut entries = Vec::new();
     let mut drift = !stale.is_empty();
@@ -2766,51 +3006,111 @@ fn source_shelf_owned_recursive_sweep(
         let target = request.target_shelf.join(&entry.relative_path);
         let owned = provenance.paths.contains(&target.display().to_string());
         if target.exists() && !owned && !entry.is_dir {
-            return Err(format!("source-shelf-sweep-provenance-refused-unowned-target {}", target.display()));
+            return Err(format!(
+                "source-shelf-sweep-provenance-refused-unowned-target {}",
+                target.display()
+            ));
         }
         let current = if entry.is_dir && target.exists() && !owned {
             true
         } else {
-            let (digest, mode, observed_uid, observed_gid) = sweep_path_state(&target, entry.is_dir)?;
-            mode == Some(if entry.is_dir { request.shelf_directory_mode } else { request.shelf_file_mode })
-                && observed_uid == Some(uid)
+            let (digest, mode, observed_uid, observed_gid) =
+                sweep_path_state(&target, entry.is_dir)?;
+            mode == Some(if entry.is_dir {
+                request.shelf_directory_mode
+            } else {
+                request.shelf_file_mode
+            }) && observed_uid == Some(uid)
                 && observed_gid == Some(gid)
                 && (entry.is_dir || digest == Some(digest_file(&source)?))
         };
         drift |= !current;
         entries.push(SourceShelfSweepEntry {
-            kind: if entry.is_dir { "owned-recursive-directory" } else { "owned-recursive-file" }.into(),
-            relative_path: entry.relative_path.display().to_string(), source: Some(source), target,
-            source_digest: None, before_digest: None, after_digest: None,
-            desired_mode: if entry.is_dir { request.shelf_directory_mode } else { request.shelf_file_mode },
-            before_mode: None, after_mode: None, desired_uid: uid, desired_gid: gid,
-            before_uid: None, before_gid: None, after_uid: None, after_gid: None,
-            action: if current { "unchanged" } else { "planned" }.into(), changed: !current,
-            readback_ok: current, rollback_action: "not-needed".into(), rollback_readback_ok: None,
+            kind: if entry.is_dir {
+                "owned-recursive-directory"
+            } else {
+                "owned-recursive-file"
+            }
+            .into(),
+            relative_path: entry.relative_path.display().to_string(),
+            source: Some(source),
+            target,
+            source_digest: None,
+            before_digest: None,
+            after_digest: None,
+            desired_mode: if entry.is_dir {
+                request.shelf_directory_mode
+            } else {
+                request.shelf_file_mode
+            },
+            before_mode: None,
+            after_mode: None,
+            desired_uid: uid,
+            desired_gid: gid,
+            before_uid: None,
+            before_gid: None,
+            after_uid: None,
+            after_gid: None,
+            action: if current { "unchanged" } else { "planned" }.into(),
+            changed: !current,
+            readback_ok: current,
+            rollback_action: "not-needed".into(),
+            rollback_readback_ok: None,
         });
     }
     for relative in &stale {
         entries.push(SourceShelfSweepEntry {
-            kind: "stale-owned-recursive-path".into(), relative_path: relative.display().to_string(),
-            source: None, target: request.target_shelf.join(relative), source_digest: None,
-            before_digest: None, after_digest: None, desired_mode: request.shelf_file_mode,
-            before_mode: None, after_mode: None, desired_uid: uid, desired_gid: gid,
-            before_uid: None, before_gid: None, after_uid: None, after_gid: None,
-            action: "quarantined".into(), changed: true, readback_ok: false,
-            rollback_action: "quarantine-preserved".into(), rollback_readback_ok: None,
+            kind: "stale-owned-recursive-path".into(),
+            relative_path: relative.display().to_string(),
+            source: None,
+            target: request.target_shelf.join(relative),
+            source_digest: None,
+            before_digest: None,
+            after_digest: None,
+            desired_mode: request.shelf_file_mode,
+            before_mode: None,
+            after_mode: None,
+            desired_uid: uid,
+            desired_gid: gid,
+            before_uid: None,
+            before_gid: None,
+            after_uid: None,
+            after_gid: None,
+            action: "quarantined".into(),
+            changed: true,
+            readback_ok: false,
+            rollback_action: "quarantine-preserved".into(),
+            rollback_readback_ok: None,
         });
     }
     if !apply {
-        let outcome = SourceShelfSweepOutcome { ok: true, changed: false, current: !drift,
-            source_inventory_count: desired.len(), target_inventory_count_before: 0, target_inventory_count_after: 0,
-            promoted_count: 0, removed_count: 0, transaction_state: if drift { "planned" } else { "unchanged" }.into(),
-            rollback_state: "not-needed".into(), first_blocker: "none".into(), entries,
-            message: "owned recursive source shelf sweep planned".into() };
+        let outcome = SourceShelfSweepOutcome {
+            ok: true,
+            changed: false,
+            current: !drift,
+            source_inventory_count: desired.len(),
+            target_inventory_count_before: 0,
+            target_inventory_count_after: 0,
+            promoted_count: 0,
+            removed_count: 0,
+            transaction_state: if drift { "planned" } else { "unchanged" }.into(),
+            rollback_state: "not-needed".into(),
+            first_blocker: "none".into(),
+            entries,
+            message: "owned recursive source shelf sweep planned".into(),
+        };
         write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
         return Ok(outcome);
     }
-    let quarantine = request.target_shelf.join(format!(".harmonia-source-shelf-sweep-{}", sweep_nonce()));
-    fs::create_dir(&quarantine).map_err(|error| format!("source-shelf-sweep-quarantine-create-failed {}: {error}", quarantine.display()))?;
+    let quarantine = request
+        .target_shelf
+        .join(format!(".harmonia-source-shelf-sweep-{}", sweep_nonce()));
+    fs::create_dir(&quarantine).map_err(|error| {
+        format!(
+            "source-shelf-sweep-quarantine-create-failed {}: {error}",
+            quarantine.display()
+        )
+    })?;
     let mut promoted_count = 0usize;
     let mut removed_count = 0usize;
     let movement = (|| -> Result<(), String> {
@@ -2820,7 +3120,12 @@ fn source_shelf_owned_recursive_sweep(
             let owned = provenance.paths.contains(&target.display().to_string());
             if entry.is_dir {
                 if !target.exists() {
-                    fs::create_dir_all(&target).map_err(|error| format!("source-shelf-sweep-owned-directory-create-failed {}: {error}", target.display()))?;
+                    fs::create_dir_all(&target).map_err(|error| {
+                        format!(
+                            "source-shelf-sweep-owned-directory-create-failed {}: {error}",
+                            target.display()
+                        )
+                    })?;
                     set_mode(&target, request.shelf_directory_mode)?;
                     set_ownership(&target, Some(uid), Some(gid))?;
                     provenance.paths.insert(target.display().to_string());
@@ -2839,48 +3144,121 @@ fn source_shelf_owned_recursive_sweep(
                     continue;
                 }
                 if target.exists() {
-                    if !owned { return Err(format!("source-shelf-sweep-provenance-refused-unowned-target {}", target.display())); }
+                    if !owned {
+                        return Err(format!(
+                            "source-shelf-sweep-provenance-refused-unowned-target {}",
+                            target.display()
+                        ));
+                    }
                     let backup = quarantine.join(&entry.relative_path);
-                    if let Some(parent) = backup.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-                    fs::rename(&target, &backup).map_err(|error| format!("source-shelf-sweep-owned-quarantine-failed {}: {error}", target.display()))?;
+                    if let Some(parent) = backup.parent() {
+                        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                    }
+                    fs::rename(&target, &backup).map_err(|error| {
+                        format!(
+                            "source-shelf-sweep-owned-quarantine-failed {}: {error}",
+                            target.display()
+                        )
+                    })?;
                 }
-                atomic_copy(&source, &target, Some(request.shelf_file_mode), Some(uid), Some(gid))?;
+                atomic_copy(
+                    &source,
+                    &target,
+                    Some(request.shelf_file_mode),
+                    Some(uid),
+                    Some(gid),
+                )?;
                 provenance.paths.insert(target.display().to_string());
                 promoted_count += 1;
             }
         }
         for relative in &stale {
             let target = request.target_shelf.join(relative);
-            if !target.exists() { provenance.paths.remove(&target.display().to_string()); continue; }
-            if fs::symlink_metadata(&target).map_err(|error| error.to_string())?.file_type().is_dir()
-                && fs::read_dir(&target).map_err(|error| error.to_string())?.next().is_some() {
-                return Err(format!("source-shelf-sweep-owned-directory-not-empty {}", target.display()));
+            if !target.exists() {
+                provenance.paths.remove(&target.display().to_string());
+                continue;
+            }
+            if fs::symlink_metadata(&target)
+                .map_err(|error| error.to_string())?
+                .file_type()
+                .is_dir()
+                && fs::read_dir(&target)
+                    .map_err(|error| error.to_string())?
+                    .next()
+                    .is_some()
+            {
+                return Err(format!(
+                    "source-shelf-sweep-owned-directory-not-empty {}",
+                    target.display()
+                ));
             }
             let backup = quarantine.join(relative);
-            if let Some(parent) = backup.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
-            fs::rename(&target, &backup).map_err(|error| format!("source-shelf-sweep-owned-quarantine-failed {}: {error}", target.display()))?;
+            if let Some(parent) = backup.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            fs::rename(&target, &backup).map_err(|error| {
+                format!(
+                    "source-shelf-sweep-owned-quarantine-failed {}: {error}",
+                    target.display()
+                )
+            })?;
             provenance.paths.remove(&target.display().to_string());
             removed_count += 1;
         }
         write_sweep_provenance(provenance_path, &provenance)
     })();
     if let Err(blocker) = movement {
-        let outcome = SourceShelfSweepOutcome { ok: false, changed: promoted_count > 0 || removed_count > 0, current: false,
-            source_inventory_count: desired.len(), target_inventory_count_before: 0, target_inventory_count_after: 0,
-            promoted_count, removed_count, transaction_state: "incomplete".into(), rollback_state: "quarantine-preserved".into(),
-            first_blocker: blocker.clone(), entries, message: blocker.clone() };
+        let outcome = SourceShelfSweepOutcome {
+            ok: false,
+            changed: promoted_count > 0 || removed_count > 0,
+            current: false,
+            source_inventory_count: desired.len(),
+            target_inventory_count_before: 0,
+            target_inventory_count_after: 0,
+            promoted_count,
+            removed_count,
+            transaction_state: "incomplete".into(),
+            rollback_state: "quarantine-preserved".into(),
+            first_blocker: blocker.clone(),
+            entries,
+            message: blocker.clone(),
+        };
         write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
         return Err(blocker);
     }
     for entry in &mut entries {
-        entry.readback_ok = if entry.action == "quarantined" { !entry.target.exists() } else { entry.target.exists() };
-        entry.action = if entry.action == "unchanged" { "unchanged".into() } else if entry.action == "quarantined" { "quarantined".into() } else { "promoted".into() };
+        entry.readback_ok = if entry.action == "quarantined" {
+            !entry.target.exists()
+        } else {
+            entry.target.exists()
+        };
+        entry.action = if entry.action == "unchanged" {
+            "unchanged".into()
+        } else if entry.action == "quarantined" {
+            "quarantined".into()
+        } else {
+            "promoted".into()
+        };
     }
-    let outcome = SourceShelfSweepOutcome { ok: true, changed: promoted_count > 0 || removed_count > 0, current: true,
-        source_inventory_count: desired.len(), target_inventory_count_before: 0,
-        target_inventory_count_after: inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?.len(), promoted_count, removed_count,
-        transaction_state: "committed".into(), rollback_state: "quarantine-preserved".into(), first_blocker: "none".into(), entries,
-        message: "owned recursive source shelf converged".into() };
+    let outcome = SourceShelfSweepOutcome {
+        ok: true,
+        changed: promoted_count > 0 || removed_count > 0,
+        current: true,
+        source_inventory_count: desired.len(),
+        target_inventory_count_before: 0,
+        target_inventory_count_after: inventory_sweep_tree_if_present(
+            &request.target_shelf,
+            &request.launcher_exclude,
+        )?
+        .len(),
+        promoted_count,
+        removed_count,
+        transaction_state: "committed".into(),
+        rollback_state: "quarantine-preserved".into(),
+        first_blocker: "none".into(),
+        entries,
+        message: "owned recursive source shelf converged".into(),
+    };
     write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
     Ok(outcome)
 }
@@ -2976,7 +3354,8 @@ fn source_shelf_sweep_with_fault(
     } else {
         inventory_sweep_tree(&shelf_source, &request.launcher_exclude)?
     };
-    let target_before = inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
+    let target_before =
+        inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
     let launchers = source_launchers(
         &launcher_source_root,
         &request.launcher_pattern,
@@ -2991,16 +3370,17 @@ fn source_shelf_sweep_with_fault(
         .difference(&launchers.keys().cloned().collect())
         .cloned()
         .collect();
-    let shelf_current = launcher_only || shelf_is_current(
-        &shelf_source,
-        &request.target_shelf,
-        &source_entries,
-        request.shelf_directory_mode,
-        request.shelf_file_mode,
-        uid,
-        gid,
-        &request.launcher_exclude,
-    )?;
+    let shelf_current = launcher_only
+        || shelf_is_current(
+            &shelf_source,
+            &request.target_shelf,
+            &source_entries,
+            request.shelf_directory_mode,
+            request.shelf_file_mode,
+            uid,
+            gid,
+            &request.launcher_exclude,
+        )?;
     let mut launcher_drift = BTreeSet::new();
     for (name, source) in &launchers {
         if !launcher_is_current(
@@ -3058,30 +3438,46 @@ fn source_shelf_sweep_with_fault(
     let run = crate::tools::comparison::execute(
         "files",
         || {
-            let shelf_current_now = launcher_only || shelf_is_current(
-                &shelf_source, &request.target_shelf, &source_entries,
-                request.shelf_directory_mode, request.shelf_file_mode,
-                uid, gid, &request.launcher_exclude,
-            )?;
+            let shelf_current_now = launcher_only
+                || shelf_is_current(
+                    &shelf_source,
+                    &request.target_shelf,
+                    &source_entries,
+                    request.shelf_directory_mode,
+                    request.shelf_file_mode,
+                    uid,
+                    gid,
+                    &request.launcher_exclude,
+                )?;
             let target_launchers_now = target_pattern_files(
-                &request.launcher_target_root, &request.launcher_pattern,
+                &request.launcher_target_root,
+                &request.launcher_pattern,
                 &request.launcher_exclude,
             )?;
             let mut launcher_drift_now = false;
             for name in launchers.keys() {
                 if !launcher_is_current(
-                    launchers.get(name).expect("launcher name comes from inventory"),
-                    &request.launcher_target_root.join(name), request.launcher_mode,
-                    uid, gid,
+                    launchers
+                        .get(name)
+                        .expect("launcher name comes from inventory"),
+                    &request.launcher_target_root.join(name),
+                    request.launcher_mode,
+                    uid,
+                    gid,
                 )? {
                     launcher_drift_now = true;
                     break;
                 }
             }
             let stale_now = target_launchers_now
-                .difference(&launchers.keys().cloned().collect()).next().is_some();
-            Ok::<_, String>((!launcher_only && !shelf_current_now)
-                || launcher_drift_now || (request.prune && stale_now))
+                .difference(&launchers.keys().cloned().collect())
+                .next()
+                .is_some();
+            Ok::<_, String>(
+                (!launcher_only && !shelf_current_now)
+                    || launcher_drift_now
+                    || (request.prune && stale_now),
+            )
         },
         |different| {
             if *different {
@@ -3346,7 +3742,10 @@ fn source_shelf_sweep_with_fault(
 
             let mut committed_outcome = None;
             let transaction = transaction.and_then(|_| {
-                let target_after = inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
+                let target_after = inventory_sweep_tree_if_present(
+                    &request.target_shelf,
+                    &request.launcher_exclude,
+                )?;
                 let target_launchers_after = target_pattern_files(
                     &request.launcher_target_root,
                     &request.launcher_pattern,
@@ -3399,7 +3798,8 @@ fn source_shelf_sweep_with_fault(
                         if let Err(error) = fs::rename(promoted, backup) {
                             rollback_errors.push(format!(
                                 "restore excluded {} -> {}: {error}",
-                                promoted.display(), backup.display()
+                                promoted.display(),
+                                backup.display()
                             ));
                         }
                     }
@@ -3532,13 +3932,21 @@ fn source_shelf_sweep_with_fault(
             if let Some(path) = request.provenance_state.as_ref() {
                 for name in launchers.keys() {
                     provenance.paths.insert(
-                        request.launcher_target_root.join(name).display().to_string(),
+                        request
+                            .launcher_target_root
+                            .join(name)
+                            .display()
+                            .to_string(),
                     );
                 }
                 for name in &stale {
-                    provenance
-                        .paths
-                        .remove(&request.launcher_target_root.join(name).display().to_string());
+                    provenance.paths.remove(
+                        &request
+                            .launcher_target_root
+                            .join(name)
+                            .display()
+                            .to_string(),
+                    );
                 }
                 write_sweep_provenance(path, &provenance)?;
             }
@@ -3800,7 +4208,14 @@ pub fn remove_declared_files(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileRemovalOutcome, String> {
-    crate::remove_file::execute(target_root, paths, receipt_dir, receipt_name, apply, invocation)
+    crate::remove_file::execute(
+        target_root,
+        paths,
+        receipt_dir,
+        receipt_name,
+        apply,
+        invocation,
+    )
 }
 
 pub(crate) fn validate_relative_path(path: &Path) -> Result<(), String> {
@@ -3885,8 +4300,12 @@ pub(crate) fn hard_stamp_interactable(
     }
     let desired_uid = owner.map(resolve_uid).transpose()?;
     let desired_gid = group.map(resolve_gid).transpose()?;
-    let desired_bytes = fs::read(source)
-        .map_err(|error| format!("interactable-reference-source-read-failed {}: {error}", source.display()))?;
+    let desired_bytes = fs::read(source).map_err(|error| {
+        format!(
+            "interactable-reference-source-read-failed {}: {error}",
+            source.display()
+        )
+    })?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().to_string())
@@ -3894,30 +4313,42 @@ pub(crate) fn hard_stamp_interactable(
     let backup = backup_root.join(id).join(format!(
         "{}-{}",
         stamp,
-        target.file_name().and_then(|name| name.to_str()).unwrap_or("target")
+        target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("target")
     ));
     let place = crate::place_file::execute(crate::place_file::PlaceFileRequest {
         path: target,
         declared_bytes: &desired_bytes,
         mode: mode.or_else(|| source_mode(source).ok()),
-        ownership: crate::place_file::DeclaredOwnership { uid: desired_uid, gid: desired_gid },
+        ownership: crate::place_file::DeclaredOwnership {
+            uid: desired_uid,
+            gid: desired_gid,
+        },
         backup: crate::place_file::BackupPolicy::To(&backup),
         invocation,
     })?;
     let changed = place.movement.changed();
     let backed_up_to = place.movement.backed_up;
-    let before_sha256 = backed_up_to.as_ref().map(|path| {
-        fs::read(path)
-            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
-            .map_err(|error| error.to_string())
-    }).transpose()?;
+    let before_sha256 = backed_up_to
+        .as_ref()
+        .map(|path| {
+            fs::read(path)
+                .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
     let reference_sha256 = format!("{:x}", Sha256::digest(&desired_bytes));
     let target_sha256 = format!(
         "{:x}",
         Sha256::digest(fs::read(target).map_err(|error| error.to_string())?)
     );
     if target_sha256 != reference_sha256 {
-        return Err(format!("interactable-hard-stamp-readback-failed {}", target.display()));
+        return Err(format!(
+            "interactable-hard-stamp-readback-failed {}",
+            target.display()
+        ));
     }
     Ok(json!({
         "schema": "harmonia.interactables.hard_stamp.receipt.v1",
@@ -4176,8 +4607,14 @@ fn convergence_entry_receipt(entry: &FileConvergenceEntry, apply: bool) -> serde
     object.insert("truthful_changed".into(), json!(apply && entry.changed));
     object.insert(
         "ok".into(),
-        json!(entry.source_exists
-            && if apply { entry.target_exists_after && entry.content_equal_after && entry.mode_equal_after } else { entry.target_exists_before }),
+        json!(
+            entry.source_exists
+                && if apply {
+                    entry.target_exists_after && entry.content_equal_after && entry.mode_equal_after
+                } else {
+                    entry.target_exists_before
+                }
+        ),
     );
     receipt
 }
@@ -5093,6 +5530,24 @@ fn validated_symlink_action(
     })
 }
 
+pub(crate) fn execute_validated_step(step: &crate::ladder::ValidatedStep, manifest: &crate::ladder::LadderManifest, module_dir: &std::path::Path, software_authorization: Option<&crate::SoftwareApplyAuthorization>, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<crate::OperationOutcome, String> {
+    let apply = software_authorization.is_some();
+    match step.permutation.as_str() {
+        "managed-files" => managed_files_step(step, manifest, module_dir, false),
+        "managed-directories" => managed_directories_step(step, module_dir, false),
+        "validated-symlink" => validated_symlink_step(step, module_dir, false),
+        "symlink-converge" => symlink_converge_step(step, module_dir, false),
+        "validated-file-symlink" => validated_file_symlink_step(step, manifest, module_dir, false),
+        "remove" => files_remove_step(step, module_dir, apply, invocation),
+        "executable-present" => files_executable_present_step(step, module_dir),
+        "source-shelf-sweep" => files_source_shelf_sweep_step(step, manifest, module_dir, apply, invocation),
+        "validated-sudoers-converge" => files_validated_sudoers_converge_step(step, manifest, module_dir, software_authorization, invocation),
+        "ensure-present" => files_ensure_present_step(step, manifest, module_dir, false),
+        "hotfix-file-backfill" | "converge" | "directory-sync" => files_converge_step(step, manifest, module_dir, software_authorization, invocation),
+        _ => Err(format!("ladder-executor-missing tool=files permutation={}", step.permutation)),
+    }
+}
+
 #[cfg(test)]
 mod managed_ownership_tests {
     use super::*;
@@ -5838,3 +6293,672 @@ mod managed_ownership_tests {
         let _ = fs::remove_dir_all(&scratch);
     }
 }
+
+// File permutation preflight and operation ownership.
+use crate::ladder::{LadderManifest, ProjectedRoutineChild};
+use crate::tools;
+use crate::tools::routine::ValidatedStep;
+use crate::OperationOutcome;
+use serde_json::Value;
+
+pub(crate) fn preflight_file_targets(
+    manifest: &LadderManifest,
+    steps: &[ValidatedStep],
+    projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
+    band: Option<crate::bands::Band>,
+) -> Result<(), String> {
+    for step in steps {
+        if step.tool != "routine" {
+            if band.is_none() || crate::tools::routine::placement_for_step(step)? == band.unwrap() {
+                if let Some(blocker) = crate::tools::files::structural_file_blocker(step, manifest)
+                {
+                    return Err(blocker);
+                }
+            }
+            continue;
+        }
+        for child in projected_routines
+            .get(&step.step_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+        {
+            if band.is_none() || child.band == band.unwrap() {
+                let child_step = ValidatedStep {
+                    step_id: child.name.clone(),
+                    tool: child.tool.clone(),
+                    permutation: child.permutation.clone(),
+                    args: child.args.clone(),
+                    on_failure: child.on_failure,
+                };
+                if let Some(blocker) =
+                    crate::tools::files::structural_file_blocker(&child_step, manifest)
+                {
+                    return Err(blocker);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+pub(crate) fn managed_files_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
+        serde_json::from_value(files_value.clone())
+            .map_err(|e| format!("managed-files-args-invalid: {e}"))?
+    } else if let Some(files_root) = &manifest.files_root {
+        managed_files_from_files_root(&manifest.base_dir.join(files_root))?
+    } else {
+        Vec::new()
+    };
+    let config_write = files.iter().any(|file| {
+        matches!(
+            crate::tools::files::classify_target(Path::new(&file.path)),
+            crate::tools::files::TargetClass::Config
+        )
+    });
+    tools::files::converge_managed_files(
+        &tools::files::ManagedFilesRequest {
+            module_id: "ladder",
+            files: &files,
+            owner: step.args.get("owner").and_then(|value| value.as_str()),
+            group: step.args.get("group").and_then(|value| value.as_str()),
+            receipt_name: &step.step_id,
+            schema: "harmonia.ladder.files.v1",
+            first_missing_signal: "managed-files-drift",
+        },
+        module_dir,
+        apply && !config_write,
+    )
+}
+pub(crate) fn is_configuration_path(path: &Path) -> bool {
+    let path = path.to_string_lossy();
+    path == "/etc"
+        || path.starts_with("/etc/")
+        || path == "/home"
+        || path.starts_with("/home/")
+        || path == "/root"
+        || path.starts_with("/root/")
+        || path == "$HOME"
+        || path.starts_with("$HOME/")
+}
+pub(crate) fn managed_directories_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let directories: Vec<tools::files::ManagedDirectorySpec> = serde_json::from_value(
+        step.args
+            .get("directories")
+            .cloned()
+            .ok_or("managed-directories-args-missing")?,
+    )
+    .map_err(|e| format!("managed-directories-args-invalid: {e}"))?;
+    tools::files::converge_managed_directories(&directories, module_dir, &step.step_id, apply)
+}
+fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileManifest>, String> {
+    let mut files = Vec::new();
+    if !root.exists() {
+        return Err(format!("managed-files-root-missing {}", root.display()));
+    }
+    fn walk(
+        root: &Path,
+        path: &Path,
+        out: &mut Vec<crate::ManagedFileManifest>,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let p = entry.path();
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                walk(root, &p, out)?;
+            } else {
+                let rel = p.strip_prefix(root).map_err(|e| e.to_string())?;
+                let content = fs::read_to_string(&p)
+                    .map_err(|e| format!("managed-files-root-read-failed {}: {e}", p.display()))?;
+                #[cfg(unix)]
+                let mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    Some(
+                        fs::metadata(&p)
+                            .map_err(|e| e.to_string())?
+                            .permissions()
+                            .mode()
+                            & 0o777,
+                    )
+                };
+                #[cfg(not(unix))]
+                let mode = Some(0o644);
+                out.push(crate::ManagedFileManifest {
+                    path: format!("/{}", rel.to_string_lossy()),
+                    content,
+                    mode,
+                });
+            }
+        }
+        Ok(())
+    }
+    walk(root, root, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+pub(crate) fn validated_symlink_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    crate::tools::files::validated_symlink(
+        module_dir,
+        &step.step_id,
+        &PathBuf::from(string_arg(&step.args, "source")),
+        &PathBuf::from(string_arg(&step.args, "target")),
+        string_arg(&step.args, "validator_program"),
+        &string_array_arg(&step.args, "validator_args"),
+        optional_string_arg(&step.args, "reload_program"),
+        &string_array_arg(&step.args, "reload_args"),
+        integer_arg(&step.args, "timeout_secs", 30),
+        apply,
+    )
+}
+pub(crate) fn symlink_converge_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let required_source_kind = match string_arg(&step.args, "required_source_kind") {
+        "regular-executable" => crate::tools::files::SymlinkSourceKind::RegularExecutable,
+        other => return Err(format!("symlink-converge-source-kind-unsupported {other}")),
+    };
+    let conflict_policy = match optional_string_arg(&step.args, "conflict_policy")
+        .unwrap_or("refuse-non-symlink")
+    {
+        "refuse-non-symlink" => crate::tools::files::SymlinkConflictPolicy::RefuseNonSymlink,
+        "replace-regular-file" => crate::tools::files::SymlinkConflictPolicy::ReplaceRegularFile,
+        "replace-empty-directory" => {
+            crate::tools::files::SymlinkConflictPolicy::ReplaceEmptyDirectory
+        }
+        other => {
+            return Err(format!(
+                "symlink-converge-conflict-policy-unsupported {other}"
+            ))
+        }
+    };
+    crate::tools::files::symlink_converge(
+        &crate::tools::files::SymlinkConvergeRequest {
+            source: PathBuf::from(string_arg(&step.args, "source")),
+            target: PathBuf::from(string_arg(&step.args, "target")),
+            required_source_kind,
+            conflict_policy,
+            owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
+            group: optional_string_arg(&step.args, "group").map(ToString::to_string),
+            receipt_name: step.step_id.clone(),
+        },
+        module_dir,
+        apply,
+    )
+}
+pub(crate) fn validated_file_symlink_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let desired_source = resolve_ladder_path(manifest, string_arg(&step.args, "desired_source"));
+    let source = PathBuf::from(string_arg(&step.args, "source"));
+    let target = PathBuf::from(string_arg(&step.args, "target"));
+    let validator_args = string_array_arg(&step.args, "validator_args");
+    let reload_args = string_array_arg(&step.args, "reload_args");
+    crate::tools::make_symlink::execute(
+        crate::tools::make_symlink::ValidatedFileSymlinkRequest {
+            receipt_dir: module_dir,
+            name: &step.step_id,
+            desired_source: &desired_source,
+            source: &source,
+            target: &target,
+            validator_program: string_arg(&step.args, "validator_program"),
+            validator_args: &validator_args,
+            reload_program: optional_string_arg(&step.args, "reload_program"),
+            reload_args: &reload_args,
+            timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
+            apply,
+        },
+        None,
+    )
+}
+pub(crate) fn files_remove_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let outcome = crate::tools::files::remove_declared_files(
+        &PathBuf::from(string_arg(&step.args, "target_root")),
+        &string_array_arg(&step.args, "paths"),
+        module_dir,
+        &step.step_id,
+        apply,
+        invocation,
+    )?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+pub(crate) fn files_executable_present_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+) -> Result<OperationOutcome, String> {
+    let search_scope = crate::tools::files::ExecutableSearchScope::parse(optional_string_arg(
+        &step.args,
+        "search_scope",
+    ))?;
+    let outcome = crate::tools::files::executable_present(
+        &crate::tools::files::ExecutablePresentRequest {
+            executable: string_arg(&step.args, "executable").to_string(),
+            search_scope,
+            receipt_name: step.step_id.clone(),
+            receipt_label: optional_string_arg(&step.args, "receipt_label")
+                .map(ToString::to_string),
+        },
+        module_dir,
+    )?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: false,
+        skipped: false,
+        message: outcome.message,
+        command: None,
+    })
+}
+pub(crate) fn files_source_shelf_sweep_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
+    let target_shelf = PathBuf::from(string_arg(&step.args, "target_shelf"));
+    let launcher_source_root = optional_string_arg(&step.args, "launcher_source_root")
+        .map(|path| resolve_ladder_path(manifest, path))
+        .unwrap_or_else(|| source_root.clone());
+    let launcher_target_root = optional_string_arg(&step.args, "launcher_target_root")
+        .map(PathBuf::from)
+        .or_else(|| target_shelf.parent().map(Path::to_path_buf))
+        .ok_or_else(|| "source-shelf-sweep-target-shelf-parent-missing".to_string())?;
+    let shelf_file_mode = integer_arg(&step.args, "shelf_file_mode", 0) as u32;
+    let request = crate::tools::files::SourceShelfSweepRequest {
+        source_root,
+        shelf_source: PathBuf::from(string_arg(&step.args, "shelf_source")),
+        target_shelf,
+        launcher_source_root,
+        launcher_target_root,
+        launcher_pattern: optional_string_arg(&step.args, "launcher_pattern")
+            .unwrap_or(".harmonia-no-flat-launchers")
+            .to_string(),
+        shelf_owner: string_arg(&step.args, "shelf_owner").to_string(),
+        shelf_group: string_arg(&step.args, "shelf_group").to_string(),
+        shelf_directory_mode: integer_arg(&step.args, "shelf_directory_mode", 0) as u32,
+        shelf_file_mode,
+        launcher_mode: integer_arg(&step.args, "launcher_mode", shelf_file_mode as u64) as u32,
+        prune: step
+            .args
+            .get("prune")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        launcher_exclude: string_array_arg(&step.args, "launcher_exclude"),
+        provenance_state: optional_string_arg(&step.args, "provenance_state").map(PathBuf::from),
+        owned_recursive: step
+            .args
+            .get("owned_recursive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        receipt_name: step.step_id.clone(),
+    };
+    let outcome = crate::tools::files::source_shelf_sweep(&request, module_dir, apply, invocation)?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+pub(crate) fn files_validated_sudoers_converge_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
+    let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
+    let owned_prefix = string_arg(&step.args, "owned_prefix");
+    let validator_program = string_arg(&step.args, "validator_program");
+    let validator_args = string_array_arg(&step.args, "validator_args");
+    let files: Vec<String> = string_array_arg(&step.args, "files");
+
+    if target_root != PathBuf::from("/etc/sudoers.d") {
+        return Err("validated-sudoers-target-root-refused".into());
+    }
+    if owned_prefix.is_empty()
+        || owned_prefix.contains('/')
+        || owned_prefix.contains('\\')
+        || !matches!(validator_program, "/usr/bin/visudo" | "/usr/sbin/visudo")
+        || validator_args.len() != 1
+        || validator_args[0] != "-cf"
+        || string_arg(&step.args, "owner") != "root"
+        || string_arg(&step.args, "group") != "root"
+    {
+        return Err("validated-sudoers-contract-refused".into());
+    }
+    if files.is_empty() {
+        return Err("validated-sudoers-files-empty".into());
+    }
+
+    for name in &files {
+        let relative = Path::new(name.as_str());
+        if relative.components().count() != 1
+            || relative.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
+            || !name.starts_with(owned_prefix)
+        {
+            return Err(format!("validated-sudoers-declared-path-refused {name}"));
+        }
+        let candidate = source_root.join(relative);
+        let candidate_text = candidate.to_string_lossy();
+        let refs = ["-cf", candidate_text.as_ref()];
+        let result = tools::command::capture_with_timeout(validator_program, &refs, 30);
+        crate::write_command_receipt(
+            module_dir,
+            &format!("{}-{}-validation", step.step_id, name),
+            &result,
+        )?;
+        if !result.ok {
+            return Err(format!("validated-sudoers-visudo-rejected {name}"));
+        }
+    }
+
+    let request = crate::tools::files::FileConvergenceRequest {
+        source_root,
+        target_root,
+        files: files
+            .into_iter()
+            .map(|relative_path| crate::tools::files::FileSpec {
+                relative_path: PathBuf::from(relative_path),
+                mode: Some(0o440),
+            })
+            .collect(),
+        backup_existing: false,
+        receipt_name: optional_string_arg(&step.args, "receipt_name")
+            .unwrap_or(&step.step_id)
+            .to_string(),
+        owner: Some("root".to_string()),
+        group: Some("root".to_string()),
+    };
+    let outcome = crate::tools::files::converge_files_authorized(
+        &request,
+        module_dir,
+        authorization,
+        invocation,
+    )?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !authorization.is_some(),
+        message: outcome.message,
+        command: None,
+    })
+}
+pub(crate) fn files_converge_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
+    let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
+    let apply = software_authorization.is_some();
+    if step.permutation == "directory-sync"
+        && source_root == target_root
+        && !step.args.contains_key("owner")
+        && !step.args.contains_key("group")
+        && step
+            .args
+            .get("allow_same_root")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        let run = crate::tools::comparison::execute(
+            "ladder",
+            || Ok::<_, String>((source_root.clone(), target_root.clone())),
+            |_| crate::tools::comparison::DiffDecision::Empty,
+            |_, _| Ok::<_, String>(()),
+        )?;
+        let (observed_source_root, observed_target_root) = match run {
+            crate::tools::comparison::ComparisonRun::Current { observation, .. } => observation,
+            crate::tools::comparison::ComparisonRun::Moved { .. } => {
+                return Err("directory-sync-same-root-unexpected-movement".into());
+            }
+        };
+        let outcome = OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: !apply,
+            message: format!(
+                "directory-sync same-root verified {}",
+                observed_source_root.display()
+            ),
+            command: None,
+        };
+        crate::write_tool_receipt(
+            module_dir,
+            &step.step_id,
+            "files",
+            "directory-sync",
+            &outcome,
+        )?;
+        let receipt_path = module_dir.join(format!("{}.json", step.step_id));
+        let mut receipt: serde_json::Value = serde_json::from_slice(
+            &fs::read(&receipt_path)
+                .map_err(|error| format!("directory-sync-receipt-read-failed: {error}"))?,
+        )
+        .map_err(|error| format!("directory-sync-receipt-parse-failed: {error}"))?;
+        let object = receipt
+            .as_object_mut()
+            .ok_or_else(|| "directory-sync-receipt-not-object".to_string())?;
+        object.insert(
+            "observed_state".into(),
+            serde_json::json!({"source_root": observed_source_root, "target_root": observed_target_root, "same_root": true}),
+        );
+        object.insert(
+            "desired_state".into(),
+            serde_json::json!({"directory_sync": "verified"}),
+        );
+        object.insert("diff_decision".into(), serde_json::json!("empty"));
+        object.insert("movement".into(), serde_json::json!("none"));
+        object.insert("truthful_changed".into(), serde_json::json!(false));
+        crate::write_json(&receipt_path, &receipt)?;
+        return Ok(outcome);
+    }
+    let rels = if step.permutation == "directory-sync" && !step.args.contains_key("files") {
+        files_under_root(&source_root)?
+    } else {
+        string_array_arg(&step.args, "files")
+    };
+    let files = rels
+        .into_iter()
+        .map(|rel| crate::tools::files::FileSpec {
+            mode: if rel.starts_with("bin/") || rel.starts_with("usr/local/bin/") {
+                Some(0o755)
+            } else {
+                Some(0o644)
+            },
+            relative_path: PathBuf::from(rel),
+        })
+        .collect();
+    let request = crate::tools::files::FileConvergenceRequest {
+        source_root,
+        target_root,
+        files,
+        backup_existing: step
+            .args
+            .get("backup_existing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        receipt_name: optional_string_arg(&step.args, "receipt_name")
+            .unwrap_or(&step.step_id)
+            .to_string(),
+        owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
+        group: optional_string_arg(&step.args, "group").map(ToString::to_string),
+    };
+    let classes = request
+        .files
+        .iter()
+        .map(|file| {
+            crate::tools::files::classify_target(&request.target_root.join(&file.relative_path))
+        })
+        .collect::<Vec<_>>();
+    if let Some(reason) = classes.iter().find_map(|class| match class {
+        crate::tools::files::TargetClass::Refused(reason) => Some(reason.clone()),
+        _ => None,
+    }) {
+        return Err(reason);
+    }
+    let config_write = classes
+        .iter()
+        .any(|class| matches!(class, crate::tools::files::TargetClass::Config));
+    let tier_two = manifest.config_deploy.as_deref() == Some("interactable");
+    let mut outcome = crate::tools::files::converge_files_authorized(
+        &request,
+        module_dir,
+        if config_write || tier_two {
+            None
+        } else {
+            software_authorization
+        },
+        invocation,
+    )?;
+    if config_write || tier_two {
+        crate::bands::propose_edits::refresh_interactables_for_convergence(
+            manifest, &request, &outcome,
+        )?;
+        outcome.changed = false;
+        outcome.ownership_changed = false;
+    }
+    if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
+        let name = summary
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("files-summary");
+        let schema = summary
+            .get("schema")
+            .and_then(Value::as_str)
+            .unwrap_or("harmonia.files.summary.v1");
+        crate::write_json(
+            &module_dir.join(format!("{name}.json")),
+            &serde_json::json!({
+                "schema": schema,
+                "ok": outcome.ok,
+                "apply": apply,
+                "module": manifest.id,
+                "source_dir": request.source_root,
+                "target_dir": request.target_root,
+                "checked_file_count": outcome.checked,
+                "written_file_count": outcome.written,
+                "backed_up_file_count": outcome.backed_up,
+                "changed": outcome.changed,
+                "missing": outcome.missing,
+                "authority": summary.get("authority").and_then(Value::as_str).unwrap_or(""),
+                "waybar_contract": summary.get("waybar_contract").cloned().unwrap_or(Value::Null),
+                "first_missing_signal": if outcome.ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
+            }),
+        )?;
+    }
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+pub(crate) fn files_ensure_present_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let files = string_array_arg(&step.args, "files")
+        .into_iter()
+        .map(|relative_path| crate::tools::files::FileSpec {
+            mode: Some(0o644),
+            relative_path: PathBuf::from(relative_path),
+        })
+        .collect();
+    let outcome = crate::tools::files::ensure_files_present(
+        &crate::tools::files::FileConvergenceRequest {
+            source_root: resolve_ladder_path(manifest, string_arg(&step.args, "source_root")),
+            target_root: PathBuf::from(string_arg(&step.args, "target_root")),
+            files,
+            backup_existing: false,
+            receipt_name: optional_string_arg(&step.args, "receipt_name")
+                .unwrap_or(&step.step_id)
+                .to_string(),
+            owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
+            group: optional_string_arg(&step.args, "group").map(ToString::to_string),
+        },
+        module_dir,
+        apply,
+    )?;
+    Ok(OperationOutcome {
+        ok: outcome.ok,
+        changed: outcome.changed,
+        skipped: !apply,
+        message: outcome.message,
+        command: None,
+    })
+}
+fn files_under_root(root: &Path) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    fn walk(root: &Path, path: &Path, out: &mut Vec<String>) -> Result<(), String> {
+        for entry in fs::read_dir(path)
+            .map_err(|e| format!("directory-sync-read-failed {}: {e}", path.display()))?
+        {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let p = entry.path();
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                walk(root, &p, out)?;
+            } else {
+                out.push(
+                    p.strip_prefix(root)
+                        .map_err(|e| e.to_string())?
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+    walk(root, root, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+pub(crate) fn resolve_ladder_path(manifest: &LadderManifest, path: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        p
+    } else {
+        manifest.base_dir.join(p)
+    }
+}
+
+fn string_arg<'a>(a: &'a std::collections::BTreeMap<String, serde_json::Value>, n: &str) -> &'a str { a.get(n).and_then(serde_json::Value::as_str).unwrap_or("") }
+fn optional_string_arg<'a>(a: &'a std::collections::BTreeMap<String, serde_json::Value>, n: &str) -> Option<&'a str> { a.get(n).and_then(serde_json::Value::as_str) }
+fn string_array_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &str) -> Vec<String> { a.get(n).and_then(serde_json::Value::as_array).map(|xs| xs.iter().filter_map(serde_json::Value::as_str).map(ToString::to_string).collect()).unwrap_or_default() }
+fn integer_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &str, d: u64) -> u64 { a.get(n).and_then(serde_json::Value::as_u64).unwrap_or(d) }

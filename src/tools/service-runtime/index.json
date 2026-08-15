@@ -1,13 +1,8 @@
 {
   "schema": "harmonia.tool.v1",
   "name": "service-runtime",
-  "state": "fronted",
-  "legacy_path": "src/tools/service_runtime.rs",
-  "stages": [
-    "pull-repo",
-    "managed-files",
-    "build",
-    "binary-install"
-  ],
-  "migration_status": "routine-spine-landed-interior-dissolution-debt"
+  "state": "declaration-only",
+  "live_permutations": [],
+  "lowered_by": "ladder pre-execution lowering",
+  "migration_status": "execution-adapter-deleted"
 }

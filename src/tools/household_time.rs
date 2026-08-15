@@ -199,6 +199,8 @@ fn parse_utc(value: &str) -> Option<i64> {
     Some((era * 146097 + doe - 719468) * 86400 + h * 3600 + min * 60 + s)
 }
 
+
+pub(crate) fn execute_validated_step(step: &crate::ladder::ValidatedStep, module_dir: &std::path::Path, apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<crate::OperationOutcome, String> { execute(module_dir, &step.step_id, &step.permutation, &step.args, apply, invocation) }
 #[cfg(test)]
 mod tests {
     use super::*;
