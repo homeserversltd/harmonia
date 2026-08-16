@@ -234,9 +234,9 @@ pub(crate) fn check(
     lock_path: &Path,
     upstream_state: Option<&str>,
 ) -> Result<OperationOutcome, String> {
-    let observation = crate::ratchet_aur_package::check(package, lock_path, upstream_state)?;
+    let observation = crate::atoms::ask::ratchet_aur::check(package, lock_path, upstream_state)?;
     let newer_available =
-        observation.verdict == crate::ratchet_aur_package::Verdict::UpstreamMovedPastPin;
+        observation.verdict == crate::atoms::ask::ratchet_aur::Verdict::UpstreamMovedPastPin;
     let receipt = AurCheckReceipt {
         schema: "harmonia.aur.check.v1",
         package: package.to_string(),
@@ -276,7 +276,7 @@ pub(crate) fn check(
         message: format!("aur check {package}"),
         command: None,
     };
-    crate::ratchet_aur_package::report(
+    crate::atoms::r#do::ratchet_aur::report(
         &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
         observation.verdict,
         &outcome,
@@ -299,7 +299,7 @@ pub(crate) fn install(
     } else {
         "current-user"
     };
-    let run = crate::ratchet_aur_package::install(
+    let run = crate::atoms::r#do::ratchet_aur::install(
         receipt_dir,
         receipt_name,
         package,
@@ -385,7 +385,7 @@ pub(crate) fn build_pinned(
     } else {
         "current-user".to_string()
     };
-    let run = crate::ratchet_aur_package::build_pinned(
+    let run = crate::atoms::r#do::ratchet_aur::build_pinned(
         receipt_dir,
         receipt_name,
         package,
@@ -445,7 +445,7 @@ pub(crate) fn build_pinned(
         movement,
         outcome.changed,
     )?;
-    crate::ratchet_aur_package::report(
+    crate::atoms::r#do::ratchet_aur::report(
         &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
         run.observation().verdict,
         &outcome,

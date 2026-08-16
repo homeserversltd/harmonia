@@ -1,9 +1,21 @@
 //! One-call receipt custody: redact, serialize locally, then forward the same redacted value.
 #![allow(dead_code)]
+#[path = "build_crate.rs"]
+pub(crate) mod build_crate;
+#[path = "build_venv.rs"]
+pub(crate) mod build_venv;
+#[path = "check_health.rs"]
+pub(crate) mod check_health;
 #[path = "convergence-receipts.rs"]
 pub(crate) mod convergence_receipts;
 #[path = "hyalos.rs"]
 pub(crate) mod hyalos;
+#[path = "install_package.rs"]
+pub(crate) mod install_package;
+#[path = "ratchet_aur.rs"]
+pub(crate) mod ratchet_aur;
+#[path = "set_clock.rs"]
+pub(crate) mod set_clock;
 use super::{append_appliance_log, Receipt};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

@@ -416,7 +416,7 @@ fn write_unified_diff_receipt(
     })
 }
 
-pub use crate::remove_file::{FileRemovalEntry, FileRemovalOutcome};
+pub(crate) use crate::remove_file::{FileRemovalEntry, FileRemovalOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -6396,7 +6396,7 @@ pub(crate) fn validated_file_symlink_step(
             timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
             apply,
         },
-        None,
+        apply.then(crate::atoms::r#do::InvocationKey::for_apply),
     )
 }
 pub(crate) fn files_remove_step(

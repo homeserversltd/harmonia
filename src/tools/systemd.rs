@@ -6,7 +6,6 @@ use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-
 pub(crate) fn validate_candidate_units(
     args: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Result<(), String> {
@@ -389,21 +388,9 @@ fn observe_systemd_state(
     target_user: Option<&str>,
     timeout_secs: u64,
 ) -> SystemdObservation {
-    if action == "enable-now" {
-        return crate::enable_unit::observe(service, user, target_user, timeout_secs);
-    }
-    if matches!(action, "disable-stop" | "disable-stop-remove") {
-        let path = (action == "disable-stop-remove")
-            .then(|| unit_file_path(service))
-            .flatten();
-        return crate::remove_unit::observe(
-            service,
-            path.as_deref(),
-            user,
-            target_user,
-            timeout_secs,
-        );
-    }
+    // Special legacy permutations use the same settled read-only systemd
+    // atoms as the ordinary service lane. The conductor never reaches into
+    // a private tool rung.
     let probe = matches!(action, "unit-present" | "is-active-probe")
         .then(|| systemctl(action, service, user, target_user, timeout_secs));
     let unit_present = if action == "unit-present" {
@@ -609,25 +596,37 @@ fn run_action_with_policy(
         |authorization, before| {
             let result: Result<CmdResult, String> = if apply {
                 let command = if action == "enable-now" {
-                    crate::enable_unit::act(
+                    crate::atoms::r#do::unit_change_scoped(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
                         service,
+                        crate::atoms::r#do::UnitVerb::EnableNow,
                         user,
                         target_user,
                         timeout_secs,
                     )
+                    .map(|result| CmdResult {
+                        ok: result.ok,
+                        code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                    })
                 } else if matches!(action, "disable-stop" | "disable-stop-remove") {
-                    crate::remove_unit::act(
+                    crate::atoms::r#do::unit_change_scoped(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
                         service,
-                        action,
-                        unit_file_path(service).as_deref(),
+                        crate::atoms::r#do::UnitVerb::DisableNow,
                         user,
                         target_user,
                         timeout_secs,
                     )
+                    .map(|result| CmdResult {
+                        ok: result.ok,
+                        code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                    })
                 } else {
                     let invocation = invocation.ok_or("invocation-key-missing")?;
                     let verb = match action {
@@ -645,7 +644,8 @@ fn run_action_with_policy(
                         user,
                         target_user,
                         timeout_secs,
-                    ).map(|result| CmdResult {
+                    )
+                    .map(|result| CmdResult {
                         ok: result.ok,
                         code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
                         stdout: result.stdout,
@@ -739,12 +739,16 @@ fn run_action_with_policy(
         comparison::ComparisonRun::Moved { movement, .. } => {
             let before = movement.before.clone();
             let after = movement.after.clone();
-            (movement.outcome.clone(), before, after, Some(movement.outcome))
+            (
+                movement.outcome.clone(),
+                before,
+                after,
+                Some(movement.outcome),
+            )
         }
     };
-    let restart_decision = (action == "restart").then(|| {
-        decide_restart_for_observation(&before, service_material_changed, restart_policy)
-    });
+    let restart_decision = (action == "restart")
+        .then(|| decide_restart_for_observation(&before, service_material_changed, restart_policy));
     let command = outcome.command.clone().unwrap_or(CmdResult {
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { -1 },
@@ -779,17 +783,19 @@ fn run_action_with_policy(
             outcome.changed,
         ),
     )?;
-    if action == "enable-now" {
-        crate::enable_unit::report_home(
-            service,
+    if matches!(
+        action,
+        "enable-now" | "disable-stop" | "disable-stop-remove"
+    ) {
+        crate::atoms::attest::attest(
             &receipt_dir.join("harmonia-atoms.log"),
-            &command,
-        )?;
-    } else if matches!(action, "disable-stop" | "disable-stop-remove") {
-        crate::remove_unit::report_home(
-            service,
-            &receipt_dir.join("harmonia-atoms.log"),
-            &command,
+            &crate::atoms::Receipt {
+                atom: "systemd".into(),
+                ok: command.ok,
+                drift: crate::atoms::Drift::Current,
+                message: format!("service={service}; action={action}; code={}", command.code),
+            },
+            &[],
         )?;
     }
     Ok(outcome)
@@ -860,10 +866,6 @@ fn unit_present_result(mut result: CmdResult, service: &str) -> CmdResult {
     }
     result
 }
-
-
-
-
 
 fn unit_file_path(service: &str) -> Option<PathBuf> {
     let path = Path::new(service);
@@ -963,10 +965,39 @@ fn write_systemd_receipt(
     )
 }
 
-
-pub(crate) fn execute_validated_step(step: &crate::ladder::ValidatedStep, module_dir: &std::path::Path, apply: bool, changed: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<crate::OperationOutcome, String> {
-    let units: Vec<String> = step.args.get("candidate_units").and_then(serde_json::Value::as_array).map(|xs| xs.iter().filter_map(serde_json::Value::as_str).map(ToString::to_string).collect()).unwrap_or_default();
-    run_permutation(module_dir, &step.step_id, &step.permutation, step.args.get("service").and_then(serde_json::Value::as_str), &units, step.args.get("user").and_then(serde_json::Value::as_str), step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(30), apply, changed, invocation)
+pub(crate) fn execute_validated_step(
+    step: &crate::ladder::ValidatedStep,
+    module_dir: &std::path::Path,
+    apply: bool,
+    changed: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<crate::OperationOutcome, String> {
+    let units: Vec<String> = step
+        .args
+        .get("candidate_units")
+        .and_then(serde_json::Value::as_array)
+        .map(|xs| {
+            xs.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    run_permutation(
+        module_dir,
+        &step.step_id,
+        &step.permutation,
+        step.args.get("service").and_then(serde_json::Value::as_str),
+        &units,
+        step.args.get("user").and_then(serde_json::Value::as_str),
+        step.args
+            .get("timeout_secs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(30),
+        apply,
+        changed,
+        invocation,
+    )
 }
 #[cfg(test)]
 mod tests {

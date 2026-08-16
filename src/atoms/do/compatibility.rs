@@ -1,7 +1,8 @@
 //! Shared compatibility membrane for legacy mutation atom signatures.
 use super::{
-    build_aur_pinned, build_crate, change_unit, install_aur, install_aur_pinned, install_package, make_dir, make_link,
-    pull_repo, remove_file as remove_file_organ, rename as rename_organ, run_command, write_file,
+    build_aur_pinned, build_crate, change_unit, install_aur, install_aur_pinned, install_package,
+    make_dir, make_link, pull_repo, remove_file as remove_file_organ, rename as rename_organ,
+    run_command, write_file,
 };
 use crate::atoms::Receipt;
 use crate::tools::comparison::ActionAuthorization;
@@ -12,6 +13,10 @@ use std::time::Duration;
 pub(crate) struct InvocationKey(());
 
 impl InvocationKey {
+    pub(crate) fn for_apply() -> Self {
+        Self(())
+    }
+
     pub(crate) fn from_apply_or_timer(
         v: bool,
         _mint: crate::invocation_face::Mint,
@@ -126,7 +131,13 @@ pub(crate) fn aur_install(
     install_aur::aur_install(a, i, c)
 }
 
-pub(crate) fn aur_install_pinned(a: ActionAuthorization, i: InvocationKey, c: impl FnOnce() -> Result<crate::OperationOutcome, String>) -> Result<crate::OperationOutcome, String> { install_aur_pinned::aur_install_pinned(a, i, c) }
+pub(crate) fn aur_install_pinned(
+    a: ActionAuthorization,
+    i: InvocationKey,
+    c: impl FnOnce() -> Result<crate::OperationOutcome, String>,
+) -> Result<crate::OperationOutcome, String> {
+    install_aur_pinned::aur_install_pinned(a, i, c)
+}
 
 pub(crate) fn aur_build_pinned(
     a: ActionAuthorization,
@@ -142,7 +153,7 @@ pub(crate) fn git_pull(
     r: &crate::tools::git_artifact::Request,
     c: impl FnOnce() -> crate::tools::git_artifact::Outcome,
 ) -> crate::tools::git_artifact::Outcome {
-    pull_repo::git_pull(a, i, r, c)
+    super::pull_repo::git_pull(a, i, r, c)
 }
 
 pub(crate) fn git_acquire(
@@ -151,7 +162,7 @@ pub(crate) fn git_acquire(
     p: &crate::tools::git_artifact::SourcePlan,
     c: impl FnOnce() -> crate::tools::git_artifact::SourceOutcome,
 ) -> crate::tools::git_artifact::SourceOutcome {
-    pull_repo::git_acquire(a, i, p, c)
+    super::pull_repo::git_acquire(a, i, p, c)
 }
 
 pub(crate) fn package_install(

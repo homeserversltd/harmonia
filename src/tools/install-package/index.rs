@@ -2,13 +2,6 @@ use crate::tools::comparison::{self, DiffDecision};
 use crate::{CmdResult, OperationOutcome};
 use std::path::Path;
 
-#[path = "act/index.rs"]
-mod act;
-#[path = "observe/index.rs"]
-mod observe;
-#[path = "report-home/index.rs"]
-mod report_home;
-
 pub(crate) fn run(
     receipt_dir: &Path,
     name: &str,
@@ -24,7 +17,7 @@ pub(crate) fn run(
         return crate::tools::package::non_arch_install(receipt_dir, name, packages);
     }
     let observe_package = || {
-        let current = observe::pacman(program, timeout_secs);
+        let current = crate::atoms::ask::install_package::pacman(program, timeout_secs);
         Ok::<_, String>(crate::tools::package::PackageObservation {
             observed_state: if current.ok {
                 current.stdout.clone()
@@ -47,7 +40,12 @@ pub(crate) fn run(
         observe_package,
         |current| {
             if packages.iter().any(|package| {
-                !current.current.as_ref().is_some_and(|result| result.stdout.lines().any(|line| line.split_whitespace().next() == Some(package)))
+                !current.current.as_ref().is_some_and(|result| {
+                    result
+                        .stdout
+                        .lines()
+                        .any(|line| line.split_whitespace().next() == Some(package))
+                })
             }) {
                 DiffDecision::Different
             } else {
@@ -58,7 +56,7 @@ pub(crate) fn run(
             if apply {
                 let invocation = invocation
                     .ok_or_else(|| "package-install-invocation-key-missing".to_string())?;
-                let result = act::install(
+                let result = crate::atoms::r#do::package_install(
                     authorization,
                     invocation,
                     receipt_dir,
@@ -93,8 +91,12 @@ pub(crate) fn run(
             }
         },
         |before, movement, after| {
-            crate::tools::package::write_install_package_guard_receipt(
-                receipt_dir, name, before, movement, after,
+            crate::atoms::attest::install_package::write_guard_receipt(
+                receipt_dir,
+                name,
+                before,
+                movement,
+                after,
             )
         },
     )?;
@@ -112,20 +114,13 @@ pub(crate) fn run(
         message: "package install already current".into(),
         command: observation.current.clone(),
     });
-    crate::write_json(
-        &receipt_dir.join(format!("{name}.comparison.json")),
-        &crate::tools::package::package_receipt_fields(
-            &final_observation,
-            decision,
-            movement.as_ref(),
-            outcome.changed,
-        ),
-    )?;
-    crate::tools::package::write_package_receipt(receipt_dir, name, "install", &outcome)?;
-    report_home::attest(
-        &receipt_dir.join(format!("{name}.attest.jsonl")),
-        &outcome.message,
-        outcome.ok,
+    crate::atoms::attest::install_package::write_receipts(
+        receipt_dir,
+        name,
+        &final_observation,
+        decision,
+        movement.as_ref(),
+        &outcome,
     )?;
     Ok(outcome)
 }
