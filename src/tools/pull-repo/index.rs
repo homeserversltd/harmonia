@@ -101,7 +101,9 @@ pub(crate) fn acquire_source(
             ..
         }) => outcome,
         Ok(comparison::ComparisonRun::Moved { movement, .. }) => movement,
-        Ok(_) | Err(_) => acted.unwrap_or_else(|| git_artifact::legacy_acquire_source(plan)),
+        Ok(_) | Err(_) => {
+            acted.unwrap_or_else(|| crate::atoms::r#do::pull_repo::acquire_source(plan))
+        }
     };
     report_home::source(outcome)
 }
