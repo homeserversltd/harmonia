@@ -2878,7 +2878,12 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     let apply = args.iter().any(|arg| arg == "--apply");
                     let config_dir = value_arg(&args, "--config-dir")
                         .unwrap_or_else(|| PathBuf::from("/etc/harmonia"));
-                    capsule_install(Path::new(capsule_dir), &config_dir, apply)
+                    capsule_install_with_invocation(
+                        Path::new(capsule_dir),
+                        &config_dir,
+                        apply,
+                        invocation.0,
+                    )
                 }
                 other => Err(format!("capsule-action-unsupported-{other}")),
             }
