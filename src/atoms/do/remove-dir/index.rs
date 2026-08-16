@@ -304,6 +304,58 @@ pub(crate) fn restore(base: &Path, image: &Image) -> Result<(), String> {
 pub(crate) fn exact(a: &Image, b: &Image) -> bool {
     a == b
 }
+
+/// Replace a path with an exact image, including an absent destination.
+///
+/// The old image is captured before any mutation. If removal or restoration of
+/// the replacement fails, the partial destination is removed and the captured
+/// image is restored before returning the original error. Any rollback failure
+/// is appended without hiding the original failure.
+pub(crate) fn replace_authorized(
+    a: ActionAuthorization,
+    i: InvocationKey,
+    root: &Path,
+    replacement: &Image,
+) -> Result<(), String> {
+    let old = if fs::symlink_metadata(root).is_ok() {
+        Some(capture(root)?)
+    } else {
+        None
+    };
+    let result = (|| {
+        if old.is_some() {
+            remove(root)?;
+        }
+        restore(root, replacement)
+    })();
+    if let Err(original) = result {
+        let rollback = (|| {
+            if fs::symlink_metadata(root).is_ok() {
+                remove(root)?;
+            }
+            if let Some(image) = old.as_ref() {
+                restore(root, image)?;
+            }
+            Ok::<(), String>(())
+        })();
+        return match rollback {
+            Ok(()) => Err(original),
+            Err(rollback) => Err(format!("{original}; rollback failed: {rollback}")),
+        };
+    }
+    apply(
+        a,
+        i,
+        Receipt {
+            atom: "do".into(),
+            ok: true,
+            drift: Drift::Current,
+            message: "exact directory replacement".into(),
+        },
+    )?;
+    Ok(())
+}
+
 pub(crate) fn operate(
     a: ActionAuthorization,
     i: InvocationKey,

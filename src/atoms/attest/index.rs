@@ -16,11 +16,13 @@ pub(crate) mod install_package;
 pub(crate) mod ratchet_aur;
 #[path = "set_clock.rs"]
 pub(crate) mod set_clock;
-use super::{append_appliance_log, Receipt};
+use super::Receipt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -34,6 +36,28 @@ struct StalePreimage {
     mode: u32,
     uid: u32,
     gid: u32,
+}
+
+
+/// Attestation-owned no-follow read handle for source observation.
+#[cfg(unix)]
+pub(crate) fn open_nofollow_read(path: &Path) -> Result<File, String> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| error.to_string())
+}
+
+/// Test fixture permission helper owned by the attestation filesystem seam.
+pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| error.to_string());
+    }
+    #[cfg(not(unix))]
+    { let _ = (path, mode); Ok(()) }
 }
 
 pub(crate) fn update_set_receipt(
@@ -443,6 +467,10 @@ pub(crate) fn write_receipt_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<bo
     result.map(|()| true)
 }
 
+pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_receipt_bytes_atomic(path, bytes).map(|_| ())
+}
+
 pub(crate) fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     let mut bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| format!("receipt-serialize-failed {}: {error}", path.display()))?;
@@ -503,6 +531,33 @@ pub(crate) fn append_jsonl_to<W: Write>(
     serde_json::to_writer(&mut *writer, value)
         .map_err(|error| format!("receipt-jsonl-serialize-failed: {error}"))?;
     writeln!(writer).map_err(|error| format!("receipt-jsonl-append-failed: {error}"))
+}
+
+pub(crate) fn remove_artifact(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("attest-artifact-remove-failed {}: {error}", path.display())),
+    }
+}
+
+pub(crate) fn copy_artifact(source: &Path, target: &Path) -> Result<(), String> {
+    let parent = target.parent().ok_or_else(|| format!("artifact-copy-parent-missing {}", target.display()))?;
+    prepare_receipt_parent(parent)?;
+    fs::copy(source, target).map_err(|error| format!("artifact-copy-failed {} -> {}: {error}", source.display(), target.display()))?;
+    Ok(())
+}
+
+/// Open a named fresh event stream through the Attest owner (create/truncate semantics).
+pub(crate) fn open_event_stream(path: &Path) -> Result<File, String> {
+    let parent = path.parent().ok_or_else(|| format!("event-stream-parent-missing {}", path.display()))?;
+    prepare_receipt_parent(parent)?;
+    File::create(path).map_err(|error| format!("event-stream-open-failed {}: {error}", path.display()))
+}
+
+pub(crate) fn append_appliance_log(path: &Path, receipt: &Receipt) -> Result<(), String> {
+    let value = serde_json::to_value(receipt).map_err(|e| format!("attest-serialize: {e}"))?;
+    append_jsonl(path, &value).map_err(|e| format!("attest-append: {e}"))
 }
 
 pub(crate) fn append_jsonl(path: &Path, value: &serde_json::Value) -> Result<(), String> {

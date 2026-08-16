@@ -5,12 +5,10 @@ use similar::TextDiff;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::ffi::CString;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File};
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(unix)]
-use std::os::unix::io::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -183,66 +181,6 @@ fn classify_request(request: &FileConvergenceRequest) -> Result<Vec<TargetClass>
         .collect()
 }
 
-#[derive(Debug, Clone)]
-pub struct HotfixFileBackfillRequest {
-    pub target: PathBuf,
-    pub file_bytes: Vec<u8>,
-    pub mode: Option<u32>,
-    pub owner: Option<String>,
-}
-#[derive(Debug, Clone, Serialize)]
-pub struct HotfixFileBackfillOutcome {
-    pub ok: bool,
-    pub changed: bool,
-    pub target_path: PathBuf,
-    pub movement: String,
-}
-pub(crate) fn comparison_gated_hotfix_backfill(
-    request: &HotfixFileBackfillRequest,
-) -> Result<HotfixFileBackfillOutcome, String> {
-    validate_hotfix_target(&request.target)?;
-    let uid = request.owner.as_deref().map(resolve_uid).transpose()?;
-    atomic_write_bytes_with_ownership(
-        &request.target,
-        &request.file_bytes,
-        request.mode,
-        uid,
-        None,
-    )?;
-    if fs::read(&request.target).map_err(|error| {
-        format!(
-            "hotfix-file-readback-failed {}: {error}",
-            request.target.display()
-        )
-    })? != request.file_bytes
-    {
-        return Err(format!(
-            "hotfix-file-readback-failed {}",
-            request.target.display()
-        ));
-    }
-    if let Some(mode) = request.mode {
-        if target_mode(&request.target)? != Some(mode) {
-            return Err(format!(
-                "hotfix-file-mode-readback-failed {}",
-                request.target.display()
-            ));
-        }
-    }
-    if !ownership_equal(&request.target, uid, None)?.0 {
-        return Err(format!(
-            "hotfix-file-owner-readback-failed {}",
-            request.target.display()
-        ));
-    }
-    Ok(HotfixFileBackfillOutcome {
-        ok: true,
-        changed: true,
-        target_path: request.target.clone(),
-        movement: "atomic-file-backfill".to_string(),
-    })
-}
-
 fn validate_hotfix_target(target: &Path) -> Result<(), String> {
     let home_dotfile = target.starts_with("/home")
         && target.components().any(|part| {
@@ -401,14 +339,14 @@ fn write_unified_diff_receipt(
 ) -> Result<(), String> {
     let safe_path = relative_path.replace('/', "_").replace('\\', "_");
     let stem = receipt_name.trim_end_matches(".json");
-    fs::create_dir_all(receipt_dir).map_err(|error| {
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir).map_err(|error| {
         format!(
             "files-diff-receipt-directory-create-failed {}: {error}",
             receipt_dir.display()
         )
     })?;
     let path = receipt_dir.join(format!("{stem}-{safe_path}.diff"));
-    fs::write(&path, diff).map_err(|error| {
+    crate::atoms::attest::write_bytes_atomic(&path, diff.as_bytes()).map_err(|error| {
         format!(
             "files-diff-receipt-write-failed {}: {error}",
             path.display()
@@ -665,12 +603,13 @@ pub(crate) fn converge_managed_directories(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(receipt_name)?;
     if directories.is_empty() {
         return Err("managed-directories-empty-request".to_string());
     }
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut changed = false;
     let mut entries = Vec::new();
     for directory in directories {
@@ -721,17 +660,21 @@ pub(crate) fn converge_managed_directories(
                     crate::tools::comparison::DiffDecision::Different
                 }
             },
-            |_, _| {
+            |authorization, _| {
                 if !apply {
                     return Ok(false);
                 }
-                fs::create_dir_all(&path).map_err(|e| {
-                    format!("managed-directory-create-failed {}: {e}", path.display())
-                })?;
-                fs::set_permissions(&path, fs::Permissions::from_mode(directory.mode)).map_err(
-                    |e| format!("managed-directory-mode-set-failed {}: {e}", path.display()),
-                )?;
-                set_ownership(&path, Some(desired_uid), Some(desired_gid))?;
+                let key = invocation.ok_or("managed-directory-invocation-missing")?;
+                crate::atoms::r#do::make_dir::create_dir_all(authorization, key, &path)
+                    .map_err(|e| format!("managed-directory-create-failed {}: {e}", path.display()))?;
+                crate::atoms::r#do::change_mode::change(
+                    authorization, key,
+                    &crate::atoms::r#do::change_mode::Plan { path: path.clone(), mode: Some(directory.mode), no_follow: true }
+                ).map_err(|e| format!("managed-directory-mode-set-failed {}: {e}", path.display()))?;
+                crate::atoms::r#do::change_owner::change(
+                    authorization, key,
+                    &crate::atoms::r#do::change_owner::Plan { path: path.clone(), uid: Some(desired_uid), gid: Some(desired_gid), no_follow: true }
+                ).map_err(|e| format!("managed-directory-owner-set-failed {}: {e}", path.display()))?;
                 if target_mode(&path)? != Some(directory.mode) {
                     return Err(format!(
                         "managed-directory-mode-readback-failed {}",
@@ -780,7 +723,7 @@ pub(crate) fn converge_managed_directories(
             "truthful_changed": truthful_changed,
         }));
     }
-    crate::write_json(
+    crate::atoms::attest::write_json_atomic(
         &receipt_dir.join(format!("{receipt_name}.json")),
         &json!({
             "schema": "harmonia.files.managed_directories.v1",
@@ -850,6 +793,7 @@ pub(crate) fn converge_managed_files(
     request: &ManagedFilesRequest<'_>,
     receipt_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(request.receipt_name)?;
     let classes = request
@@ -870,7 +814,7 @@ pub(crate) fn converge_managed_files(
     for file in request.files {
         reject_ssh_path(Path::new(&file.path))?;
     }
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut drift = Vec::new();
     let mut missing_target_birth_debts = Vec::new();
     let mut written = Vec::new();
@@ -911,14 +855,21 @@ pub(crate) fn converge_managed_files(
                     crate::tools::comparison::DiffDecision::Empty
                 }
             },
-            |_, observation| {
+            |authorization, observation| {
                 if !apply || observation.missing_target_debt {
                     return Ok(ManagedFileMovement::ReportOnly);
                 }
+                let key = invocation.ok_or("managed-file-invocation-missing")?;
                 if !observation.content_equal || !observation.mode_equal {
-                    atomic_write_bytes(&observation.path, desired, Some(observation.mode))?;
+                    crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(
+                        authorization, key, &observation.path, desired, Some(observation.mode), desired_uid, desired_gid
+                    )?;
+                } else if !observation.owner_equal || !observation.group_equal {
+                    crate::atoms::r#do::change_owner::change(
+                        authorization, key,
+                        &crate::atoms::r#do::change_owner::Plan { path: observation.path.clone(), uid: desired_uid, gid: desired_gid, no_follow: true }
+                    )?;
                 }
-                set_ownership(&observation.path, desired_uid, desired_gid)?;
                 let (owner_equal_after, group_equal_after) =
                     ownership_equal(&observation.path, desired_uid, desired_gid)?;
                 if !owner_equal_after || !group_equal_after {
@@ -997,7 +948,7 @@ pub(crate) fn converge_managed_files(
             request.receipt_name.trim_end_matches(".json"),
             safe_name
         ));
-        crate::write_json(
+        crate::atoms::attest::write_json_atomic(
             &per_file,
             &json!({
                 "schema": "harmonia.files.managed_file.v1",
@@ -1030,7 +981,7 @@ pub(crate) fn converge_managed_files(
     } else {
         format!("{}.json", request.receipt_name)
     });
-    crate::write_json(
+    crate::atoms::attest::write_json_atomic(
         &receipt,
         &json!({
             "schema": request.schema,
@@ -1116,33 +1067,6 @@ fn ownership_equal(
     _desired_gid: Option<u32>,
 ) -> Result<(bool, bool), String> {
     Ok((true, true))
-}
-
-#[cfg(unix)]
-fn set_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
-    if uid.is_none() && gid.is_none() {
-        return Ok(());
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|e| format!("managed-file-owner-open-failed {}: {e}", path.display()))?;
-    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
-    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
-    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-        return Err(format!(
-            "managed-file-owner-set-failed {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> {
-    Ok(())
 }
 
 pub fn converge_files(
@@ -1541,10 +1465,30 @@ pub(crate) fn converge_files_authorized(
 /// Seed files are a one-way ownership boundary: the declared source is used
 /// only to create an absent regular file. Later bytes, mode, and ownership
 /// belong to the external writer and are deliberately not reconverged.
+#[cfg(not(test))]
 pub fn ensure_files_present(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<FileConvergenceOutcome, String> {
+    ensure_files_present_with_invocation(request, receipt_dir, apply, invocation)
+}
+
+#[cfg(test)]
+fn ensure_files_present(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    apply: bool,
+) -> Result<FileConvergenceOutcome, String> {
+    ensure_files_present_with_invocation(request, receipt_dir, apply, apply.then(crate::atoms::r#do::InvocationKey::for_apply))
+}
+
+pub(crate) fn ensure_files_present_with_invocation(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
         return Err("files-ensure-present-empty-request".to_string());
@@ -1586,25 +1530,16 @@ pub fn ensure_files_present(
                     crate::tools::comparison::DiffDecision::Different
                 }
             },
-            |_, _| {
-                if !apply {
-                    return Ok(false);
-                }
-                let parent = target
-                    .parent()
-                    .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
-                fs::create_dir_all(parent).map_err(|e| {
-                    format!(
-                        "files-ensure-present-parent-create-failed {}: {e}",
-                        parent.display()
-                    )
-                })?;
-                atomic_copy(
-                    &source,
-                    &target,
-                    spec.mode.or_else(|| source_mode(&source).ok()),
-                    desired_uid,
-                    desired_gid,
+            |authorization, _| {
+                if !apply { return Ok(false); }
+                let parent = target.parent().ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
+                let key = invocation.ok_or("files-ensure-present-invocation-missing")?;
+                crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent)
+                    .map_err(|e| format!("files-ensure-present-parent-create-failed {}: {e}", parent.display()))?;
+                let bytes = fs::read(&source).map_err(|e| format!("files-source-read-failed {}: {e}", source.display()))?;
+                crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(
+                    authorization, key, &target, &bytes,
+                    spec.mode.or_else(|| source_mode(&source).ok()), desired_uid, desired_gid,
                 )?;
                 if !fs::symlink_metadata(&target)
                     .map(|m| m.file_type().is_file())
@@ -1659,13 +1594,13 @@ pub fn ensure_files_present(
             }
         ),
     };
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt_name = if request.receipt_name.ends_with(".json") {
         request.receipt_name.clone()
     } else {
         format!("{}.json", request.receipt_name)
     };
-    crate::write_json(
+    crate::atoms::attest::write_json_atomic(
         &receipt_dir.join(receipt_name),
         &json!({
             "schema": "harmonia.files.ensure_present.v1", "ok": true, "apply": apply,
@@ -1856,11 +1791,15 @@ fn source_shelf_excluded(patterns: &[String], relative: &Path) -> bool {
 }
 
 fn carry_excluded_shelf_entries(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
     shelf_backup: &Path,
     promoted_shelf: &Path,
     exclude: &[String],
 ) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     fn carry(
+        authorization: crate::tools::comparison::ActionAuthorization,
+        invocation: crate::atoms::r#do::InvocationKey,
         shelf_backup: &Path,
         promoted_shelf: &Path,
         path: &Path,
@@ -1889,7 +1828,7 @@ fn carry_excluded_shelf_entries(
                 match fs::symlink_metadata(&promoted_path) {
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        fs::rename(&backup_path, &promoted_path).map_err(|error| {
+                        crate::atoms::r#do::source_shelf::rename(authorization, invocation, &backup_path, &promoted_path).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-excluded-carry-failed {} -> {}: {error}",
                                 backup_path.display(),
@@ -1912,13 +1851,15 @@ fn carry_excluded_shelf_entries(
                 .map_err(|error| format!("source-shelf-sweep-excluded-entry-type-failed: {error}"))?
                 .is_dir()
             {
-                carry(shelf_backup, promoted_shelf, &backup_path, exclude, carried)?;
+                carry(authorization, invocation, shelf_backup, promoted_shelf, &backup_path, exclude, carried)?;
             }
         }
         Ok(())
     }
     let mut carried = Vec::new();
     carry(
+        authorization,
+        invocation,
         shelf_backup,
         promoted_shelf,
         shelf_backup,
@@ -1951,13 +1892,13 @@ fn write_sweep_provenance(
     let parent = path
         .parent()
         .ok_or_else(|| "source-shelf-sweep-provenance-parent-missing".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| {
+    crate::atoms::attest::prepare_receipt_parent(parent).map_err(|error| {
         format!(
             "source-shelf-sweep-provenance-parent-create-failed {}: {error}",
             parent.display()
         )
     })?;
-    crate::write_json(
+    crate::atoms::attest::write_json_atomic(
         path,
         &json!({
             "schema":"harmonia.files.source_shelf_sweep.provenance.v1",
@@ -2069,6 +2010,8 @@ fn sync_directory(path: &Path) -> Result<(), String> {
 }
 
 fn stage_sweep_tree(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
     source: &Path,
     stage: &Path,
     entries: &[SweepTreeEntry],
@@ -2077,14 +2020,9 @@ fn stage_sweep_tree(
     uid: u32,
     gid: u32,
 ) -> Result<(), String> {
-    fs::create_dir(stage).map_err(|error| {
-        format!(
-            "source-shelf-sweep-stage-create-failed {}: {error}",
-            stage.display()
-        )
-    })?;
-    set_mode(stage, directory_mode)?;
-    set_ownership(stage, Some(uid), Some(gid))?;
+    crate::atoms::r#do::make_dir::create_dir_all(authorization, invocation, stage).map_err(|error| format!("source-shelf-sweep-stage-create-failed {}: {error}", stage.display()))?;
+    crate::atoms::r#do::change_mode::change(authorization, invocation, &crate::atoms::r#do::change_mode::Plan { path: stage.to_path_buf(), mode: Some(directory_mode), no_follow: true })?;
+    crate::atoms::r#do::change_owner::change(authorization, invocation, &crate::atoms::r#do::change_owner::Plan { path: stage.to_path_buf(), uid: Some(uid), gid: Some(gid), no_follow: true })?;
     for entry in entries
         .iter()
         .filter(|entry| entry.relative_path != Path::new("."))
@@ -2092,14 +2030,9 @@ fn stage_sweep_tree(
         let source_path = source.join(&entry.relative_path);
         let target_path = stage.join(&entry.relative_path);
         if entry.is_dir {
-            fs::create_dir(&target_path).map_err(|error| {
-                format!(
-                    "source-shelf-sweep-stage-directory-failed {}: {error}",
-                    target_path.display()
-                )
-            })?;
-            set_mode(&target_path, directory_mode)?;
-            set_ownership(&target_path, Some(uid), Some(gid))?;
+            crate::atoms::r#do::make_dir::create_dir_all(authorization, invocation, &target_path).map_err(|error| format!("source-shelf-sweep-stage-directory-failed {}: {error}", target_path.display()))?;
+            crate::atoms::r#do::change_mode::change(authorization, invocation, &crate::atoms::r#do::change_mode::Plan { path: target_path.clone(), mode: Some(directory_mode), no_follow: true })?;
+            crate::atoms::r#do::change_owner::change(authorization, invocation, &crate::atoms::r#do::change_owner::Plan { path: target_path.clone(), uid: Some(uid), gid: Some(gid), no_follow: true })?;
         } else {
             let parent = target_path.parent().ok_or_else(|| {
                 format!(
@@ -2107,13 +2040,7 @@ fn stage_sweep_tree(
                     target_path.display()
                 )
             })?;
-            atomic_copy(
-                &source_path,
-                &target_path,
-                Some(file_mode),
-                Some(uid),
-                Some(gid),
-            )?;
+            crate::atoms::r#do::source_shelf::copy(authorization, invocation, &source_path, &target_path, Some(file_mode), Some(uid), Some(gid))?;
             sync_directory(parent)?;
         }
     }
@@ -2549,7 +2476,7 @@ fn write_sweep_receipts(
     outcome: &SourceShelfSweepOutcome,
     apply: bool,
 ) -> Result<(), String> {
-    fs::create_dir_all(receipt_dir).map_err(|error| error.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let base = request.receipt_name.trim_end_matches(".json");
     for (index, entry) in outcome.entries.iter().enumerate() {
         let safe = entry
@@ -2562,7 +2489,7 @@ fn write_sweep_receipts(
         } else {
             "file"
         };
-        crate::write_json(
+        crate::atoms::attest::write_json_atomic(
             &receipt_dir.join(format!("{base}-{lane}-{index:04}-{safe}.json")),
             &json!({
                 "schema": "harmonia.files.source_shelf_sweep.file.v1",
@@ -2586,7 +2513,7 @@ fn write_sweep_receipts(
     } else {
         format!("{}.json", request.receipt_name)
     };
-    crate::write_json(
+    crate::atoms::attest::write_json_atomic(
         &receipt_dir.join(receipt_name),
         &json!({
             "schema": "harmonia.files.source_shelf_sweep.transaction.v1",
@@ -2658,6 +2585,7 @@ pub fn source_shelf_sweep(
             receipt_dir,
             apply,
             SourceShelfSweepFault::default(),
+            invocation,
         )?;
         let mut outcome = SourceShelfSweepOutcome {
             ok: shelf_outcome.ok && launcher_outcome.ok,
@@ -2703,7 +2631,7 @@ pub fn source_shelf_sweep(
             let entry = entry.map_err(|error| error.to_string())?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with(&launcher_pass_prefix) && name.ends_with(".json") {
-                fs::remove_file(entry.path()).map_err(|error| {
+                crate::atoms::attest::remove_artifact(&entry.path()).map_err(|error| {
                     format!(
                         "source-shelf-sweep-launcher-pass-receipt-cleanup-failed {}: {error}",
                         entry.path().display()
@@ -2719,6 +2647,7 @@ pub fn source_shelf_sweep(
         receipt_dir,
         apply,
         SourceShelfSweepFault::default(),
+        invocation,
     ) {
         Ok(outcome) => Ok(outcome),
         Err(blocker) => {
@@ -2951,34 +2880,34 @@ fn source_shelf_owned_recursive_sweep(
     let quarantine = request
         .target_shelf
         .join(format!(".harmonia-source-shelf-sweep-{}", sweep_nonce()));
-    fs::create_dir(&quarantine).map_err(|error| {
-        format!(
-            "source-shelf-sweep-quarantine-create-failed {}: {error}",
-            quarantine.display()
-        )
-    })?;
     let mut promoted_count = 0usize;
     let mut removed_count = 0usize;
-    let movement = (|| -> Result<(), String> {
+    let movement = crate::tools::comparison::execute_once(
+        "source-shelf-owned-recursive",
+        || Ok::<_, String>(true),
+        |_| crate::tools::comparison::DiffDecision::Different,
+        |authorization, _| (|| -> Result<(), String> {
+            let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
+            crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, &quarantine)?;
         for entry in &desired {
             let source = shelf_source.join(&entry.relative_path);
             let target = request.target_shelf.join(&entry.relative_path);
             let owned = provenance.paths.contains(&target.display().to_string());
             if entry.is_dir {
                 if !target.exists() {
-                    fs::create_dir_all(&target).map_err(|error| {
+                    crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, &target).map_err(|error| {
                         format!(
                             "source-shelf-sweep-owned-directory-create-failed {}: {error}",
                             target.display()
                         )
                     })?;
-                    set_mode(&target, request.shelf_directory_mode)?;
-                    set_ownership(&target, Some(uid), Some(gid))?;
+                    crate::atoms::r#do::change_mode::change(authorization, invocation, &crate::atoms::r#do::change_mode::Plan { path: target.clone(), mode: Some(request.shelf_directory_mode), no_follow: true })?;
+                    crate::atoms::r#do::change_owner::change(authorization, invocation, &crate::atoms::r#do::change_owner::Plan { path: target.clone(), uid: Some(uid), gid: Some(gid), no_follow: true })?;
                     provenance.paths.insert(target.display().to_string());
                     promoted_count += 1;
                 } else if owned {
-                    set_mode(&target, request.shelf_directory_mode)?;
-                    set_ownership(&target, Some(uid), Some(gid))?;
+                    crate::atoms::r#do::change_mode::change(authorization, invocation, &crate::atoms::r#do::change_mode::Plan { path: target.clone(), mode: Some(request.shelf_directory_mode), no_follow: true })?;
+                    crate::atoms::r#do::change_owner::change(authorization, invocation, &crate::atoms::r#do::change_owner::Plan { path: target.clone(), uid: Some(uid), gid: Some(gid), no_follow: true })?;
                 }
             } else {
                 let (digest, mode, observed_uid, observed_gid) = sweep_path_state(&target, false)?;
@@ -2998,22 +2927,16 @@ fn source_shelf_owned_recursive_sweep(
                     }
                     let backup = quarantine.join(&entry.relative_path);
                     if let Some(parent) = backup.parent() {
-                        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                        crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, parent)?;
                     }
-                    fs::rename(&target, &backup).map_err(|error| {
+                    crate::atoms::r#do::source_shelf::rename(authorization, invocation, &target, &backup).map_err(|error| {
                         format!(
                             "source-shelf-sweep-owned-quarantine-failed {}: {error}",
                             target.display()
                         )
                     })?;
                 }
-                atomic_copy(
-                    &source,
-                    &target,
-                    Some(request.shelf_file_mode),
-                    Some(uid),
-                    Some(gid),
-                )?;
+                crate::atoms::r#do::source_shelf::copy(authorization, invocation, &source, &target, Some(request.shelf_file_mode), Some(uid), Some(gid))?;
                 provenance.paths.insert(target.display().to_string());
                 promoted_count += 1;
             }
@@ -3040,9 +2963,9 @@ fn source_shelf_owned_recursive_sweep(
             }
             let backup = quarantine.join(relative);
             if let Some(parent) = backup.parent() {
-                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, parent)?;
             }
-            fs::rename(&target, &backup).map_err(|error| {
+            crate::atoms::r#do::source_shelf::rename(authorization, invocation, &target, &backup).map_err(|error| {
                 format!(
                     "source-shelf-sweep-owned-quarantine-failed {}: {error}",
                     target.display()
@@ -3052,7 +2975,8 @@ fn source_shelf_owned_recursive_sweep(
             removed_count += 1;
         }
         write_sweep_provenance(provenance_path, &provenance)
-    })();
+        })(),
+    ).map(|_| ());
     if let Err(blocker) = movement {
         let outcome = SourceShelfSweepOutcome {
             ok: false,
@@ -3114,6 +3038,7 @@ fn source_shelf_sweep_with_fault(
     receipt_dir: &Path,
     apply: bool,
     fault: SourceShelfSweepFault,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<SourceShelfSweepOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
     validate_source_shelf_relative_path(&request.shelf_source)?;
@@ -3332,7 +3257,8 @@ fn source_shelf_sweep_with_fault(
                 crate::tools::comparison::DiffDecision::Empty
             }
         },
-        |_, _| {
+        |authorization, _| {
+            let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
             let shelf_parent = request.target_shelf.parent().ok_or_else(|| {
                 format!(
                     "source-shelf-sweep-target-shelf-parent-missing {}",
@@ -3354,6 +3280,7 @@ fn source_shelf_sweep_with_fault(
             let quarantine_existed_before = quarantine.exists();
             let setup = (|| -> Result<(), String> {
                 stage_sweep_tree(
+                    authorization, invocation,
                     &shelf_source,
                     &stage,
                     &source_entries,
@@ -3365,7 +3292,7 @@ fn source_shelf_sweep_with_fault(
                 if fault.fail_setup_after_stage {
                     return Err("source-shelf-sweep-injected-setup-failure".into());
                 }
-                fs::create_dir(&quarantine).map_err(|error| {
+                crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, &quarantine).map_err(|error| {
                     format!(
                         "source-shelf-sweep-quarantine-create-failed {}: {error}",
                         quarantine.display()
@@ -3383,15 +3310,15 @@ fn source_shelf_sweep_with_fault(
                     if existed_before {
                         continue;
                     }
-                    if let Err(error) = fs::remove_dir_all(path) {
-                        if error.kind() != std::io::ErrorKind::NotFound {
+                    if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(authorization, invocation, path) {
+                        if !error.contains("No such file") {
                             cleanup_errors
                                 .push(format!("remove setup path {}: {error}", path.display()));
                         }
                     }
                 }
                 for parent in [shelf_parent, request.launcher_target_root.as_path()] {
-                    if let Err(error) = sync_directory(parent) {
+                    if let Err(error) = crate::atoms::r#do::symlink_converge::sync_parent(authorization, invocation, parent) {
                         cleanup_errors.push(error);
                     }
                 }
@@ -3442,15 +3369,17 @@ fn source_shelf_sweep_with_fault(
             let transaction = (|| -> Result<(), String> {
                 if !shelf_current {
                     if shelf_had_prior {
-                        fs::rename(&request.target_shelf, &shelf_backup).map_err(|error| {
+                        crate::atoms::r#do::source_shelf::rename(authorization, invocation, &request.target_shelf, &shelf_backup).map_err(|error| {
                             format!("source-shelf-sweep-shelf-quarantine-failed: {error}")
                         })?;
                     }
-                    fs::rename(&stage, &request.target_shelf).map_err(|error| {
+                    crate::atoms::r#do::source_shelf::rename(authorization, invocation, &stage, &request.target_shelf).map_err(|error| {
                         format!("source-shelf-sweep-shelf-promote-failed: {error}")
                     })?;
                     if shelf_had_prior {
                         carried_excluded = carry_excluded_shelf_entries(
+                            authorization,
+                            invocation,
                             &shelf_backup,
                             &request.target_shelf,
                             &request.launcher_exclude,
@@ -3474,14 +3403,14 @@ fn source_shelf_sweep_with_fault(
                     if target.exists() {
                         let backup = receipt_dir.join("backups").join(name);
                         if let Some(parent) = backup.parent() {
-                            fs::create_dir_all(parent).map_err(|error| {
+                            crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, parent).map_err(|error| {
                                 format!(
                                     "source-shelf-sweep-launcher-backup-parent-failed {}: {error}",
                                     parent.display()
                                 )
                             })?;
                         }
-                        atomic_copy(&target, &backup, None, None, None).map_err(|error| {
+                        crate::atoms::r#do::source_shelf::copy_raw(authorization, invocation, &target, &backup, None, None, None).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-launcher-backup-failed {} -> {}: {error}",
                                 target.display(),
@@ -3489,14 +3418,14 @@ fn source_shelf_sweep_with_fault(
                             )
                         })?;
                         sync_directory(backup.parent().expect("launcher backup has parent"))?;
-                        fs::create_dir_all(&quarantine).map_err(|error| {
+                        crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, &quarantine).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-quarantine-create-failed {}: {error}",
                                 quarantine.display()
                             )
                         })?;
                         let backup = quarantine.join(name);
-                        fs::rename(&target, &backup).map_err(|error| {
+                        crate::atoms::r#do::source_shelf::rename(authorization, invocation, &target, &backup).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-launcher-quarantine-failed {}: {error}",
                                 target.display()
@@ -3506,7 +3435,7 @@ fn source_shelf_sweep_with_fault(
                     } else {
                         new_launchers.push(target.clone());
                     }
-                    atomic_copy(
+                    crate::atoms::r#do::source_shelf::copy_raw(authorization, invocation,
                         source,
                         &target,
                         Some(request.launcher_mode),
@@ -3525,14 +3454,14 @@ fn source_shelf_sweep_with_fault(
                 if request.prune {
                     for name in &stale {
                         let target = request.launcher_target_root.join(name);
-                        fs::create_dir_all(&quarantine).map_err(|error| {
+                        crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, &quarantine).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-quarantine-create-failed {}: {error}",
                                 quarantine.display()
                             )
                         })?;
                         let backup = quarantine.join(name);
-                        fs::rename(&target, &backup).map_err(|error| {
+                        crate::atoms::r#do::source_shelf::rename(authorization, invocation, &target, &backup).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-stale-launcher-quarantine-failed {}: {error}",
                                 target.display()
@@ -3623,15 +3552,15 @@ fn source_shelf_sweep_with_fault(
             if let Err(blocker) = transaction {
                 let mut rollback_errors = Vec::new();
                 for target in new_launchers.iter().rev() {
-                    if let Err(error) = fs::remove_file(target) {
-                        if error.kind() != std::io::ErrorKind::NotFound {
+                    if let Err(error) = crate::atoms::r#do::source_shelf::remove_file(authorization, invocation, target) {
+                        if !error.contains("No such file") {
                             rollback_errors.push(format!("remove {}: {error}", target.display()));
                         }
                     }
                 }
                 for (target, backup) in launcher_backups.iter().rev() {
-                    let _ = fs::remove_file(target);
-                    if let Err(error) = fs::rename(backup, target) {
+                    let _ = crate::atoms::r#do::source_shelf::remove_file(authorization, invocation, target);
+                    if let Err(error) = crate::atoms::r#do::source_shelf::rename(authorization, invocation, backup, target) {
                         rollback_errors.push(format!(
                             "restore {} -> {}: {error}",
                             backup.display(),
@@ -3641,7 +3570,7 @@ fn source_shelf_sweep_with_fault(
                 }
                 if shelf_promoted {
                     for (backup, promoted) in carried_excluded.iter().rev() {
-                        if let Err(error) = fs::rename(promoted, backup) {
+                        if let Err(error) = crate::atoms::r#do::source_shelf::rename(authorization, invocation, promoted, backup) {
                             rollback_errors.push(format!(
                                 "restore excluded {} -> {}: {error}",
                                 promoted.display(),
@@ -3649,14 +3578,14 @@ fn source_shelf_sweep_with_fault(
                             ));
                         }
                     }
-                    if let Err(error) = fs::remove_dir_all(&request.target_shelf) {
+                    if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(authorization, invocation, &request.target_shelf) {
                         rollback_errors.push(format!(
                             "remove promoted shelf {}: {error}",
                             request.target_shelf.display()
                         ));
                     }
                     if shelf_had_prior {
-                        if let Err(error) = fs::rename(&shelf_backup, &request.target_shelf) {
+                        if let Err(error) = crate::atoms::r#do::source_shelf::rename(authorization, invocation, &shelf_backup, &request.target_shelf) {
                             rollback_errors.push(format!(
                                 "restore shelf {} -> {}: {error}",
                                 shelf_backup.display(),
@@ -3665,8 +3594,8 @@ fn source_shelf_sweep_with_fault(
                         }
                     }
                 }
-                let _ = fs::remove_dir_all(&stage);
-                let _ = fs::remove_dir_all(&quarantine);
+                let _ = crate::atoms::r#do::source_shelf::remove_tree(authorization, invocation, &stage);
+                let _ = crate::atoms::r#do::source_shelf::remove_tree(authorization, invocation, &quarantine);
                 let rollback_entries = match readback_rollback_entries(planned_entries.clone()) {
                     Ok(entries) => {
                         if entries
@@ -3734,8 +3663,8 @@ fn source_shelf_sweep_with_fault(
                     return Err("source-shelf-sweep-injected-cleanup-failure".into());
                 }
                 let remove_dir_all_if_present = |path: &Path, label: &str| -> Result<(), String> {
-                    if let Err(error) = fs::remove_dir_all(path) {
-                        if error.kind() != std::io::ErrorKind::NotFound {
+                    if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(authorization, invocation, path) {
+                        if !error.contains("No such file") {
                             return Err(format!("{label} {}: {error}", path.display()));
                         }
                     }
@@ -3757,7 +3686,7 @@ fn source_shelf_sweep_with_fault(
                         "source-shelf-sweep-prior-shelf-remove-failed",
                     )?;
                 }
-                let _ = fs::remove_dir_all(&stage);
+                let _ = crate::atoms::r#do::source_shelf::remove_tree(authorization, invocation, &stage);
                 sync_directory(shelf_parent)?;
                 sync_directory(&request.launcher_target_root)?;
                 Ok(())
@@ -4013,13 +3942,13 @@ fn executable_present_in_paths(
             format!("{first_blocker} {}", request.executable)
         },
     };
-    fs::create_dir_all(receipt_dir).map_err(|error| error.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt_name = if request.receipt_name.ends_with(".json") {
         request.receipt_name.clone()
     } else {
         format!("{}.json", request.receipt_name)
     };
-    crate::write_json(
+    crate::atoms::attest::write_json_atomic(
         &receipt_dir.join(receipt_name),
         &json!({
             "schema": "harmonia.files.executable_present.v1",
@@ -4301,84 +4230,9 @@ fn same_file_bytes(source: &Path, target: &Path) -> Result<bool, String> {
     Ok(source_bytes == target_bytes)
 }
 
-pub(crate) fn atomic_write_bytes(
-    target: &Path,
-    bytes: &[u8],
-    mode: Option<u32>,
-) -> Result<(), String> {
-    atomic_write_bytes_with_ownership(target, bytes, mode, None, None)
-}
-
-fn atomic_write_bytes_with_ownership(
-    target: &Path,
-    bytes: &[u8],
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-) -> Result<(), String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
-    let temp = parent.join(format!(
-        ".{}.harmonia-tmp-{}",
-        target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("file"),
-        sweep_nonce()
-    ));
-    let result = (|| -> Result<(), String> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(|e| format!("files-temp-create-failed {}: {e}", temp.display()))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("files-temp-write-failed {}: {e}", temp.display()))?;
-        file.sync_all()
-            .map_err(|e| format!("files-temp-sync-failed {}: {e}", temp.display()))?;
-        drop(file);
-        if let Some(mode) = mode {
-            set_mode(&temp, mode)?;
-        }
-        set_ownership(&temp, uid, gid)?;
-        fs::rename(&temp, target).map_err(|e| {
-            format!(
-                "files-atomic-promote-failed {} -> {}: {e}",
-                temp.display(),
-                target.display()
-            )
-        })?;
-        sync_directory(parent)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-        let _ = sync_directory(parent);
-    }
-    result
-}
-
-pub(crate) fn atomic_copy(
-    source: &Path,
-    target: &Path,
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-) -> Result<(), String> {
-    let bytes = fs::read(source)
-        .map_err(|e| format!("files-source-read-failed {}: {e}", source.display()))?;
-    atomic_write_bytes_with_ownership(target, &bytes, mode, uid, gid)
-}
-
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
-    let mut permissions = fs::metadata(path)
-        .map_err(|e| format!("files-mode-metadata-failed {}: {e}", path.display()))?
-        .permissions();
-    permissions.set_mode(mode);
-    fs::set_permissions(path, permissions)
-        .map_err(|e| format!("files-mode-set-failed {}: {e}", path.display()))
+    crate::atoms::attest::set_mode(path, mode)
 }
 
 #[cfg(not(unix))]
@@ -4474,7 +4328,7 @@ fn write_convergence_receipt(
     outcome: &FileConvergenceOutcome,
     apply: bool,
 ) -> Result<(), String> {
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt = json!({
         "schema": "harmonia.files.converge.v1",
         "ok": outcome.ok,
@@ -4502,11 +4356,8 @@ fn write_convergence_receipt(
         receipt_name.push_str(".json");
     }
     let path = receipt_dir.join(receipt_name);
-    let mut file = File::create(&path)
-        .map_err(|e| format!("files-receipt-create-failed {}: {e}", path.display()))?;
-    serde_json::to_writer_pretty(&mut file, &receipt).map_err(|e| e.to_string())?;
-    writeln!(file).map_err(|e| e.to_string())?;
-    Ok(())
+    crate::atoms::attest::write_json_atomic(&path, &receipt)
+        .map_err(|e| format!("files-receipt-write-failed {}: {e}", path.display()))
 }
 
 #[cfg(unix)]
@@ -4571,16 +4422,9 @@ fn read_symlink_source(
     path: &Path,
     required_kind: SymlinkSourceKind,
 ) -> Result<SymlinkSourceIdentity, String> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|error| {
-            format!(
-                "symlink-converge-source-open-failed {}: {error}",
-                path.display()
-            )
-        })?;
+    let file = crate::atoms::attest::open_nofollow_read(path).map_err(|error| {
+        format!("symlink-converge-source-open-failed {}: {error}", path.display())
+    })?;
     let metadata = file.metadata().map_err(|error| {
         format!(
             "symlink-converge-source-readback-failed {}: {error}",
@@ -4626,74 +4470,16 @@ fn read_symlink_source(
     Err("symlink-converge-unsupported".to_string())
 }
 
-#[cfg(unix)]
-fn set_symlink_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
-    if uid.is_none() && gid.is_none() {
-        return Ok(());
-    }
-    let path_c = CString::new(path.as_os_str().as_encoded_bytes())
-        .map_err(|_| format!("symlink-converge-owner-path-invalid {}", path.display()))?;
-    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
-    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
-    if unsafe { libc::lchown(path_c.as_ptr(), uid, gid) } != 0 {
-        return Err(format!(
-            "symlink-converge-owner-set-failed {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_symlink_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> {
-    Err("symlink-converge-unsupported".to_string())
-}
 
 #[cfg(unix)]
-fn stage_symlink(
-    source: &Path,
-    target: &Path,
-    uid: Option<u32>,
-    gid: Option<u32>,
-) -> Result<PathBuf, String> {
-    let parent = target.parent().ok_or_else(|| {
-        format!(
-            "symlink-converge-target-parent-missing {}",
-            target.display()
-        )
-    })?;
-    let name = target
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("link");
-    for attempt in 0..100u32 {
-        let candidate = parent.join(format!(
-            ".{name}.harmonia-symlink-converge-{}-{attempt}",
-            std::process::id()
-        ));
-        match std::os::unix::fs::symlink(source, &candidate) {
-            Ok(()) => {
-                if let Err(error) = set_symlink_ownership(&candidate, uid, gid) {
-                    let _ = fs::remove_file(&candidate);
-                    return Err(error);
-                }
-                return Ok(candidate);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(format!(
-                    "symlink-converge-stage-failed {}: {error}",
-                    candidate.display()
-                ))
-            }
-        }
-    }
-    Err("symlink-converge-stage-name-exhausted".to_string())
+fn stage_symlink(authorization: crate::tools::comparison::ActionAuthorization, invocation: crate::atoms::r#do::InvocationKey, source: &Path, target: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<PathBuf, String> {
+    crate::atoms::r#do::symlink_converge::stage(authorization, invocation, source, target, _uid, _gid)
 }
 
 #[cfg(not(unix))]
 fn stage_symlink(
+    _authorization: crate::tools::comparison::ActionAuthorization,
+    _invocation: crate::atoms::r#do::InvocationKey,
     _source: &Path,
     _target: &Path,
     _uid: Option<u32>,
@@ -4703,67 +4489,37 @@ fn stage_symlink(
 }
 
 #[cfg(target_os = "linux")]
-fn renameat2_paths(left: &Path, right: &Path, flags: libc::c_uint) -> Result<(), String> {
-    let left_c = CString::new(left.as_os_str().as_encoded_bytes())
-        .map_err(|_| format!("symlink-converge-rename-path-invalid {}", left.display()))?;
-    let right_c = CString::new(right.as_os_str().as_encoded_bytes())
-        .map_err(|_| format!("symlink-converge-rename-path-invalid {}", right.display()))?;
-    if unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            left_c.as_ptr(),
-            libc::AT_FDCWD,
-            right_c.as_ptr(),
-            flags,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    Ok(())
-}
-
+fn exchange_paths(authorization: crate::tools::comparison::ActionAuthorization, invocation: crate::atoms::r#do::InvocationKey, left: &Path, right: &Path) -> Result<(), String> { crate::atoms::r#do::symlink_converge::exchange(authorization, invocation, left, right).map_err(|error| format!("symlink-converge-exchange-failed {}: {error}", right.display())) }
 #[cfg(target_os = "linux")]
-fn exchange_paths(left: &Path, right: &Path) -> Result<(), String> {
-    renameat2_paths(left, right, libc::RENAME_EXCHANGE).map_err(|error| {
-        format!(
-            "symlink-converge-exchange-failed {}: {error}",
-            right.display()
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn rename_noreplace(left: &Path, right: &Path) -> Result<(), String> {
-    renameat2_paths(left, right, libc::RENAME_NOREPLACE)
-        .map_err(|error| format!("symlink-converge-create-raced {}: {error}", right.display()))
-}
+fn rename_noreplace(authorization: crate::tools::comparison::ActionAuthorization, invocation: crate::atoms::r#do::InvocationKey, left: &Path, right: &Path) -> Result<(), String> { crate::atoms::r#do::symlink_converge::rename_noreplace(authorization, invocation, left, right).map_err(|error| format!("symlink-converge-create-raced {}: {error}", right.display())) }
 
 #[cfg(not(target_os = "linux"))]
-fn exchange_paths(_left: &Path, _right: &Path) -> Result<(), String> {
+fn exchange_paths(_authorization: crate::tools::comparison::ActionAuthorization, _invocation: crate::atoms::r#do::InvocationKey, _left: &Path, _right: &Path) -> Result<(), String> {
     Err("symlink-converge-exchange-unsupported".to_string())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn rename_noreplace(_left: &Path, _right: &Path) -> Result<(), String> {
+fn rename_noreplace(_authorization: crate::tools::comparison::ActionAuthorization, _invocation: crate::atoms::r#do::InvocationKey, _left: &Path, _right: &Path) -> Result<(), String> {
     Err("symlink-converge-noreplace-unsupported".to_string())
 }
 
 fn promote_staged_symlink(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
     candidate: &Path,
     target: &Path,
     before: &SymlinkPathIdentity,
 ) -> Result<(), String> {
     if before.kind == "absent" {
-        if let Err(error) = rename_noreplace(candidate, target) {
-            let _ = fs::remove_file(candidate);
+        if let Err(error) = rename_noreplace(authorization, invocation, candidate, target) {
+            let _ = crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, candidate);
             return Err(error);
         }
         return Ok(());
     }
 
-    if let Err(error) = exchange_paths(candidate, target) {
-        let _ = fs::remove_file(candidate);
+    if let Err(error) = exchange_paths(authorization, invocation, candidate, target) {
+        let _ = crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, candidate);
         return Err(error);
     }
     let exchanged = observe_symlink_path(candidate);
@@ -4773,9 +4529,9 @@ fn promote_staged_symlink(
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(false);
     if !prior_matches || !directory_still_empty {
-        let rollback = exchange_paths(candidate, target);
+        let rollback = exchange_paths(authorization, invocation, candidate, target);
         if rollback.is_ok() {
-            let _ = fs::remove_file(candidate);
+            let _ = crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, candidate);
         }
         return Err(format!(
             "symlink-converge-target-raced prior_matches={prior_matches} directory_still_empty={directory_still_empty} rollback={}",
@@ -4784,9 +4540,9 @@ fn promote_staged_symlink(
     }
 
     let cleanup = if before.kind == "directory" {
-        fs::remove_dir(candidate)
+        crate::atoms::r#do::symlink_converge::remove_dir(authorization, invocation, candidate)
     } else {
-        fs::remove_file(candidate)
+        crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, candidate)
     };
     cleanup.map_err(|error| {
         format!(
@@ -4829,6 +4585,7 @@ pub(crate) fn symlink_converge(
     request: &SymlinkConvergeRequest,
     receipt_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
     let desired_uid = request
@@ -4854,7 +4611,7 @@ pub(crate) fn symlink_converge(
             })
         },
         |observation| symlink_diff_decision(observation, request),
-        |_, _| symlink_converge_action(request, receipt_dir, apply),
+        |authorization, _| symlink_converge_action(authorization, invocation, request, receipt_dir, apply),
     )?;
     let decision = match observation.decision() {
         crate::tools::comparison::DiffDecision::Empty => "empty",
@@ -4875,7 +4632,7 @@ pub(crate) fn symlink_converge(
         crate::tools::comparison::ComparisonRun::Moved { movement, .. } => movement.clone(),
     };
     let path = receipt_dir.join(format!("{}.json", request.receipt_name));
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut receipt = if path.exists() {
         serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?
@@ -4912,11 +4669,13 @@ pub(crate) fn symlink_converge(
             .unwrap_or_else(|| json!("none")),
     );
     object.insert("truthful_changed".into(), json!(outcome.changed));
-    crate::write_json(&path, &receipt)?;
+    crate::atoms::attest::write_json_atomic(&path, &receipt)?;
     Ok(outcome)
 }
 
 fn symlink_converge_action(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
     request: &SymlinkConvergeRequest,
     receipt_dir: &Path,
     apply: bool,
@@ -4964,13 +4723,13 @@ fn symlink_converge_action(
                   after: &SymlinkPathIdentity,
                   source_after: Option<&SymlinkSourceIdentity>|
      -> Result<crate::OperationOutcome, String> {
-        fs::create_dir_all(receipt_dir).map_err(|error| {
+        crate::atoms::attest::prepare_receipt_parent(receipt_dir).map_err(|error| {
             format!(
                 "symlink-converge-receipt-dir-failed {}: {error}",
                 receipt_dir.display()
             )
         })?;
-        crate::write_json(
+        crate::atoms::attest::write_json_atomic(
             &receipt_dir.join(format!("{}.json", request.receipt_name)),
             &json!({
                 "schema": "harmonia.files.symlink_converge.v1",
@@ -5108,6 +4867,8 @@ fn symlink_converge_action(
         );
     }
 
+    let invocation = invocation.ok_or("symlink-converge-invocation-missing")?;
+
     let parent = request.target.parent().ok_or_else(|| {
         format!(
             "symlink-converge-target-parent-missing {}",
@@ -5143,7 +4904,7 @@ fn symlink_converge_action(
             Some(&source_pre_stage),
         );
     }
-    let candidate = match stage_symlink(&request.source, &request.target, desired_uid, desired_gid)
+    let candidate = match stage_symlink(authorization, invocation, &request.source, &request.target, desired_uid, desired_gid)
     {
         Ok(candidate) => candidate,
         Err(blocker) => return finish(false, false, true, &blocker, &before, Some(&source_before)),
@@ -5152,14 +4913,14 @@ fn symlink_converge_action(
         match read_symlink_source(&request.source, request.required_source_kind) {
             Ok(identity) => identity,
             Err(blocker) => {
-                let _ = fs::remove_file(&candidate);
+                let _ = crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, &candidate);
                 let after =
                     observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
                 return finish(false, false, true, &blocker, &after, None);
             }
         };
     if source_pre_promote != source_before {
-        let _ = fs::remove_file(&candidate);
+        let _ = crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, &candidate);
         let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
         return finish(
             false,
@@ -5170,7 +4931,7 @@ fn symlink_converge_action(
             Some(&source_pre_promote),
         );
     }
-    if let Err(blocker) = promote_staged_symlink(&candidate, &request.target, &before) {
+    if let Err(blocker) = promote_staged_symlink(authorization, invocation, &candidate, &request.target, &before) {
         let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
         return finish(
             false,
@@ -5181,7 +4942,7 @@ fn symlink_converge_action(
             Some(&source_before),
         );
     }
-    if let Err(error) = sync_directory(parent) {
+    if let Err(error) = crate::atoms::r#do::symlink_converge::sync_parent(authorization, invocation, parent) {
         let after = observe_symlink_path(&request.target).unwrap_or_else(|_| before.clone());
         return finish(
             false,
@@ -5230,153 +4991,24 @@ pub(crate) fn validated_symlink(
     reload_args: &[String],
     timeout_secs: u64,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
-    let run = crate::tools::comparison::execute(
-        "files",
-        || {
-            let source_exists = source.is_file();
-            let target_link = fs::read_link(target).ok();
-            Ok::<_, String>((source_exists, target_link))
+    crate::atoms::r#do::make_symlink::execute(
+        crate::atoms::r#do::make_symlink::ValidatedFileSymlinkRequest {
+            receipt_dir,
+            name,
+            desired_source: source,
+            source,
+            target,
+            validator_program,
+            validator_args,
+            reload_program,
+            reload_args,
+            timeout_secs,
+            apply,
         },
-        |observed| {
-            if observed.0 && observed.1.as_deref() == Some(source) {
-                crate::tools::comparison::DiffDecision::Empty
-            } else {
-                crate::tools::comparison::DiffDecision::Different
-            }
-        },
-        |_, _| {
-            validated_symlink_action(
-                receipt_dir,
-                name,
-                source,
-                target,
-                validator_program,
-                validator_args,
-                reload_program,
-                reload_args,
-                timeout_secs,
-                apply,
-            )
-        },
-    )?;
-    match run {
-        crate::tools::comparison::ComparisonRun::Current { observation, .. } => {
-            let (source_exists, current) = observation;
-            crate::write_json(
-                &receipt_dir.join(format!("{name}.json")),
-                &json!({
-                    "schema":"harmonia.files.validated_symlink.v1",
-                    "source":source,"target":target,"apply":apply,"changed":false,
-                    "source_exists":source_exists,"link_current_before":current.as_deref() == Some(source),
-                    "validator":{"ok":true,"code":0,"stdout":"not-run","stderr":""},"reload":null,
-                    "first_missing_signal":"none","ok":true,
-                    "observed_state":{"source_exists":source_exists,"link_target":current},
-                    "desired_state":{"link_target":source},"diff_decision":"empty",
-                    "movement":"none","truthful_changed":false
-                }),
-            )?;
-            Ok(crate::OperationOutcome {
-                ok: source_exists,
-                changed: false,
-                skipped: !apply,
-                message: "validated symlink unchanged".into(),
-                command: None,
-            })
-        }
-
-        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement),
-    }
-}
-
-fn validated_symlink_action(
-    receipt_dir: &Path,
-    name: &str,
-    source: &Path,
-    target: &Path,
-    validator_program: &str,
-    validator_args: &[String],
-    reload_program: Option<&str>,
-    reload_args: &[String],
-    timeout_secs: u64,
-    apply: bool,
-) -> Result<crate::OperationOutcome, String> {
-    let source_ok = source.is_file();
-    let prior = fs::read_link(target).ok();
-    let current = prior.as_deref() == Some(source);
-    let mut validator = crate::CmdResult {
-        ok: true,
-        code: 0,
-        stdout: "not-run".into(),
-        stderr: String::new(),
-    };
-    let mut reload = None;
-    let mut promoted = false;
-    let mut signal = "none".to_string();
-    if !source_ok {
-        signal = "validated-symlink-source-missing".into();
-    } else if !current && apply {
-        let parent = target
-            .parent()
-            .ok_or_else(|| "validated-symlink-target-parent-missing".to_string())?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        if target.exists() && !target.is_symlink() {
-            signal = "validated-symlink-target-not-link".into();
-        } else {
-            let candidate = parent.join(format!(
-                ".{}.harmonia-candidate-{}",
-                target
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or("link"),
-                std::process::id()
-            ));
-            let _ = fs::remove_file(&candidate);
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(source, &candidate).map_err(|e| e.to_string())?;
-            #[cfg(not(unix))]
-            return Err("validated-symlink-unsupported".into());
-            let refs: Vec<&str> = validator_args.iter().map(String::as_str).collect();
-            validator =
-                crate::tools::command::capture_with_timeout(validator_program, &refs, timeout_secs);
-            if validator.ok {
-                fs::rename(&candidate, target).map_err(|e| e.to_string())?;
-                promoted = true;
-                if let Some(program) = reload_program.filter(|value| !value.is_empty()) {
-                    let refs: Vec<&str> = reload_args.iter().map(String::as_str).collect();
-                    let result =
-                        crate::tools::command::capture_with_timeout(program, &refs, timeout_secs);
-                    if !result.ok {
-                        if let Some(old) = prior {
-                            let _ = fs::remove_file(target);
-                            #[cfg(unix)]
-                            let _ = std::os::unix::fs::symlink(old, target);
-                        }
-                        signal = "validated-symlink-reload-failed-restored".into();
-                    }
-                    reload = Some(result);
-                }
-            } else {
-                signal = "validated-symlink-validator-failed".into();
-                let _ = fs::remove_file(candidate);
-            }
-        }
-    }
-    let ok = source_ok
-        && signal == "none"
-        && validator.ok
-        && reload.as_ref().map(|v| v.ok).unwrap_or(true);
-    crate::write_json(
-        &receipt_dir.join(format!("{name}.json")),
-        &json!({"schema":"harmonia.files.validated_symlink.v1","source":source,"target":target,"apply":apply,"changed":promoted,"source_exists":source_ok,"link_current_before":current,"validator":validator,"reload":reload,"first_missing_signal":signal,"ok":ok}),
-    )?;
-    Ok(crate::OperationOutcome {
-        ok,
-        changed: promoted,
-        skipped: !apply,
-        message: "validated symlink".into(),
-        command: None,
-    })
+        invocation,
+    )
 }
 
 pub(crate) fn execute_validated_step(
@@ -5388,11 +5020,11 @@ pub(crate) fn execute_validated_step(
 ) -> Result<crate::OperationOutcome, String> {
     let apply = software_authorization.is_some();
     match step.permutation.as_str() {
-        "managed-files" => managed_files_step(step, manifest, module_dir, false),
-        "managed-directories" => managed_directories_step(step, module_dir, false),
-        "validated-symlink" => validated_symlink_step(step, module_dir, false),
-        "symlink-converge" => symlink_converge_step(step, module_dir, false),
-        "validated-file-symlink" => validated_file_symlink_step(step, manifest, module_dir, false),
+        "managed-files" => managed_files_step(step, manifest, module_dir, false, invocation),
+        "managed-directories" => managed_directories_step(step, module_dir, false, invocation),
+        "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
+        "symlink-converge" => symlink_converge_step(step, module_dir, false, invocation),
+        "validated-file-symlink" => validated_file_symlink_step(step, manifest, module_dir, false, invocation),
         "remove" => files_remove_step(step, module_dir, apply, invocation),
         "executable-present" => files_executable_present_step(step, module_dir),
         "source-shelf-sweep" => {
@@ -5405,7 +5037,7 @@ pub(crate) fn execute_validated_step(
             software_authorization,
             invocation,
         ),
-        "ensure-present" => files_ensure_present_step(step, manifest, module_dir, false),
+        "ensure-present" => files_ensure_present_step(step, manifest, module_dir, false, invocation),
         "hotfix-file-backfill" | "converge" | "directory-sync" => files_converge_step(
             step,
             manifest,
@@ -6217,6 +5849,7 @@ pub(crate) fn managed_files_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
         serde_json::from_value(files_value.clone())
@@ -6244,6 +5877,7 @@ pub(crate) fn managed_files_step(
         },
         module_dir,
         apply && !config_write,
+        invocation,
     )
 }
 pub(crate) fn is_configuration_path(path: &Path) -> bool {
@@ -6261,6 +5895,7 @@ pub(crate) fn managed_directories_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let directories: Vec<tools::files::ManagedDirectorySpec> = serde_json::from_value(
         step.args
@@ -6269,7 +5904,7 @@ pub(crate) fn managed_directories_step(
             .ok_or("managed-directories-args-missing")?,
     )
     .map_err(|e| format!("managed-directories-args-invalid: {e}"))?;
-    tools::files::converge_managed_directories(&directories, module_dir, &step.step_id, apply)
+    tools::files::converge_managed_directories(&directories, module_dir, &step.step_id, apply, invocation)
 }
 fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileManifest>, String> {
     let mut files = Vec::new();
@@ -6320,6 +5955,7 @@ pub(crate) fn validated_symlink_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     crate::tools::files::validated_symlink(
         module_dir,
@@ -6332,12 +5968,14 @@ pub(crate) fn validated_symlink_step(
         &string_array_arg(&step.args, "reload_args"),
         integer_arg(&step.args, "timeout_secs", 30),
         apply,
+        invocation,
     )
 }
 pub(crate) fn symlink_converge_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let required_source_kind = match string_arg(&step.args, "required_source_kind") {
         "regular-executable" => crate::tools::files::SymlinkSourceKind::RegularExecutable,
@@ -6369,6 +6007,7 @@ pub(crate) fn symlink_converge_step(
         },
         module_dir,
         apply,
+        invocation,
     )
 }
 pub(crate) fn validated_file_symlink_step(
@@ -6376,6 +6015,7 @@ pub(crate) fn validated_file_symlink_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let desired_source = resolve_ladder_path(manifest, string_arg(&step.args, "desired_source"));
     let source = PathBuf::from(string_arg(&step.args, "source"));
@@ -6396,7 +6036,7 @@ pub(crate) fn validated_file_symlink_step(
             timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
             apply,
         },
-        apply.then(crate::atoms::r#do::InvocationKey::for_apply),
+        invocation,
     )
 }
 pub(crate) fn files_remove_step(
@@ -6655,7 +6295,7 @@ pub(crate) fn files_converge_step(
         object.insert("diff_decision".into(), serde_json::json!("empty"));
         object.insert("movement".into(), serde_json::json!("none"));
         object.insert("truthful_changed".into(), serde_json::json!(false));
-        crate::write_json(&receipt_path, &receipt)?;
+        crate::atoms::attest::write_json_atomic(&receipt_path, &receipt)?;
         return Ok(outcome);
     }
     let rels = if step.permutation == "directory-sync" && !step.args.contains_key("files") {
@@ -6732,7 +6372,7 @@ pub(crate) fn files_converge_step(
             .get("schema")
             .and_then(Value::as_str)
             .unwrap_or("harmonia.files.summary.v1");
-        crate::write_json(
+        crate::atoms::attest::write_json_atomic(
             &module_dir.join(format!("{name}.json")),
             &serde_json::json!({
                 "schema": schema,
@@ -6765,6 +6405,7 @@ pub(crate) fn files_ensure_present_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let files = string_array_arg(&step.args, "files")
         .into_iter()
@@ -6773,7 +6414,7 @@ pub(crate) fn files_ensure_present_step(
             relative_path: PathBuf::from(relative_path),
         })
         .collect();
-    let outcome = crate::tools::files::ensure_files_present(
+    let outcome = crate::tools::files::ensure_files_present_with_invocation(
         &crate::tools::files::FileConvergenceRequest {
             source_root: resolve_ladder_path(manifest, string_arg(&step.args, "source_root")),
             target_root: PathBuf::from(string_arg(&step.args, "target_root")),
@@ -6787,6 +6428,7 @@ pub(crate) fn files_ensure_present_step(
         },
         module_dir,
         apply,
+        invocation,
     )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
