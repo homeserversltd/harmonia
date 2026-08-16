@@ -206,6 +206,21 @@ pub(crate) fn pacman_base_args(sync: bool) -> Vec<&'static str> {
     }
 }
 
+pub(crate) fn capture_overwrite_preimage(receipt_dir: &Path, paths: &[String]) -> Result<(), String> {
+    let entries = paths.iter().map(|path| {
+        let target = Path::new(path);
+        let metadata = fs::symlink_metadata(target).ok();
+        let (kind, bytes) = match metadata.as_ref() {
+            Some(m) if m.is_file() => ("file", fs::read(target).ok()),
+            Some(m) if m.is_dir() => ("directory", None),
+            Some(_) => ("other", None),
+            None => ("missing", None),
+        };
+        serde_json::json!({"path": path, "exists": metadata.is_some(), "type": kind, "bytes_hex": bytes.as_ref().map(|b| b.iter().map(|v| format!("{:02x}", v)).collect::<String>())})
+    }).collect::<Vec<_>>();
+    crate::write_json(&receipt_dir.join("pacman-overwrite-preimage.json"), &serde_json::json!({"schema":"harmonia.pacman_overwrite_preimage.v1", "paths": entries}))
+}
+
 pub(crate) fn overwrite_allowed_args<'a>(
     base: &[&'a str],
     paths: &'a [String],
@@ -219,128 +234,6 @@ pub(crate) fn overwrite_allowed_args<'a>(
         args.push(path.as_str());
     }
     Some(args)
-}
-
-#[allow(dead_code)]
-pub(crate) fn pacman_mutate_packages(
-    receipt_dir: &Path,
-    sync: bool,
-    packages: &[String],
-) -> Result<CmdResult, String> {
-    pacman_mutate_packages_with_options(
-        receipt_dir,
-        sync,
-        packages,
-        None,
-        &[],
-        DEFAULT_PACKAGE_TIMEOUT_SECS,
-    )
-}
-
-#[allow(dead_code)]
-pub(crate) fn pacman_mutate_packages_with_conflict_policy(
-    receipt_dir: &Path,
-    sync: bool,
-    packages: &[String],
-    conflict_policy: Option<&str>,
-    conflict_paths: &[String],
-) -> Result<CmdResult, String> {
-    pacman_mutate_packages_with_options(
-        receipt_dir,
-        sync,
-        packages,
-        conflict_policy,
-        conflict_paths,
-        DEFAULT_PACKAGE_TIMEOUT_SECS,
-    )
-}
-
-pub(crate) fn pacman_mutate_packages_with_options(
-    receipt_dir: &Path,
-    sync: bool,
-    packages: &[String],
-    conflict_policy: Option<&str>,
-    conflict_paths: &[String],
-    timeout_secs: u64,
-) -> Result<CmdResult, String> {
-    let program = pacman_program();
-    reclaim_pacman_database_lock(receipt_dir, &program, true)?;
-    Ok(pacman_mutate_packages_without_lock_reclaim(
-        sync,
-        packages,
-        conflict_policy,
-        conflict_paths,
-        timeout_secs,
-    ))
-}
-
-fn pacman_mutate_packages_without_lock_reclaim(
-    sync: bool,
-    packages: &[String],
-    conflict_policy: Option<&str>,
-    conflict_paths: &[String],
-    timeout_secs: u64,
-) -> CmdResult {
-    let program = pacman_program();
-    let mut args = pacman_base_args(sync);
-    args.extend(packages.iter().map(String::as_str));
-    let result = command::capture_with_timeout(&program, &args, timeout_secs);
-    if result.ok || !pacman_needs_overwrite_retry(&result) {
-        return result;
-    }
-    let Some(policy) = conflict_policy else {
-        return result;
-    };
-    if policy != "overwrite-declared-paths" {
-        return CmdResult {
-            ok: false,
-            code: result.code,
-            stdout: result.stdout,
-            stderr: format!(
-                "{}\npacman-package-file-conflict-policy-unsupported:{policy}",
-                result.stderr
-            )
-            .trim()
-            .to_string(),
-        };
-    }
-    let Some(mut overwrite_args) = overwrite_allowed_args(&pacman_base_args(sync), conflict_paths)
-    else {
-        return CmdResult {
-            ok: false,
-            code: result.code,
-            stdout: result.stdout,
-            stderr: format!(
-                "{}\npacman-package-file-conflict-overwrite-paths-missing-or-wildcard",
-                result.stderr
-            )
-            .trim()
-            .to_string(),
-        };
-    };
-    overwrite_args.extend(packages.iter().map(String::as_str));
-    let second = command::capture_with_timeout(&program, &overwrite_args, timeout_secs);
-    CmdResult {
-        ok: second.ok,
-        code: second.code,
-        stdout: format!(
-            "first_command={} {}\nfirst_ok={}\nsecond_command={} {}\n{}",
-            program,
-            args.join(" "),
-            result.ok,
-            program,
-            overwrite_args.join(" "),
-            second.stdout
-        )
-        .trim()
-        .to_string(),
-        stderr: format!(
-            "first_stderr={}\nsecond_stderr={}",
-            result.stderr, second.stderr
-        )
-        .trim()
-        .to_string(),
-    }
 }
 
 pub(crate) fn pacman_stdout_indicates_change(stdout: &str) -> bool {
@@ -587,6 +480,8 @@ fn pacman_update_query_is_empty(result: &crate::CmdResult) -> bool {
         && (result.code == 0 || (result.code == 1 && result.stderr.trim().is_empty()))
 }
 
+pub(crate) fn write_install_package_guard_receipt(receipt_dir: &Path, name: &str, before: &PackageObservation, movement: &OperationOutcome, after: &PackageObservation) -> Result<(), String> { write_guard_receipts(receipt_dir, name, before, movement, after) }
+
 fn write_guard_receipts(
     receipt_dir: &Path,
     name: &str,
@@ -701,7 +596,7 @@ pub(crate) fn package_tool_with_policy(
         current: Some(observe_result),
     };
     let run = comparison::execute_with_failure_receipt(
-        "package",
+        if action == "install" { "install-package" } else { "package" },
         || {
             let result = match action {
                 "install" => command::capture(&pacman, &["-Q"]),
@@ -739,7 +634,7 @@ pub(crate) fn package_tool_with_policy(
                     reclaim_pacman_database_lock(receipt_dir, &pacman, false)?;
                     command::capture(&pacman, &["-Qu"])
                 }
-                "install" if apply => pacman_mutate_packages_with_options(
+                "install" if apply => crate::atoms::r#do::install_package::pacman_mutate_packages_with_options(
                     receipt_dir,
                     false,
                     packages,
@@ -989,7 +884,7 @@ fn keyring_repair_action(
         ));
         commands.push((
             "archlinux-keyring-refresh",
-            pacman_mutate_packages_with_options(
+            crate::atoms::r#do::install_package::pacman_mutate_packages_with_options(
                 receipt_dir,
                 false,
                 &[package_name.to_string()],

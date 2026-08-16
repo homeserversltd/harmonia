@@ -1,5 +1,5 @@
 use crate::tools::comparison::{self, DiffDecision};
-use crate::{atoms, CmdResult, OperationOutcome};
+use crate::{CmdResult, OperationOutcome};
 use std::path::Path;
 
 #[path = "act/index.rs"]
@@ -23,33 +23,32 @@ pub(crate) fn run(
     if !crate::tools::package::pacman_available(program) {
         return crate::tools::package::non_arch_install(receipt_dir, name, packages);
     }
-    let current = observe::pacman(program, timeout_secs);
-    let differs = packages.iter().any(|package| {
-        !current
-            .stdout
-            .lines()
-            .any(|line| line.split_whitespace().next() == Some(package))
-    });
-    let observation = crate::tools::package::PackageObservation {
-        observed_state: if current.ok {
-            current.stdout.clone()
-        } else {
-            format!("probe-failed:{:?}", current.code)
-        },
-        desired_state: format!("packages-present:{}", packages.join(",")),
-        current: Some(CmdResult {
-            ok: current.ok,
-            code: current.code.unwrap_or(-1),
-            stdout: current.stdout.clone(),
-            stderr: current.stderr.clone(),
-        }),
+    let observe_package = || {
+        let current = observe::pacman(program, timeout_secs);
+        Ok::<_, String>(crate::tools::package::PackageObservation {
+            observed_state: if current.ok {
+                current.stdout.clone()
+            } else {
+                format!("probe-failed:{:?}", current.code)
+            },
+            desired_state: format!("packages-present:{}", packages.join(",")),
+            current: Some(CmdResult {
+                ok: current.ok,
+                code: current.code.unwrap_or(-1),
+                stdout: current.stdout,
+                stderr: current.stderr,
+            }),
+        })
     };
-    let run = crate::tools::declaration::execute(
+    let observation = observe_package()?;
+    let run = crate::tools::declaration::execute_with_failure_receipt(
         "install-package",
         "install-package",
-        || Ok::<_, String>(observation.clone()),
-        |_| {
-            if differs {
+        observe_package,
+        |current| {
+            if packages.iter().any(|package| {
+                !current.current.as_ref().is_some_and(|result| result.stdout.lines().any(|line| line.split_whitespace().next() == Some(package)))
+            }) {
                 DiffDecision::Different
             } else {
                 DiffDecision::Empty
@@ -93,7 +92,13 @@ pub(crate) fn run(
                 })
             }
         },
+        |before, movement, after| {
+            crate::tools::package::write_install_package_guard_receipt(
+                receipt_dir, name, before, movement, after,
+            )
+        },
     )?;
+    let final_observation = run.observation().clone();
     let (decision, movement) = match run {
         comparison::ComparisonRun::Current { decision, .. } => (decision, None),
         comparison::ComparisonRun::Moved {
@@ -110,7 +115,7 @@ pub(crate) fn run(
     crate::write_json(
         &receipt_dir.join(format!("{name}.comparison.json")),
         &crate::tools::package::package_receipt_fields(
-            &observation,
+            &final_observation,
             decision,
             movement.as_ref(),
             outcome.changed,
