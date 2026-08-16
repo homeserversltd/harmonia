@@ -1,7 +1,7 @@
 use crate::*;
 use serde_json::json;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,23 +54,14 @@ pub(crate) fn append_profile_ledger_entry(
     entry: ProfileLedgerEntry<'_>,
 ) -> Result<(), String> {
     let path = profile_ledger_path(receipt_dir, profile);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let sequence = next_ledger_sequence(&path)?;
     let stamped_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    let mut ledger = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    writeln!(
-        ledger,
-        "{}",
-        json!({
+    crate::atoms::attest::append_jsonl(
+        &path,
+        &json!({
             "schema": "harmonia.profile_ledger.entry.v1",
             "ledger": "profile-module-ledger",
             "sequence": sequence,
@@ -85,9 +76,8 @@ pub(crate) fn append_profile_ledger_entry(
             "first_missing_signal": entry.first_missing_signal,
             "receipt_dir": entry.receipt_dir,
             "module_version": entry.module_version,
-        })
+        }),
     )
-    .map_err(|e| e.to_string())
 }
 
 pub(crate) fn write_tool_receipt(
@@ -262,12 +252,10 @@ pub(crate) fn write_run_receipt(
 }
 
 pub(crate) fn event(events: &mut File, event: &str, ok: bool, message: &str) -> Result<(), String> {
-    writeln!(
+    crate::atoms::attest::append_jsonl_to(
         events,
-        "{}",
-        json!({"event": event, "ok": ok, "message": message})
+        &json!({"event": event, "ok": ok, "message": message}),
     )
-    .map_err(|e| e.to_string())
 }
 
 pub(crate) fn write_plan_receipts(
@@ -275,23 +263,22 @@ pub(crate) fn write_plan_receipts(
     module_root: &Path,
     receipt_dir: &Path,
 ) -> io::Result<()> {
-    fs::create_dir_all(receipt_dir)?;
-    let mut events = File::create(receipt_dir.join("events.jsonl"))?;
+    let mut events = crate::atoms::attest::create_receipt_file(&receipt_dir.join("events.jsonl"))
+        .map_err(io::Error::other)?;
     let mut ok = true;
     let mut first_missing_signal = "none".to_string();
-    writeln!(
-        events,
-        "{}",
-        json!({"event":"plan-start","profile":profile.id,"ok":true})
-    )?;
+    crate::atoms::attest::append_jsonl_to(
+        &mut events,
+        &json!({"event":"plan-start","profile":profile.id,"ok":true}),
+    )
+    .map_err(io::Error::other)?;
     if profile.modules.is_empty() {
         ok = false;
         first_missing_signal = "profile-modules-empty".to_string();
-        writeln!(
-            events,
-            "{}",
-            json!({"event":"profile-modules","ok":false,"message":"profile module spine is empty"})
-        )?;
+        crate::atoms::attest::append_jsonl_to(
+            &mut events,
+            &json!({"event":"profile-modules","ok":false,"message":"profile module spine is empty"}),
+        ).map_err(io::Error::other)?;
     }
     for module in &profile.modules {
         let module_dir = module_root.join(module);
@@ -306,15 +293,14 @@ pub(crate) fn write_plan_receipts(
                 }
                 let steps = validate_ladder(&manifest).map_err(|err| err.first_missing_signal())?;
                 for step in steps {
-                    writeln!(
-                        events,
-                        "{}",
-                        json!({
+                    crate::atoms::attest::append_jsonl_to(
+                        &mut events,
+                        &json!({
                             "event":"step-planned", "module":module,
                             "step_id":step.step_id, "tool":step.tool,
                             "permutation":step.permutation, "args":step.args,
                             "ok":true, "mutation":false
-                        })
+                        }),
                     )
                     .map_err(|error| error.to_string())?;
                 }
@@ -325,28 +311,27 @@ pub(crate) fn write_plan_receipts(
         };
         match planned {
             Ok(_) => {
-                writeln!(
-                    events,
-                    "{}",
-                    json!({"event":"module-planned","module":module,"ok":true})
-                )?;
+                crate::atoms::attest::append_jsonl_to(
+                    &mut events,
+                    &json!({"event":"module-planned","module":module,"ok":true}),
+                )
+                .map_err(io::Error::other)?;
             }
             Err(err) => {
                 ok = false;
                 if first_missing_signal == "none" {
                     first_missing_signal = format!("module-missing-{module}");
                 }
-                writeln!(
-                    events,
-                    "{}",
-                    json!({"event":"module-planned","module":module,"ok":false,"message":err})
-                )?;
+                crate::atoms::attest::append_jsonl_to(
+                    &mut events,
+                    &json!({"event":"module-planned","module":module,"ok":false,"message":err}),
+                )
+                .map_err(io::Error::other)?;
             }
         }
     }
-    let mut run = File::create(receipt_dir.join("run.json"))?;
-    serde_json::to_writer_pretty(
-        &mut run,
+    crate::atoms::attest::write_json_atomic(
+        &receipt_dir.join("run.json"),
         &json!({
             "schema": "harmonia.run.v1",
             "ok": ok,
@@ -357,7 +342,7 @@ pub(crate) fn write_plan_receipts(
             "module_count": profile.modules.len(),
             "first_missing_signal": first_missing_signal,
         }),
-    )?;
-    writeln!(run)?;
+    )
+    .map_err(io::Error::other)?;
     Ok(())
 }

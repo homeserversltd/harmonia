@@ -51,11 +51,8 @@ use crate::bands::stage_profile::groups::{
     group_loser_winners, read_device_module_policy, resolve_group_selections,
 };
 use crate::*;
-use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 pub(crate) fn run_profile_engine(
@@ -111,8 +108,7 @@ pub(crate) fn run_profile_engine_with_projection(
     let apply = mode.is_software_apply();
     let invocation = mode.invocation();
     let run_started = Instant::now();
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
+    let mut events = crate::atoms::attest::create_receipt_file(&receipt_dir.join("events.jsonl"))?;
     event(
         &mut events,
         "engine-start",

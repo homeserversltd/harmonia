@@ -1,7 +1,6 @@
 use crate::tools::routine::project_manifest_routines;
 use crate::*;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 pub(crate) struct ModuleWalkState {
@@ -59,7 +58,7 @@ pub(crate) fn execute_profile_module(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     let module_dir = receipt_dir.join("modules").join(&module.id);
-    fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(&module_dir)?;
     let manifest_path = module_root.join(&module.id).join("manifest.json");
     if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
         let manifest = load_ladder_manifest(&manifest_path)?;
