@@ -1,3 +1,3 @@
 # Attest
 
-Before serialization, `attest` recursively scrubs every caller-injected declared secret substring. The same redacted receipt is appended to `appliance.log` and forwarded to Hyalos through the existing redaction hook.
+Attest recursively redacts every caller-injected declared secret substring before serialization. It appends the redacted `Receipt`, then forwards fields derived from that same redacted value.

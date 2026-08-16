@@ -7,7 +7,6 @@ The ladder:
 - fails closed unless the birth-provided Vaultwarden executable exists;
 - requires the installed secret-bearing `/etc/vaultwarden.env` to be non-empty but never overwrites it;
 - converges the quarry `vaultwarden.service` unit with a backup of any replaced file;
-- validates the installed unit with `systemd-analyze verify`;
 - reloads systemd and restarts Vaultwarden only when this module changed managed material;
 - enables the service when needed and proves it is active.
 

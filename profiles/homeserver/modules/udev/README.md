@@ -6,7 +6,6 @@ The ladder:
 
 - fails closed unless the birth-provided `udevadm` executable exists;
 - converges the product-owned RAPL permissions rule with a backup of any replaced file;
-- validates the installed rule with `udevadm verify`;
 - reloads the udev daemon and triggers existing devices only when this module changed the managed rule;
 - proves the udev daemon is active.
 

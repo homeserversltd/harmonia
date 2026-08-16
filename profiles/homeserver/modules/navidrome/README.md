@@ -7,7 +7,6 @@ The ladder:
 - fails closed unless the birth-provided `navidrome` and `ffmpeg` executables exist;
 - requires the installed `navidrome.toml` to be non-empty but never overwrites it;
 - converges the quarry `navidrome.service` unit with a backup of any replaced file;
-- validates the installed unit with `systemd-analyze verify`;
 - reloads systemd and restarts Navidrome only when this module changed managed material;
 - enables the service when needed and proves it is active.
 

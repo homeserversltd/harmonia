@@ -7,7 +7,6 @@ The ladder:
 - fails closed unless the birth-provided `transmission-daemon` and `/vault/scripts/transmission.py` launcher exist;
 - requires the installed `settings.json` to be non-empty and valid JSON but never overwrites it;
 - converges the quarry network buffer policy and Transmission VPN namespace unit with backups of replaced files;
-- validates the installed unit with `systemd-analyze verify`;
 - reloads systemd and restarts `transmissionPIA.service` only when this module changed managed material;
 - enables the service when needed and proves it is active.
 

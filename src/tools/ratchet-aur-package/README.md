@@ -1,3 +1,5 @@
 # ratchet-aur-package
 
-Owns AUR pin observation, nudge-only upstream drift, keyed convergence to the blessed pin, and report-home attestation. Artifact-lock verification is absorbed into the observe rung while its legacy entry point remains byte-compatible.
+`ratchet-aur-package` is a registered Harmonia tool declaration resolved through `src/tools/index.json`, the single registry. `ratchet-aur-package` is one of the thirteen deed declaration records in `src/tools/index.json`: permutation `build-pinned`, deed `install-aur-pinned`, permission `mutate`, and phases `observe → compare → act → attest`. It builds and installs the pinned AUR package through the keyed transactional do atom.
+
+The two required mutation keys are diff-minted `Authorization` and the exact `--apply-or-timer` invocation key.
