@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
@@ -74,9 +73,14 @@ fn stable_id(module_id: &str, target: &Path) -> String {
     format!("config-proposal-{}", &format!("{digest:x}")[..16])
 }
 
+pub(crate) fn make_feed(interactables: Vec<Interactable>) -> InteractablesFeed {
+    InteractablesFeed { schema: FEED_SCHEMA.to_string(), interactables }
+}
+
 pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
-    match fs::read_to_string(path) {
-        Ok(text) => {
+    let observed_text = crate::atoms::ask::optional_text(path)?;
+    match observed_text {
+        Some(text) => {
             let feed: InteractablesFeed = serde_json::from_str(&text)
                 .map_err(|error| format!("interactables-feed-parse-failed {}: {error}", path.display()))?;
             if feed.schema != FEED_SCHEMA && feed.schema != "harmonia.interactables.feed.v1" {
@@ -84,11 +88,10 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
             }
             Ok(InteractablesFeed { schema: FEED_SCHEMA.to_string(), ..feed })
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(InteractablesFeed {
+        None => Ok(InteractablesFeed {
             schema: FEED_SCHEMA.to_string(),
             interactables: Vec::new(),
         }),
-        Err(error) => Err(format!("interactables-feed-read-failed {}: {error}", path.display())),
     }
 }
 

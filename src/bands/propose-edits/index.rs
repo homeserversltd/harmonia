@@ -10,9 +10,7 @@ use crate::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,44 +53,34 @@ pub(crate) fn persist_feed(
     path: &Path,
     feed: &interactables::InteractablesFeed,
 ) -> Result<(), String> {
-    let value = serde_json::to_value(feed)
-        .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?;
-    crate::write_json(path, &value)?;
-    #[cfg(unix)]
-    fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
-        .map_err(|error| format!("interactables-feed-mode-failed {}: {error}", path.display()))?;
-    let proposal_root = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("proposals");
-    fs::create_dir_all(&proposal_root).map_err(|error| error.to_string())?;
-    let live_records = feed
+    persist_feed_with_writes(path, feed).map(|_| ())
+}
+
+pub(crate) fn persist_feed_with_writes(
+    path: &Path,
+    feed: &interactables::InteractablesFeed,
+) -> Result<usize, String> {
+    let feed_bytes = {
+        let mut bytes = serde_json::to_vec_pretty(feed)
+            .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?;
+        bytes.push(b'\n');
+        bytes
+    };
+    let records = feed
         .interactables
         .iter()
-        .map(|item| format!("{}.json", item.id))
-        .collect::<BTreeSet<_>>();
-    for entry in fs::read_dir(&proposal_root).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name();
-        if entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_file()
-            && name.to_str().is_some_and(|name| {
-                name.starts_with("config-proposal-")
-                    && name.ends_with(".json")
-                    && !live_records.contains(name)
-            })
-        {
-            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
-        }
-    }
-    for item in &feed.interactables {
-        crate::write_json(
-            &proposal_root.join(format!("{}.json", item.id)),
-            &serde_json::to_value(item).map_err(|error| error.to_string())?,
-        )?;
-    }
+        .map(|item| {
+            let mut bytes = serde_json::to_vec_pretty(item).map_err(|error| error.to_string())?;
+            bytes.push(b'\n');
+            Ok((format!("{}.json", item.id), bytes))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let writes = crate::atoms::attest::refresh_proposal_projection(
+        path,
+        &feed_bytes,
+        &records,
+        crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
+    )?;
     crate::atoms::attest::attest(
         &path
             .parent()
@@ -109,6 +97,179 @@ pub(crate) fn persist_feed(
         },
         &[],
     )?;
+    Ok(writes)
+}
+
+pub(crate) fn proposal_refresh_bench() -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SnapshotEntry {
+        relative_path: PathBuf,
+        kind: &'static str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        inode: u64,
+        mtime_seconds: i64,
+        mtime_nanoseconds: i64,
+        size: u64,
+        sha256: Option<Vec<u8>>,
+        symlink_target: Option<Vec<u8>>,
+    }
+
+    fn snapshot(root: &Path) -> Result<Vec<SnapshotEntry>, String> {
+        fn visit(
+            root: &Path,
+            current: &Path,
+            entries: &mut Vec<SnapshotEntry>,
+        ) -> Result<(), String> {
+            let mut children = std::fs::read_dir(current)
+                .map_err(|error| format!("read-dir {}: {error}", current.display()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("read-dir-entry {}: {error}", current.display()))?;
+            children.sort_by_key(|entry| entry.file_name());
+            for entry in children {
+                let path = entry.path();
+                let metadata = std::fs::symlink_metadata(&path)
+                    .map_err(|error| format!("symlink-metadata {}: {error}", path.display()))?;
+                let relative_path = path
+                    .strip_prefix(root)
+                    .map_err(|error| format!("relative-path {}: {error}", path.display()))?
+                    .to_path_buf();
+                let file_type = metadata.file_type();
+                let (kind, sha256, symlink_target) = if file_type.is_file() {
+                    let bytes = std::fs::read(&path)
+                        .map_err(|error| format!("read-file {}: {error}", path.display()))?;
+                    ("file", Some(Sha256::digest(bytes).to_vec()), None)
+                } else if file_type.is_dir() {
+                    ("dir", None, None)
+                } else if file_type.is_symlink() {
+                    let target = std::fs::read_link(&path)
+                        .map_err(|error| format!("read-link {}: {error}", path.display()))?;
+                    (
+                        "symlink",
+                        None,
+                        Some(target.as_os_str().as_bytes().to_vec()),
+                    )
+                } else {
+                    return Err(format!("unsupported-node-kind {}", path.display()));
+                };
+                entries.push(SnapshotEntry {
+                    relative_path,
+                    kind,
+                    mode: metadata.mode() & 0o7777,
+                    uid: metadata.uid(),
+                    gid: metadata.gid(),
+                    inode: metadata.ino(),
+                    mtime_seconds: metadata.mtime(),
+                    mtime_nanoseconds: metadata.mtime_nsec(),
+                    size: metadata.len(),
+                    sha256,
+                    symlink_target,
+                });
+                if file_type.is_dir() {
+                    visit(root, &path, entries)?;
+                }
+            }
+            Ok(())
+        }
+
+        let mut entries = Vec::new();
+        visit(root, root, &mut entries)?;
+        entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(entries)
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "harmonia-proposal-refresh-bench-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let feed_path = root.join("interactables.json");
+    let item = Interactable {
+        id: "config-proposal-bench".into(),
+        module_id: "bench".into(),
+        name: "bench proposal".into(),
+        description: "proposal refresh bench".into(),
+        kind: "hard-stamp".into(),
+        target_path: root.join("target"),
+        reference_source_path: root.join("source"),
+        drift: DriftSummary {
+            content: true,
+            mode: false,
+            ownership: false,
+        },
+        created_at: "0".into(),
+        refreshed_at: "0".into(),
+        available_at: None,
+        has_run: false,
+        mode: Some(0o644),
+        owner: None,
+        group: None,
+        source_sha: None,
+        target_sha: None,
+        commits_behind: None,
+    };
+    let feed = interactables::make_feed(vec![item]);
+    let first_writes = persist_feed_with_writes(&feed_path, &feed)?;
+    let quiet_before = snapshot(&root.join("proposals"))?;
+    let second_writes = persist_feed_with_writes(&feed_path, &feed)?;
+    let quiet_after = snapshot(&root.join("proposals"))?;
+    let target_snapshot_unchanged = quiet_before == quiet_after;
+    let record_path = root.join("proposals/config-proposal-bench.json");
+    let metadata = std::fs::metadata(&record_path).map_err(|error| error.to_string())?;
+    let mode_ok = metadata.permissions().mode() & 0o777 == 0o644;
+    let owner_ok = (metadata.uid(), metadata.gid())
+        == (unsafe { libc::geteuid() }, unsafe { libc::getegid() });
+    std::fs::write(
+        root.join("proposals/config-proposal-stale.json"),
+        b"stale\n",
+    )
+    .map_err(|error| error.to_string())?;
+    std::fs::set_permissions(
+        root.join("proposals/config-proposal-stale.json"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .map_err(|error| error.to_string())?;
+    let empty = interactables::make_feed(Vec::new());
+    let stale_refresh = persist_feed_with_writes(&feed_path, &empty)?;
+    let stale_removed = !root.join("proposals/config-proposal-stale.json").exists();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        &feed_path,
+        root.join("proposals/config-proposal-collision.json"),
+    )
+    .map_err(|error| error.to_string())?;
+    let collision_before = snapshot(&root.join("proposals"))?;
+    let collision_blocked = persist_feed_with_writes(&feed_path, &feed).is_err();
+    let collision_after = snapshot(&root.join("proposals"))?;
+    let collision_snapshot_unchanged = collision_before == collision_after;
+    let _ = std::fs::remove_file(root.join("proposals/config-proposal-collision.json"));
+    let result = serde_json::json!({
+        "schema": "harmonia.proposal-refresh-bench.v1",
+        "ok": first_writes > 0 && mode_ok && owner_ok && stale_removed && collision_blocked && second_writes == 0 && target_snapshot_unchanged && collision_snapshot_unchanged,
+        "first_writes": first_writes,
+        "mode": "0644",
+        "mode_observed": mode_ok,
+        "owner_observed": owner_ok,
+        "stale_regular_removed": stale_removed,
+        "stale_refresh_writes": stale_refresh,
+        "symlink_collision_blocked": collision_blocked,
+        "second_identical_writes": second_writes,
+        "target_snapshot_unchanged": target_snapshot_unchanged,
+        "collision_snapshot_unchanged": collision_snapshot_unchanged,
+    });
+    let _ = std::fs::remove_dir_all(&root);
+    println!(
+        "{}",
+        serde_json::to_string(&result).map_err(|error| error.to_string())?
+    );
+    if result["ok"] != true {
+        return Err("proposal-refresh-bench-failed".into());
+    }
     Ok(())
 }
 
@@ -207,7 +368,7 @@ pub(crate) fn execute_manifest_band(
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
 ) -> Result<ModuleExecution, String> {
-    fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
         ok: true,
         changed: false,

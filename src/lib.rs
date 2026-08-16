@@ -25,6 +25,7 @@ pub(crate) mod remove_unit;
 #[path = "tools/set-clock/index.rs"]
 pub(crate) mod set_clock;
 mod stillness_bench;
+mod proposal_refresh_bench;
 mod structural_wall_bench;
 #[path = "tools/index.rs"]
 pub mod tools;
@@ -286,6 +287,7 @@ mod invocation_face {
                     arg.as_str(),
                     "acquire-source"
                         | "bench-stillness"
+                        | "bench-proposal-refresh"
                         | "bench-structural-wall"
                         | "bench-harmonia-foundation"
                         | "bench-update-set"
@@ -2654,6 +2656,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or_else(|| "slice12-clock-invocation-key-missing".to_string())?,
         ),
         Some("bench-stillness") => stillness_bench::run(invocation.0),
+        Some("bench-proposal-refresh") => proposal_refresh_bench::run(),
         Some("bench-structural-wall") => structural_wall_bench::run(invocation.0),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
@@ -3283,6 +3286,13 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
+    println!("  harmonia bench-proposal-refresh");
+    println!("  harmonia bench-structural-wall");
+    println!("  harmonia bench-stillness");
+    println!("  harmonia bench-harmonia-foundation");
+    println!("  harmonia bench-update-set");
+    println!("  harmonia bench-slice12-clock");
+    println!("  harmonia bench-slice13-renew-schedule");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id>");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");

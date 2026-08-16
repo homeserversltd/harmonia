@@ -1,7 +1,7 @@
 use crate::*;
 use serde_json::json;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,11 +29,10 @@ pub(crate) fn profile_ledger_path(receipt_dir: &Path, profile: &Profile) -> Path
 }
 
 fn next_ledger_sequence(path: &Path) -> Result<u64, String> {
-    if !path.exists() {
+    if !crate::atoms::ask::exists(path) {
         return Ok(1);
     }
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let count = BufReader::new(file).lines().count() as u64;
+    let count = crate::atoms::ask::line_count(path)?;
     Ok(count + 1)
 }
 
@@ -263,8 +262,7 @@ pub(crate) fn write_plan_receipts(
     module_root: &Path,
     receipt_dir: &Path,
 ) -> io::Result<()> {
-    let mut events = crate::atoms::attest::create_receipt_file(&receipt_dir.join("events.jsonl"))
-        .map_err(io::Error::other)?;
+    let mut events = Vec::new();
     let mut ok = true;
     let mut first_missing_signal = "none".to_string();
     crate::atoms::attest::append_jsonl_to(
@@ -283,7 +281,9 @@ pub(crate) fn write_plan_receipts(
     for module in &profile.modules {
         let module_dir = module_root.join(module);
         let manifest_path = module_dir.join("manifest.json");
-        let planned = if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
+        let planned = if crate::atoms::ask::exists(&manifest_path)
+            && is_ladder_manifest(&manifest_path)
+        {
             load_ladder_manifest(&manifest_path).and_then(|manifest| {
                 if manifest.id != *module {
                     return Err(format!(
@@ -330,6 +330,8 @@ pub(crate) fn write_plan_receipts(
             }
         }
     }
+    crate::atoms::attest::write_receipt_bytes_atomic(&receipt_dir.join("events.jsonl"), &events)
+        .map_err(io::Error::other)?;
     crate::atoms::attest::write_json_atomic(
         &receipt_dir.join("run.json"),
         &json!({

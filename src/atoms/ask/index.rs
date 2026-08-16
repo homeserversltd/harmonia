@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 use super::{ask_file, CommandObservation, FileObservation, HttpObservation, UnitObservation};
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -17,6 +17,28 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 
 pub(crate) fn file(path: &Path) -> Result<FileObservation, String> {
     ask_file(path)
+}
+
+pub(crate) fn line_count(path: &Path) -> Result<u64, String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    Ok(BufReader::new(file).lines().count() as u64)
+}
+
+pub(crate) fn text(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("ask-text-read {}: {error}", path.display()))
+}
+
+pub(crate) fn optional_text(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("ask-text-read {}: {error}", path.display())),
+    }
+}
+
+pub(crate) fn exists(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok()
 }
 
 pub(crate) fn directory_entries(path: &Path) -> Result<Vec<std::path::PathBuf>, String> {
