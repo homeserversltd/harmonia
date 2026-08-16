@@ -39,40 +39,7 @@ pub(crate) fn execute(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     validate_ladder_args(permutation, args)?;
-    let timeout = args
-        .get("timeout_secs")
-        .and_then(Value::as_u64)
-        .unwrap_or(15);
-    let request = crate::set_clock::Request {
-        backend: string(args, "backend"),
-        operation: permutation,
-        timezone: (permutation == "set-timezone").then(|| string(args, "timezone")),
-        state_url: (permutation == "watch-and-set").then(|| string(args, "state_url")),
-        state_path: optional(args, "state_path"),
-        timeout_secs: timeout,
-    };
-    let result = match permutation {
-        "resolve" | "set-timezone" | "watch-and-set" => crate::set_clock::run(&request, apply, invocation)?,
-        value => return Err(format!("household-time-permutation-unsupported-{value}")),
-    };
-    let changed = result.ok && receipt_changed(&result.stdout);
-    let outcome = OperationOutcome {
-        ok: result.ok,
-        changed,
-        skipped: !apply,
-        message: format!("household-time {permutation}"),
-        command: Some(result),
-    };
-    crate::write_tool_receipt(receipt_dir, step_id, NAME, permutation, &outcome)?;
-    crate::set_clock::report_home(
-        &receipt_dir.join(format!("{step_id}.attest.jsonl")),
-        permutation,
-        outcome
-            .command
-            .as_ref()
-            .expect("household-time command result"),
-    )?;
-    Ok(outcome)
+    crate::set_clock::execute(receipt_dir, step_id, permutation, args, apply, invocation)
 }
 
 pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
