@@ -1,6 +1,6 @@
 //! Shared compatibility membrane for legacy mutation atom signatures.
 use super::{
-    build_aur_pinned, build_crate, change_unit, install_aur, install_package, make_dir, make_link,
+    build_aur_pinned, build_crate, change_unit, install_aur, install_aur_pinned, install_package, make_dir, make_link,
     pull_repo, remove_file as remove_file_organ, rename as rename_organ, run_command, write_file,
 };
 use crate::atoms::Receipt;
@@ -125,6 +125,8 @@ pub(crate) fn aur_install(
 ) -> Result<crate::OperationOutcome, String> {
     install_aur::aur_install(a, i, c)
 }
+
+pub(crate) fn aur_install_pinned(a: ActionAuthorization, i: InvocationKey, c: impl FnOnce() -> Result<crate::OperationOutcome, String>) -> Result<crate::OperationOutcome, String> { install_aur_pinned::aur_install_pinned(a, i, c) }
 
 pub(crate) fn aur_build_pinned(
     a: ActionAuthorization,

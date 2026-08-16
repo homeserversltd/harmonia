@@ -2,11 +2,11 @@ use crate::atoms;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 #[derive(Debug, Clone)]
-pub(super) struct Observation {
-    pub(super) dependency_files: Vec<PathBuf>,
-    pub(super) dependency_sha256: Option<String>,
-    pub(super) previous_dependency_sha256: Option<String>,
-    pub(super) venv_valid: bool,
+pub(crate) struct Observation {
+    pub(crate) dependency_files: Vec<PathBuf>,
+    pub(crate) dependency_sha256: Option<String>,
+    pub(crate) previous_dependency_sha256: Option<String>,
+    pub(crate) venv_valid: bool,
 }
 impl Observation {
     pub(super) fn different(&self) -> bool {

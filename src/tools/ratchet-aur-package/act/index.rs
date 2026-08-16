@@ -28,8 +28,8 @@ pub(super) fn build_pinned(
     if observation.verdict != Verdict::BehindPin {
         return Err("ratchet-aur-package-act-without-behind-pin".into());
     }
-    atoms::r#do::aur_build_pinned(authorization, invocation, || {
-        crate::tools::aur::build_pinned_action(
+    let built = atoms::r#do::aur_build_pinned(authorization, invocation, || {
+        atoms::r#do::build_aur_pinned::aur_build_pinned_action(
             receipt_dir,
             receipt_name,
             package,
@@ -38,9 +38,24 @@ pub(super) fn build_pinned(
             source_dir,
             builder_user,
             timeout_secs,
-            install,
+            false,
             apply,
         )
+    })?;
+    if !install || !built.ok {
+        return Ok(built);
+    }
+    let lock = crate::tools::aur::read_lock(lock_path, package)?;
+    atoms::r#do::aur_install_pinned(authorization, invocation, || {
+        atoms::r#do::install_aur_pinned::run(&atoms::r#do::install_aur_pinned::Plan {
+            receipt_dir: receipt_dir.to_path_buf(),
+            receipt_name: format!("{receipt_name}.install"),
+            build_receipt: receipt_dir.join(format!("{receipt_name}.json")),
+            package: package.to_string(),
+            expected_version: lock.pinned_version,
+            timeout_secs,
+        },
+        apply)
     })
 }
 
@@ -55,7 +70,7 @@ pub(super) fn install(
     apply: bool,
 ) -> Result<OperationOutcome, String> {
     atoms::r#do::aur_install(authorization, invocation, || {
-        crate::tools::aur::install_action(receipt_dir, receipt_name, package, timeout_secs, apply)
+        atoms::r#do::install_aur::aur_install_action(receipt_dir, receipt_name, package, timeout_secs, apply)
     })
 }
 

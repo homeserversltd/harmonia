@@ -31,6 +31,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
             return Err(e);
         }
     };
+    let aur_pinned = aur_pinned_bench(&root, invocation)?;
     let never = never_converge_bench()?;
     let receipt = json!({
         "schema": "harmonia.stillness-bench.v1",
@@ -40,6 +41,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         "source_gate": source_gate,
         "venv": venv,
         "package": package,
+        "aur_pinned": aur_pinned,
         "never_converge": never,
     });
     println!(
@@ -593,19 +595,201 @@ fn serve_health_once<T>(
     result
 }
 
+fn aur_pinned_bench(
+    root: &Path,
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<serde_json::Value, String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().into())
+    }
+    let dir = root.join("aur-pinned");
+    let source = dir.join("source");
+    let receipts = dir.join("receipts");
+    fs::create_dir_all(&source).map_err(|e| e.to_string())?;
+    git(&source, &["init", "-b", "main"])?;
+    git(&source, &["config", "user.email", "bench@example.invalid"])?;
+    git(&source, &["config", "user.name", "bench"])?;
+    fs::write(
+        source.join("PKGBUILD"),
+        "pkgname=benchpkg
+pkgver=1
+pkgrel=1
+",
+    )
+    .map_err(|e| e.to_string())?;
+    git(&source, &["add", "PKGBUILD"])?;
+    git(&source, &["commit", "-m", "pinned"])?;
+    let pinned_sha = git(&source, &["rev-parse", "HEAD"])?;
+    let lock = dir.join("lock.json");
+    fs::write(&lock,serde_json::json!({"schema":"harmonia.aur.ratchet_lock.v1","package":"benchpkg","pinned_version":"1","pkgbuild_sha":pinned_sha}).to_string()).map_err(|e|e.to_string())?;
+    let log = dir.join("fake-tools.log");
+    let fake = dir.join("makepkg");
+    fs::write(
+        &fake,
+        format!(
+            r#"#!/bin/sh
+printf 'makepkg:%s\n' "$*" >> "{0}"
+printf artifact-bytes > benchpkg-1-1-x86_64.pkg.tar.zst
+"#,
+            log.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    let state = dir.join("pacman-state");
+    let pac = dir.join("pacman");
+    fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
+    fs::write(&pac,format!(r#"#!/bin/sh
+printf 'pacman:%s\n' "$*" >> "{0}"
+case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1;; -U) printf installed > "{1}";; esac
+"#,log.display(),state.display())).map_err(|e|e.to_string())?;
+    fs::set_permissions(&pac, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    let upstream = dir.join("upstream.json");
+    fs::write(&upstream, serde_json::json!({"schema":"harmonia.aur.upstream_state.v1","package":"benchpkg","available_version":"1","pkgbuild_sha":pinned_sha,"observed_source":"stillness-bench"}).to_string()).map_err(|e|e.to_string())?;
+    let om = env::var("HARMONIA_MAKEPKG_PATH").ok();
+    let op = env::var("HARMONIA_PACMAN_PATH").ok();
+    let ou = env::var("HARMONIA_AUR_UPSTREAM_STATE").ok();
+    env::set_var("HARMONIA_MAKEPKG_PATH", &fake);
+    env::set_var("HARMONIA_PACMAN_PATH", &pac);
+    env::set_var("HARMONIA_AUR_UPSTREAM_STATE", &upstream);
+    let first = crate::tools::aur::build_pinned(
+        &receipts,
+        "build-pinned",
+        "benchpkg",
+        &lock,
+        &dir.join("build"),
+        Some(source.to_str().unwrap()),
+        Some("current-user"),
+        30,
+        true,
+        true,
+        Some(invocation),
+    )?;
+    let fb: serde_json::Value = serde_json::from_slice(
+        &fs::read(receipts.join("build-pinned.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let fi: serde_json::Value = serde_json::from_slice(
+        &fs::read(receipts.join("build-pinned.install.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let before = fs::read_to_string(&log).map_err(|e| e.to_string())?;
+    let second = crate::tools::aur::build_pinned(
+        &receipts,
+        "build-pinned",
+        "benchpkg",
+        &lock,
+        &dir.join("build"),
+        Some(source.to_str().unwrap()),
+        Some("current-user"),
+        30,
+        true,
+        true,
+        Some(invocation),
+    )?;
+    let sb: serde_json::Value = serde_json::from_slice(
+        &fs::read(receipts.join("build-pinned.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let si: serde_json::Value = serde_json::from_slice(
+        &fs::read(receipts.join("build-pinned.install.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let after = fs::read_to_string(&log).map_err(|e| e.to_string())?;
+    match om {
+        Some(v) => env::set_var("HARMONIA_MAKEPKG_PATH", v),
+        None => env::remove_var("HARMONIA_MAKEPKG_PATH"),
+    };
+    match op {
+        Some(v) => env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => env::remove_var("HARMONIA_PACMAN_PATH"),
+    }
+    match ou {
+        Some(v) => env::set_var("HARMONIA_AUR_UPSTREAM_STATE", v),
+        None => env::remove_var("HARMONIA_AUR_UPSTREAM_STATE"),
+    };
+    let count = |s: &str, p: &str| s.lines().filter(|x| x.starts_with(p)).count();
+    let fbops = count(&before, "makepkg:");
+    let fiops = count(&before, "pacman:-U");
+    let sbops = count(&after[before.len()..], "makepkg:");
+    let siops = count(&after[before.len()..], "pacman:-U");
+    let artifact = PathBuf::from(
+        fb["produced_package_path"]
+            .as_str()
+            .ok_or("aur-first-artifact-missing")?,
+    );
+    let bytes = fs::read(&artifact).map_err(|e| e.to_string())?;
+    let sha = crate::atoms::file_sha256(&bytes);
+    let meta = fs::metadata(&artifact).map_err(|e| e.to_string())?;
+    let missing = crate::atoms::r#do::install_aur_pinned::run(
+        &crate::atoms::r#do::install_aur_pinned::Plan {
+            receipt_dir: receipts.clone(),
+            receipt_name: "missing".into(),
+            build_receipt: receipts.join("missing-build.json"),
+            package: "benchpkg".into(),
+            expected_version: "1".into(),
+            timeout_secs: 30,
+        },
+        true,
+    )?;
+    let mr: serde_json::Value = serde_json::from_slice(
+        &fs::read(receipts.join("missing.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let no_install = !missing.ok
+        && !missing.changed
+        && mr["schema"] == "harmonia.aur.install_pinned.v1"
+        && mr["first_blocker"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("pinned-build-proof-missing");
+    if !first.ok
+        || !first.changed
+        || !second.ok
+        || second.changed
+        || fb["changed"] != true
+        || fi["changed"] != true
+        || sb["changed"] != false
+        || si["changed"] != false
+        || fbops == 0
+        || fiops == 0
+        || sbops != 0
+        || siops != 0
+        || sha != fb["artifact_sha256"].as_str().unwrap_or("")
+        || !no_install
+    {
+        return Err("aur-pinned-stillness-proof-failed".into());
+    }
+    Ok(
+        json!({"pinned_sha":pinned_sha,"source_checkout_sha":pinned_sha,"builder_toolchain_identity":"current-user","artifact_sha256":sha,"artifact_path":artifact,"build_receipt":"build-pinned.json","install_receipt":"build-pinned.install.json","build_schema":"harmonia.aur.build_pinned.v1","install_schema":"harmonia.aur.install_pinned.v1","candidate_mode_owner":{"mode":format!("{:o}",meta.mode()&0o777),"uid":meta.uid(),"gid":meta.gid()},"first":{"changed":first.changed,"build_changed":fb["changed"],"install_changed":fi["changed"],"build_operation_count":fbops,"install_operation_count":fiops},"second":{"changed":second.changed,"build_changed":sb["changed"],"install_changed":si["changed"],"build_operation_count":sbops,"install_operation_count":siops},"changed_then_quiet":true,"no_install_before_failed_build":no_install,"failed_build_receipt":"missing.json","installed":true}),
+    )
+}
+
 fn venv_bench(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
+    use std::os::unix::fs::MetadataExt;
     let dir = root.join("venv");
     let source = dir.join("source");
     let venv = dir.join("venv");
     let receipts = dir.join("receipts");
-    fs::create_dir_all(&source).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&source).map_err(|e| e.to_string())?;
+    fs::write(source.join("requirements.txt"), b"").map_err(|e| e.to_string())?;
+    let patterns = vec!["requirements*.txt".to_string()];
     let request = crate::build_venv::Request {
         venv: &venv,
         source_root: &source,
-        source_patterns: &[],
+        source_patterns: &patterns,
         python: Path::new("/usr/bin/python3"),
         receipt_dir: &receipts,
         receipt_name: "venv-bench.json",
@@ -613,13 +797,18 @@ fn venv_bench(
     };
     let run1 = crate::build_venv::run(&request, true, Some(invocation))?;
     let run2 = crate::build_venv::run(&request, true, Some(invocation))?;
+    let state = venv.join(".harmonia-sbin-dependency-sha256");
+    let state_meta = fs::metadata(&state).map_err(|e| e.to_string())?;
+    let state_bytes = fs::read(&state).map_err(|e| e.to_string())?;
+    let state_hash = crate::atoms::file_sha256(&state_bytes);
+    let python_path = venv.join("bin/python");
+    let python_identity = fs::read_link(&python_path).map_err(|e| e.to_string())?;
     if !run1.ok || !run1.changed || !run2.ok || run2.changed {
-        return Err("venv-double-run-bench-failed".to_string());
+        return Err("venv-double-run-bench-failed".into());
     }
-    Ok(json!({
-        "run1": {"ok": run1.ok, "changed": run1.changed, "message": run1.message},
-        "run2": {"ok": run2.ok, "changed": run2.changed, "message": run2.message}
-    }))
+    Ok(
+        json!({"venv_path":venv,"python":{"requested":request.python,"path":python_path,"identity":python_identity},"state":{"path":state,"present":true,"sha256":state_hash,"mode":format!("{:o}",state_meta.mode()&0o777),"uid":state_meta.uid(),"gid":state_meta.gid()},"run1":{"ok":run1.ok,"changed":run1.changed,"message":run1.message},"run2":{"ok":run2.ok,"changed":run2.changed,"message":run2.message},"changed_then_quiet":run1.changed&&!run2.changed}),
+    )
 }
 
 fn package_bench(

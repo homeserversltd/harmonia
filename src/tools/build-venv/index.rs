@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 #[path = "act/index.rs"]
 mod act;
 #[path = "observe/index.rs"]
-mod observe;
+pub(crate) mod observe;
 #[path = "report-home/index.rs"]
-mod report_home;
+pub(crate) mod report_home;
 pub(crate) struct Request<'a> {
     pub venv: &'a Path,
     pub source_root: &'a Path,
@@ -37,7 +37,7 @@ pub(crate) fn run(
         |authorization, observation| {
             let invocation =
                 invocation.ok_or_else(|| "build-venv-invocation-key-missing".to_string())?;
-            act::converge(authorization, invocation, request, observation)
+            atoms::r#do::build_venv::converge(authorization, invocation, request, observation)
         },
     )?;
     let (observation, movement) = match run {

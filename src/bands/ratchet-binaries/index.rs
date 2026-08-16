@@ -25,13 +25,13 @@ pub(crate) fn build_arcadia(
         || Ok::<_, String>(()),
         |_| crate::tools::comparison::DiffDecision::Different,
         |authorization, _| {
-            crate::build_crate::build(
+            crate::atoms::r#do::build_crate::cargo_build(
                 authorization,
                 key,
                 source_dir,
                 &[],
-                crate::tools::command::DEFAULT_TIMEOUT_SECS,
                 "owner",
+                std::time::Duration::from_secs(crate::tools::command::DEFAULT_TIMEOUT_SECS),
             )
         },
     );
@@ -376,19 +376,20 @@ pub(crate) fn execute_routine_child(
                 .get("bearer")
                 .and_then(Value::as_str)
                 .unwrap_or("owner");
-            let moved = crate::build_crate::run_build(
-                cwd,
-                source_sha,
-                installed_sha,
-                binary,
-                &artifact_path,
-                apply,
-                &env,
-                timeout,
-                &receipt_dir.join("harmonia-atoms.log"),
-                bearer,
-                invocation,
+            let key = invocation.ok_or("build-crate-invocation-key-missing")?;
+            let run = crate::tools::comparison::execute(
+                "build-crate-routine",
+                || Ok(fs::read(&artifact_path).ok().is_some_and(|bytes| bytes.windows(source_sha.len()).any(|w| w == source_sha.as_bytes()))),
+                |matches| if apply && !matches { crate::tools::comparison::DiffDecision::Different } else { crate::tools::comparison::DiffDecision::Empty },
+                |authorization, _| crate::atoms::r#do::build_crate::cargo_build(
+                    authorization, key, cwd, &env, bearer,
+                    std::time::Duration::from_secs(timeout),
+                ),
             )?;
+            let moved = match run {
+                crate::tools::comparison::ComparisonRun::Current { .. } => None,
+                crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
+            };
             if let Some(legacy_name) = args.get("legacy_build_receipt").and_then(Value::as_str) {
                 if let Some(observation) = &moved {
                     let command = crate::CmdResult {
