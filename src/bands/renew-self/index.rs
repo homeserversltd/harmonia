@@ -1321,6 +1321,16 @@ pub(crate) fn run_engine_preflight(
         engine_content_head.as_deref(),
         &artifact_transport_attempts,
     )?;
+    crate::hyalos::forward_receipt(
+        "harmonia.renew_self.preflight",
+        &format!(
+            "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}"
+        ),
+        Some(
+            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "attest_owner": "hyalos.forward_receipt"}),
+        ),
+        Some(ok),
+    );
 
     let mut execution = ModuleExecution::from_operations(
         vec![
@@ -1374,10 +1384,14 @@ pub(crate) fn run_engine_preflight(
             &json!({"schema":"harmonia.runtime.self_update_reexec.v1","ok":true,"install_bin":config.install_bin,"reason":"engine pre-flight promoted a proved Harmonia successor; re-exec same argv before module convergence"}),
         )?;
         let args: Vec<String> = env::args().skip(1).collect();
-        let key = invocation.ok_or_else(|| "harmonia-self-update-reexec-invocation-missing".to_string())?;
+        let key = invocation
+            .ok_or_else(|| "harmonia-self-update-reexec-invocation-missing".to_string())?;
         let plan = crate::atoms::r#do::replace_process::Plan {
-            successor: config.install_bin.clone(), argv: args, guard_name: SELF_UPDATE_REEXEC_ENV.into(),
-            guard_value: "1".into(), receipt_path: preflight_dir.join("harmonia-self-update-reexec.json"),
+            successor: config.install_bin.clone(),
+            argv: args,
+            guard_name: SELF_UPDATE_REEXEC_ENV.into(),
+            guard_value: "1".into(),
+            receipt_path: preflight_dir.join("harmonia-self-update-reexec.json"),
         };
         return crate::atoms::r#do::replace_process::replace(&plan, key)
             .map(|_| unreachable!())

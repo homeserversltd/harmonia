@@ -10,23 +10,6 @@ const NAME: &str = "command";
 pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/// Typed boundary for guarded same-argv process replacement.
-#[allow(dead_code)]
-pub(crate) fn exec_same_argv(
-    program: &Path,
-    args: &[String],
-    guard_name: &str,
-    guard_value: &str,
-) -> Result<(), String> {
-    crate::atoms::r#do::replace_process::compatibility_exec(
-        program,
-        args,
-        guard_name,
-        guard_value,
-        None,
-    )
-}
-
 const TERMINATION_GRACE_SECS: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

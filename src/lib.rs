@@ -290,6 +290,9 @@ mod invocation_face {
                         | "bench-harmonia-foundation"
                         | "bench-update-set"
                         | "bench-slice12-clock"
+                        | "bench-slice13-renew-schedule"
+                        | "install-timer"
+                        | "uninstall-timer"
                 )
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
@@ -2640,6 +2643,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .clone()
                 .ok_or_else(|| "foundation-invocation-key-missing".to_string())?,
         ),
+        Some("bench-slice13-renew-schedule") => stillness_bench::slice13_renew_schedule_bench(
+            invocation
+                .0
+                .ok_or_else(|| "slice13-renew-schedule-invocation-key-missing".to_string())?,
+        ),
         Some("bench-slice12-clock") => stillness_bench::slice12_clock_bench(
             invocation
                 .0
@@ -2650,8 +2658,18 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
         }
-        Some("install-timer") => schedule::install_timer(&args[1..]),
-        Some("uninstall-timer") => schedule::uninstall_timer(&args[1..]),
+        Some("install-timer") => schedule::install_timer(
+            &args[1..],
+            invocation
+                .0
+                .ok_or_else(|| "schedule-invocation-key-missing".to_string())?,
+        ),
+        Some("uninstall-timer") => schedule::uninstall_timer(
+            &args[1..],
+            invocation
+                .0
+                .ok_or_else(|| "schedule-invocation-key-missing".to_string())?,
+        ),
         Some("renew-self") => renew_self_command(&args[1..], invocation),
         Some("update") => update_from_certificate(&args[1..], invocation),
         Some("explain") => explain(),

@@ -155,6 +155,298 @@ impl Drop for ClockEnvGuard {
     }
 }
 
+fn walk_receipts(root: &Path) -> std::io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    if !root.exists() {
+        return Ok(names);
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            names.extend(walk_receipts(&path)?);
+        } else if path.extension().and_then(|v| v.to_str()) == Some("json") {
+            names.push(
+                path.strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn path_attestation(path: &Path) -> serde_json::Value {
+    fn visit(path: &Path, base: &Path, entries: &mut BTreeMap<String, serde_json::Value>) {
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            return;
+        };
+        let kind = if meta.is_dir() { "dir" } else if meta.is_file() { "file" } else { "other" };
+        let hash = if meta.is_file() {
+            crate::bands::renew_self::install_bin_fingerprint(path)
+        } else {
+            None
+        };
+        entries.insert(path.strip_prefix(base).unwrap_or(path).display().to_string(), json!({
+            "kind": kind, "size": meta.len(), "mtime_ns": meta.mtime_nsec(), "mode": meta.mode(), "sha256": hash
+        }));
+        if meta.is_dir() {
+            if let Ok(children) = fs::read_dir(path) {
+                let mut children = children.flatten().map(|child| child.path()).collect::<Vec<_>>();
+                children.sort();
+                for child in children {
+                    visit(&child, base, entries);
+                }
+            }
+        }
+    }
+    let mut entries = BTreeMap::new();
+    if path.exists() {
+        visit(path, path.parent().unwrap_or(path), &mut entries);
+    }
+    json!({"path": path, "entries": entries})
+}
+
+pub(crate) fn slice13_renew_schedule_bench(
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<(), String> {
+    let root = std::env::temp_dir().join(format!(
+        "harmonia-slice13-renew-schedule-{}",
+        crate::run_id_from_stamp()
+    ));
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source_head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(source)
+            .output()
+            .map_err(|e| e.to_string())?
+            .stdout,
+    )
+    .map_err(|e| e.to_string())?
+    .trim()
+    .to_string();
+    if source_head.len() != 40 {
+        return Err("slice13-source-head-not-a-commit".into());
+    }
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let install_bin = root.join("installed-successor");
+    fs::copy(&executable, &install_bin).map_err(|e| e.to_string())?;
+    let source_dir = root.join("source-copy");
+    let staged_bin = source_dir.join("target/release/harmonia");
+    let renew_receipts = root.join("renew-receipts");
+    let config_path = root.join("engine.json");
+    fs::create_dir_all(&renew_receipts).map_err(|e| e.to_string())?;
+    fs::write(
+        &config_path,
+        serde_json::json!({
+            "source_repo_url":"https://example.invalid/harmonia.git", "branch":"main",
+            "source_dir":source_dir, "local_source_checkout":source, "install_bin":install_bin,
+            "staged_bin":staged_bin, "profile_index":source.join("profiles/homeconsole/index.json"),
+            "enabled":true
+        })
+        .to_string(),
+    )
+    .map_err(|e| e.to_string())?;
+    let prior_engine = env::var_os("HARMONIA_ENGINE_CONFIG_PATH");
+    let prior_guard = env::var_os("HARMONIA_SELF_UPDATE_REEXEC");
+    env::set_var("HARMONIA_ENGINE_CONFIG_PATH", &config_path);
+    env::set_var("HARMONIA_SELF_UPDATE_REEXEC", "1");
+    let module_root = root.join("module");
+    fs::create_dir_all(module_root.join("identity")).map_err(|e| e.to_string())?;
+    fs::copy(
+        source.join("profiles/homeconsole/modules/identity/manifest.json"),
+        module_root.join("identity/manifest.json"),
+    )
+    .map_err(|e| e.to_string())?;
+    let renewal =
+        crate::bands::renew_self::run(&module_root, &renew_receipts, true, Some(invocation));
+    match prior_engine {
+        Some(v) => env::set_var("HARMONIA_ENGINE_CONFIG_PATH", v),
+        None => env::remove_var("HARMONIA_ENGINE_CONFIG_PATH"),
+    }
+    match prior_guard {
+        Some(v) => env::set_var("HARMONIA_SELF_UPDATE_REEXEC", v),
+        None => env::remove_var("HARMONIA_SELF_UPDATE_REEXEC"),
+    }
+    renewal
+        .as_ref()
+        .map_err(|e| format!("renew-self-bench: {e}"))?;
+    let mut receipt_names = std::collections::BTreeSet::new();
+    for entry in walk_receipts(&renew_receipts).map_err(|e| e.to_string())? {
+        receipt_names.insert(entry);
+    }
+    let receipt_ok = |name: &str| -> bool {
+        let path = renew_receipts
+            .join("engine-preflight")
+            .join(format!("{name}.json"));
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
+            .unwrap_or(false)
+    };
+    let run_receipt: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(renew_receipts.join("engine-preflight/run.json"))
+            .map_err(|e| format!("renew-run-receipt: {e}"))?,
+    )
+    .map_err(|e| format!("renew-run-receipt-json: {e}"))?;
+    let built_successor_identity =
+        crate::bands::renew_self::install_bin_fingerprint(&staged_bin)
+            .ok_or_else(|| "slice13-built-successor-fingerprint-missing".to_string())?;
+    let installed_successor_identity =
+        crate::bands::renew_self::install_bin_fingerprint(&install_bin)
+            .ok_or_else(|| "slice13-installed-successor-fingerprint-missing".to_string())?;
+    let installer = root.join("installer.py");
+    let argv_log = root.join("argv.log");
+    fs::write(&installer, format!("import pathlib,sys\npathlib.Path({argv_log:?}).write_text(repr(sys.argv[1:]))\npass\n")).map_err(|e| e.to_string())?;
+    let prior = env::var_os("HARMONIA_INSTALLER");
+    env::set_var("HARMONIA_INSTALLER", &installer);
+    let systemd_root = root.join("systemd");
+    let actual_service = Path::new("/etc/systemd/system/harmonia.service");
+    let actual_timer = Path::new("/etc/systemd/system/harmonia.timer");
+    let systemd_root_before = path_attestation(&systemd_root);
+    let actual_service_before = path_attestation(actual_service);
+    let actual_timer_before = path_attestation(actual_timer);
+    let scheduled = crate::schedule::install_timer(
+        &[
+            "--systemd-root".into(),
+            systemd_root.display().to_string(),
+            "--dry-run".into(),
+        ],
+        invocation,
+    );
+    match prior {
+        Some(v) => env::set_var("HARMONIA_INSTALLER", v),
+        None => env::remove_var("HARMONIA_INSTALLER"),
+    }
+    scheduled?;
+    let argv = fs::read_to_string(&argv_log).map_err(|e| format!("schedule-argv-receipt: {e}"))?;
+    let expected = format!(
+        "['install-timer', '--systemd-root', '{}', '--dry-run']",
+        systemd_root.display()
+    );
+    if argv != expected {
+        return Err(format!(
+            "schedule-argv-mismatch expected={expected} actual={argv}"
+        ));
+    }
+    let systemd_root_after = path_attestation(&systemd_root);
+    let actual_service_after = path_attestation(actual_service);
+    let actual_timer_after = path_attestation(actual_timer);
+    let systemd_root_unchanged = systemd_root_before == systemd_root_after;
+    let actual_service_unchanged = actual_service_before == actual_service_after;
+    let actual_timer_unchanged = actual_timer_before == actual_timer_after;
+    let source_head_observed = run_receipt
+        .get("engine_content_head")
+        .and_then(serde_json::Value::as_str)
+        == Some(source_head.as_str());
+    let built_identity_tied = run_receipt
+        .get("staged_sha256")
+        .and_then(serde_json::Value::as_str)
+        == Some(built_successor_identity.as_str())
+        && installed_successor_identity == built_successor_identity
+        && receipt_ok("staged-build");
+    let execution_ok = renewal.as_ref().map(|value| value.ok).unwrap_or(false);
+    let explain = receipt_ok("harmonia-engine-preflight-explain") && receipt_ok("proof-explain");
+    let validate_ladder = receipt_ok("proof-validate-ladder");
+    let plan_run_gate = receipt_ok("proof-plan-run");
+    let promotion_after_all_green =
+        receipt_ok("promote-successor") && validate_ladder && plan_run_gate && explain;
+    let replacement_receipt_path = renew_receipts
+        .join("engine-preflight")
+        .join("harmonia-self-update-reexec.json");
+    let replacement_plan = crate::atoms::r#do::replace_process::Plan {
+        successor: install_bin.clone(),
+        argv: env::args().skip(1).collect(),
+        guard_name: "HARMONIA_SELF_UPDATE_REEXEC".into(),
+        guard_value: "1".into(),
+        receipt_path: replacement_receipt_path.clone(),
+    };
+    let replacement_proof =
+        crate::atoms::r#do::replace_process::proof(&replacement_plan, invocation)?;
+    let replacement_bytes_before = fs::read(&replacement_receipt_path)
+        .map_err(|e| format!("replacement-receipt-read: {e}"))?;
+    let replacement_receipt: crate::atoms::r#do::replace_process::Receipt =
+        serde_json::from_slice(&replacement_bytes_before)
+            .map_err(|e| format!("replacement-receipt-parse: {e}"))?;
+    let replacement_canonical =
+        fs::canonicalize(&replacement_plan.successor).map_err(|e| e.to_string())?;
+    let replacement_metadata =
+        fs::symlink_metadata(&replacement_canonical).map_err(|e| e.to_string())?;
+    let replacement_identity = replacement_receipt.successor_canonical
+        == replacement_canonical.display().to_string()
+        && replacement_receipt.successor_dev == replacement_metadata.dev()
+        && replacement_receipt.successor_ino == replacement_metadata.ino();
+    let replacement_contents = replacement_receipt.schema == "harmonia.replace-process.v1"
+        && replacement_receipt.successor == replacement_plan.successor.display().to_string()
+        && replacement_receipt.argv == replacement_plan.argv
+        && replacement_receipt.guard_name == replacement_plan.guard_name
+        && replacement_receipt.guard_value == replacement_plan.guard_value
+        && replacement_receipt.receipt_path == replacement_receipt_path.display().to_string()
+        && replacement_receipt.synced
+        && replacement_receipt.proof
+        && replacement_proof.proof;
+    let previous_replacement_guard = env::var_os(&replacement_plan.guard_name);
+    env::set_var(&replacement_plan.guard_name, &replacement_plan.guard_value);
+    let replacement_refusal =
+        crate::atoms::r#do::replace_process::proof(&replacement_plan, invocation)
+            .err()
+            .unwrap_or_else(|| "replacement-reentry-not-refused".into());
+    let replacement_bytes_after = fs::read(&replacement_receipt_path)
+        .map_err(|e| format!("replacement-receipt-reread: {e}"))?;
+    match previous_replacement_guard {
+        Some(value) => env::set_var(&replacement_plan.guard_name, value),
+        None => env::remove_var(&replacement_plan.guard_name),
+    }
+    let replacement_receipt_observed = replacement_receipt_path.exists();
+    let final_receipt_before_exec = receipt_ok("run")
+        && replacement_receipt_observed
+        && replacement_contents
+        && replacement_identity;
+    let reentry_guard = replacement_refusal == "replace-process-reentry-refused"
+        && replacement_bytes_before == replacement_bytes_after;
+    let quiet_no_reexec = !crate::bands::renew_self::should_self_update_reexec(
+        true,
+        true,
+        Some(installed_successor_identity.clone()),
+        Some(built_successor_identity.clone()),
+    );
+    let renew_ok = source_head_observed
+        && built_identity_tied
+        && execution_ok
+        && explain
+        && validate_ladder
+        && plan_run_gate
+        && promotion_after_all_green
+        && final_receipt_before_exec
+        && reentry_guard
+        && quiet_no_reexec;
+    let schedule_ok = argv == expected
+        && systemd_root_unchanged
+        && actual_service_unchanged
+        && actual_timer_unchanged;
+    let receipt = json!({
+        "schema":"harmonia.slice13-renew-schedule-bench.v3", "ok": renew_ok && schedule_ok,
+        "source_head": source_head, "built_successor_identity": built_successor_identity,
+        "renew_self": {"receipt_names": receipt_names, "execution_ok": execution_ok, "actual_source_head": source_head_observed, "successor_identity_tied_to_build_receipt": built_identity_tied, "explain": explain, "validate_ladder": validate_ladder, "plan_run_gate": plan_run_gate, "promotion_after_all_green": promotion_after_all_green, "final_receipt_before_exec": final_receipt_before_exec, "reentry_guard": reentry_guard, "quiet_no_reexec": quiet_no_reexec, "replacement": {"receipt_path": replacement_receipt_path, "receipt_observed": replacement_receipt_observed, "schema": replacement_receipt.schema, "proof": replacement_receipt.proof, "synced": replacement_receipt.synced, "contents_observed": replacement_contents, "identity_observed": replacement_identity, "refusal": replacement_refusal, "receipt_unchanged_after_refusal": replacement_bytes_before == replacement_bytes_after}},
+        "schedule": {"dry_run": true, "argv": argv, "argv_exact": argv == expected, "systemd_root_before": systemd_root_before, "systemd_root_after": systemd_root_after, "systemd_root_unchanged": systemd_root_unchanged, "actual_service_before": actual_service_before, "actual_service_after": actual_service_after, "actual_service_unchanged": actual_service_unchanged, "actual_timer_before": actual_timer_before, "actual_timer_after": actual_timer_after, "actual_timer_unchanged": actual_timer_unchanged, "attest_owner": "hyalos.forward_receipt"}
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&receipt).map_err(|e| e.to_string())?
+    );
+    let _ = fs::remove_dir_all(&root);
+    if renew_ok && schedule_ok {
+        Ok(())
+    } else {
+        Err("slice13-required-predicate-failed".into())
+    }
+}
+
 pub(crate) fn slice12_clock_bench(
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
