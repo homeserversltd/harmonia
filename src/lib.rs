@@ -289,6 +289,7 @@ mod invocation_face {
                         | "bench-structural-wall"
                         | "bench-harmonia-foundation"
                         | "bench-update-set"
+                        | "bench-slice12-clock"
                 )
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
@@ -2638,6 +2639,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .1
                 .clone()
                 .ok_or_else(|| "foundation-invocation-key-missing".to_string())?,
+        ),
+        Some("bench-slice12-clock") => stillness_bench::slice12_clock_bench(
+            invocation
+                .0
+                .ok_or_else(|| "slice12-clock-invocation-key-missing".to_string())?,
         ),
         Some("bench-stillness") => stillness_bench::run(invocation.0),
         Some("bench-structural-wall") => structural_wall_bench::run(invocation.0),

@@ -130,6 +130,138 @@ fn snapshot_predicates(before: &[SnapshotEntry], after: &[SnapshotEntry]) -> ser
     json!({"equal": before == after, "entry_count_before": before.len(), "entry_count_after": after.len(), "git_metadata_equal": git_before == git_after, "git_bytes_and_mtimes_equal": git_before == git_after, "git_paths_checked": git_paths, "ordinary_bytes_and_kinds_equal": before == after})
 }
 
+struct ClockEnvGuard {
+    timedatectl: Option<String>,
+    caduceus: Option<String>,
+}
+impl Drop for ClockEnvGuard {
+    fn drop(&mut self) {
+        match &self.timedatectl {
+            Some(v) => std::env::set_var("HARMONIA_CLOCK_TIMEDATECTL", v),
+            None => std::env::remove_var("HARMONIA_CLOCK_TIMEDATECTL"),
+        }
+        match &self.caduceus {
+            Some(v) => std::env::set_var("HARMONIA_CLOCK_CADUCEUS", v),
+            None => std::env::remove_var("HARMONIA_CLOCK_CADUCEUS"),
+        }
+    }
+}
+
+pub(crate) fn slice12_clock_bench(
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = ClockEnvGuard {
+        timedatectl: std::env::var("HARMONIA_CLOCK_TIMEDATECTL").ok(),
+        caduceus: std::env::var("HARMONIA_CLOCK_CADUCEUS").ok(),
+    };
+    let root = std::env::temp_dir().join(format!(
+        "harmonia-slice12-clock-{}",
+        crate::run_id_from_stamp()
+    ));
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let state = root.join("state");
+    let log = root.join("writes.log");
+    let timedatectl = root.join("timedatectl");
+    let backend = root.join("caduceus");
+    let refusal = root.join("refusal");
+    std::fs::write(&state, "Etc/UTC|no\n").map_err(|e| e.to_string())?;
+    std::fs::write(
+        &timedatectl,
+        format!(
+            r#"#!/bin/sh
+timezone=$(cut -d'|' -f1 {0})
+ntp=$(cut -d'|' -f2 {0})
+printf 'Timezone=%s\nNTPSynchronized=%s\nNTP=%s\n' "$timezone" "$ntp" "$ntp"
+"#,
+            state.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &backend,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" != time ]; then exit 1; fi
+case "$2" in
+  state) cat {0} ;;
+  set-timezone)
+    before=$(cat {0})
+    ntp=$(cut -d'|' -f2 {0})
+    printf '%s|%s\n' "$3" "$ntp" > {0}
+    printf 'set-timezone:%s->%s\n' "$before" "$(cat {0})" >> {1}
+    ;;
+  ensure-ntp)
+    before=$(cat {0})
+    timezone=$(cut -d'|' -f1 {0})
+    printf '%s|yes\n' "$timezone" > {0}
+    printf 'ensure-ntp:%s->%s\n' "$before" "$(cat {0})" >> {1}
+    ;;
+  *) exit 1 ;;
+esac
+"#,
+            state.display(),
+            log.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(&refusal, "#!/bin/sh\nexit 77\n").map_err(|e| e.to_string())?;
+    for path in [&timedatectl, &backend, &refusal] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+    std::env::set_var("HARMONIA_CLOCK_TIMEDATECTL", &timedatectl);
+    std::env::set_var("HARMONIA_CLOCK_CADUCEUS", &backend);
+    let request = crate::set_clock::Request {
+        backend: "caduceus",
+        operation: "set-timezone",
+        timezone: Some("Europe/Berlin"),
+        state_url: None,
+        state_path: None,
+        timeout_secs: 3,
+    };
+    let preimage = std::fs::read_to_string(&state).map_err(|e| e.to_string())?;
+    let changed = crate::set_clock::run(&request, true, Some(invocation))?;
+    let readback = std::fs::read_to_string(&state).map_err(|e| e.to_string())?;
+    let actions = std::fs::read_to_string(&log).map_err(|e| e.to_string())?;
+    let expected_actions =
+        "set-timezone:Etc/UTC|no->Europe/Berlin|no\nensure-ntp:Europe/Berlin|no->Europe/Berlin|yes\n";
+    if !changed.ok
+        || preimage != "Etc/UTC|no\n"
+        || readback != "Europe/Berlin|yes\n"
+        || actions != expected_actions
+    {
+        return Err("slice12-posture-readback-failed".into());
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    if std::fs::read_to_string(&state).map_err(|e| e.to_string())? != readback {
+        return Err("slice12-elapsed-reversal".into());
+    }
+    let state_before_quiet = std::fs::read(&state).map_err(|e| e.to_string())?;
+    let writes_before = std::fs::read(&log).map_err(|e| e.to_string())?;
+    let quiet = crate::set_clock::run(&request, true, Some(invocation))?;
+    if !quiet.ok
+        || std::fs::read(&state).map_err(|e| e.to_string())? != state_before_quiet
+        || std::fs::read(&log).map_err(|e| e.to_string())? != writes_before
+    {
+        return Err("slice12-quiet-write".into());
+    }
+    std::fs::write(&state, "Etc/UTC|no\n").map_err(|e| e.to_string())?;
+    std::env::set_var("HARMONIA_CLOCK_CADUCEUS", &refusal);
+    let refusal_state = std::fs::read(&state).map_err(|e| e.to_string())?;
+    let refusal_writes = std::fs::read(&log).map_err(|e| e.to_string())?;
+    let refused = crate::set_clock::run(&request, true, Some(invocation));
+    if !matches!(refused, Err(ref error) if error == "set-clock-act-did-not-converge")
+        || std::fs::read(&state).map_err(|e| e.to_string())? != refusal_state
+        || std::fs::read(&log).map_err(|e| e.to_string())? != refusal_writes
+    {
+        return Err("slice12-refusal-proof-failed".into());
+    }
+    println!("slice12-clock-bench ok preimage=Etc/UTC|no requested=Europe/Berlin|yes readback=verified elapsed=non-reversing quiet=no-write refusal=backend-refused host_mutation=false");
+    std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn git_artifact_bench(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,

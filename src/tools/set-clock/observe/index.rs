@@ -12,7 +12,8 @@ pub(super) struct ClockObservation {
 
 pub(super) fn clock(request: &super::Request<'_>) -> ClockObservation {
     let local_state = atoms::ask::read_only_command_with_timeout(
-        "/usr/bin/timedatectl",
+        &std::env::var("HARMONIA_CLOCK_TIMEDATECTL")
+            .unwrap_or_else(|_| "/usr/bin/timedatectl".into()),
         &[
             "show".into(),
             "--property=NTPSynchronized,NTP,Timezone".into(),
@@ -44,7 +45,8 @@ pub(super) fn clock(request: &super::Request<'_>) -> ClockObservation {
 fn backend_query(request: &super::Request<'_>) -> CmdResult {
     let observed = match request.backend {
         "caduceus" => atoms::ask::read_only_command_with_timeout(
-            "/usr/local/bin/caduceus",
+            &std::env::var("HARMONIA_CLOCK_CADUCEUS")
+                .unwrap_or_else(|_| "/usr/local/bin/caduceus".into()),
             &["time".into(), "state".into()],
             Duration::from_secs(request.timeout_secs),
         ),

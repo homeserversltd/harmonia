@@ -44,7 +44,11 @@ fn command(
             if let Some(zone) = timezone {
                 args.push(zone.into());
             }
-            ("/usr/local/bin/caduceus", args)
+            (
+                std::env::var("HARMONIA_CLOCK_CADUCEUS")
+                    .unwrap_or_else(|_| "/usr/local/bin/caduceus".into()),
+                args,
+            )
         }
         "staff" => {
             let mut args =
@@ -61,7 +65,7 @@ fn command(
             if let Some(zone) = timezone {
                 args.push(zone.into());
             }
-            ("/usr/bin/env", args)
+            ("/usr/bin/env".into(), args)
         }
         _ => {
             return Ok(CmdResult {
@@ -75,7 +79,7 @@ fn command(
     let result = atoms::r#do::command_with_timeout(
         authorization,
         invocation,
-        program,
+        &program,
         &args,
         Duration::from_secs(request.timeout_secs),
     )?;
