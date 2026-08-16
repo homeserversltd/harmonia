@@ -250,9 +250,6 @@ pub(crate) fn legacy_plan(request: &Request) -> Outcome {
     crate::atoms::ask::legacy_plan(request)
 }
 
-pub(crate) fn legacy_apply(request: &Request) -> Outcome {
-    crate::atoms::r#do::pull_repo::apply_legacy(request)
-}
 
 pub fn stdout_changed(stdout: &str) -> bool {
     stdout.lines().any(|line| line.trim() == "changed=true")
@@ -407,9 +404,6 @@ pub fn acquire_source(
     crate::pull_repo::acquire_source(plan, invocation)
 }
 
-pub(crate) fn legacy_acquire_source(plan: &SourcePlan) -> SourceOutcome {
-    crate::atoms::r#do::pull_repo::acquire_source(plan)
-}
 
 #[cfg(test)]
 mod tests {
