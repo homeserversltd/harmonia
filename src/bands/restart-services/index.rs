@@ -10,7 +10,6 @@ use crate::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
@@ -509,9 +508,9 @@ pub(crate) fn execute_routine_child(
                 invocation,
             )?;
             if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
-                std::fs::copy(
-                    receipt_dir.join(format!("{name}.json")),
-                    receipt_dir.join(format!("{legacy}.json")),
+                crate::atoms::attest::copy_artifact(
+                    &receipt_dir.join(format!("{name}.json")),
+                    &receipt_dir.join(format!("{legacy}.json")),
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -546,9 +545,9 @@ pub(crate) fn execute_routine_child(
                 invocation,
             )?;
             if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
-                std::fs::copy(
-                    receipt_dir.join(format!("{name}.json")),
-                    receipt_dir.join(format!("{legacy}.json")),
+                crate::atoms::attest::copy_artifact(
+                    &receipt_dir.join(format!("{name}.json")),
+                    &receipt_dir.join(format!("{legacy}.json")),
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -584,20 +583,39 @@ use sha2::{Digest, Sha256};
 fn ensure_arcadia_control_surface_authority(
     receipt_dir: &Path,
     apply: bool,
+    authorization: Option<crate::tools::comparison::ActionAuthorization>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<bool, String> {
     let existing = fs::read_to_string(ARCADIA_CONTROL_DROPIN_PATH).unwrap_or_default();
     let changed = existing != ARCADIA_CONTROL_DROPIN_CONTENT;
     if apply && changed {
-        fs::create_dir_all(ARCADIA_CONTROL_DROPIN_DIR)
-            .map_err(|e| format!("arcadia-control-dropin-dir-failed: {e}"))?;
+        let authorization = authorization.ok_or("arcadia-control-dropin-authorization-missing")?;
+        let invocation = invocation.ok_or("arcadia-control-dropin-invocation-missing")?;
+        crate::atoms::r#do::make_dir::create_dir_all(
+            authorization,
+            invocation,
+            Path::new(ARCADIA_CONTROL_DROPIN_DIR),
+        )?;
         let tmp = Path::new(ARCADIA_CONTROL_DROPIN_PATH).with_extension("harmonia-new");
-        fs::write(&tmp, ARCADIA_CONTROL_DROPIN_CONTENT)
-            .map_err(|e| format!("arcadia-control-dropin-write-failed: {e}"))?;
-        let mut perms = fs::metadata(&tmp).map_err(|e| e.to_string())?.permissions();
-        perms.set_mode(0o644);
-        fs::set_permissions(&tmp, perms).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, ARCADIA_CONTROL_DROPIN_PATH)
-            .map_err(|e| format!("arcadia-control-dropin-promote-failed: {e}"))?;
+        crate::atoms::r#do::write_file::file_write(
+            authorization,
+            invocation,
+            &tmp,
+            ARCADIA_CONTROL_DROPIN_CONTENT.as_bytes(),
+            crate::atoms::r#do::write_file::FileWriteOptions {
+                write_bytes: true,
+                mode: Some(0o644),
+                uid: None,
+                gid: None,
+                backup_to: None,
+            },
+        )?;
+        crate::atoms::r#do::rename::rename(
+            authorization,
+            invocation,
+            &tmp,
+            Path::new(ARCADIA_CONTROL_DROPIN_PATH),
+        )?;
     }
     write_json(
         &receipt_dir.join("arcadia-control-surface-authority.json"),
@@ -742,7 +760,7 @@ fn homeconsole_arcadia_update_check(
         ));
     }
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
-    let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
+    let mut events = crate::atoms::attest::open_event_stream(&receipt_dir.join("events.jsonl"))?;
     event(&mut events, "arcadia-start", true, "Arcadia update started")?;
     let metadata = fs::metadata(artifact).map_err(|e| format!("artifact-missing: {e}"))?;
     let artifact_len = metadata.len();
@@ -755,7 +773,7 @@ fn homeconsole_arcadia_update_check(
         return Err("arcadia-check-apply-forbidden".into());
     }
     if !apply {
-        if let Err(signal) = ensure_arcadia_control_surface_authority(receipt_dir, false) {
+        if let Err(signal) = ensure_arcadia_control_surface_authority(receipt_dir, false, None, None) {
             ok = false;
             if first_missing_signal == "none" {
                 first_missing_signal = signal;
@@ -838,7 +856,7 @@ fn homeconsole_arcadia_update_apply(
         ));
     }
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
-    let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
+    let mut events = crate::atoms::attest::open_event_stream(&receipt_dir.join("events.jsonl"))?;
     event(&mut events, "arcadia-start", true, "Arcadia update started")?;
     let metadata = fs::metadata(artifact).map_err(|e| format!("artifact-missing: {e}"))?;
     let artifact_len = metadata.len();
@@ -868,7 +886,7 @@ fn homeconsole_arcadia_update_apply(
         } else {
             event(&mut events, "artifact-current", true, "converged-quiet")?;
         }
-        let authority_changed = ensure_arcadia_control_surface_authority(receipt_dir, true)?;
+        let authority_changed = ensure_arcadia_control_surface_authority(receipt_dir, true, Some(authorization), Some(invocation))?;
         changed = changed || authority_changed;
         event(
             &mut events,
@@ -900,7 +918,7 @@ fn homeconsole_arcadia_update_apply(
         }
     }
     if !apply {
-        if let Err(signal) = ensure_arcadia_control_surface_authority(receipt_dir, false) {
+        if let Err(signal) = ensure_arcadia_control_surface_authority(receipt_dir, false, None, None) {
             ok = false;
             if first_missing_signal == "none" {
                 first_missing_signal = signal;

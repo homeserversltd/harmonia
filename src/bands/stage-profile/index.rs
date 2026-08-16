@@ -115,7 +115,8 @@ pub(crate) fn materialize(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    update_subscription_record(
+    let key = context.map(|value| value.key).ok_or_else(|| "subscription-invocation-key-missing".to_string())?;
+    update_subscription_record_with_invocation(
         &subscription_path(),
         SubscriptionUpdate {
             lane: preserve_existing_lane_or_default(&subscription_path()),
@@ -125,6 +126,7 @@ pub(crate) fn materialize(
             engine_version_received: VERSION.to_string(),
             modules,
         },
+        key,
     )?;
     if let Some(target_carrier) = carrier.or_else(|| context.map(|value| &value.carrier)) {
         let mut value = target_carrier.borrow_mut();

@@ -211,7 +211,7 @@ pub(crate) fn molt_at_subscription_path(
     let pruned_modules = prune_retired_module_dirs(key, &output_module_root, &profile.modules)?;
 
     let lane = preserve_existing_lane_or_default(&subscription_path);
-    update_subscription_record(
+    update_subscription_record_with_invocation(
         &subscription_path,
         SubscriptionUpdate {
             lane,
@@ -221,6 +221,7 @@ pub(crate) fn molt_at_subscription_path(
             engine_version_received: VERSION.to_string(),
             modules: subscription_modules,
         },
+        key,
     )?;
 
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;

@@ -285,7 +285,7 @@ mod invocation_face {
             || args.first().is_some_and(|arg| {
                 matches!(
                     arg.as_str(),
-                    "acquire-source"
+                    "capsule" | "acquire-source"
                         | "bench-stillness"
                         | "bench-proposal-refresh"
                         | "bench-structural-wall"
@@ -2888,7 +2888,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         value_arg(&args, "--out").ok_or("capsule pack requires --out <dir>")?;
                     let harmonia_root = value_arg(&args, "--harmonia-root")
                         .unwrap_or_else(|| PathBuf::from(SOURCE_ROOT));
-                    capsule_pack(profile_id, &output_dir, &harmonia_root)
+                    capsule_pack_with_invocation(profile_id, &output_dir, &harmonia_root, invocation.0.ok_or_else(|| "capsule-pack-invocation-key-missing".to_string())?)
                 }
                 "verify" => {
                     let capsule_dir = args.get(2).ok_or("capsule verify requires <dir>")?;

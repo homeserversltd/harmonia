@@ -3,8 +3,8 @@
 use crate::tools::comparison::{self, DiffDecision};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 #[path = "ask/index.rs"]
 pub(crate) mod ask;
@@ -185,28 +185,4 @@ pub(crate) fn compare<Movement>(
         },
         |authorization, observed| act(authorization, observed, &drift),
     )
-}
-pub(crate) fn backup_first_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if path.exists() {
-        let backup = path.with_extension(format!(
-            "{}bak",
-            path.extension()
-                .and_then(|x| x.to_str())
-                .map(|x| format!("{x}."))
-                .unwrap_or_default()
-        ));
-        fs::copy(path, backup).map_err(|e| format!("backup-first: {e}"))?;
-    }
-    fs::write(path, bytes).map_err(|e| format!("file-write: {e}"))
-}
-pub(crate) fn append_appliance_log(path: &Path, receipt: &Receipt) -> Result<(), String> {
-    let mut stream = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| format!("attest-open: {e}"))?;
-    serde_json::to_writer(&mut stream, receipt).map_err(|e| format!("attest-serialize: {e}"))?;
-    stream
-        .write_all(b"\n")
-        .map_err(|e| format!("attest-append: {e}"))
 }

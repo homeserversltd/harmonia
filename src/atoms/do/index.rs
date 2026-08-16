@@ -63,6 +63,8 @@ pub(crate) mod set_clock;
 pub(crate) mod transaction;
 #[path = "write-file/index.rs"]
 pub(crate) mod write_file;
+#[path = "source-shelf.rs"]
+pub(crate) mod source_shelf;
 
 pub(crate) use compatibility::{
     apply, aur_build_pinned, aur_install, aur_install_pinned, cargo_build, command_with_timeout,
@@ -70,3 +72,6 @@ pub(crate) use compatibility::{
     git_acquire, git_pull, mutating_command, package_install, remove_file, rename, symlink,
     unit_change, unit_change_scoped, FileWriteOptions, FileWriteResult, InvocationKey, UnitVerb,
 };
+
+#[path = "symlink-converge.rs"]
+pub(crate) mod symlink_converge;

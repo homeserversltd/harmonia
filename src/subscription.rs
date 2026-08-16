@@ -122,9 +122,18 @@ pub(crate) fn diff_subscription_modules(
     Ok(statuses)
 }
 
+#[cfg(test)]
 pub(crate) fn update_subscription_record(
     path: &Path,
     update: SubscriptionUpdate,
+) -> Result<SubscriptionRecord, String> {
+    update_subscription_record_with_invocation(path, update, crate::atoms::r#do::InvocationKey::for_apply())
+}
+
+pub(crate) fn update_subscription_record_with_invocation(
+    path: &Path,
+    update: SubscriptionUpdate,
+    key: crate::atoms::r#do::InvocationKey,
 ) -> Result<SubscriptionRecord, String> {
     let existing_value = if path.exists() {
         let text = fs::read_to_string(path)
@@ -201,9 +210,6 @@ pub(crate) fn update_subscription_record(
             b.push(b'\n');
             b
         })?;
-    let key = crate::invocation_face::mint(&["molt".into(), "--apply".into()])
-        .0
-        .ok_or_else(|| "subscription-invocation-key-missing".to_string())?;
     let parent = path
         .parent()
         .ok_or_else(|| "subscription-parent-missing".to_string())?;
@@ -307,6 +313,7 @@ pub(crate) fn update_engine_plane(
     engine_version: &str,
     engine_lane: &str,
     lock_sha256: Option<&str>,
+    key: crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let existing_value = if path.exists() {
         let text = fs::read_to_string(path)
@@ -329,7 +336,7 @@ pub(crate) fn update_engine_plane(
         }),
     );
     object.insert("updated_at_unix_ms".to_string(), json!(now_unix_ms()));
-    write_json_value_atomic(path, &Value::Object(object))
+    write_json_value_atomic_with_invocation(path, &Value::Object(object), key)
 }
 
 pub(crate) fn hotfix_ledger_entry(path: &Path, hotfix_id: &str) -> Result<Option<Value>, String> {
@@ -352,6 +359,7 @@ pub(crate) fn close_hotfix_ledger(
     body_identity: &str,
     closing_reason: &str,
     receipt_reference: &Path,
+    key: crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let existing = if path.exists() {
         let text = fs::read_to_string(path)
@@ -371,28 +379,21 @@ pub(crate) fn close_hotfix_ledger(
     root.insert("hotfix_ledger".to_string(), Value::Object(ledger));
     root.insert("schema".to_string(), json!(SUBSCRIPTION_SCHEMA));
     root.insert("updated_at_unix_ms".to_string(), json!(now_unix_ms()));
-    write_json_value_atomic(path, &Value::Object(root))
+    write_json_value_atomic_with_invocation(path, &Value::Object(root), key)
 }
 
+#[cfg(test)]
 pub(crate) fn write_json_value_atomic(path: &Path, value: &Value) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "\n";
-    write_bytes_atomic(path, text.as_bytes())
+    write_json_value_atomic_with_invocation(path, value, crate::atoms::r#do::InvocationKey::for_apply())
 }
 
-pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("harmonia-new");
-    fs::write(&tmp, bytes)
-        .map_err(|e| format!("subscription-write-failed {}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| {
-        format!(
-            "subscription-promote-failed {} -> {}: {e}",
-            tmp.display(),
-            path.display()
-        )
-    })
+pub(crate) fn write_json_value_atomic_with_invocation(path: &Path, value: &Value, key: crate::atoms::r#do::InvocationKey) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "
+";
+    let parent = path.parent().ok_or_else(|| "subscription-parent-missing".to_string())?;
+    crate::tools::comparison::execute("subscription-json-parent", || Ok(fs::symlink_metadata(parent).is_ok()), |present| if *present { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different }, |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent))?;
+    crate::tools::comparison::execute("subscription-json-write", || Ok(fs::read(path).ok().as_deref() == Some(text.as_bytes())), |same| if *same { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different }, |authorization, _| crate::atoms::r#do::write_file::file_write(authorization, key, path, text.as_bytes(), crate::atoms::r#do::write_file::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None }).map(|_| ()))?;
+    Ok(())
 }
 
 fn ensure_subscription_parent(

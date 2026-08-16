@@ -1,13 +1,13 @@
 use crate::atoms::attest;
 use crate::atoms::r#do::make_dir;
 use crate::atoms::r#do::remove_dir;
-use crate::atoms::r#do::InvocationKey;
+use crate::atoms::r#do::{write_file, InvocationKey};
 use crate::hyalos;
 use crate::tools::comparison::{self, DiffDecision};
 use crate::{
     diff_subscription_modules, is_ladder_manifest, load_ladder_manifest, load_profile,
     preserve_existing_lane_or_default, run_id_from_stamp, subscription_path,
-    update_subscription_record, SubscriptionModuleStatus, SubscriptionModuleUpdate,
+    update_subscription_record_with_invocation, SubscriptionModuleStatus, SubscriptionModuleUpdate,
     SubscriptionUpdate, VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -111,17 +111,81 @@ pub(crate) struct InstallChange {
     module_id: Option<String>,
 }
 
+struct CapsuleStageGuard {
+    path: PathBuf,
+    key: InvocationKey,
+    active: bool,
+}
+impl Drop for CapsuleStageGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = comparison::execute(
+                "capsule-stage-cleanup",
+                || Ok(fs::symlink_metadata(&self.path).is_ok()),
+                |present| {
+                    if *present {
+                        DiffDecision::Different
+                    } else {
+                        DiffDecision::Empty
+                    }
+                },
+                |authorization, _| {
+                    remove_dir::remove_authorized(authorization, self.key, &self.path)
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn capsule_pack(
     profile_id: &str,
     output_dir: &Path,
     harmonia_root: &Path,
 ) -> Result<(), String> {
+    capsule_pack_with_invocation(
+        profile_id,
+        output_dir,
+        harmonia_root,
+        InvocationKey::for_apply(),
+    )
+}
+
+pub(crate) fn capsule_pack_with_invocation(
+    profile_id: &str,
+    output_dir: &Path,
+    harmonia_root: &Path,
+    key: InvocationKey,
+) -> Result<(), String> {
     validate_harmonia_root(harmonia_root)?;
-    if output_dir.exists() {
-        fs::remove_dir_all(output_dir)
-            .map_err(|e| format!("capsule-output-clear-failed {}: {e}", output_dir.display()))?;
+    // Build in a fresh sibling. The prior destination is untouched until the
+    // complete staged tree and its manifest/receipt have been produced.
+    let destination_dir = output_dir.to_path_buf();
+    let stage_dir = output_dir.with_file_name(format!(
+        ".{}-harmonia-stage",
+        output_dir
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("capsule")
+    ));
+    if fs::symlink_metadata(&stage_dir).is_ok() {
+        return Err(format!(
+            "capsule-stage-already-exists {}",
+            stage_dir.display()
+        ));
     }
-    fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
+    comparison::execute(
+        "capsule-stage-create",
+        || Ok(false),
+        |_| DiffDecision::Different,
+        |authorization, _| make_dir::create_dir_all(authorization, key, &stage_dir),
+    )?;
+    let mut stage_guard = CapsuleStageGuard {
+        path: stage_dir.clone(),
+        key,
+        active: true,
+    };
+    let output_dir = stage_dir.as_path();
     let profile_src = harmonia_root
         .join("profiles")
         .join(profile_id)
@@ -137,7 +201,7 @@ pub(crate) fn capsule_pack(
         .join("profiles")
         .join(profile_id)
         .join("index.json");
-    copy_node_artifact(&profile_src, &profile_dst)?;
+    copy_node_artifact(&profile_src, &profile_dst, key)?;
     let mut modules = Vec::new();
     for module_id in &profile.modules {
         let src = harmonia_root
@@ -158,7 +222,7 @@ pub(crate) fn capsule_pack(
             ));
         }
         let manifest = load_ladder_manifest(&manifest_src)?;
-        copy_tree_artifact(&src, &dst)?;
+        copy_tree_artifact(&src, &dst, key)?;
         let tree_sha256 = module_tree_sha256(&dst)?;
         modules.push(CapsuleModuleEntry {
             id: module_id.clone(),
@@ -171,7 +235,7 @@ pub(crate) fn capsule_pack(
     let locks_src = harmonia_root.join("locks").join(profile_id);
     if locks_src.is_dir() {
         let locks_dst = output_dir.join("locks").join(profile_id);
-        copy_tree_artifact(&locks_src, &locks_dst)?;
+        copy_tree_artifact(&locks_src, &locks_dst, key)?;
         lock_tree_sha256 = Some(module_tree_sha256(&locks_dst)?);
         for rel in sorted_file_paths(&locks_src)? {
             let src = locks_src.join(&rel);
@@ -210,7 +274,7 @@ pub(crate) fn capsule_pack(
         profile_index_sha256: Some(module_tree_sha256(&profile_dst)?),
         created_from,
     };
-    write_manifest_json_atomic(&output_dir.join("capsule.json"), &manifest)?;
+    write_manifest_json_atomic(&output_dir.join("capsule.json"), &manifest, key)?;
     let receipt = CapsulePackReceipt {
         schema: "harmonia.capsule.pack.v1",
         ok: true,
@@ -224,6 +288,34 @@ pub(crate) fn capsule_pack(
         first_missing_signal: "none".into(),
     };
     write_receipt_json_atomic(&output_dir.join("pack-receipt.json"), &receipt)?;
+    let staged = remove_dir::capture(output_dir)?;
+    comparison::execute(
+        "capsule-output-promote",
+        || Ok(fs::symlink_metadata(&destination_dir).is_ok()),
+        |present| {
+            if *present {
+                DiffDecision::Different
+            } else {
+                DiffDecision::Empty
+            }
+        },
+        |authorization, _| {
+            remove_dir::replace_authorized(authorization, key, &destination_dir, &staged)
+        },
+    )?;
+    comparison::execute(
+        "capsule-stage-cleanup",
+        || Ok(fs::symlink_metadata(&stage_dir).is_ok()),
+        |present| {
+            if *present {
+                DiffDecision::Different
+            } else {
+                DiffDecision::Empty
+            }
+        },
+        |authorization, _| remove_dir::remove_authorized(authorization, key, &stage_dir),
+    )?;
+    stage_guard.active = false;
     println!("schema=harmonia.capsule.pack.v1");
     hyalos::forward_receipt(
         "schema=harmonia.capsule.pack.v1",
@@ -527,7 +619,7 @@ pub(crate) fn capsule_install_with_invocation(
             .any(|status| status.status != "current");
     if subscription_updated {
         let lane = preserve_existing_lane_or_default(&subscription_path);
-        update_subscription_record(
+        update_subscription_record_with_invocation(
             &subscription_path,
             SubscriptionUpdate {
                 lane,
@@ -537,6 +629,7 @@ pub(crate) fn capsule_install_with_invocation(
                 engine_version_received: manifest.engine_version.clone(),
                 modules: subscription_modules,
             },
+            invocation.ok_or_else(|| "capsule-install-invocation-missing".to_string())?,
         )?;
     }
     let receipt = CapsuleInstallReceipt {
@@ -639,7 +732,9 @@ fn validate_install_target_ancestors(
 ) -> Result<(), String> {
     let mut target_parents = vec![
         PathBuf::from("profiles").join(&manifest.profile_id),
-        PathBuf::from("profiles").join(&manifest.profile_id).join("modules"),
+        PathBuf::from("profiles")
+            .join(&manifest.profile_id)
+            .join("modules"),
         PathBuf::from("locks").join(&manifest.profile_id),
     ];
     if apply {
@@ -671,12 +766,12 @@ fn is_safe_component(value: &str) -> bool {
         && Path::new(value).components().count() == 1
 }
 
-fn verify_capsule_structure(
-    capsule_dir: &Path,
-    manifest: &CapsuleManifest,
-) -> Result<(), String> {
+fn verify_capsule_structure(capsule_dir: &Path, manifest: &CapsuleManifest) -> Result<(), String> {
     if !is_safe_component(&manifest.profile_id)
-        || manifest.modules.iter().any(|module| !is_safe_component(&module.id))
+        || manifest
+            .modules
+            .iter()
+            .any(|module| !is_safe_component(&module.id))
     {
         return Err("capsule-unsafe-profile-or-module-id".to_string());
     }
@@ -697,7 +792,10 @@ fn verify_capsule_structure(
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().to_string();
         if !allowed_root.contains(&name.as_str()) {
-            return Err(format!("capsule-undeclared-root-node path={}", entry.path().display()));
+            return Err(format!(
+                "capsule-undeclared-root-node path={}",
+                entry.path().display()
+            ));
         }
         let meta = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
         let valid = match name.as_str() {
@@ -705,19 +803,27 @@ fn verify_capsule_structure(
             _ => meta.is_file() && !meta.file_type().is_symlink(),
         };
         if !valid {
-            return Err(format!("capsule-root-wrong-kind path={}", entry.path().display()));
+            return Err(format!(
+                "capsule-root-wrong-kind path={}",
+                entry.path().display()
+            ));
         }
     }
     let profiles = capsule_dir.join("profiles");
     let profile_meta = fs::symlink_metadata(&profiles).map_err(|e| e.to_string())?;
     if !profile_meta.is_dir() || profile_meta.file_type().is_symlink() {
-        return Err(format!("capsule-profiles-wrong-kind path={}", profiles.display()));
+        return Err(format!(
+            "capsule-profiles-wrong-kind path={}",
+            profiles.display()
+        ));
     }
     let profile_entries = fs::read_dir(&profiles)
         .map_err(|e| e.to_string())?
         .map(|entry| entry.map_err(|e| e.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
-    if profile_entries.len() != 1 || profile_entries[0].file_name().to_string_lossy() != manifest.profile_id {
+    if profile_entries.len() != 1
+        || profile_entries[0].file_name().to_string_lossy() != manifest.profile_id
+    {
         return Err(format!(
             "capsule-undeclared-profile expected={} path={}",
             manifest.profile_id,
@@ -727,7 +833,10 @@ fn verify_capsule_structure(
     let profile_dir = profiles.join(&manifest.profile_id);
     let profile_meta = fs::symlink_metadata(&profile_dir).map_err(|e| e.to_string())?;
     if !profile_meta.is_dir() || profile_meta.file_type().is_symlink() {
-        return Err(format!("capsule-profile-wrong-kind path={}", profile_dir.display()));
+        return Err(format!(
+            "capsule-profile-wrong-kind path={}",
+            profile_dir.display()
+        ));
     }
     let profile_entries = fs::read_dir(&profile_dir)
         .map_err(|e| e.to_string())?
@@ -737,7 +846,10 @@ fn verify_capsule_structure(
     for entry in &profile_entries {
         let name = entry.file_name().to_string_lossy().to_string();
         if !allowed_profile.contains(&name.as_str()) {
-            return Err(format!("capsule-undeclared-profile-node path={}", entry.path().display()));
+            return Err(format!(
+                "capsule-undeclared-profile-node path={}",
+                entry.path().display()
+            ));
         }
         let meta = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
         let valid = match name.as_str() {
@@ -746,11 +858,17 @@ fn verify_capsule_structure(
             _ => false,
         };
         if !valid {
-            return Err(format!("capsule-profile-node-wrong-kind path={}", entry.path().display()));
+            return Err(format!(
+                "capsule-profile-node-wrong-kind path={}",
+                entry.path().display()
+            ));
         }
     }
     if profile_entries.len() != 2 {
-        return Err(format!("capsule-profile-node-missing path={}", profile_dir.display()));
+        return Err(format!(
+            "capsule-profile-node-missing path={}",
+            profile_dir.display()
+        ));
     }
     let modules_dir = profile_dir.join("modules");
     let declared: BTreeSet<&str> = manifest.modules.iter().map(|m| m.id.as_str()).collect();
@@ -765,11 +883,17 @@ fn verify_capsule_structure(
         let id = entry.file_name().to_string_lossy().to_string();
         let meta = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
         if !meta.is_dir() || meta.file_type().is_symlink() || !declared.contains(id.as_str()) {
-            return Err(format!("capsule-undeclared-module path={}", entry.path().display()));
+            return Err(format!(
+                "capsule-undeclared-module path={}",
+                entry.path().display()
+            ));
         }
     }
     if module_entries.len() != declared.len() {
-        return Err(format!("capsule-module-node-count-mismatch path={}", modules_dir.display()));
+        return Err(format!(
+            "capsule-module-node-count-mismatch path={}",
+            modules_dir.display()
+        ));
     }
     let lock_root = Path::new("locks").join(&manifest.profile_id);
     for lock in &manifest.locks {
@@ -777,13 +901,19 @@ fn verify_capsule_structure(
         let Ok(relative) = lock_path.strip_prefix(&lock_root) else {
             return Err(format!("capsule-lock-path-outside-tree path={}", lock.path));
         };
-        if relative.components().any(|part| !matches!(part, Component::Normal(_))) {
+        if relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+        {
             return Err(format!("capsule-lock-path-unsafe path={}", lock.path));
         }
         let path = capsule_dir.join(lock_path);
         let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
         if !meta.is_file() || meta.file_type().is_symlink() {
-            return Err(format!("capsule-lock-file-wrong-kind path={}", path.display()));
+            return Err(format!(
+                "capsule-lock-file-wrong-kind path={}",
+                path.display()
+            ));
         }
     }
     match (&manifest.lock_tree_sha256, manifest.locks.is_empty()) {
@@ -794,9 +924,13 @@ fn verify_capsule_structure(
                 return Err(format!("capsule-locks-wrong-kind path={}", locks.display()));
             }
             let lock_profile = locks.join(&manifest.profile_id);
-            let lock_profile_meta = fs::symlink_metadata(&lock_profile).map_err(|e| e.to_string())?;
+            let lock_profile_meta =
+                fs::symlink_metadata(&lock_profile).map_err(|e| e.to_string())?;
             if !lock_profile_meta.is_dir() || lock_profile_meta.file_type().is_symlink() {
-                return Err(format!("capsule-lock-tree-wrong-kind path={}", lock_profile.display()));
+                return Err(format!(
+                    "capsule-lock-tree-wrong-kind path={}",
+                    lock_profile.display()
+                ));
             }
         }
         (None, true) => {
@@ -909,19 +1043,33 @@ fn file_sha256(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn copy_node_artifact(src: &Path, dst: &Path) -> Result<(), String> {
+fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), String> {
     let image = remove_dir::capture(src)?;
-    if fs::symlink_metadata(dst).is_ok() {
-        remove_dir::remove(dst)?;
-    }
     if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        comparison::execute(
+            "capsule-artifact-parent",
+            || Ok(fs::symlink_metadata(parent).is_ok()),
+            |present| {
+                if *present {
+                    DiffDecision::Empty
+                } else {
+                    DiffDecision::Different
+                }
+            },
+            |authorization, _| make_dir::create_dir_all(authorization, key, parent),
+        )?;
     }
-    remove_dir::restore(dst, &image)
+    comparison::execute(
+        "capsule-artifact-replace",
+        || Ok(fs::symlink_metadata(dst).is_ok()),
+        |_| DiffDecision::Different,
+        |authorization, _| remove_dir::replace_authorized(authorization, key, dst, &image),
+    )?;
+    Ok(())
 }
 
-fn copy_tree_artifact(src: &Path, dst: &Path) -> Result<(), String> {
-    copy_node_artifact(src, dst)
+fn copy_tree_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), String> {
+    copy_node_artifact(src, dst, key)
 }
 
 fn copy_tree_exact(
@@ -1098,31 +1246,69 @@ fn converge_exact_node(
     Ok(())
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+fn write_json_atomic<T: Serialize>(
+    path: &Path,
+    value: &T,
+    key: InvocationKey,
+) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "\n";
-    write_bytes_atomic(path, text.as_bytes())
+    write_bytes_atomic(path, text.as_bytes(), key)
 }
-fn write_manifest_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    write_json_atomic(path, value)
+fn write_manifest_json_atomic<T: Serialize>(
+    path: &Path,
+    value: &T,
+    key: InvocationKey,
+) -> Result<(), String> {
+    write_json_atomic(path, value, key)
 }
 fn write_receipt_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let value = serde_json::to_value(value).map_err(|e| e.to_string())?;
     attest::write_json_atomic(path, &value)
 }
 
-fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_bytes_atomic(path: &Path, bytes: &[u8], key: InvocationKey) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        comparison::execute(
+            "capsule-payload-parent",
+            || Ok(fs::symlink_metadata(parent).is_ok()),
+            |present| {
+                if *present {
+                    DiffDecision::Empty
+                } else {
+                    DiffDecision::Different
+                }
+            },
+            |authorization, _| make_dir::create_dir_all(authorization, key, parent),
+        )?;
     }
-    let tmp = path.with_extension("harmonia-new");
-    fs::write(&tmp, bytes).map_err(|e| format!("write-failed {}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| {
-        format!(
-            "promote-failed {} -> {}: {e}",
-            tmp.display(),
-            path.display()
-        )
-    })
+    comparison::execute(
+        "capsule-payload-write",
+        || Ok(fs::read(path).ok().as_deref() == Some(bytes)),
+        |same| {
+            if *same {
+                DiffDecision::Empty
+            } else {
+                DiffDecision::Different
+            }
+        },
+        |authorization, _| {
+            write_file::file_write(
+                authorization,
+                key,
+                path,
+                bytes,
+                write_file::FileWriteOptions {
+                    write_bytes: true,
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                    backup_to: None,
+                },
+            )
+            .map(|_| ())
+        },
+    )?;
+    Ok(())
 }
 
 fn git_head_sha(root: &Path) -> Option<String> {

@@ -150,6 +150,7 @@ fn run_one(
             &profile.identity,
             "file-tool-proved",
             &receipt_path,
+            invocation.ok_or_else(|| "hotfix-ledger-invocation-missing".to_string())?,
         )?;
     }
     Ok(())

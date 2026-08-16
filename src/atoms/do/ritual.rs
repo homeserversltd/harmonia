@@ -380,7 +380,12 @@ impl Transaction {
             append(&self.journal, &Event { event:"movement-none".into(), status:Some("attested".into()), source_identity:Some(identity), source_revision:Some(revision), proposal:Some(proposal), deed:Some(deed), pre:Some(pre.clone()), post:Some(pre) })?;
             return match intent { TerminalIntent::Commit => self.commit(), TerminalIntent::LeaveApplied => Ok(json!({"file":"unchanged","status":"applied"})) };
         };
-        self.apply(authority, (&identity, &revision, &proposal, &deed))?;
+        let _ = crate::tools::comparison::execute_once(
+            "ritual-write",
+            || Ok::<_, String>(pre.clone()),
+            |_| crate::tools::comparison::DiffDecision::Different,
+            |action_authorization, _| self.apply(action_authorization, authority, (&identity, &revision, &proposal, &deed)),
+        )?;
         match intent { TerminalIntent::Commit => self.commit(), TerminalIntent::LeaveApplied => Ok(json!({"file":"after","status":"applied"})) }
     }
     fn admit(
@@ -417,12 +422,18 @@ impl Transaction {
             service,
         })
     }
-    fn apply(&mut self, a: ForwardAuthority, keys: (&str, &str, &str, &str)) -> Result<(), String> {
+    fn apply(&mut self, action_authorization: crate::tools::comparison::ActionAuthorization, a: ForwardAuthority, keys: (&str, &str, &str, &str)) -> Result<(), String> {
         self.action_count += 1;
         if a.target != self.target || a.old != self.old || a.new.bytes != b"after" {
             return Err("path-mismatch".into());
         }
-        fs::write(&self.target, b"after").map_err(|e| e.to_string())?;
+        crate::atoms::r#do::file_write(
+            action_authorization,
+            a.key,
+            &self.target,
+            b"after",
+            crate::atoms::r#do::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None },
+        )?;
         self.target_write_count += 1;
         let mut changed_service = self.service.observe("bench.service")?;
         changed_service.enabled = false;
@@ -696,7 +707,18 @@ fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String>
         }))
 }
 
-pub(crate) fn restore(s: &Snapshot) -> Result<(), String> {
+fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key: InvocationKey) -> Result<(), String> {
+    let desired = bytes.to_vec();
+    let path = path.to_path_buf();
+    crate::tools::comparison::execute_once(
+        "ritual-restore-write",
+        || Ok::<_, String>(fs::read(&path).ok()),
+        |observed| if observed.as_deref() == Some(desired.as_slice()) { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different },
+        |authorization, _| crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(authorization, key, &path, &desired, mode, None, None),
+    ).map(|_| ())
+}
+
+pub(crate) fn restore(s: &Snapshot, key: InvocationKey) -> Result<(), String> {
     let mut changed = Vec::new();
     for root in &s.roots {
         safe_target(root)?;
@@ -727,7 +749,7 @@ pub(crate) fn restore(s: &Snapshot) -> Result<(), String> {
                 if let Some(p) = n.path.parent() {
                     fs::create_dir_all(p).map_err(|e| e.to_string())?;
                 }
-                crate::tools::files::atomic_write_bytes(&n.path, b, Some(n.mode & 0o7777))?
+                comparison_authorized_write(&n.path, b, Some(n.mode & 0o7777), key)?
             }
             Kind::Symlink(t) => {
                 if let Some(p) = n.path.parent() {
@@ -960,6 +982,7 @@ pub(crate) fn commit_projection(
 }
 pub(crate) fn rollback_projection(
     t: &mut ProjectionTransaction,
+    key: InvocationKey,
 ) -> Result<TransactionReceipt, String> {
     if t.state == TransactionState::RolledBack {
         return Ok(receipt_for(t));
@@ -967,7 +990,7 @@ pub(crate) fn rollback_projection(
     if t.state == TransactionState::Committed {
         return Err("committed-transaction-not-rollbackable".into());
     }
-    let a = restore(&t.sealed.snapshot);
+    let a = restore(&t.sealed.snapshot, key);
     let b = restore_services(&t.sealed.services);
     if a.is_ok() && b.is_ok() {
         t.state = TransactionState::RolledBack;
@@ -1179,14 +1202,14 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
     for t in &plan.targets {
         if fail.as_deref() != Some(t.member.as_str()) {
             if matches!(fs::symlink_metadata(&t.path),Ok(m)if m.is_file()) {
-                crate::tools::files::atomic_write_bytes(&t.path, b"mutated", None)?;
+                comparison_authorized_write(&t.path, b"mutated", None, _ctx.key)?;
             }
         }
     }
     let dir = root.join("receipts");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let verdict = if fail.is_some() {
-        restore(&snap)?;
+        restore(&snap, _ctx.key)?;
         "failed-rolled-back"
     } else {
         "ok"

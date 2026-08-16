@@ -204,13 +204,12 @@ pub(crate) fn rolling_update_run(
             let Some(mut txn) = transaction_guard else {
                 return Err(error);
             };
-            if let Ok(receipt) = crate::atoms::r#do::transaction::rollback_projection(&mut txn) {
+            if let Some(key) = mode.invocation() { if let Ok(receipt) = crate::atoms::r#do::transaction::rollback_projection(&mut txn, key) {
                 crate::atoms::attest::write_transaction_receipt(
                     &effective_receipt_dir,
                     &receipt,
                     Some(&error),
-                )?;
-            }
+                )?; } }
             return Err(error);
         }
         let Some(mut txn) = transaction_guard else {

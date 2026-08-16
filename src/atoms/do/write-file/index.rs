@@ -137,6 +137,77 @@ fn atomic_file_write(
     result
 }
 
+
+/// Authorized managed-file transactional writer. The comparison kernel supplies
+/// both capabilities; dry-run paths never enter this function.
+pub(crate) fn atomic_write_bytes_with_ownership(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    target: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
+    let temp = parent.join(format!(
+        ".{}.harmonia-tmp-{}",
+        target.file_name().and_then(|name| name.to_str()).unwrap_or("file"),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)
+            .map_err(|e| format!("files-temp-create-failed {}: {e}", temp.display()))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("files-temp-write-failed {}: {e}", temp.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("files-temp-sync-failed {}: {e}", temp.display()))?;
+        drop(file);
+        if let Some(mode) = mode { managed_set_mode(&temp, mode)?; }
+        managed_set_ownership(&temp, uid, gid)?;
+        fs::rename(&temp, target).map_err(|e| format!("files-atomic-promote-failed {} -> {}: {e}", temp.display(), target.display()))?;
+        let directory = OpenOptions::new().read(true).open(parent)
+            .map_err(|e| format!("files-parent-open-failed {}: {e}", parent.display()))?;
+        directory.sync_all().map_err(|e| format!("files-parent-sync-failed {}: {e}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+        let _ = OpenOptions::new().read(true).open(parent).and_then(|directory| directory.sync_all());
+    }
+    result?;
+    apply(authorization, invocation, Receipt { atom: "do".into(), ok: true, drift: Drift::Current, message: "managed file write complete".into() }).map(|_| ())
+}
+
+#[cfg(unix)]
+fn managed_set_mode(path: &Path, mode: u32) -> Result<(), String> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| format!("files-mode-set-failed {}: {e}", path.display()))
+}
+#[cfg(not(unix))]
+fn managed_set_mode(_path: &Path, _mode: u32) -> Result<(), String> { Ok(()) }
+#[cfg(unix)]
+fn managed_set_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
+    if uid.is_none() && gid.is_none() { return Ok(()); }
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path)
+        .map_err(|e| format!("files-owner-open-failed {}: {e}", path.display()))?;
+    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
+    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
+    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+        return Err(format!("files-owner-set-failed {}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+#[cfg(not(unix))]
+fn managed_set_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> { Ok(()) }
+
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
