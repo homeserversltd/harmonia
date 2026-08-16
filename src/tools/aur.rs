@@ -1,5 +1,5 @@
-use super::comparison::{self, DiffDecision};
 use super::command;
+use super::comparison::{self, DiffDecision};
 use crate::{write_json, CmdResult, OperationOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,10 +10,9 @@ use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-
 const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 const DEFAULT_AUR_BASE_URL: &str = "https://aur.archlinux.org";
-const DEFAULT_BUILD_ROOT: &str = "/var/tmp/harmonia/aur";
+pub(crate) const DEFAULT_BUILD_ROOT: &str = "/var/tmp/harmonia/aur";
 const HARMONIA_AUR_UPSTREAM_STATE_ENV: &str = "HARMONIA_AUR_UPSTREAM_STATE";
 
 #[cfg(test)]
@@ -76,6 +75,7 @@ pub(crate) struct AurBuildReceipt {
     pub pinned_pkgbuild_sha: String,
     pub build_dir: PathBuf,
     pub produced_package_path: Option<PathBuf>,
+    pub artifact_sha256: Option<String>,
     pub installed_version_before: Option<String>,
     pub install_requested: bool,
     pub installed_converged: bool,
@@ -345,95 +345,7 @@ pub(crate) fn install(
     Ok(outcome)
 }
 
-pub(crate) fn install_action(
-    receipt_dir: &Path,
-    receipt_name: &str,
-    package: &str,
-    timeout_secs: u64,
-    apply: bool,
-) -> Result<OperationOutcome, String> {
-    let timeout_secs = bounded_timeout(timeout_secs);
-    let build_dir = Path::new(DEFAULT_BUILD_ROOT).join(package);
-    let builder = if unsafe { libc::geteuid() } == 0 {
-        "nobody"
-    } else {
-        "current-user"
-    };
-    let mut receipt = serde_json::json!({
-        "schema": "harmonia.aur.install.v1",
-        "package": package,
-        "build_dir": build_dir,
-        "timeout_policy": format!("bounded-timeout-seconds={timeout_secs}"),
-        "safety_posture": "current-aur-head;no-pin;no-upstream-check-cycle;unprivileged-makepkg",
-        "unprivileged_builder": builder,
-        "ok": false,
-        "changed": false,
-        "installed_converged": false,
-        "first_blocker": null,
-    });
-    if !apply {
-        receipt["ok"] = Value::Bool(true);
-        receipt["first_blocker"] = Value::String("planned-only".into());
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
-        return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: format!("aur install planned {package}"),
-            command: None,
-        });
-    }
-    if installed_version(package).is_some() {
-        receipt["ok"] = Value::Bool(true);
-        receipt["installed_converged"] = Value::Bool(true);
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
-        return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: false,
-            message: format!("aur install idle {package}"),
-            command: None,
-        });
-    }
-    let outcome = prepare_current_build(package, &build_dir, builder, timeout_secs)?;
-    if !outcome.0.ok {
-        return write_install_failure(receipt_dir, receipt_name, package, receipt, outcome.0);
-    }
-    let Some(package_path) = outcome.1 else {
-        receipt["first_blocker"] = Value::String("aur-produced-package-missing".into());
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
-        return Ok(OperationOutcome {
-            ok: false,
-            changed: false,
-            skipped: false,
-            message: format!("aur install {package}"),
-            command: Some(outcome.0),
-        });
-    };
-    let install = install_built_package(&package_path, timeout_secs);
-    let verified = installed_version_command(package);
-    let ok = install.ok && verified.ok;
-    receipt["ok"] = Value::Bool(ok);
-    receipt["changed"] = Value::Bool(install.ok);
-    receipt["installed_converged"] = Value::Bool(ok);
-    if !ok {
-        receipt["first_blocker"] = Value::String(first_blocker(if !install.ok {
-            &install
-        } else {
-            &verified
-        }));
-    }
-    write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
-    Ok(OperationOutcome {
-        ok,
-        changed: install.ok,
-        skipped: false,
-        message: format!("aur install {package}"),
-        command: Some(outcome.0),
-    })
-}
-
-fn write_install_failure(
+pub(crate) fn write_install_failure(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -498,7 +410,7 @@ pub(crate) fn build_pinned(
         let receipt = AurBuildReceipt {
             schema: "harmonia.aur.build_pinned.v1", package: package.to_string(),
             pinned_version: lock.pinned_version.clone(), pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
-            build_dir, produced_package_path: None, installed_version_before: observed.clone(),
+            build_dir, produced_package_path: None, artifact_sha256: None, installed_version_before: observed.clone(),
             install_requested: install, installed_converged: true, first_blocker: None,
             pkgver_neutralized: false, timeout_policy: format!("bounded-timeout-seconds={timeout_secs}"),
             safety_posture: "bounded-timeout;no-curl-pipe-bash;no-partial-db-sync;exact-pkgbuild-sha;unprivileged-makepkg".into(),
@@ -506,6 +418,17 @@ pub(crate) fn build_pinned(
             install_command: None, install_verify_command: None,
         };
         write_build_receipt(receipt_dir, receipt_name, &receipt)?;
+        if install {
+            write_json(
+                &receipt_dir.join(format!("{receipt_name}.install.json")),
+                &serde_json::json!({
+                    "schema": "harmonia.aur.install_pinned.v1", "package": package,
+                    "expected_version": lock.pinned_version, "ok": true, "changed": false,
+                    "first_blocker": null, "build_proof": receipt_dir.join(format!("{receipt_name}.json")),
+                    "installed_converged": true
+                }),
+            )?;
+        }
         OperationOutcome {
             ok: true,
             changed: false,
@@ -531,146 +454,12 @@ pub(crate) fn build_pinned(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_pinned_action(
-    receipt_dir: &Path,
-    receipt_name: &str,
-    package: &str,
-    lock_path: &Path,
-    build_root: &Path,
-    source_dir: Option<&str>,
-    builder_user: Option<&str>,
-    timeout_secs: u64,
-    install: bool,
-    apply: bool,
-) -> Result<OperationOutcome, String> {
-    let lock = read_lock(lock_path, package)?;
-    let timeout_secs = bounded_timeout(timeout_secs);
-    let build_dir = build_root.join(package);
-    let safety_posture = "bounded-timeout;no-curl-pipe-bash;no-partial-db-sync;exact-pkgbuild-sha;unprivileged-makepkg";
-    let unprivileged_builder = if unsafe { libc::geteuid() } == 0 {
-        builder_user.unwrap_or("nobody").to_string()
-    } else {
-        "current-user".to_string()
-    };
-    let mut receipt = AurBuildReceipt {
-        schema: "harmonia.aur.build_pinned.v1",
-        package: package.to_string(),
-        pinned_version: lock.pinned_version.clone(),
-        pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
-        build_dir: build_dir.clone(),
-        produced_package_path: None,
-        installed_version_before: None,
-        install_requested: install,
-        installed_converged: false,
-        first_blocker: None,
-        pkgver_neutralized: false,
-        timeout_policy: format!("bounded-timeout-seconds={timeout_secs}"),
-        safety_posture: safety_posture.into(),
-        unprivileged_builder: unprivileged_builder.clone(),
-        ok: false,
-        changed: false,
-        command: None,
-        install_command: None,
-        install_verify_command: None,
-    };
 
-    if !apply {
-        receipt.ok = true;
-        receipt.first_blocker = Some("planned-only".into());
-        write_build_receipt(receipt_dir, receipt_name, &receipt)?;
-        return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: format!("aur build-pinned planned {package}"),
-            command: None,
-        });
-    }
-
-    if install {
-        let installed = installed_version(package);
-        if let Some(version) = &installed {
-            receipt.installed_version_before = Some(version.clone());
-            if version == &lock.pinned_version {
-                receipt.ok = true;
-                receipt.installed_converged = true;
-                write_build_receipt(receipt_dir, receipt_name, &receipt)?;
-                return Ok(OperationOutcome {
-                    ok: true,
-                    changed: false,
-                    skipped: false,
-                    message: format!("aur build-pinned idle {package}"),
-                    command: None,
-                });
-            }
-        }
-    }
-
-    let result = prepare_and_build(
-        &lock,
-        package,
-        &build_dir,
-        source_dir,
-        &unprivileged_builder,
-        timeout_secs,
-    );
-    match result {
-        Ok((command, package_path, pkgver_neutralized)) => {
-            receipt.pkgver_neutralized = pkgver_neutralized;
-            receipt.ok = command.ok;
-            receipt.changed = command.ok;
-            receipt.command = Some(command.clone());
-            if command.ok {
-                receipt.produced_package_path = package_path.clone();
-                if install {
-                    if let Some(path) = package_path {
-                        let install_result = install_built_package(&path, timeout_secs);
-                        let verify_result = installed_version_command(package);
-                        let verified_version = installed_version_from_result(&verify_result);
-                        receipt.installed_converged = install_result.ok
-                            && verified_version.as_deref() == Some(lock.pinned_version.as_str());
-                        receipt.changed = install_result.ok;
-                        receipt.ok = receipt.installed_converged;
-                        if !install_result.ok {
-                            receipt.first_blocker = Some(first_blocker(&install_result));
-                        } else if !receipt.installed_converged {
-                            receipt.first_blocker = Some(format!(
-                                "aur-installed-package-verify-failed expected={} actual={}",
-                                lock.pinned_version,
-                                verified_version.unwrap_or_else(|| "missing".to_string())
-                            ));
-                        }
-                        receipt.install_command = Some(install_result);
-                        receipt.install_verify_command = Some(verify_result);
-                    } else {
-                        receipt.ok = false;
-                        receipt.changed = false;
-                        receipt.first_blocker = Some("aur-produced-package-missing".into());
-                    }
-                }
-            } else {
-                receipt.first_blocker = Some(first_blocker(&command));
-            }
-        }
-        Err(err) => {
-            receipt.first_blocker = Some(err);
-        }
-    }
-    write_build_receipt(receipt_dir, receipt_name, &receipt)?;
-    Ok(OperationOutcome {
-        ok: receipt.ok,
-        changed: receipt.changed,
-        skipped: false,
-        message: format!("aur build-pinned {package}"),
-        command: receipt.command,
-    })
-}
-
-fn installed_version(package: &str) -> Option<String> {
+pub(crate) fn installed_version(package: &str) -> Option<String> {
     installed_version_from_result(&installed_version_command(package))
 }
 
-fn installed_version_command(package: &str) -> CmdResult {
+pub(crate) fn installed_version_command(package: &str) -> CmdResult {
     let pacman = crate::tools::package::pacman_program();
     if !Path::new(&pacman).exists() {
         return CmdResult {
@@ -683,7 +472,7 @@ fn installed_version_command(package: &str) -> CmdResult {
     command::capture(&pacman, &["-Q", package])
 }
 
-fn installed_version_from_result(result: &CmdResult) -> Option<String> {
+pub(crate) fn installed_version_from_result(result: &CmdResult) -> Option<String> {
     if !result.ok {
         return None;
     }
@@ -692,20 +481,20 @@ fn installed_version_from_result(result: &CmdResult) -> Option<String> {
     fields.next().map(ToString::to_string)
 }
 
-fn install_built_package(path: &Path, timeout_secs: u64) -> CmdResult {
+pub(crate) fn install_built_package(path: &Path, timeout_secs: u64) -> CmdResult {
     let pacman = crate::tools::package::pacman_program();
     let path = path.to_string_lossy().to_string();
     command::capture_with_timeout(&pacman, &["-U", "--noconfirm", &path], timeout_secs)
 }
 
-fn bounded_timeout(timeout_secs: u64) -> u64 {
+pub(crate) fn bounded_timeout(timeout_secs: u64) -> u64 {
     match timeout_secs {
         1..=14400 => timeout_secs,
         _ => DEFAULT_TIMEOUT_SECS,
     }
 }
 
-fn prepare_and_build(
+pub(crate) fn prepare_and_build(
     lock: &AurRatchetLock,
     package: &str,
     build_dir: &Path,
@@ -766,7 +555,7 @@ fn prepare_and_build(
     Ok((makepkg, produced, pkgver_neutralized))
 }
 
-fn prepare_current_build(
+pub(crate) fn prepare_current_build(
     package: &str,
     build_dir: &Path,
     builder: &str,
@@ -794,7 +583,7 @@ fn prepare_current_build(
     Ok((makepkg, produced))
 }
 
-fn neutralize_pkgver_function(
+pub(crate) fn neutralize_pkgver_function(
     build_dir: &Path,
     builder: &str,
     timeout_secs: u64,
@@ -826,7 +615,7 @@ fn neutralize_pkgver_function(
     Ok(true)
 }
 
-fn neutralize_pkgver_function_text(text: &str) -> Result<(String, bool), String> {
+pub(crate) fn neutralize_pkgver_function_text(text: &str) -> Result<(String, bool), String> {
     let mut out = Vec::new();
     let mut lines = text.lines();
     let mut changed = false;
@@ -860,7 +649,11 @@ fn neutralize_pkgver_function_text(text: &str) -> Result<(String, bool), String>
     Ok((rendered, changed))
 }
 
-fn makepkg_command(builder: &str, timeout_secs: u64, cwd: &Path) -> Result<CmdResult, String> {
+pub(crate) fn makepkg_command(
+    builder: &str,
+    timeout_secs: u64,
+    cwd: &Path,
+) -> Result<CmdResult, String> {
     if unsafe { libc::geteuid() } == 0 {
         if builder.trim().is_empty() || builder == "root" || builder == "current-user" {
             return Err("aur-unprivileged-builder-required-when-root".into());
@@ -881,8 +674,10 @@ fn makepkg_command(builder: &str, timeout_secs: u64, cwd: &Path) -> Result<CmdRe
                 .timeout_secs(timeout_secs),
         ))
     } else {
+        let makepkg =
+            env::var("HARMONIA_MAKEPKG_PATH").unwrap_or_else(|_| "/usr/bin/makepkg".into());
         Ok(command::capture_with_cwd_and_timeout(
-            "/usr/bin/makepkg",
+            &makepkg,
             &["--cleanbuild", "--force", "--noconfirm"],
             cwd.to_str(),
             timeout_secs,
@@ -890,7 +685,7 @@ fn makepkg_command(builder: &str, timeout_secs: u64, cwd: &Path) -> Result<CmdRe
     }
 }
 
-fn pinned_pkg_tar(
+pub(crate) fn pinned_pkg_tar(
     build_dir: &Path,
     package: &str,
     pinned_version: &str,
@@ -919,7 +714,7 @@ fn pinned_pkg_tar(
     }
 }
 
-fn current_pkg_tar(build_dir: &Path, package: &str) -> Result<Option<PathBuf>, String> {
+pub(crate) fn current_pkg_tar(build_dir: &Path, package: &str) -> Result<Option<PathBuf>, String> {
     let mut packages = Vec::new();
     let expected_prefix = format!("{package}-");
     let debug_prefix = format!("{package}-debug-");
@@ -942,7 +737,7 @@ fn current_pkg_tar(build_dir: &Path, package: &str) -> Result<Option<PathBuf>, S
     }
 }
 
-fn prepare_build_dir_for_builder(build_dir: &Path, builder: &str) -> Result<(), String> {
+pub(crate) fn prepare_build_dir_for_builder(build_dir: &Path, builder: &str) -> Result<(), String> {
     if unsafe { libc::geteuid() } != 0 || builder == "current-user" {
         return Ok(());
     }
@@ -957,7 +752,11 @@ fn prepare_build_dir_for_builder(build_dir: &Path, builder: &str) -> Result<(), 
 }
 
 #[cfg(unix)]
-fn chown_recursive(path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> Result<(), String> {
+pub(crate) fn chown_recursive(
+    path: &Path,
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| format!("aur-build-dir-chown-path-invalid {}", path.display()))?;
@@ -973,7 +772,7 @@ fn chown_recursive(path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> Result<()
     Ok(())
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
+pub(crate) fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(src).map_err(|e| format!("aur-source-dir-read-failed: {e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -988,7 +787,7 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn meaningful_stderr_tail(command: &CmdResult) -> String {
+pub(crate) fn meaningful_stderr_tail(command: &CmdResult) -> String {
     let mut tail: Vec<&str> = command
         .stderr
         .lines()
@@ -1022,7 +821,7 @@ fn is_curl_progress_line(line: &str) -> bool {
         })
 }
 
-fn first_blocker(command: &CmdResult) -> String {
+pub(crate) fn first_blocker(command: &CmdResult) -> String {
     if !command.stderr.trim().is_empty() {
         command
             .stderr
@@ -1089,7 +888,7 @@ fn augment_comparison_receipt(
     write_json(path, &receipt)
 }
 
-fn write_build_receipt(
+pub(crate) fn write_build_receipt(
     receipt_dir: &Path,
     receipt_name: &str,
     receipt: &AurBuildReceipt,

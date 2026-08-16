@@ -50,7 +50,7 @@ pub(crate) mod transaction;
 pub(crate) mod write_file;
 
 pub(crate) use compatibility::{
-    apply, aur_build_pinned, aur_install, cargo_build, command_with_timeout,
+    apply, aur_build_pinned, aur_install, aur_install_pinned, cargo_build, command_with_timeout,
     command_with_timeout_in_dir, command_with_timeout_in_dir_env, create_dir_all, file_write,
     git_acquire, git_pull, mutating_command, package_install, remove_file, rename, symlink,
     unit_change, unit_change_scoped, FileWriteOptions, FileWriteResult, InvocationKey, UnitVerb,
