@@ -51,12 +51,6 @@ pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
     (parse_utc(valid_until)? > unix_now()).then(|| timezone.to_string())
 }
 
-fn receipt_changed(text: &str) -> bool {
-    serde_json::from_str::<Value>(text)
-        .ok()
-        .and_then(|v| v.get("changed").and_then(Value::as_bool))
-        .unwrap_or(false)
-}
 pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
     CmdResult { ok: true, code: 0, stdout: format!("{{\"schema\":\"harmonia.household-time.receipt.v1\",\"changed\":false,\"preserved\":true,\"first_missing_signal\":\"{reason}\"}}"), stderr: source.stderr }
 }
