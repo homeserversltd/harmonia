@@ -24,7 +24,13 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     let caduceus = caduceus_bench(&root, invocation)?;
     let source_gate = json!({"fresh_source":true,"stale_service_ignored":true,"changed":false});
     let venv = venv_bench(&root, invocation)?;
-    let package = package_bench(&root)?;
+    let package = match package_bench(&root, invocation) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("package_root={} error={}", root.display(), e);
+            return Err(e);
+        }
+    };
     let never = never_converge_bench()?;
     let receipt = json!({
         "schema": "harmonia.stillness-bench.v1",
@@ -616,71 +622,298 @@ fn venv_bench(
     }))
 }
 
-fn package_bench(root: &Path) -> Result<serde_json::Value, String> {
+fn package_bench(
+    root: &Path,
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<serde_json::Value, String> {
     use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
     let dir = root.join("package");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let fr = dir.join("root");
+    let bin = fr.join("usr/bin");
+    let lock = fr.join("var/lib/pacman/db.lck");
+    fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+    fs::create_dir_all(lock.parent().unwrap()).map_err(|e| e.to_string())?;
     let state = dir.join("state");
-    fs::write(&state, b"pending\n").map_err(|e| e.to_string())?;
-    let fake = dir.join("pacman");
-    fs::write(&fake, format!("#!/bin/sh\nstate='{}'\ncase \"$1\" in\n  -Qu) if [ -s \"$state\" ]; then cat \"$state\"; exit 0; else exit 1; fi ;;\n  -Syu) if [ \"${{HARMONIA_BENCH_PERSIST:-0}}\" = 0 ]; then printf '' > \"$state\"; fi; printf 'upgrading bench\\n' ;;\n  -Q) printf 'bench 1\\n' ;;\nesac\n", state.display())).map_err(|e| e.to_string())?;
-    let mut perms = fs::metadata(&fake)
+    let target = dir.join("target");
+    let marker = dir.join("conflict");
+    fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
+    let fake = bin.join("pacman");
+    fs::write(&fake,format!(r#"#!/bin/sh
+s='{s}'; t='{t}'; m='{m}'
+if [ "$1" = --hold ]; then while :; do sleep 1; done; fi
+case "$1" in
+-Q) if [ "$(cat "$s")" = absent ]; then exit 1; else printf 'benchpkg 1\n'; fi ;;
+-Qu) if [ "$(cat "$s")" = pending ]; then printf 'benchpkg 1->2\n'; else exit 1; fi ;;
+-Syu) printf 'upgrading benchpkg
+'; [ "${{HARMONIA_BENCH_PERSIST:-0}}" = 1 ] || printf 'current
+' > "$s" ;;
+-S) if [ -f "$t" ] && [ ! -f "$m" ] && ! printf '%s' "$*"|grep -q -- --overwrite; then touch "$m"; printf 'exists in filesystem\n' >&2; exit 1; fi; printf 'installing benchpkg\n'; [ "${{HARMONIA_BENCH_PERSIST:-0}}" = 1 ] || printf 'current\n' > "$s"; printf '%s' "$*"|grep -q -- --overwrite && printf 'new-bytes\n' > "$t"; exit 0 ;;
+*) exit 0;; esac
+"#,s=state.display(),t=target.display(),m=marker.display())).map_err(|e|e.to_string())?;
+    let mut pm = fs::metadata(&fake)
         .map_err(|e| e.to_string())?
         .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&fake, perms).map_err(|e| e.to_string())?;
-    env::set_var("HARMONIA_PACMAN_PATH", &fake);
-    let first_dir = dir.join("first");
-    fs::create_dir_all(&first_dir).map_err(|e| e.to_string())?;
-    let first =
-        crate::tools::package::package_tool(&first_dir, "system-sync", "upgrade", &[], true)?;
-    let second_dir = dir.join("second");
-    fs::create_dir_all(&second_dir).map_err(|e| e.to_string())?;
-    let second =
-        crate::tools::package::package_tool(&second_dir, "system-sync", "upgrade", &[], true)?;
-    if !first.ok || !first.changed || !second.ok || second.changed {
-        return Err("package-bench-convergence-failed".into());
-    }
-    let second_receipt: serde_json::Value = serde_json::from_slice(
-        &fs::read(second_dir.join("system-sync.comparison.json")).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    if second_receipt["observed_after"]["current"]["code"] != 1
-        || !second_receipt["observed_after"]["current"]["stdout"]
-            .as_str()
-            .unwrap_or_default()
-            .is_empty()
-        || !second_receipt["observed_after"]["current"]["stderr"]
-            .as_str()
-            .unwrap_or_default()
-            .is_empty()
-    {
-        return Err("package-empty-exit-one-not-observed".into());
-    }
-    fs::write(&state, b"pending\n").map_err(|e| e.to_string())?;
-    env::set_var("HARMONIA_BENCH_PERSIST", "1");
-    let persistent_dir = dir.join("persistent");
-    fs::create_dir_all(&persistent_dir).map_err(|e| e.to_string())?;
-    let persistent =
-        crate::tools::package::package_tool(&persistent_dir, "system-sync", "upgrade", &[], true);
-    env::remove_var("HARMONIA_BENCH_PERSIST");
-    env::remove_var("HARMONIA_PACMAN_PATH");
-    let error = match persistent {
-        Err(e) if e == "package-act-did-not-converge" => e,
-        Ok(_) => return Err("package-persistent-upgrade-did-not-fail".into()),
-        Err(e) => return Err(e),
-    };
-    let receipt: serde_json::Value = serde_json::from_slice(
-        &fs::read(persistent_dir.join("system-sync.json")).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    for key in ["observed_before", "act", "observed_after", "converged"] {
-        if receipt.get(key).is_none() {
-            return Err(format!("package-receipt-missing-{key}"));
+    pm.set_mode(0o755);
+    fs::set_permissions(&fake, pm).map_err(|e| e.to_string())?;
+    let saved = env::var("HARMONIA_PACMAN_PATH").ok();
+    let sp = env::var("HARMONIA_BENCH_PERSIST").ok();
+    let sc = env::var("HARMONIA_BENCH_CONFLICT").ok();
+    let st = env::var("HARMONIA_BENCH_TARGET").ok();
+    struct R(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    impl Drop for R {
+        fn drop(&mut self) {
+            for (k, v) in [
+                ("HARMONIA_PACMAN_PATH", &self.0),
+                ("HARMONIA_BENCH_PERSIST", &self.1),
+                ("HARMONIA_BENCH_CONFLICT", &self.2),
+                ("HARMONIA_BENCH_TARGET", &self.3),
+            ] {
+                match v {
+                    Some(x) => env::set_var(k, x),
+                    None => env::remove_var(k),
+                }
+            }
         }
     }
+    let _r = R(saved, sp, sc, st);
+    env::set_var("HARMONIA_PACMAN_PATH", &fake);
+    let pk = vec!["benchpkg".to_string()];
+    let run = |n: &str, d: &Path| {
+        crate::tools::package::package_tool_with_policy_for_backend(
+            d,
+            n,
+            "install",
+            &pk,
+            true,
+            None,
+            &[],
+            30,
+            crate::PackageBackend::Pacman,
+            Some(invocation),
+        )
+    };
+    let cd = dir.join("current");
+    fs::create_dir_all(&cd).map_err(|e| e.to_string())?;
+    fs::write(&state, "current\n").map_err(|e| e.to_string())?;
+    let cur = run("install", &cd).map_err(|e| format!("current:{e}"))?;
+    let qd = dir.join("quiet");
+    fs::create_dir_all(&qd).map_err(|e| e.to_string())?;
+    let quiet = run("install", &qd).map_err(|e| format!("quiet:{e}"))?;
+    let cur_r: serde_json::Value = serde_json::from_slice(
+        &fs::read(cd.join("install.json")).map_err(|e| format!("cur-receipt:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let quiet_r: serde_json::Value = serde_json::from_slice(
+        &fs::read(qd.join("install.json")).map_err(|e| format!("quiet-receipt:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let p1 = cur.ok
+        && quiet.ok
+        && !cur.changed
+        && !quiet.changed
+        && fs::read_to_string(&state)
+            .map_err(|e| e.to_string())?
+            .trim()
+            == "current"
+        && cur_r["diff_decision"] == "empty"
+        && cur_r["movement"].is_null()
+        && quiet_r["diff_decision"] == "empty"
+        && quiet_r["movement"].is_null();
+    fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
+    let xd = dir.join("changed");
+    fs::create_dir_all(&xd).map_err(|e| e.to_string())?;
+    let ch = run("install", &xd).map_err(|e| format!("changed:{e}"))?;
+    let ch_r: serde_json::Value = serde_json::from_slice(
+        &fs::read(xd.join("install.json")).map_err(|e| format!("changed-receipt:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let p2 = ch.ok
+        && ch.changed
+        && fs::read_to_string(&state)
+            .map_err(|e| e.to_string())?
+            .trim()
+            == "current"
+        && ch_r["ok"] == true
+        && ch_r["changed"] == true
+        && ch_r["observed_state"] == "benchpkg 1\n";
+    let apt = dir.join("apt-get");
+    fs::write(
+        &apt,
+        "#!/bin/sh\n[ \"$1\" = -s ] && exit 0\nprintf 'The following packages will be installed: benchpkg\\n'\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let mut am = fs::metadata(&apt).map_err(|e| e.to_string())?.permissions();
+    am.set_mode(0o755);
+    fs::set_permissions(&apt, am).map_err(|e| e.to_string())?;
+    let oa = env::var("HARMONIA_APT_GET_PATH").ok();
+    env::set_var("HARMONIA_APT_GET_PATH", &apt);
+    let ad = dir.join("apt");
+    fs::create_dir_all(&ad).map_err(|e| e.to_string())?;
+    let ao = crate::tools::package::package_tool_with_policy_for_backend(
+        &ad,
+        "apt",
+        "install",
+        &pk,
+        false,
+        None,
+        &[],
+        30,
+        crate::PackageBackend::Apt,
+        Some(invocation),
+    )?;
+    match oa {
+        Some(v) => env::set_var("HARMONIA_APT_GET_PATH", v),
+        None => env::remove_var("HARMONIA_APT_GET_PATH"),
+    };
+    let ar: serde_json::Value = serde_json::from_slice(
+        &fs::read(ad.join("apt.json")).map_err(|e| format!("apt-read:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let pac_r = ch_r.clone();
+    let p3 = ao.ok
+        && pac_r["declared_package_backend"] == "pacman"
+        && ar["declared_package_backend"] == "apt";
+    fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
+    fs::write(&lock, b"").map_err(|e| e.to_string())?;
+    let fake_script = fs::read(&fake).map_err(|e| e.to_string())?;
+    fs::copy("/bin/sleep", &fake).map_err(|e| e.to_string())?;
+    let mut h = Command::new(&fake)
+        .arg("30")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    thread::sleep(std::time::Duration::from_millis(100));
+    let ld = dir.join("live");
+    fs::create_dir_all(&ld).map_err(|e| e.to_string())?;
+    let live = run("install", &ld);
+    let live_state = fs::read_to_string(&state).map_err(|e| e.to_string())?;
+    let live_lock_remains = lock.exists();
+    let _ = Command::new("kill").arg(h.id().to_string()).status();
+    let _ = h.wait();
+    fs::write(&fake, fake_script).map_err(|e| e.to_string())?;
+    let lr: serde_json::Value = serde_json::from_slice(
+        &fs::read(ld.join("pacman-database-lock-reclaim.json"))
+            .map_err(|e| format!("live-receipt:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let p4 = matches!(live, Err(_))
+        && live_lock_remains
+        && live_state.trim() == "absent"
+        && lr["lock_present"] == true
+        && lr["live_holder_found"] == true
+        && lr["reclaimed"] == false;
+    fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
+    fs::write(&lock, b"").map_err(|e| e.to_string())?;
+    let sd = dir.join("stale");
+    fs::create_dir_all(&sd).map_err(|e| e.to_string())?;
+    let stl = run("install", &sd).map_err(|e| format!("stale:{e}"))?;
+    let sr: serde_json::Value = serde_json::from_slice(
+        &fs::read(sd.join("pacman-database-lock-reclaim.json"))
+            .map_err(|e| format!("stale-receipt:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let p5 = stl.ok
+        && stl.changed
+        && sr["lock_present"] == true
+        && sr["live_holder_found"] == false
+        && sr["reclaimed"] == true
+        && !lock.exists()
+        && fs::read_to_string(&state)
+            .map_err(|e| e.to_string())?
+            .trim()
+            == "current";
+    fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
+    fs::write(&target, b"old-bytes\n").map_err(|e| e.to_string())?;
+    env::set_var("HARMONIA_BENCH_CONFLICT", "1");
+    env::set_var("HARMONIA_BENCH_TARGET", &target);
+    let od = dir.join("overwrite");
+    fs::create_dir_all(&od).map_err(|e| e.to_string())?;
+    let ov = crate::tools::package::package_tool_with_policy_for_backend(
+        &od,
+        "install",
+        "install",
+        &pk,
+        true,
+        Some("overwrite-declared-paths"),
+        &[target.to_string_lossy().into_owned()],
+        30,
+        crate::PackageBackend::Pacman,
+        Some(invocation),
+    )
+    .map_err(|e| format!("overwrite-call:{e}"))?;
+    let pre: serde_json::Value = serde_json::from_slice(
+        &fs::read(od.join("pacman-overwrite-preimage.json")).map_err(|e| format!("pre:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let tx: serde_json::Value = serde_json::from_slice(
+        &fs::read(od.join("pacman-package-transaction.json")).map_err(|e| format!("tx:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let retry_text = ov
+        .command
+        .as_ref()
+        .map(|c| format!("{}\n{}", c.stdout, c.stderr))
+        .unwrap_or_default();
+    let p6 = pre["paths"]
+        .as_array()
+        .is_some_and(|paths| paths.len() == 1)
+        && pre["paths"][0]["path"] == target.to_string_lossy().as_ref()
+        && pre["paths"][0]["exists"] == true
+        && pre["paths"][0]["type"] == "file"
+        && pre["paths"][0]["bytes_hex"] == "6f6c642d62797465730a"
+        && fs::read(&target).map_err(|e| e.to_string())? == b"new-bytes\n"
+        && tx["overwrite_paths"]
+            .as_array()
+            .is_some_and(|paths| paths.len() == 1 && paths[0] == target.to_string_lossy().as_ref())
+        && retry_text.contains("--overwrite")
+        && retry_text.contains(target.to_string_lossy().as_ref())
+        && ov.ok
+        && ov.changed
+        && tx["first_ok"] == false
+        && tx["second_ok"] == true;
+    env::set_var("HARMONIA_BENCH_PERSIST", "1");
+    env::remove_var("HARMONIA_BENCH_CONFLICT");
+    fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
+    let pd = dir.join("persistent");
+    fs::create_dir_all(&pd).map_err(|e| e.to_string())?;
+    let per = run("install", &pd);
+    let pr: serde_json::Value =
+        serde_json::from_slice(&fs::read(pd.join("install.json")).map_err(|e| format!("pr:{e}"))?)
+            .map_err(|e| e.to_string())?;
+    let pc: serde_json::Value = serde_json::from_slice(
+        &fs::read(pd.join("install.comparison.json")).map_err(|e| format!("pc:{e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let p7 = matches!(per, Err(ref e) if e == "install-package-act-did-not-converge")
+        && pc["diff_decision"] == "different"
+        && pc["observed_before"].is_object()
+        && pc["act"].is_object()
+        && pc["observed_after"].is_object()
+        && pc["converged"] == false;
+    let live_result = match &live {
+        Ok(v) => json!({"ok":v.ok,"changed":v.changed}),
+        Err(e) => json!({"error":e}),
+    };
+    let persistent_result = match &per {
+        Ok(v) => json!({"ok":v.ok,"changed":v.changed}),
+        Err(e) => json!({"error":e}),
+    };
+    let predicates = json!({"current_to_quiet":p1,"changed_to_current":p2,"backend_selection":p3,"live_lock_refusal":p4,"stale_lock_declared_removal":p5,"overwrite_path_preimage_capture":p6,"transaction_receipt":p6,"persistent_difference_failure":p7});
+    if !predicates.as_object().unwrap().values().all(|v| v == true) {
+        return Err(format!(
+            "package-eight-predicate-battery-failed:{predicates}"
+        ));
+    }
     Ok(
-        json!({"first": {"ok": first.ok, "changed": first.changed, "pending_set": "pending"}, "second": {"ok": second.ok, "changed": second.changed, "pending_set": [], "pacman_exit": 1}, "persistent_upgrade_failure": {"ok": false, "signal": error, "receipt": receipt}}),
+        json!({"predicates":predicates,"current_to_quiet":{"current":{"ok":cur.ok,"changed":cur.changed},"quiet":{"ok":quiet.ok,"changed":quiet.changed}},"changed_to_current":{"ok":ch.ok,"changed":ch.changed},"backend_selection":{"pacman":pac_r,"apt":ar},"live_lock_refusal":{"result":live_result,"receipt":lr},"stale_lock_declared_removal":{"result":{"ok":stl.ok,"changed":stl.changed},"receipt":sr},"overwrite_path_preimage_capture":pre,"transaction_receipt":tx,"persistent_difference_failure":{"result":persistent_result,"receipt":pr}}),
     )
 }
 
