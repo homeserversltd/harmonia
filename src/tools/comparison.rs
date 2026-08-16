@@ -62,6 +62,32 @@ where
     )
 }
 
+/// Runs one bounded plan command after a real comparison. This is for
+/// planners whose dry-run action is intentionally non-converging: the action
+/// still receives authorization only when the observed state differs.
+pub(crate) fn execute_once<Observed, Movement, Error>(
+    _operation: &str,
+    mut observe: impl FnMut() -> Result<Observed, Error>,
+    mut compare: impl FnMut(&Observed) -> DiffDecision,
+    act: impl FnOnce(ActionAuthorization, &Observed) -> Result<Movement, Error>,
+) -> Result<ComparisonRun<Observed, Movement>, Error>
+where
+    Error: From<String>,
+{
+    let observation = observe()?;
+    match compare(&observation) {
+        DiffDecision::Empty => Ok(ComparisonRun::Current {
+            observation,
+            decision: DiffDecision::Empty,
+        }),
+        DiffDecision::Different => Ok(ComparisonRun::Moved {
+            movement: act(ActionAuthorization(()), &observation)?,
+            observation,
+            decision: DiffDecision::Different,
+        }),
+    }
+}
+
 /// Runs the comparison and gives the owner one last chance to persist the
 /// complete guard receipt before a persistent post-act mismatch is returned.
 pub(crate) fn execute_with_failure_receipt<Observed, Movement, Error>(
