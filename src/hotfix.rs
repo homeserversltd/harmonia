@@ -1,6 +1,5 @@
 use crate::{subscription_path, tools, write_json, Profile};
 use serde_json::{json, Map, Value};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 const SCHEMA: &str = "harmonia.hotfix.v1";
@@ -20,7 +19,11 @@ struct Payload {
     owner: Option<String>,
 }
 
-pub(crate) fn run_profile_hotfixes(profile: &Profile, receipt_dir: &Path, invocation: Option<crate::atoms::r#do::InvocationKey>) {
+pub(crate) fn run_profile_hotfixes(
+    profile: &Profile,
+    receipt_dir: &Path,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) {
     for (ordinal, declaration) in profile.hotfixes.iter().enumerate() {
         if let Err(blocker) = run_one(profile, receipt_dir, declaration, invocation) {
             // A Hotfix failure is terminal for that declaration, never for the
@@ -31,7 +34,12 @@ pub(crate) fn run_profile_hotfixes(profile: &Profile, receipt_dir: &Path, invoca
     }
 }
 
-fn run_one(profile: &Profile, receipt_dir: &Path, declaration: &Value, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
+fn run_one(
+    profile: &Profile,
+    receipt_dir: &Path,
+    declaration: &Value,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
     let object = declaration
         .as_object()
         .ok_or_else(|| "hotfix-declaration-not-object".to_string())?;
@@ -198,10 +206,10 @@ fn write_blocked_receipt(
 }
 
 fn prior_receipt(path: &Path) -> Result<Map<String, Value>, String> {
-    if std::fs::metadata(path).is_err() {
+    if !crate::atoms::ask::exists(path) {
         return Ok(Map::new());
     }
-    let text = fs::read_to_string(path)
+    let text = crate::atoms::ask::text(path)
         .map_err(|error| format!("hotfix-receipt-read-failed {}: {error}", path.display()))?;
     Ok(serde_json::from_str::<Value>(&text)
         .map_err(|error| format!("hotfix-receipt-parse-failed {}: {error}", path.display()))?

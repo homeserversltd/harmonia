@@ -60,7 +60,7 @@ pub(crate) fn execute_profile_module(
     let module_dir = receipt_dir.join("modules").join(&module.id);
     crate::atoms::attest::prepare_receipt_parent(&module_dir)?;
     let manifest_path = module_root.join(&module.id).join("manifest.json");
-    if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
+    if crate::atoms::ask::exists(&manifest_path) && is_ladder_manifest(&manifest_path) {
         let manifest = load_ladder_manifest(&manifest_path)?;
         if manifest.id != module.id {
             return Err(format!(
