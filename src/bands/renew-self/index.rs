@@ -713,7 +713,7 @@ pub(crate) fn run_engine_preflight(
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     let preflight_dir = receipt_dir.join("engine-preflight");
-    fs::create_dir_all(&preflight_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
     let config_path = engine_config_path();
     let Some(config) = load_engine_plane_config(&config_path)? else {
         let signal = "engine-self-possession-unconfigured";

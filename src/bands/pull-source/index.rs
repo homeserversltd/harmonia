@@ -717,7 +717,7 @@ pub(crate) fn execute_manifest_band(
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
 ) -> Result<ModuleExecution, String> {
-    fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
         ok: true,
         changed: false,
@@ -974,7 +974,7 @@ pub(crate) fn execute_routine_child(
 ) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
     let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
     let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
-    std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {
         "pull-repo" => {

@@ -184,7 +184,7 @@ pub(crate) fn execute_manifest_band(
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
 ) -> Result<ModuleExecution, String> {
-    fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
         ok: true,
         changed: false,
@@ -429,7 +429,7 @@ pub(crate) fn execute_routine_child(
         .and_then(|name| contract.permutation(name))
         .or_else(|| contract.permutations.first())
         .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
-    std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {
         "check-health" => {
@@ -741,7 +741,7 @@ fn homeconsole_arcadia_update_check(
             profile.id, profile.identity
         ));
     }
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
     event(&mut events, "arcadia-start", true, "Arcadia update started")?;
     let metadata = fs::metadata(artifact).map_err(|e| format!("artifact-missing: {e}"))?;
@@ -837,7 +837,7 @@ fn homeconsole_arcadia_update_apply(
             profile.id, profile.identity
         ));
     }
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut events = File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
     event(&mut events, "arcadia-start", true, "Arcadia update started")?;
     let metadata = fs::metadata(artifact).map_err(|e| format!("artifact-missing: {e}"))?;
@@ -849,7 +849,7 @@ fn homeconsole_arcadia_update_apply(
     let mut first_missing_signal = "none".to_string();
     if apply {
         if let Some(parent) = install_bin.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            crate::atoms::r#do::make_dir::create_dir_all(authorization, invocation, parent)?;
         }
         let before_sha = sha256_file(install_bin).ok();
         let binary_changed = before_sha.as_deref() != Some(artifact_sha.as_str());
@@ -982,7 +982,7 @@ pub(crate) fn homeconsole_arcadia_gui_update(
             profile.id, profile.identity
         ));
     }
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
 
     let certificate = crate::device_profile_certificate_path();
     let resolution = crate::resolve_source(
