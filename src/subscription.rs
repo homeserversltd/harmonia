@@ -2,11 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const SUBSCRIPTION_SCHEMA: &str = "harmonia.subscription.v1";
 const DEFAULT_SUBSCRIPTION_PATH: &str = "/var/lib/harmonia/subscription.json";
+const DECLARED_SUBSCRIPTION_MODE: u32 = 0o644;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct SubscriptionModuleReceived {
@@ -132,6 +134,14 @@ pub(crate) fn update_subscription_record(
     } else {
         Value::Object(Map::new())
     };
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.is_dir() || meta.file_type().is_symlink() {
+            return Err(format!(
+                "subscription-output-kind-collision {}",
+                path.display()
+            ));
+        }
+    }
     let mut object = existing_value.as_object().cloned().unwrap_or_default();
     let mut modules_object = object
         .get("modules")
@@ -139,16 +149,26 @@ pub(crate) fn update_subscription_record(
         .cloned()
         .unwrap_or_default();
     for module in update.modules {
-        modules_object.insert(
-            module.id,
-            json!({
-                "version": module.version,
-                "tree_sha256": module.tree_sha256,
-                "received_at_run_id": module.received_at_run_id,
-            }),
-        );
+        let unchanged = modules_object
+            .get(&module.id)
+            .and_then(Value::as_object)
+            .map(|old| {
+                old.get("version").and_then(Value::as_str) == Some(module.version.as_str())
+                    && old.get("tree_sha256").and_then(Value::as_str)
+                        == Some(module.tree_sha256.as_str())
+            })
+            .unwrap_or(false);
+        if !unchanged {
+            modules_object.insert(
+                module.id,
+                json!({
+                    "version": module.version,
+                    "tree_sha256": module.tree_sha256,
+                    "received_at_run_id": module.received_at_run_id,
+                }),
+            );
+        }
     }
-    let updated_at_unix_ms = now_unix_ms();
     object.insert("schema".to_string(), json!(SUBSCRIPTION_SCHEMA));
     object.insert("lane".to_string(), json!(update.lane));
     object.insert("source".to_string(), json!(update.source));
@@ -162,8 +182,91 @@ pub(crate) fn update_subscription_record(
         json!(update.engine_version_received),
     );
     object.insert("modules".to_string(), Value::Object(modules_object));
-    object.insert("updated_at_unix_ms".to_string(), json!(updated_at_unix_ms));
-    write_json_value_atomic(path, &Value::Object(object))?;
+    let mut current_without_time = object.clone();
+    current_without_time.remove("updated_at_unix_ms");
+    let existing_without_time = existing_value.as_object().map(|old| {
+        let mut old = old.clone();
+        old.remove("updated_at_unix_ms");
+        old
+    });
+    if existing_without_time.as_ref() == Some(&current_without_time) {
+        return read_subscription_record(path)?
+            .ok_or_else(|| "subscription-write-missing-after-promote".to_string());
+    }
+    object.insert("updated_at_unix_ms".to_string(), json!(now_unix_ms()));
+    let value = Value::Object(object);
+    let bytes = serde_json::to_vec_pretty(&value)
+        .map_err(|e| e.to_string())
+        .map(|mut b| {
+            b.push(b'\n');
+            b
+        })?;
+    let key = crate::invocation_face::mint(&["molt".into(), "--apply".into()])
+        .0
+        .ok_or_else(|| "subscription-invocation-key-missing".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "subscription-parent-missing".to_string())?;
+    ensure_subscription_parent(key, parent)?;
+    let parent_meta = fs::symlink_metadata(parent).map_err(|e| {
+        format!(
+            "subscription-parent-authority-missing {}: {e}",
+            parent.display()
+        )
+    })?;
+    let target_tail = fs::symlink_metadata(path)
+        .ok()
+        .map(|meta| (meta.mode() & 0o7777, meta.uid(), meta.gid()))
+        .unwrap_or((
+            DECLARED_SUBSCRIPTION_MODE,
+            parent_meta.uid(),
+            parent_meta.gid(),
+        ));
+    crate::tools::comparison::execute(
+        "subscription-promote",
+        || Ok(fs::read(path).ok().as_deref() == Some(bytes.as_slice())),
+        |same| {
+            if *same {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |authorization, _| {
+            crate::atoms::r#do::write_file::file_write(
+                authorization,
+                key,
+                path,
+                &bytes,
+                crate::atoms::r#do::write_file::FileWriteOptions {
+                    write_bytes: true,
+                    mode: Some(target_tail.0),
+                    uid: Some(target_tail.1),
+                    gid: Some(target_tail.2),
+                    backup_to: None,
+                },
+            )
+            .map(|_| ())
+        },
+    )?;
+    let post_meta = fs::symlink_metadata(path).map_err(|e| {
+        format!(
+            "subscription-postimage-metadata-missing {}: {e}",
+            path.display()
+        )
+    })?;
+    if (post_meta.mode() & 0o7777, post_meta.uid(), post_meta.gid()) != target_tail {
+        return Err(format!(
+            "subscription-postimage-metadata-mismatch {}",
+            path.display()
+        ));
+    }
+    if fs::read(path).ok().as_deref() != Some(bytes.as_slice()) {
+        return Err(format!(
+            "subscription-postimage-mismatch {}",
+            path.display()
+        ));
+    }
     read_subscription_record(path)?
         .ok_or_else(|| "subscription-write-missing-after-promote".to_string())
 }
@@ -229,8 +332,47 @@ pub(crate) fn update_engine_plane(
     write_json_value_atomic(path, &Value::Object(object))
 }
 
-pub(crate) fn hotfix_ledger_entry(path: &Path, hotfix_id: &str) -> Result<Option<Value>, String> { if !path.exists() { return Ok(None); } let text = fs::read_to_string(path).map_err(|error| format!("subscription-read-failed {}: {error}", path.display()))?; let value: Value = serde_json::from_str(&text).map_err(|error| format!("subscription-parse-failed {}: {error}", path.display()))?; Ok(value.get("hotfix_ledger").and_then(Value::as_object).and_then(|ledger| ledger.get(hotfix_id)).cloned()) }
-pub(crate) fn close_hotfix_ledger(path: &Path, hotfix_id: &str, body_identity: &str, closing_reason: &str, receipt_reference: &Path) -> Result<(), String> { let existing = if path.exists() { let text = fs::read_to_string(path).map_err(|error| format!("subscription-read-failed {}: {error}", path.display()))?; serde_json::from_str::<Value>(&text).map_err(|error| format!("subscription-parse-failed {}: {error}", path.display()))? } else { Value::Object(Map::new()) }; let mut root = existing.as_object().cloned().unwrap_or_default(); let mut ledger = root.get("hotfix_ledger").and_then(Value::as_object).cloned().unwrap_or_default(); ledger.entry(hotfix_id.to_string()).or_insert_with(|| json!({"hotfix_id": hotfix_id, "body_identity": body_identity, "closing_reason": closing_reason, "receipt_reference": receipt_reference})); root.insert("hotfix_ledger".to_string(), Value::Object(ledger)); root.insert("schema".to_string(), json!(SUBSCRIPTION_SCHEMA)); root.insert("updated_at_unix_ms".to_string(), json!(now_unix_ms())); write_json_value_atomic(path, &Value::Object(root)) }
+pub(crate) fn hotfix_ledger_entry(path: &Path, hotfix_id: &str) -> Result<Option<Value>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("subscription-read-failed {}: {error}", path.display()))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("subscription-parse-failed {}: {error}", path.display()))?;
+    Ok(value
+        .get("hotfix_ledger")
+        .and_then(Value::as_object)
+        .and_then(|ledger| ledger.get(hotfix_id))
+        .cloned())
+}
+pub(crate) fn close_hotfix_ledger(
+    path: &Path,
+    hotfix_id: &str,
+    body_identity: &str,
+    closing_reason: &str,
+    receipt_reference: &Path,
+) -> Result<(), String> {
+    let existing = if path.exists() {
+        let text = fs::read_to_string(path)
+            .map_err(|error| format!("subscription-read-failed {}: {error}", path.display()))?;
+        serde_json::from_str::<Value>(&text)
+            .map_err(|error| format!("subscription-parse-failed {}: {error}", path.display()))?
+    } else {
+        Value::Object(Map::new())
+    };
+    let mut root = existing.as_object().cloned().unwrap_or_default();
+    let mut ledger = root
+        .get("hotfix_ledger")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    ledger.entry(hotfix_id.to_string()).or_insert_with(|| json!({"hotfix_id": hotfix_id, "body_identity": body_identity, "closing_reason": closing_reason, "receipt_reference": receipt_reference}));
+    root.insert("hotfix_ledger".to_string(), Value::Object(ledger));
+    root.insert("schema".to_string(), json!(SUBSCRIPTION_SCHEMA));
+    root.insert("updated_at_unix_ms".to_string(), json!(now_unix_ms()));
+    write_json_value_atomic(path, &Value::Object(root))
+}
 
 pub(crate) fn write_json_value_atomic(path: &Path, value: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "\n";
@@ -251,6 +393,38 @@ pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String
             path.display()
         )
     })
+}
+
+fn ensure_subscription_parent(
+    key: crate::atoms::r#do::InvocationKey,
+    parent: &Path,
+) -> Result<(), String> {
+    if let Ok(meta) = fs::symlink_metadata(parent) {
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            return Ok(());
+        }
+        return Err(format!(
+            "subscription-parent-kind-collision {}",
+            parent.display()
+        ));
+    }
+    crate::tools::comparison::execute(
+        "subscription-parent-create",
+        || {
+            Ok(fs::symlink_metadata(parent)
+                .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+                .unwrap_or(false))
+        },
+        |present| {
+            if *present {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent),
+    )?;
+    Ok(())
 }
 
 pub(crate) fn preserve_existing_lane_or_default(path: &Path) -> String {

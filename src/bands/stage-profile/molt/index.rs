@@ -2,6 +2,7 @@ use crate::*;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +80,9 @@ pub(crate) fn molt_at_subscription_path(
     subscription_path: &Path,
     mode: MoltMode,
 ) -> Result<(), String> {
+    let key = crate::invocation_face::mint(&["molt".into(), "--apply".into()])
+        .0
+        .ok_or_else(|| "molt-invocation-key-missing".to_string())?;
     validate_harmonia_config_root(harmonia_root)?;
     let profile_path = harmonia_root
         .join("profiles")
@@ -117,6 +121,7 @@ pub(crate) fn molt_at_subscription_path(
     let mut pruned_paths = Vec::new();
     let mut untouched_modules = Vec::new();
     export_one(
+        key,
         &profile_path,
         &output_dir.join("index.json"),
         "profile-index",
@@ -143,6 +148,7 @@ pub(crate) fn molt_at_subscription_path(
         if manifest.exists() && is_ladder_manifest(&manifest) {
             let ladder = load_ladder_manifest(&manifest)?;
             export_one(
+                key,
                 &manifest,
                 &module_output_dir.join("manifest.json"),
                 "module-ladder-manifest",
@@ -151,6 +157,7 @@ pub(crate) fn molt_at_subscription_path(
             )?;
             if let Some(files_root) = ladder.files_root.as_deref() {
                 export_tree(
+                    key,
                     &module_dir.join(files_root),
                     &module_output_dir.join(files_root),
                     "module-ladder-files-root",
@@ -160,6 +167,7 @@ pub(crate) fn molt_at_subscription_path(
                 )?;
             }
             export_module_sibling_files(
+                key,
                 &module_dir,
                 &module_output_dir,
                 ladder.files_root.as_deref(),
@@ -169,6 +177,7 @@ pub(crate) fn molt_at_subscription_path(
         } else if sidecar.exists() {
             load_module(&sidecar)?;
             export_one(
+                key,
                 &sidecar,
                 &module_output_dir.join("sidecar.json"),
                 "module-sidecar",
@@ -189,6 +198,7 @@ pub(crate) fn molt_at_subscription_path(
         .join("pinned-artifacts.json");
     if lock_path.exists() {
         export_one(
+            key,
             &lock_path,
             &output_dir.join("locks").join("pinned-artifacts.json"),
             "profile-lock",
@@ -198,7 +208,7 @@ pub(crate) fn molt_at_subscription_path(
     }
 
     let output_module_root = output_dir.join("modules");
-    let pruned_modules = prune_retired_module_dirs(&output_module_root, &profile.modules)?;
+    let pruned_modules = prune_retired_module_dirs(key, &output_module_root, &profile.modules)?;
 
     let lane = preserve_existing_lane_or_default(&subscription_path);
     update_subscription_record(
@@ -213,7 +223,7 @@ pub(crate) fn molt_at_subscription_path(
         },
     )?;
 
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt = MoltReceipt {
         schema: "harmonia.molt.v1",
         ok: true,
@@ -232,7 +242,10 @@ pub(crate) fn molt_at_subscription_path(
         first_missing_signal: "molt-none",
     };
     let receipt_text = serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?;
-    fs::write(receipt_dir.join("molt.json"), receipt_text).map_err(|e| e.to_string())?;
+    crate::atoms::attest::write_json_atomic(
+        &receipt_dir.join("molt.json"),
+        &serde_json::from_str(&receipt_text).map_err(|e| e.to_string())?,
+    )?;
 
     println!("schema=harmonia.molt.v1");
     hyalos::forward_receipt(
@@ -258,6 +271,7 @@ pub(crate) fn molt_at_subscription_path(
 }
 
 fn prune_retired_module_dirs(
+    key: crate::atoms::r#do::InvocationKey,
     output_module_root: &Path,
     declared_modules: &[String],
 ) -> Result<Vec<String>, String> {
@@ -284,12 +298,21 @@ fn prune_retired_module_dirs(
         {
             continue;
         }
-        fs::remove_dir_all(&module_path).map_err(|e| {
-            format!(
-                "molt-prune-module-dir-failed {}: {e}",
-                module_path.display()
-            )
-        })?;
+        let restoration_testimony = crate::atoms::r#do::remove_dir::capture(&module_path)?;
+        crate::tools::comparison::execute(
+            "molt-retired-tree-remove",
+            || Ok(fs::symlink_metadata(&module_path).is_ok()),
+            |present| {
+                if *present {
+                    crate::tools::comparison::DiffDecision::Different
+                } else {
+                    crate::tools::comparison::DiffDecision::Empty
+                }
+            },
+            |authorization, _| {
+                crate::atoms::r#do::remove_dir::operate(authorization, key, &module_path, None)
+            },
+        )?;
         pruned_modules.push(module_name);
     }
     Ok(pruned_modules)
@@ -329,38 +352,363 @@ fn validate_harmonia_config_root(harmonia_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MetadataTail {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    no_follow: bool,
+}
+
+const DECLARED_NO_FOLLOW: bool = true;
+
+fn metadata_tail(path: &Path) -> Result<MetadataTail, String> {
+    let m = fs::symlink_metadata(path)
+        .map_err(|e| format!("molt-metadata-tail-missing {}: {e}", path.display()))?;
+    let no_follow = DECLARED_NO_FOLLOW;
+    Ok(MetadataTail {
+        mode: m.mode() & 0o7777,
+        uid: m.uid(),
+        gid: m.gid(),
+        no_follow,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ExportPreimage {
+    bytes: Option<Vec<u8>>,
+    link_target: Option<PathBuf>,
+    tail: MetadataTail,
+}
+
+fn capture_export_preimage(
+    output: &Path,
+    metadata: Option<&fs::Metadata>,
+) -> Result<Option<ExportPreimage>, String> {
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
+    let tail = metadata_tail(output)?;
+    if metadata.file_type().is_symlink() {
+        Ok(Some(ExportPreimage {
+            bytes: None,
+            link_target: Some(fs::read_link(output).map_err(|e| e.to_string())?),
+            tail,
+        }))
+    } else {
+        Ok(Some(ExportPreimage {
+            bytes: Some(fs::read(output).map_err(|e| e.to_string())?),
+            link_target: None,
+            tail,
+        }))
+    }
+}
+
+fn ensure_tail_can_converge(desired: &MetadataTail, path: &Path) -> Result<(), String> {
+    if unsafe { libc::geteuid() } != 0
+        && (desired.uid != unsafe { libc::geteuid() } || desired.gid != unsafe { libc::getegid() })
+    {
+        return Err(format!("molt-owner-cannot-converge {}", path.display()));
+    }
+    Ok(())
+}
+
+fn converge_file_tail(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    key: crate::atoms::r#do::InvocationKey,
+    path: &Path,
+    desired: MetadataTail,
+) -> Result<(), String> {
+    crate::atoms::r#do::change_mode::change(
+        authorization,
+        key,
+        &crate::atoms::r#do::change_mode::Plan {
+            path: path.to_path_buf(),
+            mode: Some(desired.mode),
+            no_follow: desired.no_follow,
+        },
+    )?;
+    crate::atoms::r#do::change_owner::change(
+        authorization,
+        key,
+        &crate::atoms::r#do::change_owner::Plan {
+            path: path.to_path_buf(),
+            uid: Some(desired.uid),
+            gid: Some(desired.gid),
+            no_follow: desired.no_follow,
+        },
+    )
+}
+
+fn verify_absent(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+        Ok(_) => Err("target-remains".into()),
+    }
+}
+
+fn transactional_export_failure(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    key: crate::atoms::r#do::InvocationKey,
+    output: &Path,
+    preimage: Option<&ExportPreimage>,
+    error: String,
+) -> String {
+    let restoration = match preimage {
+        Some(old) => {
+            let Some(bytes) = old.bytes.as_deref() else {
+                return format!("{error}; restoration-failed prior-kind-not-file");
+            };
+            crate::atoms::r#do::write_file::file_write(
+                authorization,
+                key,
+                output,
+                bytes,
+                crate::atoms::r#do::write_file::FileWriteOptions {
+                    write_bytes: true,
+                    mode: Some(old.tail.mode),
+                    uid: Some(old.tail.uid),
+                    gid: Some(old.tail.gid),
+                    backup_to: None,
+                },
+            )
+            .and_then(|_| verify_file_restore(output, bytes, old.tail))
+        }
+        None => match fs::symlink_metadata(output) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+            Ok(_) => crate::atoms::r#do::remove_file::remove_file(authorization, key, output)
+                .and_then(|_| verify_absent(output)),
+        },
+    };
+    match restoration {
+        Ok(()) => error,
+        Err(restoration) => format!("{error}; restoration-failed {restoration}"),
+    }
+}
+
+fn converge_link_tail(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    key: crate::atoms::r#do::InvocationKey,
+    path: &Path,
+    desired: MetadataTail,
+) -> Result<(), String> {
+    if desired.uid != unsafe { libc::geteuid() } || desired.gid != unsafe { libc::getegid() } {
+        return Err(format!(
+            "molt-export-link-tail-cannot-converge {}",
+            path.display()
+        ));
+    }
+    crate::atoms::r#do::change_owner::change(
+        authorization,
+        key,
+        &crate::atoms::r#do::change_owner::Plan {
+            path: path.to_path_buf(),
+            uid: Some(desired.uid),
+            gid: Some(desired.gid),
+            no_follow: true,
+        },
+    )
+}
+
+fn transactional_link_failure(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    key: crate::atoms::r#do::InvocationKey,
+    output: &Path,
+    preimage: Option<&ExportPreimage>,
+    error: String,
+) -> String {
+    let restoration: Result<(), String> = (|| {
+        match fs::symlink_metadata(output) {
+            Ok(_) => {
+                crate::atoms::r#do::remove_file::remove_file(authorization, key, output)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if let Some(old) = preimage {
+            let target = old.link_target.as_ref().ok_or("prior-kind-not-link")?;
+            crate::atoms::r#do::make_link::symlink(authorization, key, target, output)?;
+            crate::atoms::r#do::change_owner::change(
+                authorization,
+                key,
+                &crate::atoms::r#do::change_owner::Plan {
+                    path: output.to_path_buf(),
+                    uid: Some(old.tail.uid),
+                    gid: Some(old.tail.gid),
+                    no_follow: true,
+                },
+            )?;
+            if !fs::symlink_metadata(output)
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_symlink()
+            {
+                return Err("restored-path-not-symlink".into());
+            }
+            if fs::read_link(output).map_err(|e| e.to_string())? != *target {
+                return Err("link-target-mismatch".into());
+            }
+            if metadata_tail(output)? != old.tail {
+                return Err("link-preimage-mismatch".into());
+            }
+        } else {
+            verify_absent(output)?;
+        }
+        Ok(())
+    })();
+    match restoration {
+        Ok(()) => error,
+        Err(restoration) => format!("{error}; restoration-failed {restoration}"),
+    }
+}
+
+fn verify_file_restore(path: &Path, bytes: &[u8], tail: MetadataTail) -> Result<(), String> {
+    if fs::read(path).map_err(|e| e.to_string())? != bytes || metadata_tail(path)? != tail {
+        return Err("file-preimage-mismatch".into());
+    }
+    Ok(())
+}
+
 fn export_one(
+    key: crate::atoms::r#do::InvocationKey,
     source: &Path,
     output: &Path,
     kind: &'static str,
     mode: MoltMode,
     artifacts: &mut Vec<MoltArtifact>,
 ) -> Result<(), String> {
-    if export_is_current(source, output, mode)? {
-        return Ok(());
-    }
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    if output.exists() || output.symlink_metadata().is_ok() {
-        let metadata = fs::symlink_metadata(output).map_err(|e| e.to_string())?;
-        if metadata.is_dir() && !metadata.file_type().is_symlink() {
-            fs::remove_dir_all(output).map_err(|e| e.to_string())?;
-        } else {
-            fs::remove_file(output).map_err(|e| e.to_string())?;
-        }
-    }
-    match mode {
-        MoltMode::Copy => {
-            fs::copy(source, output).map_err(|e| {
-                format!(
-                    "molt-copy-failed {} -> {}: {e}",
-                    source.display(),
+    let source_observed = source.to_path_buf();
+    let output_observed = output.to_path_buf();
+    let comparison = crate::tools::comparison::execute(
+        "molt-export",
+        || export_is_current(&source_observed, &output_observed, mode),
+        |same| {
+            if *same {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |authorization, _| {
+            let source_tail = metadata_tail(source)?;
+            let output_meta = fs::symlink_metadata(output).ok();
+            if let Some(meta) = &output_meta {
+                let permitted = match mode {
+                    MoltMode::Copy => meta.is_file() && !meta.file_type().is_symlink(),
+                    MoltMode::Symlink => meta.file_type().is_symlink(),
+                };
+                if !permitted {
+                    return Err(format!("molt-output-kind-collision {}", output.display()));
+                }
+            }
+            ensure_tail_can_converge(&source_tail, output)?;
+            if mode == MoltMode::Symlink
+                && (source_tail.uid != unsafe { libc::geteuid() }
+                    || source_tail.gid != unsafe { libc::getegid() })
+            {
+                return Err(format!(
+                    "molt-export-link-tail-cannot-converge {}",
                     output.display()
-                )
-            })?;
-        }
-        MoltMode::Symlink => symlink_file(source, output)?,
+                ));
+            }
+            let preimage = capture_export_preimage(output, output_meta.as_ref())?;
+            let parent = output
+                .parent()
+                .ok_or_else(|| format!("molt-output-parent-missing {}", output.display()))?;
+            let source_parent = source
+                .parent()
+                .ok_or_else(|| format!("molt-source-parent-missing {}", source.display()))?;
+            if ensure_dir(key, source_parent, parent)? {
+                artifacts.push(MoltArtifact {
+                    kind: "export-directory",
+                    source: source_parent.display().to_string(),
+                    output: parent.display().to_string(),
+                    mode: mode.as_str(),
+                });
+            }
+            let source_path = source.to_path_buf();
+            let output_path = output.to_path_buf();
+            match mode {
+                MoltMode::Copy => {
+                    let result = crate::atoms::r#do::copy_file::copy(
+                        authorization,
+                        key,
+                        &crate::atoms::r#do::copy_file::Plan {
+                            source: source_path.clone(),
+                            target: output_path.clone(),
+                            mode: None,
+                            uid: None,
+                            gid: None,
+                            no_follow: source_tail.no_follow,
+                            restore: None,
+                        },
+                    )
+                    .and_then(|_| converge_file_tail(authorization, key, output, source_tail))
+                    .and_then(|_| {
+                        if export_is_current(&source_path, &output_path, MoltMode::Copy)? {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "molt-export-postimage-mismatch {}",
+                                output_path.display()
+                            ))
+                        }
+                    });
+                    result.map_err(|error| {
+                        transactional_export_failure(
+                            authorization,
+                            key,
+                            output,
+                            preimage.as_ref(),
+                            error,
+                        )
+                    })
+                }
+                MoltMode::Symlink => {
+                    let result = (|| {
+                        if fs::symlink_metadata(&output_path).is_ok() {
+                            crate::atoms::r#do::remove_file::remove_file(
+                                authorization,
+                                key,
+                                &output_path,
+                            )?;
+                        }
+                        crate::atoms::r#do::make_link::symlink(
+                            authorization,
+                            key,
+                            &source_path,
+                            &output_path,
+                        )?;
+                        converge_link_tail(authorization, key, &output_path, source_tail)?;
+                        if export_is_current(&source_path, &output_path, MoltMode::Symlink)? {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "molt-export-postimage-mismatch {}",
+                                output_path.display()
+                            ))
+                        }
+                    })();
+                    result.map_err(|error| {
+                        transactional_link_failure(
+                            authorization,
+                            key,
+                            output,
+                            preimage.as_ref(),
+                            error,
+                        )
+                    })
+                }
+            }
+        },
+    )?;
+    if !matches!(
+        comparison,
+        crate::tools::comparison::ComparisonRun::Moved { .. }
+    ) {
+        return Ok(());
     }
     artifacts.push(MoltArtifact {
         kind,
@@ -369,6 +717,111 @@ fn export_one(
         mode: mode.as_str(),
     });
     Ok(())
+}
+
+fn ensure_dir(
+    key: crate::atoms::r#do::InvocationKey,
+    source: &Path,
+    path: &Path,
+) -> Result<bool, String> {
+    let desired = metadata_tail(source)?;
+    let path = path.to_path_buf();
+    let run = crate::tools::comparison::execute(
+        "molt-ensure-dir",
+        || {
+            Ok(match fs::symlink_metadata(&path) {
+                Ok(metadata) => Some((
+                    metadata.is_dir() && !metadata.file_type().is_symlink(),
+                    metadata_tail(&path)?,
+                )),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            })
+        },
+        |observed| {
+            if observed
+                .as_ref()
+                .is_some_and(|(is_dir, tail)| *is_dir && *tail == desired)
+            {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |authorization, observed| {
+            if let Some((is_dir, before)) = observed {
+                if !is_dir {
+                    return Err(format!("molt-output-kind-collision {}", path.display()));
+                }
+                ensure_tail_can_converge(&desired, &path)?;
+                let result = apply_dir_tail(authorization, key, &path, desired)
+                    .and_then(|_| verify_dir_tail(&path, desired));
+                return result.map_err(|error| {
+                    let rollback = apply_dir_tail(authorization, key, &path, *before)
+                        .and_then(|_| verify_dir_tail(&path, *before));
+                    match rollback {
+                        Ok(()) => error,
+                        Err(rollback) => format!("{error}; restoration-failed {rollback}"),
+                    }
+                });
+            }
+            ensure_tail_can_converge(&desired, &path)?;
+            let result = crate::atoms::r#do::make_dir::create_dir_all(authorization, key, &path)
+                .and_then(|_| apply_dir_tail(authorization, key, &path, desired))
+                .and_then(|_| verify_dir_tail(&path, desired));
+            result.map_err(|error| {
+                let rollback =
+                    crate::atoms::r#do::remove_dir::operate(authorization, key, &path, None)
+                        .and_then(|_| verify_absent(&path));
+                match rollback {
+                    Ok(()) => error,
+                    Err(rollback) => format!("{error}; restoration-failed {rollback}"),
+                }
+            })
+        },
+    )?;
+    Ok(matches!(
+        run,
+        crate::tools::comparison::ComparisonRun::Moved { .. }
+    ))
+}
+
+fn verify_dir_tail(path: &Path, desired: MetadataTail) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("directory-postimage-kind-mismatch".into());
+    }
+    if metadata_tail(path)? != desired {
+        return Err("directory-postimage-metadata-mismatch".into());
+    }
+    Ok(())
+}
+
+fn apply_dir_tail(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    key: crate::atoms::r#do::InvocationKey,
+    path: &Path,
+    desired: MetadataTail,
+) -> Result<(), String> {
+    crate::atoms::r#do::change_mode::change(
+        authorization,
+        key,
+        &crate::atoms::r#do::change_mode::Plan {
+            path: path.to_path_buf(),
+            mode: Some(desired.mode),
+            no_follow: true,
+        },
+    )?;
+    crate::atoms::r#do::change_owner::change(
+        authorization,
+        key,
+        &crate::atoms::r#do::change_owner::Plan {
+            path: path.to_path_buf(),
+            uid: Some(desired.uid),
+            gid: Some(desired.gid),
+            no_follow: true,
+        },
+    )
 }
 
 fn export_is_current(source: &Path, output: &Path, mode: MoltMode) -> Result<bool, String> {
@@ -382,21 +835,26 @@ fn export_is_current(source: &Path, output: &Path, mode: MoltMode) -> Result<boo
             if !output_metadata.is_file() || output_metadata.file_type().is_symlink() {
                 return Ok(false);
             }
-            let source_metadata = fs::metadata(source).map_err(|error| error.to_string())?;
-            if file_mode(&source_metadata) != file_mode(&output_metadata) {
+            let source_metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+            if file_mode(&source_metadata) != file_mode(&output_metadata)
+                || source_metadata.uid() != output_metadata.uid()
+                || source_metadata.gid() != output_metadata.gid()
+            {
                 return Ok(false);
             }
-            let source_bytes = fs::read(source).map_err(|error| error.to_string())?;
-            let output_bytes = fs::read(output).map_err(|error| error.to_string())?;
-            Ok(source_bytes == output_bytes)
+            Ok(fs::read(source).map_err(|e| e.to_string())?
+                == fs::read(output).map_err(|e| e.to_string())?)
         }
         MoltMode::Symlink => {
-            if !output_metadata.file_type().is_symlink() {
+            if !output_metadata.file_type().is_symlink()
+                || fs::read_link(output).map_err(|e| e.to_string())? != source
+            {
                 return Ok(false);
             }
-            fs::read_link(output)
-                .map(|target| target == source)
-                .map_err(|error| error.to_string())
+            let tail = metadata_tail(output)?;
+            Ok(tail.mode == 0o777
+                && tail.uid == unsafe { libc::geteuid() }
+                && tail.gid == unsafe { libc::getegid() })
         }
     }
 }
@@ -413,6 +871,7 @@ fn file_mode(_metadata: &fs::Metadata) -> u32 {
 }
 
 fn export_module_sibling_files(
+    key: crate::atoms::r#do::InvocationKey,
     module_dir: &Path,
     module_output_dir: &Path,
     files_root: Option<&str>,
@@ -433,6 +892,7 @@ fn export_module_sibling_files(
         let kind = entry.file_type().map_err(|e| e.to_string())?;
         if kind.is_file() {
             export_one(
+                key,
                 &source,
                 &module_output_dir.join(&name),
                 "module-ladder-sibling-file",
@@ -445,6 +905,7 @@ fn export_module_sibling_files(
 }
 
 fn export_tree(
+    key: crate::atoms::r#do::InvocationKey,
     source_root: &Path,
     output_root: &Path,
     kind: &'static str,
@@ -455,21 +916,30 @@ fn export_tree(
     if !source_root.is_dir() {
         return Err(format!("molt-files-root-missing {}", source_root.display()));
     }
-    prune_deleted_tree_paths(source_root, output_root, pruned_paths)?;
+    if ensure_dir(key, source_root, output_root)? {
+        artifacts.push(MoltArtifact {
+            kind: "export-directory",
+            source: source_root.display().to_string(),
+            output: output_root.display().to_string(),
+            mode: mode.as_str(),
+        });
+    }
+    prune_deleted_tree_paths(key, source_root, output_root, pruned_paths)?;
     for entry in fs::read_dir(source_root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let source = entry.path();
         let output = output_root.join(entry.file_name());
         if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            export_tree(&source, &output, kind, mode, artifacts, pruned_paths)?;
+            export_tree(key, &source, &output, kind, mode, artifacts, pruned_paths)?;
         } else {
-            export_one(&source, &output, kind, mode, artifacts)?;
+            export_one(key, &source, &output, kind, mode, artifacts)?;
         }
     }
     Ok(())
 }
 
 fn prune_deleted_tree_paths(
+    key: crate::atoms::r#do::InvocationKey,
     source_root: &Path,
     output_root: &Path,
     pruned_paths: &mut Vec<String>,
@@ -481,10 +951,29 @@ fn prune_deleted_tree_paths(
     let output_files = relative_files(output_root)?;
     for rel in output_files.difference(&source_files) {
         let path = output_root.join(rel);
-        fs::remove_file(&path).map_err(|e| format!("molt-prune-failed {}: {e}", path.display()))?;
+        crate::tools::comparison::execute(
+            "molt-stale-file-remove",
+            || Ok(fs::symlink_metadata(&path).is_ok()),
+            |present| {
+                if *present {
+                    crate::tools::comparison::DiffDecision::Different
+                } else {
+                    crate::tools::comparison::DiffDecision::Empty
+                }
+            },
+            |authorization, _| {
+                crate::atoms::r#do::remove_file::remove_file(authorization, key, &path)
+            },
+        )?;
+        if fs::symlink_metadata(&path).is_ok() {
+            return Err(format!(
+                "molt-stale-file-postimage-present {}",
+                path.display()
+            ));
+        }
         pruned_paths.push(path.display().to_string());
     }
-    prune_empty_dirs(output_root)?;
+    prune_empty_dirs(key, output_root)?;
     Ok(())
 }
 
@@ -511,15 +1000,35 @@ fn relative_files(root: &Path) -> Result<BTreeSet<PathBuf>, String> {
     Ok(files)
 }
 
-fn prune_empty_dirs(root: &Path) -> Result<bool, String> {
+fn prune_empty_dirs(key: crate::atoms::r#do::InvocationKey, root: &Path) -> Result<bool, String> {
     let mut empty = true;
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            if prune_empty_dirs(&path)? {
-                fs::remove_dir(&path)
-                    .map_err(|e| format!("molt-prune-dir-failed {}: {e}", path.display()))?;
+            if prune_empty_dirs(key, &path)? {
+                let restoration_testimony = crate::atoms::r#do::remove_dir::capture(&path)?;
+                crate::tools::comparison::execute(
+                    "molt-empty-dir-remove",
+                    || Ok(fs::symlink_metadata(&path).is_ok()),
+                    |present| {
+                        if *present {
+                            crate::tools::comparison::DiffDecision::Different
+                        } else {
+                            crate::tools::comparison::DiffDecision::Empty
+                        }
+                    },
+                    |authorization, _| {
+                        crate::atoms::r#do::remove_dir::operate(authorization, key, &path, None)
+                    },
+                )?;
+                let _restoration_testimony_root = restoration_testimony.root.relative.len();
+                if fs::symlink_metadata(&path).is_ok() {
+                    return Err(format!(
+                        "molt-empty-dir-postimage-present {}",
+                        path.display()
+                    ));
+                }
             } else {
                 empty = false;
             }
@@ -528,20 +1037,4 @@ fn prune_empty_dirs(root: &Path) -> Result<bool, String> {
         }
     }
     Ok(empty)
-}
-
-#[cfg(unix)]
-fn symlink_file(source: &Path, output: &Path) -> Result<(), String> {
-    std::os::unix::fs::symlink(source, output).map_err(|e| {
-        format!(
-            "molt-symlink-failed {} -> {}: {e}",
-            source.display(),
-            output.display()
-        )
-    })
-}
-
-#[cfg(not(unix))]
-fn symlink_file(_source: &Path, _output: &Path) -> Result<(), String> {
-    Err("molt-symlink-unsupported".to_string())
 }

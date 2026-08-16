@@ -253,8 +253,8 @@ fn write_group_selection_receipt(
     receipt_dir: &Path,
     selection: &GroupSelection,
 ) -> Result<(), String> {
-    fs::create_dir_all(receipt_dir.join("groups")).map_err(|e| e.to_string())?;
-    write_json(
+    crate::atoms::attest::prepare_receipt_parent(&receipt_dir.join("groups"))?;
+    crate::atoms::attest::write_json_atomic(
         &receipt_dir
             .join("groups")
             .join(format!("{}-selection.json", selection.group_id)),
