@@ -11,6 +11,7 @@ pub(crate) enum UnitVerb {
     Disable,
     EnableNow,
     DisableNow,
+    DaemonReload,
 }
 
 impl UnitVerb {
@@ -23,7 +24,12 @@ impl UnitVerb {
             Self::Disable => &["disable"],
             Self::EnableNow => &["enable", "--now"],
             Self::DisableNow => &["disable", "--now"],
+            Self::DaemonReload => &["daemon-reload"],
         }
+    }
+
+    fn targets_unit(&self) -> bool {
+        !matches!(self, Self::DaemonReload)
     }
 }
 pub(crate) fn unit_change(
@@ -37,7 +43,7 @@ pub(crate) fn unit_change(
         .argv()
         .iter()
         .map(|arg| (*arg).to_owned())
-        .chain(std::iter::once(unit.to_owned()))
+        .chain(verb.targets_unit().then(|| unit.to_owned()))
         .collect::<Vec<_>>();
     let result = super::run_command::run(program, &args);
     apply(
@@ -71,7 +77,9 @@ pub(crate) fn unit_change_scoped(
         }
     }
     args.extend(verb.argv().iter().map(|arg| (*arg).to_owned()));
-    args.push(unit.to_owned());
+    if verb.targets_unit() {
+        args.push(unit.to_owned());
+    }
     super::run_command::command_with_timeout(
         authorization,
         invocation,

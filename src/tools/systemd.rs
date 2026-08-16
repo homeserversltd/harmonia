@@ -731,15 +731,28 @@ fn run_action_with_policy(
                         timeout_secs,
                     )
                 } else {
-                    keyed_systemctl(
+                    let invocation = invocation.ok_or("invocation-key-missing")?;
+                    let verb = match action {
+                        "daemon-reload" => crate::atoms::r#do::UnitVerb::DaemonReload,
+                        "restart" => crate::atoms::r#do::UnitVerb::Restart,
+                        "stop" => crate::atoms::r#do::UnitVerb::Stop,
+                        "enable" => crate::atoms::r#do::UnitVerb::Enable,
+                        other => return Err(format!("systemd-action-unsupported-{other}")),
+                    };
+                    crate::atoms::r#do::unit_change_scoped(
                         authorization,
-                        invocation.ok_or("invocation-key-missing")?,
-                        action,
+                        invocation,
                         service,
+                        verb,
                         user,
                         target_user,
                         timeout_secs,
-                    )
+                    ).map(|result| CmdResult {
+                        ok: result.ok,
+                        code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                    })
                 };
                 if edge_triggered {
                     // Consume the edge even when the command failed, so the
@@ -884,37 +897,6 @@ fn run_action_with_policy(
     Ok(outcome)
 }
 
-fn keyed_systemctl(
-    authorization: crate::tools::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
-    action: &str,
-    service: &str,
-    user: bool,
-    target_user: Option<&str>,
-    timeout_secs: u64,
-) -> Result<CmdResult, String> {
-    let mut args: Vec<String> = systemctl_scope_args(user, target_user);
-    match action {
-        "daemon-reload" => args.push("daemon-reload".to_string()),
-        "enable" => args.extend(["enable".to_string(), service.to_string()]),
-        "restart" | "stop" => args.extend([action.to_string(), service.to_string()]),
-        _ => return Err(format!("systemd-keyed-action-unsupported-{action}")),
-    }
-    let result = crate::atoms::r#do::command_with_timeout(
-        authorization,
-        invocation,
-        "/usr/bin/systemctl",
-        &args,
-        std::time::Duration::from_secs(timeout_secs),
-    )?;
-    Ok(CmdResult {
-        ok: result.ok,
-        code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
-        stdout: result.stdout,
-        stderr: result.stderr,
-    })
-}
-
 fn systemctl(
     action: &str,
     service: &str,
@@ -924,20 +906,6 @@ fn systemctl(
 ) -> CmdResult {
     let mut args: Vec<String> = systemctl_scope_args(user, target_user);
     match action {
-        "daemon-reload" => args.push("daemon-reload".to_string()),
-        "enable" => args.extend(["enable".to_string(), service.to_string()]),
-        "enable-now" => {
-            args.extend([
-                "enable".to_string(),
-                "--now".to_string(),
-                service.to_string(),
-            ]);
-        }
-        "disable-stop" => return disable_stop(service, user, timeout_secs),
-        "disable-stop-remove" => return disable_stop_remove(service, user, timeout_secs),
-        "restart" | "stop" => {
-            args.extend([action.to_string(), service.to_string()]);
-        }
         "unit-present" => {
             args.extend([
                 "show".to_string(),
@@ -995,68 +963,9 @@ fn unit_present_result(mut result: CmdResult, service: &str) -> CmdResult {
     result
 }
 
-fn disable_stop_remove(service: &str, user: bool, timeout_secs: u64) -> CmdResult {
-    if user {
-        return CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: "systemd-action-unsupported-user-disable-stop-remove".to_string(),
-        };
-    }
-    let Some(unit_file) = unit_file_path(service) else {
-        return CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: format!("systemd-unit-name-invalid-{service}"),
-        };
-    };
-    if !unit_file.exists() {
-        return CmdResult {
-            ok: true,
-            code: 0,
-            stdout: format!("unit file absent: {}", unit_file.display()),
-            stderr: String::new(),
-        };
-    }
 
-    let mut result = disable_stop(service, user, timeout_secs);
-    if !result.ok {
-        return result;
-    }
-    if let Err(err) = fs::remove_file(&unit_file) {
-        result.ok = false;
-        result.code = -1;
-        result.stderr = format!(
-            "{}{}systemd-unit-remove-failed {}: {err}",
-            result.stderr,
-            if result.stderr.is_empty() { "" } else { "\n" },
-            unit_file.display(),
-        );
-        return result;
-    }
-    if !result.stdout.is_empty() {
-        result.stdout.push('\n');
-    }
-    result
-        .stdout
-        .push_str(&format!("removed unit file: {}", unit_file.display()));
-    result
-}
 
-fn disable_stop(service: &str, user: bool, timeout_secs: u64) -> CmdResult {
-    if user {
-        return CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: "systemd-action-unsupported-user-disable-stop".to_string(),
-        };
-    }
-    let args = ["disable", "--now", service];
-    crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &args, timeout_secs)
-}
+
 
 fn unit_file_path(service: &str) -> Option<PathBuf> {
     let path = Path::new(service);
