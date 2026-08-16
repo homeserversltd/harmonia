@@ -177,6 +177,25 @@ pub(crate) fn capture(root: &Path) -> Result<Image, String> {
         root: node(root, vec![])?,
     })
 }
+pub(crate) fn remove_authorized(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    root: &Path,
+) -> Result<(), String> {
+    remove(root)?;
+    apply(
+        authorization,
+        invocation,
+        Receipt {
+            atom: "do".into(),
+            ok: true,
+            drift: Drift::Current,
+            message: format!("directory removed {}", root.display()),
+        },
+    )?;
+    Ok(())
+}
+
 pub(crate) fn remove(root: &Path) -> Result<(), String> {
     let m = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
     if m.is_dir() && !m.file_type().is_symlink() {

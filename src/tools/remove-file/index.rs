@@ -62,8 +62,14 @@ pub(crate) fn execute(
     receipt_name: &str,
     apply: bool,
     invocation: Option<atoms::r#do::InvocationKey>,
+    no_follow: bool,
+    collision_policy: &str,
+    rollback_policy: &str,
 ) -> Result<FileRemovalOutcome, String> {
     validate_request(paths, receipt_name)?;
+    if !no_follow || collision_policy != "refuse" || rollback_policy != "exact" {
+        return Err("remove-file-policy-unsupported".into());
+    }
     let invocation = invocation;
     let mut entries = Vec::new();
     let mut removed = 0usize;
@@ -85,7 +91,16 @@ pub(crate) fn execute(
                 let Some(invocation) = invocation else {
                     return Ok(false);
                 };
-                act::remove(authorization, invocation, &target)
+                act::remove(
+                    authorization,
+                    invocation,
+                    &target,
+                    atoms::r#do::remove_file::RemovePolicy {
+                        no_follow,
+                        collision_refuse: collision_policy == "refuse",
+                        rollback_exact: rollback_policy == "exact",
+                    },
+                )
             },
         );
         let run = match run {

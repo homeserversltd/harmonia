@@ -1,8 +1,8 @@
+use crate::tools;
 use crate::tools::routine::{
     resolve_args, validate_args, validate_command_precondition, validate_tool_semantics,
 };
 pub(crate) use crate::tools::routine::{ProjectedRoutineChild, ValidatedStep};
-use crate::tools;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -131,7 +131,8 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
         .and_then(|mut manifest| {
             if manifest.schema == SCHEMA {
-                lower_service_runtime_steps(&mut manifest);
+                lower_service_runtime_steps(&mut manifest)
+                    .map_err(|e| format!("ladder-manifest-lowering-failed {e}"))?;
                 manifest.base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
                 Ok(manifest)
             } else {
@@ -144,9 +145,10 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
         })
 }
 
-fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
+fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Result<(), String> {
     crate::bands::restart_services::lower_service_runtime_steps(manifest);
-    crate::bands::backfill_files::lower_service_runtime_steps(manifest);
+    crate::bands::backfill_files::lower_service_runtime_steps(manifest)?;
+    Ok(())
 }
 
 pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
@@ -206,7 +208,11 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             && child.permutation.as_deref() == Some("managed-files")
         {
             config_count += 1;
-        } else if !(child.name.starts_with("managed-file-")
+        } else if !((child.name.starts_with("managed-file-")
+            || child.name.starts_with("managed-place-")
+            || child.name.starts_with("managed-backfill-")
+            || child.name.starts_with("managed-remove-")
+            || child.name.starts_with("managed-symlink-"))
             && child.tool == "place-file"
             && child.permutation.as_deref() == Some("place"))
         {
@@ -529,11 +535,11 @@ pub(crate) fn validate_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CmdResult;
-    use serde_json::{json, Map};
     use crate::tools::routine::*;
+    use crate::CmdResult;
     use crate::{run_profile_engine, write_command_receipt, ModuleExecution, Profile};
     use serde_json::json;
+    use serde_json::{json, Map};
     use std::process;
 
     fn base_manifest() -> LadderManifest {

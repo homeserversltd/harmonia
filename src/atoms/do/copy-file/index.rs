@@ -32,6 +32,21 @@ pub(crate) fn copy(a: ActionAuthorization, i: InvocationKey, p: &Plan) -> Result
         fs::set_permissions(&p.target, fs::Permissions::from_mode(mode))
             .map_err(|e| format!("copy-file-mode-failed: {e}"))?;
     }
+    #[cfg(unix)]
+    if p.uid.is_some() || p.gid.is_some() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let path = CString::new(p.target.as_os_str().as_bytes())
+            .map_err(|_| "copy-file-owner-path-nul")?;
+        let uid = p.uid.map_or(!0, |v| v) as libc::uid_t;
+        let gid = p.gid.map_or(!0, |v| v) as libc::gid_t;
+        if unsafe { libc::lchown(path.as_ptr(), uid, gid) } != 0 {
+            return Err(format!(
+                "copy-file-owner-failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
     apply(
         a,
         i,

@@ -6,8 +6,8 @@ use crate::ladder::{
     CommandPrecondition, LadderManifest, LadderStep, LadderValidationError, OnFailure,
 };
 
-use crate::{tools, OperationOutcome};
 use crate::tools::files::structural_file_blocker;
+use crate::{tools, OperationOutcome};
 use serde_json::{json, Map};
 use std::collections::BTreeMap;
 
@@ -347,12 +347,52 @@ fn execute_routine_tool(
     receipt_dir: &Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<(OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
+) -> Result<
+    (
+        OperationOutcome,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    ),
+    String,
+> {
     match tool {
-        "pull-repo" => crate::bands::pull_source::execute_routine_child("pull-repo", requested_permutation, args, manifest, receipt_dir, apply, invocation),
-        "build-crate" => crate::bands::ratchet_binaries::execute_routine_child("build-crate", requested_permutation, args, manifest, receipt_dir, apply, invocation),
-        "place-file" | "backfill-file" => crate::bands::backfill_files::execute_routine_child(tool, requested_permutation, args, manifest, receipt_dir, apply, invocation),
-        "check-health" | "systemd" | "enable-unit" => crate::bands::restart_services::execute_routine_child(tool, requested_permutation, args, manifest, receipt_dir, apply, invocation),
+        "pull-repo" => crate::bands::pull_source::execute_routine_child(
+            "pull-repo",
+            requested_permutation,
+            args,
+            manifest,
+            receipt_dir,
+            apply,
+            invocation,
+        ),
+        "build-crate" => crate::bands::ratchet_binaries::execute_routine_child(
+            "build-crate",
+            requested_permutation,
+            args,
+            manifest,
+            receipt_dir,
+            apply,
+            invocation,
+        ),
+        "place-file" | "backfill-file" => crate::bands::backfill_files::execute_routine_child(
+            tool,
+            requested_permutation,
+            args,
+            manifest,
+            receipt_dir,
+            apply,
+            invocation,
+        ),
+        "check-health" | "systemd" | "enable-unit" => {
+            crate::bands::restart_services::execute_routine_child(
+                tool,
+                requested_permutation,
+                args,
+                manifest,
+                receipt_dir,
+                apply,
+                invocation,
+            )
+        }
         "service-runtime" => Err("service-runtime-execution-removed".into()),
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
     }
@@ -390,11 +430,26 @@ pub(crate) fn execute_validated_step(
         );
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("routine", "execute") => Err("routine-dispatch-internal".into()),
-        ("command", "capture") => tools::command::execute_validated_step(step, module_dir, software_apply),
-        ("artifact-lock", "verify") => tools::artifact_lock::execute_validated_step(step, module_dir),
+        ("command", "capture") => {
+            tools::command::execute_validated_step(step, module_dir, software_apply)
+        }
+        ("artifact-lock", "verify") => {
+            tools::artifact_lock::execute_validated_step(step, module_dir)
+        }
         ("health", "probe") => tools::health::execute_validated_step(step, module_dir, false),
-        ("household-time", _) => tools::household_time::execute_validated_step(step, module_dir, software_apply, invocation),
-        ("files", _) => tools::files::execute_validated_step(step, manifest, module_dir, software_authorization, invocation),
+        ("household-time", _) => tools::household_time::execute_validated_step(
+            step,
+            module_dir,
+            software_apply,
+            invocation,
+        ),
+        ("files", _) => tools::files::execute_validated_step(
+            step,
+            manifest,
+            module_dir,
+            software_authorization,
+            invocation,
+        ),
         ("systemd", _) => tools::systemd::execute_validated_step(
             step,
             module_dir,
@@ -416,7 +471,21 @@ pub(crate) fn execute_validated_step(
     }
 }
 fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {
-    let mut paths = fs::read_dir(child_dir).map_err(|e| e.to_string())?.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().and_then(|v| v.to_str()) == Some("json")).filter(|p| p.file_name().and_then(|v| v.to_str()) != Some("routine-child.json")).collect::<Vec<_>>(); paths.sort(); paths.into_iter().map(|p| serde_json::from_slice(&fs::read(&p).map_err(|e| e.to_string())?).map_err(|e| format!("routine-receipt-parse-{}: {e}",p.display()))).collect()
+    let mut paths = fs::read_dir(child_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|v| v.to_str()) == Some("json"))
+        .filter(|p| p.file_name().and_then(|v| v.to_str()) != Some("routine-child.json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|p| {
+            serde_json::from_slice(&fs::read(&p).map_err(|e| e.to_string())?)
+                .map_err(|e| format!("routine-receipt-parse-{}: {e}", p.display()))
+        })
+        .collect()
 }
 
 pub(crate) fn execute_routine(
@@ -539,11 +608,11 @@ pub(crate) fn execute_routine(
                 crate::tools::files::structural_file_blocker(&child_step, manifest).map_or_else(
                     || {
                         tools::routine::execute_routine_tool(
-                        &child.tool,
-                        Some(child.permutation.as_str()),
-                        &args,
-                        manifest,
-                        &child_dir,
+                            &child.tool,
+                            Some(child.permutation.as_str()),
+                            &args,
+                            manifest,
+                            &child_dir,
                             apply,
                             invocation,
                         )
@@ -636,4 +705,3 @@ pub(crate) fn execute_routine(
         command: None,
     })
 }
-
