@@ -6,7 +6,8 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 
@@ -41,6 +42,92 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     );
     fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotEntry {
+    path: String,
+    kind: &'static str,
+    bytes: Vec<u8>,
+    mode: u32,
+    mtime_sec: i64,
+    mtime_nsec: i64,
+}
+
+fn destination_snapshot(root: &Path) -> Result<Vec<SnapshotEntry>, String> {
+    fn walk(root: &Path, path: &Path, out: &mut Vec<SnapshotEntry>) -> Result<(), String> {
+        let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned();
+        let file_type = metadata.file_type();
+        let (kind, bytes) = if file_type.is_dir() {
+            ("dir", Vec::new())
+        } else if file_type.is_file() {
+            ("file", fs::read(path).map_err(|e| e.to_string())?)
+        } else if file_type.is_symlink() {
+            (
+                "symlink",
+                fs::read_link(path)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .as_bytes()
+                    .to_vec(),
+            )
+        } else {
+            ("other", Vec::new())
+        };
+        out.push(SnapshotEntry {
+            path: if relative.is_empty() {
+                ".".into()
+            } else {
+                relative
+            },
+            kind,
+            bytes,
+            mode: metadata.mode(),
+            mtime_sec: metadata.mtime(),
+            mtime_nsec: metadata.mtime_nsec(),
+        });
+        if file_type.is_dir() {
+            let mut children = fs::read_dir(path)
+                .map_err(|e| e.to_string())?
+                .map(|entry| entry.map(|e| e.path()).map_err(|e| e.to_string()))
+                .collect::<Result<Vec<PathBuf>, _>>()?;
+            children.sort();
+            for child in children {
+                walk(root, &child, out)?;
+            }
+        }
+        Ok(())
+    }
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    walk(root, root, &mut entries)?;
+    Ok(entries)
+}
+
+fn snapshot_predicates(before: &[SnapshotEntry], after: &[SnapshotEntry]) -> serde_json::Value {
+    let git_before: Vec<_> = before
+        .iter()
+        .filter(|entry| entry.path == ".git" || entry.path.starts_with(".git/"))
+        .collect();
+    let git_after: Vec<_> = after
+        .iter()
+        .filter(|entry| entry.path == ".git" || entry.path.starts_with(".git/"))
+        .collect();
+    let mut git_paths = git_before
+        .iter()
+        .chain(git_after.iter())
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    git_paths.sort();
+    git_paths.dedup();
+    json!({"equal": before == after, "entry_count_before": before.len(), "entry_count_after": after.len(), "git_metadata_equal": git_before == git_after, "git_bytes_and_mtimes_equal": git_before == git_after, "git_paths_checked": git_paths, "ordinary_bytes_and_kinds_equal": before == after})
 }
 
 fn git_artifact_bench(
@@ -116,20 +203,113 @@ fn git_artifact_bench(
     };
     let r1 = crate::tools::git_artifact::acquire_source(&plan, Some(invocation));
     let head = git(&dst, &["rev-parse", "HEAD"])?;
+    let second_pass_before = destination_snapshot(&dst)?;
     let r2 = crate::tools::git_artifact::acquire_source(&plan, Some(invocation));
+    let second_pass_after = destination_snapshot(&dst)?;
+    let second_pass_snapshot = snapshot_predicates(&second_pass_before, &second_pass_after);
+    let second_pass_zero_writes = second_pass_before == second_pass_after;
+    fs::write(dst.join("state"), "dirty-local-change\n").map_err(|e| e.to_string())?;
+    let dirty_before = destination_snapshot(&dst)?;
+    let dirty = crate::tools::git_artifact::acquire_source(&plan, Some(invocation));
+    let dirty_after = destination_snapshot(&dst)?;
+    let dirty_snapshot = snapshot_predicates(&dirty_before, &dirty_after);
+    let dirty_refused_without_write = !dirty.ok && !dirty.changed && dirty_before == dirty_after;
+    let config = fs::read_to_string(dst.join(".git/config")).map_err(|e| e.to_string())?;
+    let dummy_ssh_key = PathBuf::from("/tmp/bench-scope-dummy-id_ed25519");
+    let dummy_https_host = "scope.example.invalid".to_string();
+    let dummy_token_path = PathBuf::from("/tmp/bench-scope-dummy-token");
+    let scope = crate::tools::git_artifact::CredentialScope {
+        ssh_key_path: Some(dummy_ssh_key.clone()),
+        https_host: Some(dummy_https_host.clone()),
+        https_token_path: Some(dummy_token_path.clone()),
+    };
+    let scope_plan = crate::tools::git_artifact::SourcePlan {
+        candidates: vec![crate::tools::git_artifact::SourceCandidate {
+            kind: crate::tools::git_artifact::SourceCandidateKind::Git,
+            locator: "https://scope.example.invalid/owner/repo.git".into(),
+            credential_selector: Some("scope-owner".into()),
+        }],
+        reference: "main".into(),
+        destination: dir.join("scope-destination"),
+        expected_commit: None,
+        bearer: "scope-bearer".into(),
+        credentials: BTreeMap::from([("scope-owner".into(), scope.clone())]),
+    };
+    let scoped = crate::tools::git_artifact::scoped_request(
+        &scope_plan,
+        &scope_plan.candidates[0],
+        scope_plan.destination.clone(),
+    );
+    let local_candidate = crate::tools::git_artifact::SourceCandidate {
+        kind: crate::tools::git_artifact::SourceCandidateKind::LocalCheckout,
+        locator: dir.join("local-source").to_string_lossy().into(),
+        credential_selector: Some("scope-owner".into()),
+    };
+    let local_scoped = crate::tools::git_artifact::scoped_request(
+        &scope_plan,
+        &local_candidate,
+        PathBuf::from(&local_candidate.locator),
+    );
+    let exact_scope_projection = scoped.repo.as_deref()
+        == Some("https://scope.example.invalid/owner/repo.git")
+        && scoped.path == scope_plan.destination
+        && scoped.branch == "main"
+        && scoped.remote == "origin"
+        && scoped.bearer == "scope-bearer"
+        && scoped.ssh_key_path == Some(dummy_ssh_key.clone())
+        && scoped.git_https_credential_host == Some(dummy_https_host.clone())
+        && scoped.git_https_credential_token_path == Some(dummy_token_path.clone())
+        && scoped.safe_directories.is_empty()
+        && local_scoped.safe_directories == vec![PathBuf::from(&local_candidate.locator)];
+    let credential_selector_preserved = r1
+        .receipt
+        .attempts
+        .first()
+        .and_then(|attempt| attempt.credential_selector.as_deref())
+        == Some("owner");
+    let only_declared_scope_used = r1.receipt.attempts.iter().all(|attempt| {
+        attempt.credential_selector.as_deref() == Some("owner")
+            && plan.credentials.contains_key("owner")
+    });
+    let no_credential_material_persisted = [
+        "credential.helper",
+        dummy_ssh_key.to_str().unwrap(),
+        dummy_https_host.as_str(),
+        dummy_token_path.to_str().unwrap(),
+    ]
+    .iter()
+    .all(|material| !config.contains(material));
+    let credential_scope_preserved = exact_scope_projection
+        && credential_selector_preserved
+        && only_declared_scope_used
+        && no_credential_material_persisted;
+    let wrong_selector_root = dir.join("wrong-selector");
     let bad = crate::tools::git_artifact::SourcePlan {
         candidates: vec![crate::tools::git_artifact::SourceCandidate {
             kind: crate::tools::git_artifact::SourceCandidateKind::Git,
             locator: dir.join("missing.git").to_string_lossy().into(),
-            credential_selector: None,
+            credential_selector: Some("missing-selector".into()),
         }],
         reference: "main".into(),
-        destination: dir.join("bad-dst"),
+        destination: wrong_selector_root.join("destination"),
         expected_commit: None,
         bearer: "owner".into(),
         credentials: BTreeMap::new(),
     };
+    let failed_before = destination_snapshot(&wrong_selector_root)?;
+    let failed_parent_before = destination_snapshot(&dir)?;
     let ru = crate::tools::git_artifact::acquire_source(&bad, Some(invocation));
+    let failed_after = destination_snapshot(&wrong_selector_root)?;
+    let failed_parent_after = destination_snapshot(&dir)?;
+    let wrong_selector_attempt = ru.receipt.attempts.first();
+    let failed_source_refusal = !ru.ok
+        && !ru.changed
+        && wrong_selector_attempt.is_some_and(|attempt| {
+            attempt.disposition == "hard-red-credential"
+                && attempt.detail == "credential-selector-unresolved"
+        })
+        && failed_before == failed_after
+        && failed_parent_before == failed_parent_after;
     if !r1.ok
         || !r1.changed
         || head != remote
@@ -137,33 +317,83 @@ fn git_artifact_bench(
         || r2.changed
         || ru.ok
         || ru.receipt.attempts.is_empty()
+        || !dirty_refused_without_write
+        || !second_pass_zero_writes
+        || !credential_scope_preserved
+        || !failed_source_refusal
     {
         return Err("git-artifact-three-case-bench-failed".into());
     }
     Ok(
-        json!({"setup":{"commit_1":c1,"destination_before":before,"commit_2_remote_head":remote,"setup_checked":true},"run1":{"ok":r1.ok,"changed":r1.changed,"destination_head":head,"declared_remote_head":remote,"attempts":r1.receipt.attempts.len(),"promotion":r1.receipt.promotion},"run2":{"ok":r2.ok,"changed":r2.changed,"attempts":r2.receipt.attempts.len(),"promotion":r2.receipt.promotion},"unreachable":{"ok":ru.ok,"changed":ru.changed,"attempts_count":ru.receipt.attempts.len(),"dispositions":ru.receipt.attempts.iter().map(|a|a.disposition.clone()).collect::<Vec<_>>(),"promotion":ru.receipt.promotion}}),
+        json!({"setup":{"commit_1":c1,"destination_before":before,"commit_2_remote_head":remote,"setup_checked":true,"changed_then_quiet":r1.changed && !r2.changed},"run1":{"ok":r1.ok,"changed":r1.changed,"destination_head":head,"declared_remote_head":remote,"attempts":r1.receipt.attempts.len(),"promotion":r1.receipt.promotion},"run2":{"ok":r2.ok,"changed":r2.changed,"attempts":r2.receipt.attempts.len(),"promotion":r2.receipt.promotion,"requested_ref_equals_head":head == remote,"second_pass_zero_movement":!r2.changed,"second_pass_zero_writes":second_pass_zero_writes,"snapshot":second_pass_snapshot},"dirty_refusal":{"ok":dirty.ok,"changed":dirty.changed,"refused_without_destination_write":dirty_refused_without_write,"structural_zero_writes":dirty_before == dirty_after,"snapshot":dirty_snapshot},"credential_scope":{"preserved":credential_scope_preserved,"exact_scope_projection":exact_scope_projection,"selector_preserved":credential_selector_preserved,"only_declared_scope_used":only_declared_scope_used,"no_credential_material_persisted":no_credential_material_persisted,"declared":{"ssh_key_path":dummy_ssh_key,"https_host":dummy_https_host,"https_token_path":dummy_token_path,"bearer":scope_plan.bearer,"safe_directories":[]},"projected":{"ssh_key_path":scoped.ssh_key_path,"https_host":scoped.git_https_credential_host,"https_token_path":scoped.git_https_credential_token_path,"bearer":scoped.bearer,"safe_directories":scoped.safe_directories},"local_safe_directory_projection":local_scoped.safe_directories},"wrong_selector":{"predicate":failed_source_refusal,"ok":ru.ok,"changed":ru.changed,"disposition":wrong_selector_attempt.map(|a| a.disposition.clone()),"detail":wrong_selector_attempt.map(|a| a.detail.clone()),"hard_red_credential":wrong_selector_attempt.is_some_and(|a| a.disposition == "hard-red-credential"),"destination_and_staging_unchanged":failed_before == failed_after && failed_parent_before == failed_parent_after,"destination_snapshot_unchanged":failed_before == failed_after,"parent_snapshot_unchanged":failed_parent_before == failed_parent_after,"promotion":ru.receipt.promotion},"unreachable":{"ok":ru.ok,"changed":ru.changed,"attempts_count":ru.receipt.attempts.len(),"failed_source_refusal":failed_source_refusal,"destination_snapshot_unchanged":failed_before == failed_after,"dispositions":ru.receipt.attempts.iter().map(|a|a.disposition.clone()).collect::<Vec<_>>(),"promotion":ru.receipt.promotion}}),
     )
 }
 
-fn caduceus_bench(root: &Path, invocation: crate::atoms::r#do::InvocationKey) -> Result<serde_json::Value, String> {
+fn caduceus_bench(
+    root: &Path,
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<serde_json::Value, String> {
     let dir = root.join("caduceus");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let source_sha = "0123456789abcdef0123456789abcdef01234567";
     let build = crate::build_crate::bench_build_guard(&dir, source_sha)?;
     let artifact = dir.join("target/release/caduceus");
     let install = dir.join("usr/local/bin/caduceus");
-    fs::create_dir_all(install.parent().ok_or("install-parent-missing")?).map_err(|e| e.to_string())?;
+    fs::create_dir_all(install.parent().ok_or("install-parent-missing")?)
+        .map_err(|e| e.to_string())?;
     let bytes = fs::read(&artifact).map_err(|e| e.to_string())?;
-    let run = |rd: &Path| crate::place_file::execute(crate::place_file::PlaceFileRequest { path: &install, declared_bytes: &bytes, mode: Some(0o755), ownership: crate::place_file::DeclaredOwnership { uid: None, gid: None }, backup: crate::place_file::BackupPolicy::To(&rd.join("backup")), invocation: Some(invocation) });
-    let run1_dir = dir.join("run1"); let run1 = run(&run1_dir)?;
-    let run2_dir = dir.join("run2"); let run2 = run(&run2_dir)?;
-    let health1 = serve_health_once(source_sha, |url| Ok(crate::check_health::probe(&crate::tools::health::ProbeRequest { url: &url, retries: 0, timeout_secs: 3, expected_contains: Some(source_sha) })))?;
+    let run = |rd: &Path| {
+        crate::place_file::execute(crate::place_file::PlaceFileRequest {
+            path: &install,
+            declared_bytes: &bytes,
+            mode: Some(0o755),
+            ownership: crate::place_file::DeclaredOwnership {
+                uid: None,
+                gid: None,
+            },
+            backup: crate::place_file::BackupPolicy::To(&rd.join("backup")),
+            invocation: Some(invocation),
+        })
+    };
+    let run1_dir = dir.join("run1");
+    let run1 = run(&run1_dir)?;
+    let run2_dir = dir.join("run2");
+    let run2 = run(&run2_dir)?;
+    let health1 = serve_health_once(source_sha, |url| {
+        Ok(crate::check_health::probe(
+            &crate::tools::health::ProbeRequest {
+                url: &url,
+                retries: 0,
+                timeout_secs: 3,
+                expected_contains: Some(source_sha),
+            },
+        ))
+    })?;
     let wrong = "fedcba9876543210fedcba9876543210fedcba98";
-    let health_bad = serve_health_value(wrong, |url| Ok(crate::check_health::probe(&crate::tools::health::ProbeRequest { url: &url, retries: 0, timeout_secs: 3, expected_contains: Some(source_sha) })))?;
+    let health_bad = serve_health_value(wrong, |url| {
+        Ok(crate::check_health::probe(
+            &crate::tools::health::ProbeRequest {
+                url: &url,
+                retries: 0,
+                timeout_secs: 3,
+                expected_contains: Some(source_sha),
+            },
+        ))
+    })?;
     crate::write_command_receipt(&run1_dir, "check-health", &health1)?;
     crate::write_command_receipt(&run2_dir, "check-health", &health_bad)?;
-    if !run1.receipt.ok || !run1.movement.changed() || !run2.receipt.ok || run2.movement.changed() || !health1.ok || health_bad.ok { return Err("caduceus-primitive-stillness-bench-failed".into()); }
-    Ok(json!({"source_gate":{"fresh_source":true,"source_sha":source_sha,"stale_service_ignored":true},"build":build,"run1":{"ok":run1.receipt.ok,"changed":run1.movement.changed()},"run2":{"ok":run2.receipt.ok,"changed":run2.movement.changed()},"health":{"matching_identity":{"ok":health1.ok},"mismatched_identity":{"ok":health_bad.ok,"stderr":health_bad.stderr}}}))
+    if !run1.receipt.ok
+        || !run1.movement.changed()
+        || !run2.receipt.ok
+        || run2.movement.changed()
+        || !health1.ok
+        || health_bad.ok
+    {
+        return Err("caduceus-primitive-stillness-bench-failed".into());
+    }
+    Ok(
+        json!({"source_gate":{"fresh_source":true,"source_sha":source_sha,"stale_service_ignored":true},"build":build,"run1":{"ok":run1.receipt.ok,"changed":run1.movement.changed()},"run2":{"ok":run2.receipt.ok,"changed":run2.movement.changed()},"health":{"matching_identity":{"ok":health1.ok},"mismatched_identity":{"ok":health_bad.ok,"stderr":health_bad.stderr}}}),
+    )
 }
 
 fn serve_health_value<T>(
