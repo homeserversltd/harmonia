@@ -7,7 +7,6 @@ The ladder:
 - fails closed unless the birth-provided `/opt/forgejo/forgejo` executable exists;
 - requires the installed birth-owned `/opt/forgejo/custom/conf/app.ini` to be non-empty but never overwrites it;
 - converges the quarry `forgejo.service` unit with a backup of any replaced file;
-- validates the installed unit with `systemd-analyze verify`;
 - reloads systemd and restarts Forgejo only when this module changed managed material;
 - enables the service when needed, proves it is active, and probes its loopback HTTP endpoint.
 

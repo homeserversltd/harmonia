@@ -6,7 +6,6 @@ The ladder:
 
 - fails closed unless the birth-provided Calibre-Web Python environment, watcher script, `inotifywait`, and `calibredb` executables exist;
 - converges the quarry `calibre-web.service` and `calibre-simple-watch.service` units with backups of replaced files;
-- validates both installed units with `systemd-analyze verify`;
 - reloads systemd and restarts both concern services only when this module changed managed material;
 - enables both services when needed and proves both are active.
 

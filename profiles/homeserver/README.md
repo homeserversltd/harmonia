@@ -13,6 +13,8 @@ A profile names one appliance identity and the modules that maintain it. Each fo
 - `rust-build-toolchain` maintains the Rust build environment used for target-native service builds.
 - `coronatio` maintains the HOMESERVER crown service runtime.
 - `caduceus` maintains the local appliance control lever used to request safe convergence.
+- `jellyfin` maintains the Jellyfin media service.
+- `matrix` maintains the Synapse chat service and Element Web client surface.
 
 ## Represented product concerns
 

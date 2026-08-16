@@ -7,7 +7,6 @@ The ladder:
 - fails closed unless the birth-provided `/opt/docs/venv/bin/mkdocs` executable exists;
 - fails closed unless birth supplied the documentation tree at `/opt/docs/docs`;
 - converges the quarry `mkdocs.yml` and systemd unit with backups of replaced files;
-- validates the installed unit with `systemd-analyze verify`;
 - reloads systemd and restarts MkDocs only when this module changed managed material;
 - enables the service and proves it is active.
 

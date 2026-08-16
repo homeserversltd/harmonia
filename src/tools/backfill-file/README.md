@@ -1,5 +1,5 @@
 # backfill-file
 
-Bring one file to its declared bytes. Observe reads through `atoms::ask` and derives the diff through `atoms::compare`; act writes backup-first through the two-key `atoms::do` lane; report-home attests the terminal receipt.
+`backfill-file` is a registered Harmonia tool declaration resolved through `src/tools/index.json`, the single registry. `backfill-file` is one of the thirteen deed declaration records in `src/tools/index.json`: permutation `backfill`, deed `copy-file`, permission `mutate`, and phases `observe → compare → act → attest`. It backfills a declared file through the keyed transactional do atom.
 
-This slice wires the organ for compilation but does not delegate the legacy `files.rs` managed-file path because that path still owns additional mode, ownership, template, per-file receipt, aggregate receipt, and ladder behavior.
+The two required mutation keys are diff-minted `Authorization` and the exact `--apply-or-timer` invocation key.

@@ -1,5 +1,3 @@
 # compare
 
-Resolve profile and module comparison before execution.
-
-Movement A status: `fronted`. This face is entered by the production band walk and calls today’s existing orchestration boundary. It emits no new event or receipt and does not mint or move an invocation key. Interior separation and charter-order convergence are later debts.
+`compare` has band id `compare` and charter order 4 of 10. `restart-services` has charter order 7 and precedes `backfill-files`, which has charter order 8.

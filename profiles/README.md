@@ -1,17 +1,9 @@
 # Harmonia profiles
 
-Profiles select one appliance identity and one ordered Rust module spine.
+Profiles declare one appliance identity and an ordered module spine. The selected profile supplies module declarations and constants; execution remains inside the one `ask → compare → do → attest` ritual.
 
-HomeConsole is the sole console identity:
+Profile modules resolve their tool usage through `src/tools/index.json`. Mutating work is admitted only through the twenty transactional do atoms and both keys: diff-minted `Authorization` plus `--apply-or-timer`.
 
-```json
-{
-  "schema": "harmonia.profile.v1",
-  "id": "homeconsole",
-  "identity": "homeconsole",
-  "module_spine_entered": "profiles/homeconsole/modules",
-  "modules": ["identity", "system-packages"]
-}
-```
+The ten execution bands are entered in charter order, with `restart-services` before `backfill-files`. A closing census with zero missing signals is reported as `first_missing_signal=none`.
 
-Module sidecars live beside the selected profile at `profiles/<id>/modules/<module>/sidecar.json` and carry constants only. Profile-adjacent Rust module logic lives in `profiles/<id>/modules/<module>/index.rs`; `src/module_dispatch.rs` is only the thin loader/dispatcher and shared tools live in `src/tools/*.rs`.
+The profile and module paths are checkable in the repository, for example `profiles/homeconsole/index.json` and `profiles/homeconsole/modules/`.

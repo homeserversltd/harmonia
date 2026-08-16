@@ -6,7 +6,6 @@ The ladder:
 
 - fails closed unless the birth-provided `systemd-analyze`, `/dev/mapper/vault`, and executable `/vault/scripts/init.sh` exist;
 - converges `vault.mount` and `mountNas.service` with backups of replaced files;
-- validates both installed units with `systemd-analyze verify`;
 - reloads systemd and restarts each unit only when this module changed managed material;
 - enables both units when needed and proves they are active.
 

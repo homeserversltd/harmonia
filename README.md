@@ -1,183 +1,39 @@
 # Harmonia
 
-Harmonia is a Rust appliance update manager for serious HOMESERVERSLTD systems: home servers, game consoles, TV boxes, kiosks, and other managed machines that require predictable maintenance, explicit state, and receipt-backed proof.
+Harmonia is a Rust appliance update engine. Each invocation follows one bounded ritual: **ask → compare → do → attest**.
 
-It gives each machine one selected profile, runs that profile's ordered Rust module spine, calls focused Rust tools to make changes, writes per-run receipts, and appends each module result to one profile ledger. The result is an update path that can be tested, explained, repeated, installed, and historically audited.
+The engine has two authorization keys: diff-minted `Authorization` and the exact `--apply-or-timer` invocation key. A bare update may observe and report, but cannot perform a deed. Mutating behavior exists only in the twenty true-named transactional atoms under `src/atoms/do/`; each requires both keys by value and emits an attested result.
 
-## Why Harmonia exists
+## Engine shape
 
-Appliance deployments require disciplined maintenance boundaries:
+- `src/atoms/ask/` performs bounded observations without mutation.
+- `src/atoms/do/` contains the only mutation vocabulary.
+- `src/atoms/attest/` redacts caller-injected secrets before serialization, appends the redacted `Receipt`, and forwards fields derived from that same redacted value.
+- `src/tools/index.json` is the single tool registry. Its `declarations.records` contains exactly thirteen declaration records; `service-runtime` is a separate registry entry lowered to primitives, not one of those records.
+- Ten bands run in charter order: `renew-self`, `pull-source`, `stage-profile`, `compare`, `install-packages`, `ratchet-binaries`, `restart-services`, `backfill-files`, `propose-edits`, `report-home`. `restart-services` precedes `backfill-files`.
+- The closing census is zero: a successful run reports `first_missing_signal=none`.
 
-- one script updates packages;
-- another script restarts services;
-- a third script copies artifacts;
-- a cron job runs without proof;
-- nobody can tell whether the machine is current, skipped, or half-updated.
-
-Harmonia provides a public contract for that work:
-
-```text
-profile -> ordered modules -> focused tools -> one profile ledger + receipts
-```
-
-A profile says what this machine is. Profile-adjacent Rust modules own the ladder logic for that profile. Sidecars carry constants only. Tools do the actual primitive work. One append-only profile ledger records historical continuity, while per-run receipts prove the local run.
-
-## Design goals
-
-- One public update engine.
-- One selected profile per installed machine.
-- Ordered profile modules with Rust-owned validation/execution instead of ambient discovery or JSON-only placeholders.
-- A focused Rust toolbelt of specific tools, each with one purpose.
-- Sidecars provide constants only; they do not create modules, tools, ladders, or commands by themselves.
-- Failed work exits nonzero and records `ok=false`.
-- Live paths are changed only after staging and proof.
-- Every run leaves `events.jsonl`, `run.json`, and module/tool evidence.
-- Every module result appends to exactly one JSONL profile ledger under the receipts root, such as `homeconsole-ledger.jsonl`.
-- Installer-ready layout: binary, config, state directory, service, timer, and receipt root.
-
-
-
-## Module currentness
-
-A Harmonia module is a self-contained update intent. It is not a loose folder and not a data-only manifest. The module owns the desired state for one appliance concern and the rule for keeping that concern current.
-
-Each module answers the same questions:
-
-1. What desired state belongs to this concern?
-2. Where is that state expressed on the installed machine?
-3. How is current state read?
-4. What comparison proves drift or no drift?
-5. What safe mutation repairs drift?
-6. What domain-specific reconcile step is required after mutation?
-7. What receipt proves the module is current or names the first blocker?
-
-For managed files, Harmonia renders desired module-owned files, compares them to installed targets, writes only when the bytes or declared metadata differ, performs the domain reconcile step, and records receipts. UDEV modules reload UDEV rules. Systemd modules run daemon-reload and reconcile unit enablement or activity. Service modules own their runtime, configuration, health checks, and currentness receipts.
-
-### Change-driven service restarts
-
-`systemd` `restart` and `user-restart` are engine primitives, not module conventions. By default a restart runs only when an earlier step in the same module reported `changed=true`; that includes managed files and ownership/mode convergence, unit files or drop-ins, packages or binaries, and every other tool that truthfully reports mutation. An active unchanged unit is explicitly skipped.
-
-A unit whose observed active state is anything other than `active` (including `inactive`, `failed`, absent state, and first convergence) is restarted so restraint never leaves it dead. Operators can pass `--force-service-restarts` to a Harmonia invocation. A module that must restart unconditionally must declare `"restart_policy": "always"` on that restart step; the receipt records that exception. Restart receipts always include `restart_decision`, `restart_reason`, `module_changed_before_step`, `force_service_restarts`, and `restart_policy`.
-
-## Core concepts
-
-### Profile
-
-A profile is the machine's declared identity and update spine. A console, a server, and a TV appliance can each have different modules while using the same engine and toolbelt.
-
-Example:
-
-```text
-profiles/homeconsole/index.json
-```
-
-### Module
-
-A module is one ordered unit of profile work. The module boundary is validated and executed in Rust; its adjacent sidecar supplies constants only.
-
-Example module work:
-
-- prove machine identity;
-- check or update OS packages;
-- stage and promote an application artifact;
-- restart and verify a service;
-- write a receipt summary.
-
-### Tool
-
-A tool is executable Rust behavior with one clear purpose. Adding a tool means adding code, a manifest contract, and tests for that tool's seam.
-
-Examples:
-
-- `package` checks or applies operating-system packages;
-- `systemd` manages service state;
-- `artifact` promotes a binary or release payload;
-- `health` verifies readiness;
-- `receipt` writes run evidence.
-
-### Receipt
-
-A receipt is the audit trail for a run. The profile ledger is the historical continuity trail across runs. Harmonia records one JSONL ledger entry per module with `sequence`, `stamped_at_unix_ms`, `run_id`, profile identity, module id, pass/fail, changed state, operation count, and first missing signal.
-
-## Quick start
-
-Use the repo-local command face for install-oriented operations:
-
-```bash
-./cli.py
-./cli.py build
-./cli.py install
-sudo ./cli.py install --apply
-./cli.py status
-sudo ./cli.py uninstall --apply
-```
-
-Use Cargo while developing the Rust engine:
-
-```bash
-cargo run -p harmonia -- explain
-cargo run -p harmonia -- toolbelt
-cargo run -p harmonia -- inspect-profile profiles/homeconsole/index.json
-cargo test -p harmonia
-```
-
-Run a non-mutating profile check and write receipts:
-
-```bash
-cargo run -p harmonia -- homeconsole-update profiles/homeconsole/index.json --receipt-dir target/homeconsole-check
-```
-
-## Example: HomeConsole
-
-The HomeConsole profile demonstrates the appliance pattern:
-
-```text
-identity                  prove the machine context
-system-packages           check/update Arch packages
-harmonia-runtime          prove the installed Harmonia binary and profile are possessed
-keyman-runtime            refresh the Keyman git checkout and install its runtime payload
-rust-build-toolchain      maintain the Rust toolchain needed for source-built runtimes
-arcadia-gui-runtime       sync, build, promote, restart, and health-prove Arcadia GUI
-pinned-artifacts-runtime  check blessed known-good artifacts against the lock
-```
-
-A full update command on an installed machine looks like this:
-
-```bash
-/usr/local/bin/harmonia homeconsole-update \
-  /etc/harmonia/profiles/homeconsole/index.json \
-  --apply \
-  --receipt-dir /var/lib/harmonia/receipts/homeconsole-update-latest
-```
-
-A good run reports:
-
-```text
-ok=true
-first_missing_signal=none
-```
+Profiles provide ordered module declarations and constants. Modules compose the ritual and the registered tools; they do not create another mutation authority. Receipts are written for the run and its module/tool work.
 
 ## Repository map
 
 ```text
-cli.py                Repository-local build/install/status helper
-src/                  Rust engine, thin dispatch/profile/receipt surfaces, and one src/tools toolbelt
-profiles/             Profile declarations with adjacent constants-only module sidecars
-docs/                 Architecture notes
-installer/            Installation support
-locks/                Known-good artifact locks
-tests/                Test guidance
+src/atoms/       ask, do, and attest ritual surfaces
+src/bands/       ten charter-ordered execution bands
+src/tools/       registered tool declarations and implementations
+profiles/        selected profile and module declarations
+installer/       installation support
+docs/            architecture and engine notes
+tests/           test guidance
 ```
 
-## Public contract
+## Safe development commands
 
-Harmonia is intentionally small at the boundary:
+```bash
+cargo run -p harmonia -- --help
+cargo run -p harmonia -- explain --help
+cargo run -p harmonia -- toolbelt --help
+cargo build --locked
+```
 
-1. declare the machine profile;
-2. run ordered modules;
-3. call focused Rust tools;
-4. stage before promotion;
-5. write receipts;
-6. exit clearly.
-
-That is the product: reliable appliance updates with visible proof.
+Apply-capable commands require explicit authorization and are outside this documentation's read-only smoke examples.

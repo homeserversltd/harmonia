@@ -1,5 +1,5 @@
 # Atoms
 
-The engine floor is a breath-shaped `ask -> compare -> do -> attest` path. `ask` observes without blocking; `compare` derives typed drift; `do` is admitted only with diff-minted `Authorization` and the exact `--apply-or-timer` invocation key; `attest` appends one redacted receipt to the appliance stream and forwards it to Hyalos.
+The engine floor is one `ask → compare → do → attest` ritual. `ask` observes, `compare` derives typed drift, `do` performs an admitted deed, and `attest` redacts and forwards the receipt.
 
-The two keys are diff-minted **Authorization** and **`--apply-or-timer`**; do requires both by value, while bare `update` observes all and performs no act. Profile locks, tests, reserve, monad, and migration remain explicit profile surfaces; this landed slice establishes only the atoms floor.
+There are two keys: diff-minted `Authorization` and the exact `--apply-or-timer` invocation key. The twenty true-named transactional atoms under `src/atoms/do/` are the only mutation vocabulary. Bare update observes and reports without a deed.
