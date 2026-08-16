@@ -57,9 +57,7 @@ pub(crate) fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Resul
     let parent = path
         .parent()
         .ok_or_else(|| format!("receipt-parent-missing {}", path.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("receipt-parent-create-failed {}: {error}", parent.display()))?;
-    make_receipt_tree_readable(parent)?;
+    prepare_receipt_parent(parent)?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -90,14 +88,7 @@ pub(crate) fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Resul
                 path.display()
             )
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if !is_backup_path(path) {
-                fs::set_permissions(path, fs::Permissions::from_mode(0o644))
-                    .map_err(|error| format!("receipt-mode-failed {}: {error}", path.display()))?;
-            }
-        }
+        set_receipt_file_mode(path)?;
         File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| format!("receipt-parent-sync-failed {}: {error}", parent.display()))?;
@@ -107,6 +98,89 @@ pub(crate) fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Resul
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+pub(crate) fn prepare_receipt_parent(parent: &Path) -> Result<(), String> {
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("receipt-parent-create-failed {}: {error}", parent.display()))?;
+    make_receipt_tree_readable(parent)
+}
+
+pub(crate) fn create_receipt_file(path: &Path) -> Result<File, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("receipt-parent-missing {}", path.display()))?;
+    prepare_receipt_parent(parent)?;
+    let file = File::create(path)
+        .map_err(|error| format!("receipt-file-create-failed {}: {error}", path.display()))?;
+    set_receipt_file_mode(path)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn set_receipt_file_mode(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !is_backup_path(path) {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+            .map_err(|error| format!("receipt-mode-failed {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_receipt_file_mode(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+pub(crate) fn append_jsonl_to(file: &mut File, value: &serde_json::Value) -> Result<(), String> {
+    serde_json::to_writer(&mut *file, value)
+        .map_err(|error| format!("receipt-jsonl-serialize-failed: {error}"))?;
+    writeln!(file).map_err(|error| format!("receipt-jsonl-append-failed: {error}"))
+}
+
+pub(crate) fn append_jsonl(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("receipt-parent-missing {}", path.display()))?;
+    prepare_receipt_parent(parent)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("receipt-jsonl-open-failed {}: {error}", path.display()))?;
+    set_receipt_file_mode(path)?;
+    append_jsonl_to(&mut file, value)
+}
+
+pub(crate) fn promote_current_link(
+    latest_path: &Path,
+    target: &Path,
+    error_prefix: &str,
+    reject_directory: bool,
+) -> Result<(), String> {
+    if latest_path.exists() {
+        if latest_path.is_dir() && !latest_path.is_symlink() {
+            if reject_directory {
+                return Err(format!(
+                    "{error_prefix}-still-directory {}",
+                    latest_path.display()
+                ));
+            }
+        } else {
+            fs::remove_file(latest_path).map_err(|e| e.to_string())?;
+        }
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, latest_path).map_err(|e| {
+        format!(
+            "{error_prefix}-symlink-failed {} -> {}: {e}",
+            target.display(),
+            latest_path.display()
+        )
+    })?;
+    #[cfg(not(unix))]
+    return Err(format!("{error_prefix}-symlink-unsupported"));
+    Ok(())
 }
 
 pub(crate) fn redact_secrets(value: &str, secrets: &[String]) -> String {

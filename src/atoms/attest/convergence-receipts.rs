@@ -49,7 +49,7 @@ pub(crate) fn materialize_tv_receipt_dir(
         .filter(|stem| !stem.is_empty())
         .unwrap_or("tv-update");
     let per_run = parent.join(format!("{base}-{run_id}"));
-    fs::create_dir_all(&per_run).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(&per_run)?;
     migrate_tv_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_tv_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
@@ -76,20 +76,7 @@ fn migrate_tv_blocking_receipt_path(latest_path: &Path, run_id: &str) -> Result<
     fs::remove_file(latest_path).map_err(|e| e.to_string())
 }
 fn refresh_tv_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), String> {
-    if latest_path.exists() {
-        fs::remove_file(latest_path).map_err(|e| e.to_string())?;
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(target, latest_path).map_err(|e| {
-        format!(
-            "tv-update-latest-symlink-failed {} -> {}: {e}",
-            target.display(),
-            latest_path.display()
-        )
-    })?;
-    #[cfg(not(unix))]
-    return Err("tv-update-latest-symlink-unsupported".to_string());
-    Ok(())
+    crate::atoms::attest::promote_current_link(latest_path, target, "tv-update-latest", false)
 }
 pub(crate) fn materialize_homeconsole_receipt_dir(
     receipt_dir: &Path,
@@ -113,7 +100,7 @@ pub(crate) fn materialize_homeconsole_receipt_dir(
         .filter(|stem| !stem.is_empty())
         .unwrap_or("homeconsole-update");
     let per_run = parent.join(format!("{base}-{run_id}"));
-    fs::create_dir_all(&per_run).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(&per_run)?;
     migrate_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
@@ -140,7 +127,7 @@ pub(crate) fn materialize_homeserver_receipt_dir(
         .filter(|stem| !stem.is_empty())
         .unwrap_or("homeserver-update");
     let per_run = parent.join(format!("{base}-{run_id}"));
-    fs::create_dir_all(&per_run).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(&per_run)?;
     migrate_homeserver_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_homeserver_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
@@ -194,50 +181,20 @@ pub(crate) fn migrate_blocking_receipt_path(
     fs::remove_file(latest_path).map_err(|e| e.to_string())
 }
 fn refresh_homeserver_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), String> {
-    if latest_path.exists() {
-        fs::remove_file(latest_path).map_err(|e| e.to_string())?;
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(target, latest_path).map_err(|e| {
-        format!(
-            "homeserver-update-latest-symlink-failed {} -> {}: {e}",
-            target.display(),
-            latest_path.display()
-        )
-    })?;
-    #[cfg(not(unix))]
-    return Err("homeserver-update-latest-symlink-unsupported".to_string());
-    Ok(())
+    crate::atoms::attest::promote_current_link(
+        latest_path,
+        target,
+        "homeserver-update-latest",
+        false,
+    )
 }
 fn refresh_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), String> {
-    if latest_path.exists() {
-        if latest_path.is_symlink() {
-            fs::remove_file(latest_path).map_err(|e| e.to_string())?;
-        } else if latest_path.is_dir() {
-            return Err(format!(
-                "homeconsole-update-latest-still-directory {}",
-                latest_path.display()
-            ));
-        } else {
-            fs::remove_file(latest_path).map_err(|e| e.to_string())?;
-        }
-    }
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(target, latest_path).map_err(|e| {
-            format!(
-                "homeconsole-update-latest-symlink-failed {} -> {}: {e}",
-                target.display(),
-                latest_path.display()
-            )
-        })?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (latest_path, target);
-        return Err("homeconsole-update-latest-symlink-unsupported".to_string());
-    }
-    Ok(())
+    crate::atoms::attest::promote_current_link(
+        latest_path,
+        target,
+        "homeconsole-update-latest",
+        true,
+    )
 }
 pub(crate) fn write_convergence_skipped_receipt(
     receipt_dir: &Path,
@@ -247,7 +204,6 @@ pub(crate) fn write_convergence_skipped_receipt(
     lock_path: &Path,
     requested_receipt_dir: &Path,
 ) -> Result<(), String> {
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     write_json(
         &receipt_dir.join("convergence-skipped.json"),
         &json!({
@@ -264,8 +220,7 @@ pub(crate) fn write_convergence_skipped_receipt(
             "suite_ok": true,
         }),
     )?;
-    let mut events =
-        fs::File::create(receipt_dir.join("events.jsonl")).map_err(|e| e.to_string())?;
+    let mut events = crate::atoms::attest::create_receipt_file(&receipt_dir.join("events.jsonl"))?;
     event(
         &mut events,
         "convergence-skipped",
