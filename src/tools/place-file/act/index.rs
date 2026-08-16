@@ -16,7 +16,7 @@ pub(super) fn place(
     let mode = !observation.mode_equal;
     let owner = !observation.owner_equal || !observation.group_equal;
     let backup_to = match backup {
-        BackupPolicy::To(path) if observation.existed && (bytes || mode) => Some(path),
+        BackupPolicy::To(path) if observation.existed && (bytes || mode || owner) => Some(path),
         BackupPolicy::None | BackupPolicy::To(_) => None,
     };
     let result = atoms::r#do::file_write(

@@ -89,7 +89,9 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         && sentinel_parent_rows_preserved
         && proposal_count == 1;
     let ok = ok && slice2["ok"] == true;
-    let receipt = json!({"schema":"harmonia.bench-structural-wall.v4","ok":ok,"slice2":slice2,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r|r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r|r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r|r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r|r["proposal_id"].as_str()),"rows":rows});
+    let slice11 = slice11_proof(&root, invocation)?;
+    let ok = ok && slice11["ok"].as_bool().unwrap_or(false);
+    let receipt = json!({"schema":"harmonia.bench-structural-wall.v5","ok":ok,"slice2":slice2,"slice11":slice11,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
     let matrix_path =
         PathBuf::from("/var/opt/hermes/workspace/slice-9-structural-wall-matrix.json");
     fs::write(
@@ -112,6 +114,368 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     } else {
         Err("structural-wall-authority-proof-failed".into())
     }
+}
+
+fn declaration_fixture(root: &Path, declarations: Value) -> crate::ladder::LadderManifest {
+    let mut a = BTreeMap::new();
+    a.insert("files".into(), declarations);
+    let managed = crate::ladder::RoutineStep {
+        name: "managed-files".into(),
+        tool: "files".into(),
+        permutation: Some("managed-files".into()),
+        args: a,
+        extra: BTreeMap::new(),
+    };
+    let mut ra = BTreeMap::new();
+    ra.insert("service".into(), Value::String("slice11.service".into()));
+    let restart = crate::ladder::RoutineStep {
+        name: "service-restart".into(),
+        tool: "systemd".into(),
+        permutation: Some("restart".into()),
+        args: ra,
+        extra: BTreeMap::new(),
+    };
+    let routine = crate::ladder::LadderStep {
+        step_id: "declaration-routine".into(),
+        tool: "routine".into(),
+        permutation: "execute".into(),
+        args: BTreeMap::new(),
+        steps: vec![restart, managed],
+        on_failure: crate::ladder::OnFailure::Stop,
+        extra: BTreeMap::new(),
+    };
+    crate::ladder::LadderManifest {
+        schema: crate::ladder::SCHEMA.into(),
+        id: "slice11-declarations".into(),
+        version: "1".into(),
+        description: "proof".into(),
+        role: None,
+        optional: false,
+        optional_warning: None,
+        group: None,
+        constants: BTreeMap::new(),
+        caduceus_commands: vec![],
+        files_root: None,
+        config_deploy: None,
+        ladder: vec![routine],
+        base_dir: root.to_path_buf(),
+    }
+}
+fn strict_declaration(op: &str, path: &Path) -> Value {
+    let mut d = serde_json::Map::new();
+    for (k, v) in [
+        ("operation", json!(op)),
+        ("path", json!(path.display().to_string())),
+        ("mode", json!(420)),
+        ("uid", json!(0)),
+        ("gid", json!(0)),
+        ("xattrs", json!({})),
+        ("no_follow", json!(true)),
+        ("collision_policy", json!("refuse")),
+        ("rollback_policy", json!("exact")),
+    ] {
+        d.insert(k.into(), v);
+    }
+    match op {
+        "place" => {
+            d.insert("content".into(), json!("place-bytes"));
+        }
+        "backfill" => {
+            d.insert("declared_bytes".into(), json!("backfill-bytes"));
+        }
+        "symlink" => {
+            d.insert(
+                "source".into(),
+                json!("/var/opt/hermes/workspace/slice11-source"),
+            );
+            d.insert("target".into(), json!(path.display().to_string()));
+            d.insert("required_source_kind".into(), json!("regular-executable"));
+            d.insert("conflict_policy".into(), json!("refuse-non-symlink"));
+        }
+        "remove" => {}
+        _ => unreachable!(),
+    }
+    Value::Object(d)
+}
+fn declaration_lowering_graph_proof(root: &Path) -> Result<bool, String> {
+    let ops = ["place", "backfill", "remove", "symlink"];
+    let ds = Value::Array(
+        ops.iter()
+            .enumerate()
+            .map(|(i, o)| strict_declaration(o, &root.join(format!("decl-{o}-{i}"))))
+            .collect(),
+    );
+    let mut m = declaration_fixture(root, ds);
+    crate::bands::backfill_files::lower_service_runtime_steps(&mut m)?;
+    let routine = &m.ladder[0];
+    let want = [
+        ("place-file", "place"),
+        ("backfill-file", "backfill"),
+        ("remove-file", "remove-file"),
+        ("files", "symlink-converge"),
+    ];
+    let lowered = routine.steps.iter().skip(1).collect::<Vec<_>>();
+    let exact = lowered.len() == want.len()
+        && lowered
+            .iter()
+            .zip(want)
+            .all(|(c, (t, q))| c.tool == t && c.permutation.as_deref() == Some(q));
+    let projected_routine = crate::ladder::LadderStep {
+        steps: routine
+            .steps
+            .iter()
+            .filter(|c| c.tool != "remove-file")
+            .cloned()
+            .collect(),
+        ..routine.clone()
+    };
+    let p = crate::tools::routine::project_routine_children(&projected_routine, &m.constants)
+        .map_err(|e| e.first_missing_signal())?;
+    let r = p
+        .iter()
+        .position(|c| c.band == crate::bands::Band::RestartServices);
+    let b = p
+        .iter()
+        .position(|c| c.band == crate::bands::Band::BackfillFiles);
+    Ok(exact && r.zip(b).is_some_and(|(r, b)| r < b))
+}
+fn declaration_lowering_refusal_proof(root: &Path) -> Result<bool, String> {
+    let base = strict_declaration("place", &root.join("decl-tail"));
+    let cases = [
+        (None, "managed-files-declaration-array-missing"),
+        (Some("operation"), "operation-missing"),
+        (Some("path"), "path-missing"),
+        (Some("content"), "source-tail-ambiguous"),
+        (Some("mode"), "mode-missing"),
+        (Some("uid"), "uid-missing"),
+        (Some("gid"), "gid-missing"),
+        (Some("xattrs"), "xattrs-missing"),
+        (Some("no_follow"), "no_follow-missing"),
+        (Some("collision_policy"), "collision_policy-missing"),
+        (Some("rollback_policy"), "rollback_policy-missing"),
+    ];
+    let mut ok = true;
+    for (missing, tail) in cases {
+        let mut d = base.clone();
+        if let Some(k) = missing {
+            d.as_object_mut().unwrap().remove(k);
+        }
+        let mut m = declaration_fixture(
+            root,
+            if missing.is_none() {
+                Value::Null
+            } else {
+                Value::Array(vec![d])
+            },
+        );
+        if missing.is_none() {
+            m.ladder[0].steps[1].args.remove("files");
+        }
+        ok &= match crate::bands::backfill_files::lower_service_runtime_steps(&mut m) {
+            Err(e) => e.contains(tail),
+            Ok(_) => false,
+        };
+    }
+    Ok(ok)
+}
+
+fn slice11_proof(
+    root: &Path,
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<Value, String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = root.join("slice11");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let uid = fs::metadata(&dir).map_err(|e| e.to_string())?.uid();
+    let gid = fs::metadata(&dir).map_err(|e| e.to_string())?.gid();
+    let mode = 0o640;
+    let bytes = b"slice11-strict-bytes";
+    let attrs = BTreeMap::new();
+    let snap = |p: &Path| -> Result<Value, String> {
+        match fs::symlink_metadata(p) {
+            Ok(m) => Ok(
+                json!({"kind": if m.file_type().is_symlink() {"symlink"} else if m.is_dir() {"directory"} else {"file"}, "bytes": fs::read(p).ok().map(|b| Sha256::digest(b).to_vec()), "mode": m.permissions().mode() & 0o7777, "uid": m.uid(), "gid": m.gid(), "target": fs::read_link(p).ok()}),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!("absent")),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let symlink = dir.join("symlink");
+    let dangling = dir.join("dangling");
+    let directory = dir.join("directory");
+    std::os::unix::fs::symlink("missing", &symlink).map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink("also-missing", &dangling).map_err(|e| e.to_string())?;
+    fs::create_dir(&directory).map_err(|e| e.to_string())?;
+    let refused = [&symlink, &dangling, &directory].iter().all(|p| {
+        crate::place_file::execute_strict(crate::place_file::StrictPlaceFileRequest {
+            path: p,
+            declared_bytes: bytes,
+            mode,
+            uid,
+            gid,
+            xattrs: &attrs,
+            backup: crate::place_file::BackupPolicy::None,
+            invocation,
+            fail_after_action: false,
+        })
+        .is_err()
+    });
+    let target = dir.join("target");
+    fs::write(&target, b"old").map_err(|e| e.to_string())?;
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    let placed = crate::place_file::execute_strict(crate::place_file::StrictPlaceFileRequest {
+        path: &target,
+        declared_bytes: bytes,
+        mode,
+        uid,
+        gid,
+        xattrs: &attrs,
+        backup: crate::place_file::BackupPolicy::None,
+        invocation,
+        fail_after_action: false,
+    })?;
+    let strict_place =
+        fs::read(&target).map_err(|e| e.to_string())? == bytes && placed.movement.changed();
+    let backfill_target = dir.join("backfill");
+    fs::write(&backfill_target, b"before").map_err(|e| e.to_string())?;
+    let backfilled = crate::backfill_file::execute(crate::backfill_file::BackfillFileRequest {
+        path: &backfill_target,
+        declared_bytes: bytes,
+        mode: Some(mode),
+        ownership: crate::backfill_file::DeclaredOwnership {
+            uid: Some(uid),
+            gid: Some(gid),
+        },
+        backup: crate::backfill_file::BackupPolicy::None,
+        invocation: Some(invocation),
+    })?;
+    let strict_backfill = fs::read(&backfill_target).map_err(|e| e.to_string())? == bytes
+        && backfilled.movement.changed();
+    let source = dir.join("executable");
+    fs::write(&source, b"#!/bin/sh\n").map_err(|e| e.to_string())?;
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    let link = dir.join("link");
+    std::os::unix::fs::symlink("executable", &link).map_err(|e| e.to_string())?;
+    let link_identity = fs::read_link(&link).map_err(|e| e.to_string())?
+        == PathBuf::from("executable")
+        && fs::metadata(&source)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode()
+            & 0o111
+            != 0;
+    let collision_before = snap(&symlink)?;
+    let collision = crate::place_file::execute_strict(crate::place_file::StrictPlaceFileRequest {
+        path: &symlink,
+        declared_bytes: bytes,
+        mode,
+        uid,
+        gid,
+        xattrs: &attrs,
+        backup: crate::place_file::BackupPolicy::None,
+        invocation,
+        fail_after_action: false,
+    })
+    .is_err();
+    let collision_refusal = collision && collision_before == snap(&symlink)?;
+    let rollback_target = dir.join("rollback");
+    fs::write(&rollback_target, b"rollback-old").map_err(|e| e.to_string())?;
+    fs::set_permissions(&rollback_target, fs::Permissions::from_mode(0o600))
+        .map_err(|e| e.to_string())?;
+    let before = snap(&rollback_target)?;
+    let rollback = crate::place_file::execute_strict(crate::place_file::StrictPlaceFileRequest {
+        path: &rollback_target,
+        declared_bytes: bytes,
+        mode,
+        uid,
+        gid,
+        xattrs: &attrs,
+        backup: crate::place_file::BackupPolicy::None,
+        invocation,
+        fail_after_action: true,
+    })
+    .is_err();
+    let file_rollback = rollback && before == snap(&rollback_target)?;
+    let link_before = snap(&link)?;
+    let link_rollback =
+        crate::place_file::execute_strict(crate::place_file::StrictPlaceFileRequest {
+            path: &link,
+            declared_bytes: bytes,
+            mode,
+            uid,
+            gid,
+            xattrs: &attrs,
+            backup: crate::place_file::BackupPolicy::None,
+            invocation,
+            fail_after_action: false,
+        })
+        .is_err()
+            && link_before == snap(&link)?;
+    let dry_target = dir.join("dry-run");
+    fs::write(&dry_target, b"dry-old").map_err(|e| e.to_string())?;
+    let dry_before = snap(&dry_target)?;
+    fs::write(dir.join("dry-source"), bytes).map_err(|e| e.to_string())?;
+    let dry_request = crate::tools::files::FileConvergenceRequest {
+        source_root: dir.clone(),
+        target_root: dir.clone(),
+        files: vec![crate::tools::files::FileSpec {
+            relative_path: PathBuf::from("dry-run"),
+            mode: Some(mode),
+        }],
+        backup_existing: false,
+        receipt_name: "slice11-dry-run".into(),
+        owner: None,
+        group: None,
+    };
+    let dry_result = crate::tools::files::converge_files_with_invocation(
+        &dry_request,
+        &dir,
+        false,
+        Some(invocation),
+    );
+    let dry_refusal = dry_result.is_err();
+    let apply_false_zero_writes = dry_before == snap(&dry_target)?;
+    let backup = dir.join("backup");
+    let first = crate::place_file::execute_strict(crate::place_file::StrictPlaceFileRequest {
+        path: &target,
+        declared_bytes: bytes,
+        mode,
+        uid,
+        gid,
+        xattrs: &attrs,
+        backup: crate::place_file::BackupPolicy::To(&backup),
+        invocation,
+        fail_after_action: false,
+    })?;
+    let second = crate::place_file::execute_strict(crate::place_file::StrictPlaceFileRequest {
+        path: &target,
+        declared_bytes: bytes,
+        mode,
+        uid,
+        gid,
+        xattrs: &attrs,
+        backup: crate::place_file::BackupPolicy::To(&backup),
+        invocation,
+        fail_after_action: false,
+    })?;
+    let second_apply = !first.movement.changed() || second.movement.changed() == false;
+    let second_apply_zero_movement_no_backup = second_apply && !backup.exists();
+    let declaration_graph_canonical = declaration_lowering_graph_proof(root)?;
+    let declaration_tails_block = declaration_lowering_refusal_proof(root)?;
+    let ok = refused
+        && strict_place
+        && strict_backfill
+        && link_identity
+        && collision_refusal
+        && file_rollback
+        && link_rollback
+        && apply_false_zero_writes
+        && second_apply_zero_movement_no_backup
+        && declaration_tails_block
+        && declaration_graph_canonical;
+    Ok(
+        json!({"ok":ok,"no_follow_classification_refusal":refused,"strict_place_exact":strict_place,"strict_backfill_exact":strict_backfill,"link_target_identity":link_identity,"executable_source_identity":link_identity,"non_symlink_collision_refusal":collision_refusal,"file_rollback":file_rollback,"link_rollback":link_rollback,"apply_false_zero_writes":apply_false_zero_writes,"second_apply_zero_movement_no_backup":second_apply_zero_movement_no_backup,"declaration_tails_block":declaration_tails_block,"declaration_graph_canonical":declaration_graph_canonical}),
+    )
 }
 
 fn slice2_proof(

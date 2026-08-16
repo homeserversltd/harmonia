@@ -1,6 +1,6 @@
-use crate::OperationOutcome;
 use crate::ladder::{LadderManifest, OnFailure, ProjectedRoutineChild, RoutineStep, ValidatedStep};
 use crate::ModuleExecution;
+use crate::OperationOutcome;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -147,7 +147,7 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
     enter(Band::BackfillFiles)
 }
 
-pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
+pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Result<(), String> {
     for step in &mut manifest.ladder {
         if step.tool != "routine" || step.permutation != "execute" {
             continue;
@@ -155,7 +155,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
         let Some(index) = step
             .steps
             .iter()
-            .position(|c| c.name == "managed-files" && c.tool == "files")
+            .position(|child| child.name == "managed-files" && child.tool == "files")
         else {
             continue;
         };
@@ -165,13 +165,71 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             .get("files")
             .or_else(|| original.args.get("managed_files"))
             .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+            .ok_or_else(|| "managed-files-declaration-array-missing".to_string())?
+            .clone();
         let mut configuration = Vec::new();
-        let mut replacement = Vec::with_capacity(declarations.len() + 1);
-        for declaration in declarations {
-            let Some(path) = declaration.get("path").and_then(Value::as_str) else {
-                continue;
+        let mut replacement = Vec::new();
+        for (ordinal, declaration) in declarations.into_iter().enumerate() {
+            let object = declaration
+                .as_object()
+                .ok_or_else(|| format!("managed-file-declaration-{ordinal}-not-object"))?;
+            let operation = object
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("managed-file-declaration-{ordinal}-operation-missing"))?;
+            let path = object
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("managed-file-declaration-{ordinal}-path-missing"))?;
+            if path.is_empty() {
+                return Err(format!("managed-file-declaration-{ordinal}-path-invalid"));
+            }
+            let xattrs = object
+                .get("xattrs")
+                .ok_or_else(|| format!("managed-file-declaration-{ordinal}-xattrs-missing"))?;
+            let no_follow = object
+                .get("no_follow")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| format!("managed-file-declaration-{ordinal}-no_follow-missing"))?;
+            let collision_policy = object
+                .get("collision_policy")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    format!("managed-file-declaration-{ordinal}-collision_policy-missing")
+                })?;
+            let rollback_policy = object
+                .get("rollback_policy")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    format!("managed-file-declaration-{ordinal}-rollback_policy-missing")
+                })?;
+            if !no_follow {
+                return Err(format!(
+                    "managed-file-declaration-{ordinal}-no_follow-unsupported-false"
+                ));
+            }
+            if collision_policy != "refuse" {
+                return Err(format!("managed-file-declaration-{ordinal}-collision_policy-unsupported-{collision_policy}"));
+            }
+            if !xattrs.as_object().is_some_and(|object| object.is_empty()) {
+                return Err(format!(
+                    "managed-file-declaration-{ordinal}-xattrs-unsupported"
+                ));
+            }
+            if rollback_policy != "exact" {
+                return Err(format!("managed-file-declaration-{ordinal}-rollback_policy-unsupported-{rollback_policy}"));
+            }
+            let kind = operation;
+            let (tool, permutation) = match kind {
+                "place" => ("place-file", "place"),
+                "backfill" => ("backfill-file", "backfill"),
+                "remove" => ("remove-file", "remove-file"),
+                "symlink" => ("files", "symlink-converge"),
+                other => {
+                    return Err(format!(
+                        "managed-file-declaration-{ordinal}-operation-unsupported-{other}"
+                    ))
+                }
             };
             if matches!(
                 crate::tools::files::classify_target(Path::new(path)),
@@ -182,58 +240,84 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             }
             let mut args = BTreeMap::new();
             args.insert("path".into(), Value::String(path.into()));
+            args.insert("xattrs".into(), xattrs.clone());
+            args.insert("no_follow".into(), Value::Bool(no_follow));
             args.insert(
-                "declared_bytes".into(),
-                declaration
-                    .get("content")
-                    .cloned()
-                    .unwrap_or_else(|| Value::String(String::new())),
+                "collision_policy".into(),
+                Value::String(collision_policy.into()),
             );
-            for key in ["mode", "uid", "gid"] {
-                if let Some(value) = declaration.get(key) {
-                    args.insert(key.into(), value.clone());
+            args.insert(
+                "rollback_policy".into(),
+                Value::String(rollback_policy.into()),
+            );
+            match kind {
+                "place" | "backfill" => {
+                    let bytes = object
+                        .get("content")
+                        .or_else(|| object.get("declared_bytes"));
+                    let source = object.get("source_path");
+                    if kind == "backfill" && source.is_some() {
+                        return Err(format!(
+                            "managed-file-declaration-{ordinal}-backfill-source_path-unsupported"
+                        ));
+                    }
+                    if bytes.is_none() == source.is_none() {
+                        return Err(format!(
+                            "managed-file-declaration-{ordinal}-source-tail-ambiguous"
+                        ));
+                    }
+                    if let Some(value) = bytes {
+                        args.insert("declared_bytes".into(), value.clone());
+                    }
+                    if let Some(value) = source {
+                        args.insert("source_path".into(), value.clone());
+                    }
+                    for key in ["mode", "uid", "gid"] {
+                        let value = object.get(key).ok_or_else(|| {
+                            format!("managed-file-declaration-{ordinal}-{key}-missing")
+                        })?;
+                        args.insert(key.into(), value.clone());
+                    }
                 }
+                "remove" => {}
+                "symlink" => {
+                    for key in [
+                        "source",
+                        "target",
+                        "required_source_kind",
+                        "conflict_policy",
+                    ] {
+                        let value = object.get(key).ok_or_else(|| {
+                            format!("managed-file-declaration-{ordinal}-{key}-missing")
+                        })?;
+                        args.insert(key.into(), value.clone());
+                    }
+                }
+                _ => unreachable!(),
             }
             replacement.push(RoutineStep {
-                name: format!("managed-file-{}", replacement.len()),
-                tool: "place-file".into(),
-                permutation: Some("place".into()),
+                name: format!("managed-{kind}-{ordinal}"),
+                tool: tool.into(),
+                permutation: Some(permutation.into()),
                 args,
-                extra: BTreeMap::new(),
+                extra: BTreeMap::from([(
+                    "canonical_atom".into(),
+                    Value::String(format!("{tool}:{permutation}")),
+                )]),
             });
         }
-        if let Some(source) = original.args.get("caduceus_profile_source") {
-            if let Some(path) = source.get("path").and_then(Value::as_str) {
-                if matches!(
-                    crate::tools::files::classify_target(Path::new(path)),
-                    crate::tools::files::TargetClass::Config
-                ) {
-                    configuration.push(serde_json::json!({
-                        "path": path,
-                        "content": "",
-                        "mode": source.get("mode").cloned().unwrap_or(Value::Null)
-                    }));
-                }
-            }
-        }
-        // Keep the proposal after the retained RestartServices suffix. The
-        // place-file children remain the BackfillFiles mutation lane.
-        let proposal = if !configuration.is_empty() {
-            let mut config = original;
-            config
+        step.steps.splice(index..=index, replacement);
+        if !configuration.is_empty() {
+            let mut proposal = original;
+            proposal
                 .args
                 .insert("files".into(), Value::Array(configuration));
-            config.tool = "files".into();
-            config.permutation = Some("managed-files".into());
-            Some(config)
-        } else {
-            None
-        };
-        step.steps.splice(index..=index, replacement);
-        if let Some(proposal) = proposal {
+            proposal.tool = "files".into();
+            proposal.permutation = Some("managed-files".into());
             step.steps.push(proposal);
         }
     }
+    Ok(())
 }
 
 use crate::receipts::event;
@@ -354,7 +438,6 @@ pub(crate) fn execute_manifest_modules(
     Ok(())
 }
 
-
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -363,10 +446,41 @@ pub(crate) fn execute_routine_child(
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
-    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+) -> Result<
+    (
+        crate::OperationOutcome,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let contract =
+        crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = requested_permutation
+        .and_then(|name| contract.permutation(name))
+        .or_else(|| contract.permutations.first())
+        .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    if matches!(tool, "place-file" | "backfill-file" | "remove-file") {
+        if args.get("no_follow").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("{tool}-no_follow-unsupported"));
+        }
+        if args.get("collision_policy").and_then(Value::as_str) != Some("refuse") {
+            return Err(format!("{tool}-collision-policy-unsupported"));
+        }
+        if args.get("rollback_policy").and_then(Value::as_str) != Some("exact") {
+            return Err(format!("{tool}-rollback-policy-unsupported"));
+        }
+        if !args.get("xattrs").is_some_and(Value::is_object) {
+            return Err(format!("{tool}-xattrs-invalid"));
+        }
+        if !args
+            .get("xattrs")
+            .and_then(Value::as_object)
+            .is_some_and(|x| x.is_empty())
+        {
+            return Err(format!("{tool}-xattrs-unsupported"));
+        }
+    }
     let name = tool.to_string();
     match tool {
         "place-file" => {
@@ -441,6 +555,51 @@ pub(crate) fn execute_routine_child(
                         "sha256".into(),
                         serde_json::json!(crate::atoms::file_sha256(&bytes)),
                     ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        "remove-file" => {
+            let path = Path::new(
+                args.get("path")
+                    .and_then(Value::as_str)
+                    .ok_or("remove-file-path-missing")?,
+            );
+            let root = path.parent().ok_or("remove-file-parent-missing")?;
+            let name = path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .ok_or("remove-file-name-missing")?
+                .to_string();
+            let out = crate::remove_file::execute(
+                root,
+                &[name],
+                receipt_dir,
+                &tool.to_string(),
+                apply,
+                invocation,
+                args.get("no_follow")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                args.get("collision_policy")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                args.get("rollback_policy")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            )?;
+            Ok((
+                crate::OperationOutcome {
+                    ok: out.ok,
+                    changed: out.changed,
+                    skipped: !apply,
+                    message: out.message,
+                    command: None,
+                },
+                [
+                    ("path".into(), serde_json::json!(path)),
+                    ("changed".into(), serde_json::json!(out.changed)),
                 ]
                 .into_iter()
                 .collect(),

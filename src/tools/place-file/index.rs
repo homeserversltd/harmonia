@@ -2,6 +2,10 @@
 #![allow(dead_code)]
 
 use crate::atoms::{self, Drift, Receipt};
+use std::collections::BTreeMap;
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 #[path = "act/index.rs"]
@@ -81,6 +85,15 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
         }
         _ => {}
     }
+    if let Ok(metadata) = std::fs::symlink_metadata(request.path) {
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "place-file-target-collision-{} {}",
+                collision_kind(&metadata),
+                request.path.display()
+            ));
+        }
+    }
     let run = crate::tools::declaration::execute(
         "place-file",
         "place-file",
@@ -142,4 +155,232 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
 
 pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
     crate::tools::declaration::get("place-file")
+}
+
+/// Strict Slice 11 request. Unlike the compatibility request above, all metadata
+/// is explicit and xattrs are compared by name and value without following links.
+pub(crate) struct StrictPlaceFileRequest<'a> {
+    pub path: &'a Path,
+    pub declared_bytes: &'a [u8],
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub xattrs: &'a BTreeMap<Vec<u8>, Vec<u8>>,
+    pub backup: BackupPolicy<'a>,
+    pub invocation: atoms::r#do::InvocationKey,
+    pub fail_after_action: bool,
+}
+
+#[derive(Clone)]
+struct StrictPreimage {
+    existed: bool,
+    bytes: Vec<u8>,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+#[cfg(unix)]
+fn strict_xattrs(path: &Path) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    let n = unsafe { libc::llistxattr(c.as_ptr(), std::ptr::null_mut(), 0) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let mut names = vec![0u8; n as usize];
+    if n > 0
+        && unsafe { libc::llistxattr(c.as_ptr(), names.as_mut_ptr() as *mut _, names.len()) } < 0
+    {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let mut out = BTreeMap::new();
+    for name in names.split(|b| *b == 0).filter(|n| !n.is_empty()) {
+        let cn = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        let z = unsafe { libc::lgetxattr(c.as_ptr(), cn.as_ptr(), std::ptr::null_mut(), 0) };
+        if z < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let mut value = vec![0u8; z as usize];
+        if z > 0
+            && unsafe {
+                libc::lgetxattr(
+                    c.as_ptr(),
+                    cn.as_ptr(),
+                    value.as_mut_ptr() as *mut _,
+                    value.len(),
+                )
+            } < 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        out.insert(name.to_vec(), value);
+    }
+    Ok(out)
+}
+#[cfg(not(unix))]
+fn strict_xattrs(_path: &Path) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, String> {
+    Ok(BTreeMap::new())
+}
+
+#[cfg(unix)]
+fn strict_set_xattrs(path: &Path, wanted: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    let current = strict_xattrs(path)?;
+    for name in current.keys().filter(|n| !wanted.contains_key(*n)) {
+        let cn = std::ffi::CString::new(name.as_slice()).map_err(|e| e.to_string())?;
+        if unsafe { libc::lremovexattr(c.as_ptr(), cn.as_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+    for (name, value) in wanted {
+        let cn = std::ffi::CString::new(name.as_slice()).map_err(|e| e.to_string())?;
+        if unsafe {
+            libc::lsetxattr(
+                c.as_ptr(),
+                cn.as_ptr(),
+                value.as_ptr() as *const _,
+                value.len(),
+                0,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+    Ok(())
+}
+#[cfg(not(unix))]
+fn strict_set_xattrs(_path: &Path, _wanted: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), String> {
+    Ok(())
+}
+
+fn strict_preimage(path: &Path) -> Result<StrictPreimage, String> {
+    match fs::symlink_metadata(path) {
+        Ok(m) if !m.file_type().is_file() => Err(format!(
+            "place-file-target-collision-{} {}",
+            collision_kind(&m),
+            path.display()
+        )),
+        Ok(m) => Ok(StrictPreimage {
+            existed: true,
+            bytes: fs::read(path).map_err(|e| e.to_string())?,
+            mode: m.permissions().mode() & 0o7777,
+            #[cfg(unix)]
+            uid: m.uid(),
+            #[cfg(not(unix))]
+            uid: 0,
+            #[cfg(unix)]
+            gid: m.gid(),
+            #[cfg(not(unix))]
+            gid: 0,
+            xattrs: strict_xattrs(path)?,
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StrictPreimage {
+            existed: false,
+            bytes: Vec::new(),
+            mode: 0,
+            uid: 0,
+            gid: 0,
+            xattrs: BTreeMap::new(),
+        }),
+        Err(e) => Err(e.to_string()),
+    }
+}
+fn collision_kind(m: &fs::Metadata) -> &'static str {
+    if m.file_type().is_symlink() {
+        "symlink"
+    } else if m.is_dir() {
+        "directory"
+    } else {
+        "non-regular"
+    }
+}
+fn strict_restore(path: &Path, old: &StrictPreimage) -> Result<(), String> {
+    if old.existed {
+        fs::write(path, &old.bytes).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            fs::set_permissions(path, fs::Permissions::from_mode(old.mode))
+                .map_err(|e| e.to_string())?;
+            let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+                .map_err(|e| e.to_string())?;
+            if unsafe { libc::chown(c.as_ptr(), old.uid, old.gid) } != 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            };
+        }
+        strict_set_xattrs(path, &old.xattrs)
+    } else {
+        match fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_file() => fs::remove_file(path).map_err(|e| e.to_string()),
+            Ok(_) => Err("place-file-rollback-collision".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+pub(crate) fn execute_strict(
+    request: StrictPlaceFileRequest<'_>,
+) -> Result<PlaceFileOutcome, String> {
+    let old = strict_preimage(request.path)?;
+    let desired_equal = old.existed
+        && old.bytes == request.declared_bytes
+        && old.mode == request.mode
+        && old.uid == request.uid
+        && old.gid == request.gid
+        && old.xattrs == *request.xattrs;
+    if desired_equal {
+        return execute(PlaceFileRequest {
+            path: request.path,
+            declared_bytes: request.declared_bytes,
+            mode: Some(request.mode),
+            ownership: DeclaredOwnership {
+                uid: Some(request.uid),
+                gid: Some(request.gid),
+            },
+            backup: request.backup,
+            invocation: Some(request.invocation),
+        });
+    }
+    let result: Result<PlaceFileOutcome, String> = (|| {
+        let out = execute(PlaceFileRequest {
+            path: request.path,
+            declared_bytes: request.declared_bytes,
+            mode: Some(request.mode),
+            ownership: DeclaredOwnership {
+                uid: Some(request.uid),
+                gid: Some(request.gid),
+            },
+            backup: request.backup,
+            invocation: Some(request.invocation),
+        })?;
+        strict_set_xattrs(request.path, request.xattrs)?;
+        if request.fail_after_action {
+            return Err("place-file-injected-post-action-failure".into());
+        }
+        let now = strict_preimage(request.path)?;
+        if !now.existed
+            || now.bytes != request.declared_bytes
+            || now.mode != request.mode
+            || now.uid != request.uid
+            || now.gid != request.gid
+            || now.xattrs != *request.xattrs
+        {
+            return Err("place-file-readback-mismatch".into());
+        }
+        Ok(out)
+    })();
+    match result {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let rollback = strict_restore(request.path, &old);
+            match rollback {
+                Ok(()) => Err(format!("{e}; exact-rollback=ok")),
+                Err(r) => Err(format!("{e}; exact-rollback=failed:{r}")),
+            }
+        }
+    }
 }
