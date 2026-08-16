@@ -141,3 +141,7 @@ pub(crate) fn proof_battery(
     }
     Ok((true, None, operations))
 }
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("check-health")
+}

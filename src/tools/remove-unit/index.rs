@@ -41,3 +41,7 @@ pub(crate) fn act(
 pub(crate) fn report_home(unit: &str, log: &Path, result: &CmdResult) -> Result<(), String> {
     report_home::attest(unit, log, result)
 }
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("remove-unit")
+}

@@ -65,7 +65,8 @@ pub(crate) fn run_build_with_mode(
     invocation: Option<atoms::r#do::InvocationKey>,
     identity_mode: IdentityMode,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
-    let run = comparison::execute_with_failure_receipt(
+    let run = crate::tools::declaration::execute_with_failure_receipt(
+        "build-crate",
         "build-crate",
         || {
             observe::build_identity_with_mode(
@@ -182,7 +183,8 @@ pub(crate) fn bench_build_guard(
     std::fs::create_dir_all(artifact.parent().unwrap()).map_err(|e| e.to_string())?;
     let action_count = Cell::new(0_u32);
     let run_once = |action_count: &Cell<u32>| -> Result<bool, String> {
-        let run = comparison::execute(
+        let run = crate::tools::declaration::execute(
+            "build-crate",
             "bench-build-crate",
             || observe::build_identity(source_build_sha, None, &artifact),
             |observation| {
@@ -210,4 +212,8 @@ pub(crate) fn bench_build_guard(
     Ok(
         serde_json::json!({"run1":{"changed":changed1,"action_count":ops1},"run2":{"changed":changed2,"operations":ops2},"artifact":artifact,"environment":{"CADUCEUS_BUILD_SHA":source_build_sha}}),
     )
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("build-crate")
 }

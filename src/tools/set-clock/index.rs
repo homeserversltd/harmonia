@@ -20,7 +20,11 @@ pub(crate) struct Request<'a> {
     pub timeout_secs: u64,
 }
 
-pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::r#do::InvocationKey>) -> Result<CmdResult, String> {
+pub(crate) fn run(
+    request: &Request<'_>,
+    apply: bool,
+    invocation: Option<atoms::r#do::InvocationKey>,
+) -> Result<CmdResult, String> {
     if !apply {
         return Ok(crate::tools::household_time::planned(request.operation));
     }
@@ -60,7 +64,8 @@ pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::
         }
         _ => true,
     };
-    let run = comparison::execute(
+    let run = crate::tools::declaration::execute(
+        "set-clock",
         "set-clock",
         || Ok::<_, String>(observation.clone()),
         |_| {
@@ -71,8 +76,8 @@ pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::
             }
         },
         |authorization, _| {
-            let invocation = invocation
-                .ok_or_else(|| "set-clock-invocation-key-missing".to_string())?;
+            let invocation =
+                invocation.ok_or_else(|| "set-clock-invocation-key-missing".to_string())?;
             act::apply(
                 authorization,
                 invocation,
@@ -93,4 +98,8 @@ pub(crate) fn run(request: &Request<'_>, apply: bool, invocation: Option<atoms::
 
 pub(crate) fn report_home(log: &Path, operation: &str, result: &CmdResult) -> Result<(), String> {
     report_home::attest(log, operation, result)
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("set-clock")
 }

@@ -27,7 +27,8 @@ pub(crate) fn install(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Option<String>, OperationOutcome>, String> {
-    comparison::execute(
+    crate::tools::declaration::execute(
+        "ratchet-aur-package",
         "ratchet-aur-package",
         || Ok(observe::installed_version(package)),
         |installed| {
@@ -67,7 +68,8 @@ pub(crate) fn build_pinned(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Observation, OperationOutcome>, String> {
-    comparison::execute(
+    crate::tools::declaration::execute(
+        "ratchet-aur-package",
         "ratchet-aur-package",
         || observe::ratchet(package, lock_path, None, install),
         |observation| {
@@ -141,4 +143,8 @@ pub(crate) fn pinned_artifacts_command(
         "bless" => act::pinned_artifacts_bless(profile, lock_path, receipt_dir, args),
         other => Err(format!("unsupported pinned-artifacts action {other}")),
     }
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("ratchet-aur-package")
 }

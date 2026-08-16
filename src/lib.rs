@@ -628,7 +628,12 @@ mod tests {
         let _guard = try_acquire_homeconsole_update_lock(&lock_path).expect("hold lock");
         let previous_lock = std::env::var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK").ok();
         std::env::set_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK", &lock_path);
-        let result = homeconsole_update(&profile, &PathBuf::from("profiles/homeconsole/modules"), &latest, true);
+        let result = homeconsole_update(
+            &profile,
+            &PathBuf::from("profiles/homeconsole/modules"),
+            &latest,
+            true,
+        );
         if let Some(value) = previous_lock {
             std::env::set_var("HARMONIA_HOME_CONSOLE_UPDATE_LOCK", value);
         } else {
@@ -956,7 +961,9 @@ mod tests {
             optional: false,
             optional_warning: None,
         };
-        assert!(!repo_root().join("profiles/homeconsole/modules/json-invented-module/manifest.json").exists());
+        assert!(!repo_root()
+            .join("profiles/homeconsole/modules/json-invented-module/manifest.json")
+            .exists());
     }
 
     #[test]
@@ -3180,6 +3187,16 @@ pub(crate) fn toolbelt() -> Result<(), String> {
     );
     println!("ok=true");
     println!("tool_count={}", tools::all().len());
+    for declaration in tools::declaration::all()? {
+        println!(
+            "declaration={} deed={} comparison={:?} attest={:?} inputs={}",
+            declaration.tool,
+            declaration.deed.map(|d| d.name()).unwrap_or("ask"),
+            declaration.comparison,
+            declaration.attest,
+            declaration.inputs.len()
+        );
+    }
     for tool in tools::all() {
         let permutations: Vec<&str> = tool.permutations.iter().map(|p| p.name).collect();
         println!(
