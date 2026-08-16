@@ -40,7 +40,7 @@ pub(crate) fn execute_manifest_band(
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
 ) -> Result<ModuleExecution, String> {
-    fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
         ok: true,
         changed: false,
@@ -264,7 +264,7 @@ pub(crate) fn execute_group_live_probe_validated(
     step: &ValidatedStep,
     receipt_dir: &Path,
 ) -> Result<OperationOutcome, String> {
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     execute_validated_step(step, manifest, receipt_dir, None, None, false, None)
 }
 pub(crate) fn execute_group_live_probe(
@@ -304,7 +304,7 @@ pub(crate) fn homeconsole_arcadia_check(
             profile.id, profile.identity
         ));
     }
-    fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let started = Instant::now();
     let current_sha = fs::read_to_string(current_sha_file)
         .ok()

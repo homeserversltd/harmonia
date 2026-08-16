@@ -23,7 +23,7 @@ pub(crate) fn execute_files(
     let band = crate::bands::Band::BackfillFiles;
     let steps = projected_steps.to_vec();
     crate::tools::files::preflight_file_targets(manifest, &steps, projected_routines, Some(band))?;
-    fs::create_dir_all(module_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
         ok: true,
         changed: false,
@@ -503,7 +503,7 @@ pub(crate) fn execute_routine_child(
         .and_then(|name| contract.permutation(name))
         .or_else(|| contract.permutations.first())
         .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
-    std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     if matches!(tool, "place-file" | "backfill-file" | "remove-file") {
         if args.get("no_follow").and_then(Value::as_bool) != Some(true) {
             return Err(format!("{tool}-no_follow-unsupported"));

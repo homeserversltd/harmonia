@@ -514,7 +514,7 @@ pub(crate) fn execute_routine(
         Some(band),
     )?;
     let routine_dir = module_dir.join(&source.step_id);
-    fs::create_dir_all(&routine_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::prepare_receipt_parent(&routine_dir)?;
     let local = states.is_none();
     let mut owned;
     let state = if let Some(map) = states.as_deref_mut() {
@@ -550,7 +550,7 @@ pub(crate) fn execute_routine(
             continue;
         }
         let child_dir = routine_dir.join(&child.name);
-        fs::create_dir_all(&child_dir).map_err(|e| e.to_string())?;
+        crate::atoms::attest::prepare_receipt_parent(&child_dir)?;
         if let Some(parent) = state.blocked_by.clone() {
             let receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":parent});
             crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
