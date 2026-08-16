@@ -889,7 +889,7 @@ pub(crate) fn run_engine_preflight(
                                 invocation.ok_or("invocation-key-missing")?,
                             )
                         } else {
-                            crate::pull_repo::plan(&request)
+                            tools::git_artifact::plan(&request)
                         };
                         let git_cmd = CmdResult {
                             ok: git_outcome.command.ok,

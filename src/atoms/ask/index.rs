@@ -1,5 +1,19 @@
 //! Typed, bounded, non-blocking observation atoms.
 #![allow(dead_code)]
+#[path = "backfill_file.rs"]
+pub(crate) mod backfill_file;
+#[path = "build_crate.rs"]
+pub(crate) mod build_crate;
+#[path = "build_venv.rs"]
+pub(crate) mod build_venv;
+#[path = "check_health.rs"]
+pub(crate) mod check_health;
+#[path = "install_package.rs"]
+pub(crate) mod install_package;
+#[path = "ratchet_aur.rs"]
+pub(crate) mod ratchet_aur;
+#[path = "set_clock.rs"]
+pub(crate) mod set_clock;
 use super::{ask_file, CommandObservation, FileObservation, HttpObservation, UnitObservation};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};

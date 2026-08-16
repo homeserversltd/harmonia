@@ -173,16 +173,60 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             let object = declaration
                 .as_object()
                 .ok_or_else(|| format!("managed-file-declaration-{ordinal}-not-object"))?;
-            let operation = object
-                .get("operation")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("managed-file-declaration-{ordinal}-operation-missing"))?;
-            let path = object
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("managed-file-declaration-{ordinal}-path-missing"))?;
+            let legacy_implied_place = !object.contains_key("operation");
+            let operation = if legacy_implied_place {
+                "place"
+            } else {
+                object
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        format!("managed-file-declaration-{ordinal}-operation-invalid")
+                    })?
+            };
+            let Some(path) = object.get("path").and_then(Value::as_str) else {
+                return Err(format!("managed-file-declaration-{ordinal}-path-missing"));
+            };
             if path.is_empty() {
                 return Err(format!("managed-file-declaration-{ordinal}-path-invalid"));
+            }
+            if legacy_implied_place {
+                if matches!(
+                    crate::tools::files::classify_target(Path::new(path)),
+                    crate::tools::files::TargetClass::Config
+                ) {
+                    configuration.push(declaration);
+                    continue;
+                }
+                let mut args = BTreeMap::new();
+                args.insert("path".into(), Value::String(path.into()));
+                args.insert(
+                    "declared_bytes".into(),
+                    object
+                        .get("content")
+                        .cloned()
+                        .unwrap_or_else(|| Value::String(String::new())),
+                );
+                args.insert("xattrs".into(), Value::Object(serde_json::Map::new()));
+                args.insert("no_follow".into(), Value::Bool(true));
+                args.insert("collision_policy".into(), Value::String("refuse".into()));
+                args.insert("rollback_policy".into(), Value::String("exact".into()));
+                for key in ["mode", "uid", "gid"] {
+                    if let Some(value) = object.get(key) {
+                        args.insert(key.into(), value.clone());
+                    }
+                }
+                replacement.push(RoutineStep {
+                    name: format!("managed-place-{ordinal}"),
+                    tool: "place-file".into(),
+                    permutation: Some("place".into()),
+                    args,
+                    extra: BTreeMap::from([(
+                        "canonical_atom".into(),
+                        Value::String("place-file:place".into()),
+                    )]),
+                });
+                continue;
             }
             let xattrs = object
                 .get("xattrs")

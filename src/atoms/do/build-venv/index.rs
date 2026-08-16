@@ -20,7 +20,7 @@ pub(crate) fn converge(
     authorization: ActionAuthorization,
     invocation: InvocationKey,
     request: &crate::build_venv::Request<'_>,
-    observation: &crate::build_venv::observe::Observation,
+    observation: &crate::atoms::ask::build_venv::Observation,
 ) -> Result<&'static str, String> {
     let mut movement = "none";
     if !observation.venv_valid {

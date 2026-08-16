@@ -1,15 +1,8 @@
-//! Household clock convergence behind observe/compare/act/report-home.
+//! Household clock convergence through comparison and ownership lanes.
 use crate::atoms;
 use crate::tools::comparison::DiffDecision;
 use crate::CmdResult;
 use std::path::Path;
-
-#[path = "act/index.rs"]
-mod act;
-#[path = "observe/index.rs"]
-mod observe;
-#[path = "report-home/index.rs"]
-mod report_home;
 
 pub(crate) struct Request<'a> {
     pub backend: &'a str,
@@ -28,7 +21,7 @@ pub(crate) fn run(
     if !apply {
         return Ok(crate::tools::household_time::planned(request.operation));
     }
-    let observation = observe::clock(request);
+    let observation = crate::atoms::ask::set_clock::clock(request);
     let desired_timezone = request.timezone.map(str::to_owned).or_else(|| {
         observation
             .remote_state
@@ -54,7 +47,7 @@ pub(crate) fn run(
         crate::tools::declaration::execute(
             "set-clock",
             "set-clock",
-            || Ok::<_, String>(observe::clock(request)),
+            || Ok::<_, String>(crate::atoms::ask::set_clock::clock(request)),
             |current| {
                 let desired = request.timezone.map(str::to_owned).or_else(|| {
                     current.remote_state.as_ref().and_then(|result| {
@@ -98,14 +91,19 @@ pub(crate) fn run(
                         crate::tools::household_time::fresh_timezone(&result.stdout)
                     })
                 });
-                act::apply(authorization, invocation, request, desired.as_deref())
+                crate::atoms::r#do::set_clock::apply(
+                    authorization,
+                    invocation,
+                    request,
+                    desired.as_deref(),
+                )
             },
         )?;
     let result = match run {
         crate::tools::comparison::ComparisonRun::Current { observation, .. } => observation
             .remote_state
             .clone()
-            .unwrap_or_else(|| observe::current_receipt(&observation)),
+            .unwrap_or_else(|| crate::atoms::ask::set_clock::current_receipt(&observation)),
         crate::tools::comparison::ComparisonRun::Moved { movement, .. } => movement,
     };
     Ok(result)
@@ -154,8 +152,13 @@ pub(crate) fn execute(
         message: format!("set-clock {permutation}"),
         command: Some(result),
     };
-    crate::write_tool_receipt(receipt_dir, step_id, "set-clock", permutation, &outcome)?;
-    report_home(
+    crate::atoms::attest::set_clock::write_tool_receipt(
+        receipt_dir,
+        step_id,
+        permutation,
+        &outcome,
+    )?;
+    crate::atoms::attest::set_clock::attest(
         &receipt_dir.join(format!("{step_id}.attest.jsonl")),
         permutation,
         outcome.command.as_ref().expect("set-clock command result"),
@@ -178,10 +181,6 @@ pub(crate) fn execute_validated_step(
         apply,
         invocation,
     )
-}
-
-pub(crate) fn report_home(log: &Path, operation: &str, result: &CmdResult) -> Result<(), String> {
-    report_home::attest(log, operation, result)
 }
 
 pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {

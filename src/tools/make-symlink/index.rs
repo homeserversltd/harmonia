@@ -1,22 +1,6 @@
-//! Indexed implementation spine for validated file-and-symlink promotion.
-//!
-//! The source remains one Rust privacy scope through `include!`, while each
-//! independently named transaction boundary owns an indexed directory.
-
-use crate::atoms;
-use crate::{CmdResult, OperationOutcome};
-use serde_json::json;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-include!("observe/index.rs");
-include!("act/index.rs");
-include!("report-home/index.rs");
-
+//! Declaration/ritual adapter for the make-symlink atom.
+#![allow(dead_code)]
+pub(crate) use crate::atoms::r#do::make_symlink::*;
 #[cfg(test)]
 #[path = "tests/index.rs"]
 mod tests;
-
-pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
-    crate::tools::declaration::get("make-symlink")
-}

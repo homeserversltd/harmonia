@@ -1,6 +1,6 @@
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{CommandObservation, Drift, Receipt};
-use crate::tools::comparison::ActionAuthorization;
+use crate::tools::comparison::{self, ActionAuthorization};
 use std::path::Path;
 use std::time::Duration;
 
@@ -42,3 +42,46 @@ pub(crate) fn cargo_build(
         stderr: result.stderr,
     })
 }
+
+pub(crate) fn bench_build_guard(
+    root: &Path,
+    source_build_sha: &str,
+) -> Result<serde_json::Value, String> {
+    use std::cell::Cell;
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let artifact = root.join("target/release/caduceus");
+    std::fs::create_dir_all(artifact.parent().unwrap()).map_err(|e| e.to_string())?;
+    let action_count = Cell::new(0_u32);
+    let run_once = |action_count: &Cell<u32>| -> Result<bool, String> {
+        let run = crate::tools::declaration::execute(
+            "build-crate",
+            "bench-build-crate",
+            || crate::atoms::ask::build_crate::build_identity(source_build_sha, None, &artifact),
+            |observation| {
+                if observation.identity_matches() {
+                    comparison::DiffDecision::Empty
+                } else {
+                    comparison::DiffDecision::Different
+                }
+            },
+            |_, _| {
+                action_count.set(action_count.get() + 1);
+                std::fs::write(&artifact, format!("bench artifact {source_build_sha}\n"))
+                    .map_err(|e| e.to_string())
+            },
+        )?;
+        Ok(matches!(run, comparison::ComparisonRun::Moved { .. }))
+    };
+    let changed1 = run_once(&action_count)?;
+    let ops1 = action_count.get();
+    let changed2 = run_once(&action_count)?;
+    let ops2 = action_count.get() - ops1;
+    if !changed1 || changed2 || ops1 != 1 || ops2 != 0 {
+        return Err("build-guard-bench-failed".into());
+    }
+    Ok(
+        serde_json::json!({"run1":{"changed":changed1,"action_count":ops1},"run2":{"changed":changed2,"operations":ops2},"artifact":artifact,"environment":{"CADUCEUS_BUILD_SHA":source_build_sha}}),
+    )
+}
+
+pub(crate) fn failure(log: &Path, artifact: &Path, source_build_sha: &str, before: &crate::atoms::ask::build_crate::Observation, after: &crate::atoms::ask::build_crate::Observation, movement_ok: bool) -> Result<(), String> { crate::write_json(&log.with_file_name("service-runtime-build-failure.json"), &serde_json::json!({"signal":"service-runtime-act-did-not-converge","artifact":artifact,"source_build_sha":source_build_sha,"before":before.artifact_build_sha,"after":after.artifact_build_sha,"movement_ok":movement_ok})) }

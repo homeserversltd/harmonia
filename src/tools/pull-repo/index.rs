@@ -4,21 +4,14 @@ use crate::{
     CmdResult,
 };
 
-#[path = "act/index.rs"]
-mod act;
-#[path = "observe/index.rs"]
-mod observe;
-#[path = "report-home/index.rs"]
-mod report_home;
-
 pub(crate) fn plan(request: &Request) -> Outcome {
-    report_home::outcome(observe::plan(request))
+    crate::atoms::ask::legacy_plan(request)
 }
 pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
     let run = crate::tools::declaration::execute(
         "pull-repo",
         "pull-repo",
-        || Ok::<_, String>(observe::request(request)),
+        || Ok::<_, String>(crate::atoms::ask::observe_request_current(request)),
         |current| {
             if current.is_some() {
                 DiffDecision::Empty
@@ -26,7 +19,14 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
                 DiffDecision::Different
             }
         },
-        |authorization, _| Ok(act::git_pull(authorization, request, invocation)),
+        |authorization, _| {
+            Ok(crate::atoms::r#do::pull_repo::git_pull(
+                authorization,
+                invocation,
+                request,
+                || crate::atoms::r#do::pull_repo::apply_legacy(request),
+            ))
+        },
     );
     let outcome = match run {
         Ok(comparison::ComparisonRun::Current {
@@ -57,7 +57,7 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
             },
         },
     };
-    report_home::outcome(outcome)
+    outcome
 }
 pub(crate) fn acquire_source(
     plan: &SourcePlan,
@@ -81,7 +81,7 @@ pub(crate) fn acquire_source(
     let run = crate::tools::declaration::execute(
         "pull-repo",
         "pull-repo",
-        || Ok::<_, String>(observe::source(plan)),
+        || Ok::<_, String>(crate::atoms::ask::observe_source_current(plan)),
         |current| {
             if current.is_some() {
                 DiffDecision::Empty
@@ -90,7 +90,10 @@ pub(crate) fn acquire_source(
             }
         },
         |authorization, _| {
-            let outcome = act::git_acquire(authorization, plan, invocation);
+            let outcome =
+                crate::atoms::r#do::pull_repo::git_acquire(authorization, invocation, plan, || {
+                    crate::atoms::r#do::pull_repo::acquire_source(plan)
+                });
             acted = Some(outcome.clone());
             Ok(outcome)
         },
@@ -101,19 +104,35 @@ pub(crate) fn acquire_source(
             ..
         }) => outcome,
         Ok(comparison::ComparisonRun::Moved { movement, .. }) => movement,
-        Ok(_) | Err(_) => {
-            acted.unwrap_or_else(|| crate::atoms::r#do::pull_repo::acquire_source(plan))
-        }
+        Ok(_) | Err(_) => acted.unwrap_or(SourceOutcome {
+            ok: false,
+            changed: false,
+            receipt: git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: "declaration-or-comparison-failed".into(),
+            },
+        }),
     };
-    report_home::source(outcome)
+    outcome
 }
 
 pub(crate) fn observe_source(plan: &SourcePlan) -> Option<SourceOutcome> {
-    observe::source(plan)
+    crate::atoms::ask::observe_source_current(plan)
 }
 
 pub(crate) fn attest_source(log: &std::path::Path, value: &SourceOutcome) -> Result<(), String> {
-    report_home::attest_source(log, value)
+    crate::atoms::attest::attest(
+        log,
+        &crate::atoms::Receipt {
+            atom: "pull-repo".into(),
+            ok: value.ok,
+            drift: crate::atoms::Drift::Current,
+            message: "authoritative receipt=pull-repo.json".into(),
+        },
+        &[],
+    )
 }
 
 pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {

@@ -1,8 +1,8 @@
-use crate::OperationOutcome;
 use super::Band;
 use crate::ladder::RoutineStep;
 use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::ModuleExecution;
+use crate::OperationOutcome;
 use crate::{
     LoadedModule, PackageAuthority, Profile, ProfileProjection, SoftwareApplyAuthorization,
     UpdateMode,
@@ -10,8 +10,8 @@ use crate::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RestartServices)
@@ -408,7 +408,6 @@ pub(crate) fn execute_manifest_modules(
     Ok(())
 }
 
-
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -417,9 +416,19 @@ pub(crate) fn execute_routine_child(
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
-    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+) -> Result<
+    (
+        crate::OperationOutcome,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let contract =
+        crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = requested_permutation
+        .and_then(|name| contract.permutation(name))
+        .or_else(|| contract.permutations.first())
+        .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     let name = tool.to_string();
     match tool {
@@ -437,7 +446,7 @@ pub(crate) fn execute_routine_child(
                     .unwrap_or(3),
                 expected_contains: args.get("expected_contains").and_then(Value::as_str),
             };
-            let result = crate::check_health::probe(&request);
+            let result = crate::tools::health::curl_probe(&request);
             if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
                 crate::write_command_receipt(receipt_dir, legacy, &result)?;
             }
@@ -557,13 +566,15 @@ pub(crate) fn execute_routine_child(
     }
 }
 
-
 const ARCADIA_CONTROL_DROPIN_DIR: &str = "/etc/systemd/system/arcadia.service.d";
-const ARCADIA_CONTROL_DROPIN_PATH: &str = "/etc/systemd/system/arcadia.service.d/10-control-surface-authority.conf";
+const ARCADIA_CONTROL_DROPIN_PATH: &str =
+    "/etc/systemd/system/arcadia.service.d/10-control-surface-authority.conf";
 const ARCADIA_CONTROL_DROPIN_CONTENT: &str = "[Service]\nUser=\nGroup=\nNoNewPrivileges=false\n";
-use crate::{CmdResult, hyalos};
 use crate::tools;
-use crate::{command_capture, write_artifact_receipt, write_command_receipt, write_json, write_run_receipt};
+use crate::{
+    command_capture, write_artifact_receipt, write_command_receipt, write_json, write_run_receipt,
+};
+use crate::{hyalos, CmdResult};
 
 // Arcadia-specific runtime ownership. This is intentionally not the generic
 // service-runtime lowering: the direct Arcadia order remains authoritative.
@@ -635,20 +646,84 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn keyed_arcadia_command(authorization: crate::tools::comparison::ActionAuthorization, invocation: crate::atoms::r#do::InvocationKey, args: &[&str], timeout_secs: u64) -> CmdResult {
-    let args = args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>();
-    match crate::atoms::r#do::command_with_timeout(authorization, invocation, "/usr/bin/systemctl", &args, std::time::Duration::from_secs(timeout_secs)) {
-        Ok(result) => CmdResult { ok: result.ok, code: result.code.unwrap_or(if result.ok { 0 } else { -1 }), stdout: result.stdout, stderr: result.stderr },
-        Err(error) => CmdResult { ok: false, code: -1, stdout: String::new(), stderr: error },
+fn keyed_arcadia_command(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+    args: &[&str],
+    timeout_secs: u64,
+) -> CmdResult {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    match crate::atoms::r#do::command_with_timeout(
+        authorization,
+        invocation,
+        "/usr/bin/systemctl",
+        &args,
+        std::time::Duration::from_secs(timeout_secs),
+    ) {
+        Ok(result) => CmdResult {
+            ok: result.ok,
+            code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+            stdout: result.stdout,
+            stderr: result.stderr,
+        },
+        Err(error) => CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: error,
+        },
     }
 }
 
-pub(crate) fn homeconsole_arcadia_update(profile: &Profile, receipt_dir: &Path, artifact: &Path, install_bin: &Path, service: &str, apply: bool, source_sha: Option<&str>, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
-    if !apply { return homeconsole_arcadia_update_check(profile, receipt_dir, artifact, install_bin, service, false, source_sha); }
+pub(crate) fn homeconsole_arcadia_update(
+    profile: &Profile,
+    receipt_dir: &Path,
+    artifact: &Path,
+    install_bin: &Path,
+    service: &str,
+    apply: bool,
+    source_sha: Option<&str>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
+    if !apply {
+        return homeconsole_arcadia_update_check(
+            profile,
+            receipt_dir,
+            artifact,
+            install_bin,
+            service,
+            false,
+            source_sha,
+        );
+    }
     let key = invocation.ok_or("homeconsole-arcadia-update-invocation-key-missing")?;
     let run = crate::tools::comparison::execute(
-        "arcadia-update",|| Ok::<_, String>(()), |_| crate::tools::comparison::DiffDecision::Different, move |authorization, _| homeconsole_arcadia_update_apply(profile, receipt_dir, artifact, install_bin, service, true, source_sha, authorization, key))?;
-    match run { crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement), crate::tools::comparison::ComparisonRun::Current { .. } => Err("arcadia-update-apply-boundary-empty".into()) }
+        "arcadia-update",
+        || Ok::<_, String>(()),
+        |_| crate::tools::comparison::DiffDecision::Different,
+        move |authorization, _| {
+            homeconsole_arcadia_update_apply(
+                profile,
+                receipt_dir,
+                artifact,
+                install_bin,
+                service,
+                true,
+                source_sha,
+                authorization,
+                key,
+            )
+        },
+    )?;
+    match run {
+        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement),
+        crate::tools::comparison::ComparisonRun::Current { .. } => {
+            Err("arcadia-update-apply-boundary-empty".into())
+        }
+    }
 }
 
 fn homeconsole_arcadia_update_check(
@@ -802,7 +877,8 @@ fn homeconsole_arcadia_update_apply(
             "Arcadia control-surface authority installed",
         )?;
         if authority_changed {
-            let daemon_reload = keyed_arcadia_command(authorization, invocation, &["daemon-reload"], 30);
+            let daemon_reload =
+                keyed_arcadia_command(authorization, invocation, &["daemon-reload"], 30);
             write_command_receipt(receipt_dir, "arcadia-daemon-reload", &daemon_reload)?;
             if !daemon_reload.ok {
                 ok = false;
@@ -810,7 +886,8 @@ fn homeconsole_arcadia_update_apply(
             }
         }
         if changed {
-            let restart = keyed_arcadia_command(authorization, invocation, &["restart", service], 30);
+            let restart =
+                keyed_arcadia_command(authorization, invocation, &["restart", service], 30);
             write_command_receipt(receipt_dir, "arcadia-service-restart", &restart)?;
             if !restart.ok {
                 ok = false;
@@ -940,7 +1017,8 @@ pub(crate) fn homeconsole_arcadia_gui_update(
         expected_commit,
         credentials,
     );
-    let git_outcome = crate::bands::pull_source::acquire_arcadia_source(&source_plan, apply, invocation);
+    let git_outcome =
+        crate::bands::pull_source::acquire_arcadia_source(&source_plan, apply, invocation);
     let repo = component;
     let branch = source_plan.reference.as_str();
     let git_cmd = crate::bands::pull_source::source_outcome_cmd(&git_outcome);
@@ -996,8 +1074,13 @@ pub(crate) fn homeconsole_arcadia_gui_update(
         println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
         hyalos::forward_receipt(
             "schema=harmonia.homeconsole_arcadia_gui_update.v1",
-            &format!("schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}", true),
-            Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_gui_update.v1", "ok": true})),
+            &format!(
+                "schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}",
+                true
+            ),
+            Some(
+                serde_json::json!({"schema": "harmonia.homeconsole_arcadia_gui_update.v1", "ok": true}),
+            ),
             Some(true),
         );
         println!("ok=true");
@@ -1060,7 +1143,10 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
     hyalos::forward_receipt(
         "schema=harmonia.homeconsole_arcadia_gui_update.v1",
-        &format!("schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}", ok),
+        &format!(
+            "schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}",
+            ok
+        ),
         Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_gui_update.v1", "ok": ok})),
         Some(ok),
     );

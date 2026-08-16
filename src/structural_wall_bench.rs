@@ -243,7 +243,6 @@ fn declaration_lowering_refusal_proof(root: &Path) -> Result<bool, String> {
     let base = strict_declaration("place", &root.join("decl-tail"));
     let cases = [
         (None, "managed-files-declaration-array-missing"),
-        (Some("operation"), "operation-missing"),
         (Some("path"), "path-missing"),
         (Some("content"), "source-tail-ambiguous"),
         (Some("mode"), "mode-missing"),
