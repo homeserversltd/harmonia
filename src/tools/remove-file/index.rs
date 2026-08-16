@@ -71,8 +71,9 @@ pub(crate) fn execute(
     let mut failure = None;
     for relative_path in paths {
         let target = target_root.join(relative_path);
-        let run = crate::tools::comparison::execute(
-        "remove-file",
+        let run = crate::tools::declaration::execute(
+            "remove-file",
+            "remove-file",
             || observe::file(&target),
             |state| match state {
                 RemovalObservation::RegularFile => {
@@ -202,4 +203,8 @@ fn validate_receipt_name(receipt_name: &str) -> Result<(), String> {
         return Err(format!("files-receipt-name-rejected {receipt_name}"));
     }
     Ok(())
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("remove-file")
 }

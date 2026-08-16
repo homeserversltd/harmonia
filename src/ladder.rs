@@ -308,6 +308,10 @@ pub(crate) fn is_ladder_manifest(path: &Path) -> bool {
 pub(crate) fn validate_ladder(
     manifest: &LadderManifest,
 ) -> Result<Vec<ValidatedStep>, LadderValidationError> {
+    crate::tools::declaration::all().map_err(|defect| LadderValidationError {
+        step_id: "declaration-validation".into(),
+        defect,
+    })?;
     if manifest.schema != SCHEMA {
         return Err(LadderValidationError {
             step_id: "manifest".into(),

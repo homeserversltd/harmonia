@@ -81,7 +81,8 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
         }
         _ => {}
     }
-    let run = crate::tools::comparison::execute(
+    let run = crate::tools::declaration::execute(
+        "place-file",
         "place-file",
         || {
             observe::file(
@@ -137,4 +138,8 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
         movement,
         receipt,
     })
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("place-file")
 }

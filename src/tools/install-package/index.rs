@@ -44,7 +44,8 @@ pub(crate) fn run(
             stderr: current.stderr.clone(),
         }),
     };
-    let run = comparison::execute(
+    let run = crate::tools::declaration::execute(
+        "install-package",
         "install-package",
         || Ok::<_, String>(observation.clone()),
         |_| {
@@ -122,4 +123,8 @@ pub(crate) fn run(
         outcome.ok,
     )?;
     Ok(outcome)
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("install-package")
 }

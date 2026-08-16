@@ -148,6 +148,7 @@ pub mod artifact_lock;
 pub mod aur;
 pub mod command;
 pub(crate) mod comparison;
+pub mod declaration;
 pub mod files;
 pub mod git_artifact;
 pub mod health;

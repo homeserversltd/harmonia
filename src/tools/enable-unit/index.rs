@@ -41,3 +41,7 @@ pub(crate) fn report_home(
 ) -> Result<(), String> {
     report_home::attest(unit, log, result)
 }
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("enable-unit")
+}

@@ -147,7 +147,8 @@ pub(crate) fn execute(request: BackfillFileRequest<'_>) -> Result<BackfillFileOu
         BackupPolicy::Observed(path) => Some(path),
         BackupPolicy::None => None,
     };
-    let run = crate::tools::comparison::execute(
+    let run = crate::tools::declaration::execute(
+        "backfill-file",
         "backfill-file",
         || {
             observe::file(
@@ -253,4 +254,8 @@ pub(crate) fn observe_predicate(
     payload: Option<&serde_json::Value>,
 ) -> Result<(bool, serde_json::Value), String> {
     observe::predicate(predicate, payload)
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("backfill-file")
 }

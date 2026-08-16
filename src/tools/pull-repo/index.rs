@@ -15,7 +15,8 @@ pub(crate) fn plan(request: &Request) -> Outcome {
     report_home::outcome(observe::plan(request))
 }
 pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
-    let run = comparison::execute(
+    let run = crate::tools::declaration::execute(
+        "pull-repo",
         "pull-repo",
         || Ok::<_, String>(observe::request(request)),
         |current| {
@@ -77,7 +78,8 @@ pub(crate) fn acquire_source(
     // The git-artifact owner supplies the fresh post-act identity observation.
     // Preserve its movement so acquisition diagnostics survive a guard error.
     let mut acted = None;
-    let run = comparison::execute(
+    let run = crate::tools::declaration::execute(
+        "pull-repo",
         "pull-repo",
         || Ok::<_, String>(observe::source(plan)),
         |current| {
@@ -110,4 +112,8 @@ pub(crate) fn observe_source(plan: &SourcePlan) -> Option<SourceOutcome> {
 
 pub(crate) fn attest_source(log: &std::path::Path, value: &SourceOutcome) -> Result<(), String> {
     report_home::attest_source(log, value)
+}
+
+pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
+    crate::tools::declaration::get("pull-repo")
 }
