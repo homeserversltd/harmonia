@@ -1,3 +1,76 @@
+// Operation-semantic actuator seats owned by the files tool. These delegations
+// preserve the atom APIs without coupling callers to a specific band.
+pub(crate) type InvocationKey = crate::atoms::r#do::InvocationKey;
+pub(crate) type ActionAuthorization = crate::tools::comparison::ActionAuthorization;
+pub(crate) type ChangeModePlan = crate::atoms::r#do::change_mode::Plan;
+pub(crate) type ChangeOwnerPlan = crate::atoms::r#do::change_owner::Plan;
+pub(crate) type CopyFilePlan = crate::atoms::r#do::copy_file::Plan;
+pub(crate) type FileWriteOptions<'a> = crate::atoms::r#do::write_file::FileWriteOptions<'a>;
+
+pub(crate) fn remove_dir_capture(
+    path: &Path,
+) -> Result<crate::atoms::r#do::remove_dir::Image, String> {
+    crate::atoms::r#do::remove_dir::capture(path)
+}
+
+pub(crate) fn remove_dir(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+) -> Result<crate::atoms::r#do::remove_dir::Image, String> {
+    crate::atoms::r#do::remove_dir::operate(authorization, invocation, path, None)
+}
+
+pub(crate) fn change_mode(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    plan: &ChangeModePlan,
+) -> Result<(), String> {
+    crate::atoms::r#do::change_mode::change(authorization, invocation, plan)
+}
+
+pub(crate) fn change_owner(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    plan: &ChangeOwnerPlan,
+) -> Result<(), String> {
+    crate::atoms::r#do::change_owner::change(authorization, invocation, plan)
+}
+
+pub(crate) fn copy_file(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    plan: &CopyFilePlan,
+) -> Result<(), String> {
+    crate::atoms::r#do::copy_file::copy(authorization, invocation, plan)
+}
+
+pub(crate) fn file_write(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+    bytes: &[u8],
+    options: FileWriteOptions<'_>,
+) -> Result<crate::atoms::r#do::write_file::FileWriteResult, String> {
+    crate::atoms::r#do::write_file::file_write(authorization, invocation, path, bytes, options)
+}
+
+pub(crate) fn remove_file(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+) -> Result<(), String> {
+    crate::atoms::r#do::remove_file::remove_file(authorization, invocation, path)
+}
+
+pub(crate) fn make_dir(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+) -> Result<(), String> {
+    crate::atoms::r#do::make_dir::create_dir_all(authorization, invocation, path)
+}
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
