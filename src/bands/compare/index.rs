@@ -34,7 +34,7 @@ pub(crate) fn execute_manifest_band(
     module_dir: &Path,
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
-    key: Option<crate::atoms::r#do::InvocationKey>,
+    key: Option<crate::tools::files::InvocationKey>,
     mode_apply: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
@@ -283,7 +283,6 @@ pub(crate) fn execute_group_live_probe(
 // Arcadia fast-check ownership: preserve the legacy CLI surface while keeping
 // source comparison and SHA probes in the Compare band.
 use serde_json::json;
-use std::process::Command;
 use std::time::Instant;
 use crate::{CmdResult, hyalos};
 use crate::{write_command_receipt, write_json};
@@ -397,25 +396,7 @@ pub(crate) fn homeconsole_arcadia_check(
 }
 
 pub(crate) fn git_ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> CmdResult {
-    let mut cmd = Command::new("/usr/bin/git");
-    if insecure_tls {
-        cmd.arg("-c").arg("http.sslVerify=false");
-    }
-    cmd.arg("ls-remote").arg(repo).arg(refspec);
-    match cmd.output() {
-        Ok(output) => CmdResult {
-            ok: output.status.success(),
-            code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        },
-        Err(err) => CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: err.to_string(),
-        },
-    }
+    crate::tools::git_artifact::ls_remote(repo, refspec, insecure_tls)
 }
 
 pub(crate) fn is_hex_sha(s: &str) -> bool {

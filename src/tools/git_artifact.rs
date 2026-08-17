@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub type CommandReceipt = crate::CmdResult;
 
@@ -138,6 +139,28 @@ pub(crate) fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -
         &request.bearer,
         env,
     )
+}
+
+pub(crate) fn ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> CommandReceipt {
+    let mut cmd = Command::new("/usr/bin/git");
+    if insecure_tls {
+        cmd.arg("-c").arg("http.sslVerify=false");
+    }
+    cmd.arg("ls-remote").arg(repo).arg(refspec);
+    match cmd.output() {
+        Ok(output) => CommandReceipt {
+            ok: output.status.success(),
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        },
+        Err(err) => CommandReceipt {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: err.to_string(),
+        },
+    }
 }
 
 fn estate_forgejo_credential_helper() -> Result<String, String> {

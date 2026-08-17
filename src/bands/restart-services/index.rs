@@ -177,7 +177,7 @@ pub(crate) fn execute_manifest_band(
     module_dir: &Path,
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
-    key: Option<crate::atoms::r#do::InvocationKey>,
+    key: Option<crate::tools::files::InvocationKey>,
     mode_apply: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
@@ -414,7 +414,7 @@ pub(crate) fn execute_routine_child(
     manifest: &crate::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<crate::tools::files::InvocationKey>,
 ) -> Result<
     (
         crate::OperationOutcome,
@@ -584,25 +584,25 @@ fn ensure_arcadia_control_surface_authority(
     receipt_dir: &Path,
     apply: bool,
     authorization: Option<crate::tools::comparison::ActionAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<crate::tools::files::InvocationKey>,
 ) -> Result<bool, String> {
     let existing = fs::read_to_string(ARCADIA_CONTROL_DROPIN_PATH).unwrap_or_default();
     let changed = existing != ARCADIA_CONTROL_DROPIN_CONTENT;
     if apply && changed {
         let authorization = authorization.ok_or("arcadia-control-dropin-authorization-missing")?;
         let invocation = invocation.ok_or("arcadia-control-dropin-invocation-missing")?;
-        crate::atoms::r#do::make_dir::create_dir_all(
+        crate::tools::files::make_dir(
             authorization,
             invocation,
             Path::new(ARCADIA_CONTROL_DROPIN_DIR),
         )?;
         let tmp = Path::new(ARCADIA_CONTROL_DROPIN_PATH).with_extension("harmonia-new");
-        crate::atoms::r#do::write_file::file_write(
+        crate::tools::files::file_write(
             authorization,
             invocation,
             &tmp,
             ARCADIA_CONTROL_DROPIN_CONTENT.as_bytes(),
-            crate::atoms::r#do::write_file::FileWriteOptions {
+            crate::tools::files::FileWriteOptions {
                 write_bytes: true,
                 mode: Some(0o644),
                 uid: None,
@@ -610,7 +610,7 @@ fn ensure_arcadia_control_surface_authority(
                 backup_to: None,
             },
         )?;
-        crate::atoms::r#do::rename::rename(
+        crate::tools::files::rename(
             authorization,
             invocation,
             &tmp,
@@ -666,7 +666,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 
 fn keyed_arcadia_command(
     authorization: crate::tools::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: crate::tools::files::InvocationKey,
     args: &[&str],
     timeout_secs: u64,
 ) -> CmdResult {
@@ -674,7 +674,7 @@ fn keyed_arcadia_command(
         .iter()
         .map(|arg| (*arg).to_string())
         .collect::<Vec<_>>();
-    match crate::atoms::r#do::command_with_timeout(
+    match crate::tools::command::authorized_capture(
         authorization,
         invocation,
         "/usr/bin/systemctl",
@@ -704,7 +704,7 @@ pub(crate) fn homeconsole_arcadia_update(
     service: &str,
     apply: bool,
     source_sha: Option<&str>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<crate::tools::files::InvocationKey>,
 ) -> Result<(), String> {
     if !apply {
         return homeconsole_arcadia_update_check(
@@ -847,7 +847,7 @@ fn homeconsole_arcadia_update_apply(
     apply: bool,
     _source_sha: Option<&str>,
     authorization: crate::tools::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: crate::tools::files::InvocationKey,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
@@ -867,7 +867,7 @@ fn homeconsole_arcadia_update_apply(
     let mut first_missing_signal = "none".to_string();
     if apply {
         if let Some(parent) = install_bin.parent() {
-            crate::atoms::r#do::make_dir::create_dir_all(authorization, invocation, parent)?;
+            crate::tools::files::make_dir(authorization, invocation, parent)?;
         }
         let before_sha = sha256_file(install_bin).ok();
         let binary_changed = before_sha.as_deref() != Some(artifact_sha.as_str());
@@ -992,7 +992,7 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     install_bin: &Path,
     service: &str,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<crate::tools::files::InvocationKey>,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(

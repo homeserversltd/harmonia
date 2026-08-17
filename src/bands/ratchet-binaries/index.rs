@@ -18,14 +18,14 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
 
 pub(crate) fn build_arcadia(
     source_dir: &Path,
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
 ) -> crate::CmdResult {
     let run = crate::tools::comparison::execute(
         "arcadia-cargo-build",
         || Ok::<_, String>(()),
         |_| crate::tools::comparison::DiffDecision::Different,
         |authorization, _| {
-            crate::atoms::r#do::build_crate::cargo_build(
+            crate::build_crate::cargo_build(
                 authorization,
                 key,
                 source_dir,
@@ -60,7 +60,7 @@ pub(crate) fn build_arcadia(
 pub(crate) fn promote_arcadia_artifact(
     artifact: &Path,
     install_bin: &Path,
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
 ) -> Result<bool, String> {
     let bytes = fs::read(artifact).map_err(|e| format!("artifact-read-failed: {e}"))?;
     let outcome = crate::place_file::execute(crate::place_file::PlaceFileRequest {
@@ -83,7 +83,7 @@ pub(crate) fn execute_manifest_band(
     module_dir: &Path,
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
-    key: Option<crate::atoms::r#do::InvocationKey>,
+    key: Option<crate::tools::files::InvocationKey>,
     mode_apply: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
@@ -321,7 +321,7 @@ pub(crate) fn execute_routine_child(
     manifest: &crate::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<crate::tools::files::InvocationKey>,
 ) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
     let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
     let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
@@ -381,7 +381,7 @@ pub(crate) fn execute_routine_child(
                 "build-crate-routine",
                 || Ok(fs::read(&artifact_path).ok().is_some_and(|bytes| bytes.windows(source_sha.len()).any(|w| w == source_sha.as_bytes()))),
                 |matches| if apply && !matches { crate::tools::comparison::DiffDecision::Different } else { crate::tools::comparison::DiffDecision::Empty },
-                |authorization, _| crate::atoms::r#do::build_crate::cargo_build(
+                |authorization, _| crate::build_crate::cargo_build(
                     authorization, key, cwd, &env, bearer,
                     std::time::Duration::from_secs(timeout),
                 ),
