@@ -6,6 +6,9 @@ pub(crate) type ChangeModePlan = crate::atoms::r#do::change_mode::Plan;
 pub(crate) type ChangeOwnerPlan = crate::atoms::r#do::change_owner::Plan;
 pub(crate) type CopyFilePlan = crate::atoms::r#do::copy_file::Plan;
 pub(crate) type FileWriteOptions<'a> = crate::atoms::r#do::write_file::FileWriteOptions<'a>;
+pub(crate) type RemoveDirImage = crate::atoms::r#do::remove_dir::Image;
+pub(crate) type RemoveDirNode = crate::atoms::r#do::remove_dir::Node;
+pub(crate) type RemoveDirKind = crate::atoms::r#do::remove_dir::Kind;
 
 pub(crate) fn remove_dir_capture(
     path: &Path,
@@ -19,6 +22,40 @@ pub(crate) fn remove_dir(
     path: &Path,
 ) -> Result<crate::atoms::r#do::remove_dir::Image, String> {
     crate::atoms::r#do::remove_dir::operate(authorization, invocation, path, None)
+}
+
+pub(crate) fn remove_dir_authorized(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+) -> Result<(), String> {
+    crate::atoms::r#do::remove_dir::remove_authorized(authorization, invocation, path)
+}
+
+pub(crate) fn rename(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    from: &Path,
+    to: &Path,
+) -> Result<(), String> {
+    crate::atoms::r#do::rename::rename(authorization, invocation, from, to)
+}
+
+pub(crate) fn remove_dir_replace(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    path: &Path,
+    image: &RemoveDirImage,
+) -> Result<(), String> {
+    crate::atoms::r#do::remove_dir::replace_authorized(authorization, invocation, path, image)
+}
+
+pub(crate) fn remove_dir_exact(left: &RemoveDirImage, right: &RemoveDirImage) -> bool {
+    crate::atoms::r#do::remove_dir::exact(left, right)
+}
+
+pub(crate) fn remove_dir_is_directory(image: &RemoveDirImage) -> bool {
+    matches!(image.root.kind, RemoveDirKind::Directory)
 }
 
 pub(crate) fn change_mode(

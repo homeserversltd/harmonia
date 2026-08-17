@@ -98,6 +98,16 @@ pub fn capture_request(program: impl Into<String>, args: Vec<String>) -> Request
     }
 }
 
+pub(crate) fn authorized_capture(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<crate::atoms::CommandObservation, String> {
+    crate::atoms::r#do::command_with_timeout(authorization, invocation, program, args, timeout)
+}
+
 pub fn plan(request: &Request) -> Outcome {
     Outcome {
         ok: true,
