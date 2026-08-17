@@ -16,6 +16,17 @@ pub(crate) fn build(
     crate::atoms::r#do::build_crate::cargo_build(auth, key, cwd, environment, bearer, std::time::Duration::from_secs(timeout_secs))
 }
 
+pub(crate) fn cargo_build(
+    auth: ActionAuthorization,
+    key: atoms::r#do::InvocationKey,
+    cwd: &Path,
+    environment: &[(String, String)],
+    bearer: &str,
+    timeout: std::time::Duration,
+) -> Result<crate::atoms::CommandObservation, String> {
+    crate::atoms::r#do::build_crate::cargo_build(auth, key, cwd, environment, bearer, timeout)
+}
+
 pub(crate) fn run_build(
     cwd: &Path,
     source_build_sha: &str,
