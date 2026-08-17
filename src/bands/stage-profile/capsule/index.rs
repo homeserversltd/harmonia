@@ -1,7 +1,5 @@
 use crate::atoms::attest;
-use crate::atoms::r#do::make_dir;
-use crate::atoms::r#do::remove_dir;
-use crate::atoms::r#do::{write_file, InvocationKey};
+use crate::tools::files::InvocationKey;
 use crate::hyalos;
 use crate::tools::comparison::{self, DiffDecision};
 use crate::{
@@ -130,7 +128,7 @@ impl Drop for CapsuleStageGuard {
                     }
                 },
                 |authorization, _| {
-                    remove_dir::remove_authorized(authorization, self.key, &self.path)
+                    crate::tools::files::remove_dir_authorized(authorization, self.key, &self.path)
                 },
             );
         }
@@ -178,7 +176,7 @@ pub(crate) fn capsule_pack_with_invocation(
         "capsule-stage-create",
         || Ok(false),
         |_| DiffDecision::Different,
-        |authorization, _| make_dir::create_dir_all(authorization, key, &stage_dir),
+        |authorization, _| crate::tools::files::make_dir(authorization, key, &stage_dir),
     )?;
     let mut stage_guard = CapsuleStageGuard {
         path: stage_dir.clone(),
@@ -288,7 +286,7 @@ pub(crate) fn capsule_pack_with_invocation(
         first_missing_signal: "none".into(),
     };
     write_receipt_json_atomic(&output_dir.join("pack-receipt.json"), &receipt)?;
-    let staged = remove_dir::capture(output_dir)?;
+    let staged = crate::tools::files::remove_dir_capture(output_dir)?;
     comparison::execute(
         "capsule-output-promote",
         || Ok(fs::symlink_metadata(&destination_dir).is_ok()),
@@ -300,7 +298,7 @@ pub(crate) fn capsule_pack_with_invocation(
             }
         },
         |authorization, _| {
-            remove_dir::replace_authorized(authorization, key, &destination_dir, &staged)
+            crate::tools::files::remove_dir_replace(authorization, key, &destination_dir, &staged)
         },
     )?;
     comparison::execute(
@@ -313,7 +311,7 @@ pub(crate) fn capsule_pack_with_invocation(
                 DiffDecision::Empty
             }
         },
-        |authorization, _| remove_dir::remove_authorized(authorization, key, &stage_dir),
+        |authorization, _| crate::tools::files::remove_dir_authorized(authorization, key, &stage_dir),
     )?;
     stage_guard.active = false;
     println!("schema=harmonia.capsule.pack.v1");
@@ -559,7 +557,7 @@ pub(crate) fn capsule_install_with_invocation(
                                 }
                             },
                             |authorization, _| {
-                                remove_dir::operate(authorization, key, &path, None).map(|_| ())
+                                crate::tools::files::remove_dir_authorized(authorization, key, &path).map(|_| ())
                             },
                         )?;
                     }
@@ -608,7 +606,7 @@ pub(crate) fn capsule_install_with_invocation(
                     }
                 },
                 |authorization, _| {
-                    remove_dir::operate(authorization, key, &locks_dst, None).map(|_| ())
+                    crate::tools::files::remove_dir_authorized(authorization, key, &locks_dst).map(|_| ())
                 },
             )?;
         }
@@ -958,7 +956,7 @@ pub(crate) fn installed_module_version(module_dir: &Path) -> Option<String> {
 }
 
 pub(crate) fn module_tree_sha256(module_dir: &Path) -> Result<String, String> {
-    let image = remove_dir::capture(module_dir)?;
+    let image = crate::tools::files::remove_dir_capture(module_dir)?;
     let mut chain = Sha256::new();
     hash_tree_node(&mut chain, &image.root);
     Ok(format!("{:x}", chain.finalize()))
@@ -969,12 +967,12 @@ fn hash_tree_bytes(chain: &mut Sha256, bytes: &[u8]) {
     chain.update(bytes);
 }
 
-fn hash_tree_node(chain: &mut Sha256, node: &remove_dir::Node) {
+fn hash_tree_node(chain: &mut Sha256, node: &crate::tools::files::RemoveDirNode) {
     hash_tree_bytes(chain, &node.relative);
     chain.update([match node.kind {
-        remove_dir::Kind::Directory => 0,
-        remove_dir::Kind::File => 1,
-        remove_dir::Kind::Symlink => 2,
+        crate::tools::files::RemoveDirKind::Directory => 0,
+        crate::tools::files::RemoveDirKind::File => 1,
+        crate::tools::files::RemoveDirKind::Symlink => 2,
     }]);
     hash_tree_bytes(chain, &node.bytes);
     hash_tree_bytes(chain, &node.link);
@@ -1044,7 +1042,7 @@ fn file_sha256(path: &Path) -> Result<String, String> {
 }
 
 fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), String> {
-    let image = remove_dir::capture(src)?;
+    let image = crate::tools::files::remove_dir_capture(src)?;
     if let Some(parent) = dst.parent() {
         comparison::execute(
             "capsule-artifact-parent",
@@ -1056,14 +1054,14 @@ fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), 
                     DiffDecision::Different
                 }
             },
-            |authorization, _| make_dir::create_dir_all(authorization, key, parent),
+            |authorization, _| crate::tools::files::make_dir(authorization, key, parent),
         )?;
     }
     comparison::execute(
         "capsule-artifact-replace",
         || Ok(fs::symlink_metadata(dst).is_ok()),
         |_| DiffDecision::Different,
-        |authorization, _| remove_dir::replace_authorized(authorization, key, dst, &image),
+        |authorization, _| crate::tools::files::remove_dir_replace(authorization, key, dst, &image),
     )?;
     Ok(())
 }
@@ -1083,22 +1081,22 @@ fn copy_tree_exact(
     if !src.is_dir() {
         return Err(format!("copy-tree-source-missing {}", src.display()));
     }
-    let source_image = remove_dir::capture(src)?;
+    let source_image = crate::tools::files::remove_dir_capture(src)?;
     let source_paths = sorted_tree_paths(src)?;
     let target_image = if fs::symlink_metadata(dst).is_ok() {
-        Some(remove_dir::capture(dst)?)
+        Some(crate::tools::files::remove_dir_capture(dst)?)
     } else {
         None
     };
     if target_image
         .as_ref()
-        .is_some_and(|image| remove_dir::exact(image, &source_image))
+        .is_some_and(|image| crate::tools::files::remove_dir_exact(image, &source_image))
     {
         return Ok(());
     }
     let target_paths = if target_image
         .as_ref()
-        .is_some_and(|image| matches!(image.root.kind, remove_dir::Kind::Directory))
+        .is_some_and(|image| matches!(image.root.kind, crate::tools::files::RemoveDirKind::Directory))
     {
         sorted_tree_paths(dst)?
     } else if target_image.is_some() {
@@ -1135,7 +1133,7 @@ fn copy_tree_exact(
             "capsule-install-tree",
             || {
                 if fs::symlink_metadata(dst).is_ok() {
-                    Ok(Some(remove_dir::capture(dst)?))
+                    Ok(Some(crate::tools::files::remove_dir_capture(dst)?))
                 } else {
                     Ok(None)
                 }
@@ -1143,7 +1141,7 @@ fn copy_tree_exact(
             |current| {
                 if current
                     .as_ref()
-                    .is_some_and(|image| remove_dir::exact(image, &source_image))
+                    .is_some_and(|image| crate::tools::files::remove_dir_exact(image, &source_image))
                 {
                     DiffDecision::Empty
                 } else {
@@ -1152,9 +1150,9 @@ fn copy_tree_exact(
             },
             |authorization, _| {
                 if target_image.is_none() {
-                    make_dir::create_dir_all(authorization, key, dst)?;
+                    crate::tools::files::make_dir(authorization, key, dst)?;
                 }
-                remove_dir::operate(authorization, key, dst, Some(&source_image)).map(|_| ())
+                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image).map(|_| ())
             },
         )?;
     }
@@ -1191,14 +1189,14 @@ fn converge_exact_node(
     module_id: Option<&str>,
     invocation: Option<InvocationKey>,
 ) -> Result<(), String> {
-    let source_image = remove_dir::capture(src)?;
+    let source_image = crate::tools::files::remove_dir_capture(src)?;
     let target_image = fs::symlink_metadata(dst)
         .ok()
-        .map(|_| remove_dir::capture(dst))
+        .map(|_| crate::tools::files::remove_dir_capture(dst))
         .transpose()?;
     if target_image
         .as_ref()
-        .is_some_and(|image| remove_dir::exact(image, &source_image))
+        .is_some_and(|image| crate::tools::files::remove_dir_exact(image, &source_image))
     {
         return Ok(());
     }
@@ -1219,13 +1217,13 @@ fn converge_exact_node(
             || {
                 Ok(fs::symlink_metadata(dst)
                     .ok()
-                    .map(|_| remove_dir::capture(dst))
+                    .map(|_| crate::tools::files::remove_dir_capture(dst))
                     .transpose()?)
             },
             |current| {
                 if current
                     .as_ref()
-                    .is_some_and(|image| remove_dir::exact(image, &source_image))
+                    .is_some_and(|image| crate::tools::files::remove_dir_exact(image, &source_image))
                 {
                     DiffDecision::Empty
                 } else {
@@ -1235,11 +1233,11 @@ fn converge_exact_node(
             |authorization, _| {
                 if fs::symlink_metadata(dst).is_err() {
                     if let Some(parent) = dst.parent() {
-                        make_dir::create_dir_all(authorization, key, parent)?;
+                        crate::tools::files::make_dir(authorization, key, parent)?;
                     }
-                    make_dir::create_dir_all(authorization, key, dst)?;
+                    crate::tools::files::make_dir(authorization, key, dst)?;
                 }
-                remove_dir::operate(authorization, key, dst, Some(&source_image)).map(|_| ())
+                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image).map(|_| ())
             },
         )?;
     }
@@ -1278,7 +1276,7 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8], key: InvocationKey) -> Result<(
                     DiffDecision::Different
                 }
             },
-            |authorization, _| make_dir::create_dir_all(authorization, key, parent),
+            |authorization, _| crate::tools::files::make_dir(authorization, key, parent),
         )?;
     }
     comparison::execute(
@@ -1292,12 +1290,12 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8], key: InvocationKey) -> Result<(
             }
         },
         |authorization, _| {
-            write_file::file_write(
+            crate::tools::files::file_write(
                 authorization,
                 key,
                 path,
                 bytes,
-                write_file::FileWriteOptions {
+                crate::tools::files::FileWriteOptions {
                     write_bytes: true,
                     mode: None,
                     uid: None,
