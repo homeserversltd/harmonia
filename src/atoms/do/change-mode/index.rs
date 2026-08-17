@@ -1,7 +1,7 @@
 //! Typed no-follow mode actuator.
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{Drift, Receipt};
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;

@@ -4,7 +4,7 @@ use std::path::Path;
 
 // Operation-semantic symlink actuator seat owned by the files tool.
 pub(crate) fn make_link(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: crate::atoms::r#do::InvocationKey,
     target: &Path,
     link: &Path,

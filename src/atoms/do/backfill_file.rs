@@ -12,7 +12,7 @@ pub(crate) fn execute(request: BackfillFileRequest<'_>) -> Result<BackfillFileOu
         BackupPolicy::Observed(path) => Some(path),
         BackupPolicy::None => None,
     };
-    let run = crate::tools::declaration::execute(
+    let run = crate::atoms::declaration::execute(
         "backfill-file",
         "backfill-file",
         || {
@@ -26,9 +26,9 @@ pub(crate) fn execute(request: BackfillFileRequest<'_>) -> Result<BackfillFileOu
         },
         |observation| {
             if observation.current() {
-                crate::tools::comparison::DiffDecision::Empty
+                crate::atoms::comparison::DiffDecision::Empty
             } else {
-                crate::tools::comparison::DiffDecision::Different
+                crate::atoms::comparison::DiffDecision::Different
             }
         },
         |authorization, observation| {
@@ -70,8 +70,8 @@ pub(crate) fn execute(request: BackfillFileRequest<'_>) -> Result<BackfillFileOu
         },
     )?;
     let movement = match &run {
-        crate::tools::comparison::ComparisonRun::Current { .. } => BackfillFileMovement::default(),
-        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => movement.clone(),
+        crate::atoms::comparison::ComparisonRun::Current { .. } => BackfillFileMovement::default(),
+        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement.clone(),
     };
     let observation = if movement.changed() {
         let post_action = crate::atoms::ask::backfill_file::probe::file(
@@ -121,13 +121,13 @@ pub(crate) fn observe_predicate(
     crate::atoms::ask::backfill_file::probe::predicate(predicate, payload)
 }
 
-pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
-    crate::tools::declaration::get("backfill-file")
+pub fn declaration() -> Result<Option<&'static crate::atoms::declaration::Declaration>, String> {
+    crate::atoms::declaration::get("backfill-file")
 }
 
 mod mutation {
     use super::*;
-    use crate::tools::comparison::ActionAuthorization;
+    use crate::atoms::comparison::ActionAuthorization;
 
     pub(super) struct BackfillFileAction<'a> {
         pub bytes: bool,

@@ -1,7 +1,7 @@
 //! Exact directory image capture/removal/restoration; symlink-safe and byte-preserving.
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{Drift, Receipt};
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};

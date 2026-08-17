@@ -70,15 +70,15 @@ pub(crate) fn execute(
     let mut failure = None;
     for relative_path in paths {
         let target = target_root.join(relative_path);
-        let run = crate::tools::declaration::execute(
+        let run = crate::atoms::declaration::execute(
             "remove-file",
             "remove-file",
             || probe::file(&target),
             |state| match state {
                 RemovalObservation::RegularFile => {
-                    crate::tools::comparison::DiffDecision::Different
+                    crate::atoms::comparison::DiffDecision::Different
                 }
-                RemovalObservation::Absent => crate::tools::comparison::DiffDecision::Empty,
+                RemovalObservation::Absent => crate::atoms::comparison::DiffDecision::Empty,
             },
             |authorization, _| {
                 let Some(invocation) = invocation else {
@@ -105,15 +105,15 @@ pub(crate) fn execute(
         };
         let state = *run.observation();
         let diff_decision = match run.decision() {
-            crate::tools::comparison::DiffDecision::Empty => "empty",
-            crate::tools::comparison::DiffDecision::Different => "different",
+            crate::atoms::comparison::DiffDecision::Empty => "empty",
+            crate::atoms::comparison::DiffDecision::Different => "different",
         };
         let (movement, truthful_changed) = match &run {
-            crate::tools::comparison::ComparisonRun::Current { .. } => ("none", false),
-            crate::tools::comparison::ComparisonRun::Moved { movement, .. } if *movement => {
+            crate::atoms::comparison::ComparisonRun::Current { .. } => ("none", false),
+            crate::atoms::comparison::ComparisonRun::Moved { movement, .. } if *movement => {
                 ("remove-file", true)
             }
-            crate::tools::comparison::ComparisonRun::Moved { .. } => ("report-only", false),
+            crate::atoms::comparison::ComparisonRun::Moved { .. } => ("report-only", false),
         };
         if truthful_changed {
             match probe::file(&target) {
@@ -213,8 +213,8 @@ fn validate_receipt_name(receipt_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
-    crate::tools::declaration::get("remove-file")
+pub fn declaration() -> Result<Option<&'static crate::atoms::declaration::Declaration>, String> {
+    crate::atoms::declaration::get("remove-file")
 }
 
 mod probe {
@@ -238,7 +238,7 @@ mod probe {
 
 mod mutation {
     use super::*;
-    use crate::tools::comparison::ActionAuthorization;
+    use crate::atoms::comparison::ActionAuthorization;
 
     pub(super) fn remove(
         authorization: ActionAuthorization,

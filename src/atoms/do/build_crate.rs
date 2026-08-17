@@ -1,6 +1,6 @@
 // Owned do atom for build-crate
 use crate::atoms;
-    use crate::tools::comparison::ActionAuthorization;
+    use crate::atoms::comparison::ActionAuthorization;
     use std::path::Path;
     use std::time::Duration;
     pub(crate) fn build(

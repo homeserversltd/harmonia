@@ -1,5 +1,5 @@
 pub(crate) use crate::atoms::ask::ratchet_aur::{ArtifactLockObservation, Observation, Verdict};
-use crate::tools::comparison::{self, DiffDecision};
+use crate::atoms::comparison::{self, DiffDecision};
 use crate::{OperationOutcome, Profile};
 use std::path::Path;
 pub(crate) fn install(
@@ -10,7 +10,7 @@ pub(crate) fn install(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Option<String>, OperationOutcome>, String> {
-    crate::tools::declaration::execute(
+    crate::atoms::declaration::execute(
         "ratchet-aur-package",
         "ratchet-aur-package",
         || {
@@ -55,7 +55,7 @@ pub(crate) fn build_pinned(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<comparison::ComparisonRun<Observation, OperationOutcome>, String> {
-    crate::tools::declaration::execute(
+    crate::atoms::declaration::execute(
         "ratchet-aur-package",
         "ratchet-aur-package",
         || crate::atoms::ask::ratchet_aur::probe::ratchet(package, lock_path, None, install),
@@ -145,7 +145,7 @@ mod mutation {
     use super::{Observation, Verdict};
     use crate::atoms;
     use crate::atoms::ask::ratchet_aur::probe::load_pinned_lock;
-    use crate::tools::comparison::ActionAuthorization;
+    use crate::atoms::comparison::ActionAuthorization;
     use crate::OperationOutcome;
     use crate::{
         hyalos, value_arg, value_arg_string, write_json, PinnedArtifact, PinnedArtifactsLock,
@@ -192,7 +192,7 @@ mod mutation {
         if !install || !built.ok {
             return Ok(built);
         }
-        let lock = crate::tools::aur::read_lock(lock_path, package)?;
+        let lock = crate::atoms::aur::read_lock(lock_path, package)?;
         atoms::r#do::aur_install_pinned(authorization, invocation, || {
             atoms::r#do::install_aur_pinned::run(
                 &atoms::r#do::install_aur_pinned::Plan {

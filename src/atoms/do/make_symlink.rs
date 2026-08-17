@@ -9,8 +9,8 @@ use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
-    crate::tools::declaration::get("make-symlink")
+pub fn declaration() -> Result<Option<&'static crate::atoms::declaration::Declaration>, String> {
+    crate::atoms::declaration::get("make-symlink")
 }
 
 #[derive(Clone)]
@@ -139,7 +139,7 @@ fn save_link(path: &Path) -> Result<SavedLink, String> {
 }
 
 fn restore_file(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     path: &Path,
     saved: &SavedFile,
@@ -174,7 +174,7 @@ fn restore_file(
 }
 
 fn restore_link(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     path: &Path,
     saved: &SavedLink,
@@ -322,7 +322,7 @@ fn file_symlink_fault(_fault: FileSymlinkFault) -> Result<(), String> {
 
 #[cfg(test)]
 fn replace_source_with_dangling_symlink_during_restoration(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     path: &Path,
 ) -> Result<bool, String> {
@@ -347,7 +347,7 @@ fn replace_source_with_dangling_symlink_during_restoration(
 }
 
 fn rollback_file_symlink(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     mutations: &[FileSymlinkMutation],
     source: &Path,
@@ -399,7 +399,7 @@ pub(crate) fn execute(
     if request.apply && invocation.is_none() {
         return Err("validated-file-symlink-apply-invocation-required".into());
     }
-    let run = crate::tools::comparison::execute(
+    let run = crate::atoms::comparison::execute(
         "make-symlink",
         || observe_symlink(&request),
         |observation| {
@@ -408,9 +408,9 @@ pub(crate) fn execute(
                 && observation.link.target.as_deref() == Some(request.source)
                 && observation.desired_mode == observation.source.mode.unwrap_or_default()
             {
-                crate::tools::comparison::DiffDecision::Empty
+                crate::atoms::comparison::DiffDecision::Empty
             } else {
-                crate::tools::comparison::DiffDecision::Different
+                crate::atoms::comparison::DiffDecision::Different
             }
         },
         |authorization, observation| {
@@ -421,10 +421,10 @@ pub(crate) fn execute(
         },
     )?;
     match run {
-        crate::tools::comparison::ComparisonRun::Current { .. } => {
+        crate::atoms::comparison::ComparisonRun::Current { .. } => {
             write_receipt(&request, TerminalReceipt::no_change(true))
         }
-        crate::tools::comparison::ComparisonRun::Moved {
+        crate::atoms::comparison::ComparisonRun::Moved {
             observation,
             movement,
             ..
@@ -467,7 +467,7 @@ pub(crate) fn execute(
 /// Validates desired bytes through a hidden source candidate and a non-hidden sibling
 /// link candidate, so Nginx's `sites-enabled/*` include observes the exact candidate.
 fn execute_action(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     request: ValidatedFileSymlinkRequest<'_>,
     observation: &SymlinkObservation,
@@ -559,7 +559,7 @@ fn execute_action(
     #[cfg(not(unix))]
     return Err("validated-file-symlink-unsupported".into());
     let validator_refs: Vec<&str> = request.validator_args.iter().map(String::as_str).collect();
-    let validator = crate::tools::command::capture_with_timeout(
+    let validator = crate::atoms::command::capture_with_timeout(
         request.validator_program,
         &validator_refs,
         request.timeout_secs,

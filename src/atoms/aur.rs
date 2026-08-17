@@ -460,7 +460,7 @@ pub(crate) fn installed_version(package: &str) -> Option<String> {
 }
 
 pub(crate) fn installed_version_command(package: &str) -> CmdResult {
-    let pacman = crate::tools::package::pacman_program();
+    let pacman = crate::atoms::package::pacman_program();
     if !Path::new(&pacman).exists() {
         return CmdResult {
             ok: false,
@@ -482,7 +482,7 @@ pub(crate) fn installed_version_from_result(result: &CmdResult) -> Option<String
 }
 
 pub(crate) fn install_built_package(path: &Path, timeout_secs: u64) -> CmdResult {
-    let pacman = crate::tools::package::pacman_program();
+    let pacman = crate::atoms::package::pacman_program();
     let path = path.to_string_lossy().to_string();
     command::capture_with_timeout(&pacman, &["-U", "--noconfirm", &path], timeout_secs)
 }
@@ -1152,7 +1152,7 @@ mod tests {
         .unwrap();
         #[cfg(unix)]
         fs::set_permissions(&fake_pacman, fs::Permissions::from_mode(0o755)).unwrap();
-        crate::tools::package::set_test_pacman_path(Some(fake_pacman.display().to_string()));
+        crate::atoms::package::set_test_pacman_path(Some(fake_pacman.display().to_string()));
         let lock = root.join("lock.json");
         fs::write(
             &lock,
@@ -1179,7 +1179,7 @@ mod tests {
             true,
         )
         .unwrap();
-        crate::tools::package::set_test_pacman_path(None);
+        crate::atoms::package::set_test_pacman_path(None);
         assert!(out.ok);
         assert!(!out.changed);
         assert!(!root.join("build/oh-my-posh-bin").exists());

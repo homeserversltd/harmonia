@@ -1,9 +1,9 @@
 //! Pinned AUR install atom. Installation is gated by a successful pinned-build proof.
 use crate::atoms::r#do::InvocationKey;
-use crate::tools::aur::{
+use crate::atoms::aur::{
     first_blocker, install_built_package, installed_version_command, installed_version_from_result,
 };
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use crate::write_json;
 use crate::OperationOutcome;
 use serde_json::Value;

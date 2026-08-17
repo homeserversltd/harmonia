@@ -1,6 +1,6 @@
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{CommandObservation, Drift, Receipt};
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::time::Duration;
 
 pub(crate) enum UnitVerb {

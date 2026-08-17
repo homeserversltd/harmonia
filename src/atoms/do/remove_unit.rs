@@ -8,11 +8,11 @@ pub(crate) fn observe(
     user: bool,
     target: Option<&str>,
     timeout: u64,
-) -> crate::tools::systemd::SystemdObservation {
+) -> crate::atoms::systemd::SystemdObservation {
     probe::unit(unit, unit_path, user, target, timeout)
 }
 pub(crate) fn act(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     unit: &str,
     action: &str,
@@ -37,7 +37,7 @@ pub(crate) fn report_home(unit: &str, log: &Path, result: &CmdResult) -> Result<
 }
 
 mod probe {
-    use crate::tools::systemd::SystemdObservation;
+    use crate::atoms::systemd::SystemdObservation;
     use std::path::Path;
     pub(super) fn unit(
         unit: &str,
@@ -73,7 +73,7 @@ mod mutation {
     use crate::CmdResult;
     use std::path::Path;
     pub(super) fn remove(
-        authorization: crate::tools::comparison::ActionAuthorization,
+        authorization: crate::atoms::comparison::ActionAuthorization,
         invocation: atoms::r#do::InvocationKey,
         unit: &str,
         action: &str,

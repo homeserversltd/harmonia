@@ -22,8 +22,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::tools::git_artifact::{scoped_request, source_attempt};
-use crate::tools::git_artifact::{
+use crate::atoms::git_artifact::{scoped_request, source_attempt};
+use crate::atoms::git_artifact::{
     CommandReceipt, RemoteHeadProbe, SourceCandidateKind, SourceOutcome, SourcePlan, SourceReceipt,
 };
 const OUTPUT_LIMIT: usize = 16 * 1024;
@@ -280,8 +280,8 @@ pub(crate) fn systemd_state_query(
 }
 
 pub(crate) fn observe_request_current(
-    request: &crate::tools::git_artifact::Request,
-) -> Option<crate::tools::git_artifact::Outcome> {
+    request: &crate::atoms::git_artifact::Request,
+) -> Option<crate::atoms::git_artifact::Outcome> {
     if !request.path.join(".git").exists() {
         return None;
     }
@@ -327,16 +327,16 @@ pub(crate) fn observe_request_current(
     );
     let remote_sha = remote
         .ok
-        .then(|| crate::tools::git_artifact::parse_declared_remote_head(&remote.stdout, &reference))
+        .then(|| crate::atoms::git_artifact::parse_declared_remote_head(&remote.stdout, &reference))
         .flatten()?;
     if remote_sha != before.stdout.trim() {
         return None;
     }
-    Some(crate::tools::git_artifact::Outcome {
+    Some(crate::atoms::git_artifact::Outcome {
         ok: true,
         changed: false,
         message: format!("git-artifact sync {}", request.path.display()),
-        command: crate::tools::git_artifact::CommandReceipt {
+        command: crate::atoms::git_artifact::CommandReceipt {
             ok: true,
             code: 0,
             stdout: format!(
@@ -352,19 +352,19 @@ pub(crate) fn observe_request_current(
 }
 
 pub(crate) fn legacy_plan(
-    request: &crate::tools::git_artifact::Request,
-) -> crate::tools::git_artifact::Outcome {
+    request: &crate::atoms::git_artifact::Request,
+) -> crate::atoms::git_artifact::Outcome {
     let command = if request.path.join(".git").exists() {
         git_observe(request, &["status", "--short"], request.path.to_str())
     } else {
-        crate::tools::git_artifact::CommandReceipt {
+        crate::atoms::git_artifact::CommandReceipt {
             ok: true,
             code: 0,
             stdout: format!("planned clone/update path={}", request.path.display()),
             stderr: String::new(),
         }
     };
-    crate::tools::git_artifact::Outcome {
+    crate::atoms::git_artifact::Outcome {
         ok: command.ok,
         changed: false,
         message: format!("git-artifact planned {}", request.path.display()),
@@ -375,15 +375,15 @@ pub(crate) fn legacy_plan(
 // Git observation lives in Ask.  The pull-repo deed may consume these
 // observations, but it owns all clone/fetch/checkout/promotion actuation.
 pub(crate) fn git_observe(
-    request: &crate::tools::git_artifact::Request,
+    request: &crate::atoms::git_artifact::Request,
     args: &[&str],
     cwd: Option<&str>,
-) -> crate::tools::git_artifact::CommandReceipt {
-    crate::tools::git_artifact::capture_git(request, args, cwd)
+) -> crate::atoms::git_artifact::CommandReceipt {
+    crate::atoms::git_artifact::capture_git(request, args, cwd)
 }
 
-pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::tools::git_artifact::CommandReceipt {
-    let request = crate::tools::git_artifact::Request::new(
+pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::atoms::git_artifact::CommandReceipt {
+    let request = crate::atoms::git_artifact::Request::new(
         None,
         path.to_path_buf(),
         String::new(),
@@ -391,7 +391,7 @@ pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::tools::git_artifa
     )
     .with_bearer(bearer)
     .with_safe_directory(path);
-    crate::tools::git_artifact::capture_git(&request, &["rev-parse", "HEAD"], path.to_str())
+    crate::atoms::git_artifact::capture_git(&request, &["rev-parse", "HEAD"], path.to_str())
 }
 
 pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
@@ -429,7 +429,7 @@ pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
             let remote_sha = command
                 .ok
                 .then(|| command.stdout.trim().to_string())
-                .filter(|sha| crate::tools::git_artifact::is_lower_hex_sha(sha));
+                .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha));
             return RemoteHeadProbe {
                 state: if remote_sha.is_some() {
                     "local-checkout-observed".into()
@@ -476,7 +476,7 @@ pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
             }
         }
         let request = scoped_request(plan, candidate, plan.destination.clone());
-        let command = crate::tools::git_artifact::capture_git(
+        let command = crate::atoms::git_artifact::capture_git(
             &request,
             &["ls-remote", "--refs", &candidate.locator, &reference],
             None,
@@ -484,7 +484,7 @@ pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
         let remote_sha = command
             .ok
             .then(|| {
-                crate::tools::git_artifact::parse_declared_remote_head(&command.stdout, &reference)
+                crate::atoms::git_artifact::parse_declared_remote_head(&command.stdout, &reference)
             })
             .flatten();
         if let Some(remote_sha) = remote_sha {
@@ -552,7 +552,7 @@ pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome>
         let destination_commit = destination
             .ok
             .then(|| destination.stdout.trim().to_string())
-            .filter(|v| crate::tools::git_artifact::is_lower_hex_sha(v))?;
+            .filter(|v| crate::atoms::git_artifact::is_lower_hex_sha(v))?;
         let request = scoped_request(plan, candidate, plan.destination.clone());
         let destination_status = git_observe(
             &request,
@@ -563,7 +563,7 @@ pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome>
             return None;
         }
         let reference = format!("refs/heads/{}", plan.reference);
-        let remote = crate::tools::git_artifact::capture_git(
+        let remote = crate::atoms::git_artifact::capture_git(
             &request,
             &["ls-remote", "--refs", &candidate.locator, &reference],
             None,
@@ -571,7 +571,7 @@ pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome>
         let remote_commit = remote
             .ok
             .then(|| {
-                crate::tools::git_artifact::parse_declared_remote_head(&remote.stdout, &reference)
+                crate::atoms::git_artifact::parse_declared_remote_head(&remote.stdout, &reference)
             })
             .flatten()?;
         if plan

@@ -1,7 +1,7 @@
 //! Authorized filesystem mutation owners for symlink convergence.
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::r#do::{apply, InvocationKey};
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;

@@ -35,7 +35,7 @@ pub(crate) fn run(
     })
 }
 
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
     use std::time::Duration;
 
     pub(crate) fn apply(
