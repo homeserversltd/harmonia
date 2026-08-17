@@ -272,7 +272,7 @@ pub(crate) fn molt_at_subscription_path(
 }
 
 fn prune_retired_module_dirs(
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
     output_module_root: &Path,
     declared_modules: &[String],
 ) -> Result<Vec<String>, String> {
@@ -299,7 +299,7 @@ fn prune_retired_module_dirs(
         {
             continue;
         }
-        let restoration_testimony = crate::atoms::r#do::remove_dir::capture(&module_path)?;
+        let restoration_testimony = crate::tools::files::remove_dir_capture(&module_path)?;
         crate::tools::comparison::execute(
             "molt-retired-tree-remove",
             || Ok(fs::symlink_metadata(&module_path).is_ok()),
@@ -310,9 +310,7 @@ fn prune_retired_module_dirs(
                     crate::tools::comparison::DiffDecision::Empty
                 }
             },
-            |authorization, _| {
-                crate::atoms::r#do::remove_dir::operate(authorization, key, &module_path, None)
-            },
+            |authorization, _| crate::tools::files::remove_dir(authorization, key, &module_path),
         )?;
         pruned_modules.push(module_name);
     }
@@ -415,24 +413,24 @@ fn ensure_tail_can_converge(desired: &MetadataTail, path: &Path) -> Result<(), S
 }
 
 fn converge_file_tail(
-    authorization: crate::tools::comparison::ActionAuthorization,
-    key: crate::atoms::r#do::InvocationKey,
+    authorization: crate::tools::files::ActionAuthorization,
+    key: crate::tools::files::InvocationKey,
     path: &Path,
     desired: MetadataTail,
 ) -> Result<(), String> {
-    crate::atoms::r#do::change_mode::change(
+    crate::tools::files::change_mode(
         authorization,
         key,
-        &crate::atoms::r#do::change_mode::Plan {
+        &crate::tools::files::ChangeModePlan {
             path: path.to_path_buf(),
             mode: Some(desired.mode),
             no_follow: desired.no_follow,
         },
     )?;
-    crate::atoms::r#do::change_owner::change(
+    crate::tools::files::change_owner(
         authorization,
         key,
-        &crate::atoms::r#do::change_owner::Plan {
+        &crate::tools::files::ChangeOwnerPlan {
             path: path.to_path_buf(),
             uid: Some(desired.uid),
             gid: Some(desired.gid),
@@ -450,8 +448,8 @@ fn verify_absent(path: &Path) -> Result<(), String> {
 }
 
 fn transactional_export_failure(
-    authorization: crate::tools::comparison::ActionAuthorization,
-    key: crate::atoms::r#do::InvocationKey,
+    authorization: crate::tools::files::ActionAuthorization,
+    key: crate::tools::files::InvocationKey,
     output: &Path,
     preimage: Option<&ExportPreimage>,
     error: String,
@@ -461,12 +459,12 @@ fn transactional_export_failure(
             let Some(bytes) = old.bytes.as_deref() else {
                 return format!("{error}; restoration-failed prior-kind-not-file");
             };
-            crate::atoms::r#do::write_file::file_write(
+            crate::tools::files::file_write(
                 authorization,
                 key,
                 output,
                 bytes,
-                crate::atoms::r#do::write_file::FileWriteOptions {
+                crate::tools::files::FileWriteOptions {
                     write_bytes: true,
                     mode: Some(old.tail.mode),
                     uid: Some(old.tail.uid),
@@ -479,7 +477,7 @@ fn transactional_export_failure(
         None => match fs::symlink_metadata(output) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.to_string()),
-            Ok(_) => crate::atoms::r#do::remove_file::remove_file(authorization, key, output)
+            Ok(_) => crate::tools::files::remove_file(authorization, key, output)
                 .and_then(|_| verify_absent(output)),
         },
     };
@@ -490,8 +488,8 @@ fn transactional_export_failure(
 }
 
 fn converge_link_tail(
-    authorization: crate::tools::comparison::ActionAuthorization,
-    key: crate::atoms::r#do::InvocationKey,
+    authorization: crate::tools::files::ActionAuthorization,
+    key: crate::tools::files::InvocationKey,
     path: &Path,
     desired: MetadataTail,
 ) -> Result<(), String> {
@@ -501,10 +499,10 @@ fn converge_link_tail(
             path.display()
         ));
     }
-    crate::atoms::r#do::change_owner::change(
+    crate::tools::files::change_owner(
         authorization,
         key,
-        &crate::atoms::r#do::change_owner::Plan {
+        &crate::tools::files::ChangeOwnerPlan {
             path: path.to_path_buf(),
             uid: Some(desired.uid),
             gid: Some(desired.gid),
@@ -514,8 +512,8 @@ fn converge_link_tail(
 }
 
 fn transactional_link_failure(
-    authorization: crate::tools::comparison::ActionAuthorization,
-    key: crate::atoms::r#do::InvocationKey,
+    authorization: crate::tools::files::ActionAuthorization,
+    key: crate::tools::files::InvocationKey,
     output: &Path,
     preimage: Option<&ExportPreimage>,
     error: String,
@@ -523,18 +521,18 @@ fn transactional_link_failure(
     let restoration: Result<(), String> = (|| {
         match fs::symlink_metadata(output) {
             Ok(_) => {
-                crate::atoms::r#do::remove_file::remove_file(authorization, key, output)?;
+                crate::tools::files::remove_file(authorization, key, output)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.to_string()),
         }
         if let Some(old) = preimage {
             let target = old.link_target.as_ref().ok_or("prior-kind-not-link")?;
-            crate::atoms::r#do::make_link::symlink(authorization, key, target, output)?;
-            crate::atoms::r#do::change_owner::change(
+            crate::tools::files::make_link(authorization, key, target, output)?;
+            crate::tools::files::change_owner(
                 authorization,
                 key,
-                &crate::atoms::r#do::change_owner::Plan {
+                &crate::tools::files::ChangeOwnerPlan {
                     path: output.to_path_buf(),
                     uid: Some(old.tail.uid),
                     gid: Some(old.tail.gid),
@@ -573,7 +571,7 @@ fn verify_file_restore(path: &Path, bytes: &[u8], tail: MetadataTail) -> Result<
 }
 
 fn export_one(
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
     source: &Path,
     output: &Path,
     kind: &'static str,
@@ -633,10 +631,10 @@ fn export_one(
             let output_path = output.to_path_buf();
             match mode {
                 MoltMode::Copy => {
-                    let result = crate::atoms::r#do::copy_file::copy(
+                    let result = crate::tools::files::copy_file(
                         authorization,
                         key,
-                        &crate::atoms::r#do::copy_file::Plan {
+                        &crate::tools::files::CopyFilePlan {
                             source: source_path.clone(),
                             target: output_path.clone(),
                             mode: None,
@@ -670,13 +668,9 @@ fn export_one(
                 MoltMode::Symlink => {
                     let result = (|| {
                         if fs::symlink_metadata(&output_path).is_ok() {
-                            crate::atoms::r#do::remove_file::remove_file(
-                                authorization,
-                                key,
-                                &output_path,
-                            )?;
+                            crate::tools::files::remove_file(authorization, key, &output_path)?;
                         }
-                        crate::atoms::r#do::make_link::symlink(
+                        crate::tools::files::make_link(
                             authorization,
                             key,
                             &source_path,
@@ -721,7 +715,7 @@ fn export_one(
 }
 
 fn ensure_dir(
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
     source: &Path,
     path: &Path,
 ) -> Result<bool, String> {
@@ -767,13 +761,12 @@ fn ensure_dir(
                 });
             }
             ensure_tail_can_converge(&desired, &path)?;
-            let result = crate::atoms::r#do::make_dir::create_dir_all(authorization, key, &path)
+            let result = crate::tools::files::make_dir(authorization, key, &path)
                 .and_then(|_| apply_dir_tail(authorization, key, &path, desired))
                 .and_then(|_| verify_dir_tail(&path, desired));
             result.map_err(|error| {
-                let rollback =
-                    crate::atoms::r#do::remove_dir::operate(authorization, key, &path, None)
-                        .and_then(|_| verify_absent(&path));
+                let rollback = crate::tools::files::remove_dir(authorization, key, &path)
+                    .and_then(|_| verify_absent(&path));
                 match rollback {
                     Ok(()) => error,
                     Err(rollback) => format!("{error}; restoration-failed {rollback}"),
@@ -799,24 +792,24 @@ fn verify_dir_tail(path: &Path, desired: MetadataTail) -> Result<(), String> {
 }
 
 fn apply_dir_tail(
-    authorization: crate::tools::comparison::ActionAuthorization,
-    key: crate::atoms::r#do::InvocationKey,
+    authorization: crate::tools::files::ActionAuthorization,
+    key: crate::tools::files::InvocationKey,
     path: &Path,
     desired: MetadataTail,
 ) -> Result<(), String> {
-    crate::atoms::r#do::change_mode::change(
+    crate::tools::files::change_mode(
         authorization,
         key,
-        &crate::atoms::r#do::change_mode::Plan {
+        &crate::tools::files::ChangeModePlan {
             path: path.to_path_buf(),
             mode: Some(desired.mode),
             no_follow: true,
         },
     )?;
-    crate::atoms::r#do::change_owner::change(
+    crate::tools::files::change_owner(
         authorization,
         key,
-        &crate::atoms::r#do::change_owner::Plan {
+        &crate::tools::files::ChangeOwnerPlan {
             path: path.to_path_buf(),
             uid: Some(desired.uid),
             gid: Some(desired.gid),
@@ -872,7 +865,7 @@ fn file_mode(_metadata: &fs::Metadata) -> u32 {
 }
 
 fn export_module_sibling_files(
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
     module_dir: &Path,
     module_output_dir: &Path,
     files_root: Option<&str>,
@@ -906,7 +899,7 @@ fn export_module_sibling_files(
 }
 
 fn export_tree(
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
     source_root: &Path,
     output_root: &Path,
     kind: &'static str,
@@ -940,7 +933,7 @@ fn export_tree(
 }
 
 fn prune_deleted_tree_paths(
-    key: crate::atoms::r#do::InvocationKey,
+    key: crate::tools::files::InvocationKey,
     source_root: &Path,
     output_root: &Path,
     pruned_paths: &mut Vec<String>,
@@ -962,9 +955,7 @@ fn prune_deleted_tree_paths(
                     crate::tools::comparison::DiffDecision::Empty
                 }
             },
-            |authorization, _| {
-                crate::atoms::r#do::remove_file::remove_file(authorization, key, &path)
-            },
+            |authorization, _| crate::tools::files::remove_file(authorization, key, &path),
         )?;
         if fs::symlink_metadata(&path).is_ok() {
             return Err(format!(
@@ -1001,14 +992,14 @@ fn relative_files(root: &Path) -> Result<BTreeSet<PathBuf>, String> {
     Ok(files)
 }
 
-fn prune_empty_dirs(key: crate::atoms::r#do::InvocationKey, root: &Path) -> Result<bool, String> {
+fn prune_empty_dirs(key: crate::tools::files::InvocationKey, root: &Path) -> Result<bool, String> {
     let mut empty = true;
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
             if prune_empty_dirs(key, &path)? {
-                let restoration_testimony = crate::atoms::r#do::remove_dir::capture(&path)?;
+                let restoration_testimony = crate::tools::files::remove_dir_capture(&path)?;
                 crate::tools::comparison::execute(
                     "molt-empty-dir-remove",
                     || Ok(fs::symlink_metadata(&path).is_ok()),
@@ -1019,9 +1010,7 @@ fn prune_empty_dirs(key: crate::atoms::r#do::InvocationKey, root: &Path) -> Resu
                             crate::tools::comparison::DiffDecision::Empty
                         }
                     },
-                    |authorization, _| {
-                        crate::atoms::r#do::remove_dir::operate(authorization, key, &path, None)
-                    },
+                    |authorization, _| crate::tools::files::remove_dir(authorization, key, &path),
                 )?;
                 let _restoration_testimony_root = restoration_testimony.root.relative.len();
                 if fs::symlink_metadata(&path).is_ok() {
