@@ -434,6 +434,37 @@ pub(crate) fn execute_validated_step(
         )),
     }
 }
+fn resolve_routine_value(
+    value: &Value,
+    context: &BTreeMap<String, Value>,
+) -> Result<Value, String> {
+    match value {
+        Value::Object(map) if map.len() == 1 && map.contains_key("from") => {
+            let reference = map
+                .get("from")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "invalid-routine-reference".to_string())?;
+            context
+                .get(reference)
+                .cloned()
+                .ok_or_else(|| reference.to_string())
+        }
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| {
+                resolve_routine_value(value, context).map(|resolved| (key.clone(), resolved))
+            })
+            .collect::<Result<Map<_, _>, _>>()
+            .map(Value::Object),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| resolve_routine_value(item, context))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        _ => Ok(value.clone()),
+    }
+}
+
 fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {
     let mut paths = fs::read_dir(child_dir)
         .map_err(|e| e.to_string())?
@@ -524,14 +555,11 @@ pub(crate) fn execute_routine(
         let mut args = child.args.clone();
         let mut missing = None;
         for value in args.values_mut() {
-            if let Value::Object(map) = value {
-                if map.len() == 1 {
-                    if let Some(reference) = map.get("from").and_then(Value::as_str) {
-                        match state.context.get(reference) {
-                            Some(v) => *value = v.clone(),
-                            None => missing = Some(reference.to_string()),
-                        }
-                    }
+            match resolve_routine_value(value, &state.context) {
+                Ok(resolved) => *value = resolved,
+                Err(reference) => {
+                    missing = Some(reference);
+                    break;
                 }
             }
         }

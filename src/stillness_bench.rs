@@ -1,5 +1,5 @@
 use crate::tools::comparison::{self, ComparisonRun, DiffDecision};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::env;
@@ -22,6 +22,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
 
     let git_artifact = git_artifact_bench(&root, invocation)?;
     let caduceus = caduceus_bench(&root, invocation)?;
+    let service_runtime_build_sha = service_runtime_build_sha_bench(&root, invocation)?;
     let source_gate = json!({"fresh_source":true,"stale_service_ignored":true,"changed":false});
     let venv = venv_bench(&root, invocation)?;
     let package = match package_bench(&root, invocation) {
@@ -33,11 +34,16 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     };
     let aur_pinned = aur_pinned_bench(&root, invocation)?;
     let never = never_converge_bench()?;
+    let overall_ok = service_runtime_build_sha
+        .get("ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let receipt = json!({
         "schema": "harmonia.stillness-bench.v1",
-        "ok": true,
+        "ok": overall_ok,
         "git_artifact": git_artifact,
         "caduceus": caduceus,
+        "service_runtime_build_sha": service_runtime_build_sha,
         "source_gate": source_gate,
         "venv": venv,
         "package": package,
@@ -826,6 +832,200 @@ fn caduceus_bench(
     Ok(
         json!({"source_gate":{"fresh_source":true,"source_sha":source_sha,"stale_service_ignored":true},"build":build,"run1":{"ok":run1.receipt.ok,"changed":run1.movement.changed()},"run2":{"ok":run2.receipt.ok,"changed":run2.movement.changed()},"health":{"matching_identity":{"ok":health1.ok},"mismatched_identity":{"ok":health_bad.ok,"stderr":health_bad.stderr}}}),
     )
+}
+
+fn service_runtime_build_sha_bench(
+    root: &Path,
+    invocation: crate::atoms::r#do::InvocationKey,
+) -> Result<serde_json::Value, String> {
+    let dir = root.join("service-runtime-build-sha");
+    let source_dir = dir.join("fixture");
+    let cargo_home = dir.join("cargo-home");
+    let install_bin = dir.join("installed/fixture");
+    let source_sha = "0123456789abcdef0123456789abcdef01234567";
+    fs::create_dir_all(source_dir.join("src")).map_err(|e| e.to_string())?;
+    fs::write(
+        source_dir.join("Cargo.toml"),
+        b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        source_dir.join("src/main.rs"),
+        b"fn main() { println!(\"{}\", env!(\"FIXTURE_BUILD_SHA\")); }\n",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut manifest: crate::ladder::LadderManifest = serde_json::from_value(json!({
+        "schema":"harmonia.ladder.v1", "id":"service-runtime-build-sha-bench",
+        "version":"1.0.0", "constants": {}, "ladder":[{
+            "step_id":"runtime", "tool":"service-runtime", "permutation":"converge",
+            "args": {
+                "component":"fixture", "source_dir":source_dir, "install_bin":install_bin,
+                "service":"fixture.service", "url":"http://127.0.0.1:1/health",
+                "binary_name":"fixture", "op_prefix":"fixture", "run_schema":"bench.v1",
+                "managed_files_schema":"bench.v1", "build_environment":{"CARGO_HOME":cargo_home}
+            }
+        }]
+    })).map_err(|e| e.to_string())?;
+    let binary_name = manifest.ladder.first()
+        .and_then(|step| step.args.get("binary_name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "service-runtime-binary-name-missing".to_string())?
+        .to_string();
+    crate::bands::restart_services::lower_service_runtime_steps(&mut manifest);
+    let source = manifest.ladder.first().ok_or_else(|| "service-runtime-step-missing".to_string())?;
+    let build = source.steps.iter().find(|child| child.name == "build")
+        .ok_or_else(|| "service-runtime-build-child-missing".to_string())?;
+    if build.args.contains_key("artifact") {
+        return Err("service-runtime-build-artifact-override-present".into());
+    }
+    let expected_artifact = source_dir.join("target/release").join(&binary_name);
+    let lowered_environment = build.args.get("environment").and_then(Value::as_object)
+        .ok_or_else(|| "service-runtime-build-environment-missing".to_string())?;
+    let build_sha_ref = lowered_environment.get("FIXTURE_BUILD_SHA")
+        .ok_or_else(|| "service-runtime-build-sha-env-missing".to_string())?;
+    let environment_preserved = lowered_environment.get("CARGO_HOME") == Some(&json!(cargo_home));
+    let generic_environment_ref = build_sha_ref == &json!({"from":"pull-repo.resolved_commit"});
+    if !environment_preserved || !generic_environment_ref {
+        return Err("service-runtime-build-sha-lowering-bench-failed".into());
+    }
+
+    let mut unresolved_manifest = manifest.clone();
+    let unresolved_source = unresolved_manifest
+        .ladder
+        .first_mut()
+        .ok_or_else(|| "service-runtime-unresolved-step-missing".to_string())?;
+    let unresolved_build = unresolved_source
+        .steps
+        .iter_mut()
+        .find(|child| child.name == "build")
+        .ok_or_else(|| "service-runtime-unresolved-build-child-missing".to_string())?;
+    unresolved_build
+        .args
+        .get_mut("environment")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "service-runtime-unresolved-environment-missing".to_string())?
+        .insert(
+            "FIXTURE_BUILD_SHA".into(),
+            json!({"from":"pull-repo.unresolved_nested_reference"}),
+        );
+    let unresolved_projected = crate::tools::routine::project_routine_children(
+        unresolved_source,
+        &unresolved_manifest.constants,
+    )
+    .map_err(|e| e.first_missing_signal())?;
+    let unresolved_step = crate::ladder::ValidatedStep {
+        step_id: unresolved_source.step_id.clone(),
+        tool: "routine".into(),
+        permutation: "execute".into(),
+        args: BTreeMap::new(),
+        on_failure: crate::ladder::OnFailure::Stop,
+    };
+    let unresolved_module_dir = dir.join("unresolved-reference");
+    let unresolved_routine_dir = unresolved_module_dir.join("runtime");
+    fs::create_dir_all(unresolved_routine_dir.join("pull-repo"))
+        .map_err(|e| e.to_string())?;
+    let unresolved_pull_receipt = json!({
+        "schema":"harmonia.routine.child-receipt.v1", "name":"pull-repo", "tool":"pull-repo",
+        "state":"completed", "ok":true, "changed":false, "outputs":{
+            "path":source_dir, "resolved_commit":source_sha
+        }
+    });
+    fs::write(
+        unresolved_routine_dir.join("pull-repo/routine-child.json"),
+        unresolved_pull_receipt.to_string(),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut unresolved_states = BTreeMap::new();
+    unresolved_states.insert("runtime".into(), crate::ModuleWalkState {
+        context: [("pull-repo.path".into(), json!(source_dir)), ("pull-repo.resolved_commit".into(), json!(source_sha))].into_iter().collect(),
+        children: vec![unresolved_pull_receipt], blocked_by: None, ok: true, changed: false,
+        first_missing_signal: None,
+    });
+    let unresolved_outcome = crate::tools::routine::execute_routine(
+        &unresolved_step,
+        &unresolved_manifest,
+        &unresolved_module_dir,
+        None,
+        None,
+        true,
+        Some(invocation),
+        Some(&mut unresolved_states),
+        crate::bands::Band::RatchetBinaries,
+        &unresolved_projected,
+    )?;
+    let unresolved_signal = unresolved_states
+        .get("runtime")
+        .and_then(|state| state.first_missing_signal.as_deref());
+    let unresolved_nested_reference_rejected = !unresolved_outcome.ok
+        && unresolved_signal
+            == Some("step_id=build defect=missing-stamp-pull-repo.unresolved_nested_reference");
+
+    let step = crate::ladder::ValidatedStep {
+        step_id: source.step_id.clone(), tool: "routine".into(), permutation: "execute".into(),
+        args: BTreeMap::new(), on_failure: crate::ladder::OnFailure::Stop,
+    };
+    let projected = crate::tools::routine::project_routine_children(source, &manifest.constants)
+        .map_err(|e| e.first_missing_signal())?;
+    let pull_receipt = json!({
+        "schema":"harmonia.routine.child-receipt.v1", "name":"pull-repo", "tool":"pull-repo",
+        "state":"completed", "ok":true, "changed":false, "outputs":{
+            "path":source_dir, "resolved_commit":source_sha
+        }
+    });
+    let mut run_once = |label: &str| -> Result<(crate::OperationOutcome, serde_json::Value, bool, PathBuf, bool), String> {
+        let module_dir = dir.join(label);
+        let routine_dir = module_dir.join("runtime");
+        fs::create_dir_all(routine_dir.join("pull-repo")).map_err(|e| e.to_string())?;
+        fs::write(routine_dir.join("pull-repo/routine-child.json"), pull_receipt.to_string())
+            .map_err(|e| e.to_string())?;
+        let mut states = BTreeMap::new();
+        states.insert("runtime".into(), crate::ModuleWalkState {
+            context: [("pull-repo.path".into(), json!(source_dir)), ("pull-repo.resolved_commit".into(), json!(source_sha))].into_iter().collect(),
+            children: vec![pull_receipt.clone()], blocked_by: None, ok: true, changed: false,
+            first_missing_signal: None,
+        });
+        let outcome = crate::tools::routine::execute_routine(
+            &step, &manifest, &module_dir, None, None, true, Some(invocation),
+            Some(&mut states), crate::bands::Band::RatchetBinaries, &projected,
+        )?;
+        let receipt: Value = serde_json::from_str(&fs::read_to_string(routine_dir.join("build/routine-child.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let artifact = states.get("runtime").and_then(|state| state.context.get("build.artifact"))
+            .and_then(Value::as_str).ok_or_else(|| "service-runtime-artifact-output-missing".to_string())?;
+        let artifact_path = PathBuf::from(artifact);
+        let artifact_selection_matches = artifact_path == expected_artifact;
+        let artifact_bytes = fs::read(&artifact_path).map_err(|e| e.to_string())?;
+        let artifact_embeds = artifact_bytes.windows(source_sha.len()).any(|window| window == source_sha.as_bytes());
+        Ok((outcome, receipt, artifact_embeds, artifact_path, artifact_selection_matches))
+    };
+    let (first, first_receipt, artifact_embeds_first, first_artifact, first_selection_matches) = run_once("first")?;
+    let (second, second_receipt, artifact_embeds_second, second_artifact, second_selection_matches) = run_once("second")?;
+    let first_changed = first.changed && first_receipt.get("changed").and_then(Value::as_bool) == Some(true);
+    let second_quiet = !second.changed && second_receipt.get("changed").and_then(Value::as_bool) == Some(false);
+    let artifact_embeds = artifact_embeds_first && artifact_embeds_second;
+    let artifact_selection_matches = first_selection_matches && second_selection_matches
+        && first_artifact == expected_artifact && second_artifact == expected_artifact;
+    let executed_output = Command::new(&first_artifact)
+        .output().map_err(|e| e.to_string())?;
+    let artifact_executes = executed_output.status.success()
+        && String::from_utf8_lossy(&executed_output.stdout).trim() == source_sha;
+    let all_predicates = environment_preserved && generic_environment_ref && artifact_embeds
+        && artifact_executes && first_changed && second_quiet && artifact_selection_matches;
+    if !all_predicates || !unresolved_nested_reference_rejected {
+        return Err("service-runtime-build-sha-bench-failed".into());
+    }
+    Ok(json!({
+        "generic_environment_key":"FIXTURE_BUILD_SHA", "generic_environment_ref":build_sha_ref,
+        "explicit_environment_preserved":environment_preserved,
+        "artifact_embeds_build_sha_environment":artifact_embeds,
+        "artifact_executes_with_build_sha":artifact_executes,
+        "first_pass_changed":first_changed, "second_pass_quiet":second_quiet,
+        "artifact_selection_matches":artifact_selection_matches,
+        "unresolved_nested_reference_rejected":unresolved_nested_reference_rejected,
+        "artifact_path":first_artifact,
+        "ok":all_predicates && unresolved_nested_reference_rejected
+    }))
 }
 
 fn serve_health_value<T>(
