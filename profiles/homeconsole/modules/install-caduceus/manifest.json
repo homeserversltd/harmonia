@@ -1,8 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
-  "id": "homeconsole-caduceus-public-lever",
+  "id": "install-caduceus",
   "version": "1.0.1",
-  "description": "HomeConsole Caduceus public lever runtime. Rust owns caduceus source sync, cargo build, binary install, profile/policy/state convergence, caduceus.service standup, and HTTP health proof; this sidecar carries constants only.",
+  "description": "HomeConsole module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "constants": {},
   "ladder": [
     {
@@ -20,7 +20,7 @@
       "tool": "service-runtime",
       "permutation": "converge",
       "args": {
-        "module_id": "homeconsole-caduceus-public-lever",
+        "module_id": "install-caduceus",
         "component": "caduceus",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
@@ -28,7 +28,7 @@
         "url": "http://127.0.0.1:8787/health",
         "binary_name": "caduceus",
         "op_prefix": "caduceus",
-        "run_schema": "harmonia.homeconsole.caduceus_public_lever.v1",
+        "run_schema": "harmonia.homeconsole.install_caduceus.v1",
         "managed_files_schema": "harmonia.homeconsole.caduceus_managed_files.v1",
         "managed_files": [
           {
