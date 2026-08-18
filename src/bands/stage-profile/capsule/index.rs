@@ -172,7 +172,7 @@ pub(crate) fn capsule_pack_with_invocation(
             stage_dir.display()
         ));
     }
-    comparison::execute(
+    comparison::execute_once(
         "capsule-stage-create",
         || Ok(false),
         |_| DiffDecision::Different,
@@ -287,16 +287,10 @@ pub(crate) fn capsule_pack_with_invocation(
     };
     write_receipt_json_atomic(&output_dir.join("pack-receipt.json"), &receipt)?;
     let staged = crate::tools::files::remove_dir_capture(output_dir)?;
-    comparison::execute(
+    comparison::execute_once(
         "capsule-output-promote",
         || Ok(fs::symlink_metadata(&destination_dir).is_ok()),
-        |present| {
-            if *present {
-                DiffDecision::Different
-            } else {
-                DiffDecision::Empty
-            }
-        },
+        |_| DiffDecision::Different,
         |authorization, _| {
             crate::tools::files::remove_dir_replace(authorization, key, &destination_dir, &staged)
         },
@@ -1057,7 +1051,7 @@ fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), 
             |authorization, _| crate::tools::files::make_dir(authorization, key, parent),
         )?;
     }
-    comparison::execute(
+    comparison::execute_once(
         "capsule-artifact-replace",
         || Ok(fs::symlink_metadata(dst).is_ok()),
         |_| DiffDecision::Different,
