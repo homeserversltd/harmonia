@@ -95,8 +95,10 @@ pub(crate) fn materialize(
         receipt_dir,
         MoltMode::Copy,
     )?;
-    let source_tree_sha256 = module_tree_sha256(&source_modules_root)?;
-    let installed_tree_sha256 = module_tree_sha256(installed_module_root)?;
+    let source_tree_sha256 =
+        crate::atoms::tree_hash::content_tree_sha256(&source_modules_root)?;
+    let installed_tree_sha256 =
+        crate::atoms::tree_hash::content_tree_sha256(installed_module_root)?;
     if source_tree_sha256 != installed_tree_sha256 {
         return Err(format!(
             "{profile_id}-module-root-inconsistent source={} installed={}",
@@ -112,7 +114,7 @@ pub(crate) fn materialize(
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
                     .unwrap_or_else(|| "sidecar".to_string()),
-                tree_sha256: module_tree_sha256(&module_dir)?,
+                tree_sha256: crate::atoms::tree_hash::content_tree_sha256(&module_dir)?,
                 received_at_run_id: run_id_from_stamp(),
             })
         })
