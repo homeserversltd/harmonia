@@ -70,10 +70,6 @@ pub(crate) fn run_build_with_mode(
     invocation: Option<atoms::r#do::InvocationKey>,
     identity_mode: IdentityMode,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
-    // Regular executables have no source-head identity. Force the first
-    // comparison of each apply invocation to authorize exactly one build;
-    // after the act, the executable observation is the convergence check.
-    let mut regular_executable_build_authorized = false;
     let run = crate::tools::declaration::execute_with_failure_receipt(
         "build-crate",
         "build-crate",
@@ -86,22 +82,35 @@ pub(crate) fn run_build_with_mode(
             )
         },
         |observation| {
-            if !apply {
-                comparison::DiffDecision::Empty
-            } else if identity_mode == IdentityMode::RegularExecutable
-                && !regular_executable_build_authorized
-            {
-                regular_executable_build_authorized = true;
+            if apply && !observation.identity_matches() {
                 comparison::DiffDecision::Different
-            } else if observation.identity_matches() {
-                comparison::DiffDecision::Empty
             } else {
-                comparison::DiffDecision::Different
+                comparison::DiffDecision::Empty
             }
         },
         |auth, _observation| {
             let key = invocation.ok_or("build-crate-invocation-key-missing")?;
-            crate::atoms::r#do::build_crate::cargo_build(auth, key, cwd, environment, bearer, std::time::Duration::from_secs(timeout_secs))
+            if identity_mode == IdentityMode::RegularExecutable {
+                crate::atoms::r#do::build_crate::cargo_build_and_stamp(
+                    auth,
+                    key,
+                    cwd,
+                    environment,
+                    bearer,
+                    std::time::Duration::from_secs(timeout_secs),
+                    artifact,
+                    source_build_sha,
+                )
+            } else {
+                crate::atoms::r#do::build_crate::cargo_build(
+                    auth,
+                    key,
+                    cwd,
+                    environment,
+                    bearer,
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+            }
         },
         |before, movement, after| {
             crate::atoms::attest::build_crate::attest(

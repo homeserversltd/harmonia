@@ -43,6 +43,28 @@ pub(crate) fn cargo_build(
     })
 }
 
+pub(crate) fn cargo_build_and_stamp(
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
+    cwd: &Path,
+    environment: &[(String, String)],
+    bearer: &str,
+    timeout: Duration,
+    artifact: &Path,
+    source_build_sha: &str,
+) -> Result<CommandObservation, String> {
+    let observation = cargo_build(authorization, invocation, cwd, environment, bearer, timeout)?;
+    if observation.ok {
+        let stamp = artifact.with_file_name(format!(
+            "{}.source-build-sha",
+            artifact.file_name().and_then(|name| name.to_str()).unwrap_or("artifact")
+        ));
+        std::fs::write(stamp, format!("{source_build_sha}\n"))
+            .map_err(|error| format!("build-crate-source-head-stamp-write-failed: {error}"))?;
+    }
+    Ok(observation)
+}
+
 pub(crate) fn bench_build_guard(
     root: &Path,
     source_build_sha: &str,
