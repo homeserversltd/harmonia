@@ -49,11 +49,16 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             ("service-active", "systemd", "is-active-probe"),
             ("health-proof", "check-health", "probe"),
         ];
+        let has_managed_files = args
+            .get("managed_files")
+            .and_then(Value::as_array)
+            .is_some_and(|files| !files.is_empty());
         step.tool = "routine".into();
         step.permutation = "execute".into();
         step.args.clear();
         step.steps = stages
             .into_iter()
+            .filter(|(name, _, _)| *name != "managed-files" || has_managed_files)
             .map(|(name, tool, permutation)| {
                 let child_args = match name {
                     "pull-repo" => pull.clone(),
@@ -123,6 +128,11 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                     | "service-restart"
                     | "service-active" => {
                         let mut c = args.clone();
+                        let managed_files_changed = if has_managed_files {
+                            serde_json::json!({"from":"managed-files.changed"})
+                        } else {
+                            Value::Bool(false)
+                        };
                         for (k, r) in [
                             ("source_dir", "pull-repo.path"),
                             ("source_sha", "pull-repo.resolved_commit"),
@@ -130,10 +140,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                             ("source_remote", "pull-repo.source_remote"),
                             ("source_changed", "pull-repo.changed"),
                             ("binary_changed", "binary-install.changed"),
-                            ("managed_files_changed", "managed-files.changed"),
                         ] {
                             c.insert(k.into(), serde_json::json!({"from":r}));
                         }
+                        c.insert("managed_files_changed".into(), managed_files_changed);
                         c.insert(
                             "user".into(),
                             args.get("user").cloned().unwrap_or(Value::Bool(false)),
