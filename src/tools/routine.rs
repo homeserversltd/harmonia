@@ -483,6 +483,15 @@ fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+fn is_managed_child_name(name: &str) -> bool {
+    name == "managed-files"
+        || name.starts_with("managed-file-")
+        || name.starts_with("managed-place-")
+        || name.starts_with("managed-backfill-")
+        || name.starts_with("managed-remove-")
+        || name.starts_with("managed-symlink-")
+}
+
 pub(crate) fn execute_routine(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -652,14 +661,12 @@ pub(crate) fn execute_routine(
                     .entry(format!("{}.{}", child.name, key))
                     .or_insert(value.clone());
             }
-            if child.name == "managed-files" || child.name.starts_with("managed-file-") {
+            if is_managed_child_name(&child.name) {
                 let aggregate_changed = state.children.iter().any(|receipt| {
                     receipt
                         .get("name")
                         .and_then(Value::as_str)
-                        .is_some_and(|name| {
-                            name == "managed-files" || name.starts_with("managed-file-")
-                        })
+                        .is_some_and(is_managed_child_name)
                         && receipt
                             .get("changed")
                             .and_then(Value::as_bool)
