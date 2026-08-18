@@ -346,23 +346,21 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             });
         }
         step.steps.splice(index..=index, replacement);
-        if !configuration.is_empty() {
-            let mut proposal = original;
-            proposal
-                .args
-                .insert("files".into(), Value::Array(configuration));
-            proposal.tool = "files".into();
-            proposal.permutation = Some("managed-files".into());
-            // The service epilogue consumes managed-files.changed. Keep the
-            // proposal producer in the linear routine before every consumer,
-            // rather than appending it after daemon-reload/enable/restart.
-            let service_index = step
-                .steps
-                .iter()
-                .position(|child| child.name == "service-daemon-reload")
-                .unwrap_or(step.steps.len());
-            step.steps.insert(service_index, proposal);
-        }
+        let mut proposal = original;
+        proposal
+            .args
+            .insert("files".into(), Value::Array(configuration));
+        proposal.tool = "files".into();
+        proposal.permutation = Some("managed-files".into());
+        // The service epilogue consumes managed-files.changed. Keep the
+        // proposal producer in the linear routine before every consumer,
+        // rather than appending it after daemon-reload/enable/restart.
+        let service_index = step
+            .steps
+            .iter()
+            .position(|child| child.name == "service-daemon-reload")
+            .unwrap_or(step.steps.len());
+        step.steps.insert(service_index, proposal);
     }
     Ok(())
 }
