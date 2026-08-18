@@ -5,80 +5,80 @@
     {
       "id": "renew-self",
       "charter_order": 1,
-      "deed": "Keep the engine plane current before profile work.",
+      "deed": "Keep the engine plane current through its owning source, build, health, and promotion tools.",
       "movement_status": "fronted"
     },
     {
       "id": "pull-source",
       "charter_order": 2,
-      "deed": "Front source acquisition at its existing rolling-update boundary.",
+      "deed": "Acquire source through the owning pull-repo tool at the rolling-update boundary.",
       "movement_status": "fronted"
     },
     {
       "id": "stage-profile",
       "charter_order": 3,
-      "deed": "Front profile materialization at its existing update prelude.",
+      "deed": "Materialize the profile and refresh its projection at the update prelude.",
       "movement_status": "fronted"
     },
     {
       "id": "compare",
       "charter_order": 4,
-      "deed": "Resolve profile and module comparison before execution.",
+      "deed": "Compare the projected profile and modules before execution.",
       "movement_status": "fronted"
     },
     {
       "id": "install-packages",
       "charter_order": 5,
-      "deed": "Enter today’s indivisible mixed module executor exactly once.",
+      "deed": "Execute the owning package, binary, service, file, and proposal tools in module order.",
       "movement_status": "fronted"
     },
     {
       "id": "ratchet-binaries",
       "charter_order": 6,
-      "deed": "Front binary ratchets carried inside today’s module order.",
+      "deed": "Execute binary builds and promotion through the owning build-crate and place-file tools.",
       "movement_status": "fronted"
     },
     {
       "id": "restart-services",
       "charter_order": 7,
-      "deed": "Front service transitions carried inside today’s module order.",
+      "deed": "Execute service transitions through the owning service and health tools.",
       "movement_status": "fronted"
     },
     {
       "id": "backfill-files",
       "charter_order": 8,
-      "deed": "Front managed-file work carried inside today’s module order.",
+      "deed": "Execute managed-file work through the owning file and symlink tools.",
       "movement_status": "fronted"
     },
     {
       "id": "propose-edits",
       "charter_order": 9,
-      "deed": "Front proposal and hotfix work without changing its current position.",
+      "deed": "Use the owning file tools and proposal projection for proposal and hotfix work.",
       "movement_status": "fronted"
     },
     {
       "id": "report-home",
       "charter_order": 10,
-      "deed": "Return the existing run receipt, stdout, and result.",
+      "deed": "Report the run receipt, stdout, and result.",
       "movement_status": "fronted"
     }
   ],
   "effective_order": {
     "rolling_update": [
       "renew-self engine preflight",
-      "pull-source and stage-profile rolling prelude",
-      "renew-self face: existing hotfix then preflight-skipped accounting",
-      "compare face: profile shape and module-group selection",
-      "install-packages face: today’s indivisible per-module package/binary/service/file/proposal executor",
-      "ratchet-binaries, restart-services, backfill-files, and propose-edits faces: fronted because that work already ran interleaved",
-      "report-home face: existing run receipt and stdout"
+      "pull-source acquisition and stage-profile materialization",
+      "renew-self hotfix selection and engine preflight",
+      "compare profile shape and module-group selection",
+      "install-packages package and virtual-environment tools, followed by owning binary, service, file, and proposal tools",
+      "ratchet-binaries, restart-services, backfill-files, and propose-edits tools in their declared module order",
+      "report-home receipt and stdout reporting"
     ],
     "direct_profile_run": [
       "renew-self face: existing hotfix then engine preflight",
-      "compare face: profile shape and module-group selection",
-      "install-packages face: today’s indivisible per-module package/binary/service/file/proposal executor",
-      "ratchet-binaries, restart-services, backfill-files, and propose-edits faces: fronted because that work already ran interleaved",
-      "report-home face: existing run receipt and stdout"
+      "compare profile shape and module-group selection",
+      "install-packages package and virtual-environment tools, followed by owning binary, service, file, and proposal tools",
+      "ratchet-binaries, restart-services, backfill-files, and propose-edits tools in their declared module order",
+      "report-home receipt and stdout reporting"
     ]
   }
 }

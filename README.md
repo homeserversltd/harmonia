@@ -2,30 +2,48 @@
 
 Harmonia is a Rust appliance update engine. Each invocation follows one bounded ritual: **ask → compare → do → attest**.
 
-The engine has two authorization keys: diff-minted `Authorization` and the exact `--apply-or-timer` invocation key. A bare update may observe and report, but cannot perform a deed. Mutating behavior exists only in the twenty true-named transactional atoms under `src/atoms/do/`; each requires both keys by value and emits an attested result.
-
 ## Engine shape
 
-- `src/atoms/ask/` performs bounded observations without mutation.
-- `src/atoms/do/` contains the only mutation vocabulary.
-- `src/atoms/attest/` redacts caller-injected secrets before serialization, appends the redacted `Receipt`, and forwards fields derived from that same redacted value.
-- `src/tools/index.json` is the single tool registry. Its `declarations.records` contains exactly thirteen declaration records; `service-runtime` is a separate registry entry lowered to primitives, not one of those records.
-- Ten bands run in charter order: `renew-self`, `pull-source`, `stage-profile`, `compare`, `install-packages`, `ratchet-binaries`, `restart-services`, `backfill-files`, `propose-edits`, `report-home`. `restart-services` precedes `backfill-files`.
-- The closing census is zero: a successful run reports `first_missing_signal=none`.
+- Atoms are the engine floor. They host primitive operations and engines: comparison, command capture, AUR work, Git artifact work, systemd work, package work, declaration handling, and the embedded `declarations.json` authority.
+- Tools compose those atom capabilities. The tool layer owns the managed-files dispatcher, ordered routines, virtual-environment work, household-time work, and artifact-lock compatibility work. Other tool paths are re-export seats for atom or tool implementations.
+- Bands are the execution faces. A band calls tools, and tools call atoms. Bands do not call atoms directly, except `renew-self`, whose `replace_process` path is an intended direct atom exception.
+- The `do` directory contains twenty true-named transactional atoms, one folder per atom. Mutating atoms require diff-minted `Authorization` and the exact `--apply-or-timer` invocation key.
+- `src/atoms/attest/` redacts caller-injected secrets before serialization and forwards fields derived from the redacted value.
 
-Profiles provide ordered module declarations and constants. Modules compose the ritual and the registered tools; they do not create another mutation authority. Receipts are written for the run and its module/tool work.
+Profiles provide ordered module declarations and constants. Receipts are written for the run and its module and tool work.
 
 ## Repository map
 
 ```text
-src/atoms/       ask, do, and attest ritual surfaces
-src/bands/       ten charter-ordered execution bands
-src/tools/       registered tool declarations and implementations
+src/atoms/       primitive operations and the ask/do/attest surfaces
+src/bands/       ten charter-ordered execution faces
+src/tools/       composition tools and re-export seats
 profiles/        selected profile and module declarations
 installer/       installation support
 docs/            architecture and engine notes
 tests/           test guidance
 ```
+
+## Bench routes
+
+A bench is a real production walk through one route. It creates a scratch root, runs the production implementation, emits a receipt, and observes cleanup. The binary exposes these Slice 4 routes:
+
+```text
+bench-slice4-files-transaction
+bench-slice4-make-symlink
+bench-slice4-aur
+bench-slice4-git-artifact
+bench-slice4-systemd-unit
+bench-slice4-package
+bench-slice4-command
+bench-slice4-subscription-interactables
+bench-slice4-ladder-profile
+bench-slice4-renew-self
+bench-slice4-capsule
+bench-slice4-household-time
+```
+
+The binary also exposes the pre-existing `bench-proposal-refresh`, `bench-structural-wall`, `bench-stillness`, `bench-harmonia-foundation`, `bench-update-set`, `bench-slice12-clock`, and `bench-slice13-renew-schedule` routes.
 
 ## Safe development commands
 

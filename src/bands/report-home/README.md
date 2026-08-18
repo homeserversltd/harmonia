@@ -1,3 +1,3 @@
 # report-home
 
-`report-home` has band id `report-home` and charter order 10 of 10. `restart-services` has charter order 7 and precedes `backfill-files`, which has charter order 8.
+`report-home` is band 10 of 10. It calls tools for its execution work; those tools call atom primitives. It does not call atoms directly.

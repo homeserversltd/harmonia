@@ -1,5 +1,3 @@
 # place-file
 
-`place-file` is a registered Harmonia tool declaration resolved through `src/tools/index.json`, the single registry. `place-file` is one of the thirteen deed declaration records in `src/tools/index.json`: permutation `place`, deed `copy-file`, permission `mutate`, and phases `observe → compare → act → attest`. It places a declared file through the keyed transactional do atom.
-
-The two required mutation keys are diff-minted `Authorization` and the exact `--apply-or-timer` invocation key.
+`place-file` is a re-export seat. Bands reach the owning atom through the tool registry; it adds no tool-layer orchestration or second mutation authority.

@@ -1,3 +1,3 @@
 # pull-source
 
-`pull-source` has band id `pull-source` and charter order 2 of 10. `restart-services` has charter order 7 and precedes `backfill-files`, which has charter order 8.
+`pull-source` is band 2 of 10. It calls tools for its execution work; those tools call atom primitives. It does not call atoms directly.

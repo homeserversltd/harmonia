@@ -1,3 +1,3 @@
 # backfill-files
 
-`backfill-files` has band id `backfill-files` and charter order 8 of 10. `restart-services` has charter order 7 and precedes `backfill-files`, which has charter order 8.
+`backfill-files` is band 8 of 10. It calls tools for its execution work; those tools call atom primitives. It does not call atoms directly.

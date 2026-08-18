@@ -4,12 +4,12 @@
   "entries": [
     {
       "name": "routine",
-      "description": "Ordered primitive routine grammar and execution.",
+      "description": "Ordered tool routine composition and execution.",
       "routine_summonable": false,
       "permutations": [
         {
           "name": "execute",
-          "description": "execute an ordered primitive routine",
+          "description": "execute an ordered tool routine",
           "args": [
             {
               "name": "steps",
@@ -23,7 +23,7 @@
     },
     {
       "name": "pull-repo",
-      "description": "primitive repository acquisition adapter.",
+      "description": "Tool composition seat for repository acquisition.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -52,7 +52,7 @@
     },
     {
       "name": "build-crate",
-      "description": "primitive crate build adapter.",
+      "description": "Tool composition seat for crate builds.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -101,7 +101,7 @@
     },
     {
       "name": "place-file",
-      "description": "primitive file placement adapter.",
+      "description": "Tool composition seat for file placement.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -177,7 +177,7 @@
     },
     {
       "name": "enable-unit",
-      "description": "primitive systemd enable adapter.",
+      "description": "Tool composition seat for systemd enable work.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -211,7 +211,7 @@
     },
     {
       "name": "backfill-file",
-      "description": "primitive declared-file backfill adapter.",
+      "description": "Tool composition seat for declared-file backfill.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -250,7 +250,7 @@
     },
     {
       "name": "check-health",
-      "description": "primitive observation-only health adapter.",
+      "description": "Tool observation and composition seat for health checks.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -284,7 +284,7 @@
     },
     {
       "name": "artifact-lock",
-      "description": "Compatibility entry point for artifact integrity observation owned by ratchet-aur-package.",
+      "description": "Re-export seat for artifact integrity observation owned by ratchet-aur-package.",
       "routine_summonable": false,
       "permutations": [
         {
@@ -308,7 +308,7 @@
     },
     {
       "name": "aur",
-      "description": "AUR package primitive for regular installs and optional pinned-state receipts.",
+      "description": "Tool composition seat for regular and pinned AUR package work.",
       "routine_summonable": false,
       "permutations": [
         {
@@ -396,7 +396,7 @@
     },
     {
       "name": "command",
-      "description": "Host command execution primitive with cwd/env/timeout/exit capture; every subprocess produces a command receipt.",
+      "description": "Re-export seat for the command atom; every subprocess produces a command receipt.",
       "routine_summonable": false,
       "permutations": [
         {
@@ -430,7 +430,7 @@
     },
     {
       "name": "files",
-      "description": "Staged file/template/directory/symlink primitive with atomic promotion.",
+      "description": "Managed-files dispatcher and composition seat for staged file, directory, and symlink work.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -553,7 +553,7 @@
         },
         {
           "name": "hotfix-file-backfill",
-          "description": "comparison-gated primitive that atomically backfills declared file bytes",
+          "description": "comparison-gated tool operation that atomically backfills declared file bytes",
           "args": [
             {
               "name": "file_bytes",
@@ -928,7 +928,7 @@
     },
     {
       "name": "git-artifact",
-      "description": "Bottled repository primitive for clone, fetch, clean-tree guard, checkout, and fast-forward update through profile modules.",
+      "description": "Re-export seat for Git artifact acquisition and fast-forward update.",
       "routine_summonable": false,
       "permutations": [
         {
@@ -957,7 +957,7 @@
     },
     {
       "name": "health",
-      "description": "HTTP health probe primitive with curl-backed retry and timeout controls.",
+      "description": "Re-export seat for the HTTP health atom with retry and timeout controls.",
       "routine_summonable": false,
       "permutations": [
         {
@@ -991,7 +991,7 @@
     },
     {
       "name": "household-time",
-      "description": "Household timezone fact primitive with typed resolver, watched application, debounce-preserving timezone actuation, and audit receipts.",
+      "description": "Tool composition seat for household timezone resolution and application.",
       "routine_summonable": false,
       "permutations": [
         {
@@ -1074,7 +1074,7 @@
     },
     {
       "name": "package",
-      "description": "System package manager primitive for pacman check, install, upgrade, and keyring repair permutations.",
+      "description": "Re-export seat for package atom operations.",
       "routine_summonable": false,
       "permutations": [
         {
@@ -1149,12 +1149,12 @@
     },
     {
       "name": "service-runtime",
-      "description": "declaration-only service runtime lowered to owning primitive tools before execution.",
+      "description": "Declaration-only tool entry lowered to owning tools before execution.",
       "routine_summonable": false,
       "permutations": [
         {
           "name": "converge",
-          "description": "declare a Rust service runtime for pre-execution primitive lowering",
+          "description": "declare a Rust service runtime for pre-execution lowering to owning tools",
           "args": [
             {
               "name": "module_id",
@@ -1238,7 +1238,7 @@
     },
     {
       "name": "systemd",
-      "description": "Systemd unit lifecycle primitive with observed is-enabled/is-active before/after receipts.",
+      "description": "Re-export seat for systemd unit lifecycle operations.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -1491,7 +1491,7 @@
     },
     {
       "name": "venv",
-      "description": "Change-gated Python virtual-environment convergence primitive.",
+      "description": "Tool composition seat for change-gated Python virtual-environment convergence.",
       "routine_summonable": false,
       "permutations": [
         {

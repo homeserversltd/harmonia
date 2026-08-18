@@ -2,8 +2,8 @@
   "schema": "harmonia.band-face.v1",
   "id": "restart-services",
   "charter_order": 7,
-  "deed": "Front service transitions carried inside today’s module order.",
+  "deed": "Execute service transitions through the owning service and health tools.",
   "movement_status": "fronted",
-  "behavior_owner": "existing profile/update orchestration",
-  "movement_a_rule": "The face calls the existing phase boundary; no event, receipt, key mint, or ordering is added."
+  "behavior_owner": "the current band execution path",
+  "movement_a_rule": "Execution work routes through owning tools; the face preserves event, receipt, key, and ordering contracts."
 }
