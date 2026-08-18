@@ -138,7 +138,7 @@ pub(crate) use super::ritual::{
     seal_projection, snapshot, snapshot_services, strict_rejects_forward_only, strict_rejects_weak,
     update_set_bench, validate_exact_root, Atom, AtomKind, ProjectionChild, ProjectionTransaction,
     RestorationImage, Reversibility, SealedProjection, ServiceImage, ServiceState, Snapshot,
-    TransactionReceipt, TransactionState,
+    TransactionReceipt, TransactionState, validate_member_scoped_target,
 };
 
 pub(crate) fn rolling_update_run(
