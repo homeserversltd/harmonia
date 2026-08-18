@@ -90,7 +90,27 @@ pub(crate) fn run_build_with_mode(
         },
         |auth, _observation| {
             let key = invocation.ok_or("build-crate-invocation-key-missing")?;
-            crate::atoms::r#do::build_crate::cargo_build(auth, key, cwd, environment, bearer, std::time::Duration::from_secs(timeout_secs))
+            if identity_mode == IdentityMode::RegularExecutable {
+                crate::atoms::r#do::build_crate::cargo_build_and_stamp(
+                    auth,
+                    key,
+                    cwd,
+                    environment,
+                    bearer,
+                    std::time::Duration::from_secs(timeout_secs),
+                    artifact,
+                    source_build_sha,
+                )
+            } else {
+                crate::atoms::r#do::build_crate::cargo_build(
+                    auth,
+                    key,
+                    cwd,
+                    environment,
+                    bearer,
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+            }
         },
         |before, movement, after| {
             crate::atoms::attest::build_crate::attest(

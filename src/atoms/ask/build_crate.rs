@@ -30,7 +30,9 @@ impl Observation {
                     && self.artifact_build_sha.as_deref() == Some(self.source_build_sha.as_str())
             }
             IdentityMode::RegularExecutable => {
-                self.artifact_executable && self.artifact_digest.is_some()
+                self.artifact_executable
+                    && !self.source_build_sha.is_empty()
+                    && self.artifact_build_sha.as_deref() == Some(self.source_build_sha.as_str())
             }
         }
     }
@@ -64,15 +66,27 @@ pub(crate) fn build_identity_with_mode(
         Some(atoms::ask::PathKind::RegularFile)
     );
     let bytes = artifact_present.then(|| fs::read(artifact).ok()).flatten();
-    let artifact_build_sha = (identity_mode == IdentityMode::EmbeddedSourceSha)
-        .then(|| bytes.as_deref())
-        .flatten()
-        .and_then(|bytes| {
+    let artifact_build_sha = match identity_mode {
+        IdentityMode::EmbeddedSourceSha => bytes.as_deref().and_then(|bytes| {
             bytes
                 .windows(source_build_sha.len())
                 .any(|window| window == source_build_sha.as_bytes())
                 .then(|| source_build_sha.clone())
-        });
+        }),
+        IdentityMode::RegularExecutable => artifact
+            .with_file_name(format!(
+                "{}.source-build-sha",
+                artifact.file_name().and_then(|name| name.to_str()).unwrap_or("artifact")
+            ))
+            .is_file()
+            .then(|| artifact.with_file_name(format!(
+                "{}.source-build-sha",
+                artifact.file_name().and_then(|name| name.to_str()).unwrap_or("artifact")
+            )))
+            .and_then(|stamp| fs::read_to_string(stamp).ok())
+            .map(|stamp| stamp.trim().to_string())
+            .filter(|stamp| crate::bands::compare::is_hex_sha(stamp)),
+    };
     let artifact_digest = (identity_mode == IdentityMode::RegularExecutable)
         .then(|| bytes.as_deref())
         .flatten()
