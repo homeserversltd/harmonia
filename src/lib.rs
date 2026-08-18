@@ -1010,6 +1010,18 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia bench-harmonia-foundation");
     println!("  harmonia bench-update-set");
     println!("  harmonia bench-slice12-clock");
+    println!("  harmonia bench-slice4-files-transaction");
+    println!("  harmonia bench-slice4-make-symlink");
+    println!("  harmonia bench-slice4-aur");
+    println!("  harmonia bench-slice4-git-artifact");
+    println!("  harmonia bench-slice4-systemd-unit");
+    println!("  harmonia bench-slice4-package");
+    println!("  harmonia bench-slice4-command");
+    println!("  harmonia bench-slice4-subscription-interactables");
+    println!("  harmonia bench-slice4-ladder-profile");
+    println!("  harmonia bench-slice4-renew-self");
+    println!("  harmonia bench-slice4-capsule");
+    println!("  harmonia bench-slice4-household-time");
     println!("  harmonia bench-slice13-renew-schedule");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id>");

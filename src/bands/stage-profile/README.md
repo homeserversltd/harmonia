@@ -1,3 +1,3 @@
 # stage-profile
 
-`stage-profile` has band id `stage-profile` and charter order 3 of 10. `restart-services` has charter order 7 and precedes `backfill-files`, which has charter order 8.
+`stage-profile` is band 3 of 10. It calls tools for its execution work; those tools call atom primitives. It does not call atoms directly.
