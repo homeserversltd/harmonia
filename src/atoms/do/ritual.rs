@@ -845,8 +845,8 @@ pub(crate) struct SealedProjection {
     pub children: Vec<ProjectionChild>,
     pub snapshot: Snapshot,
     pub services: Vec<ServiceStateSnapshot>,
-    pub gui_face: String,
-    pub gui_member: String,
+    pub gui_face: Option<String>,
+    pub gui_member: Option<String>,
     pub caduceus_count: usize,
 }
 #[derive(Clone, Debug)]
@@ -861,7 +861,7 @@ pub(crate) struct TransactionReceipt {
     pub profile_id: String,
     pub profile_identity: String,
     pub source_head: String,
-    pub gui: String,
+    pub gui: Option<String>,
     pub children: Vec<ProjectionChild>,
     pub target_count: usize,
     pub service_count: usize,
@@ -886,7 +886,7 @@ pub(crate) fn seal_projection(
     profile_identity: &str,
     source_head: &str,
 ) -> Result<ProjectionTransaction, String> {
-    if plan.gui_member.is_empty() || plan.gui_face.is_empty() {
+    if plan.gui_member.is_none() && plan.gui_face.is_some() {
         return Err("sealed-projection-gui-missing".into());
     }
     for t in &plan.targets {
@@ -894,17 +894,24 @@ pub(crate) fn seal_projection(
     }
     let snapshot = snapshot(&plan.targets)?;
     let services = snapshot_services(plan)?;
-    let mut members = Vec::new();
-    for t in &plan.targets {
-        if !members.contains(&t.member) {
-            members.push(t.member.clone());
+    let members = if let Some(members) = &plan.pinned_members {
+        members.clone()
+    } else {
+        let mut members = Vec::new();
+        for t in &plan.targets {
+            if !members.contains(&t.member) {
+                members.push(t.member.clone());
+            }
         }
-    }
-    for m in ["caduceus", "agathodaimon", plan.gui_member.as_str()] {
-        if !members.iter().any(|x| x == m) {
-            members.push(m.to_string());
+        for m in [Some("caduceus"), Some("agathodaimon"), plan.gui_member.as_deref()] {
+            if let Some(m) = m {
+                if !members.iter().any(|x| x == m) {
+                    members.push(m.to_string());
+                }
+            }
         }
-    }
+        members
+    };
     let children = members
         .into_iter()
         .enumerate()
@@ -1058,7 +1065,44 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         package_authority: None,
         modules: vec!["caduceus".into(), "arcadia-gui-runtime".into()],
         hotfixes: vec![],
+        syzygy_declaration: None,
     };
+    let mut declared_face_profile = p.clone();
+    declared_face_profile.syzygy_declaration = Some(crate::SyzygyDeclaration {
+        schema: "appliance.syzygy.v1".into(),
+        members: vec!["caduceus".into(), "declared-face".into()],
+        gui_face: Some("Hyprland".into()),
+    });
+    let declared_face_plan = derive_plan(&declared_face_profile, &modules, Some(&root))?;
+    let declared_face_sealed = seal_projection(&declared_face_plan, "bench-declared-face", "bench", "bench")?;
+    let declared_face_members = declared_face_sealed.sealed.children.iter().map(|child| child.member.clone()).collect::<Vec<_>>();
+    let declared_face_ok = declared_face_plan.gui_face.as_deref() == Some("Hyprland")
+        && declared_face_members == ["caduceus", "declared-face"];
+
+    let mut declared_null_profile = p.clone();
+    declared_null_profile.syzygy_declaration = Some(crate::SyzygyDeclaration {
+        schema: "appliance.syzygy.v1".into(),
+        members: vec!["caduceus".into()],
+        gui_face: None,
+    });
+    let declared_null_plan = derive_plan(&declared_null_profile, &modules, Some(&root))?;
+    let declared_null_sealed = seal_projection(&declared_null_plan, "bench-declared-null", "bench", "bench")?;
+    let declared_null_members = declared_null_sealed.sealed.children.iter().map(|child| child.member.clone()).collect::<Vec<_>>();
+    let declared_null_ok = declared_null_plan.gui_face.is_none()
+        && declared_null_plan.gui_member.is_none()
+        && declared_null_members == ["caduceus"];
+
+    let undeclared_plan = derive_plan(&p, &modules, Some(&root))?;
+    let undeclared_sealed = seal_projection(&undeclared_plan, "bench-undeclared", "bench", "bench")?;
+    let undeclared_members = undeclared_sealed.sealed.children.iter().map(|child| child.member.clone()).collect::<Vec<_>>();
+    let undeclared_ok = undeclared_plan.gui_face.as_deref() == Some("Arcadia")
+        && undeclared_members == ["Arcadia", "caduceus", "agathodaimon"];
+    println!("projection_decision declared_face=true gui_face={} members={} exact_members={} sealable_atomic={}", declared_face_plan.gui_face.as_deref().unwrap_or("null"), declared_face_members.join(","), declared_face_ok, matches!(declared_face_sealed.state, TransactionState::Open));
+    println!("projection_decision declared_null=true gui_face=null members={} exact_members={} sealable_atomic={}", declared_null_members.join(","), declared_null_ok, matches!(declared_null_sealed.state, TransactionState::Open));
+    println!("projection_decision undeclared=true gui_face={} members={} legacy_inference={}", undeclared_plan.gui_face.as_deref().unwrap_or("null"), undeclared_members.join(","), undeclared_ok);
+    if !(declared_face_ok && declared_null_ok && undeclared_ok) {
+        return Err("projection decision matrix failed".into());
+    }
     if args.iter().any(|arg| arg == "--config-census") {
         let manifest_path = modules.join("caduceus/manifest.json");
         let config_manifest = fs::read_to_string(&manifest_path)
@@ -1151,7 +1195,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
             }
             Err(error) => return Err(error),
         };
-        bindings.push(format!("{}={}", profile_id, source_plan.gui_face));
+        bindings.push(format!("{}={}", profile_id, source_plan.gui_face.as_deref().unwrap_or("null")));
         if profile_id == "tv" {
             let agathodaimon_targets = source_plan
                 .targets
@@ -1162,7 +1206,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
             let gui_targets = source_plan
                 .targets
                 .iter()
-                .filter(|target| target.member == source_plan.gui_member)
+                .filter(|target| Some(target.member.clone()) == source_plan.gui_member)
                 .map(|target| target.path.display().to_string())
                 .collect::<Vec<_>>();
             let gui_services = source_plan
@@ -1174,7 +1218,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
                 "profile_update_set=tv caduceus_count={} agathodaimon_targets={} gui_face={} gui_targets={} gui_services={}",
                 source_plan.caduceus_count,
                 agathodaimon_targets.join(","),
-                source_plan.gui_face,
+                source_plan.gui_face.as_deref().unwrap_or("null"),
                 gui_targets.join(","),
                 gui_services.join(",")
             );
@@ -1216,7 +1260,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
     };
     crate::atoms::attest::update_set_receipt(
         &dir,
-        &plan.gui_face,
+        plan.gui_face.as_deref().unwrap_or("null"),
         verdict,
         fail.as_deref(),
         fail.as_ref().map(|_| "gui-forced"),
@@ -1243,6 +1287,15 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         receipt.replace('\n', "")
     );
     println!("profile_gui_bindings={}", bindings.join(","));
+    println!("{}", serde_json::json!({
+        "ok": true,
+        "receipt": serde_json::from_str::<Value>(&receipt).map_err(|e| e.to_string())?,
+        "projection_decisions": {
+            "declared_face": true,
+            "declared_null": true,
+            "undeclared": true,
+        },
+    }));
     if fail.is_some() {
         Err("forced GUI failure".into())
     } else {

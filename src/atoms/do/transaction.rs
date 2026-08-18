@@ -80,9 +80,10 @@ pub(crate) struct ServiceBinding {
 pub(crate) struct UpdatePlan {
     pub targets: Vec<Target>,
     pub services: Vec<ServiceBinding>,
-    pub gui_face: String,
-    pub gui_member: String,
+    pub gui_face: Option<String>,
+    pub gui_member: Option<String>,
     pub caduceus_count: usize,
+    pub pinned_members: Option<Vec<String>>,
 }
 pub(crate) fn derive_plan(
     profile: &Profile,
