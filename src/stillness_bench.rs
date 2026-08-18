@@ -967,6 +967,20 @@ fn service_runtime_build_sha_bench(
     };
     let projected = crate::tools::routine::project_routine_children(source, &manifest.constants)
         .map_err(|e| e.first_missing_signal())?;
+    let binary_install = source
+        .steps
+        .iter()
+        .find(|child| child.name == "binary-install")
+        .ok_or_else(|| "service-runtime-binary-install-child-missing".to_string())?;
+    let binary_install_routine_gate_accepts = binary_install.tool == "place-file"
+        && binary_install.permutation.as_deref() == Some("binary-promotion")
+        && binary_install.args.get("no_follow") == Some(&json!(true))
+        && binary_install.args.get("collision_policy") == Some(&json!("refuse"))
+        && binary_install.args.get("rollback_policy") == Some(&json!("exact"))
+        && binary_install.args.get("xattrs") == Some(&json!({}));
+    if !binary_install_routine_gate_accepts {
+        return Err("service-runtime-binary-install-routine-gate-failed".into());
+    }
     let pull_receipt = json!({
         "schema":"harmonia.routine.child-receipt.v1", "name":"pull-repo", "tool":"pull-repo",
         "state":"completed", "ok":true, "changed":false, "outputs":{
@@ -1020,11 +1034,12 @@ fn service_runtime_build_sha_bench(
         "explicit_environment_preserved":environment_preserved,
         "artifact_embeds_build_sha_environment":artifact_embeds,
         "artifact_executes_with_build_sha":artifact_executes,
+        "binary_install_routine_gate_accepts":binary_install_routine_gate_accepts,
         "first_pass_changed":first_changed, "second_pass_quiet":second_quiet,
         "artifact_selection_matches":artifact_selection_matches,
         "unresolved_nested_reference_rejected":unresolved_nested_reference_rejected,
         "artifact_path":first_artifact,
-        "ok":all_predicates && unresolved_nested_reference_rejected
+        "ok":all_predicates && unresolved_nested_reference_rejected && binary_install_routine_gate_accepts
     }))
 }
 
