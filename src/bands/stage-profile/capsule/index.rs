@@ -11,8 +11,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -244,7 +245,12 @@ pub(crate) fn slice4_bench(
                 .map_err(|e| e.to_string())?;
         let payload_bytes_exact = payload == installed && payload == b"one\n";
         let packed_module_path = capsule.join("profiles/demo/modules/alpha");
-        let packed_module_directory_real = fs::symlink_metadata(&packed_module_path).map(|meta| meta.is_dir() && !meta.file_type().is_symlink()).unwrap_or(false);
+        let source_module_hash = module_tree_sha256(&module)?;
+        let packed_module_hash = module_tree_sha256(&packed_module_path)?;
+        let source_hash_equals_dereferenced_copy = source_module_hash == packed_module_hash;
+        let packed_module_directory_real = fs::symlink_metadata(&packed_module_path)
+            .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+            .unwrap_or(false);
         let stale_module_pruned = !config.join("profiles/demo/modules/old").exists();
         let unowned_preserved = sub["machine_local_divergence"] == "lawful";
         let ok = [
@@ -257,10 +263,11 @@ pub(crate) fn slice4_bench(
         .all(|v| *v == Some(true))
             && payload_bytes_exact
             && packed_module_directory_real
+            && source_hash_equals_dereferenced_copy
             && stale_module_pruned
             && unowned_preserved;
         Ok(
-            serde_json::json!({"payload_bytes_exact":payload_bytes_exact,"packed_module_directory_real":packed_module_directory_real,"pack_ok":pack["ok"],"verify_ok":verify["ok"],"plan_ok":plan["ok"],"install_ok":install["ok"],"stale_module_pruned":stale_module_pruned,"subscription_unowned_fields_preserved":unowned_preserved,"pack_receipt":pack,"verify_receipt":verify,"install_receipt":install,"ok":ok}),
+            serde_json::json!({"payload_bytes_exact":payload_bytes_exact,"packed_module_directory_real":packed_module_directory_real,"source_hash_equals_dereferenced_copy":source_hash_equals_dereferenced_copy,"pack_ok":pack["ok"],"verify_ok":verify["ok"],"plan_ok":plan["ok"],"install_ok":install["ok"],"stale_module_pruned":stale_module_pruned,"subscription_unowned_fields_preserved":unowned_preserved,"pack_receipt":pack,"verify_receipt":verify,"install_receipt":install,"ok":ok}),
         )
     })();
     if let Some(v) = previous {
@@ -1081,14 +1088,121 @@ pub(crate) fn installed_module_version(module_dir: &Path) -> Option<String> {
 
 pub(crate) fn module_tree_sha256(module_dir: &Path) -> Result<String, String> {
     let image = crate::tools::files::remove_dir_capture(module_dir)?;
+    let mut active_directories = HashSet::new();
+    let root = dereference_hash_node(image.root, module_dir, &mut active_directories)?;
     let mut chain = Sha256::new();
-    hash_tree_node(&mut chain, &image.root);
+    hash_tree_node(&mut chain, &root);
     Ok(format!("{:x}", chain.finalize()))
 }
 
-fn hash_tree_bytes(chain: &mut Sha256, bytes: &[u8]) {
-    chain.update((bytes.len() as u64).to_le_bytes());
-    chain.update(bytes);
+fn dereference_hash_node(
+    node: crate::tools::files::RemoveDirNode,
+    physical_path: &Path,
+    active_directories: &mut HashSet<PathBuf>,
+) -> Result<crate::tools::files::RemoveDirNode, String> {
+    match node.kind {
+        crate::tools::files::RemoveDirKind::Symlink => {
+            let target = fs::canonicalize(physical_path).map_err(|e| {
+                format!(
+                    "module-tree-hash-broken-link {}: {e}",
+                    physical_path.display()
+                )
+            })?;
+            let image = crate::tools::files::remove_dir_capture(&target)?;
+            dereference_hash_node_at(image.root, &target, node.relative, active_directories)
+        }
+        crate::tools::files::RemoveDirKind::Directory => {
+            let identity = fs::canonicalize(physical_path).map_err(|e| {
+                format!(
+                    "module-tree-hash-directory-resolve {}: {e}",
+                    physical_path.display()
+                )
+            })?;
+            if !active_directories.insert(identity.clone()) {
+                return Err(format!(
+                    "module-tree-hash-cycle {}",
+                    physical_path.display()
+                ));
+            }
+            let mut children = Vec::with_capacity(node.children.len());
+            for child in node.children {
+                let child_name = child
+                    .relative
+                    .rsplit(|byte| *byte == b'/')
+                    .next()
+                    .unwrap_or(&[]);
+                let child_path =
+                    physical_path.join(std::ffi::OsString::from_vec(child_name.to_vec()));
+                children.push(dereference_hash_node(
+                    child,
+                    &child_path,
+                    active_directories,
+                )?);
+            }
+            active_directories.remove(&identity);
+            Ok(crate::tools::files::RemoveDirNode { children, ..node })
+        }
+        crate::tools::files::RemoveDirKind::File => Ok(node),
+    }
+}
+
+fn dereference_hash_node_at(
+    mut node: crate::tools::files::RemoveDirNode,
+    physical_path: &Path,
+    relative: Vec<u8>,
+    active_directories: &mut HashSet<PathBuf>,
+) -> Result<crate::tools::files::RemoveDirNode, String> {
+    node.relative = relative.clone();
+    match node.kind {
+        crate::tools::files::RemoveDirKind::Directory => {
+            let identity = fs::canonicalize(physical_path).map_err(|e| {
+                format!(
+                    "module-tree-hash-directory-resolve {}: {e}",
+                    physical_path.display()
+                )
+            })?;
+            if !active_directories.insert(identity.clone()) {
+                return Err(format!(
+                    "module-tree-hash-cycle {}",
+                    physical_path.display()
+                ));
+            }
+            let mut children = Vec::with_capacity(node.children.len());
+            for child in node.children {
+                let child_name = child
+                    .relative
+                    .rsplit(|byte| *byte == b'/')
+                    .next()
+                    .unwrap_or(&[])
+                    .to_vec();
+                let child_path =
+                    physical_path.join(std::ffi::OsString::from_vec(child_name.clone()));
+                children.push(dereference_hash_node_at(
+                    child,
+                    &child_path,
+                    if relative.is_empty() {
+                        child_name.clone()
+                    } else {
+                        [relative.as_slice(), b"/", child_name.as_slice()].concat()
+                    },
+                    active_directories,
+                )?);
+            }
+            active_directories.remove(&identity);
+            Ok(crate::tools::files::RemoveDirNode { children, ..node })
+        }
+        crate::tools::files::RemoveDirKind::File => Ok(node),
+        crate::tools::files::RemoveDirKind::Symlink => {
+            let target = fs::canonicalize(physical_path).map_err(|e| {
+                format!(
+                    "module-tree-hash-broken-link {}: {e}",
+                    physical_path.display()
+                )
+            })?;
+            let image = crate::tools::files::remove_dir_capture(&target)?;
+            dereference_hash_node_at(image.root, &target, node.relative, active_directories)
+        }
+    }
 }
 
 fn hash_tree_node(chain: &mut Sha256, node: &crate::tools::files::RemoveDirNode) {
@@ -1115,6 +1229,11 @@ fn hash_tree_node(chain: &mut Sha256, node: &crate::tools::files::RemoveDirNode)
     for child in &node.children {
         hash_tree_node(chain, child);
     }
+}
+
+fn hash_tree_bytes(chain: &mut Sha256, bytes: &[u8]) {
+    chain.update((bytes.len() as u64).to_le_bytes());
+    chain.update(bytes);
 }
 
 fn first_missing_module_path(module_dir: &Path) -> Option<PathBuf> {
@@ -1191,9 +1310,15 @@ fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), 
 }
 
 fn copy_tree_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(src).map_err(|e| format!("capsule-artifact-source-stat-failed {}: {e}", src.display()))?;
+    let metadata = fs::symlink_metadata(src)
+        .map_err(|e| format!("capsule-artifact-source-stat-failed {}: {e}", src.display()))?;
     let source = if metadata.file_type().is_symlink() {
-        src.canonicalize().map_err(|e| format!("capsule-artifact-source-resolve-failed {}: {e}", src.display()))?
+        src.canonicalize().map_err(|e| {
+            format!(
+                "capsule-artifact-source-resolve-failed {}: {e}",
+                src.display()
+            )
+        })?
     } else {
         src.to_path_buf()
     };
