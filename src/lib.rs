@@ -52,6 +52,15 @@ struct Profile {
     /// Raw declarations preserve future additive fields across engine hops.
     #[serde(default)]
     hotfixes: Vec<serde_json::Value>,
+    #[serde(skip)]
+    syzygy_declaration: Option<SyzygyDeclaration>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct SyzygyDeclaration {
+    pub schema: String,
+    pub members: Vec<String>,
+    pub gui_face: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

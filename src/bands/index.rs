@@ -248,6 +248,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         "owner",
                         context,
                         carrier,
+                        active_profile.syzygy_declaration.clone(),
                     )?;
                     active_profile = refreshed;
                     let target_carrier = carrier.or_else(|| context.map(|value| &value.carrier));

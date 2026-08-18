@@ -29,13 +29,15 @@ pub(crate) fn materialize(
     git_bearer: &str,
     context: Option<&RunContext>,
     carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
+    syzygy_declaration: Option<crate::SyzygyDeclaration>,
 ) -> Result<Profile, String> {
     let installed_root = installed_module_root
         .parent()
         .ok_or_else(|| format!("{profile_id}-config-root-missing"))?;
     let source_profile_path = source_root.join(format!("profiles/{profile_id}/index.json"));
-    let refreshed = load_profile(&source_profile_path)
+    let mut refreshed = load_profile(&source_profile_path)
         .map_err(|e| format!("{profile_id}-profile-source-read-failed: {e}"))?;
+    refreshed.syzygy_declaration = syzygy_declaration;
     let source_modules_root = source_root.join(format!("profiles/{}/modules", refreshed.id));
     let projection = crate::bands::stage_profile::projection::load_profile_projection(
         &refreshed,
@@ -74,8 +76,8 @@ pub(crate) fn materialize(
         target_count: update_plan.targets.len(),
         service_count: update_plan.services.len(),
         caduceus_count: update_plan.caduceus_count,
-        gui_face: update_plan.gui_face.clone(),
-        gui_member: update_plan.gui_member.clone(),
+        gui_face: update_plan.gui_face.clone().unwrap_or_default(),
+        gui_member: update_plan.gui_member.clone().unwrap_or_default(),
     };
     if let Some(target_carrier) = carrier.or_else(|| context.map(|value| &value.carrier)) {
         let mut value = target_carrier.borrow_mut();

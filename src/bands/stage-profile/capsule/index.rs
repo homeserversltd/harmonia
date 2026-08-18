@@ -144,7 +144,10 @@ pub(crate) fn slice4_bench(
     let config = root.join("config");
     let subscription = root.join("subscription.json");
     let module = authority.join("profiles/demo/modules/alpha");
-    fs::create_dir_all(module.join("files_root/etc/demo")).map_err(|e| e.to_string())?;
+    let module_tree = authority.join("shared-modules/alpha");
+    fs::create_dir_all(module_tree.join("files_root/etc/demo")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(module.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink(&module_tree, &module).map_err(|e| e.to_string())?;
     fs::create_dir_all(authority.join("locks/demo")).map_err(|e| e.to_string())?;
     fs::write(authority.join("Cargo.toml"), "[package]\nname='fixture'\n")
         .map_err(|e| e.to_string())?;
@@ -240,6 +243,8 @@ pub(crate) fn slice4_bench(
             serde_json::from_slice(&fs::read(&subscription).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         let payload_bytes_exact = payload == installed && payload == b"one\n";
+        let packed_module_path = capsule.join("profiles/demo/modules/alpha");
+        let packed_module_directory_real = fs::symlink_metadata(&packed_module_path).map(|meta| meta.is_dir() && !meta.file_type().is_symlink()).unwrap_or(false);
         let stale_module_pruned = !config.join("profiles/demo/modules/old").exists();
         let unowned_preserved = sub["machine_local_divergence"] == "lawful";
         let ok = [
@@ -251,10 +256,11 @@ pub(crate) fn slice4_bench(
         .iter()
         .all(|v| *v == Some(true))
             && payload_bytes_exact
+            && packed_module_directory_real
             && stale_module_pruned
             && unowned_preserved;
         Ok(
-            serde_json::json!({"payload_bytes_exact":payload_bytes_exact,"pack_ok":pack["ok"],"verify_ok":verify["ok"],"plan_ok":plan["ok"],"install_ok":install["ok"],"stale_module_pruned":stale_module_pruned,"subscription_unowned_fields_preserved":unowned_preserved,"pack_receipt":pack,"verify_receipt":verify,"install_receipt":install,"ok":ok}),
+            serde_json::json!({"payload_bytes_exact":payload_bytes_exact,"packed_module_directory_real":packed_module_directory_real,"pack_ok":pack["ok"],"verify_ok":verify["ok"],"plan_ok":plan["ok"],"install_ok":install["ok"],"stale_module_pruned":stale_module_pruned,"subscription_unowned_fields_preserved":unowned_preserved,"pack_receipt":pack,"verify_receipt":verify,"install_receipt":install,"ok":ok}),
         )
     })();
     if let Some(v) = previous {
@@ -1185,7 +1191,13 @@ fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), 
 }
 
 fn copy_tree_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), String> {
-    copy_node_artifact(src, dst, key)
+    let metadata = fs::symlink_metadata(src).map_err(|e| format!("capsule-artifact-source-stat-failed {}: {e}", src.display()))?;
+    let source = if metadata.file_type().is_symlink() {
+        src.canonicalize().map_err(|e| format!("capsule-artifact-source-resolve-failed {}: {e}", src.display()))?
+    } else {
+        src.to_path_buf()
+    };
+    copy_node_artifact(&source, dst, key)
 }
 
 fn copy_tree_exact(

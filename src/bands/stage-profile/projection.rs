@@ -219,16 +219,17 @@ fn projection_derive_plan_inner(
         })
         .collect();
     let faces: BTreeSet<String> = runtime_faces.into_iter().collect();
-    let face = if faces.len() == 1 {
-        faces.iter().next().unwrap().clone()
-    } else if faces.is_empty()
-        && projected
-            .iter()
-            .any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("hyprland"))
-    {
-        "Hyprland".into()
+    let (face, pinned_members) = if let Some(declaration) = &profile.syzygy_declaration {
+        (declaration.gui_face.clone(), Some(declaration.members.clone()))
     } else {
-        return Err(format!("gui-selection-ambiguous count={}", faces.len()));
+        let face = if faces.len() == 1 {
+            Some(faces.iter().next().unwrap().clone())
+        } else if faces.is_empty() && projected.iter().any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("hyprland")) {
+            Some("Hyprland".into())
+        } else {
+            return Err(format!("gui-selection-ambiguous count={}", faces.len()));
+        };
+        (face, None)
     };
     let mut targets = Vec::new();
     let mut services = Vec::new();
@@ -240,14 +241,14 @@ fn projection_derive_plan_inner(
         };
         let module_id = projected.loaded.id();
         let steps = &projected.steps;
-        let is_gui = projected_gui_module(projected, &face);
+        let is_gui = face.as_deref().is_some_and(|face| projected_gui_module(projected, face));
         for args in projected_runtime_args(projected) {
             let component = args.get("component").and_then(Value::as_str).unwrap_or("");
             let member = if component == "caduceus" {
                 caduceus_count += 1;
                 "caduceus"
-            } else if projection_component_face(component) == Some(face.as_str()) {
-                face.as_str()
+            } else if face.as_deref() == projection_component_face(component) {
+                face.as_deref().unwrap()
             } else {
                 continue;
             };
@@ -339,7 +340,7 @@ fn projection_derive_plan_inner(
                             println!("census-config-skip path={}", p.display());
                             continue;
                         }
-                        projection_add_target(&mut targets, p, &face)?;
+                        projection_add_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
                     }
                 }
             }
@@ -347,7 +348,7 @@ fn projection_derive_plan_inner(
                 let user = s.permutation.starts_with("user-");
                 let target_user = projection_text(&s.args, "user");
                 if let Some(name) = projection_text(&s.args, "service") {
-                    projection_add_service(&mut services, name, user, target_user, &face);
+                    projection_add_service(&mut services, name, user, target_user, face.as_deref().unwrap_or(""));
                 }
             }
         }
@@ -376,7 +377,7 @@ fn projection_derive_plan_inner(
                         println!("census-config-skip path={}", p.display());
                         continue;
                     }
-                    projection_add_target(&mut targets, p, &face)?;
+                    projection_add_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
                 }
             }
             for (key, user) in [("services", false), ("user_services", true)] {
@@ -387,7 +388,7 @@ fn projection_derive_plan_inner(
                             name.into(),
                             user,
                             if user { Some("owner".into()) } else { None },
-                            &face,
+                            face.as_deref().unwrap_or(""),
                         );
                     }
                 }
@@ -408,6 +409,7 @@ fn projection_derive_plan_inner(
         gui_face: face.clone(),
         gui_member: face,
         caduceus_count,
+        pinned_members,
     })
 }
 fn projection_glob(pattern: &str, name: &str) -> bool {

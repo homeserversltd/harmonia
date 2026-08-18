@@ -17,6 +17,8 @@ thread_local! {
 struct DeviceProfileCertificate {
     schema: String,
     kernel: DeviceProfileKernel,
+    #[serde(default, alias = "syzygy_declaration")]
+    syzygy: Option<crate::SyzygyDeclaration>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,7 +38,7 @@ pub(crate) fn device_profile_certificate_path() -> PathBuf {
     PathBuf::from(DEVICE_PROFILE_CERTIFICATE)
 }
 
-fn certificate_profile() -> Result<String, String> {
+fn load_certificate() -> Result<DeviceProfileCertificate, String> {
     let path = device_profile_certificate_path();
     if !path.exists() {
         return Err("device-profile-certificate-missing".to_string());
@@ -59,6 +61,26 @@ fn certificate_profile() -> Result<String, String> {
             DEVICE_PROFILE_SCHEMA, certificate.schema
         ));
     }
+    if let Some(declaration) = certificate.syzygy.as_ref() {
+        validate_syzygy_declaration(declaration)?;
+    }
+    Ok(certificate)
+}
+
+fn validate_syzygy_declaration(declaration: &crate::SyzygyDeclaration) -> Result<(), String> {
+    if declaration.schema != "appliance.syzygy.v1" {
+        return Err(format!("device-profile-syzygy-schema-unsupported {}", declaration.schema));
+    }
+    if let Some(face) = declaration.gui_face.as_deref() {
+        if !matches!(face, "Hyprland" | "Arcadia" | "Coronatio") {
+            return Err(format!("device-profile-syzygy-gui-face-unsupported {face}"));
+        }
+    }
+    Ok(())
+}
+
+fn certificate_profile() -> Result<String, String> {
+    let certificate = load_certificate()?;
     let profile = certificate.kernel.profile.trim();
     if profile.is_empty() {
         return Err("device-profile-certificate-profile-empty".to_string());
@@ -84,7 +106,11 @@ pub(crate) fn verify_asserted_profile(asserted_profile: &str) -> Result<(), Stri
 }
 
 pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String> {
-    let profile_id = certificate_profile()?;
+    let certificate = load_certificate()?;
+    let profile_id = certificate.kernel.profile.trim().to_string();
+    if profile_id.is_empty() || profile_id.contains('/') || profile_id.contains('\\') || profile_id == "." || profile_id == ".." {
+        return Err(format!("device-profile-certificate-profile-invalid profile={profile_id}"));
+    }
     let profile_dir = Path::new(HARMONIA_MODULE_ROOT)
         .join("profiles")
         .join(&profile_id);
@@ -107,6 +133,11 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
             "device-profile-certificate-profile-id-mismatch certificate={} profile_file={}",
             profile_id, profile.id
         ));
+    }
+    let mut profile = profile;
+    if let Some(declaration) = certificate.syzygy {
+        validate_syzygy_declaration(&declaration)?;
+        profile.syzygy_declaration = Some(declaration);
     }
     set_run_identity_source("certificate");
     Ok((profile, profile_path))
