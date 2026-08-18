@@ -1,8 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "homeconsole-sync-runtime",
-  "version": "1.0.0",
-  "description": "HomeConsole game-library intake scaffold: ensures the Games ROM/ISO directory tree that caduceus sync now converges into exists with correct ownership. Game admission, artwork, and shortcut generation belong to Arcadia, not this module.",
+  "version": "1.1.0",
+  "description": "HomeConsole game-library intake and artwork-sync ladder: ensures the Games ROM/ISO directory tree that caduceus sync now converges into exists with correct ownership, then has Harmonia invoke the separately birth-installed arch-game-sync utility without installing it.",
   "constants": {},
   "ladder": [
     {
@@ -28,6 +28,19 @@
           {"path": "/home/owner/Games/sync", "mode": 493, "owner": "owner", "group": "owner"},
           {"path": "/home/owner/Games/receipts", "mode": 493, "owner": "owner", "group": "owner"}
         ]
+      }
+    },
+    {
+      "step_id": "homeconsole-artwork-sync",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/bin/sh",
+        "args": [
+          "-c",
+          "if [ ! -x /usr/local/bin/arch-game-sync ]; then printf \"{\\\"schema\\\":\\\"harmonia.homeconsole.sync.advisory.v1\\\",\\\"advisory\\\":true,\\\"kind\\\":\\\"missing-binary\\\",\\\"binary\\\":\\\"/usr/local/bin/arch-game-sync\\\"}\\n\"; exit 0; fi; /usr/local/bin/arch-game-sync >/dev/null 2>&1; rc=$?; if [ $rc -ne 0 ]; then printf \"{\\\"schema\\\":\\\"harmonia.homeconsole.sync.advisory.v1\\\",\\\"advisory\\\":true,\\\"kind\\\":\\\"nonzero-exit\\\",\\\"binary\\\":\\\"/usr/local/bin/arch-game-sync\\\",\\\"exit_code\\\":%s}\\n\" $rc; fi; exit 0"
+        ],
+        "timeout_secs": 300
       }
     }
   ]
