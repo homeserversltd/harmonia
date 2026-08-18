@@ -211,6 +211,37 @@ pub(crate) fn write_command_receipt_with_request(
     cwd: Option<&str>,
     result: &CmdResult,
 ) -> Result<(), String> {
+    write_command_receipt_with_policy(
+        receipt_dir,
+        name,
+        program,
+        args,
+        cwd,
+        result,
+        false,
+        None,
+        None,
+        true,
+        false,
+    )
+}
+
+pub(crate) fn write_command_receipt_with_policy(
+    receipt_dir: &Path,
+    name: &str,
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    result: &CmdResult,
+    advisory: bool,
+    lane: Option<&str>,
+    active_lane: Option<&str>,
+    executed: bool,
+    skipped: bool,
+) -> Result<(), String> {
+    let lane_match = lane.is_none() || lane == active_lane;
+    let advisory_triggered = advisory && executed && !result.ok;
+    let effective_ok = result.ok || skipped || advisory_triggered;
     write_json(
         &receipt_dir.join(format!("{}.json", name)),
         &json!({
@@ -219,11 +250,20 @@ pub(crate) fn write_command_receipt_with_request(
             "program": program,
             "args": args,
             "cwd": cwd,
-            "ok": result.ok,
+            "ok": effective_ok,
             "exit_code": result.code,
             "stdout": result.stdout,
             "stderr": result.stderr,
-            "first_missing_signal": command_first_missing_signal(result),
+            "advisory": advisory,
+            "advisory_triggered": advisory_triggered,
+            "advisory_signal": if advisory_triggered { command_first_missing_signal(result) } else { "none" },
+            "lane": lane,
+            "requested_lane": lane,
+            "active_lane": active_lane,
+            "lane_match": lane_match,
+            "executed": executed,
+            "skipped": skipped,
+            "first_missing_signal": if effective_ok { "none" } else { command_first_missing_signal(result) },
         }),
     )
 }

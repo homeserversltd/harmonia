@@ -740,6 +740,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 mode.software_authorization(),
                 &harmonia_root,
                 mode.invocation(),
+                None,
             )?;
             write_engine_run_receipt_with_duration(
                 &receipt_dir,
@@ -812,6 +813,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 mode.software_authorization(),
                 &harmonia_root,
                 mode.invocation(),
+                Some("homeconsole-sync"),
             )?;
             write_engine_run_receipt_with_duration(
                 &receipt_dir,

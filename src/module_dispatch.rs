@@ -56,6 +56,7 @@ pub(crate) fn execute_profile_module(
     software_authorization: Option<&SoftwareApplyAuthorization>,
     _harmonia_root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    active_lane: Option<&str>,
 ) -> Result<ModuleExecution, String> {
     let module_dir = receipt_dir.join("modules").join(&module.id);
     crate::atoms::attest::prepare_receipt_parent(&module_dir)?;
@@ -82,6 +83,7 @@ pub(crate) fn execute_profile_module(
             &mut routine_states,
             &steps,
             &projected,
+            active_lane,
         )
     } else {
         Err(format!("module-unregistered-{}", module.id))

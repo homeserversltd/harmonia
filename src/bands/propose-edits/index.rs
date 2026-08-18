@@ -367,6 +367,7 @@ pub(crate) fn execute_manifest_band(
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
+    active_lane: Option<&str>,
 ) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
@@ -439,7 +440,7 @@ pub(crate) fn execute_manifest_band(
             )?
         } else {
             crate::tools::routine::execute_validated_step(
-                step, manifest, module_dir, auth, pa, false, key,
+                step, manifest, module_dir, auth, pa, false, key, active_lane,
             )?
         };
         if step.tool == "routine" {
@@ -495,6 +496,7 @@ pub(crate) fn execute_manifest_modules(
     ok: &mut bool,
     first_missing_signal: &mut String,
     events: &mut File,
+    active_lane: Option<&str>,
 ) -> Result<(), String> {
     for module_id in &profile.modules {
         if disabled_modules.contains(module_id) || halted.contains(module_id) {
@@ -535,6 +537,7 @@ pub(crate) fn execute_manifest_modules(
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,
+                active_lane,
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };

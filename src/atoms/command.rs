@@ -430,6 +430,7 @@ pub(crate) fn execute_validated_step(
     step: &crate::ladder::ValidatedStep,
     module_dir: &std::path::Path,
     apply: bool,
+    active_lane: Option<&str>,
 ) -> Result<crate::OperationOutcome, String> {
     let program = step
         .args
@@ -449,7 +450,11 @@ pub(crate) fn execute_validated_step(
         })
         .unwrap_or_default();
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let result = if apply {
+    let requested_lane = step.args.get("lane").and_then(serde_json::Value::as_str);
+    let lane_matches = requested_lane.is_none() || requested_lane == active_lane;
+    let executed = apply && lane_matches;
+    let skipped = !executed;
+    let result = if executed {
         capture_with_options(
             program,
             &argv_refs,
@@ -470,19 +475,31 @@ pub(crate) fn execute_validated_step(
             stderr: String::new(),
         }
     };
-    crate::write_command_receipt_with_request(
+    let advisory = step.args.get("advisory").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    crate::write_command_receipt_with_policy(
         module_dir,
         &step.step_id,
         program,
         &argv,
         step.args.get("cwd").and_then(serde_json::Value::as_str),
         &result,
+        advisory,
+        requested_lane,
+        active_lane,
+        executed,
+        skipped,
     )?;
     Ok(crate::OperationOutcome {
-        ok: result.ok,
+        ok: result.ok || advisory || skipped,
         changed: false,
-        skipped: !apply,
-        message: format!("command capture {}", program),
+        skipped: !apply || skipped,
+        message: if !apply {
+            format!("command planned/report-only {}", program)
+        } else if !lane_matches {
+            format!("command skipped lane mismatch requested={requested_lane:?} active={active_lane:?}")
+        } else {
+            format!("command capture {}", program)
+        },
         command: Some(result),
     })
 }

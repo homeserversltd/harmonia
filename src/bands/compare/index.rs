@@ -109,7 +109,7 @@ pub(crate) fn execute_manifest_band(
             )?
         } else {
             crate::tools::routine::execute_validated_step(
-                step, manifest, module_dir, auth, pa, false, key,
+                step, manifest, module_dir, auth, pa, false, key, None,
             )?
         };
         if step.tool == "routine" {
@@ -265,7 +265,7 @@ pub(crate) fn execute_group_live_probe_validated(
     receipt_dir: &Path,
 ) -> Result<OperationOutcome, String> {
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
-    execute_validated_step(step, manifest, receipt_dir, None, None, false, None)
+    execute_validated_step(step, manifest, receipt_dir, None, None, false, None, None)
 }
 pub(crate) fn execute_group_live_probe(
     manifest: &LadderManifest,

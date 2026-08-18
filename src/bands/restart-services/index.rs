@@ -254,7 +254,7 @@ pub(crate) fn execute_manifest_band(
             )?
         } else {
             crate::tools::routine::execute_validated_step(
-                step, manifest, module_dir, auth, pa, false, key,
+                step, manifest, module_dir, auth, pa, false, key, None,
             )?
         };
         if step.tool == "routine" {

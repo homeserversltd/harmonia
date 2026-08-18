@@ -369,6 +369,7 @@ pub(crate) fn execute_validated_step(
     package_authority: Option<&crate::PackageAuthority>,
     module_changed_before_step: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    active_lane: Option<&str>,
 ) -> Result<OperationOutcome, String> {
     if let Some(blocker) = structural_file_blocker(step, manifest) {
         return Err(blocker);
@@ -394,7 +395,7 @@ pub(crate) fn execute_validated_step(
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("routine", "execute") => Err("routine-dispatch-internal".into()),
         ("command", "capture") => {
-            tools::command::execute_validated_step(step, module_dir, software_apply)
+            tools::command::execute_validated_step(step, module_dir, software_apply, active_lane)
         }
         ("artifact-lock", "verify") => {
             tools::artifact_lock::execute_validated_step(step, module_dir)
