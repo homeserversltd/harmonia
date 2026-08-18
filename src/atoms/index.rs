@@ -15,6 +15,8 @@ pub mod git_artifact;
 pub mod health;
 pub mod package;
 pub mod systemd;
+#[path = "tree-hash.rs"]
+pub(crate) mod tree_hash;
 #[path = "ask/index.rs"]
 pub(crate) mod ask;
 #[path = "attest/index.rs"]

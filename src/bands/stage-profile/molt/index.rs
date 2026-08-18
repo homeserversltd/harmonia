@@ -110,7 +110,7 @@ pub(crate) fn molt_at_subscription_path(
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
                     .unwrap_or_else(|| "sidecar".to_string()),
-                tree_sha256: module_tree_sha256(&module_dir)?,
+                tree_sha256: crate::atoms::tree_hash::content_tree_sha256(&module_dir)?,
                 received_at_run_id: run_id_from_stamp(),
             })
         })
@@ -138,9 +138,10 @@ pub(crate) fn molt_at_subscription_path(
         let sidecar = module_dir.join("sidecar.json");
         let manifest = module_dir.join("manifest.json");
         let module_output_dir = output_dir.join("modules").join(module);
-        let source_tree_sha256 = module_tree_sha256(&module_dir)?;
+        let source_tree_sha256 = crate::atoms::tree_hash::content_tree_sha256(&module_dir)?;
         let installed_clean = module_output_dir.is_dir()
-            && module_tree_sha256(&module_output_dir)? == source_tree_sha256;
+            && crate::atoms::tree_hash::content_tree_sha256(&module_output_dir)?
+                == source_tree_sha256;
         if installed_clean {
             untouched_modules.push(module.clone());
             continue;
