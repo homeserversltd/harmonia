@@ -389,7 +389,7 @@ fn build(root: RawDeclarations) -> Result<Vec<Declaration>, String> {
     Ok(out)
 }
 fn loaded() -> Result<Vec<Declaration>, String> {
-    let root: Root = serde_json::from_str(include_str!("index.json"))
+    let root: Root = serde_json::from_str(include_str!("declarations.json"))
         .map_err(|e| format!("declaration-json-{e}"))?;
     build(root.declarations)
 }

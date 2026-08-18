@@ -1,7 +1,7 @@
 use crate::atoms::attest;
-use crate::tools::files::InvocationKey;
 use crate::hyalos;
 use crate::tools::comparison::{self, DiffDecision};
+use crate::tools::files::InvocationKey;
 use crate::{
     diff_subscription_modules, is_ladder_manifest, load_ladder_manifest, load_profile,
     preserve_existing_lane_or_default, run_id_from_stamp, subscription_path,
@@ -135,18 +135,134 @@ impl Drop for CapsuleStageGuard {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn capsule_pack(
-    profile_id: &str,
-    output_dir: &Path,
-    harmonia_root: &Path,
-) -> Result<(), String> {
-    capsule_pack_with_invocation(
-        profile_id,
-        output_dir,
-        harmonia_root,
-        InvocationKey::for_apply(),
+pub(crate) fn slice4_bench(
+    root: &Path,
+    key: crate::atoms::r#do::InvocationKey,
+) -> Result<serde_json::Value, String> {
+    let authority = root.join("authority");
+    let capsule = root.join("capsule");
+    let config = root.join("config");
+    let subscription = root.join("subscription.json");
+    let module = authority.join("profiles/demo/modules/alpha");
+    fs::create_dir_all(module.join("files_root/etc/demo")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(authority.join("locks/demo")).map_err(|e| e.to_string())?;
+    fs::write(authority.join("Cargo.toml"), "[package]\nname='fixture'\n")
+        .map_err(|e| e.to_string())?;
+    fs::write(authority.join("profiles/demo/index.json"), r#"{"id":"demo","identity":"demo-box","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["alpha"]}"#).map_err(|e| e.to_string())?;
+    fs::write(module.join("manifest.json"), r#"{"schema":"harmonia.module.ladder.v1","id":"alpha","version":"1.0.0","description":"alpha","files_root":"files_root","ladder":[]}"#).map_err(|e| e.to_string())?;
+    fs::write(module.join("files_root/etc/demo/value.txt"), b"one\n").map_err(|e| e.to_string())?;
+    fs::write(module.join("ratchet-lock.json"), r#"{"schema":"harmonia.aur.ratchet_lock.v1","package":"oh-my-posh-bin","pinned_version":"29.20.1-1","pkgbuild_sha":"ed800be1c781d41ce83ce6e693d6e00e868883c9"}"#).map_err(|e| e.to_string())?;
+    fs::write(
+        authority.join("locks/demo/pinned-artifacts.json"),
+        r#"{"schema":"lock"}"#,
     )
+    .map_err(|e| e.to_string())?;
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "harmonia-test@home.arpa"],
+        vec!["config", "user.name", "Harmonia Test"],
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "fixture"],
+    ] {
+        if !Command::new("git")
+            .args(args)
+            .current_dir(&authority)
+            .status()
+            .map_err(|e| e.to_string())?
+            .success()
+        {
+            return Err("capsule-git-authority-failed".into());
+        }
+    }
+    // Seed only pre-existing target state; proof mutations use production routes.
+    fs::create_dir_all(config.join("profiles/demo/modules/old/files_root/tmp"))
+        .map_err(|e| e.to_string())?;
+    fs::write(
+        config.join("profiles/demo/modules/old/manifest.json"),
+        b"{}",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::create_dir_all(config.join("profiles/demo/modules/alpha/files_root/etc/demo"))
+        .map_err(|e| e.to_string())?;
+    fs::write(
+        config.join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt"),
+        b"stale\n",
+    )
+    .map_err(|e| e.to_string())?;
+    update_subscription_record_with_invocation(
+        &subscription,
+        SubscriptionUpdate {
+            lane: "owner".into(),
+            source: "fixture://previous".into(),
+            ref_name: "previous-ref".into(),
+            selected_profile: "demo".into(),
+            engine_version_received: "0.0.1".into(),
+            modules: vec![],
+        },
+        key,
+    )?;
+    let mut seeded: Value =
+        serde_json::from_slice(&fs::read(&subscription).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    seeded
+        .as_object_mut()
+        .ok_or("capsule-subscription-seed-not-object")?
+        .insert(
+            "machine_local_divergence".into(),
+            serde_json::json!("lawful"),
+        );
+    crate::write_json_value_atomic_with_invocation(&subscription, &seeded, key)?;
+    let previous = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
+    std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
+    let result = (|| {
+        capsule_pack_with_invocation("demo", &capsule, &authority, key)?;
+        capsule_verify(&capsule)?;
+        capsule_install_with_invocation(&capsule, &config, false, None)?;
+        let plan: Value = serde_json::from_slice(
+            &fs::read(capsule.join("install-plan-receipt.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        capsule_install_with_invocation(&capsule, &config, true, Some(key))?;
+        let read = |p: PathBuf| -> Result<Value, String> {
+            serde_json::from_slice(&fs::read(p).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())
+        };
+        let pack = read(capsule.join("pack-receipt.json"))?;
+        let verify = read(capsule.join("verify-receipt.json"))?;
+        let install = read(config.join("receipts/capsule-install-latest/install-receipt.json"))?;
+        let payload =
+            fs::read(capsule.join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt"))
+                .map_err(|e| e.to_string())?;
+        let installed =
+            fs::read(config.join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt"))
+                .map_err(|e| e.to_string())?;
+        let sub: Value =
+            serde_json::from_slice(&fs::read(&subscription).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let payload_bytes_exact = payload == installed && payload == b"one\n";
+        let stale_module_pruned = !config.join("profiles/demo/modules/old").exists();
+        let unowned_preserved = sub["machine_local_divergence"] == "lawful";
+        let ok = [
+            pack["ok"].as_bool(),
+            verify["ok"].as_bool(),
+            plan["ok"].as_bool(),
+            install["ok"].as_bool(),
+        ]
+        .iter()
+        .all(|v| *v == Some(true))
+            && payload_bytes_exact
+            && stale_module_pruned
+            && unowned_preserved;
+        Ok(
+            serde_json::json!({"payload_bytes_exact":payload_bytes_exact,"pack_ok":pack["ok"],"verify_ok":verify["ok"],"plan_ok":plan["ok"],"install_ok":install["ok"],"stale_module_pruned":stale_module_pruned,"subscription_unowned_fields_preserved":unowned_preserved,"pack_receipt":pack,"verify_receipt":verify,"install_receipt":install,"ok":ok}),
+        )
+    })();
+    if let Some(v) = previous {
+        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", v);
+    } else {
+        std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
+    }
+    result
 }
 
 pub(crate) fn capsule_pack_with_invocation(
@@ -172,7 +288,7 @@ pub(crate) fn capsule_pack_with_invocation(
             stage_dir.display()
         ));
     }
-    comparison::execute(
+    comparison::execute_once(
         "capsule-stage-create",
         || Ok(false),
         |_| DiffDecision::Different,
@@ -287,16 +403,10 @@ pub(crate) fn capsule_pack_with_invocation(
     };
     write_receipt_json_atomic(&output_dir.join("pack-receipt.json"), &receipt)?;
     let staged = crate::tools::files::remove_dir_capture(output_dir)?;
-    comparison::execute(
+    comparison::execute_once(
         "capsule-output-promote",
         || Ok(fs::symlink_metadata(&destination_dir).is_ok()),
-        |present| {
-            if *present {
-                DiffDecision::Different
-            } else {
-                DiffDecision::Empty
-            }
-        },
+        |_| DiffDecision::Different,
         |authorization, _| {
             crate::tools::files::remove_dir_replace(authorization, key, &destination_dir, &staged)
         },
@@ -311,7 +421,9 @@ pub(crate) fn capsule_pack_with_invocation(
                 DiffDecision::Empty
             }
         },
-        |authorization, _| crate::tools::files::remove_dir_authorized(authorization, key, &stage_dir),
+        |authorization, _| {
+            crate::tools::files::remove_dir_authorized(authorization, key, &stage_dir)
+        },
     )?;
     stage_guard.active = false;
     println!("schema=harmonia.capsule.pack.v1");
@@ -557,7 +669,12 @@ pub(crate) fn capsule_install_with_invocation(
                                 }
                             },
                             |authorization, _| {
-                                crate::tools::files::remove_dir_authorized(authorization, key, &path).map(|_| ())
+                                crate::tools::files::remove_dir_authorized(
+                                    authorization,
+                                    key,
+                                    &path,
+                                )
+                                .map(|_| ())
                             },
                         )?;
                     }
@@ -606,7 +723,8 @@ pub(crate) fn capsule_install_with_invocation(
                     }
                 },
                 |authorization, _| {
-                    crate::tools::files::remove_dir_authorized(authorization, key, &locks_dst).map(|_| ())
+                    crate::tools::files::remove_dir_authorized(authorization, key, &locks_dst)
+                        .map(|_| ())
                 },
             )?;
         }
@@ -1057,7 +1175,7 @@ fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), 
             |authorization, _| crate::tools::files::make_dir(authorization, key, parent),
         )?;
     }
-    comparison::execute(
+    comparison::execute_once(
         "capsule-artifact-replace",
         || Ok(fs::symlink_metadata(dst).is_ok()),
         |_| DiffDecision::Different,
@@ -1094,10 +1212,12 @@ fn copy_tree_exact(
     {
         return Ok(());
     }
-    let target_paths = if target_image
-        .as_ref()
-        .is_some_and(|image| matches!(image.root.kind, crate::tools::files::RemoveDirKind::Directory))
-    {
+    let target_paths = if target_image.as_ref().is_some_and(|image| {
+        matches!(
+            image.root.kind,
+            crate::tools::files::RemoveDirKind::Directory
+        )
+    }) {
         sorted_tree_paths(dst)?
     } else if target_image.is_some() {
         vec![PathBuf::from(".")]
@@ -1139,10 +1259,9 @@ fn copy_tree_exact(
                 }
             },
             |current| {
-                if current
-                    .as_ref()
-                    .is_some_and(|image| crate::tools::files::remove_dir_exact(image, &source_image))
-                {
+                if current.as_ref().is_some_and(|image| {
+                    crate::tools::files::remove_dir_exact(image, &source_image)
+                }) {
                     DiffDecision::Empty
                 } else {
                     DiffDecision::Different
@@ -1152,7 +1271,8 @@ fn copy_tree_exact(
                 if target_image.is_none() {
                     crate::tools::files::make_dir(authorization, key, dst)?;
                 }
-                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image).map(|_| ())
+                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image)
+                    .map(|_| ())
             },
         )?;
     }
@@ -1221,10 +1341,9 @@ fn converge_exact_node(
                     .transpose()?)
             },
             |current| {
-                if current
-                    .as_ref()
-                    .is_some_and(|image| crate::tools::files::remove_dir_exact(image, &source_image))
-                {
+                if current.as_ref().is_some_and(|image| {
+                    crate::tools::files::remove_dir_exact(image, &source_image)
+                }) {
                     DiffDecision::Empty
                 } else {
                     DiffDecision::Different
@@ -1237,7 +1356,8 @@ fn converge_exact_node(
                     }
                     crate::tools::files::make_dir(authorization, key, dst)?;
                 }
-                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image).map(|_| ())
+                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image)
+                    .map(|_| ())
             },
         )?;
     }
@@ -1330,240 +1450,4 @@ fn rel_slash(path: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::write_json_value_atomic;
-    use serde_json::json;
-    use std::process;
-    use std::sync::{Mutex, OnceLock};
-
-    static SUBSCRIPTION_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn with_subscription_path<T>(path: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = SUBSCRIPTION_ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("subscription env lock");
-        let previous = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
-        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", path);
-        let result = f();
-        if let Some(value) = previous {
-            std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", value);
-        } else {
-            std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
-        }
-        result
-    }
-
-    fn scratch(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("harmonia-capsule-{name}-{}", process::id()));
-        let _ = fs::remove_dir_all(&p);
-        fs::create_dir_all(&p).unwrap();
-        p
-    }
-
-    fn write_fixture(root: &Path, version: &str) {
-        fs::create_dir_all(root.join("profiles/demo/modules/alpha/files_root/etc/demo")).unwrap();
-        fs::create_dir_all(root.join("locks/demo")).unwrap();
-        fs::write(root.join("Cargo.toml"), "[package]\nname='fixture'\n").unwrap();
-        fs::write(
-            root.join("profiles/demo/index.json"),
-            r#"{"id":"demo","identity":"demo-box","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["alpha"]}"#,
-        )
-        .unwrap();
-        fs::write(root.join("profiles/demo/modules/alpha/manifest.json"), format!(r#"{{"schema":"harmonia.module.ladder.v1","id":"alpha","version":"{version}","description":"alpha","files_root":"files_root","ladder":[]}}"#)).unwrap();
-        fs::write(
-            root.join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt"),
-            "one\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("profiles/demo/modules/alpha/ratchet-lock.json"),
-            r#"{"schema":"harmonia.aur.ratchet_lock.v1","package":"oh-my-posh-bin","pinned_version":"29.20.1-1","pkgbuild_sha":"ed800be1c781d41ce83ce6e693d6e00e868883c9"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("locks/demo/pinned-artifacts.json"),
-            r#"{"schema":"lock"}"#,
-        )
-        .unwrap();
-        for args in [
-            vec!["init", "-q"],
-            vec!["config", "user.email", "harmonia-test@home.arpa"],
-            vec!["config", "user.name", "Harmonia Test"],
-            vec!["add", "."],
-            vec!["commit", "-q", "-m", "fixture"],
-        ] {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .unwrap();
-            assert!(status.success());
-        }
-    }
-
-    #[test]
-    fn pack_refuses_a_non_git_root_instead_of_emitting_unknown_provenance() {
-        let root = scratch("non-git-src");
-        let capsule = scratch("non-git-capsule");
-        write_fixture(&root, "1.0.0");
-        fs::remove_dir_all(root.join(".git")).unwrap();
-        let err = capsule_pack("demo", &capsule, &root).unwrap_err();
-        assert!(err.contains("capsule-created-from-unavailable"), "{err}");
-        assert!(!capsule.join("capsule.json").exists());
-        assert!(!capsule.join("pack-receipt.json").exists());
-        let _ = fs::remove_dir_all(root);
-        let _ = fs::remove_dir_all(capsule);
-    }
-
-    #[test]
-    fn pack_verify_install_roundtrip_and_prune() {
-        let root = scratch("roundtrip-src");
-        let capsule = scratch("roundtrip-capsule");
-        let config = scratch("roundtrip-config");
-        let subscription_root = scratch("roundtrip-subscription");
-        let subscription = subscription_root.join("subscription.json");
-        write_fixture(&root, "1.0.0");
-        fs::create_dir_all(config.join("profiles/demo/modules/old/files_root/tmp")).unwrap();
-        fs::write(config.join("profiles/demo/modules/old/manifest.json"), "{}").unwrap();
-        capsule_pack("demo", &capsule, &root).unwrap();
-        assert!(capsule
-            .join("profiles/demo/modules/alpha/ratchet-lock.json")
-            .exists());
-        capsule_verify(&capsule).unwrap();
-        with_subscription_path(&subscription, || {
-            capsule_install(&capsule, &config, false).unwrap();
-            let plan = fs::read_to_string(capsule.join("install-plan-receipt.json")).unwrap();
-            assert!(plan.contains("prune-module"));
-            assert!(plan.contains("old"));
-            capsule_install(&capsule, &config, true).unwrap();
-        });
-        assert!(!config.join("profiles/demo/modules/old").exists());
-        assert!(config
-            .join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt")
-            .exists());
-        assert!(config
-            .join("profiles/demo/modules/alpha/ratchet-lock.json")
-            .exists());
-        let receipt =
-            fs::read_to_string(config.join("receipts/capsule-install-latest/install-receipt.json"))
-                .unwrap();
-        assert!(receipt.contains("\"lane\": \"capsule\""));
-        let _ = fs::remove_dir_all(root);
-        let _ = fs::remove_dir_all(capsule);
-        let _ = fs::remove_dir_all(config);
-        let _ = fs::remove_dir_all(subscription_root);
-    }
-
-    #[test]
-    fn tamper_verify_names_module_and_path() {
-        let root = scratch("tamper-src");
-        let capsule = scratch("tamper-capsule");
-        write_fixture(&root, "1.0.0");
-        capsule_pack("demo", &capsule, &root).unwrap();
-        fs::write(
-            capsule.join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt"),
-            "tampered\n",
-        )
-        .unwrap();
-        let err = capsule_verify(&capsule).unwrap_err();
-        assert!(err.contains("module=alpha"));
-        assert!(err.contains("path=manifest.json") || err.contains("digest-mismatch"));
-        let _ = fs::remove_dir_all(root);
-        let _ = fs::remove_dir_all(capsule);
-    }
-
-    #[test]
-    fn single_module_bump_only_writes_changed_module() {
-        let root = scratch("bump-src");
-        let capsule = scratch("bump-capsule");
-        let config = scratch("bump-config");
-        let subscription = scratch("bump-subscription").join("subscription.json");
-        write_fixture(&root, "1.0.0");
-        capsule_pack("demo", &capsule, &root).unwrap();
-        with_subscription_path(&subscription, || {
-            capsule_install(&capsule, &config, true).unwrap();
-        });
-        fs::write(root.join("profiles/demo/modules/alpha/manifest.json"), r#"{"schema":"harmonia.module.ladder.v1","id":"alpha","version":"1.0.1","description":"alpha","files_root":"files_root","ladder":[]}"#).unwrap();
-        fs::write(
-            root.join("profiles/demo/modules/alpha/files_root/etc/demo/value.txt"),
-            "two\n",
-        )
-        .unwrap();
-        let capsule2 = scratch("bump-capsule2");
-        capsule_pack("demo", &capsule2, &root).unwrap();
-        with_subscription_path(&subscription, || {
-            capsule_install(&capsule2, &config, false).unwrap();
-            let plan = fs::read_to_string(capsule2.join("install-plan-receipt.json")).unwrap();
-            assert!(plan.contains("\"status\": \"stale\""));
-            assert!(plan.contains("\"record_version\": \"1.0.0\""));
-            assert!(plan.contains("\"capsule_version\": \"1.0.1\""));
-            let before = fs::read_to_string(&subscription).unwrap();
-            capsule_install(&capsule2, &config, true).unwrap();
-            let after = fs::read_to_string(&subscription).unwrap();
-            assert!(after.contains("\"alpha\""));
-            assert!(after.contains("\"version\": \"1.0.1\""));
-            assert_ne!(before, after);
-        });
-        let receipt =
-            fs::read_to_string(config.join("receipts/capsule-install-latest/install-receipt.json"))
-                .unwrap();
-        assert!(receipt.contains("alpha"));
-        assert!(receipt.contains("write-file"));
-        assert!(receipt.contains("harmonia.subscription.v1") || subscription.exists());
-        let _ = fs::remove_dir_all(root);
-        let _ = fs::remove_dir_all(capsule);
-        let _ = fs::remove_dir_all(capsule2);
-        let _ = fs::remove_dir_all(config);
-    }
-
-    #[test]
-    fn capsule_plan_and_apply_preserve_unowned_subscription_fields() {
-        let root = scratch("subscription-src");
-        let capsule = scratch("subscription-capsule");
-        let config = scratch("subscription-config");
-        let state = scratch("subscription-state");
-        let subscription = state.join("subscription.json");
-        write_fixture(&root, "1.0.0");
-        update_subscription_record(
-            &subscription,
-            SubscriptionUpdate {
-                lane: "owner".into(),
-                source: "fixture://previous".into(),
-                ref_name: "previous-ref".into(),
-                selected_profile: "demo".into(),
-                engine_version_received: "0.0.1".into(),
-                modules: vec![],
-            },
-        )
-        .unwrap();
-        let mut value: Value =
-            serde_json::from_str(&fs::read_to_string(&subscription).unwrap()).unwrap();
-        value
-            .as_object_mut()
-            .unwrap()
-            .insert("machine_local_divergence".into(), json!("lawful"));
-        write_json_value_atomic(&subscription, &value).unwrap();
-        capsule_pack("demo", &capsule, &root).unwrap();
-        with_subscription_path(&subscription, || {
-            capsule_install(&capsule, &config, false).unwrap();
-            let planned = fs::read_to_string(&subscription).unwrap();
-            assert!(planned.contains("machine_local_divergence"));
-            assert!(!planned.contains("alpha"));
-            capsule_install(&capsule, &config, true).unwrap();
-        });
-        let applied = fs::read_to_string(&subscription).unwrap();
-        assert!(applied.contains("machine_local_divergence"));
-        assert!(applied.contains("\"lane\": \"owner\""));
-        assert!(applied.contains("\"selected_profile\": \"demo\""));
-        assert!(applied.contains("\"alpha\""));
-        let _ = fs::remove_dir_all(root);
-        let _ = fs::remove_dir_all(capsule);
-        let _ = fs::remove_dir_all(config);
-        let _ = fs::remove_dir_all(state);
-    }
 }

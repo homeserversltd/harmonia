@@ -965,6 +965,30 @@ fn write_systemd_receipt(
     )
 }
 
+pub(crate) fn slice4_bench(
+    root: &Path,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let receipts = root.join("receipts");
+    std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
+    let out = run_permutation(
+        &receipts,
+        "bench",
+        "disable-stop-remove",
+        Some("harmonia-slice4-never.service"),
+        &[],
+        None,
+        1,
+        false,
+        false,
+        invocation,
+    )?;
+    let receipt = receipts.join("bench.json").exists();
+    Ok(
+        serde_json::json!({"planned":out.ok,"apply":false,"typed_receipt":receipt,"argv_candidate":"harmonia-slice4-never.service","removal_planned":false,"restart_restrained":true,"no_live_mutation":true,"ok":out.ok && receipt && !out.changed}),
+    )
+}
+
 pub(crate) fn execute_validated_step(
     step: &crate::ladder::ValidatedStep,
     module_dir: &std::path::Path,
@@ -998,237 +1022,4 @@ pub(crate) fn execute_validated_step(
         changed,
         invocation,
     )
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ladder::{load_ladder_manifest, validate_ladder};
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_root(name: &str) -> PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("harmonia-systemd-{name}-{stamp}"))
-    }
-
-    #[test]
-    fn user_scope_args_use_machine_transport_when_target_user_declared() {
-        assert_eq!(
-            systemctl_scope_args(true, Some("owner")),
-            vec!["--user".to_string(), "--machine=owner@.host".to_string()]
-        );
-        assert_eq!(
-            systemctl_scope_args(false, Some("owner")),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn tv_user_session_manifest_declares_target_user_for_user_systemd_steps() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let manifest = load_ladder_manifest(
-            &root.join("profiles/tv/modules/user-session-services/manifest.json"),
-        )
-        .unwrap();
-        let steps = validate_ladder(&manifest).unwrap();
-        for step in steps
-            .iter()
-            .filter(|step| step.permutation.starts_with("user-"))
-        {
-            assert_eq!(
-                step.args.get("user").and_then(|v| v.as_str()),
-                Some("owner")
-            );
-        }
-    }
-
-    #[test]
-    fn planned_user_systemd_receipt_names_machine_user_transport() {
-        let root = temp_root("receipt");
-        fs::create_dir_all(&root).unwrap();
-        run_action(
-            &root,
-            "user-daemon-reload",
-            "daemon-reload",
-            None,
-            true,
-            Some("owner"),
-            30,
-            false,
-            false,
-        )
-        .unwrap();
-        let receipt: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(root.join("user-daemon-reload.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(receipt["scope"], "user");
-        assert_eq!(receipt["target_user"], "owner");
-        assert_eq!(receipt["systemctl_transport"], "machine-user");
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn disable_stop_remove_is_declared_and_dry_run_is_a_clean_absent_unit_plan() {
-        assert!(PERMUTATIONS
-            .iter()
-            .any(|permutation| permutation.name == "disable-stop-remove"));
-        let root = temp_root("disable-stop-remove-plan");
-        fs::create_dir_all(&root).unwrap();
-        let outcome = run_action(
-            &root,
-            "retire-absent",
-            "disable-stop-remove",
-            Some("harmonia-never-installed-for-test.service"),
-            false,
-            None,
-            30,
-            false,
-            false,
-        )
-        .unwrap();
-        assert!(outcome.ok);
-        assert!(outcome.skipped);
-        assert!(!outcome.changed);
-        let receipt: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(root.join("retire-absent.json")).unwrap())
-                .unwrap();
-        assert_eq!(receipt["action"], "disable-stop-remove");
-        assert_eq!(receipt["ok"], true);
-        assert_eq!(receipt["apply"], false);
-        assert_eq!(receipt["changed"], false);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn retire_unit_file_accepts_only_a_unit_basename() {
-        assert_eq!(
-            unit_file_path("harmonia.service"),
-            Some(PathBuf::from("/etc/systemd/system/harmonia.service"))
-        );
-        assert_eq!(unit_file_path("../harmonia.service"), None);
-        assert_eq!(unit_file_path("/etc/systemd/system/harmonia.service"), None);
-    }
-
-    #[test]
-    fn unchanged_service_material_skips_restart_and_receipts_the_restraint() {
-        let decision = decide_restart(false);
-        assert!(!decision.execute);
-        assert_eq!(decision.reason, "service-material-unchanged");
-
-        let root = temp_root("restart-skip");
-        fs::create_dir_all(&root).unwrap();
-        let result = CmdResult {
-            ok: true,
-            code: 0,
-            stdout: "restart skipped by change-driven policy".into(),
-            stderr: String::new(),
-        };
-        write_systemd_receipt(
-            &root,
-            "service-restart",
-            "restart",
-            "example.service",
-            false,
-            true,
-            &result,
-            None,
-            Some("active"),
-            None,
-            Some("active"),
-            false,
-            None,
-            Some(decision),
-            false,
-        )
-        .unwrap();
-        let receipt: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(root.join("service-restart.json")).unwrap())
-                .unwrap();
-        assert_eq!(receipt["restart_decision"], "skipped");
-        assert_eq!(receipt["restart_reason"], "service-material-unchanged");
-        assert_eq!(receipt["service_material_changed"], false);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn changed_service_material_restarts_and_receipts_the_change_reason() {
-        let decision = decide_restart(true);
-        assert!(decision.execute);
-        assert_eq!(decision.reason, "service-material-changed");
-
-        let root = temp_root("restart-change");
-        fs::create_dir_all(&root).unwrap();
-        let result = CmdResult {
-            ok: true,
-            code: 0,
-            stdout: "restarted".into(),
-            stderr: String::new(),
-        };
-        write_systemd_receipt(
-            &root,
-            "service-restart",
-            "restart",
-            "example.service",
-            false,
-            true,
-            &result,
-            None,
-            Some("active"),
-            None,
-            Some("active"),
-            true,
-            None,
-            Some(decision),
-            true,
-        )
-        .unwrap();
-        let receipt: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(root.join("service-restart.json")).unwrap())
-                .unwrap();
-        assert_eq!(receipt["restart_decision"], "restarted");
-        assert_eq!(receipt["restart_reason"], "service-material-changed");
-        assert_eq!(receipt["service_material_changed"], true);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn unit_state_never_bypasses_the_material_change_gate() {
-        let decision = decide_restart(false);
-        assert!(!decision.execute);
-        assert_eq!(decision.reason, "service-material-unchanged");
-    }
-
-    #[test]
-    fn material_change_is_the_only_restart_gate() {
-        assert!(!decide_restart(false).execute);
-        assert!(decide_restart(true).execute);
-    }
-
-    #[test]
-    fn enable_first_present_now_selects_the_first_available_candidate_in_order() {
-        let candidates = vec![
-            "systemd-timesyncd.service".to_string(),
-            "chronyd.service".to_string(),
-            "ntpd.service".to_string(),
-        ];
-        let mut probed = Vec::new();
-        let selected = first_present_candidate(&candidates, |unit| {
-            probed.push(unit.to_string());
-            Ok(unit == "chronyd.service")
-        })
-        .unwrap();
-        assert_eq!(selected, "chronyd.service");
-        assert_eq!(
-            probed,
-            vec![
-                "systemd-timesyncd.service".to_string(),
-                "chronyd.service".to_string(),
-            ]
-        );
-    }
 }

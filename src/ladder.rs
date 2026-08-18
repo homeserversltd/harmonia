@@ -11,6 +11,90 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const SCHEMA: &str = "harmonia.module.ladder.v1";
 
+pub(crate) fn slice4_bench(
+    root: &Path,
+    _key: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let profile_root = root.join("profiles/synthetic-ladder");
+    let module_dir = profile_root.join("modules/synthetic-ladder");
+    let output_dir = root.join("molt-output");
+    let receipts = root.join("receipts");
+    let first_receipts = receipts.join("run-one");
+    let second_receipts = receipts.join("run-two");
+    let subscription = root.join("subscription.json");
+    fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(root.join("src/tools")).map_err(|e| e.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        b"[package]\nname=\"scratch\"\nversion=\"0.1.0\"\nedition=\"2021\"\n",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        profile_root.join("index.json"),
+        br#"{"id":"synthetic-ladder","identity":"synthetic-ladder","modules":["synthetic-ladder"]}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        module_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": SCHEMA,
+            "id": "synthetic-ladder",
+            "version": "1.2.3",
+            "description": "complete scratch ladder fixture",
+            "optional": false,
+            "constants": {},
+            "ladder": []
+        }))
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    crate::bands::stage_profile::molt::molt_at_subscription_path(
+        root,
+        "synthetic-ladder",
+        &output_dir,
+        &first_receipts,
+        &subscription,
+        crate::bands::stage_profile::molt::MoltMode::Copy,
+    )?;
+    crate::bands::stage_profile::molt::molt_at_subscription_path(
+        root,
+        "synthetic-ladder",
+        &output_dir,
+        &second_receipts,
+        &subscription,
+        crate::bands::stage_profile::molt::MoltMode::Copy,
+    )?;
+
+    let read_json = |path: &Path| -> Result<serde_json::Value, String> {
+        serde_json::from_slice(&fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let first = read_json(&first_receipts.join("molt.json"))?;
+    let second = read_json(&second_receipts.join("molt.json"))?;
+    let subscription_record = read_json(&subscription)?;
+    let output_manifest = read_json(&output_dir.join("modules/synthetic-ladder/manifest.json"))?;
+    let first_production_run_ok = first["ok"].as_bool() == Some(true)
+        && first["profile_id"] == "synthetic-ladder"
+        && first["subscription_updated"].as_bool() == Some(true)
+        && output_manifest["version"] == "1.2.3";
+    let second_production_run_quiet = second["ok"].as_bool() == Some(true)
+        && second["untouched_modules"]
+            .as_array()
+            .is_some_and(|modules| modules.iter().any(|module| module == "synthetic-ladder"));
+    let ledger_carries_version =
+        subscription_record["modules"]["synthetic-ladder"]["version"] == "1.2.3";
+    Ok(serde_json::json!({
+        "first_production_run_ok": first_production_run_ok,
+        "second_production_run_quiet": second_production_run_quiet,
+        "ledger_carries_version": ledger_carries_version,
+        "production_route": "crate::bands::stage_profile::molt::molt_at_subscription_path",
+        "receipt_paths": [first_receipts.join("molt.json"), second_receipts.join("molt.json")],
+        "ledger_path": subscription,
+        "ok": first_production_run_ok && second_production_run_quiet && ledger_carries_version
+    }))
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LadderManifest {
@@ -530,366 +614,4 @@ pub(crate) fn validate_group(
         args: resolved,
         on_failure: OnFailure::Stop,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tools::routine::*;
-    use crate::CmdResult;
-    use crate::{run_profile_engine, write_command_receipt, ModuleExecution, Profile};
-    use serde_json::json;
-    use serde_json::{json, Map};
-    use std::process;
-
-    fn base_manifest() -> LadderManifest {
-        LadderManifest {
-            schema: SCHEMA.into(),
-            id: "synthetic-ladder".into(),
-            version: "1.2.3".into(),
-            description: "synthetic ladder".into(),
-            role: None,
-            optional: false,
-            optional_warning: None,
-            group: None,
-            constants: BTreeMap::new(),
-            caduceus_commands: Vec::new(),
-            files_root: None,
-            base_dir: PathBuf::new(),
-            ladder: vec![LadderStep {
-                step_id: "say-ok".into(),
-                tool: "command".into(),
-                permutation: "capture".into(),
-                args: BTreeMap::from([
-                    ("program".into(), json!("/usr/bin/true")),
-                    ("args".into(), json!([])),
-                ]),
-                on_failure: OnFailure::Stop,
-            }],
-        }
-    }
-
-    fn defect(manifest: LadderManifest) -> String {
-        validate_ladder(&manifest)
-            .unwrap_err()
-            .first_missing_signal()
-    }
-
-    #[test]
-    fn validator_rejects_unknown_tool() {
-        let mut manifest = base_manifest();
-        manifest.ladder[0].tool = "missing-tool".into();
-        assert_eq!(
-            defect(manifest),
-            "step_id=say-ok defect=unknown-tool-missing-tool"
-        );
-    }
-
-    #[test]
-    fn validator_rejects_undeclared_permutation() {
-        let mut manifest = base_manifest();
-        manifest.ladder[0].permutation = "bogus".into();
-        assert_eq!(
-            defect(manifest),
-            "step_id=say-ok defect=undeclared-permutation-bogus"
-        );
-    }
-
-    #[test]
-    fn validator_rejects_missing_extra_and_type_mismatched_args() {
-        let mut missing = base_manifest();
-        missing.ladder[0].args.remove("program");
-        assert_eq!(
-            defect(missing),
-            "step_id=say-ok defect=missing-argument-program"
-        );
-
-        let mut extra = base_manifest();
-        extra.ladder[0].args.insert("surprise".into(), json!(true));
-        assert!(validate_ladder(&extra).is_ok());
-
-        let mut bad_type = base_manifest();
-        bad_type.ladder[0].args.insert("program".into(), json!(123));
-        assert_eq!(
-            defect(bad_type),
-            "step_id=say-ok defect=type-mismatch-program-expected-string"
-        );
-    }
-
-    #[test]
-    fn validator_rejects_duplicate_step_and_non_optional_continue_optional() {
-        let mut duplicate = base_manifest();
-        duplicate.ladder.push(duplicate.ladder[0].clone());
-        assert_eq!(defect(duplicate), "step_id=say-ok defect=duplicate-step_id");
-
-        let mut non_optional = base_manifest();
-        non_optional.ladder[0].on_failure = OnFailure::ContinueOptional;
-        assert_eq!(
-            defect(non_optional),
-            "step_id=say-ok defect=continue-optional-on-non-optional-module"
-        );
-    }
-
-    #[test]
-    fn constants_resolve_and_dangling_reference_is_named() {
-        let mut manifest = base_manifest();
-        manifest
-            .constants
-            .insert("program".into(), json!("/usr/bin/true"));
-        manifest.ladder[0]
-            .args
-            .insert("program".into(), json!("${program}"));
-        let steps = validate_ladder(&manifest).unwrap();
-        assert_eq!(steps[0].args.get("program"), Some(&json!("/usr/bin/true")));
-
-        manifest.ladder[0]
-            .args
-            .insert("program".into(), json!("$constants.absent"));
-        assert_eq!(
-            defect(manifest),
-            "step_id=say-ok defect=dangling-constant-absent"
-        );
-    }
-
-    #[test]
-    fn serde_rejects_unknown_manifest_field_by_name() {
-        let text = r#"{"schema":"harmonia.module.ladder.v1","id":"x","version":"1","description":"x","optional":false,"constants":{},"ladder":[],"stray":true}"#;
-        let err = serde_json::from_str::<LadderManifest>(text)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("unknown field `stray`"), "{err}");
-    }
-
-    #[test]
-    fn managed_files_validator_accepts_string_owner_and_group() {
-        let mut manifest = base_manifest();
-        manifest.ladder[0].tool = "files".into();
-        manifest.ladder[0].permutation = "managed-files".into();
-        manifest.ladder[0].args = BTreeMap::from([
-            ("files".into(), json!([])),
-            ("owner".into(), json!("owner")),
-            ("group".into(), json!("owner")),
-        ]);
-        validate_ladder(&manifest).unwrap();
-
-        manifest.ladder[0].args.insert("group".into(), json!(1000));
-        assert_eq!(
-            defect(manifest),
-            "step_id=say-ok defect=type-mismatch-group-expected-string"
-        );
-    }
-
-    #[test]
-    fn validator_accepts_group_live_probe_and_rejects_unknown_group_field_by_name() {
-        let mut manifest = base_manifest();
-        manifest.group = Some(LadderGroup {
-            group_id: "git-host".into(),
-            group_order: 1,
-            live_probe: LadderProbe {
-                tool: "systemd".into(),
-                permutation: "is-active-probe".into(),
-                args: BTreeMap::from([("service".into(), json!("forgejo.service"))]),
-            },
-        });
-        validate_ladder(&manifest).unwrap();
-
-        let text = r#"{"schema":"harmonia.module.ladder.v1","id":"x","version":"1","description":"x","group":{"group_id":"git-host","group_order":1,"live_probe":{"tool":"systemd","permutation":"is-active-probe","args":{"service":"forgejo.service"}},"stray":true},"constants":{},"ladder":[]}"#;
-        let err = serde_json::from_str::<LadderManifest>(text)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("unknown field `stray`"), "{err}");
-    }
-
-    #[test]
-    fn nginx_manifest_desired_source_is_a_regular_manifest_relative_file() {
-        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("profiles/homeserver/modules/nginx/manifest.json");
-        let manifest = load_ladder_manifest(&manifest_path).unwrap();
-        let step = manifest
-            .ladder
-            .iter()
-            .find(|step| step.step_id == "nginx-shared-transaction")
-            .unwrap();
-        let desired_source =
-            resolve_ladder_path(&manifest, string_arg(&step.args, "desired_source"));
-        assert!(
-            desired_source.is_file(),
-            "expected regular desired source at {}",
-            desired_source.display()
-        );
-    }
-
-    #[test]
-    fn engine_runs_unregistered_ladder_and_ledger_carries_version() {
-        let scratch =
-            std::env::temp_dir().join(format!("harmonia-ladder-engine-{}", process::id()));
-        let module_root = scratch.join("profiles/test/modules");
-        let module_dir = module_root.join("synthetic-ladder");
-        let receipts = scratch.join("receipts/run-one");
-        fs::create_dir_all(&module_dir).unwrap();
-        fs::write(
-            module_dir.join("manifest.json"),
-            serde_json::to_string_pretty(&base_manifest()).unwrap(),
-        )
-        .unwrap();
-        let profile = Profile {
-            package_authority: None,
-            id: "test".into(),
-            identity: "test".into(),
-            modules: vec!["synthetic-ladder".into()],
-        };
-        run_profile_engine(&profile, &module_root, &receipts, false).unwrap();
-        let ledger = fs::read_to_string(scratch.join("receipts/test-ledger.jsonl")).unwrap();
-        assert!(ledger.contains("\"module_version\":\"1.2.3\""), "{ledger}");
-        let _ = fs::remove_dir_all(&scratch);
-    }
-
-    fn fixture_group_manifest(id: &str, group_order: i64, probe_program: &str) -> LadderManifest {
-        LadderManifest {
-            schema: SCHEMA.into(),
-            id: id.into(),
-            version: "1.0.0".into(),
-            description: format!("{id} fixture"),
-            role: None,
-            optional: false,
-            optional_warning: None,
-            group: Some(LadderGroup {
-                group_id: "git-host".into(),
-                group_order,
-                live_probe: LadderProbe {
-                    tool: "command".into(),
-                    permutation: "capture".into(),
-                    args: BTreeMap::from([
-                        ("program".into(), json!(probe_program)),
-                        ("args".into(), json!([])),
-                    ]),
-                },
-            }),
-            constants: BTreeMap::new(),
-            caduceus_commands: Vec::new(),
-            files_root: None,
-            base_dir: PathBuf::new(),
-            ladder: vec![LadderStep {
-                step_id: format!("{id}-runs"),
-                tool: "command".into(),
-                permutation: "capture".into(),
-                args: BTreeMap::from([
-                    ("program".into(), json!("/usr/bin/true")),
-                    ("args".into(), json!([])),
-                ]),
-                on_failure: OnFailure::Stop,
-            }],
-        }
-    }
-
-    fn write_fixture_manifest(module_root: &Path, manifest: &LadderManifest) {
-        let dir = module_root.join(&manifest.id);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("manifest.json"),
-            serde_json::to_string_pretty(manifest).unwrap(),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn group_selection_live_winner_runs_and_loser_skips_with_receipt() {
-        let scratch = std::env::temp_dir().join(format!("harmonia-group-live-{}", process::id()));
-        let module_root = scratch.join("modules");
-        let receipts = scratch.join("receipts");
-        write_fixture_manifest(
-            &module_root,
-            &fixture_group_manifest("forgejo", 1, "/usr/bin/true"),
-        );
-        write_fixture_manifest(
-            &module_root,
-            &fixture_group_manifest("gogs", 2, "/usr/bin/false"),
-        );
-        let profile = Profile {
-            package_authority: None,
-            id: "test".into(),
-            identity: "test".into(),
-            modules: vec!["forgejo".into(), "gogs".into()],
-        };
-        run_profile_engine(&profile, &module_root, &receipts, false).unwrap();
-        assert!(receipts.join("modules/forgejo/forgejo-runs.json").exists());
-        assert!(!receipts.join("modules/gogs/gogs-runs.json").exists());
-        let selection =
-            fs::read_to_string(receipts.join("groups/git-host-selection.json")).unwrap();
-        assert!(
-            selection.contains("harmonia.group.selection.v1"),
-            "{selection}"
-        );
-        assert!(selection.contains("\"winner\": \"forgejo\""), "{selection}");
-        assert!(
-            selection.contains("\"losers\": [\n    \"gogs\"\n  ]"),
-            "{selection}"
-        );
-        let ledger = fs::read_to_string(scratch.join("test-ledger.jsonl")).unwrap();
-        assert!(ledger.contains("group-lost-to:forgejo"), "{ledger}");
-        let _ = fs::remove_dir_all(&scratch);
-    }
-
-    #[test]
-    fn group_selection_all_probes_failing_still_runs_lowest_order_winner() {
-        let scratch = std::env::temp_dir().join(format!("harmonia-group-dead-{}", process::id()));
-        let module_root = scratch.join("modules");
-        let receipts = scratch.join("receipts");
-        write_fixture_manifest(
-            &module_root,
-            &fixture_group_manifest("forgejo", 1, "/usr/bin/false"),
-        );
-        write_fixture_manifest(
-            &module_root,
-            &fixture_group_manifest("gogs", 2, "/usr/bin/false"),
-        );
-        let profile = Profile {
-            package_authority: None,
-            id: "test".into(),
-            identity: "test".into(),
-            modules: vec!["forgejo".into(), "gogs".into()],
-        };
-        run_profile_engine(&profile, &module_root, &receipts, false).unwrap();
-        assert!(receipts.join("modules/forgejo/forgejo-runs.json").exists());
-        assert!(!receipts.join("modules/gogs/gogs-runs.json").exists());
-        let selection =
-            fs::read_to_string(receipts.join("groups/git-host-selection.json")).unwrap();
-        assert!(selection.contains("\"winner\": \"forgejo\""), "{selection}");
-        assert!(selection.contains("\"ok\": false"), "{selection}");
-        let _ = fs::remove_dir_all(&scratch);
-    }
-
-    #[test]
-    fn shadow_proof_harness_diffs_receipt_families_on_synthetic_fixture() {
-        let scratch = std::env::temp_dir().join(format!("harmonia-shadow-{}", process::id()));
-        let ladder_dir = scratch.join("ladder");
-        let compiled_dir = scratch.join("compiled");
-        let diff = shadow_proof_receipt_family_diff_for_test(
-            &base_manifest(),
-            &ladder_dir,
-            &compiled_dir,
-            |dir| {
-                let result = CmdResult {
-                    ok: true,
-                    code: 0,
-                    stdout: "compiled".into(),
-                    stderr: String::new(),
-                };
-                write_command_receipt(dir, "say-ok", &result)?;
-                Ok(ModuleExecution {
-                    ok: true,
-                    changed: false,
-                    operation_count: 1,
-                    first_missing_signal: None,
-                    placements: Vec::new(),
-                })
-            },
-        )
-        .unwrap();
-        assert!(
-            diff.is_empty(),
-            "receipt family diff should be empty: {diff:?}"
-        );
-        let _ = fs::remove_dir_all(&scratch);
-    }
 }

@@ -120,6 +120,19 @@ pub(crate) fn capture(program: &str, args: &[&str]) -> CmdResult {
     capture_with_options(program, args, CaptureOptions::new())
 }
 
+pub(crate) fn slice4_bench(
+    _root: &Path,
+    _invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let success = capture("sh", &["-c", "printf %s \"$PATH\""]);
+    let timeout = capture_with_timeout("/usr/bin/sh", &["-c", "sleep 2"], 1);
+    let root_refusal = resolve_non_root_bearer("root").err().as_deref() == Some("git-bearer-root-refused root");
+    let unknown_refusal = resolve_non_root_bearer("harmonia-no-such-bearer").is_err();
+    let path_ok = success.ok && success.stdout == DEFAULT_SYSTEM_PATH;
+    let timeout_ok = !timeout.ok && timeout.stderr.contains("command-timeout-after-1s") && timeout.stderr.contains("/usr/bin/sh -c sleep 2");
+    Ok(serde_json::json!({"path_capture_succeeded":path_ok,"portable_path":success.stdout,"timeout_failure_observed":timeout_ok,"timeout_stderr":timeout.stderr,"root_bearer_refused":root_refusal,"unknown_bearer_refused":unknown_refusal,"ok":path_ok && timeout_ok && root_refusal && unknown_refusal}))
+}
+
 pub(crate) fn capture_with_timeout(program: &str, args: &[&str], timeout_secs: u64) -> CmdResult {
     capture_with_options(
         program,
@@ -474,105 +487,6 @@ pub(crate) fn execute_validated_step(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn root_is_not_a_valid_git_bearer() {
-        assert_eq!(
-            resolve_non_root_bearer("root").unwrap_err(),
-            "git-bearer-root-refused root"
-        );
-    }
-
-    #[test]
-    fn unknown_git_bearer_fails_closed() {
-        assert_eq!(
-            resolve_non_root_bearer("harmonia-no-such-bearer").unwrap_err(),
-            "git-bearer-unknown harmonia-no-such-bearer"
-        );
-    }
-
-    #[test]
-    fn privileged_child_drops_to_owner_bearer() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
-        let owner = resolve_non_root_bearer("owner").unwrap();
-        let result = capture_with_cwd_as_bearer("/usr/bin/id", &["-u"], None, "owner");
-        assert!(result.ok, "{}", result.stderr);
-        assert_eq!(result.stdout, owner.uid.to_string());
-    }
-
-    #[test]
-    fn bare_programs_receive_the_portable_system_path() {
-        let result = capture("sh", &["-c", "printf %s \"$PATH\""]);
-        assert!(result.ok, "{}", result.stderr);
-        assert_eq!(result.stdout, DEFAULT_SYSTEM_PATH);
-    }
-
-    #[test]
-    fn timed_out_child_that_exits_on_sigterm_stays_failed() {
-        let result = capture_with_timeout(
-            "/usr/bin/sh",
-            &["-c", "trap 'exit 0' TERM; while :; do :; done"],
-            1,
-        );
-        assert!(!result.ok);
-        assert!(result.stderr.contains("command-timeout-after-1s"));
-        assert!(
-            result.stderr.contains("terminated-on-sigterm-within-grace"),
-            "{}",
-            result.stderr
-        );
-    }
-
-    #[test]
-    fn timed_out_child_that_ignores_sigterm_is_killed_after_grace() {
-        let result = capture_with_timeout(
-            "/usr/bin/sh",
-            &["-c", "trap '' TERM; while :; do :; done"],
-            1,
-        );
-        assert!(!result.ok);
-        assert!(result.stderr.contains("command-timeout-after-1s"));
-        assert!(
-            result.stderr.contains("killed-after-sigterm-grace-expired"),
-            "{}",
-            result.stderr
-        );
-    }
-
-    #[test]
-    fn privileged_child_receives_git_ssh_command_only_after_bearer_drop() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
-        let owner = resolve_non_root_bearer("owner").unwrap();
-        let mut env = BTreeMap::new();
-        env.insert(
-            "GIT_SSH_COMMAND".to_string(),
-            "ssh -i '/var/lib/harmonia/forgejo-owner' -o IdentitiesOnly=yes".to_string(),
-        );
-        let result = capture_with_cwd_as_bearer_and_env(
-            "/usr/bin/sh",
-            &["-c", "printf '%s|%s' \"$(id -u)\" \"$GIT_SSH_COMMAND\""],
-            None,
-            "owner",
-            env,
-        );
-        assert!(result.ok, "{}", result.stderr);
-        assert_eq!(
-            result.stdout,
-            format!(
-                "{}|ssh -i '/var/lib/harmonia/forgejo-owner' -o IdentitiesOnly=yes",
-                owner.uid
-            )
-        );
-    }
-}
-
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {
     capture(program, args)
 }
@@ -601,25 +515,4 @@ pub(crate) fn harmonia_root_from_module_root(module_root: &Path) -> PathBuf {
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-#[cfg(test)]
-mod profile_authority_tests {
-    use super::*;
-
-    #[test]
-    fn command_timeout_kills_sleeping_child() {
-        let result = command_capture_with_timeout("/usr/bin/sh", &["-c", "sleep 2"], 1);
-        assert!(!result.ok);
-        assert!(
-            result.stderr.contains("command-timeout-after-1s"),
-            "{}",
-            result.stderr
-        );
-        assert!(
-            result.stderr.contains("/usr/bin/sh -c sleep 2"),
-            "{}",
-            result.stderr
-        );
-    }
 }

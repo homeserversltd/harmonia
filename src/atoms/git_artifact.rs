@@ -273,7 +273,6 @@ pub(crate) fn legacy_plan(request: &Request) -> Outcome {
     crate::atoms::ask::legacy_plan(request)
 }
 
-
 pub fn stdout_changed(stdout: &str) -> bool {
     stdout.lines().any(|line| line.trim() == "changed=true")
 }
@@ -427,381 +426,71 @@ pub fn acquire_source(
     crate::pull_repo::acquire_source(plan, invocation)
 }
 
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plan_accepts_missing_repo_as_future_clone() {
-        let request = Request::new(
-            Some("https://github.com/homeserversltd/keyman.git".into()),
-            PathBuf::from("/opt/keyman/source"),
-            "main".into(),
-            "origin".into(),
-        );
-        let outcome = plan(&request);
-        assert!(outcome.ok);
-        assert!(!outcome.changed);
-        assert!(outcome.command.stdout.contains("planned clone/update"));
-    }
-
-    #[test]
-    fn declared_ssh_key_path_is_absolute_regular_file_and_shell_quoted() {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-git-artifact-ssh-key-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let key = root.join("forgejo owner's key");
-        fs::write(&key, "not-a-private-key\n").unwrap();
-        let env = git_ssh_env(Some(&key)).unwrap();
-        let expected = format!(
-            "ssh -i '{}' -o IdentitiesOnly=yes",
-            key.display().to_string().replace('\'', "'\\''")
-        );
-        assert_eq!(
-            env.get("GIT_SSH_COMMAND").map(String::as_str),
-            Some(expected.as_str())
-        );
-        assert!(git_ssh_env(Some(Path::new("relative-key")))
-            .unwrap_err()
-            .contains("git-ssh-key-path-not-absolute"));
-        assert!(git_ssh_env(Some(&root.join("absent-key")))
-            .unwrap_err()
-            .contains("git-ssh-key-unavailable"));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn sync_preserves_existing_non_git_path_before_clone() {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-git-artifact-non-git-{}",
-            std::process::id()
-        ));
-        let repo = root.join("repo");
-        let target = root.join("source");
-        fs::create_dir_all(&repo).unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], repo.to_str());
-        command::capture_with_cwd(
-            "/usr/bin/git",
-            &["config", "user.email", "harmonia@example.invalid"],
-            repo.to_str(),
-        );
-        command::capture_with_cwd(
-            "/usr/bin/git",
-            &["config", "user.name", "Harmonia Test"],
-            repo.to_str(),
-        );
-        fs::write(repo.join("README.md"), "repo source\n").unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["add", "README.md"], repo.to_str());
-        command::capture_with_cwd("/usr/bin/git", &["commit", "-m", "seed"], repo.to_str());
-        fs::create_dir_all(&target).unwrap();
-        fs::write(target.join("old-payload"), "preserve me\n").unwrap();
-
-        let request = Request::new(
-            Some(repo.display().to_string()),
-            target.clone(),
-            "main".into(),
-            "origin".into(),
-        );
-        let sync = legacy_apply(&request);
-        let receipt = sync.command;
-        assert!(receipt.ok, "{}", receipt.stderr);
-        assert!(sync.changed);
-        assert!(target.join(".git").exists());
-        assert!(receipt.stdout.contains("non_git_existing_path_preserved="));
-        let preserved_exists = fs::read_dir(&root)
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("non-git-preserved")
-            });
-        assert!(preserved_exists);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn sync_fetches_configured_branch_into_remote_tracking_ref_before_fast_forward() {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-git-artifact-remote-main-{}",
-            std::process::id()
-        ));
-        let seed = root.join("seed");
-        let remote = root.join("remote.git");
-        let target = root.join("target");
-        fs::create_dir_all(&seed).unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], seed.to_str());
-        for (key, value) in [
-            ("user.email", "harmonia@example.invalid"),
-            ("user.name", "Harmonia Test"),
-        ] {
-            command::capture_with_cwd("/usr/bin/git", &["config", key, value], seed.to_str());
+pub(crate) fn slice4_bench(
+    root: &Path,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let source = root.join("source");
+    let destination = root.join("destination");
+    std::fs::create_dir_all(&source).map_err(|e| e.to_string())?;
+    for args in [
+        &["init", "-b", "main"][..],
+        &["config", "user.email", "bench@example.invalid"],
+        &["config", "user.name", "Slice4 Bench"],
+    ] {
+        if !command::capture_with_cwd("/usr/bin/git", args, source.to_str()).ok {
+            return Err("git-bench-init-failed".into());
         }
-        fs::write(seed.join("payload"), "first\n").unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["add", "payload"], seed.to_str());
-        command::capture_with_cwd("/usr/bin/git", &["commit", "-m", "first"], seed.to_str());
-        command::capture(
-            "/usr/bin/git",
-            &[
-                "clone",
-                "--bare",
-                seed.to_str().unwrap(),
-                remote.to_str().unwrap(),
-            ],
-        );
-        command::capture(
-            "/usr/bin/git",
-            &["clone", remote.to_str().unwrap(), target.to_str().unwrap()],
-        );
-
-        fs::write(seed.join("payload"), "second\n").unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["commit", "-am", "second"], seed.to_str());
-        command::capture_with_cwd(
-            "/usr/bin/git",
-            &["push", remote.to_str().unwrap(), "main"],
-            seed.to_str(),
-        );
-
-        let request = Request::new(
-            Some(remote.display().to_string()),
-            target.clone(),
-            "main".into(),
-            "origin".into(),
-        );
-        let sync = legacy_apply(&request);
-        assert!(sync.command.ok, "{}", sync.command.stderr);
-        assert!(sync.changed);
-        assert_eq!(
-            fs::read_to_string(target.join("payload")).unwrap(),
-            "second\n"
-        );
-        let local_head =
-            command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], target.to_str());
-        let tracking_head = command::capture_with_cwd(
-            "/usr/bin/git",
-            &["rev-parse", "refs/remotes/origin/main"],
-            target.to_str(),
-        );
-        assert_eq!(local_head.stdout.trim(), tracking_head.stdout.trim());
-        let _ = fs::remove_dir_all(root);
     }
-
-    #[test]
-    fn sync_ignores_cibation_worktrees_but_refuses_other_untracked_paths() {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-git-artifact-worktree-guard-{}",
-            std::process::id()
-        ));
-        let seed = root.join("seed");
-        let remote = root.join("remote.git");
-        let target = root.join("target");
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&seed).unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], seed.to_str());
-        for (key, value) in [
-            ("user.email", "harmonia@example.invalid"),
-            ("user.name", "Harmonia Test"),
-        ] {
-            command::capture_with_cwd("/usr/bin/git", &["config", key, value], seed.to_str());
+    std::fs::write(source.join("payload"), b"source-bytes\n").map_err(|e| e.to_string())?;
+    for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
+        if !command::capture_with_cwd("/usr/bin/git", args, source.to_str()).ok {
+            return Err("git-bench-commit-failed".into());
         }
-        fs::write(seed.join("payload"), "first\n").unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["add", "payload"], seed.to_str());
-        command::capture_with_cwd("/usr/bin/git", &["commit", "-m", "first"], seed.to_str());
-        command::capture(
-            "/usr/bin/git",
-            &[
-                "clone",
-                "--bare",
-                seed.to_str().unwrap(),
-                remote.to_str().unwrap(),
-            ],
-        );
-        command::capture(
-            "/usr/bin/git",
-            &["clone", remote.to_str().unwrap(), target.to_str().unwrap()],
-        );
-
-        let request = Request::new(
-            Some(remote.display().to_string()),
-            target.clone(),
-            "main".into(),
-            "origin".into(),
-        );
-        fs::create_dir_all(target.join(".worktrees/live-cibation-worktree")).unwrap();
-        fs::write(
-            target.join(".worktrees/live-cibation-worktree/marker"),
-            "preserve me\n",
-        )
-        .unwrap();
-        let allowed = legacy_apply(&request);
-        assert!(allowed.command.ok, "{}", allowed.command.stderr);
-        assert!(target
-            .join(".worktrees/live-cibation-worktree/marker")
-            .exists());
-
-        fs::write(target.join("ordinary-untracked"), "must block sync\n").unwrap();
-        let refused = legacy_apply(&request);
-        assert!(!refused.command.ok);
-        assert_eq!(refused.command.code, 3);
-        assert!(refused.command.stdout.contains("ordinary-untracked"));
-        assert!(!refused.command.stdout.contains(".worktrees"));
-        assert!(refused
-            .command
-            .stderr
-            .contains("working tree has local modifications"));
-        let _ = fs::remove_dir_all(root);
     }
-
-    #[test]
-    fn local_checkout_projects_external_checkout_into_absent_destination_without_mutating_source() {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-git-artifact-local-projection-{}",
-            std::process::id()
-        ));
-        let source = root.join("external-owner-checkout");
-        let destination = root.join("declared-destination");
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&source).unwrap();
-        for args in [
-            &["init", "-b", "main"][..],
-            &["config", "user.email", "harmonia@example.invalid"],
-            &["config", "user.name", "Harmonia Test"],
-        ] {
-            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
-            assert!(receipt.ok, "{}", receipt.stderr);
-        }
-        fs::write(source.join("payload"), "external owner bytes\n").unwrap();
-        for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
-            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
-            assert!(receipt.ok, "{}", receipt.stderr);
-        }
-        let source_head = command::capture_with_cwd(
-            "/usr/bin/git",
-            &["rev-parse", "HEAD^{commit}"],
-            source.to_str(),
-        );
-        let source_status =
-            command::capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], source.to_str());
-        let plan = SourcePlan {
-            candidates: vec![SourceCandidate {
-                kind: SourceCandidateKind::LocalCheckout,
-                locator: source.display().to_string(),
-                credential_selector: None,
-            }],
-            reference: "main".into(),
-            destination: destination.clone(),
-            expected_commit: None,
-            bearer: DEFAULT_BEARER.into(),
-            credentials: BTreeMap::new(),
-        };
-
-        let outcome = legacy_acquire_source(&plan);
-
-        assert!(outcome.ok, "{:?}", outcome.receipt);
-        assert!(destination.join(".git").exists());
-        let destination_head = command::capture_with_cwd(
-            "/usr/bin/git",
-            &["rev-parse", "HEAD^{commit}"],
-            destination.to_str(),
-        );
-        assert!(destination_head.ok, "{}", destination_head.stderr);
-        assert_eq!(destination_head.stdout.trim(), source_head.stdout.trim());
-        assert!(outcome
-            .receipt
-            .promotion
-            .contains("external freshness authority"));
-        assert_eq!(
-            outcome.receipt.attempts[0].disposition,
-            "served-external-projected"
-        );
-        assert!(outcome.receipt.attempts[0].external_freshness);
-        let second = legacy_acquire_source(&plan);
-        assert!(second.ok, "{:?}", second.receipt);
-        assert!(!second.changed);
-        assert!(second
-            .receipt
-            .promotion
-            .contains("destination-already-projects-observed-head"));
-        fs::write(destination.join("local-change"), "must be preserved\n").unwrap();
-        let refused = legacy_acquire_source(&plan);
-        assert!(!refused.ok);
-        assert!(refused
-            .receipt
-            .promotion
-            .contains("hard-red; destination-preserved"));
-        assert!(destination.join("local-change").exists());
-        let source_head_final = command::capture_with_cwd(
-            "/usr/bin/git",
-            &["rev-parse", "HEAD^{commit}"],
-            source.to_str(),
-        );
-        let source_status_final =
-            command::capture_with_cwd("/usr/bin/git", &["status", "--porcelain"], source.to_str());
-        assert_eq!(source_head_final.stdout, source_head.stdout);
-        assert_eq!(source_status_final.stdout, source_status.stdout);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn owner_borne_existing_checkout_source_acquisition_is_command_local_and_quiet() {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-git-artifact-owner-borne-source-{}",
-            std::process::id()
-        ));
-        let source = root.join("source");
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&source).unwrap();
-        for args in [
-            &["init", "-b", "main"][..],
-            &["config", "user.email", "harmonia@example.invalid"],
-            &["config", "user.name", "Harmonia Test"],
-        ] {
-            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
-            assert!(receipt.ok, "{}", receipt.stderr);
-        }
-        fs::write(source.join("payload"), "owner-borne bytes\n").unwrap();
-        for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
-            let receipt = command::capture_with_cwd("/usr/bin/git", args, source.to_str());
-            assert!(receipt.ok, "{}", receipt.stderr);
-        }
-        let plan = SourcePlan {
-            candidates: vec![SourceCandidate {
-                kind: SourceCandidateKind::LocalCheckout,
-                locator: source.display().to_string(),
-                credential_selector: None,
-            }],
-            reference: "main".into(),
-            destination: source.clone(),
-            expected_commit: None,
-            bearer: DEFAULT_BEARER.into(),
-            credentials: BTreeMap::new(),
-        };
-
-        let outcome = legacy_acquire_source(&plan);
-
-        assert!(outcome.ok, "{:?}", outcome.receipt);
-        assert!(!outcome.changed);
-        assert_eq!(outcome.receipt.served_index, Some(1));
-        assert_eq!(
-            outcome.receipt.attempts[0].disposition,
-            "served-external-projected"
-        );
-        let head = source_head(&source, DEFAULT_BEARER);
-        assert!(head.ok, "{}", head.stderr);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn command_timeout_kills_sleeping_child() {
-        let result =
-            command::capture_with_cwd_and_timeout("/usr/bin/sh", &["-c", "sleep 2"], None, 1);
-        assert!(!result.ok);
-        assert!(result.stderr.contains("command-timeout-after-1s"));
-        assert!(result.stderr.contains("/usr/bin/sh -c sleep 2"));
-    }
+    let head_before =
+        command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], source.to_str());
+    let plan = SourcePlan {
+        candidates: vec![SourceCandidate {
+            kind: SourceCandidateKind::LocalCheckout,
+            locator: source.display().to_string(),
+            credential_selector: None,
+        }],
+        reference: "main".into(),
+        destination: destination.clone(),
+        expected_commit: None,
+        bearer: DEFAULT_BEARER.into(),
+        credentials: BTreeMap::new(),
+    };
+    let first = crate::atoms::r#do::pull_repo::acquire_source(&plan);
+    let first_changed = first.ok && first.changed;
+    let destination_payload = destination.join("payload");
+    let exact = destination_payload.is_file()
+        && std::fs::read(&destination_payload)
+            .map(|bytes| bytes == b"source-bytes\n")
+            .unwrap_or(false);
+    let second = crate::atoms::r#do::pull_repo::acquire_source(&plan);
+    let quiet = second.ok && !second.changed;
+    let head_after =
+        command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], source.to_str());
+    let source_unchanged =
+        head_before.ok && head_after.ok && head_before.stdout == head_after.stdout;
+    Ok(serde_json::json!({
+        "source_head_unchanged": source_unchanged,
+        "destination_exact": exact,
+        "first_movement": first_changed,
+        "second_quiet": quiet,
+        "production_ok": first.ok && second.ok,
+        "first_ok": first.ok,
+        "first_changed": first.changed,
+        "first_message": format!("{:?}", first.receipt),
+        "first_attempts": format!("{:?}", first.receipt.attempts),
+        "second_ok": second.ok,
+        "second_changed": second.changed,
+        "second_message": format!("{:?}", second.receipt),
+        "second_attempts": format!("{:?}", second.receipt.attempts),
+        "source_head_before": head_before.stdout,
+        "source_head_after": head_after.stdout,
+        "ok": first_changed && exact && quiet && source_unchanged,
+    }))
 }

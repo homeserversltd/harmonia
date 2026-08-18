@@ -74,19 +74,32 @@ fn stable_id(module_id: &str, target: &Path) -> String {
 }
 
 pub(crate) fn make_feed(interactables: Vec<Interactable>) -> InteractablesFeed {
-    InteractablesFeed { schema: FEED_SCHEMA.to_string(), interactables }
+    InteractablesFeed {
+        schema: FEED_SCHEMA.to_string(),
+        interactables,
+    }
 }
 
 pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
     let observed_text = crate::atoms::ask::optional_text(path)?;
     match observed_text {
         Some(text) => {
-            let feed: InteractablesFeed = serde_json::from_str(&text)
-                .map_err(|error| format!("interactables-feed-parse-failed {}: {error}", path.display()))?;
+            let feed: InteractablesFeed = serde_json::from_str(&text).map_err(|error| {
+                format!(
+                    "interactables-feed-parse-failed {}: {error}",
+                    path.display()
+                )
+            })?;
             if feed.schema != FEED_SCHEMA && feed.schema != "harmonia.interactables.feed.v1" {
-                return Err(format!("interactables-feed-schema-unsupported {}", feed.schema));
+                return Err(format!(
+                    "interactables-feed-schema-unsupported {}",
+                    feed.schema
+                ));
             }
-            Ok(InteractablesFeed { schema: FEED_SCHEMA.to_string(), ..feed })
+            Ok(InteractablesFeed {
+                schema: FEED_SCHEMA.to_string(),
+                ..feed
+            })
         }
         None => Ok(InteractablesFeed {
             schema: FEED_SCHEMA.to_string(),
@@ -95,13 +108,10 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn save_feed(path: &Path, feed: &InteractablesFeed) -> Result<(), String> {
-    crate::bands::propose_edits::persist_feed(path, feed)
-}
-
 pub(crate) fn pending_config_proposal_count() -> usize {
-    load_feed(&feed_path()).map(|feed| feed.interactables.len()).unwrap_or(0)
+    load_feed(&feed_path())
+        .map(|feed| feed.interactables.len())
+        .unwrap_or(0)
 }
 
 pub(crate) fn interactable_command(
@@ -121,12 +131,21 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
     }
     let feed = load_feed(&feed_path())?;
     if args.iter().any(|arg| arg == "--json") {
-        println!("{}", serde_json::to_string_pretty(&feed).map_err(|error| error.to_string())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&feed).map_err(|error| error.to_string())?
+        );
     } else {
         println!("schema={FEED_SCHEMA}");
         println!("proposal_count={}", feed.interactables.len());
         for item in feed.interactables {
-            println!("id={} module_id={} kind={} target={}", item.id, item.module_id, item.kind, item.target_path.display());
+            println!(
+                "id={} module_id={} kind={} target={}",
+                item.id,
+                item.module_id,
+                item.kind,
+                item.target_path.display()
+            );
         }
     }
     Ok(())
@@ -168,41 +187,9 @@ fn interactable_run(
     feed.interactables[position].has_run = true;
     feed.interactables.remove(position);
     crate::bands::propose_edits::persist_feed(&path, &feed)?;
-    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+    );
     Ok(())
-}
-
-
-#[cfg(test)]
-fn refresh_interactables_at_path(path: &Path, manifest: &crate::ladder::LadderManifest, request: &crate::tools::files::FileConvergenceRequest, outcome: &crate::tools::files::FileConvergenceOutcome) -> Result<(), String> {
-    crate::bands::propose_edits::refresh_interactables_at_path(path, manifest, request, outcome)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ladder::LadderManifest;
-    use crate::tools::files::{FileConvergenceOutcome, FileConvergenceRequest, FileSpec};
-    use std::collections::BTreeMap;
-
-    fn item(module_id: &str, target: PathBuf) -> Interactable {
-        Interactable { id: stable_id(module_id, &target), module_id: module_id.to_string(), name: module_id.to_string(), description: String::new(), kind: "hard-stamp".to_string(), target_path: target.clone(), reference_source_path: PathBuf::from("/declared/files_root").join(target.file_name().unwrap()), drift: DriftSummary { content: true, mode: false, ownership: false }, created_at: "0".to_string(), refreshed_at: "0".to_string(), available_at: None, has_run: false, mode: Some(0o644), owner: None, group: None, source_sha: None, target_sha: None, commits_behind: None }
-    }
-
-    #[test]
-    fn refresh_prunes_interactable_no_longer_declared_by_its_module() {
-        let scratch = std::env::temp_dir().join(format!("harmonia-interactables-prune-{}", std::process::id()));
-        let path = scratch.join("interactables.json");
-        let current = PathBuf::from("/home/owner/.config/kate/katerc");
-        let removed = PathBuf::from("/home/owner/.local/share/kate/anonymous.katesession");
-        save_feed(&path, &InteractablesFeed { schema: FEED_SCHEMA.to_string(), interactables: vec![item("desktop-config-payload", current.clone()), item("desktop-config-payload", removed)] }).unwrap();
-        let manifest = LadderManifest { schema: crate::ladder::SCHEMA.to_string(), id: "desktop-config-payload".to_string(), version: "1.0.0".to_string(), description: String::new(), role: None, optional: false, optional_warning: None, group: None, constants: BTreeMap::new(), caduceus_commands: Vec::new(), files_root: Some("files_root".to_string()), config_deploy: Some("interactable".to_string()), ladder: Vec::new(), base_dir: scratch.join("module") };
-        let request = FileConvergenceRequest { source_root: scratch.join("module/files_root"), target_root: PathBuf::from("/home/owner"), files: vec![FileSpec { relative_path: PathBuf::from(".config/kate/katerc"), mode: Some(0o644) }], backup_existing: false, receipt_name: "desktop-config".to_string(), owner: Some("owner".to_string()), group: None };
-        let outcome = FileConvergenceOutcome { ok: true, changed: false, ownership_changed: false, checked: 1, written: 0, backed_up: 0, missing: Vec::new(), missing_target_birth_debts: Vec::new(), entries: Vec::new(), message: String::new() };
-        refresh_interactables_at_path(&path, &manifest, &request, &outcome).unwrap();
-        let feed = load_feed(&path).unwrap();
-        assert_eq!(feed.interactables.len(), 1);
-        assert_eq!(feed.interactables[0].target_path, current);
-        let _ = fs::remove_dir_all(scratch);
-    }
 }

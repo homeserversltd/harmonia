@@ -284,43 +284,6 @@ pub(crate) fn placement_for_step(step: &ValidatedStep) -> Result<crate::bands::B
         })
 }
 
-#[cfg(test)]
-pub(crate) fn receipt_families(receipt_dir: &Path) -> Result<Vec<String>, String> {
-    let mut families = BTreeSet::new();
-    if !receipt_dir.exists() {
-        return Ok(Vec::new());
-    }
-    for entry in fs::read_dir(receipt_dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if entry.file_type().map_err(|e| e.to_string())?.is_file()
-            && entry.path().extension().and_then(|e| e.to_str()) == Some("json")
-        {
-            let text = fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
-            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                if let Some(schema) = value.get("schema").and_then(Value::as_str) {
-                    families.insert(schema.to_string());
-                }
-            }
-        }
-    }
-    Ok(families.into_iter().collect())
-}
-
-#[cfg(test)]
-pub(crate) fn shadow_diff_receipt_families(
-    ladder_receipt_dir: &Path,
-    compiled_receipt_dir: &Path,
-) -> Result<Vec<String>, String> {
-    let ladder = receipt_families(ladder_receipt_dir)?;
-    let compiled = receipt_families(compiled_receipt_dir)?;
-    let ladder_set: BTreeSet<_> = ladder.iter().cloned().collect();
-    let compiled_set: BTreeSet<_> = compiled.iter().cloned().collect();
-    Ok(ladder_set
-        .symmetric_difference(&compiled_set)
-        .cloned()
-        .collect())
-}
-
 pub(crate) fn project_manifest_routines(
     manifest: &LadderManifest,
     steps: &[ValidatedStep],

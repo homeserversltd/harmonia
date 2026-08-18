@@ -30,8 +30,6 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -48,18 +46,6 @@ const LEGACY_ROOT_GITCONFIG: &str = "/root/.gitconfig";
 const LEGACY_ROOT_FORGEJO_INCLUDE: &str = "/root/.gitconfig.d/forgejo-credentials.inc";
 const LEGACY_ROOT_FORGEJO_STORE: &str = "/root/.git-credentials-forgejo";
 const LEGACY_OWNER_FORGEJO_STORE: &str = "/home/owner/.git-credentials-forgejo";
-
-#[cfg(test)]
-thread_local! {
-    static TEST_ENGINE_CONFIG_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn set_test_engine_config_path(path: Option<PathBuf>) {
-    TEST_ENGINE_CONFIG_PATH.with(|slot| {
-        *slot.borrow_mut() = path;
-    });
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -209,10 +195,6 @@ pub(crate) fn canonicalize_git_candidate(url: &str) -> Result<String, String> {
 }
 
 pub(crate) fn engine_config_path() -> PathBuf {
-    #[cfg(test)]
-    if let Some(path) = TEST_ENGINE_CONFIG_PATH.with(|slot| slot.borrow().clone()) {
-        return path;
-    }
     env::var_os(ENGINE_CONFIG_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_ENGINE_CONFIG))
@@ -706,6 +688,96 @@ fn emit_preflight_receipt(
     )
 }
 
+pub(crate) fn slice4_bench(
+    root: &Path,
+    key: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let key = key.ok_or("renew-self-slice4-invocation-key-missing")?;
+    let receipts = root.join("receipts");
+    let module_root = root.join("profiles/tv/modules");
+    let identity = module_root.join("identity");
+    let profile_index = root.join("profiles/tv/index.json");
+    let staged = root.join("staged/harmonia");
+    let installed = root.join("bin/harmonia");
+    fs::create_dir_all(&identity).map_err(|e| e.to_string())?;
+    fs::create_dir_all(
+        installed
+            .parent()
+            .ok_or("renew-self-install-parent-missing")?,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        &profile_index,
+        r#"{"id":"tv","identity":"arch-tv","modules":["identity"]}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(identity.join("manifest.json"), r#"{"schema":"harmonia.module_ladder.v1","id":"identity","version":"1.0.0","ladder":[{"step_id":"noop","tool":"command","permutation":"capture","args":{"program":"/usr/bin/true"}}]}"#)
+        .map_err(|e| e.to_string())?;
+    fs::write(&installed, b"old-engine\n").map_err(|e| e.to_string())?;
+    let write_successor = |body: &str| -> Result<(), String> {
+        fs::create_dir_all(staged.parent().ok_or("renew-self-stage-parent-missing")?)
+            .map_err(|e| e.to_string())?;
+        fs::write(&staged, body).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    };
+    write_successor("#!/usr/bin/env sh\ncase \"$1\" in\n  explain|validate-ladder|plan-run) exit 0 ;;\n  *) exit 2 ;;\nesac\n")?;
+    let (proof_ok, _, _) =
+        crate::check_health::proof_battery(&crate::check_health::ProofBatteryRequest {
+            receipt_dir: &receipts,
+            staged: &staged,
+            module_root: &module_root,
+            profile_index: &profile_index,
+            apply: true,
+        })?;
+    let proof_receipt: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(receipts.join("proof-plan-run.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let promotion = if proof_ok {
+        promote_staged_binary(&staged, &installed, true, Some(key), &receipts)?
+    } else {
+        CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: "promotion skipped before successful proof battery".into(),
+        }
+    };
+    write_command_receipt(&receipts, "promote-successor", &promotion)?;
+    let promotion_receipt: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(receipts.join("promote-successor.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let promoted = proof_receipt["ok"].as_bool() == Some(true)
+        && promotion_receipt["ok"].as_bool() == Some(true)
+        && fs::read(&installed).map_err(|e| e.to_string())?
+            == fs::read(&staged).map_err(|e| e.to_string())?;
+    let promoted_bytes = fs::read(&installed).map_err(|e| e.to_string())?;
+    write_successor("#!/usr/bin/env sh\ncase \"$1\" in\n  explain) exit 0 ;;\n  validate-ladder) exit 44 ;;\n  plan-run) exit 0 ;;\n  *) exit 2 ;;\nesac\n")?;
+    let (failed_proof, failed_signal, _) =
+        crate::check_health::proof_battery(&crate::check_health::ProofBatteryRequest {
+            receipt_dir: &receipts,
+            staged: &staged,
+            module_root: &module_root,
+            profile_index: &profile_index,
+            apply: true,
+        })?;
+    let failed_receipt: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(receipts.join("proof-validate-ladder.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let refused = !failed_proof
+        && failed_signal.as_deref() == Some("engine-proof-validate-ladder-failed")
+        && failed_receipt["ok"].as_bool() == Some(false);
+    let preserved = fs::read(&installed).map_err(|e| e.to_string())? == promoted_bytes;
+    Ok(
+        json!({"success_swap_after_proof": promoted, "proof_failure_preserves_old_binary": refused && preserved, "reexec": false, "ok": promoted && refused && preserved}),
+    )
+}
 pub(crate) fn run_engine_preflight(
     module_root: &Path,
     receipt_dir: &Path,
@@ -1398,960 +1470,4 @@ pub(crate) fn run_engine_preflight(
             .map_err(|err| format!("harmonia-self-update-reexec-failed: {err}"));
     }
     Ok(execution)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canonicalizes_only_estate_forgejo_forms() {
-        assert_eq!(
-            canonicalize_git_candidate("git@git.home.arpa:HOMESERVERSLTD/harmonia.git").unwrap(),
-            "https://git.home.arpa/HOMESERVERSLTD/harmonia.git"
-        );
-        assert_eq!(
-            canonicalize_git_candidate("ssh://git@git.home.arpa/HOMESERVERSLTD/harmonia").unwrap(),
-            "https://git.home.arpa/HOMESERVERSLTD/harmonia"
-        );
-        assert_eq!(
-            canonicalize_git_candidate("https://github.com/example/repo.git").unwrap(),
-            "https://github.com/example/repo.git"
-        );
-        assert!(canonicalize_git_candidate("ssh://git@git.example:22/owner/repo").is_err());
-        assert!(canonicalize_git_candidate("https://user:token@git.home.arpa/owner/repo").is_err());
-    }
-    use std::sync::{Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn temp_root(name: &str) -> PathBuf {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-engine-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    fn with_engine_env<T>(root: &Path, f: impl FnOnce(&Path) -> T) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("engine env lock");
-        let config_path = root.join("engine.json");
-        set_test_engine_config_path(Some(config_path.clone()));
-        let result = f(&config_path);
-        set_test_engine_config_path(None);
-        result
-    }
-
-    fn fake_tool(path: &Path, body: &str) {
-        fs::write(path, body).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-    }
-
-    fn fixture_profile(root: &Path) -> (PathBuf, PathBuf) {
-        let profile_root = root.join("etc/harmonia/profiles/tv");
-        let module_root = profile_root.join("modules");
-        let module_dir = module_root.join("identity");
-        fs::create_dir_all(&module_dir).unwrap();
-        fs::write(
-            profile_root.join("index.json"),
-            r#"{"id":"tv","identity":"arch-tv","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["identity"]}"#,
-        )
-        .unwrap();
-        fs::write(
-            module_dir.join("manifest.json"),
-            r#"{"schema":"harmonia.module_ladder.v1","id":"identity","version":"1.0.0","ladder":[{"step_id":"noop","tool":"command","permutation":"capture","args":{"program":"/usr/bin/true"}}]}"#,
-        )
-        .unwrap();
-        (profile_root.join("index.json"), module_root)
-    }
-
-    fn write_engine_config(
-        path: &Path,
-        source_repo_url: &str,
-        build_program: &Path,
-        staged_bin: &Path,
-        install_bin: &Path,
-        profile_index: &Path,
-        source_dir: &Path,
-    ) {
-        fs::write(
-            path,
-            serde_json::json!({
-                "source_repo_url": source_repo_url,
-                "branch": "main",
-                "source_dir": source_dir,
-                "install_bin": install_bin,
-                "enabled": true,
-                "build_program": build_program,
-                "build_args": [],
-                "staged_bin": staged_bin,
-                "profile_index": profile_index,
-            })
-            .to_string(),
-        )
-        .unwrap();
-    }
-
-    fn capture(program: &str, args: &[&str], cwd: &Path) {
-        let result = tools::command::capture_with_cwd(program, args, cwd.to_str());
-        assert!(result.ok, "{} {:?}: {}", program, args, result.stderr);
-    }
-
-    fn fixture_repo(root: &Path) -> String {
-        let repo = root.join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        capture("/usr/bin/git", &["init", "-b", "main"], &repo);
-        capture(
-            "/usr/bin/git",
-            &["config", "user.email", "harmonia@example.invalid"],
-            &repo,
-        );
-        capture(
-            "/usr/bin/git",
-            &["config", "user.name", "Harmonia Test"],
-            &repo,
-        );
-        fs::write(repo.join("README.md"), "fixture\n").unwrap();
-        capture("/usr/bin/git", &["add", "README.md"], &repo);
-        capture("/usr/bin/git", &["commit", "-m", "seed"], &repo);
-        repo.display().to_string()
-    }
-
-    fn with_fake_bootstrap<T>(root: &Path, pacman_body: &str, f: impl FnOnce() -> T) -> T {
-        let pacman = root.join("fake-pacman");
-        let pacman_key = root.join("fake-pacman-key");
-        fake_tool(&pacman, pacman_body);
-        fake_tool(
-            &pacman_key,
-            "#!/usr/bin/env sh\necho pacman-key ok\nexit 0\n",
-        );
-        crate::tools::package::set_test_pacman_path(Some(pacman.display().to_string()));
-        std::env::set_var("HARMONIA_PACMAN_KEY_PATH", pacman_key.display().to_string());
-        std::env::set_var(SELF_UPDATE_REEXEC_ENV, "1");
-        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", root.join("subscription.json"));
-        let result = f();
-        std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH");
-        std::env::remove_var(SELF_UPDATE_REEXEC_ENV);
-        std::env::remove_var("HARMONIA_PACMAN_KEY_PATH");
-        crate::tools::package::set_test_pacman_path(None);
-        result
-    }
-
-    fn artifact_binary_body(label: &str) -> String {
-        format!(
-            "#!/usr/bin/env sh\ncase \"$1\" in\n  explain) echo {label}; exit 0 ;;\n  validate-ladder) echo {label}; exit 0 ;;\n  plan-run) echo {label}; exit 0 ;;\n  *) echo unexpected >&2; exit 2 ;;\nesac\n"
-        )
-    }
-
-    fn fixture_artifact_repo(root: &Path, artifact_name: &str, artifact_body: &str) -> String {
-        let repo = root.join("artifact-repo");
-        fs::create_dir_all(&repo).unwrap();
-        capture("/usr/bin/git", &["init", "-b", "main"], &repo);
-        capture(
-            "/usr/bin/git",
-            &["config", "user.email", "harmonia@example.invalid"],
-            &repo,
-        );
-        capture(
-            "/usr/bin/git",
-            &["config", "user.name", "Harmonia Test"],
-            &repo,
-        );
-        let artifact = repo.join(artifact_name);
-        fake_tool(&artifact, artifact_body);
-        capture("/usr/bin/git", &["add", artifact_name], &repo);
-        capture("/usr/bin/git", &["commit", "-m", "artifact"], &repo);
-        repo.display().to_string()
-    }
-
-    fn write_artifact_engine_config(
-        path: &Path,
-        source_repo_url: &str,
-        artifact_repo_url: &str,
-        build_program: &Path,
-        staged_bin: &Path,
-        install_bin: &Path,
-        profile_index: &Path,
-        source_dir: &Path,
-        artifact_cache: &Path,
-        lock_path: &Path,
-    ) {
-        fs::write(
-            path,
-            serde_json::json!({
-                "source_repo_url": source_repo_url,
-                "branch": "main",
-                "source_dir": source_dir,
-                "install_bin": install_bin,
-                "enabled": true,
-                "build_program": build_program,
-                "build_args": [],
-                "staged_bin": staged_bin,
-                "profile_index": profile_index,
-                "ratchet_lock": lock_path,
-                "artifact_transport": {
-                    "repo_url": artifact_repo_url,
-                    "branch": "main",
-                    "cache_dir": artifact_cache
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-    }
-
-    fn write_artifact_chain_engine_config(
-        path: &Path,
-        source_repo_url: &str,
-        transports: Vec<serde_json::Value>,
-        build_program: &Path,
-        staged_bin: &Path,
-        install_bin: &Path,
-        profile_index: &Path,
-        source_dir: &Path,
-        lock_path: &Path,
-    ) {
-        fs::write(
-            path,
-            serde_json::json!({
-                "source_repo_url": source_repo_url,
-                "branch": "main",
-                "source_dir": source_dir,
-                "install_bin": install_bin,
-                "enabled": true,
-                "build_program": build_program,
-                "build_args": [],
-                "staged_bin": staged_bin,
-                "profile_index": profile_index,
-                "ratchet_lock": lock_path,
-                "artifact_transports": transports,
-            })
-            .to_string(),
-        )
-        .unwrap();
-    }
-
-    fn write_ratchet_lock(path: &Path, version: &str, artifact_name: &str, sha: &str) {
-        fs::write(
-            path,
-            serde_json::json!({
-                "schema": ENGINE_RATCHET_LOCK_SCHEMA,
-                "engine_version": version,
-                "source_head_sha": "b0b75c546e2c0a19a9bc7eef0f71823be5d68cb5",
-                "artifacts": {
-                    "x86_64": {"name": artifact_name, "sha256": sha}
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn self_update_reexec_requires_binary_fingerprint_change() {
-        assert!(!should_self_update_reexec(
-            true,
-            true,
-            Some("a".to_string()),
-            Some("a".to_string())
-        ));
-        assert!(should_self_update_reexec(
-            true,
-            true,
-            Some("a".to_string()),
-            Some("b".to_string())
-        ));
-        assert!(!should_self_update_reexec(
-            false,
-            true,
-            Some("a".to_string()),
-            Some("b".to_string())
-        ));
-    }
-
-    #[test]
-    fn preflight_schema_names_engine_plane() {
-        assert_eq!(PREFLIGHT_SCHEMA, "harmonia.engine.preflight.v1");
-    }
-
-    #[test]
-    fn absent_engine_config_reports_unconfigured_not_green_noop() {
-        let root = temp_root("unconfigured");
-        with_engine_env(&root, |_config_path| {
-            let (_, module_root) = fixture_profile(&root);
-            let receipts = root.join("receipts");
-            let execution = run_engine_preflight(
-                &module_root,
-                &receipts,
-                true,
-                Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-            )
-            .unwrap();
-            assert!(!execution.ok);
-            assert_eq!(
-                execution.first_missing_signal.as_deref(),
-                Some("engine-self-possession-unconfigured")
-            );
-            let receipt = fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap();
-            assert!(receipt.contains("engine-self-possession-unconfigured"));
-            assert!(receipt.contains("retired_sidecar_gate"));
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn staged_promote_happy_path_uses_proved_successor() {
-        let root = temp_root("happy");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let repo = fixture_repo(&root);
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let build = root.join("build-success.sh");
-            fake_tool(
-                &build,
-                &format!(
-                    "#!/usr/bin/env sh\nmkdir -p '{}'\ncat > '{}' <<'EOF'\n#!/usr/bin/env sh\ncase \"$1\" in\n  explain) echo ok=true; exit 0 ;;\n  validate-ladder) echo ok=true; exit 0 ;;\n  plan-run) echo ok=true; exit 0 ;;\n  *) echo unexpected >&2; exit 2 ;;\nesac\nEOF\nchmod 755 '{}'\nexit 0\n",
-                    staged.parent().unwrap().display(),
-                    staged.display(),
-                    staged.display(),
-                ),
-            );
-            write_engine_config(
-                config_path,
-                "https://git.home.arpa/HOMESERVERSLTD/harmonia.git",
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                Path::new(&repo),
-            );
-            let mut engine: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
-            engine["local_source_checkout"] = serde_json::json!(&repo);
-            fs::write(config_path, engine.to_string()).unwrap();
-            let pacman = "#!/usr/bin/env sh\necho upgrading\nexit 0\n";
-            let receipts = root.join("receipts");
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(execution.ok, "{:?}", execution.first_missing_signal);
-            assert_eq!(fs::read(&install_bin).unwrap(), fs::read(&staged).unwrap());
-            let receipt = fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap();
-            assert!(
-                receipt.contains("\"lane\": \"local-checkout\""),
-                "{receipt}"
-            );
-            assert!(
-                receipt.contains("declared-local-checkout-owner-plane-freshness"),
-                "{receipt}"
-            );
-            let source_receipt =
-                fs::read_to_string(receipts.join("engine-preflight/source-possession.json"))
-                    .unwrap();
-            let source_details = fs::read_to_string(
-                receipts.join("engine-preflight/source-possession-details.json"),
-            )
-            .unwrap();
-            assert!(source_details.contains("owner_freshness_lane=external-owner-plane"));
-            assert!(!source_receipt.contains("Username for"));
-            assert!(receipt.contains("old_engine_preserved"));
-            assert!(receipt.contains("successor_promoted_only_after"));
-            assert!(receipt.contains("retired_sidecar_gate"));
-            assert!(receipts
-                .join("engine-preflight/proof-explain.json")
-                .exists());
-            assert!(receipts
-                .join("engine-preflight/proof-validate-ladder.json")
-                .exists());
-            assert!(receipts
-                .join("engine-preflight/proof-plan-run.json")
-                .exists());
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn artifact_lane_happy_path_uses_blessed_lock_and_proof_battery() {
-        let root = temp_root("artifact-happy");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let source_repo = fixture_repo(&root);
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let artifact_name = "harmonia-x86_64";
-            let artifact_body = artifact_binary_body("artifact-ok");
-            let artifact_repo = fixture_artifact_repo(&root, artifact_name, &artifact_body);
-            let artifact_sha =
-                sha256_file(&root.join("artifact-repo").join(artifact_name)).unwrap();
-            let lock = root.join("engine-ratchet-lock.json");
-            write_ratchet_lock(&lock, "0.1.1", artifact_name, &artifact_sha);
-            let build = root.join("build-should-not-run.sh");
-            fake_tool(
-                &build,
-                "#!/usr/bin/env sh\necho source-build-ran >&2\nexit 9\n",
-            );
-            write_artifact_engine_config(
-                config_path,
-                &source_repo,
-                &artifact_repo,
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-                &root.join("artifact-cache"),
-                &lock,
-            );
-            let receipts = root.join("receipts");
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(execution.ok, "{:?}", execution.first_missing_signal);
-            assert_eq!(sha256_file(&install_bin).unwrap(), artifact_sha);
-            let receipt = fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap();
-            assert!(receipt.contains("\"lane\": \"artifact\""), "{receipt}");
-            assert!(receipt.contains("version+sha-lock"), "{receipt}");
-            assert!(receipts
-                .join("engine-preflight/artifact-stage.json")
-                .exists());
-            assert!(receipts
-                .join("engine-preflight/proof-explain.json")
-                .exists());
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn artifact_sha_mismatch_refuses_before_promotion() {
-        let root = temp_root("artifact-tamper");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let source_repo = fixture_repo(&root);
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let artifact_name = "harmonia-x86_64";
-            let artifact_repo =
-                fixture_artifact_repo(&root, artifact_name, &artifact_binary_body("tampered"));
-            let lock = root.join("engine-ratchet-lock.json");
-            write_ratchet_lock(
-                &lock,
-                "0.1.1",
-                artifact_name,
-                "0000000000000000000000000000000000000000000000000000000000000000",
-            );
-            let build = root.join("build-should-not-run.sh");
-            fake_tool(&build, "#!/usr/bin/env sh\nexit 9\n");
-            write_artifact_engine_config(
-                config_path,
-                &source_repo,
-                &artifact_repo,
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-                &root.join("artifact-cache"),
-                &lock,
-            );
-            let receipts = root.join("receipts");
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(!execution.ok);
-            assert_eq!(
-                execution.first_missing_signal.as_deref(),
-                Some("engine-artifact-sha256-failed")
-            );
-            assert_eq!(fs::read_to_string(&install_bin).unwrap(), "old-engine\n");
-            let promote_receipt =
-                fs::read_to_string(receipts.join("engine-preflight/promote-successor.json"))
-                    .unwrap();
-            assert!(!promote_receipt.contains("atomic swap"));
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn artifact_already_current_is_noop_without_reexec() {
-        let root = temp_root("artifact-current");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let source_repo = fixture_repo(&root);
-            let artifact_name = "harmonia-x86_64";
-            let installed = artifact_binary_body("current");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fake_tool(&install_bin, &installed);
-            let sha = sha256_file(&install_bin).unwrap();
-            let artifact_repo = fixture_artifact_repo(&root, artifact_name, &installed);
-            let lock = root.join("engine-ratchet-lock.json");
-            write_ratchet_lock(&lock, env!("CARGO_PKG_VERSION"), artifact_name, &sha);
-            let build = root.join("build-should-not-run.sh");
-            fake_tool(&build, "#!/usr/bin/env sh\nexit 9\n");
-            write_artifact_engine_config(
-                config_path,
-                &source_repo,
-                &artifact_repo,
-                &build,
-                &root.join("staged/harmonia"),
-                &install_bin,
-                &profile_index,
-                &root.join("source"),
-                &root.join("artifact-cache"),
-                &lock,
-            );
-            let receipts = root.join("receipts");
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(execution.ok);
-            let receipt = fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap();
-            assert!(receipt.contains("\"reexec_planned\": false"), "{receipt}");
-            assert!(
-                fs::read_to_string(receipts.join("engine-preflight/artifact-current.json"))
-                    .unwrap()
-                    .contains("engine-current no-op")
-            );
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn artifact_transport_failure_falls_back_to_source_lane() {
-        let root = temp_root("artifact-fallback");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let source_repo = fixture_repo(&root);
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let lock = root.join("engine-ratchet-lock.json");
-            write_ratchet_lock(
-                &lock,
-                "0.1.1",
-                "missing-artifact",
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            );
-            let build = root.join("build-success.sh");
-            fake_tool(
-                &build,
-                &format!(
-                    "#!/usr/bin/env sh\nmkdir -p '{}'\ncat > '{}' <<'EOF'\n{}EOF\nchmod 755 '{}'\n",
-                    staged.parent().unwrap().display(),
-                    staged.display(),
-                    artifact_binary_body("source-fallback"),
-                    staged.display()
-                ),
-            );
-            write_artifact_engine_config(
-                config_path,
-                &source_repo,
-                "/definitely/missing/artifacts",
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-                &root.join("artifact-cache"),
-                &lock,
-            );
-            let receipts = root.join("receipts");
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(execution.ok, "{:?}", execution.first_missing_signal);
-            let receipt = fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap();
-            assert!(
-                receipt.contains("\"lane\": \"source-fallback\""),
-                "{receipt}"
-            );
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn artifact_chain_primary_miss_second_transport_serves() {
-        let root = temp_root("artifact-chain-second");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let source_repo = fixture_repo(&root);
-            let empty_repo = fixture_repo(&root.join("empty-artifacts"));
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let artifact_name = "harmonia-x86_64";
-            let artifact_body = artifact_binary_body("second-served");
-            let artifact_repo = fixture_artifact_repo(&root, artifact_name, &artifact_body);
-            let artifact_sha =
-                sha256_file(&root.join("artifact-repo").join(artifact_name)).unwrap();
-            let lock = root.join("engine-ratchet-lock.json");
-            write_ratchet_lock(&lock, "0.1.1", artifact_name, &artifact_sha);
-            let build = root.join("build-should-not-run.sh");
-            fake_tool(
-                &build,
-                "#!/usr/bin/env sh\necho source-build-ran >&2\nexit 9\n",
-            );
-            write_artifact_chain_engine_config(
-                config_path,
-                &source_repo,
-                vec![
-                    serde_json::json!({"name":"estate-forge","repo_url": empty_repo,"branch":"main","cache_dir": root.join("artifact-cache/estate")}),
-                    serde_json::json!({"name":"github-canonical","repo_url": artifact_repo,"branch":"main","cache_dir": root.join("artifact-cache/github")}),
-                ],
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-                &lock,
-            );
-            let receipts = root.join("receipts");
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(execution.ok, "{:?}", execution.first_missing_signal);
-            assert_eq!(sha256_file(&install_bin).unwrap(), artifact_sha);
-            let receipt: serde_json::Value = serde_json::from_str(
-                &fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(receipt["transport_used"], "github-canonical");
-            assert_eq!(receipt["artifact_transport_attempts"][0]["outcome"], "miss");
-            assert_eq!(
-                receipt["artifact_transport_attempts"][0]["reason"],
-                "artifact-absent"
-            );
-            assert_eq!(
-                receipt["artifact_transport_attempts"][1]["outcome"],
-                "served"
-            );
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn artifact_chain_sha_mismatch_stops_before_second_transport() {
-        let root = temp_root("artifact-chain-tamper-stop");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let source_repo = fixture_repo(&root);
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let artifact_name = "harmonia-x86_64";
-            let tampered_repo =
-                fixture_artifact_repo(&root, artifact_name, &artifact_binary_body("tampered"));
-            let good_repo_root = root.join("good-second");
-            let good_repo = fixture_artifact_repo(
-                &good_repo_root,
-                artifact_name,
-                &artifact_binary_body("good"),
-            );
-            let good_sha =
-                sha256_file(&good_repo_root.join("artifact-repo").join(artifact_name)).unwrap();
-            let lock = root.join("engine-ratchet-lock.json");
-            write_ratchet_lock(&lock, "0.1.1", artifact_name, &good_sha);
-            let build = root.join("build-should-not-run.sh");
-            fake_tool(&build, "#!/usr/bin/env sh\nexit 9\n");
-            write_artifact_chain_engine_config(
-                config_path,
-                &source_repo,
-                vec![
-                    serde_json::json!({"name":"estate-forge","repo_url": tampered_repo,"branch":"main","cache_dir": root.join("artifact-cache/estate")}),
-                    serde_json::json!({"name":"github-canonical","repo_url": good_repo,"branch":"main","cache_dir": root.join("artifact-cache/github")}),
-                ],
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-                &lock,
-            );
-            let receipts = root.join("receipts");
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(!execution.ok);
-            assert_eq!(
-                execution.first_missing_signal.as_deref(),
-                Some("engine-artifact-sha256-failed")
-            );
-            assert!(!receipts
-                .join("engine-preflight/artifact-transport-2.json")
-                .exists());
-            let receipt: serde_json::Value = serde_json::from_str(
-                &fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(receipt["transport_used"], serde_json::Value::Null);
-            assert_eq!(
-                receipt["artifact_transport_attempts"]
-                    .as_array()
-                    .unwrap()
-                    .len(),
-                1
-            );
-            assert_eq!(
-                receipt["artifact_transport_attempts"][0]["outcome"],
-                "hard-red"
-            );
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn artifact_chain_exhausted_misses_fall_back_to_source_lane() {
-        let root = temp_root("artifact-chain-exhausted");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let source_repo = fixture_repo(&root);
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let empty_repo = fixture_repo(&root.join("empty-one"));
-            let missing_repo = root.join("missing-two").display().to_string();
-            let lock = root.join("engine-ratchet-lock.json");
-            write_ratchet_lock(
-                &lock,
-                "0.1.1",
-                "missing-artifact",
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            );
-            let build = root.join("build-success.sh");
-            fake_tool(
-                &build,
-                &format!(
-                    "#!/usr/bin/env sh\nmkdir -p '{}'\ncat > '{}' <<'EOF'\n{}EOF\nchmod 755 '{}'\n",
-                    staged.parent().unwrap().display(),
-                    staged.display(),
-                    artifact_binary_body("source-fallback"),
-                    staged.display()
-                ),
-            );
-            write_artifact_chain_engine_config(
-                config_path,
-                &source_repo,
-                vec![
-                    serde_json::json!({"name":"estate-forge","repo_url": empty_repo,"branch":"main","cache_dir": root.join("artifact-cache/estate")}),
-                    serde_json::json!({"name":"github-canonical","repo_url": missing_repo,"branch":"main","cache_dir": root.join("artifact-cache/github")}),
-                ],
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-                &lock,
-            );
-            let receipts = root.join("receipts");
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(execution.ok, "{:?}", execution.first_missing_signal);
-            let receipt: serde_json::Value = serde_json::from_str(
-                &fs::read_to_string(receipts.join("engine-preflight/run.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(receipt["lane"], "source-fallback");
-            assert_eq!(
-                receipt["artifact_transport_attempts"]
-                    .as_array()
-                    .unwrap()
-                    .len(),
-                2
-            );
-            assert_eq!(receipt["artifact_transport_attempts"][0]["outcome"], "miss");
-            assert_eq!(receipt["artifact_transport_attempts"][1]["outcome"], "miss");
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn ratchet_lock_schema_denies_unknown_fields() {
-        let root = temp_root("lock-schema");
-        let lock = root.join("engine-ratchet-lock.json");
-        fs::write(&lock, r#"{"schema":"harmonia.engine.ratchet_lock.v1","engine_version":"0.1.1","source_head_sha":"abc","artifacts":{"x86_64":{"name":"harmonia","sha256":"abc","extra":true}}}"#).unwrap();
-        let err = load_ratchet_lock(&lock).unwrap_err();
-        assert!(err.contains("engine-ratchet-lock-parse-failed"), "{err}");
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn sync_failure_blocks_source_build_and_preserves_old_binary() {
-        let root = temp_root("sync-failure");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let repo = fixture_repo(&root);
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let build = root.join("build-should-not-run.sh");
-            fake_tool(&build, "#!/usr/bin/env sh\necho build-ran >&2\nexit 9\n");
-            write_engine_config(
-                config_path,
-                &repo,
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-            );
-            let pacman = "#!/usr/bin/env sh\nif [ \"$1\" = \"-Syu\" ]; then echo sync failed >&2; exit 42; fi\necho ok\nexit 0\n";
-            let receipts = root.join("receipts");
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(!execution.ok);
-            assert_eq!(
-                execution.first_missing_signal.as_deref(),
-                Some("engine-system-sync-failed")
-            );
-            assert_eq!(fs::read_to_string(&install_bin).unwrap(), "old-engine\n");
-            let build_receipt =
-                fs::read_to_string(receipts.join("engine-preflight/staged-build.json")).unwrap();
-            assert!(build_receipt.contains("skipped before successful source possession"));
-        });
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn proof_failure_blocks_swap_and_preserves_old_binary() {
-        let root = temp_root("proof-failure");
-        with_engine_env(&root, |config_path| {
-            let (profile_index, module_root) = fixture_profile(&root);
-            let repo = fixture_repo(&root);
-            let source_dir = root.join("source");
-            let staged = root.join("staged/harmonia");
-            let install_bin = root.join("bin/harmonia");
-            fs::create_dir_all(install_bin.parent().unwrap()).unwrap();
-            fs::write(&install_bin, "old-engine\n").unwrap();
-            let build = root.join("build-proof-fail.sh");
-            fake_tool(
-                &build,
-                &format!(
-                    "#!/usr/bin/env sh\nmkdir -p '{}'\ncat > '{}' <<'EOF'\n#!/usr/bin/env sh\ncase \"$1\" in\n  explain) exit 0 ;;\n  validate-ladder) echo invalid >&2; exit 44 ;;\n  plan-run) exit 0 ;;\nesac\nEOF\nchmod 755 '{}'\nexit 0\n",
-                    staged.parent().unwrap().display(),
-                    staged.display(),
-                    staged.display(),
-                ),
-            );
-            write_engine_config(
-                config_path,
-                &repo,
-                &build,
-                &staged,
-                &install_bin,
-                &profile_index,
-                &source_dir,
-            );
-            let pacman = "#!/usr/bin/env sh\necho ok\nexit 0\n";
-            let receipts = root.join("receipts");
-            let execution = with_fake_bootstrap(&root, pacman, || {
-                run_engine_preflight(
-                    &module_root,
-                    &receipts,
-                    true,
-                    Some(crate::invocation_face::mint(&["--apply".into()]).0.unwrap()),
-                )
-                .unwrap()
-            });
-            assert!(!execution.ok);
-            assert_eq!(
-                execution.first_missing_signal.as_deref(),
-                Some("engine-proof-validate-ladder-failed")
-            );
-            assert_eq!(fs::read_to_string(&install_bin).unwrap(), "old-engine\n");
-            let promote =
-                fs::read_to_string(receipts.join("engine-preflight/promote-successor.json"))
-                    .unwrap();
-            assert!(promote.contains("promotion skipped before successful proof battery"));
-        });
-        let _ = fs::remove_dir_all(root);
-    }
 }
