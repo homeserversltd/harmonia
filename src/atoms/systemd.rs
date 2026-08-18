@@ -332,7 +332,7 @@ pub(crate) fn restore_service_state(state_before: &ServiceStateSnapshot) -> Resu
         let mut args = systemctl_scope_args(state_before.user, target_user);
         args.extend([verb.to_string(), state_before.name.clone()]);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let result = crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &refs, 30);
+        let result = crate::atoms::command::capture_with_timeout("/usr/bin/systemctl", &refs, 30);
         if !result.ok {
             return Err(format!(
                 "systemd-state-restore-{verb}-failed-{}: {}",
@@ -855,7 +855,7 @@ fn systemctl(
         }
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    crate::tools::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs)
+    crate::atoms::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs)
 }
 
 fn unit_present_result(mut result: CmdResult, service: &str) -> CmdResult {
@@ -907,7 +907,7 @@ fn state(
         "load-state" | "unit-file-state" | "needs-reload" => {
             systemctl(kind, service, user, target_user, timeout_secs)
         }
-        _ => crate::tools::command::capture_with_timeout(
+        _ => crate::atoms::command::capture_with_timeout(
             "/usr/bin/systemctl",
             &arg_refs,
             timeout_secs,

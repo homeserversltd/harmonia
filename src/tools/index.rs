@@ -145,21 +145,21 @@ impl ToolArgKind {
 }
 
 pub mod artifact_lock;
-pub mod aur;
-pub mod command;
-pub(crate) mod comparison;
-pub mod declaration;
+pub use crate::atoms::aur;
+pub use crate::atoms::command;
+pub(crate) use crate::atoms::comparison;
+pub use crate::atoms::declaration;
 pub mod files;
-pub mod git_artifact;
-pub mod health;
+pub use crate::atoms::git_artifact;
+pub use crate::atoms::health;
 pub mod household_time;
 #[path = "make-symlink.rs"]
 pub(crate) mod make_symlink;
-pub mod package;
+pub use crate::atoms::package;
 pub(crate) mod routine;
 #[path = "service-runtime/index.rs"]
 pub(crate) mod service_runtime;
-pub mod systemd;
+pub use crate::atoms::systemd;
 pub mod venv;
 
 #[derive(serde::Deserialize)]

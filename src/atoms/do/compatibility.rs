@@ -5,7 +5,7 @@ use super::{
     run_command, write_file,
 };
 use crate::atoms::Receipt;
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::path::Path;
 use std::time::Duration;
 
@@ -150,18 +150,18 @@ pub(crate) fn aur_build_pinned(
 pub(crate) fn git_pull(
     a: ActionAuthorization,
     i: InvocationKey,
-    r: &crate::tools::git_artifact::Request,
-    c: impl FnOnce() -> crate::tools::git_artifact::Outcome,
-) -> crate::tools::git_artifact::Outcome {
+    r: &crate::atoms::git_artifact::Request,
+    c: impl FnOnce() -> crate::atoms::git_artifact::Outcome,
+) -> crate::atoms::git_artifact::Outcome {
     super::pull_repo::git_pull(a, i, r, c)
 }
 
 pub(crate) fn git_acquire(
     a: ActionAuthorization,
     i: InvocationKey,
-    p: &crate::tools::git_artifact::SourcePlan,
-    c: impl FnOnce() -> crate::tools::git_artifact::SourceOutcome,
-) -> crate::tools::git_artifact::SourceOutcome {
+    p: &crate::atoms::git_artifact::SourcePlan,
+    c: impl FnOnce() -> crate::atoms::git_artifact::SourceOutcome,
+) -> crate::atoms::git_artifact::SourceOutcome {
     super::pull_repo::git_acquire(a, i, p, c)
 }
 

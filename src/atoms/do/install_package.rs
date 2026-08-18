@@ -1,6 +1,6 @@
 // Owned do atom for install-package
 use crate::atoms;
-    use crate::tools::comparison::ActionAuthorization;
+    use crate::atoms::comparison::ActionAuthorization;
     use std::path::Path;
 
     pub(crate) fn install(

@@ -1,11 +1,20 @@
 // The Harmonia engine atoms: ask, do, compare, attest.
 #[allow(dead_code)]
-use crate::tools::comparison::{self, DiffDecision};
+use crate::atoms::comparison::DiffDecision;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+pub mod aur;
+pub mod command;
+pub mod comparison;
+pub mod declaration;
+pub mod files;
+pub mod git_artifact;
+pub mod health;
+pub mod package;
+pub mod systemd;
 #[path = "ask/index.rs"]
 pub(crate) mod ask;
 #[path = "attest/index.rs"]

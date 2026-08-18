@@ -99,7 +99,7 @@ pub fn capture_request(program: impl Into<String>, args: Vec<String>) -> Request
 }
 
 pub(crate) fn authorized_capture(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: crate::atoms::r#do::InvocationKey,
     program: &str,
     args: &[String],

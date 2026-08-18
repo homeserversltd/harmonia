@@ -11,7 +11,7 @@ pub(crate) fn check(
 }
 
 pub(crate) mod probe {
-    use crate::tools::aur::{self, AurRatchetLock, AurUpstreamState};
+    use crate::atoms::aur::{self, AurRatchetLock, AurUpstreamState};
     use crate::{hyalos, PinnedArtifactStatus, PinnedArtifactsLock, Profile};
     use serde::Deserialize;
     use serde_json::json;
@@ -79,7 +79,7 @@ pub(crate) mod probe {
     }
 
     pub(crate) fn installed_version(package: &str) -> Option<String> {
-        let program = crate::tools::package::pacman_program();
+        let program = crate::atoms::package::pacman_program();
         if !Path::new(&program).exists() {
             return None;
         }

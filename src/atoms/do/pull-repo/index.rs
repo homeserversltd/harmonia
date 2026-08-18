@@ -4,7 +4,7 @@
 //! observation remains in `atoms::ask`, while plan/credential types stay in
 //! `tools::git_artifact` for compatibility.
 
-use crate::tools::git_artifact::{
+use crate::atoms::git_artifact::{
     self, scoped_request, source_attempt, CommandReceipt, Outcome, Request, SourceAttemptReceipt,
     SourceCandidate, SourceCandidateKind, SourceOutcome, SourcePlan, SourceReceipt,
 };
@@ -14,7 +14,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::tools::git_artifact::{capture_git, is_lower_hex_sha, parse_declared_remote_head};
+use crate::atoms::git_artifact::{capture_git, is_lower_hex_sha, parse_declared_remote_head};
 
 pub(crate) fn preserved_non_git_path(path: &Path) -> PathBuf {
     let stamp = SystemTime::now()
@@ -1057,7 +1057,7 @@ fn source_hard_red(attempts: Vec<SourceAttemptReceipt>, changed: bool) -> Source
 }
 
 pub(crate) fn git_pull(
-    _authorization: crate::tools::comparison::ActionAuthorization,
+    _authorization: crate::atoms::comparison::ActionAuthorization,
     _invocation: crate::atoms::r#do::InvocationKey,
     request: &Request,
     _callback: impl FnOnce() -> Outcome,
@@ -1066,7 +1066,7 @@ pub(crate) fn git_pull(
 }
 
 pub(crate) fn git_acquire(
-    _authorization: crate::tools::comparison::ActionAuthorization,
+    _authorization: crate::atoms::comparison::ActionAuthorization,
     _invocation: crate::atoms::r#do::InvocationKey,
     plan: &SourcePlan,
     _callback: impl FnOnce() -> SourceOutcome,

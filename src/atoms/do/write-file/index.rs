@@ -1,6 +1,6 @@
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{Drift, Receipt};
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]

@@ -7,11 +7,11 @@ pub(crate) fn observe(
     user: bool,
     target_user: Option<&str>,
     timeout_secs: u64,
-) -> crate::tools::systemd::SystemdObservation {
+) -> crate::atoms::systemd::SystemdObservation {
     probe::unit(unit, user, target_user, timeout_secs)
 }
 pub(crate) fn act(
-    authorization: crate::tools::comparison::ActionAuthorization,
+    authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: atoms::r#do::InvocationKey,
     unit: &str,
     user: bool,
@@ -36,7 +36,7 @@ pub(crate) fn report_home(
 }
 
 mod probe {
-    use crate::tools::systemd::SystemdObservation;
+    use crate::atoms::systemd::SystemdObservation;
     pub(super) fn unit(
         unit: &str,
         user: bool,
@@ -79,7 +79,7 @@ mod mutation {
     use crate::atoms;
     use crate::CmdResult;
     pub(super) fn enable(
-        authorization: crate::tools::comparison::ActionAuthorization,
+        authorization: crate::atoms::comparison::ActionAuthorization,
         invocation: atoms::r#do::InvocationKey,
         unit: &str,
         user: bool,

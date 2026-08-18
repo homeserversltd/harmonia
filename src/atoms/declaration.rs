@@ -1,5 +1,5 @@
 //! The authored declaration grammar for the thirteen recursive tool seats.
-use crate::tools::comparison::{self, ActionAuthorization, ComparisonRun, DiffDecision};
+use crate::atoms::comparison::{self, ActionAuthorization, ComparisonRun, DiffDecision};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeSet;

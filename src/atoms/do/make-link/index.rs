@@ -1,5 +1,5 @@
 use crate::atoms::r#do::InvocationKey;
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
 use std::path::Path;
 

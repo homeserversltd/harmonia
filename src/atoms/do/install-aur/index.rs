@@ -1,5 +1,5 @@
 use crate::OperationOutcome;
-use crate::tools::aur::{bounded_timeout, current_pkg_tar, first_blocker, installed_version, installed_version_command, install_built_package, meaningful_stderr_tail, write_install_failure, prepare_and_build, prepare_current_build, read_lock, write_build_receipt, installed_version_from_result, AurBuildReceipt, DEFAULT_BUILD_ROOT};
+use crate::atoms::aur::{bounded_timeout, current_pkg_tar, first_blocker, installed_version, installed_version_command, install_built_package, meaningful_stderr_tail, write_install_failure, prepare_and_build, prepare_current_build, read_lock, write_build_receipt, installed_version_from_result, AurBuildReceipt, DEFAULT_BUILD_ROOT};
 use crate::CmdResult;
 use serde_json::Value;
 use crate::write_json;
@@ -92,5 +92,5 @@ pub(crate) fn aur_install_action(
     })
 }
 use crate::atoms::r#do::InvocationKey;
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 pub(crate) fn aur_install(_authorization: ActionAuthorization, _invocation: InvocationKey, callback: impl FnOnce() -> Result<crate::OperationOutcome, String>) -> Result<crate::OperationOutcome, String> { callback() }

@@ -1,6 +1,6 @@
 //! Build-venv atom: owns venv creation, dependency installation, and state custody.
 use crate::atoms::r#do::InvocationKey;
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use crate::OperationOutcome;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

@@ -71,9 +71,9 @@ pub(crate) struct PlaceFileOutcome {
 }
 
 pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome, String> {
-    match crate::tools::files::classify_target(request.path) {
-        crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
-        crate::tools::files::TargetClass::Config if request.invocation.is_some() => {
+    match crate::atoms::files::classify_target(request.path) {
+        crate::atoms::files::TargetClass::Refused(reason) => return Err(reason),
+        crate::atoms::files::TargetClass::Config if request.invocation.is_some() => {
             return Err("configuration-actuator-authority-refused".into())
         }
         _ => {}
@@ -87,7 +87,7 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
             ));
         }
     }
-    let run = crate::tools::declaration::execute(
+    let run = crate::atoms::declaration::execute(
         "place-file",
         "place-file",
         || {
@@ -100,9 +100,9 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
         },
         |observation| {
             if observation.current() {
-                crate::tools::comparison::DiffDecision::Empty
+                crate::atoms::comparison::DiffDecision::Empty
             } else {
-                crate::tools::comparison::DiffDecision::Different
+                crate::atoms::comparison::DiffDecision::Different
             }
         },
         |authorization, observation| {
@@ -123,8 +123,8 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
     )?;
     let observation = run.observation().clone();
     let movement = match run {
-        crate::tools::comparison::ComparisonRun::Current { .. } => PlaceFileMovement::default(),
-        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => movement,
+        crate::atoms::comparison::ComparisonRun::Current { .. } => PlaceFileMovement::default(),
+        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement,
     };
     let drift = if observation.current() {
         Drift::Current
@@ -146,8 +146,8 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
     })
 }
 
-pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
-    crate::tools::declaration::get("place-file")
+pub fn declaration() -> Result<Option<&'static crate::atoms::declaration::Declaration>, String> {
+    crate::atoms::declaration::get("place-file")
 }
 
 /// Strict Slice 11 request. Unlike the compatibility request above, all metadata
@@ -408,7 +408,7 @@ mod probe {
                 .map(|bytes| bytes == declared_bytes)
                 .map_err(|error| format!("place-file-read-failed {}: {error}", path.display()))?;
         let mode = if regular {
-            crate::tools::files::target_mode(path)?
+            crate::atoms::files::target_mode(path)?
         } else {
             None
         };
@@ -435,7 +435,7 @@ mod probe {
 
 mod mutation {
     use super::*;
-    use crate::tools::comparison::ActionAuthorization;
+    use crate::atoms::comparison::ActionAuthorization;
 
     pub(super) fn place(
         authorization: ActionAuthorization,

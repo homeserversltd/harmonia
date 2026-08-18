@@ -3,8 +3,8 @@ use crate::CmdResult;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn probe(request: &crate::tools::health::ProbeRequest<'_>) -> CmdResult {
-    let result = crate::tools::health::curl_probe(request);
+pub(crate) fn probe(request: &crate::atoms::health::ProbeRequest<'_>) -> CmdResult {
+    let result = crate::atoms::health::curl_probe(request);
     result
 }
 
@@ -43,7 +43,7 @@ fn run_proof_command(program: &Path, args: &[String], apply: bool) -> CmdResult 
         };
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    crate::tools::command::capture_with_cwd(&program.to_string_lossy(), &refs, None)
+    crate::atoms::command::capture_with_cwd(&program.to_string_lossy(), &refs, None)
 }
 
 pub(crate) fn proof_battery(

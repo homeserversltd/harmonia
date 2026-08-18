@@ -1,5 +1,5 @@
 use crate::OperationOutcome;
-use crate::tools::aur::{bounded_timeout, current_pkg_tar, first_blocker, meaningful_stderr_tail, prepare_and_build, prepare_current_build, read_lock, write_build_receipt, AurBuildReceipt, DEFAULT_BUILD_ROOT};
+use crate::atoms::aur::{bounded_timeout, current_pkg_tar, first_blocker, meaningful_stderr_tail, prepare_and_build, prepare_current_build, read_lock, write_build_receipt, AurBuildReceipt, DEFAULT_BUILD_ROOT};
 use crate::CmdResult;
 use crate::write_json;
 use std::path::{Path, PathBuf};
@@ -98,5 +98,5 @@ pub(crate) fn aur_build_pinned_action(
     })
 }
 use crate::atoms::r#do::InvocationKey;
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 pub(crate) fn aur_build_pinned(_authorization: ActionAuthorization, _invocation: InvocationKey, callback: impl FnOnce() -> Result<crate::OperationOutcome, String>) -> Result<crate::OperationOutcome, String> { callback() }

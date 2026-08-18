@@ -1,6 +1,6 @@
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{CommandObservation, Drift, Receipt};
-use crate::tools::comparison::{self, ActionAuthorization};
+use crate::atoms::comparison::{self, ActionAuthorization};
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ pub(crate) fn cargo_build(
         .iter()
         .cloned()
         .collect::<std::collections::BTreeMap<_, _>>();
-    let result = crate::tools::command::capture_with_cwd_as_bearer_and_env(
+    let result = crate::atoms::command::capture_with_cwd_as_bearer_and_env(
         "cargo",
         &["build", "--release"],
         cwd.to_str(),
@@ -53,7 +53,7 @@ pub(crate) fn bench_build_guard(
     std::fs::create_dir_all(artifact.parent().unwrap()).map_err(|e| e.to_string())?;
     let action_count = Cell::new(0_u32);
     let run_once = |action_count: &Cell<u32>| -> Result<bool, String> {
-        let run = crate::tools::declaration::execute(
+        let run = crate::atoms::declaration::execute(
             "build-crate",
             "bench-build-crate",
             || crate::atoms::ask::build_crate::build_identity(source_build_sha, None, &artifact),

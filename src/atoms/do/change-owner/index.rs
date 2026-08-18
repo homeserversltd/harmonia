@@ -1,7 +1,7 @@
 //! Typed lchown owner actuator.
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{Drift, Receipt};
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;

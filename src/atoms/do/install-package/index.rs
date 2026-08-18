@@ -1,6 +1,6 @@
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::CommandObservation;
-use crate::tools::command;
+use crate::atoms::command;
 use crate::CmdResult;
 
 #[allow(clippy::too_many_arguments)]
@@ -12,13 +12,13 @@ pub(crate) fn pacman_mutate_packages_with_options(
     conflict_paths: &[String],
     timeout_secs: u64,
 ) -> Result<CmdResult, String> {
-    let program = crate::tools::package::pacman_program();
-    crate::tools::package::reclaim_pacman_database_lock(receipt_dir, &program, true)?;
-    let mut args = crate::tools::package::pacman_base_args(sync);
+    let program = crate::atoms::package::pacman_program();
+    crate::atoms::package::reclaim_pacman_database_lock(receipt_dir, &program, true)?;
+    let mut args = crate::atoms::package::pacman_base_args(sync);
     args.extend(packages.iter().map(String::as_str));
-    crate::tools::package::capture_overwrite_preimage(receipt_dir, conflict_paths)?;
+    crate::atoms::package::capture_overwrite_preimage(receipt_dir, conflict_paths)?;
     let result = command::capture_with_timeout(&program, &args, timeout_secs);
-    if result.ok || !crate::tools::package::pacman_needs_overwrite_retry(&result) {
+    if result.ok || !crate::atoms::package::pacman_needs_overwrite_retry(&result) {
         return Ok(result);
     }
     let Some(policy) = conflict_policy else {
@@ -37,8 +37,8 @@ pub(crate) fn pacman_mutate_packages_with_options(
             .to_string(),
         });
     }
-    let Some(mut overwrite_args) = crate::tools::package::overwrite_allowed_args(
-        &crate::tools::package::pacman_base_args(sync),
+    let Some(mut overwrite_args) = crate::atoms::package::overwrite_allowed_args(
+        &crate::atoms::package::pacman_base_args(sync),
         conflict_paths,
     ) else {
         return Ok(CmdResult {
@@ -78,7 +78,7 @@ pub(crate) fn pacman_mutate_packages_with_options(
         .to_string(),
     })
 }
-use crate::tools::comparison::ActionAuthorization;
+use crate::atoms::comparison::ActionAuthorization;
 use std::path::Path;
 
 pub(crate) fn package_install(
@@ -99,7 +99,7 @@ pub(crate) fn package_install(
         timeout_secs,
     )?;
     Ok(CommandObservation {
-        program: crate::tools::package::pacman_program(),
+        program: crate::atoms::package::pacman_program(),
         args: vec!["-S".into(), "--noconfirm".into(), "--needed".into()],
         ok: result.ok,
         code: Some(result.code),

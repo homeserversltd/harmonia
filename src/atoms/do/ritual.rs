@@ -1,7 +1,7 @@
 //! One-owner durable transactional ritual: observe, compare, act, attest, seal, recover.
 use super::transaction::{derive_plan, RunContext, Target, UpdatePlan};
 use crate::atoms::r#do::InvocationKey;
-use crate::tools::systemd::ServiceStateSnapshot;
+use crate::atoms::systemd::ServiceStateSnapshot;
 use crate::Profile;
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -380,10 +380,10 @@ impl Transaction {
             append(&self.journal, &Event { event:"movement-none".into(), status:Some("attested".into()), source_identity:Some(identity), source_revision:Some(revision), proposal:Some(proposal), deed:Some(deed), pre:Some(pre.clone()), post:Some(pre) })?;
             return match intent { TerminalIntent::Commit => self.commit(), TerminalIntent::LeaveApplied => Ok(json!({"file":"unchanged","status":"applied"})) };
         };
-        let _ = crate::tools::comparison::execute_once(
+        let _ = crate::atoms::comparison::execute_once(
             "ritual-write",
             || Ok::<_, String>(pre.clone()),
-            |_| crate::tools::comparison::DiffDecision::Different,
+            |_| crate::atoms::comparison::DiffDecision::Different,
             |action_authorization, _| self.apply(action_authorization, authority, (&identity, &revision, &proposal, &deed)),
         )?;
         match intent { TerminalIntent::Commit => self.commit(), TerminalIntent::LeaveApplied => Ok(json!({"file":"after","status":"applied"})) }
@@ -422,7 +422,7 @@ impl Transaction {
             service,
         })
     }
-    fn apply(&mut self, action_authorization: crate::tools::comparison::ActionAuthorization, a: ForwardAuthority, keys: (&str, &str, &str, &str)) -> Result<(), String> {
+    fn apply(&mut self, action_authorization: crate::atoms::comparison::ActionAuthorization, a: ForwardAuthority, keys: (&str, &str, &str, &str)) -> Result<(), String> {
         self.action_count += 1;
         if a.target != self.target || a.old != self.old || a.new.bytes != b"after" {
             return Err("path-mismatch".into());
@@ -710,10 +710,10 @@ fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String>
 fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key: InvocationKey) -> Result<(), String> {
     let desired = bytes.to_vec();
     let path = path.to_path_buf();
-    crate::tools::comparison::execute_once(
+    crate::atoms::comparison::execute_once(
         "ritual-restore-write",
         || Ok::<_, String>(fs::read(&path).ok()),
-        |observed| if observed.as_deref() == Some(desired.as_slice()) { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different },
+        |observed| if observed.as_deref() == Some(desired.as_slice()) { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
         |authorization, _| crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(authorization, key, &path, &desired, mode, None, None),
     ).map(|_| ())
 }
@@ -803,19 +803,19 @@ pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSna
     plan.services
         .iter()
         .map(|s| {
-            crate::tools::systemd::snapshot_service_state(&s.name, s.user, s.target_user.as_deref())
+            crate::atoms::systemd::snapshot_service_state(&s.name, s.user, s.target_user.as_deref())
         })
         .collect()
 }
 pub(crate) fn restore_services(states: &[ServiceStateSnapshot]) -> Result<(), String> {
     for sealed in states {
-        let observed = crate::tools::systemd::snapshot_service_state(
+        let observed = crate::atoms::systemd::snapshot_service_state(
             &sealed.name,
             sealed.user,
             sealed.target_user.as_deref(),
         )?;
         if observed.enabled != sealed.enabled || observed.active != sealed.active {
-            crate::tools::systemd::restore_service_state(sealed)?;
+            crate::atoms::systemd::restore_service_state(sealed)?;
         }
     }
     Ok(())
