@@ -82,9 +82,11 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                                 .cloned()
                                 .unwrap_or_else(|| Value::String("owner".into())),
                         );
-                        if let Some(v) = args.get("build_environment") {
-                            c.insert("environment".into(), v.clone());
-                        }
+                        let component = args.get("component").and_then(Value::as_str).unwrap_or("component");
+                        let build_sha_key = format!("{}_BUILD_SHA", component.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_uppercase() } else { '_' }).collect::<String>());
+                        let mut environment = args.get("build_environment").and_then(Value::as_object).cloned().unwrap_or_default();
+                        environment.insert(build_sha_key, serde_json::json!({"from":"pull-repo.resolved_commit"}));
+                        c.insert("environment".into(), Value::Object(environment));
                         c
                     }
                     "managed-files" => {
