@@ -35,12 +35,10 @@
       "tool": "command",
       "permutation": "capture",
       "args": {
-        "program": "/bin/sh",
-        "args": [
-          "-c",
-          "if [ ! -x /usr/local/bin/arch-game-sync ]; then printf \"{\\\"schema\\\":\\\"harmonia.homeconsole.sync.advisory.v1\\\",\\\"advisory\\\":true,\\\"kind\\\":\\\"missing-binary\\\",\\\"binary\\\":\\\"/usr/local/bin/arch-game-sync\\\"}\\n\"; exit 0; fi; /usr/local/bin/arch-game-sync >/dev/null 2>&1; rc=$?; if [ $rc -ne 0 ]; then printf \"{\\\"schema\\\":\\\"harmonia.homeconsole.sync.advisory.v1\\\",\\\"advisory\\\":true,\\\"kind\\\":\\\"nonzero-exit\\\",\\\"binary\\\":\\\"/usr/local/bin/arch-game-sync\\\",\\\"exit_code\\\":%s}\\n\" $rc; fi; exit 0"
-        ],
-        "timeout_secs": 300
+        "program": "/usr/local/bin/arch-game-sync",
+        "timeout_secs": 300,
+        "advisory": true,
+        "lane": "homeconsole-sync"
       }
     }
   ]

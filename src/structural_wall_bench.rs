@@ -807,6 +807,7 @@ fn row(
         None,
         false,
         Some(inv),
+        None,
     );
     let proposal = if interactable {
         match crate::interactables::load_feed(&root.join("interactables.json")) {

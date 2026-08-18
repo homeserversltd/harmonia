@@ -97,6 +97,7 @@ pub(crate) fn execute_files(
                 package_authority,
                 module_changed_before_step || result.changed,
                 invocation,
+                None,
             )?
         };
         if step.tool == "routine" {

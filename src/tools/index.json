@@ -422,6 +422,16 @@
               "name": "timeout_secs",
               "kind": "integer",
               "required": false
+            },
+            {
+              "name": "advisory",
+              "kind": "bool",
+              "required": false
+            },
+            {
+              "name": "lane",
+              "kind": "string",
+              "required": false
             }
           ],
           "placement": "ProposeEdits"
