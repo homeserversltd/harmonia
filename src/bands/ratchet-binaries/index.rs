@@ -376,20 +376,20 @@ pub(crate) fn execute_routine_child(
                 .get("bearer")
                 .and_then(Value::as_str)
                 .unwrap_or("owner");
-            let key = invocation.ok_or("build-crate-invocation-key-missing")?;
-            let run = crate::tools::comparison::execute(
-                "build-crate-routine",
-                || Ok(fs::read(&artifact_path).ok().is_some_and(|bytes| bytes.windows(source_sha.len()).any(|w| w == source_sha.as_bytes()))),
-                |matches| if apply && !matches { crate::tools::comparison::DiffDecision::Different } else { crate::tools::comparison::DiffDecision::Empty },
-                |authorization, _| crate::build_crate::cargo_build(
-                    authorization, key, cwd, &env, bearer,
-                    std::time::Duration::from_secs(timeout),
-                ),
+            let moved = crate::build_crate::run_build_with_mode(
+                cwd,
+                source_sha,
+                installed_sha,
+                binary,
+                &artifact_path,
+                apply,
+                &env,
+                timeout,
+                &receipt_dir.join("harmonia-atoms.log"),
+                bearer,
+                invocation,
+                crate::build_crate::IdentityMode::RegularExecutable,
             )?;
-            let moved = match run {
-                crate::tools::comparison::ComparisonRun::Current { .. } => None,
-                crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
-            };
             if let Some(legacy_name) = args.get("legacy_build_receipt").and_then(Value::as_str) {
                 if let Some(observation) = &moved {
                     let command = crate::CmdResult {
