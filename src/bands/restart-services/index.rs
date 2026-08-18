@@ -112,6 +112,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                             serde_json::json!({"from":"build.artifact"}),
                         );
                         c.insert("mode".into(), Value::from(493_u64));
+                        c.insert("no_follow".into(), Value::Bool(true));
+                        c.insert("collision_policy".into(), Value::String("refuse".into()));
+                        c.insert("rollback_policy".into(), Value::String("exact".into()));
+                        c.insert("xattrs".into(), Value::Object(serde_json::Map::new()));
                         c
                     }
                     "service-daemon-reload"

@@ -285,16 +285,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             }
             let mut args = BTreeMap::new();
             args.insert("path".into(), Value::String(path.into()));
-            args.insert("xattrs".into(), xattrs.clone());
-            args.insert("no_follow".into(), Value::Bool(no_follow));
-            args.insert(
-                "collision_policy".into(),
-                Value::String(collision_policy.into()),
-            );
-            args.insert(
-                "rollback_policy".into(),
-                Value::String(rollback_policy.into()),
-            );
+            args.insert("xattrs".into(), Value::Object(serde_json::Map::new()));
+            args.insert("no_follow".into(), Value::Bool(true));
+            args.insert("collision_policy".into(), Value::String("refuse".into()));
+            args.insert("rollback_policy".into(), Value::String("exact".into()));
             match kind {
                 "place" | "backfill" => {
                     let bytes = object
