@@ -158,6 +158,19 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             .iter()
             .position(|child| child.name == "managed-files" && child.tool == "files")
         else {
+            for child in &mut step.steps {
+                if matches!(
+                    child.name.as_str(),
+                    "service-daemon-reload"
+                        | "service-enable"
+                        | "service-restart"
+                        | "service-active"
+                ) {
+                    child
+                        .args
+                        .insert("managed_files_changed".into(), Value::Bool(false));
+                }
+            }
             continue;
         };
         let original = step.steps[index].clone();
@@ -362,6 +375,34 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 .position(|child| child.name == "service-daemon-reload")
                 .unwrap_or(step.steps.len());
             step.steps.insert(service_index, proposal);
+        }
+        let managed_files_producer = step.steps.iter().any(|child| {
+            (child.name == "managed-files"
+                && child.tool == "files"
+                && child.permutation.as_deref() == Some("managed-files"))
+                || [
+                    "managed-place-",
+                    "managed-backfill-",
+                    "managed-remove-",
+                    "managed-symlink-",
+                ]
+                .iter()
+                .any(|prefix| child.name.starts_with(prefix))
+        });
+        for child in &mut step.steps {
+            if matches!(
+                child.name.as_str(),
+                "service-daemon-reload" | "service-enable" | "service-restart" | "service-active"
+            ) {
+                child.args.insert(
+                    "managed_files_changed".into(),
+                    if managed_files_producer {
+                        serde_json::json!({"from":"managed-files.changed"})
+                    } else {
+                        Value::Bool(false)
+                    },
+                );
+            }
         }
     }
     Ok(())
