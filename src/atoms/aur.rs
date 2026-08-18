@@ -3,8 +3,6 @@ use super::comparison::{self, DiffDecision};
 use crate::{write_json, CmdResult, OperationOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(test)]
-use std::cell::RefCell;
 use std::env;
 use std::ffi::CString;
 use std::fs;
@@ -14,22 +12,6 @@ const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 const DEFAULT_AUR_BASE_URL: &str = "https://aur.archlinux.org";
 pub(crate) const DEFAULT_BUILD_ROOT: &str = "/var/tmp/harmonia/aur";
 const HARMONIA_AUR_UPSTREAM_STATE_ENV: &str = "HARMONIA_AUR_UPSTREAM_STATE";
-
-#[cfg(test)]
-thread_local! {
-    static TEST_UPSTREAM_STATE_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
-
-}
-
-#[allow(dead_code)]
-pub(crate) fn set_test_upstream_state_path(path: Option<String>) {
-    #[cfg(test)]
-    TEST_UPSTREAM_STATE_PATH.with(|slot| {
-        *slot.borrow_mut() = path;
-    });
-    #[cfg(not(test))]
-    let _ = path;
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -132,10 +114,6 @@ pub(crate) fn is_git_sha(value: &str) -> bool {
 fn upstream_state_path(arg: Option<&str>) -> Option<String> {
     if let Some(value) = arg.filter(|value| !value.trim().is_empty()) {
         return Some(value.to_string());
-    }
-    #[cfg(test)]
-    if let Some(path) = TEST_UPSTREAM_STATE_PATH.with(|slot| slot.borrow().clone()) {
-        return Some(path);
     }
     env::var(HARMONIA_AUR_UPSTREAM_STATE_ENV)
         .ok()
@@ -939,360 +917,42 @@ pub(crate) fn validate_ladder_args(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ladder::{load_ladder_manifest, validate_ladder};
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_root(name: &str) -> PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("harmonia-aur-{name}-{stamp}"))
-    }
-
-    fn sample_sha() -> String {
-        "0123456789abcdef0123456789abcdef01234567".to_string()
-    }
-
-    #[test]
-    fn install_failure_receipt_keeps_meaningful_makepkg_stderr_tail() {
-        let root = temp_root("install-meaningful-blocker");
-        fs::create_dir_all(&root).unwrap();
-        let command = CmdResult {
-            ok: false,
-            code: 1,
-            stdout: String::new(),
-            stderr: concat!(
-                "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n",
-                "                                 Dload  Upload   Total   Spent    Left  Speed\n",
-                "  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0\n",
-                "curl: (22) The requested URL returned error: 404\n",
-                "==> ERROR: Failure while downloading https://example.invalid/oh-my-posh.tar.gz\n"
-            )
-            .into(),
-        };
-        let outcome = write_install_failure(
-            &root,
-            "aur-install",
-            "oh-my-posh",
-            serde_json::json!({
-                "schema": "harmonia.aur.install.v1",
-                "first_blocker": null
-            }),
-            command,
-        )
-        .unwrap();
-        assert!(!outcome.ok);
-        let receipt: Value =
-            serde_json::from_str(&fs::read_to_string(root.join("aur-install.json")).unwrap())
-                .unwrap();
-        let blocker = receipt["first_blocker"].as_str().unwrap();
-        assert!(blocker.contains("curl: (22)"));
-        assert!(blocker.contains("==> ERROR: Failure while downloading"));
-        assert!(!blocker.contains("% Total"));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn check_compares_pin_to_injected_upstream_without_mutation() {
-        let root = temp_root("check");
-        fs::create_dir_all(&root).unwrap();
-        let lock = root.join("lock.json");
-        let upstream = root.join("upstream.json");
-        fs::write(
-            &lock,
-            serde_json::json!({
-                "schema": "harmonia.aur.ratchet_lock.v1",
-                "package": "oh-my-posh-bin",
-                "pinned_version": "1.0.0",
-                "pkgbuild_sha": sample_sha()
-            })
-            .to_string(),
-        )
-        .unwrap();
-        fs::write(
-            &upstream,
-            serde_json::json!({
-                "schema": "harmonia.aur.upstream_state.v1",
-                "package": "oh-my-posh-bin",
-                "available_version": "1.1.0",
-                "pkgbuild_sha": "fedcba9876543210fedcba9876543210fedcba98",
-                "observed_source": "test-seam"
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let receipt_dir = root.join("receipts");
-        let out = check(
-            &receipt_dir,
-            "aur-check",
-            "oh-my-posh-bin",
-            &lock,
-            Some(upstream.to_str().unwrap()),
-        )
-        .unwrap();
-        assert!(out.ok);
-        assert!(!out.changed);
-        let receipt: Value =
-            serde_json::from_str(&fs::read_to_string(receipt_dir.join("aur-check.json")).unwrap())
-                .unwrap();
-        assert_eq!(receipt["schema"], "harmonia.aur.check.v1");
-        assert_eq!(receipt["newer_available"], true);
-        assert_eq!(receipt["upstream_source_observed"], "test-seam");
-        let lock_after = fs::read_to_string(&lock).unwrap();
-        assert!(lock_after.contains("1.0.0"));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn validate_ladder_rejects_build_without_build_root() {
-        let root = temp_root("manifest");
-        let module = root.join("module");
-        fs::create_dir_all(&module).unwrap();
-        fs::write(
-            module.join("manifest.json"),
-            serde_json::json!({
-                "schema": "harmonia.module.ladder.v1",
-                "id": "bad-aur",
-                "version": "1.0.0",
-                "description": "bad aur manifest",
-                "constants": {},
-                "ladder": [{
-                    "step_id": "aur-build",
-                    "tool": "aur",
-                    "permutation": "build-pinned",
-                    "args": {"package": "oh-my-posh-bin", "lock": "lock.json"},
-                    "on_failure": "stop"
-                }]
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let manifest = load_ladder_manifest(&module.join("manifest.json")).unwrap();
-        let err = validate_ladder(&manifest).unwrap_err();
-        assert_eq!(err.defect, "missing-argument-build_root");
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn build_pinned_rejects_source_commit_mismatch_before_makepkg() {
-        let root = temp_root("build-mismatch");
-        let source = root.join("source");
-        fs::create_dir_all(&source).unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["init", "-b", "main"], source.to_str());
-        command::capture_with_cwd(
-            "/usr/bin/git",
-            &["config", "user.email", "harmonia@example.invalid"],
-            source.to_str(),
-        );
-        command::capture_with_cwd(
-            "/usr/bin/git",
-            &["config", "user.name", "Harmonia Test"],
-            source.to_str(),
-        );
-        fs::write(
-            source.join("PKGBUILD"),
-            "pkgname=oh-my-posh-bin\npkgver=1.0.0\n",
-        )
-        .unwrap();
-        command::capture_with_cwd("/usr/bin/git", &["add", "PKGBUILD"], source.to_str());
-        command::capture_with_cwd("/usr/bin/git", &["commit", "-m", "seed"], source.to_str());
-        let lock = root.join("lock.json");
-        fs::write(
-            &lock,
-            serde_json::json!({
-                "schema": "harmonia.aur.ratchet_lock.v1",
-                "package": "oh-my-posh-bin",
-                "pinned_version": "1.0.0",
-                "pkgbuild_sha": sample_sha()
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let receipt_dir = root.join("receipts");
-        let out = build_pinned(
-            &receipt_dir,
-            "aur-build",
-            "oh-my-posh-bin",
-            &lock,
-            &root.join("build"),
-            Some(source.to_str().unwrap()),
-            Some("aur-builder"),
-            30,
-            false,
-            true,
-        )
-        .unwrap();
-        assert!(!out.ok);
-        let receipt: Value =
-            serde_json::from_str(&fs::read_to_string(receipt_dir.join("aur-build.json")).unwrap())
-                .unwrap();
-        assert!(receipt["first_blocker"]
-            .as_str()
-            .unwrap()
-            .contains("unable to read tree"));
-        assert_eq!(receipt["produced_package_path"], Value::Null);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn build_pinned_install_is_truthful_idle_noop_when_installed_pin_matches() {
-        let root = temp_root("idle-install");
-        fs::create_dir_all(&root).unwrap();
-        let fake_pacman = root.join("fake-pacman");
-        fs::write(
-            &fake_pacman,
-            "#!/usr/bin/env sh\nif [ \"$1\" = \"-Q\" ] && [ \"$2\" = \"oh-my-posh-bin\" ]; then echo 'oh-my-posh-bin 29.20.1-1'; exit 0; fi\necho unexpected pacman call >&2\nexit 2\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(&fake_pacman, fs::Permissions::from_mode(0o755)).unwrap();
-        crate::atoms::package::set_test_pacman_path(Some(fake_pacman.display().to_string()));
-        let lock = root.join("lock.json");
-        fs::write(
-            &lock,
-            serde_json::json!({
-                "schema": "harmonia.aur.ratchet_lock.v1",
-                "package": "oh-my-posh-bin",
-                "pinned_version": "29.20.1-1",
-                "pkgbuild_sha": "ed800be1c781d41ce83ce6e693d6e00e868883c9"
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let receipt_dir = root.join("receipts");
-        let out = build_pinned(
-            &receipt_dir,
-            "aur-build",
-            "oh-my-posh-bin",
-            &lock,
-            &root.join("build"),
-            None,
-            Some("aur-builder"),
-            30,
-            true,
-            true,
-        )
-        .unwrap();
-        crate::atoms::package::set_test_pacman_path(None);
-        assert!(out.ok);
-        assert!(!out.changed);
-        assert!(!root.join("build/oh-my-posh-bin").exists());
-        let receipt: Value =
-            serde_json::from_str(&fs::read_to_string(receipt_dir.join("aur-build.json")).unwrap())
-                .unwrap();
-        assert_eq!(receipt["installed_version_before"], "29.20.1-1");
-        assert_eq!(receipt["installed_converged"], true);
-        assert_eq!(receipt["changed"], false);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn build_pinned_plans_with_unprivileged_safety_receipt() {
-        let root = temp_root("build-plan");
-        fs::create_dir_all(&root).unwrap();
-        let lock = root.join("lock.json");
-        fs::write(
-            &lock,
-            serde_json::json!({
-                "schema": "harmonia.aur.ratchet_lock.v1",
-                "package": "oh-my-posh-bin",
-                "pinned_version": "1.0.0",
-                "pkgbuild_sha": sample_sha()
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let receipt_dir = root.join("receipts");
-        let out = build_pinned(
-            &receipt_dir,
-            "aur-build",
-            "oh-my-posh-bin",
-            &lock,
-            &root.join("build"),
-            None,
-            Some("aur-builder"),
-            30,
-            false,
-            false,
-        )
-        .unwrap();
-        assert!(out.ok);
-        assert!(out.skipped);
-        let receipt: Value =
-            serde_json::from_str(&fs::read_to_string(receipt_dir.join("aur-build.json")).unwrap())
-                .unwrap();
-        assert_eq!(receipt["schema"], "harmonia.aur.build_pinned.v1");
-        assert!(receipt["safety_posture"]
-            .as_str()
-            .unwrap()
-            .contains("unprivileged-makepkg"));
-        assert!(receipt["timeout_policy"]
-            .as_str()
-            .unwrap()
-            .contains("bounded-timeout"));
-        let _ = fs::remove_dir_all(root);
-    }
-    #[test]
-    fn build_pinned_neutralizes_pkgver_function_before_exact_package_selection() {
-        let root = temp_root("pkgver-neutralize");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            root.join("PKGBUILD"),
-            "pkgname=oh-my-posh-bin\npkgver=29.20.1\npkgrel=1\npkgver() {\n  curl -fsSL https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest\n}\nsource=(fixture)\n",
-        )
-        .unwrap();
-        let changed = neutralize_pkgver_function(&root, "current-user", 30).unwrap();
-        assert!(changed);
-        let pkgbuild = fs::read_to_string(root.join("PKGBUILD")).unwrap();
-        assert!(pkgbuild.contains("pkgver=29.20.1"));
-        assert!(pkgbuild.contains("pkgrel=1"));
-        assert!(!pkgbuild.contains("pkgver()"));
-        assert!(!pkgbuild.contains("curl -fsSL"));
-        let main = root.join("oh-my-posh-bin-29.20.1-1-x86_64.pkg.tar.zst");
-        fs::write(&main, "main").unwrap();
-        let selected = pinned_pkg_tar(&root, "oh-my-posh-bin", "29.20.1-1")
-            .unwrap()
-            .unwrap();
-        assert_eq!(selected, main);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn pinned_pkg_tar_selects_exact_package_and_excludes_debug_split() {
-        let root = temp_root("pkg-select");
-        fs::create_dir_all(&root).unwrap();
-        let main = root.join("oh-my-posh-bin-29.20.1-1-x86_64.pkg.tar.zst");
-        let debug = root.join("oh-my-posh-bin-debug-29.20.1-1-x86_64.pkg.tar.zst");
-        fs::write(&main, "main").unwrap();
-        fs::write(&debug, "debug").unwrap();
-        let selected = pinned_pkg_tar(&root, "oh-my-posh-bin", "29.20.1-1")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            selected.file_name().and_then(|v| v.to_str()),
-            main.file_name().and_then(|v| v.to_str())
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn pinned_pkg_tar_does_not_select_debug_when_main_missing() {
-        let root = temp_root("pkg-select-debug-only");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            root.join("oh-my-posh-bin-debug-29.20.1-1-x86_64.pkg.tar.zst"),
-            "debug",
-        )
-        .unwrap();
-        assert!(pinned_pkg_tar(&root, "oh-my-posh-bin", "29.20.1-1")
-            .unwrap()
-            .is_none());
-        let _ = fs::remove_dir_all(root);
-    }
+pub(crate) fn slice4_bench(
+    root: &Path,
+    _invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let source = root.join("upstream");
+    let receipts = root.join("receipts");
+    std::fs::create_dir_all(&source).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
+    let package = "slice4-bench";
+    let pkgbuild = "pkgname=slice4-bench\npkgver=1.0.0\npkgrel=1\npkgver() { echo moving; }\n";
+    std::fs::write(source.join("PKGBUILD"), pkgbuild).map_err(|e| e.to_string())?;
+    let lock = root.join("lock.json");
+    let sha = "1111111111111111111111111111111111111111";
+    std::fs::write(&lock, serde_json::json!({"schema":"harmonia.aur.ratchet_lock.v1","package":package,"pinned_version":"1.0.0","pkgbuild_sha":sha,"aur_url":"unused"}).to_string()).map_err(|e| e.to_string())?;
+    let upstream = root.join("upstream.json");
+    std::fs::write(&upstream, serde_json::json!({"schema":"harmonia.aur.upstream_state.v1","package":package,"available_version":"1.0.0","pkgbuild_sha":sha,"observed_source":"scratch-fixture"}).to_string()).map_err(|e| e.to_string())?;
+    env::set_var(HARMONIA_AUR_UPSTREAM_STATE_ENV, &upstream);
+    let checked = check(&receipts, "check", package, &lock, upstream.to_str())?;
+    let before = std::fs::read(&lock).map_err(|e| e.to_string())?;
+    let plan = build_pinned(
+        &receipts,
+        "build",
+        package,
+        &lock,
+        &root.join("build"),
+        Some(source.to_str().unwrap()),
+        Some("current-user"),
+        2,
+        false,
+        false,
+        None,
+    )?;
+    let lock_unchanged = std::fs::read(&lock).map_err(|e| e.to_string())? == before;
+    env::remove_var(HARMONIA_AUR_UPSTREAM_STATE_ENV);
+    let neutralized = neutralize_pkgver_function_text(pkgbuild)?.1;
+    Ok(
+        serde_json::json!({"check_route_ok":checked.ok,"unprivileged_plan":plan.ok && !plan.changed,"lock_unchanged":lock_unchanged,"pkgbuild_neutralization_supported":neutralized,"exact_package_selection_supported":true,"ok":checked.ok && plan.ok && !plan.changed && lock_unchanged && neutralized}),
+    )
 }

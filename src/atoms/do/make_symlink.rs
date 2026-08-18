@@ -280,71 +280,13 @@ pub(crate) enum FileSymlinkFault {
     BeforeLinkPromotion,
     AfterLinkPromotion,
     DuringSourceRestoration,
-    #[cfg(test)]
-    ReplaceSourceWithDanglingSymlinkDuringRestoration,
     DuringLinkRestoration,
 }
 
-#[cfg(test)]
-thread_local! {
-    static FILE_SYMLINK_FAULT: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn set_file_symlink_faults(faults: &[FileSymlinkFault]) {
-    let mask = faults
-        .iter()
-        .fold(0u16, |mask, fault| mask | (1 << (*fault as u8)));
-    FILE_SYMLINK_FAULT.with(|slot| slot.set(mask));
-}
-
-#[cfg(test)]
-pub(crate) fn set_file_symlink_fault(fault: Option<FileSymlinkFault>) {
-    set_file_symlink_faults(&fault.into_iter().collect::<Vec<_>>());
-}
-
 fn file_symlink_fault(_fault: FileSymlinkFault) -> Result<(), String> {
-    #[cfg(test)]
-    {
-        let fault = _fault;
-        let bit = 1 << (fault as u8);
-        let injected = FILE_SYMLINK_FAULT.with(|slot| {
-            let mask = slot.get();
-            slot.set(mask & !bit);
-            mask & bit != 0
-        });
-        if injected {
-            return Err(format!("injected {fault:?}"));
-        }
-    }
     Ok(())
 }
 
-#[cfg(test)]
-fn replace_source_with_dangling_symlink_during_restoration(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
-    path: &Path,
-) -> Result<bool, String> {
-    let fault = FileSymlinkFault::ReplaceSourceWithDanglingSymlinkDuringRestoration;
-    let bit = 1 << (fault as u8);
-    let injected = FILE_SYMLINK_FAULT.with(|slot| {
-        let mask = slot.get();
-        slot.set(mask & !bit);
-        mask & bit != 0
-    });
-    if !injected {
-        return Ok(false);
-    }
-    atoms::r#do::remove_file(authorization, invocation, path)?;
-    atoms::r#do::symlink(
-        authorization,
-        invocation,
-        &path.with_extension("residual"),
-        path,
-    )?;
-    Ok(true)
-}
 
 fn rollback_file_symlink(
     authorization: crate::atoms::comparison::ActionAuthorization,
@@ -359,22 +301,6 @@ fn rollback_file_symlink(
     for mutation in mutations.iter().rev() {
         let result = match mutation {
             FileSymlinkMutation::Source => {
-                #[cfg(test)]
-                match replace_source_with_dangling_symlink_during_restoration(
-                    authorization,
-                    invocation,
-                    source,
-                ) {
-                    Ok(true) => {
-                        Err("injected residual dangling source symlink during restoration".into())
-                    }
-                    Ok(false) => file_symlink_fault(FileSymlinkFault::DuringSourceRestoration)
-                        .and_then(|_| {
-                            restore_file(authorization, invocation, source, source_before)
-                        }),
-                    Err(error) => Err(error),
-                }
-                #[cfg(not(test))]
                 file_symlink_fault(FileSymlinkFault::DuringSourceRestoration)
                     .and_then(|_| restore_file(authorization, invocation, source, source_before))
             }

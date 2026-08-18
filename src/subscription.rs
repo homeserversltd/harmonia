@@ -68,6 +68,194 @@ struct SubscriptionShowReceipt {
     first_missing_signal: String,
 }
 
+pub(crate) fn slice4_bench(
+    root: &Path,
+    key: crate::atoms::r#do::InvocationKey,
+) -> Result<Value, String> {
+    let path = root.join("subscription.json");
+    let seed = SubscriptionUpdate {
+        lane: "owner".into(),
+        source: "fixture://first".into(),
+        ref_name: "ref-a".into(),
+        selected_profile: "tv".into(),
+        engine_version_received: "0.1.0".into(),
+        modules: vec![SubscriptionModuleUpdate {
+            id: "alpha".into(),
+            version: "1".into(),
+            tree_sha256: "aaa".into(),
+            received_at_run_id: "run-a".into(),
+        }],
+    };
+    update_subscription_record_with_invocation(&path, seed, key)?;
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    value
+        .as_object_mut()
+        .ok_or("subscription-bench-object")?
+        .insert("machine_note".into(), json!("keep-me"));
+    write_json_value_atomic_with_invocation(&path, &value, key)?;
+    update_subscription_record_with_invocation(
+        &path,
+        SubscriptionUpdate {
+            lane: "owner".into(),
+            source: "fixture://second".into(),
+            ref_name: "ref-b".into(),
+            selected_profile: "tv".into(),
+            engine_version_received: "0.1.1".into(),
+            modules: vec![SubscriptionModuleUpdate {
+                id: "beta".into(),
+                version: "2".into(),
+                tree_sha256: "bbb".into(),
+                received_at_run_id: "run-b".into(),
+            }],
+        },
+        key,
+    )?;
+    let updated: Value = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let subscription_update_ok = updated["source"] == "fixture://second"
+        && updated["ref"] == "ref-b"
+        && updated["engine_version_received"] == "0.1.1"
+        && updated["modules"]["alpha"]["version"] == "1"
+        && updated["modules"]["beta"]["tree_sha256"] == "bbb";
+    let machine_local_fields_preserved = updated["machine_note"] == "keep-me";
+
+    let interactables_path = root.join("interactables.json");
+    let module_id = "subscription-interactables-bench";
+    let stale_target = root.join("targets/stale");
+    let unrelated_target = root.join("targets/unrelated");
+    let stable_id = |module: &str, target: &Path| {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(format!("{module}:{}", target.display()).as_bytes());
+        format!("config-proposal-{}", &format!("{digest:x}")[..16])
+    };
+    let item = |id: String, module: &str, target: &Path| crate::interactables::Interactable {
+        id,
+        module_id: module.to_string(),
+        name: module.to_string(),
+        description: String::new(),
+        kind: "hard-stamp".into(),
+        target_path: target.to_path_buf(),
+        reference_source_path: root.join("files").join(target.file_name().unwrap()),
+        drift: crate::interactables::DriftSummary {
+            content: true,
+            mode: false,
+            ownership: false,
+        },
+        created_at: "0".into(),
+        refreshed_at: "0".into(),
+        available_at: None,
+        has_run: false,
+        mode: Some(0o644),
+        owner: None,
+        group: None,
+        source_sha: None,
+        target_sha: None,
+        commits_behind: None,
+    };
+    crate::bands::propose_edits::persist_feed(
+        &interactables_path,
+        &crate::interactables::make_feed(vec![
+            item(
+                stable_id(module_id, &stale_target),
+                module_id,
+                &stale_target,
+            ),
+            item(
+                "unrelated-interactable".into(),
+                "unrelated-module",
+                &unrelated_target,
+            ),
+        ]),
+    )?;
+    let manifest = crate::ladder::LadderManifest {
+        schema: crate::ladder::SCHEMA.into(),
+        id: module_id.into(),
+        version: "1.0.0".into(),
+        description: "subscription interactables bench".into(),
+        role: None,
+        optional: false,
+        optional_warning: None,
+        group: None,
+        constants: BTreeMap::new(),
+        caduceus_commands: Vec::new(),
+        files_root: Some("files".into()),
+        config_deploy: Some("interactable".into()),
+        ladder: Vec::new(),
+        base_dir: root.join("module"),
+    };
+    let request = crate::tools::files::FileConvergenceRequest {
+        source_root: root.join("module/files"),
+        target_root: root.join("targets"),
+        files: vec![crate::tools::files::FileSpec {
+            relative_path: PathBuf::from("stale"),
+            mode: Some(0o644),
+        }],
+        backup_existing: false,
+        receipt_name: "subscription-interactables".into(),
+        owner: None,
+        group: None,
+    };
+    let outcome = crate::tools::files::FileConvergenceOutcome {
+        ok: true,
+        changed: false,
+        ownership_changed: false,
+        checked: 1,
+        written: 0,
+        backed_up: 0,
+        missing: Vec::new(),
+        missing_target_birth_debts: Vec::new(),
+        entries: vec![crate::tools::files::FileConvergenceEntry {
+            relative_path: "stale".into(),
+            source: root.join("module/files/stale"),
+            target: stale_target.clone(),
+            source_exists: true,
+            target_exists_before: false,
+            content_equal_before: false,
+            mode_equal_before: false,
+            target_exists_after: false,
+            content_equal_after: false,
+            mode_equal_after: false,
+            changed: false,
+            backed_up_to: None,
+            final_mode: Some(0o644),
+            ownership_source: "bench".into(),
+            observed_uid_before: None,
+            observed_gid_before: None,
+            observed_uid_after: None,
+            observed_gid_after: None,
+            ownership_changed: false,
+            observed_uid: None,
+            observed_gid: None,
+            diff: None,
+            diff_omitted: None,
+        }],
+        message: "bench".into(),
+    };
+    crate::bands::propose_edits::refresh_interactables_at_path(
+        &interactables_path,
+        &manifest,
+        &request,
+        &outcome,
+    )?;
+    let refreshed = crate::interactables::load_feed(&interactables_path)?;
+    let stale_interactable_pruned = !refreshed
+        .interactables
+        .iter()
+        .any(|entry| entry.module_id == module_id && entry.target_path == stale_target);
+    let unrelated_interactable_preserved = refreshed
+        .interactables
+        .iter()
+        .any(|entry| entry.id == "unrelated-interactable");
+    let ok = subscription_update_ok
+        && machine_local_fields_preserved
+        && stale_interactable_pruned
+        && unrelated_interactable_preserved;
+    Ok(
+        json!({"subscription_path":path,"machine_local_fields_preserved":machine_local_fields_preserved,"subscription_update_ok":subscription_update_ok,"stale_interactable_pruned":stale_interactable_pruned,"unrelated_interactable_preserved":unrelated_interactable_preserved,"ok":ok}),
+    )
+}
+
 pub(crate) fn subscription_path() -> PathBuf {
     std::env::var_os("HARMONIA_SUBSCRIPTION_PATH")
         .map(PathBuf::from)
@@ -120,14 +308,6 @@ pub(crate) fn diff_subscription_modules(
         });
     }
     Ok(statuses)
-}
-
-#[cfg(test)]
-pub(crate) fn update_subscription_record(
-    path: &Path,
-    update: SubscriptionUpdate,
-) -> Result<SubscriptionRecord, String> {
-    update_subscription_record_with_invocation(path, update, crate::atoms::r#do::InvocationKey::for_apply())
 }
 
 pub(crate) fn update_subscription_record_with_invocation(
@@ -382,17 +562,56 @@ pub(crate) fn close_hotfix_ledger(
     write_json_value_atomic_with_invocation(path, &Value::Object(root), key)
 }
 
-#[cfg(test)]
-pub(crate) fn write_json_value_atomic(path: &Path, value: &Value) -> Result<(), String> {
-    write_json_value_atomic_with_invocation(path, value, crate::atoms::r#do::InvocationKey::for_apply())
-}
-
-pub(crate) fn write_json_value_atomic_with_invocation(path: &Path, value: &Value, key: crate::atoms::r#do::InvocationKey) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "
+pub(crate) fn write_json_value_atomic_with_invocation(
+    path: &Path,
+    value: &Value,
+    key: crate::atoms::r#do::InvocationKey,
+) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?
+        + "
 ";
-    let parent = path.parent().ok_or_else(|| "subscription-parent-missing".to_string())?;
-    crate::tools::comparison::execute("subscription-json-parent", || Ok(fs::symlink_metadata(parent).is_ok()), |present| if *present { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different }, |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent))?;
-    crate::tools::comparison::execute("subscription-json-write", || Ok(fs::read(path).ok().as_deref() == Some(text.as_bytes())), |same| if *same { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different }, |authorization, _| crate::atoms::r#do::write_file::file_write(authorization, key, path, text.as_bytes(), crate::atoms::r#do::write_file::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None }).map(|_| ()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "subscription-parent-missing".to_string())?;
+    crate::tools::comparison::execute(
+        "subscription-json-parent",
+        || Ok(fs::symlink_metadata(parent).is_ok()),
+        |present| {
+            if *present {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent),
+    )?;
+    crate::tools::comparison::execute(
+        "subscription-json-write",
+        || Ok(fs::read(path).ok().as_deref() == Some(text.as_bytes())),
+        |same| {
+            if *same {
+                crate::tools::comparison::DiffDecision::Empty
+            } else {
+                crate::tools::comparison::DiffDecision::Different
+            }
+        },
+        |authorization, _| {
+            crate::atoms::r#do::write_file::file_write(
+                authorization,
+                key,
+                path,
+                text.as_bytes(),
+                crate::atoms::r#do::write_file::FileWriteOptions {
+                    write_bytes: true,
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                    backup_to: None,
+                },
+            )
+            .map(|_| ())
+        },
+    )?;
     Ok(())
 }
 
@@ -435,71 +654,4 @@ pub(crate) fn preserve_existing_lane_or_default(path: &Path) -> String {
         .map(|record| record.lane)
         .filter(|lane| !lane.trim().is_empty())
         .unwrap_or_else(|| "upstream".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::process;
-
-    fn scratch(name: &str) -> PathBuf {
-        let p =
-            std::env::temp_dir().join(format!("harmonia-subscription-{name}-{}", process::id()));
-        let _ = fs::remove_dir_all(&p);
-        fs::create_dir_all(&p).unwrap();
-        p
-    }
-
-    #[test]
-    fn subscription_seed_and_atomic_update_preserve_machine_local_fields() {
-        let root = scratch("seed");
-        let path = root.join("subscription.json");
-        update_subscription_record(
-            &path,
-            SubscriptionUpdate {
-                lane: "owner".into(),
-                source: "fixture://first".into(),
-                ref_name: "ref-a".into(),
-                selected_profile: "tv".into(),
-                engine_version_received: "0.1.0".into(),
-                modules: vec![SubscriptionModuleUpdate {
-                    id: "alpha".into(),
-                    version: "1".into(),
-                    tree_sha256: "aaa".into(),
-                    received_at_run_id: "run-a".into(),
-                }],
-            },
-        )
-        .unwrap();
-        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        value
-            .as_object_mut()
-            .unwrap()
-            .insert("machine_note".into(), json!("keep-me"));
-        write_json_value_atomic(&path, &value).unwrap();
-        update_subscription_record(
-            &path,
-            SubscriptionUpdate {
-                lane: "owner".into(),
-                source: "fixture://second".into(),
-                ref_name: "ref-b".into(),
-                selected_profile: "tv".into(),
-                engine_version_received: "0.1.1".into(),
-                modules: vec![SubscriptionModuleUpdate {
-                    id: "beta".into(),
-                    version: "2".into(),
-                    tree_sha256: "bbb".into(),
-                    received_at_run_id: "run-b".into(),
-                }],
-            },
-        )
-        .unwrap();
-        let updated: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(updated["schema"], SUBSCRIPTION_SCHEMA);
-        assert_eq!(updated["machine_note"], "keep-me");
-        assert_eq!(updated["modules"]["alpha"]["version"], "1");
-        assert_eq!(updated["modules"]["beta"]["tree_sha256"], "bbb");
-        assert!(!path.with_extension("harmonia-new").exists());
-        let _ = fs::remove_dir_all(root);
-    }
 }

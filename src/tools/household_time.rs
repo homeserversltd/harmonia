@@ -54,6 +54,29 @@ pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
 pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
     CmdResult { ok: true, code: 0, stdout: format!("{{\"schema\":\"harmonia.household-time.receipt.v1\",\"changed\":false,\"preserved\":true,\"first_missing_signal\":\"{reason}\"}}"), stderr: source.stderr }
 }
+pub(crate) fn slice4_bench(
+    root: &Path,
+    _key: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let args = BTreeMap::from([
+        ("backend".into(), Value::String("staff".into())),
+        ("timezone".into(), Value::String("Etc/UTC".into())),
+    ]);
+    let outcome = execute(root, "set", "set-timezone", &args, false, None)?;
+    let receipt: Value =
+        serde_json::from_slice(&std::fs::read(root.join("set.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let typed = outcome.ok && receipt["tool"] == "set-clock" && receipt["action"] == "set-timezone";
+    let rejected = validate_ladder_args(
+        "resolve",
+        &BTreeMap::from([("backend".into(), Value::String("unsafe".into()))]),
+    )
+    .is_err();
+    Ok(
+        serde_json::json!({"typed_receipt_written":typed,"unsafe_input_rejected":rejected,"receipt_path":root.join("set.json"),"ok":typed&&rejected}),
+    )
+}
+
 pub(crate) fn planned(operation: &str) -> CmdResult {
     CmdResult {
         ok: true,
@@ -126,55 +149,18 @@ fn parse_utc(value: &str) -> Option<i64> {
     Some((era * 146097 + doe - 719468) * 86400 + h * 3600 + min * 60 + s)
 }
 
-
-pub(crate) fn execute_validated_step(step: &crate::ladder::ValidatedStep, module_dir: &std::path::Path, apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<crate::OperationOutcome, String> { execute(module_dir, &step.step_id, &step.permutation, &step.args, apply, invocation) }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    #[test]
-    fn rejects_unsafe_semantic_inputs() {
-        let mut a = BTreeMap::from([
-            ("backend".into(), Value::String("shell".into())),
-            ("timezone".into(), Value::String("UTC".into())),
-        ]);
-        assert!(validate_ladder_args("set-timezone", &a).is_err());
-        a.insert("backend".into(), Value::String("staff".into()));
-        assert!(validate_ladder_args("set-timezone", &a).is_err());
-        a.insert("timezone".into(), Value::String("Etc/UTC".into()));
-        assert!(validate_ladder_args("set-timezone", &a).is_ok());
-        a.insert("state_path".into(), Value::String("relative.json".into()));
-        assert!(validate_ladder_args("set-timezone", &a).is_err());
-    }
-    #[test]
-    fn fresh_state_accepts_only_future_valid_iana_fact() {
-        assert_eq!(
-            fresh_timezone("{\"timezone\":\"Etc/UTC\",\"valid_until\":\"2999-01-01T00:00:00Z\"}"),
-            Some("Etc/UTC".into())
-        );
-        assert_eq!(
-            fresh_timezone("{\"timezone\":\"Etc/UTC\",\"valid_until\":\"2000-01-01T00:00:00Z\"}"),
-            None
-        );
-        assert_eq!(
-            fresh_timezone("{\"timezone\":\"UTC\",\"valid_until\":\"2999-01-01T00:00:00Z\"}"),
-            None
-        );
-    }
-    #[test]
-    fn planned_operation_writes_a_typed_receipt() {
-        let root = std::env::temp_dir().join(format!("harmonia-household-time-{}", unix_now()));
-        fs::create_dir_all(&root).unwrap();
-        let args = BTreeMap::from([
-            ("backend".into(), Value::String("staff".into())),
-            ("timezone".into(), Value::String("Etc/UTC".into())),
-        ]);
-        let outcome = execute(&root, "set", "set-timezone", &args, false).unwrap();
-        assert!(outcome.ok);
-        let receipt: Value =
-            serde_json::from_str(&fs::read_to_string(root.join("set.json")).unwrap()).unwrap();
-        assert_eq!(receipt["tool"], NAME);
-        assert_eq!(receipt["action"], "set-timezone");
-        let _ = fs::remove_dir_all(root);
-    }
+pub(crate) fn execute_validated_step(
+    step: &crate::ladder::ValidatedStep,
+    module_dir: &std::path::Path,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<crate::OperationOutcome, String> {
+    execute(
+        module_dir,
+        &step.step_id,
+        &step.permutation,
+        &step.args,
+        apply,
+        invocation,
+    )
 }

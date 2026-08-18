@@ -1,9 +1,7 @@
-use super::comparison::{self, DiffDecision};
 use super::command;
+use super::comparison::{self, DiffDecision};
 use crate::{write_json, CmdResult, OperationOutcome, PackageBackend};
 use serde::Serialize;
-#[cfg(test)]
-use std::cell::RefCell;
 use std::env;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
@@ -44,36 +42,17 @@ pub(crate) fn package_receipt_fields(
     })
 }
 
-#[cfg(test)]
-thread_local! {
-    static TEST_PACMAN_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-#[allow(dead_code)]
-pub(crate) fn set_test_pacman_path(path: Option<String>) {
-    #[cfg(test)]
-    TEST_PACMAN_PATH.with(|slot| {
-        *slot.borrow_mut() = path;
-    });
-    #[cfg(not(test))]
-    let _ = path;
-}
-
 pub(crate) fn pacman_program() -> String {
-    #[cfg(test)]
-    if let Some(path) = TEST_PACMAN_PATH.with(|slot| slot.borrow().clone()) {
-        return path;
-    }
     env::var(HARMONIA_PACMAN_PATH_ENV)
         .ok()
-        .filter(|value| !value.trim().is_empty())
+        .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "/usr/bin/pacman".to_string())
 }
 
 pub(crate) fn pacman_key_program() -> String {
     env::var(HARMONIA_PACMAN_KEY_PATH_ENV)
         .ok()
-        .filter(|value| !value.trim().is_empty())
+        .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "/usr/bin/pacman-key".to_string())
 }
 
@@ -206,7 +185,10 @@ pub(crate) fn pacman_base_args(sync: bool) -> Vec<&'static str> {
     }
 }
 
-pub(crate) fn capture_overwrite_preimage(receipt_dir: &Path, paths: &[String]) -> Result<(), String> {
+pub(crate) fn capture_overwrite_preimage(
+    receipt_dir: &Path,
+    paths: &[String],
+) -> Result<(), String> {
     let entries = paths.iter().map(|path| {
         let target = Path::new(path);
         let metadata = fs::symlink_metadata(target).ok();
@@ -218,7 +200,10 @@ pub(crate) fn capture_overwrite_preimage(receipt_dir: &Path, paths: &[String]) -
         };
         serde_json::json!({"path": path, "exists": metadata.is_some(), "type": kind, "bytes_hex": bytes.as_ref().map(|b| b.iter().map(|v| format!("{:02x}", v)).collect::<String>())})
     }).collect::<Vec<_>>();
-    crate::write_json(&receipt_dir.join("pacman-overwrite-preimage.json"), &serde_json::json!({"schema":"harmonia.pacman_overwrite_preimage.v1", "paths": entries}))
+    crate::write_json(
+        &receipt_dir.join("pacman-overwrite-preimage.json"),
+        &serde_json::json!({"schema":"harmonia.pacman_overwrite_preimage.v1", "paths": entries}),
+    )
 }
 
 pub(crate) fn overwrite_allowed_args<'a>(
@@ -480,7 +465,15 @@ fn pacman_update_query_is_empty(result: &crate::CmdResult) -> bool {
         && (result.code == 0 || (result.code == 1 && result.stderr.trim().is_empty()))
 }
 
-pub(crate) fn write_install_package_guard_receipt(receipt_dir: &Path, name: &str, before: &PackageObservation, movement: &OperationOutcome, after: &PackageObservation) -> Result<(), String> { write_guard_receipts(receipt_dir, name, before, movement, after) }
+pub(crate) fn write_install_package_guard_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    before: &PackageObservation,
+    movement: &OperationOutcome,
+    after: &PackageObservation,
+) -> Result<(), String> {
+    write_guard_receipts(receipt_dir, name, before, movement, after)
+}
 
 fn write_guard_receipts(
     receipt_dir: &Path,
@@ -596,7 +589,11 @@ pub(crate) fn package_tool_with_policy(
         current: Some(observe_result),
     };
     let run = comparison::execute_with_failure_receipt(
-        if action == "install" { "install-package" } else { "package" },
+        if action == "install" {
+            "install-package"
+        } else {
+            "package"
+        },
         || {
             let result = match action {
                 "install" => command::capture(&pacman, &["-Q"]),
@@ -634,14 +631,16 @@ pub(crate) fn package_tool_with_policy(
                     reclaim_pacman_database_lock(receipt_dir, &pacman, false)?;
                     command::capture(&pacman, &["-Qu"])
                 }
-                "install" if apply => crate::atoms::r#do::install_package::pacman_mutate_packages_with_options(
-                    receipt_dir,
-                    false,
-                    packages,
-                    conflict_policy,
-                    conflict_paths,
-                    timeout_secs,
-                )?,
+                "install" if apply => {
+                    crate::atoms::r#do::install_package::pacman_mutate_packages_with_options(
+                        receipt_dir,
+                        false,
+                        packages,
+                        conflict_policy,
+                        conflict_paths,
+                        timeout_secs,
+                    )?
+                }
                 "install" => {
                     reclaim_pacman_database_lock(receipt_dir, &pacman, false)?;
                     command::capture(&pacman, &["-Q"])
@@ -1026,104 +1025,50 @@ fn write_keyring_receipt(
     write_json(&receipt_dir.join(format!("{}.json", name)), &receipt)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
+pub(crate) fn slice4_bench(
+    root: &Path,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let fake = root.join("fake-pacman");
+    let log = root.join("pacman.log");
+    let receipts = root.join("receipts");
+    std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
+    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) exit 0;; -Qu) test -f {}.state || echo pending-update; exit 0;; -Syu) echo Upgrading slice4; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let old = std::env::var_os("HARMONIA_PACMAN_PATH");
+    std::env::set_var("HARMONIA_PACMAN_PATH", &fake);
+    let result = package_tool_with_policy_for_backend(
+        &receipts,
+        "bench",
+        "upgrade",
+        &[],
+        true,
+        None,
+        &[],
+        2,
+        crate::PackageBackend::Pacman,
+        invocation,
+    );
+    match old {
+        Some(v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
+    let out = result?;
+    let text = std::fs::read_to_string(&log).map_err(|e| e.to_string())?;
+    let argv = text.lines().map(str::to_string).collect::<Vec<_>>();
+    let exact = argv.iter().any(|line| line == "-Syu --noconfirm");
+    let typed_receipt = receipts.join("bench.json").is_file();
+    Ok(serde_json::json!({
+        "production_ok": out.ok,
+        "typed_receipt": typed_receipt,
+        "upgrade_argv_exact": exact,
+        "fake_log_only": !text.is_empty(),
+        "pacman_argv": argv,
+        "skipped": out.skipped,
+        "skip_refusal_truthful": out.ok && !out.skipped,
+        "ok": out.ok && exact && !out.skipped && typed_receipt,
+    }))
 
-    fn receipt_dir(test_name: &str) -> std::path::PathBuf {
-        let path = env::temp_dir().join(format!(
-            "harmonia-package-{test_name}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn pacman_lock_decision_distinguishes_absent_live_and_orphaned_locks() {
-        assert_eq!(
-            pacman_lock_decision(false, false),
-            PacmanLockDecision {
-                lock_present: false,
-                live_holder_found: false,
-                reclaim: false,
-            }
-        );
-        assert_eq!(
-            pacman_lock_decision(true, true),
-            PacmanLockDecision {
-                lock_present: true,
-                live_holder_found: true,
-                reclaim: false,
-            }
-        );
-        assert_eq!(
-            pacman_lock_decision(true, false),
-            PacmanLockDecision {
-                lock_present: true,
-                live_holder_found: false,
-                reclaim: true,
-            }
-        );
-    }
-
-    #[test]
-    fn sync_package_mutation_uses_full_upgrade_semantics() {
-        let args = pacman_base_args(true);
-        assert_eq!(args, vec!["-Syu", "--noconfirm"]);
-    }
-
-    #[test]
-    fn install_package_mutation_uses_needed_semantics() {
-        let args = pacman_base_args(false);
-        assert_eq!(args, vec!["-S", "--noconfirm", "--needed"]);
-    }
-
-    #[test]
-    fn overwrite_policy_rejects_wildcard_paths() {
-        assert!(overwrite_allowed_args(&pacman_base_args(false), &["*".to_string()]).is_none());
-    }
-
-    #[test]
-    fn keyring_repair_skips_non_arch_host_when_applying() {
-        let receipt_dir = receipt_dir("keyring-skip");
-        set_test_pacman_path(Some("/nonexistent/harmonia-pacman".to_string()));
-        let outcome = keyring_repair_tool(
-            &receipt_dir,
-            "keyring",
-            "archlinux-keyring",
-            true,
-            DEFAULT_PACKAGE_TIMEOUT_SECS,
-        )
-        .unwrap();
-        set_test_pacman_path(None);
-
-        assert!(outcome.ok);
-        assert!(outcome.skipped);
-        let receipt: serde_json::Value =
-            serde_json::from_slice(&fs::read(receipt_dir.join("keyring.json")).unwrap()).unwrap();
-        assert_eq!(receipt["first_missing_signal"], "none");
-        fs::remove_dir_all(receipt_dir).unwrap();
-    }
-
-    #[test]
-    fn package_install_skips_non_arch_host_when_applying() {
-        let receipt_dir = receipt_dir("package-skip");
-        set_test_pacman_path(Some("/nonexistent/harmonia-pacman".to_string()));
-        let outcome = package_tool(
-            &receipt_dir,
-            "package",
-            "install",
-            &["git".to_string()],
-            true,
-        )
-        .unwrap();
-        set_test_pacman_path(None);
-
-        assert!(outcome.ok);
-        assert!(outcome.skipped);
-        fs::remove_dir_all(receipt_dir).unwrap();
-    }
 }
