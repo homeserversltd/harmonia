@@ -345,6 +345,22 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 )]),
             });
         }
+        if replacement.is_empty() {
+            for child in &mut step.steps {
+                if matches!(
+                    child.name.as_str(),
+                    "service-daemon-reload"
+                        | "service-enable"
+                        | "service-restart"
+                        | "service-active"
+                ) {
+                    child.args.insert(
+                        "managed_files_changed".into(),
+                        Value::Bool(false),
+                    );
+                }
+            }
+        }
         step.steps.splice(index..=index, replacement);
         let mut proposal = original;
         proposal
