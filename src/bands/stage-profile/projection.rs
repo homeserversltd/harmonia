@@ -130,32 +130,6 @@ fn projection_component_face(component: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-fn projection_safe_target(path: &Path) -> Result<(), String> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(format!("update-set-target-invalid {}", path.display()));
-    }
-    for broad in [
-        "/",
-        "/etc",
-        "/home",
-        "/home/owner",
-        "/usr",
-        "/usr/local",
-        "/usr/local/bin",
-        "/usr/local/sbin",
-        "/var",
-        "/var/lib",
-    ] {
-        if path == Path::new(broad) {
-            return Err(format!("update-set-target-too-broad {}", path.display()));
-        }
-    }
-    Ok(())
-}
 fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> Result<(), String> {
     match crate::tools::files::classify_target(&path) {
         crate::tools::files::TargetClass::Software => {}
@@ -167,7 +141,7 @@ fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> 
         }
         crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
     }
-    projection_safe_target(&path)?;
+    crate::atoms::r#do::transaction::validate_member_scoped_target(&path, member)?;
     out.push(Target {
         path,
         member: member.into(),
@@ -294,8 +268,9 @@ fn projection_derive_plan_inner(
                         args.get("component").and_then(Value::as_str) == Some("caduceus")
                     }))
             {
+                let staff_member = if module_id == "sbin" { "sbin" } else { "agathodaimon" };
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
-                    projection_add_target(&mut targets, p.into(), "agathodaimon")?;
+                    projection_add_target(&mut targets, p.into(), staff_member)?;
                 }
                 if projection_text(&s.args, "launcher_pattern").is_none() {
                     continue;
@@ -323,7 +298,7 @@ fn projection_derive_plan_inner(
                     }
                 }
                 for n in names {
-                    projection_add_target(&mut targets, tr.join(n), "agathodaimon")?;
+                    projection_add_target(&mut targets, tr.join(n), staff_member)?;
                 }
             }
             if is_gui && s.tool == "files" && s.permutation == "converge" {

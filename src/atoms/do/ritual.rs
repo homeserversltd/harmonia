@@ -568,16 +568,19 @@ struct Node {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Snapshot {
-    roots: Vec<PathBuf>,
+    roots: Vec<Target>,
     nodes: Vec<Node>,
 }
-fn safe_target(path: &Path) -> Result<(), String> {
+pub(crate) fn validate_member_scoped_target(path: &Path, member: &str) -> Result<(), String> {
     if !path.is_absolute()
         || path
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
     {
         return Err(format!("update-set-target-invalid {}", path.display()));
+    }
+    if member == "sbin" && path == Path::new("/usr/local/sbin") {
+        return Ok(());
     }
     for broad in [
         "/",
@@ -635,17 +638,26 @@ fn capture_tree(p: &Path, n: &mut Vec<Node>) -> Result<(), String> {
     Ok(())
 }
 pub(crate) fn snapshot(ts: &[Target]) -> Result<Snapshot, String> {
-    let mut roots = BTreeSet::new();
+    let mut roots = Vec::new();
     for t in ts {
-        safe_target(&t.path)?;
-        roots.insert(t.path.clone());
+        validate_member_scoped_target(&t.path, &t.member)?;
+        if let Some(root) = roots.iter().find(|root: &&Target| root.path == t.path) {
+            if root.member != t.member {
+                return Err(format!(
+                    "update-set-target-member-ambiguous {}",
+                    t.path.display()
+                ));
+            }
+        } else {
+            roots.push(t.clone());
+        }
     }
     let mut nodes = Vec::new();
     for r in &roots {
-        capture_tree(r, &mut nodes)?;
+        capture_tree(&r.path, &mut nodes)?;
     }
     Ok(Snapshot {
-        roots: roots.into_iter().collect(),
+        roots,
         nodes,
     })
 }
@@ -721,9 +733,9 @@ fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key
 pub(crate) fn restore(s: &Snapshot, key: InvocationKey) -> Result<(), String> {
     let mut changed = Vec::new();
     for root in &s.roots {
-        safe_target(root)?;
-        if !root_matches_snapshot(root, &s.nodes)? {
-            changed.push(root.clone());
+        validate_member_scoped_target(&root.path, &root.member)?;
+        if !root_matches_snapshot(&root.path, &s.nodes)? {
+            changed.push(root.path.clone());
         }
     }
     let changed_roots = changed.clone();
@@ -770,7 +782,7 @@ pub(crate) fn restore(s: &Snapshot, key: InvocationKey) -> Result<(), String> {
 fn verify(s: &Snapshot) -> Result<(), String> {
     let mut got = Vec::new();
     for r in &s.roots {
-        capture_tree(r, &mut got)?;
+        capture_tree(&r.path, &mut got)?;
     }
     got.sort_by(|a, b| a.path.cmp(&b.path));
     let mut expected = s.nodes.clone();
@@ -867,8 +879,8 @@ pub(crate) struct TransactionReceipt {
     pub service_count: usize,
     pub caduceus_count: usize,
 }
-pub(crate) fn validate_exact_root(path: &Path) -> Result<(), String> {
-    safe_target(path)?;
+pub(crate) fn validate_exact_root(path: &Path, member: &str) -> Result<(), String> {
+    validate_member_scoped_target(path, member)?;
     let mut cur = PathBuf::from("/");
     for c in path.components().skip(1) {
         cur.push(c.as_os_str());
@@ -890,7 +902,7 @@ pub(crate) fn seal_projection(
         return Err("sealed-projection-gui-missing".into());
     }
     for t in &plan.targets {
-        validate_exact_root(&t.path)?;
+        validate_exact_root(&t.path, &t.member)?;
     }
     let snapshot = snapshot(&plan.targets)?;
     let services = snapshot_services(plan)?;
@@ -1020,6 +1032,9 @@ pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
 
 pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), String> {
     bench(&[], _ctx.clone())?;
+    let sbin_shelf_target_lawful =
+        validate_member_scoped_target(Path::new("/usr/local/sbin"), "sbin").is_ok()
+            && validate_member_scoped_target(Path::new("/usr/local/sbin"), "anyother").is_err();
     if args.iter().any(|arg| arg == "--broad-parent") {
         let error = snapshot(&[Target {
             path: PathBuf::from("/etc"),
@@ -1289,6 +1304,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
     println!("profile_gui_bindings={}", bindings.join(","));
     println!("{}", serde_json::json!({
         "ok": true,
+        "sbin_shelf_target_lawful": sbin_shelf_target_lawful,
         "receipt": serde_json::from_str::<Value>(&receipt).map_err(|e| e.to_string())?,
         "projection_decisions": {
             "declared_face": true,
