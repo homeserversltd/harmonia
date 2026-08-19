@@ -7,7 +7,7 @@ pub(crate) fn execute_validated_step(
 ) -> Result<crate::OperationOutcome, String> {
     let apply = software_authorization.is_some();
     match step.permutation.as_str() {
-        "managed-files" => managed_files_step(step, manifest, module_dir, false, invocation),
+        "managed-files" => managed_files_step(step, manifest, module_dir, apply, invocation),
         "managed-directories" => managed_directories_step(step, module_dir, apply, invocation),
         "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, false, invocation),
