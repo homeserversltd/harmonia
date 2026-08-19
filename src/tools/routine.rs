@@ -317,6 +317,25 @@ fn execute_routine_tool(
     ),
     String,
 > {
+    if tool == "files" && requested_permutation == Some("managed-files") {
+        let step = ValidatedStep {
+            step_id: "managed-files".into(),
+            tool: "files".into(),
+            permutation: "managed-files".into(),
+            args: args.clone(),
+            on_failure: OnFailure::Stop,
+        };
+        // ConfigPlane comparison is proposal-only: never pass apply authority
+        // through this routine child, even when the surrounding ladder applies.
+        let outcome = tools::files::managed_files_step(
+            &step,
+            manifest,
+            receipt_dir,
+            false,
+            invocation,
+        )?;
+        return Ok((outcome, BTreeMap::new()));
+    }
     match tool {
         "pull-repo" => crate::bands::pull_source::execute_routine_child(
             "pull-repo",
