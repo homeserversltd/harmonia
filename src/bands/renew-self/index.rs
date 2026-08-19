@@ -927,10 +927,10 @@ pub(crate) fn run_engine_preflight(
     let mut proof_ok = false;
     let mut proof_failure: Option<String> = None;
     let mut promote = CmdResult {
-        ok: false,
-        code: -1,
-        stdout: String::new(),
-        stderr: "promotion skipped before successful proof battery".into(),
+        ok: true,
+        code: 0,
+        stdout: "promotion skipped before successful proof battery".into(),
+        stderr: String::new(),
     };
     let mut reexec_planned = false;
     let staged = staged_bin(&config);
@@ -1345,7 +1345,11 @@ pub(crate) fn run_engine_preflight(
         }
     }
 
-    if first_missing_signal == "none" && !artifact_current_noop && install_before != staged_sha {
+    let promotion_due =
+        first_missing_signal == "none" && !artifact_current_noop && install_before != staged_sha;
+    let mut promotion_attempted = false;
+    if promotion_due {
+        promotion_attempted = true;
         promote = promote_staged_binary(
             &staged,
             &config.install_bin,
@@ -1363,6 +1367,7 @@ pub(crate) fn run_engine_preflight(
         operation_count += 1;
     }
 
+    let promotion_skipped = !promotion_attempted;
     let install_after = install_bin_fingerprint(&config.install_bin);
     if first_missing_signal == "none" {
         changed = changed || install_before != install_after;
@@ -1435,9 +1440,9 @@ pub(crate) fn run_engine_preflight(
             (
                 "promote-successor",
                 OperationOutcome {
-                    ok: promote.ok,
-                    changed: changed && ok,
-                    skipped: !ok,
+                    ok: promotion_skipped || promote.ok,
+                    changed: changed && ok && !promotion_skipped,
+                    skipped: promotion_skipped,
                     message: "promote staged successor after proof".into(),
                     command: Some(promote),
                 },

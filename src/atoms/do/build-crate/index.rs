@@ -55,10 +55,27 @@ pub(crate) fn cargo_build_and_stamp(
 ) -> Result<CommandObservation, String> {
     let observation = cargo_build(authorization, invocation, cwd, environment, bearer, timeout)?;
     if observation.ok {
-        let stamp = artifact.with_file_name(format!(
-            "{}.source-build-sha",
-            artifact.file_name().and_then(|name| name.to_str()).unwrap_or("artifact")
-        ));
+        let artifact_name = artifact
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("artifact");
+        let built = cwd.join("target/release").join(artifact_name);
+        if built != artifact {
+            std::fs::create_dir_all(
+                artifact
+                    .parent()
+                    .ok_or("build-crate-staged-artifact-parent-missing")?,
+            )
+            .map_err(|error| format!("build-crate-staged-artifact-parent-create-failed: {error}"))?;
+            std::fs::copy(&built, artifact).map_err(|error| {
+                format!(
+                    "build-crate-staged-artifact-copy-failed {} -> {}: {error}",
+                    built.display(),
+                    artifact.display()
+                )
+            })?;
+        }
+        let stamp = artifact.with_file_name(format!("{artifact_name}.source-build-sha"));
         std::fs::write(stamp, format!("{source_build_sha}\n"))
             .map_err(|error| format!("build-crate-source-head-stamp-write-failed: {error}"))?;
     }
