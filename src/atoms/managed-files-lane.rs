@@ -6,6 +6,9 @@ pub(crate) type ChangeModePlan = crate::atoms::r#do::change_mode::Plan;
 pub(crate) type ChangeOwnerPlan = crate::atoms::r#do::change_owner::Plan;
 pub(crate) type CopyFilePlan = crate::atoms::r#do::copy_file::Plan;
 pub(crate) type FileWriteOptions<'a> = crate::atoms::r#do::write_file::FileWriteOptions<'a>;
+
+const PYTHON_RUNTIME_DEBRIS_EXCLUDE: &[&str] = &["__pycache__", "*.pyc", "*.pyo"];
+
 pub(crate) type RemoveDirImage = crate::atoms::r#do::remove_dir::Image;
 pub(crate) type RemoveDirNode = crate::atoms::r#do::remove_dir::Node;
 pub(crate) type RemoveDirKind = crate::atoms::r#do::remove_dir::Kind;
@@ -1938,6 +1941,18 @@ fn source_shelf_excluded(patterns: &[String], relative: &Path) -> bool {
     })
 }
 
+fn source_shelf_sweep_exclude(configured: &[String]) -> Vec<String> {
+    let mut exclude = configured.to_vec();
+    // Ignore Python bytecode runtime debris without treating it as owned content.
+    exclude.extend(
+        PYTHON_RUNTIME_DEBRIS_EXCLUDE
+            .iter()
+            .copied()
+            .map(String::from),
+    );
+    exclude
+}
+
 fn carry_excluded_shelf_entries(
     authorization: crate::atoms::comparison::ActionAuthorization,
     invocation: crate::atoms::r#do::InvocationKey,
@@ -3049,6 +3064,7 @@ fn source_shelf_owned_recursive_sweep(
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_source_shelf_relative_path(&request.shelf_source)?;
+    let sweep_exclude = source_shelf_sweep_exclude(&request.launcher_exclude);
     let provenance_path = request
         .provenance_state
         .as_ref()
@@ -3085,11 +3101,10 @@ fn source_shelf_owned_recursive_sweep(
         .map_err(|error| format!("source-shelf-sweep-owner-resolution-failed: {error}"))?;
     let gid = resolve_gid(&request.shelf_group)
         .map_err(|error| format!("source-shelf-sweep-group-resolution-failed: {error}"))?;
-    let desired: Vec<SweepTreeEntry> =
-        inventory_sweep_tree(&shelf_source, &request.launcher_exclude)?
-            .into_iter()
-            .filter(|entry| entry.relative_path != Path::new("."))
-            .collect();
+    let desired: Vec<SweepTreeEntry> = inventory_sweep_tree(&shelf_source, &sweep_exclude)?
+        .into_iter()
+        .filter(|entry| entry.relative_path != Path::new("."))
+        .collect();
     let desired_paths: BTreeSet<String> = desired
         .iter()
         .map(|entry| {
@@ -3101,8 +3116,13 @@ fn source_shelf_owned_recursive_sweep(
         })
         .collect();
     let mut provenance = load_sweep_provenance(provenance_path)?;
-    let target_inventory =
-        inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
+    provenance.paths.retain(|path| {
+        Path::new(path)
+            .strip_prefix(&request.target_shelf)
+            .ok()
+            .is_none_or(|relative| !source_shelf_excluded(&sweep_exclude, relative))
+    });
+    let target_inventory = inventory_sweep_tree_if_present(&request.target_shelf, &sweep_exclude)?;
     for target_entry in target_inventory
         .iter()
         .filter(|entry| entry.relative_path != Path::new("."))
@@ -3150,8 +3170,10 @@ fn source_shelf_owned_recursive_sweep(
                 .strip_prefix(&request.target_shelf)
                 .ok()
                 .and_then(|relative| {
-                    (!relative.as_os_str().is_empty() && !desired_paths.contains(path))
-                        .then(|| relative.to_path_buf())
+                    (!relative.as_os_str().is_empty()
+                        && !source_shelf_excluded(&sweep_exclude, relative)
+                        && !desired_paths.contains(path))
+                    .then(|| relative.to_path_buf())
                 })
         })
         .collect();
@@ -3485,7 +3507,7 @@ fn source_shelf_owned_recursive_sweep(
         target_inventory_count_before: 0,
         target_inventory_count_after: inventory_sweep_tree_if_present(
             &request.target_shelf,
-            &request.launcher_exclude,
+            &sweep_exclude,
         )?
         .len(),
         promoted_count,
@@ -3509,6 +3531,7 @@ fn source_shelf_sweep_with_fault(
 ) -> Result<SourceShelfSweepOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
     validate_source_shelf_relative_path(&request.shelf_source)?;
+    let sweep_exclude = source_shelf_sweep_exclude(&request.launcher_exclude);
     validate_launcher_pattern(&request.launcher_pattern)?;
     validate_mode("shelf-directory", request.shelf_directory_mode)?;
     validate_mode("shelf-file", request.shelf_file_mode)?;
@@ -3590,19 +3613,18 @@ fn source_shelf_sweep_with_fault(
     let source_entries = if launcher_only {
         Vec::new()
     } else {
-        inventory_sweep_tree(&shelf_source, &request.launcher_exclude)?
+        inventory_sweep_tree(&shelf_source, &sweep_exclude)?
     };
-    let target_before =
-        inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
+    let target_before = inventory_sweep_tree_if_present(&request.target_shelf, &sweep_exclude)?;
     let launchers = source_launchers(
         &launcher_source_root,
         &request.launcher_pattern,
-        &request.launcher_exclude,
+        &sweep_exclude,
     )?;
     let target_launchers = target_pattern_files(
         &request.launcher_target_root,
         &request.launcher_pattern,
-        &request.launcher_exclude,
+        &sweep_exclude,
     )?;
     let stale: BTreeSet<_> = target_launchers
         .difference(&launchers.keys().cloned().collect())
@@ -3617,7 +3639,7 @@ fn source_shelf_sweep_with_fault(
             request.shelf_file_mode,
             uid,
             gid,
-            &request.launcher_exclude,
+            &sweep_exclude,
         )?;
     let mut launcher_drift = BTreeSet::new();
     for (name, source) in &launchers {
@@ -3685,12 +3707,12 @@ fn source_shelf_sweep_with_fault(
                     request.shelf_file_mode,
                     uid,
                     gid,
-                    &request.launcher_exclude,
+                    &sweep_exclude,
                 )?;
             let target_launchers_now = target_pattern_files(
                 &request.launcher_target_root,
                 &request.launcher_pattern,
-                &request.launcher_exclude,
+                &sweep_exclude,
             )?;
             let mut launcher_drift_now = false;
             for name in launchers.keys() {
@@ -3870,7 +3892,7 @@ fn source_shelf_sweep_with_fault(
                             invocation,
                             &shelf_backup,
                             &request.target_shelf,
-                            &request.launcher_exclude,
+                            &sweep_exclude,
                         )?;
                     }
                     sync_directory(shelf_parent)?;
@@ -4023,7 +4045,7 @@ fn source_shelf_sweep_with_fault(
                     }
                     sync_directory(&request.launcher_target_root)?;
                 }
-                let mut readback_exclude = request.launcher_exclude.clone();
+                let mut readback_exclude = sweep_exclude.clone();
                 if let Ok(relative) = quarantine.strip_prefix(&request.target_shelf) {
                     readback_exclude.push(relative.to_string_lossy().into_owned());
                 }
@@ -4068,14 +4090,12 @@ fn source_shelf_sweep_with_fault(
 
             let mut committed_outcome = None;
             let transaction = transaction.and_then(|_| {
-                let target_after = inventory_sweep_tree_if_present(
-                    &request.target_shelf,
-                    &request.launcher_exclude,
-                )?;
+                let target_after =
+                    inventory_sweep_tree_if_present(&request.target_shelf, &sweep_exclude)?;
                 let target_launchers_after = target_pattern_files(
                     &request.launcher_target_root,
                     &request.launcher_pattern,
-                    &request.launcher_exclude,
+                    &sweep_exclude,
                 )?;
                 let entries = readback_sweep_entries(planned_entries.clone())?;
                 if entries.iter().any(|entry| !entry.readback_ok) {
@@ -4255,14 +4275,14 @@ fn source_shelf_sweep_with_fault(
                     target_inventory_count_before: target_before.len() + target_launchers.len(),
                     target_inventory_count_after: inventory_sweep_tree_if_present(
                         &request.target_shelf,
-                        &request.launcher_exclude,
+                        &sweep_exclude,
                     )
                     .map(|entries| entries.len())
                     .unwrap_or_default()
                         + target_pattern_files(
                             &request.launcher_target_root,
                             &request.launcher_pattern,
-                            &request.launcher_exclude,
+                            &sweep_exclude,
                         )
                         .map(|entries| entries.len())
                         .unwrap_or_default(),
