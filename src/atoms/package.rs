@@ -4,8 +4,11 @@ use crate::{write_json, CmdResult, OperationOutcome, PackageBackend};
 use serde::Serialize;
 use std::env;
 use std::fs;
+use std::io::{Read, Seek};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const NAME: &str = "package";
 
@@ -38,6 +41,10 @@ pub(crate) fn package_receipt_fields(
             "message": movement.message,
             "command": movement.command,
         })),
+        "observed_before": serde_json::Value::Null,
+        "act": serde_json::Value::Null,
+        "observed_after": serde_json::Value::Null,
+        "converged": false,
         "changed": changed,
     })
 }
@@ -277,6 +284,17 @@ pub(crate) fn package_tool_with_policy_for_backend(
             &pacman_program(),
             invocation,
         ),
+        PackageBackend::Pacman if matches!(action, "check" | "upgrade" | "update") => {
+            package_update_tool(
+                receipt_dir,
+                name,
+                action,
+                packages,
+                apply,
+                timeout_secs,
+                PackageBackend::Pacman,
+            )
+        }
         PackageBackend::Pacman => package_tool_with_policy(
             receipt_dir,
             name,
@@ -287,6 +305,17 @@ pub(crate) fn package_tool_with_policy_for_backend(
             conflict_paths,
             timeout_secs,
         ),
+        PackageBackend::Apt if matches!(action, "check" | "upgrade" | "update") => {
+            package_update_tool(
+                receipt_dir,
+                name,
+                action,
+                packages,
+                apply,
+                timeout_secs,
+                PackageBackend::Apt,
+            )
+        }
         PackageBackend::Apt => {
             apt_package_tool(receipt_dir, name, action, packages, apply, timeout_secs)
         }
@@ -411,6 +440,451 @@ fn apt_package_tool(
         &package_receipt_fields(&observation, decision, movement.as_ref(), outcome.changed),
     )?;
     write_package_receipt_with_backend(receipt_dir, name, action, &outcome, PackageBackend::Apt)?;
+    Ok(outcome)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PendingPackage {
+    name: String,
+    current: Option<String>,
+    candidate: Option<String>,
+}
+#[derive(Debug, Clone, Serialize)]
+struct UpdateObservation {
+    backend: String,
+    observed_state: String,
+    desired_state: String,
+    current: CmdResult,
+    probe_ok: bool,
+    pending_count: usize,
+    pending: Vec<PendingPackage>,
+    db_synced_at: Option<String>,
+    refresh_command: CmdResult,
+    query: CmdResult,
+    cleanup_failure: Option<String>,
+}
+static UPDATE_SANDBOX_COUNTER: AtomicU64 = AtomicU64::new(0);
+fn now_rfc3339() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let timestamp = seconds.min(i64::MAX as u64) as libc::time_t;
+    let mut utc: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::gmtime_r(&timestamp, &mut utc) }.is_null() {
+        return "1970-01-01T00:00:00Z".into();
+    }
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        utc.tm_year + 1900,
+        utc.tm_mon + 1,
+        utc.tm_mday,
+        utc.tm_hour,
+        utc.tm_min,
+        utc.tm_sec
+    )
+}
+fn update_sandbox(r: &Path) -> PathBuf {
+    let n = UPDATE_SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
+    r.join(format!("package-update-sandbox-{}-{n}", std::process::id()))
+}
+fn parse_pacman_pending(s: &str) -> Vec<PendingPackage> {
+    s.lines()
+        .filter_map(|l| {
+            let (n, r) = l.split_once(' ')?;
+            let (c, v) = r.split_once(" -> ")?;
+            Some(PendingPackage {
+                name: n.into(),
+                current: Some(c.trim().into()),
+                candidate: Some(v.trim().into()),
+            })
+        })
+        .collect()
+}
+fn parse_apt_pending(s: &str) -> Vec<PendingPackage> {
+    s.lines()
+        .filter_map(|l| {
+            let l = l.trim().strip_prefix("Inst ")?;
+            let n = l.split_whitespace().next()?.into();
+            let c = l
+                .split_once('[')
+                .and_then(|(_, x)| x.split_once(']').map(|(v, _)| v.trim().into()));
+            let v = l
+                .split_once('(')
+                .and_then(|(_, x)| x.split_whitespace().next().map(Into::into));
+            Some(PendingPackage {
+                name: n,
+                current: c,
+                candidate: v,
+            })
+        })
+        .collect()
+}
+#[derive(Debug, Clone)]
+struct LogMark {
+    path: PathBuf,
+    offset: u64,
+}
+#[derive(Debug, Clone, Serialize)]
+struct UpgradedPackage {
+    name: String,
+    old: String,
+    new: String,
+}
+fn log_mark(path: impl Into<PathBuf>) -> LogMark {
+    let path = path.into();
+    let offset = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    LogMark { path, offset }
+}
+fn read_appended(m: &LogMark) -> Result<String, String> {
+    let mut f = match fs::File::open(&m.path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    f.seek(std::io::SeekFrom::Start(m.offset))
+        .map_err(|e| e.to_string())?;
+    let mut b = Vec::new();
+    f.read_to_end(&mut b).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&b).into_owned())
+}
+fn log_tail(xs: &[String]) -> String {
+    let mut v = xs.iter().flat_map(|x| x.lines()).collect::<Vec<_>>();
+    if v.len() > 20 {
+        v.drain(..v.len() - 20);
+    }
+    v.join(
+        "
+",
+    )
+}
+fn parse_upgraded(b: PackageBackend, xs: &[String]) -> Vec<UpgradedPackage> {
+    let mut o = Vec::new();
+    for x in xs {
+        for l in x.lines() {
+            match b {
+                PackageBackend::Pacman => {
+                    if let Some(r) = l.split_once("[ALPM] upgraded ").map(|(_, x)| x) {
+                        if let Some((n, v)) = r.split_once(" (") {
+                            if let Some((old, new)) = v.trim_end_matches(')').split_once(" -> ") {
+                                o.push(UpgradedPackage {
+                                    name: n.trim().into(),
+                                    old: old.trim().into(),
+                                    new: new.trim().into(),
+                                });
+                            }
+                        }
+                    }
+                }
+                PackageBackend::Apt => {
+                    if let Some(r) = l.trim().strip_prefix("Upgrade: ") {
+                        for i in r.split(", ") {
+                            if let Some((n, v)) = i.rsplit_once(" (") {
+                                if let Some((old, new)) = v.trim_end_matches(')').split_once(", ") {
+                                    o.push(UpgradedPackage {
+                                        name: n.trim().into(),
+                                        old: old.trim().into(),
+                                        new: new.trim().into(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    o
+}
+fn synthetic(s: &str) -> CmdResult {
+    CmdResult {
+        ok: false,
+        code: -1,
+        stdout: String::new(),
+        stderr: s.into(),
+    }
+}
+fn fallback_upgraded(b: PackageBackend, p: &[PendingPackage], t: u64) -> Vec<UpgradedPackage> {
+    if p.is_empty() {
+        return Vec::new();
+    }
+    let names = p.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+    let (prog, args) = match b {
+        PackageBackend::Pacman => (
+            pacman_program(),
+            std::iter::once("-Q".to_string())
+                .chain(names.clone())
+                .collect::<Vec<_>>(),
+        ),
+        PackageBackend::Apt => (
+            "/usr/bin/dpkg-query".to_string(),
+            vec![
+                "-W".into(),
+                r"-f=${Package}	${Version}
+"
+                .into(),
+            ]
+            .into_iter()
+            .chain(names.clone())
+            .collect(),
+        ),
+    };
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let r = command::capture_with_timeout(&prog, &refs, t);
+    if !r.ok {
+        return Vec::new();
+    }
+    let mut have = std::collections::HashMap::new();
+    for l in r.stdout.lines() {
+        let mut q = l.split_whitespace();
+        if let (Some(n), Some(v)) = (q.next(), q.next()) {
+            have.insert(n.to_string(), v.to_string());
+        }
+    }
+    p.iter()
+        .filter_map(|x| {
+            let old = x.current.as_ref()?;
+            let new = have.get(&x.name)?;
+            (old != new).then(|| UpgradedPackage {
+                name: x.name.clone(),
+                old: old.clone(),
+                new: new.clone(),
+            })
+        })
+        .collect()
+}
+fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObservation {
+    let bn = b.name().into();
+    match b {
+        PackageBackend::Pacman => {
+            let d = update_sandbox(r);
+            let setup = fs::create_dir_all(&d)
+                .and_then(|_| std::os::unix::fs::symlink("/var/lib/pacman/local", d.join("local")));
+            let (refresh, q, p, ok) = if let Err(e) = setup {
+                (
+                    synthetic(&format!("pacman sandbox setup failed: {e}")),
+                    synthetic("pacman query skipped after sandbox setup failure"),
+                    Vec::new(),
+                    false,
+                )
+            } else {
+                let db = d.to_string_lossy().into_owned();
+                let x = pacman_program();
+                let refresh = command::capture_with_timeout(
+                    &x,
+                    &["-Sy", "--dbpath", &db, "--logfile", "/dev/null"],
+                    t,
+                );
+                if !refresh.ok {
+                    (
+                        refresh,
+                        synthetic("pacman query skipped after refresh failure"),
+                        Vec::new(),
+                        false,
+                    )
+                } else {
+                    let q = command::capture_with_timeout(&x, &["-Qu", "--dbpath", &db], t);
+                    let ok = q.ok || (q.code == 1 && q.stdout.is_empty() && q.stderr.is_empty());
+                    let p = if ok {
+                        parse_pacman_pending(&q.stdout)
+                    } else {
+                        Vec::new()
+                    };
+                    (refresh, q, p, ok)
+                }
+            };
+            let cleanup = fs::remove_dir_all(&d).err().map(|e| e.to_string());
+            let probe_ok = ok && cleanup.is_none();
+            UpdateObservation {
+                backend: bn,
+                observed_state: if !probe_ok {
+                    "probe-failed".into()
+                } else if p.is_empty() {
+                    "empty".into()
+                } else {
+                    "pending".into()
+                },
+                desired_state: "no-pending-updates".into(),
+                current: q.clone(),
+                probe_ok,
+                pending_count: p.len(),
+                pending: p,
+                db_synced_at: probe_ok.then(|| now_rfc3339()),
+                refresh_command: refresh,
+                query: q,
+                cleanup_failure: cleanup,
+            }
+        }
+        PackageBackend::Apt => {
+            let x = apt_program();
+            let refresh = command::capture_with_timeout(&x, &["update"], t);
+            let sim = if a == "check" {
+                "upgrade"
+            } else {
+                "full-upgrade"
+            };
+            let q = if refresh.ok {
+                command::capture_with_timeout(&x, &["-s", sim], t)
+            } else {
+                synthetic("apt query skipped after refresh failure")
+            };
+            let ok = refresh.ok && q.ok;
+            let p = if ok {
+                parse_apt_pending(&q.stdout)
+            } else {
+                Vec::new()
+            };
+            UpdateObservation {
+                backend: bn,
+                observed_state: if !ok {
+                    "probe-failed".into()
+                } else if p.is_empty() {
+                    "empty".into()
+                } else {
+                    "pending".into()
+                },
+                desired_state: "no-pending-updates".into(),
+                current: q.clone(),
+                probe_ok: ok,
+                pending_count: p.len(),
+                pending: p,
+                db_synced_at: ok.then(|| now_rfc3339()),
+                refresh_command: refresh,
+                query: q,
+                cleanup_failure: None,
+            }
+        }
+    }
+}
+fn package_update_tool(
+    r: &Path,
+    n: &str,
+    a: &str,
+    _pkgs: &[String],
+    apply: bool,
+    t: u64,
+    b: PackageBackend,
+) -> Result<OperationOutcome, String> {
+    let pre = observe_update(r, a, t, b);
+    let different = !pre.probe_ok || pre.pending_count > 0;
+    let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":if !pre.probe_ok {"probe-failed"} else if pre.pending_count==0 {"empty"} else {"pending"},"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":false,"changed":false,"skipped":false});
+    let (outcome, msg, should_err) = if !pre.probe_ok {
+        let m = "package update probe failed".to_string();
+        (
+            OperationOutcome {
+                ok: false,
+                changed: false,
+                skipped: false,
+                message: m.clone(),
+                command: Some(pre.query.clone()),
+            },
+            m,
+            false,
+        )
+    } else if pre.pending_count == 0 || !apply {
+        let m = if pre.pending_count == 0 {
+            format!(
+                "package {a} already current; pending_count=0 db_synced_at={}",
+                pre.db_synced_at.as_deref().unwrap_or("unknown")
+            )
+        } else {
+            format!(
+                "package {a}: pending updates observed; pending_count={} db_synced_at={}",
+                pre.pending_count,
+                pre.db_synced_at.as_deref().unwrap_or("unknown")
+            )
+        };
+        (
+            OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: m.clone(),
+                command: Some(pre.query.clone()),
+            },
+            m,
+            false,
+        )
+    } else {
+        let pm = log_mark("/var/log/pacman.log");
+        let am = [
+            log_mark("/var/log/apt/history.log"),
+            log_mark("/var/log/apt/term.log"),
+        ];
+        let (refresh, act) = match b {
+            PackageBackend::Pacman => (
+                None,
+                command::capture_with_timeout(&pacman_program(), &["-Syu", "--noconfirm"], t),
+            ),
+            PackageBackend::Apt => {
+                let u = command::capture_with_timeout(&apt_program(), &["update"], t);
+                if u.ok {
+                    (
+                        Some(u),
+                        command::capture_with_timeout(
+                            &apt_program(),
+                            &["full-upgrade", "--yes"],
+                            t,
+                        ),
+                    )
+                } else {
+                    (Some(u.clone()), u)
+                }
+            }
+        };
+        let texts = match b {
+            PackageBackend::Pacman => vec![read_appended(&pm).unwrap_or_default()],
+            PackageBackend::Apt => am
+                .iter()
+                .map(|m| read_appended(m).unwrap_or_default())
+                .collect::<Vec<_>>(),
+        };
+        let mut upgraded = parse_upgraded(b, &texts);
+        if upgraded.is_empty() && act.ok {
+            upgraded = fallback_upgraded(b, &pre.pending, t);
+        }
+        let post = observe_update(r, a, t, b);
+        let changed = act.ok && !upgraded.is_empty();
+        let converged = act.ok && post.probe_ok && post.pending_count == 0;
+        let m = if converged {
+            format!("package {a}")
+        } else if !act.ok {
+            format!("package {a} failed")
+        } else {
+            "package-act-did-not-converge".to_string()
+        };
+        out["act_refresh_command"] = serde_json::to_value(&refresh).map_err(|e| e.to_string())?;
+        out["act"] = serde_json::json!({"ok":act.ok,"changed":changed,"skipped":false,"message":format!("package {a}"),"command":act,"act_refresh_command":refresh});
+        out["movement"] = out["act"].clone();
+        out["observed_after"] = serde_json::to_value(&post).map_err(|e| e.to_string())?;
+        out["upgraded_count"] = upgraded.len().into();
+        out["upgraded"] = serde_json::to_value(upgraded).map_err(|e| e.to_string())?;
+        out["backend_log_tail"] = log_tail(&texts).into();
+        out["converged"] = converged.into();
+        out["changed"] = changed.into();
+        out["skipped"] = false.into();
+        (
+            OperationOutcome {
+                ok: converged,
+                changed,
+                skipped: false,
+                message: m.clone(),
+                command: Some(act.clone()),
+            },
+            m,
+            act.ok && !converged,
+        )
+    };
+    out["ok"] = outcome.ok.into();
+    out["changed"] = outcome.changed.into();
+    out["skipped"] = outcome.skipped.into();
+    out["message"] = msg.clone().into();
+    out["command"] = serde_json::to_value(outcome.command.clone()).map_err(|e| e.to_string())?;
+    write_json(&r.join(format!("{n}.comparison.json")), &out)?;
+    write_json(&r.join(format!("{n}.json")), &out)?;
+    if should_err {
+        return Err("package-act-did-not-converge".into());
+    }
     Ok(outcome)
 }
 
@@ -969,6 +1443,16 @@ fn write_package_receipt_with_backend(
             "act",
             "observed_after",
             "converged",
+            "backend",
+            "probe_ok",
+            "pending_count",
+            "pending",
+            "db_synced_at",
+            "refresh_command",
+            "upgraded_count",
+            "upgraded",
+            "backend_log_tail",
+            "act_refresh_command",
         ] {
             if let Some(value) = comparison.get(field) {
                 receipt[field] = value.clone();
@@ -1070,5 +1554,4 @@ pub(crate) fn slice4_bench(
         "skip_refusal_truthful": out.ok && !out.skipped,
         "ok": out.ok && exact && !out.skipped && typed_receipt,
     }))
-
 }
