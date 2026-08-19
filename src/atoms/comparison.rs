@@ -121,3 +121,40 @@ where
         }
     }
 }
+pub(crate) fn execute_mode<Observed, Movement, Error>(
+    operation: &str,
+    mut observe: impl FnMut() -> Result<Observed, Error>,
+    mut compare: impl FnMut(&Observed) -> DiffDecision,
+    act: impl FnOnce(ActionAuthorization, &Observed) -> Result<Movement, Error>,
+    require_convergence: bool,
+) -> Result<ComparisonRun<Observed, Movement>, Error>
+where
+    Error: From<String>,
+{
+    let observed_before = observe()?;
+    match compare(&observed_before) {
+        DiffDecision::Empty => Ok(ComparisonRun::Current {
+            observation: observed_before,
+            decision: DiffDecision::Empty,
+        }),
+        DiffDecision::Different => {
+            let movement = act(ActionAuthorization(()), &observed_before)?;
+            if !require_convergence {
+                return Ok(ComparisonRun::Moved {
+                    observation: observed_before,
+                    decision: DiffDecision::Different,
+                    movement,
+                });
+            }
+            let observed_after = observe()?;
+            if compare(&observed_after) == DiffDecision::Different {
+                return Err(format!("{operation}-act-did-not-converge").into());
+            }
+            Ok(ComparisonRun::Moved {
+                observation: observed_after,
+                decision: DiffDecision::Different,
+                movement,
+            })
+        }
+    }
+}

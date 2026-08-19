@@ -87,8 +87,7 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
             ));
         }
     }
-    let run = crate::atoms::declaration::execute(
-        "place-file",
+    let run = crate::atoms::comparison::execute_mode(
         "place-file",
         || {
             probe::file(
@@ -120,6 +119,7 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
                 observation,
             )
         },
+        request.invocation.is_some(),
     )?;
     let observation = run.observation().clone();
     let movement = match run {

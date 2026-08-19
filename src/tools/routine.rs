@@ -374,7 +374,7 @@ fn execute_routine_tool(
             manifest,
             receipt_dir,
             apply,
-            invocation,
+            invocation.filter(|_| apply),
         ),
         "check-health" | "systemd" | "enable-unit" => {
             crate::bands::restart_services::execute_routine_child(

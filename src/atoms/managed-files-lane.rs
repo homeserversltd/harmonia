@@ -897,7 +897,7 @@ pub(crate) fn converge_managed_files(
     let desired_gid = request.group.map(resolve_gid).transpose()?;
     for file in request.files {
         let desired = file.content.as_bytes();
-        let run = crate::atoms::comparison::execute(
+        let run = crate::atoms::comparison::execute_mode(
             "files",
             || {
                 let path = PathBuf::from(&file.path);
@@ -969,6 +969,7 @@ pub(crate) fn converge_managed_files(
                     ManagedFileMovement::Ownership
                 })
             },
+            apply,
         )?;
         let observation = run.observation();
         let file_changed = observation.file_changed();
@@ -987,6 +988,7 @@ pub(crate) fn converge_managed_files(
             crate::atoms::comparison::ComparisonRun::Current { .. } => "none",
             crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement.as_str(),
         };
+        let report_only_drift = file_changed && !missing_target_debt && !apply;
         let truthful_changed = matches!(
             &run,
             crate::atoms::comparison::ComparisonRun::Moved {
@@ -1037,7 +1039,7 @@ pub(crate) fn converge_managed_files(
             &per_file,
             &json!({
                 "schema": "harmonia.files.managed_file.v1",
-                "ok": !missing_target_debt && (!file_changed || apply),
+                "ok": !missing_target_debt,
                 "module": request.module_id,
                 "path": file.path,
                 "mode": mode,
@@ -1047,7 +1049,7 @@ pub(crate) fn converge_managed_files(
                 "group_equal_before": group_equal,
                 "apply": apply,
                 "target_exists_before": target_exists_before,
-                "state": if missing_target_debt { "missing-target-birth-debt" } else { "observed" },
+                "state": if missing_target_debt { "missing-target-birth-debt" } else if report_only_drift { "drift-reported" } else { "observed" },
                 "changed": truthful_changed,
                 "drift_detected": file_changed && !missing_target_debt,
                 "written": truthful_changed,
@@ -1056,7 +1058,7 @@ pub(crate) fn converge_managed_files(
                 "diff_decision": diff_decision,
                 "movement": movement,
                 "truthful_changed": truthful_changed,
-                "first_missing_signal": if missing_target_debt { "missing-target-birth-debt" } else if !file_changed || apply { "none" } else { request.first_missing_signal },
+                "first_missing_signal": if missing_target_debt { "missing-target-birth-debt" } else if report_only_drift { request.first_missing_signal } else { "none" },
             }),
         )?;
     }
@@ -1080,7 +1082,7 @@ pub(crate) fn converge_managed_files(
             "apply": apply,
             "changed": changed,
             "entries": entries,
-            "first_missing_signal": if ok { "none" } else if !missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else { request.first_missing_signal },
+            "first_missing_signal": if !missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if !drift.is_empty() { request.first_missing_signal } else { "none" },
         }),
     )?;
     Ok(crate::OperationOutcome {
@@ -2104,6 +2106,76 @@ fn digest_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn sync_authorized_parent(
+    authorization: crate::atoms::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+    launcher_root: &Path,
+    path: &Path,
+    newly_created: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("source-shelf-sweep-parent-missing {}", path.display()))?;
+    if !parent.starts_with(launcher_root) {
+        return Err(format!(
+            "source-shelf-sweep-parent-outside-launcher-root {}",
+            parent.display()
+        ));
+    }
+    let mut missing = Vec::new();
+    let mut cursor = parent;
+    while cursor != launcher_root {
+        if cursor.exists() {
+            break;
+        }
+        missing.push(cursor.to_path_buf());
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| format!("source-shelf-sweep-parent-missing {}", cursor.display()))?;
+    }
+    crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, parent)?;
+    newly_created.extend(missing);
+    sync_directory(parent)
+}
+
+fn remove_new_launcher_dirs(
+    authorization: crate::atoms::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+    launcher_root: &Path,
+    newly_created: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    newly_created.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    newly_created.dedup();
+    let mut errors = Vec::new();
+    for path in newly_created.iter() {
+        if !path.starts_with(launcher_root) || path == launcher_root {
+            continue;
+        }
+        match crate::atoms::r#do::symlink_converge::remove_dir(authorization, invocation, path) {
+            Ok(()) => {
+                if let Some(parent) = path.parent() {
+                    if let Err(error) = sync_directory(parent) {
+                        errors.push(format!(
+                            "sync removed-directory parent {}: {error}",
+                            parent.display()
+                        ));
+                    }
+                }
+            }
+            Err(error) if error.contains("No such file") => {}
+            Err(error) => errors.push(format!(
+                "remove created directory {}: {error}",
+                path.display()
+            )),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 fn sync_directory(path: &Path) -> Result<(), String> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
@@ -2302,36 +2374,48 @@ fn source_launchers(
     pattern: &str,
     exclude: &[String],
 ) -> Result<BTreeMap<String, PathBuf>, String> {
-    let mut launchers = BTreeMap::new();
-    for entry in fs::read_dir(source_root).map_err(|error| {
-        format!(
-            "source-shelf-sweep-launcher-source-read-failed {}: {error}",
-            source_root.display()
-        )
-    })? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !basename_pattern_matches(pattern, &name)
-            || source_shelf_excluded(exclude, Path::new(&name))
-        {
-            continue;
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        pattern: &str,
+        exclude: &[String],
+        out: &mut BTreeMap<String, PathBuf>,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(dir).map_err(|error| {
+            format!(
+                "source-shelf-sweep-launcher-source-read-failed {}: {error}",
+                dir.display()
+            )
+        })? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_symlink() {
+                return Err(format!(
+                    "source-shelf-sweep-launcher-source-kind-rejected {}",
+                    path.display()
+                ));
+            }
+            let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+            if kind.is_dir() {
+                walk(root, &path, pattern, exclude, out)?;
+                continue;
+            }
+            let name = relative.to_string_lossy().replace('\\', "/");
+            let basename = relative
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if basename_pattern_matches(pattern, basename)
+                && !source_shelf_excluded(exclude, relative)
+            {
+                out.insert(name, path);
+            }
         }
-        let path = entry.path();
-        let kind = entry.file_type().map_err(|error| error.to_string())?;
-        if !kind.is_file() || kind.is_symlink() {
-            return Err(format!(
-                "source-shelf-sweep-launcher-source-kind-rejected {}",
-                path.display()
-            ));
-        }
-        if path.parent() != Some(source_root) {
-            return Err(format!(
-                "source-shelf-sweep-launcher-match-outside-root {}",
-                path.display()
-            ));
-        }
-        launchers.insert(name, path);
+        Ok(())
     }
+    let mut launchers = BTreeMap::new();
+    walk(source_root, source_root, pattern, exclude, &mut launchers)?;
     if launchers.is_empty() {
         return Err(format!(
             "source-shelf-sweep-launcher-pattern-empty {pattern:?}"
@@ -2345,33 +2429,52 @@ fn target_pattern_files(
     pattern: &str,
     exclude: &[String],
 ) -> Result<BTreeSet<String>, String> {
-    if !target_root.exists() {
-        return Ok(BTreeSet::new());
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        pattern: &str,
+        exclude: &[String],
+        out: &mut BTreeSet<String>,
+    ) -> Result<(), String> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(dir).map_err(|error| {
+            format!(
+                "source-shelf-sweep-launcher-target-read-failed {}: {error}",
+                dir.display()
+            )
+        })? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+            if kind.is_dir() {
+                walk(root, &path, pattern, exclude, out)?;
+                continue;
+            }
+            if kind.is_symlink() {
+                return Err(format!(
+                    "source-shelf-sweep-launcher-target-kind-rejected {}",
+                    path.display()
+                ));
+            }
+            let name = relative.to_string_lossy().replace('\\', "/");
+            let basename = relative
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if basename_pattern_matches(pattern, basename)
+                && !source_shelf_excluded(exclude, relative)
+                && !basename.starts_with(".harmonia-source-shelf-sweep-")
+            {
+                out.insert(name);
+            }
+        }
+        Ok(())
     }
     let mut names = BTreeSet::new();
-    for entry in fs::read_dir(target_root).map_err(|error| {
-        format!(
-            "source-shelf-sweep-launcher-target-read-failed {}: {error}",
-            target_root.display()
-        )
-    })? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !basename_pattern_matches(pattern, &name)
-            || source_shelf_excluded(exclude, Path::new(&name))
-            || name.starts_with(".harmonia-source-shelf-sweep-")
-        {
-            continue;
-        }
-        let kind = entry.file_type().map_err(|error| error.to_string())?;
-        if !kind.is_file() || kind.is_symlink() {
-            return Err(format!(
-                "source-shelf-sweep-launcher-target-kind-rejected {}",
-                entry.path().display()
-            ));
-        }
-        names.insert(name);
-    }
+    walk(target_root, target_root, pattern, exclude, &mut names)?;
     Ok(names)
 }
 
@@ -3610,6 +3713,7 @@ fn source_shelf_sweep_with_fault(
             let mut carried_excluded: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut launcher_backups: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut new_launchers: Vec<PathBuf> = Vec::new();
+            let mut newly_created_launcher_dirs: Vec<PathBuf> = Vec::new();
             let mut promoted_count = 0usize;
             let mut removed_count = 0usize;
             let transaction = (|| -> Result<(), String> {
@@ -3656,6 +3760,13 @@ fn source_shelf_sweep_with_fault(
                         .get(name)
                         .expect("launcher drift names come from inventory");
                     let target = request.launcher_target_root.join(name);
+                    sync_authorized_parent(
+                        authorization,
+                        invocation,
+                        &request.launcher_target_root,
+                        &target,
+                        &mut newly_created_launcher_dirs,
+                    )?;
                     if target.exists() {
                         let backup = receipt_dir.join("backups").join(name);
                         if let Some(parent) = backup.parent() {
@@ -3700,6 +3811,13 @@ fn source_shelf_sweep_with_fault(
                             )
                         })?;
                         let backup = quarantine.join(name);
+                        sync_authorized_parent(
+                            authorization,
+                            invocation,
+                            &request.launcher_target_root,
+                            &backup,
+                            &mut newly_created_launcher_dirs,
+                        )?;
                         crate::atoms::r#do::source_shelf::rename(
                             authorization,
                             invocation,
@@ -3712,6 +3830,8 @@ fn source_shelf_sweep_with_fault(
                                 target.display()
                             )
                         })?;
+                        sync_directory(target.parent().expect("launcher target has parent"))?;
+                        sync_directory(backup.parent().expect("launcher backup has parent"))?;
                         launcher_backups.push((target.clone(), backup));
                     } else {
                         new_launchers.push(target.clone());
@@ -3725,7 +3845,7 @@ fn source_shelf_sweep_with_fault(
                         Some(uid),
                         Some(gid),
                     )?;
-                    sync_directory(&request.launcher_target_root)?;
+                    sync_directory(target.parent().expect("launcher target has parent"))?;
                     promoted_count += 1;
                     if fault
                         .fail_after_promotions
@@ -3749,6 +3869,13 @@ fn source_shelf_sweep_with_fault(
                             )
                         })?;
                         let backup = quarantine.join(name);
+                        sync_authorized_parent(
+                            authorization,
+                            invocation,
+                            &request.launcher_target_root,
+                            &backup,
+                            &mut newly_created_launcher_dirs,
+                        )?;
                         crate::atoms::r#do::source_shelf::rename(
                             authorization,
                             invocation,
@@ -3761,6 +3888,8 @@ fn source_shelf_sweep_with_fault(
                                 target.display()
                             )
                         })?;
+                        sync_directory(target.parent().expect("stale launcher target has parent"))?;
+                        sync_directory(backup.parent().expect("stale launcher backup has parent"))?;
                         launcher_backups.push((target, backup));
                         removed_count += 1;
                     }
@@ -3855,6 +3984,14 @@ fn source_shelf_sweep_with_fault(
                             rollback_errors.push(format!("remove {}: {error}", target.display()));
                         }
                     }
+                    if let Some(parent) = target.parent() {
+                        if let Err(error) = sync_directory(parent) {
+                            rollback_errors.push(format!(
+                                "sync removed launcher parent {}: {error}",
+                                parent.display()
+                            ));
+                        }
+                    }
                 }
                 for (target, backup) in launcher_backups.iter().rev() {
                     let _ = crate::atoms::r#do::source_shelf::remove_file(
@@ -3862,6 +3999,14 @@ fn source_shelf_sweep_with_fault(
                         invocation,
                         target,
                     );
+                    if let Some(parent) = target.parent() {
+                        if let Err(error) = sync_directory(parent) {
+                            rollback_errors.push(format!(
+                                "sync replaced launcher parent {}: {error}",
+                                parent.display()
+                            ));
+                        }
+                    }
                     if let Err(error) = crate::atoms::r#do::source_shelf::rename(
                         authorization,
                         invocation,
@@ -3873,6 +4018,23 @@ fn source_shelf_sweep_with_fault(
                             backup.display(),
                             target.display()
                         ));
+                    } else {
+                        if let Some(parent) = target.parent() {
+                            if let Err(error) = sync_directory(parent) {
+                                rollback_errors.push(format!(
+                                    "sync restored launcher parent {}: {error}",
+                                    parent.display()
+                                ));
+                            }
+                        }
+                        if let Some(parent) = backup.parent() {
+                            if let Err(error) = sync_directory(parent) {
+                                rollback_errors.push(format!(
+                                    "sync launcher backup parent {}: {error}",
+                                    parent.display()
+                                ));
+                            }
+                        }
                     }
                 }
                 if shelf_promoted {
@@ -3925,6 +4087,18 @@ fn source_shelf_sweep_with_fault(
                     invocation,
                     &quarantine,
                 );
+                if let Err(error) = sync_directory(&request.launcher_target_root) {
+                    rollback_errors
+                        .push(format!("sync launcher quarantine rollback parent: {error}"));
+                }
+                if let Err(error) = remove_new_launcher_dirs(
+                    authorization,
+                    invocation,
+                    &request.launcher_target_root,
+                    &mut newly_created_launcher_dirs,
+                ) {
+                    rollback_errors.push(error);
+                }
                 let rollback_entries = match readback_rollback_entries(planned_entries.clone()) {
                     Ok(entries) => {
                         if entries
