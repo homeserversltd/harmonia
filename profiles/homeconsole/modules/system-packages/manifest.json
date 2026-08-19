@@ -5,5 +5,13 @@
   "description": "homeconsole system package upgrade ladder using the package tool.",
   "optional": false,
   "constants": {},
-  "ladder": []
+  "ladder": [
+    {
+      "step_id": "system-packages-upgrade",
+      "tool": "package",
+      "permutation": "upgrade",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ]
 }

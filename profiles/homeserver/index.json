@@ -74,6 +74,7 @@
     "vaultwarden",
     "udev",
     "systemd",
+    "system-packages",
     "matrix",
     "homeserver-update-runtime",
     "sbin",
