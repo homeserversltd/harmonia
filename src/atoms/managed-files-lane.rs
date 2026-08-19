@@ -2941,24 +2941,22 @@ fn source_shelf_owned_recursive_sweep(
         let source = shelf_source.join(&entry.relative_path);
         let target = request.target_shelf.join(&entry.relative_path);
         let owned = provenance.paths.contains(&target.display().to_string());
-        if target.exists() && !owned && !entry.is_dir {
-            return Err(format!(
-                "source-shelf-sweep-provenance-refused-unowned-target {}",
-                target.display()
-            ));
-        }
         let current = if entry.is_dir && target.exists() && !owned {
             true
         } else {
             let (digest, mode, observed_uid, observed_gid) =
                 sweep_path_state(&target, entry.is_dir)?;
-            mode == Some(if entry.is_dir {
-                request.shelf_directory_mode
+            if !owned && target.exists() && !entry.is_dir {
+                digest == Some(digest_file(&source)?)
             } else {
-                request.shelf_file_mode
-            }) && observed_uid == Some(uid)
-                && observed_gid == Some(gid)
-                && (entry.is_dir || digest == Some(digest_file(&source)?))
+                mode == Some(if entry.is_dir {
+                    request.shelf_directory_mode
+                } else {
+                    request.shelf_file_mode
+                }) && observed_uid == Some(uid)
+                    && observed_gid == Some(gid)
+                    && (entry.is_dir || digest == Some(digest_file(&source)?))
+            }
         };
         drift |= !current;
         entries.push(SourceShelfSweepEntry {
@@ -3093,7 +3091,7 @@ fn source_shelf_owned_recursive_sweep(
                             )?;
                             provenance.paths.insert(target.display().to_string());
                             promoted_count += 1;
-                        } else if owned {
+                        } else {
                             crate::atoms::r#do::change_mode::change(
                                 authorization,
                                 invocation,
@@ -3113,24 +3111,26 @@ fn source_shelf_owned_recursive_sweep(
                                     no_follow: true,
                                 },
                             )?;
+                            provenance.paths.insert(target.display().to_string());
                         }
                     } else {
                         let (digest, mode, observed_uid, observed_gid) =
                             sweep_path_state(&target, false)?;
-                        let current = digest == Some(digest_file(&source)?)
-                            && mode == Some(request.shelf_file_mode)
-                            && observed_uid == Some(uid)
-                            && observed_gid == Some(gid);
+                        let current = if !owned && target.exists() {
+                            digest == Some(digest_file(&source)?)
+                        } else {
+                            digest == Some(digest_file(&source)?)
+                                && mode == Some(request.shelf_file_mode)
+                                && observed_uid == Some(uid)
+                                && observed_gid == Some(gid)
+                        };
                         if current {
+                            if !owned {
+                                provenance.paths.insert(target.display().to_string());
+                            }
                             continue;
                         }
                         if target.exists() {
-                            if !owned {
-                                return Err(format!(
-                                    "source-shelf-sweep-provenance-refused-unowned-target {}",
-                                    target.display()
-                                ));
-                            }
                             let backup = quarantine.join(&entry.relative_path);
                             if let Some(parent) = backup.parent() {
                                 crate::atoms::r#do::source_shelf::mkdir_all(
