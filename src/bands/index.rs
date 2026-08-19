@@ -130,6 +130,7 @@ pub(crate) fn run_profile_engine_with_projection(
         run_started,
         transaction_state: serde_json::Value::Null,
         settlement: None,
+        defer_terminal: materialize_on_stage,
     };
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
     let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> =
@@ -428,6 +429,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         run_started: Instant::now(),
                         transaction_state: serde_json::Value::Null,
                         settlement: None,
+                        defer_terminal: false,
                     },
                 );
                 final_result = Some(crate::bands::report_home::settle(
@@ -436,6 +438,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &active_projection,
                     module_root,
                     receipt_dir,
+                    target_carrier,
                 ));
             }
         }

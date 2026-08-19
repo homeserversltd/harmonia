@@ -120,6 +120,7 @@ pub(crate) struct RunCarrier {
     pub sealed_snapshot: Option<Snapshot>,
     pub sealed_services: Option<Vec<crate::atoms::systemd::ServiceStateSnapshot>>,
     pub sealed_projection: Option<ProjectionTransaction>,
+    pub deferred_terminal_summary: Option<crate::bands::report_home::DeferredRunSummary>,
 }
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
@@ -136,9 +137,9 @@ pub(crate) struct RunContext {
 pub(crate) use super::ritual::{
     apply_projection, bench, commit_projection, project_update_set_v1, rollback_projection,
     seal_projection, snapshot, snapshot_services, strict_rejects_forward_only, strict_rejects_weak,
-    update_set_bench, validate_exact_root, Atom, AtomKind, ProjectionChild, ProjectionTransaction,
-    RestorationImage, Reversibility, SealedProjection, ServiceImage, ServiceState, Snapshot,
-    TransactionReceipt, TransactionState, validate_member_scoped_target,
+    update_set_bench, validate_exact_root, validate_member_scoped_target, Atom, AtomKind,
+    ProjectionChild, ProjectionTransaction, RestorationImage, Reversibility, SealedProjection,
+    ServiceImage, ServiceState, Snapshot, TransactionReceipt, TransactionState,
 };
 
 pub(crate) fn rolling_update_run(
@@ -203,28 +204,122 @@ pub(crate) fn rolling_update_run(
         let transaction_guard = carrier.borrow_mut().sealed_projection.take();
         if let Err(error) = transaction {
             let Some(mut txn) = transaction_guard else {
+                write_transaction_failure_run_receipt(
+                    &effective_receipt_dir,
+                    profile,
+                    module_root,
+                    "transaction-engine-failed",
+                )?;
                 return Err(error);
             };
-            if let Some(key) = mode.invocation() { if let Ok(receipt) = crate::atoms::r#do::transaction::rollback_projection(&mut txn, key) {
-                crate::atoms::attest::write_transaction_receipt(
-                    &effective_receipt_dir,
-                    &receipt,
-                    Some(&error),
-                )?; } }
+            let failure_receipt = write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-engine-failed",
+            );
+            if let Some(key) = mode.invocation() {
+                if let Ok(receipt) =
+                    crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
+                {
+                    let _ = crate::atoms::attest::write_transaction_receipt(
+                        &effective_receipt_dir,
+                        &receipt,
+                        Some(&error),
+                    );
+                }
+            }
+            failure_receipt?;
             return Err(error);
         }
         let Some(mut txn) = transaction_guard else {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-missing",
+            )?;
             return Err("stage-profile-transaction-missing".to_string());
         };
         if let Some(key) = mode.invocation() {
             for child in 0..txn.sealed.children.len() {
-                crate::atoms::r#do::transaction::apply_projection(&mut txn, child, key)?;
+                if let Err(error) =
+                    crate::atoms::r#do::transaction::apply_projection(&mut txn, child, key)
+                {
+                    let failure_receipt = write_transaction_failure_run_receipt(
+                        &effective_receipt_dir,
+                        profile,
+                        module_root,
+                        "transaction-apply-failed",
+                    );
+                    if let Ok(receipt) =
+                        crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
+                    {
+                        let _ = crate::atoms::attest::write_transaction_receipt(
+                            &effective_receipt_dir,
+                            &receipt,
+                            Some(&error),
+                        );
+                    }
+                    failure_receipt?;
+                    return Err(error);
+                }
             }
         } else {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-invocation-missing",
+            )?;
             return Err("stage-profile-invocation-missing".to_string());
         }
-        let receipt = crate::atoms::r#do::transaction::commit_projection(&mut txn)?;
-        crate::atoms::attest::write_transaction_receipt(&effective_receipt_dir, &receipt, None)?;
+        let receipt = match crate::atoms::r#do::transaction::commit_projection(&mut txn) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                write_transaction_failure_run_receipt(
+                    &effective_receipt_dir,
+                    profile,
+                    module_root,
+                    "transaction-commit-failed",
+                )?;
+                return Err(error);
+            }
+        };
+        if let Err(error) =
+            crate::atoms::attest::write_transaction_receipt(&effective_receipt_dir, &receipt, None)
+        {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-receipt-failed",
+            )?;
+            return Err(error);
+        }
+        let Some(summary) = carrier.borrow_mut().deferred_terminal_summary.take() else {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-terminal-summary-missing",
+            )?;
+            return Err("stage-profile-terminal-summary-missing".to_string());
+        };
+        if let Err(error) = crate::bands::report_home::finalize_deferred_terminal(
+            summary,
+            profile,
+            module_root,
+            &effective_receipt_dir,
+        ) {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-terminal-receipt-failed",
+            )?;
+            return Err(error);
+        }
         Ok(())
     };
     if apply {
@@ -246,6 +341,42 @@ pub(crate) fn rolling_update_run(
     } else {
         run()
     }
+}
+
+fn write_transaction_failure_run_receipt(
+    receipt_dir: &Path,
+    profile: &Profile,
+    module_root: &Path,
+    signal: &str,
+) -> Result<(), String> {
+    write_engine_run_receipt_with_duration(
+        receipt_dir,
+        profile,
+        true,
+        false,
+        false,
+        profile.modules.len(),
+        0,
+        signal,
+        module_root,
+        false,
+        0,
+    )?;
+    println!("schema=harmonia.run_profile.v1");
+    crate::hyalos::forward_receipt(
+        "schema=harmonia.run_profile.v1",
+        "schema=harmonia.run_profile.v1 ok=false",
+        Some(serde_json::json!({"schema":"harmonia.run_profile.v1","ok":false})),
+        Some(false),
+    );
+    println!("ok=false");
+    println!("changed=false");
+    println!("profile_id={}", profile.id);
+    println!("module_count={}", profile.modules.len());
+    println!("operation_count=0");
+    println!("first_missing_signal={}", signal);
+    println!("receipt_dir={}", receipt_dir.display());
+    Ok(())
 }
 
 pub(crate) fn rolling_update_from_certificate_with_context(
