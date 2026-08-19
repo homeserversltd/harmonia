@@ -91,7 +91,7 @@ pub(crate) fn structural_file_blocker(
                 if !managed_directory_under_home
                     && !matches!(
                         step.permutation.as_str(),
-                        "managed-files" | "validated-sudoers-converge"
+                        "managed-files" | "converge" | "validated-sudoers-converge"
                     ) =>
             {
                 return Some(format!(
@@ -662,7 +662,9 @@ pub(crate) fn files_converge_step(
         .iter()
         .any(|class| matches!(class, crate::atoms::files::TargetClass::Config));
     let tier_two = manifest.config_deploy.as_deref() == Some("interactable");
-    let mut outcome = crate::atoms::files::converge_files_authorized(
+    let effective_apply = apply && !config_write && !tier_two;
+    let lawful_config_proposal = config_write && tier_two;
+    let mut outcome = crate::atoms::files::converge_files_authorized_with_config_policy(
         &request,
         module_dir,
         if config_write || tier_two {
@@ -671,8 +673,9 @@ pub(crate) fn files_converge_step(
             software_authorization
         },
         invocation,
+        lawful_config_proposal,
     )?;
-    if config_write || tier_two {
+    if lawful_config_proposal {
         crate::bands::propose_edits::refresh_interactables_for_convergence(
             manifest, &request, &outcome,
         )?;
@@ -693,7 +696,8 @@ pub(crate) fn files_converge_step(
             &serde_json::json!({
                 "schema": schema,
                 "ok": outcome.ok,
-                "apply": apply,
+                "apply": effective_apply,
+                "state": if lawful_config_proposal { "proposal" } else if config_write || tier_two { "held/authority-refused" } else { "converged" },
                 "module": manifest.id,
                 "source_dir": request.source_root,
                 "target_dir": request.target_root,
@@ -704,14 +708,14 @@ pub(crate) fn files_converge_step(
                 "missing": outcome.missing,
                 "authority": summary.get("authority").and_then(Value::as_str).unwrap_or(""),
                 "waybar_contract": summary.get("waybar_contract").cloned().unwrap_or(Value::Null),
-                "first_missing_signal": if outcome.ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
+                "first_missing_signal": if lawful_config_proposal { "none" } else if config_write || tier_two { "authority-refused" } else if outcome.ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
             }),
         )?;
     }
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
-        skipped: !apply,
+        skipped: !effective_apply && !lawful_config_proposal,
         message: outcome.message,
         command: None,
     })
