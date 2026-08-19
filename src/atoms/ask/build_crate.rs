@@ -31,7 +31,7 @@ impl Observation {
             }
             IdentityMode::RegularExecutable => {
                 self.artifact_executable
-                    && !self.source_build_sha.is_empty()
+                    && crate::bands::compare::is_hex_sha(&self.source_build_sha)
                     && self.artifact_build_sha.as_deref() == Some(self.source_build_sha.as_str())
             }
         }
