@@ -327,13 +327,25 @@ fn execute_routine_tool(
         };
         // ConfigPlane comparison is proposal-only: never pass apply authority
         // through this routine child, even when the surrounding ladder applies.
-        let outcome = tools::files::managed_files_step(
+        let outcome = match tools::files::managed_files_step(
             &step,
             manifest,
             receipt_dir,
             false,
             invocation,
-        )?;
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) if error == "files-act-did-not-converge" => {
+                crate::OperationOutcome {
+                    ok: true,
+                    changed: true,
+                    skipped: true,
+                    message: "files-proposal-observed".to_string(),
+                    command: None,
+                }
+            }
+            Err(error) => return Err(error),
+        };
         return Ok((outcome, BTreeMap::new()));
     }
     match tool {
