@@ -2082,6 +2082,30 @@ fn inventory_sweep_tree(root: &Path, exclude: &[String]) -> Result<Vec<SweepTree
     Ok(entries)
 }
 
+fn sweep_internal_quarantine_path(target_root: &Path, relative: &Path) -> bool {
+    let Some(Component::Normal(component)) = relative.components().next() else {
+        return false;
+    };
+    let Some(name) = component.to_str() else {
+        return false;
+    };
+    let Some(suffix) = name.strip_prefix(".harmonia-source-shelf-sweep-") else {
+        return false;
+    };
+    let Some((pid, nanos)) = suffix.split_once('-') else {
+        return false;
+    };
+    if pid.is_empty()
+        || nanos.is_empty()
+        || !pid.bytes().all(|byte| byte.is_ascii_digit())
+        || !nanos.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return false;
+    }
+    fs::symlink_metadata(target_root.join(component))
+        .is_ok_and(|metadata| metadata.file_type().is_dir())
+}
+
 fn inventory_sweep_tree_if_present(
     root: &Path,
     exclude: &[String],
@@ -3023,6 +3047,46 @@ fn source_shelf_owned_recursive_sweep(
         })
         .collect();
     let mut provenance = load_sweep_provenance(provenance_path)?;
+    let target_inventory =
+        inventory_sweep_tree_if_present(&request.target_shelf, &request.launcher_exclude)?;
+    for target_entry in target_inventory
+        .iter()
+        .filter(|entry| entry.relative_path != Path::new("."))
+    {
+        // A committed sweep intentionally retains its rollback quarantine under
+        // the target root. It is internal sweep state, not foreign material;
+        // every other absent-source, unledgered path remains a refusal.
+        if sweep_internal_quarantine_path(&request.target_shelf, &target_entry.relative_path) {
+            continue;
+        }
+        let target_path = request.target_shelf.join(&target_entry.relative_path);
+        let target_path_string = target_path.display().to_string();
+        if !desired_paths.contains(&target_path_string)
+            && !provenance.paths.contains(&target_path_string)
+        {
+            let blocker = format!(
+                "source-shelf-sweep-provenance-refused-unowned-target {}",
+                target_path.display()
+            );
+            let outcome = SourceShelfSweepOutcome {
+                ok: false,
+                changed: false,
+                current: false,
+                source_inventory_count: desired.len(),
+                target_inventory_count_before: target_inventory.len(),
+                target_inventory_count_after: target_inventory.len(),
+                promoted_count: 0,
+                removed_count: 0,
+                transaction_state: "refused".into(),
+                rollback_state: "not-needed".into(),
+                first_blocker: blocker.clone(),
+                entries: Vec::new(),
+                message: blocker.clone(),
+            };
+            write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+            return Err(blocker);
+        }
+    }
     let mut stale: Vec<PathBuf> = provenance
         .paths
         .iter()
@@ -3043,7 +3107,11 @@ fn source_shelf_owned_recursive_sweep(
     for entry in &desired {
         let source = shelf_source.join(&entry.relative_path);
         let target = request.target_shelf.join(&entry.relative_path);
-        let owned = provenance.paths.contains(&target.display().to_string());
+        // Source presence is explicit ownership for this sweep; the ledger
+        // remains authoritative only for paths absent from the source.
+        let source_owned = desired_paths.contains(&target.display().to_string());
+        let ledger_owned = provenance.paths.contains(&target.display().to_string());
+        let owned = source_owned || ledger_owned;
         let current = if entry.is_dir && target.exists() && !owned {
             true
         } else {
@@ -3159,7 +3227,13 @@ fn source_shelf_owned_recursive_sweep(
                 for entry in &desired {
                     let source = shelf_source.join(&entry.relative_path);
                     let target = request.target_shelf.join(&entry.relative_path);
-                    let owned = provenance.paths.contains(&target.display().to_string());
+                    let target_path = target.display().to_string();
+                    let source_owned = desired_paths.contains(&target_path);
+                    let ledger_owned = provenance.paths.contains(&target_path);
+                    let owned = source_owned || ledger_owned;
+                    if source_owned {
+                        provenance.paths.insert(target_path);
+                    }
                     if entry.is_dir {
                         if !target.exists() {
                             crate::atoms::r#do::source_shelf::mkdir_all(
