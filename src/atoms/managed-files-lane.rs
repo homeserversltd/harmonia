@@ -897,7 +897,7 @@ pub(crate) fn converge_managed_files(
     let desired_gid = request.group.map(resolve_gid).transpose()?;
     for file in request.files {
         let desired = file.content.as_bytes();
-        let run = crate::atoms::comparison::execute_mode(
+        let run = match crate::atoms::comparison::execute_mode(
             "files",
             || {
                 let path = PathBuf::from(&file.path);
@@ -929,10 +929,15 @@ pub(crate) fn converge_managed_files(
                 }
             },
             |authorization, observation| {
-                if !apply || observation.missing_target_debt {
+                if !apply {
                     return Ok(ManagedFileMovement::ReportOnly);
                 }
                 let key = invocation.ok_or("managed-file-invocation-missing")?;
+                if let Some(parent) = observation.path.parent() {
+                    if !parent.is_dir() {
+                        make_dir(authorization, key, parent)?;
+                    }
+                }
                 if !observation.content_equal || !observation.mode_equal {
                     crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(
                         authorization,
@@ -970,7 +975,35 @@ pub(crate) fn converge_managed_files(
                 })
             },
             apply,
-        )?;
+        ) {
+            Ok(run) => run,
+            Err(error) => {
+                let safe_name = file
+                    .path
+                    .replace('/', "_")
+                    .trim_start_matches('_')
+                    .to_string();
+                let per_file = receipt_dir.join(format!(
+                    "{}-{}.json",
+                    request.receipt_name.trim_end_matches(".json"),
+                    safe_name
+                ));
+                crate::atoms::attest::write_json_atomic(
+                    &per_file,
+                    &json!({
+                        "schema": "harmonia.files.managed_file.v1",
+                        "ok": false,
+                        "module": request.module_id,
+                        "path": file.path,
+                        "apply": apply,
+                        "state": "act-error",
+                        "error": error,
+                        "first_missing_signal": "managed-file-act-error",
+                    }),
+                )?;
+                return Err(error);
+            }
+        };
         let observation = run.observation();
         let file_changed = observation.file_changed();
         let missing_target_debt = observation.missing_target_debt;
@@ -1185,13 +1218,34 @@ pub(crate) fn converge_files_authorized(
     authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
+    converge_files_authorized_with_config_policy(
+        request,
+        receipt_dir,
+        authorization,
+        invocation,
+        false,
+    )
+}
+
+pub(crate) fn converge_files_authorized_with_config_policy(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    allow_config_proposal: bool,
+) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
         return Err("files-converge-empty-request".to_string());
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
     let classes = classify_request(request)?;
+    let held = !allow_config_proposal
+        && classes
+            .iter()
+            .any(|class| matches!(class, TargetClass::Config));
     let apply = authorization.is_some()
+        && !held
         && classes
             .iter()
             .all(|class| matches!(class, TargetClass::Software));
@@ -1520,9 +1574,9 @@ pub(crate) fn converge_files_authorized(
         });
     }
 
-    let ok = missing.is_empty() && missing_target_birth_debts.is_empty();
-    let changed = entries.iter().any(|entry| entry.changed);
-    let ownership_changed = entries.iter().any(|entry| entry.ownership_changed);
+    let ok = held || (missing.is_empty() && missing_target_birth_debts.is_empty());
+    let changed = !held && entries.iter().any(|entry| entry.changed);
+    let ownership_changed = !held && entries.iter().any(|entry| entry.ownership_changed);
     let outcome = FileConvergenceOutcome {
         ok,
         changed,
@@ -1545,7 +1599,7 @@ pub(crate) fn converge_files_authorized(
             "files convergence incomplete".to_string()
         },
     };
-    write_convergence_receipt(receipt_dir, request, &outcome, apply)?;
+    write_convergence_receipt(receipt_dir, request, &outcome, apply, held)?;
     Ok(outcome)
 }
 
@@ -4848,10 +4902,14 @@ fn write_partial_failure_receipt(
         entries: entries.to_vec(),
         message: signal.to_string(),
     };
-    write_convergence_receipt(receipt_dir, request, &outcome, apply)
+    write_convergence_receipt(receipt_dir, request, &outcome, apply, false)
 }
 
-fn convergence_entry_receipt(entry: &FileConvergenceEntry, apply: bool) -> serde_json::Value {
+fn convergence_entry_receipt(
+    entry: &FileConvergenceEntry,
+    apply: bool,
+    held: bool,
+) -> serde_json::Value {
     let mut receipt = serde_json::to_value(entry).expect("file convergence entry serializes");
     let object = receipt
         .as_object_mut()
@@ -4895,15 +4953,16 @@ fn convergence_entry_receipt(entry: &FileConvergenceEntry, apply: bool) -> serde
     object.insert("truthful_changed".into(), json!(apply && entry.changed));
     object.insert(
         "ok".into(),
-        json!(
-            entry.source_exists
-                && if apply {
-                    entry.target_exists_after && entry.content_equal_after && entry.mode_equal_after
-                } else {
-                    entry.target_exists_before
-                }
-        ),
+        json!(held || (entry.source_exists
+            && if apply {
+                entry.target_exists_after && entry.content_equal_after && entry.mode_equal_after
+            } else {
+                entry.target_exists_before
+            })),
     );
+    if held {
+        object.insert("state".into(), json!("held/authority-refused"));
+    }
     receipt
 }
 
@@ -4912,6 +4971,7 @@ fn write_convergence_receipt(
     request: &FileConvergenceRequest,
     outcome: &FileConvergenceOutcome,
     apply: bool,
+    held: bool,
 ) -> Result<(), String> {
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt = json!({
@@ -4930,8 +4990,9 @@ fn write_convergence_receipt(
         "ownership_changed": apply && outcome.ownership_changed,
         "missing": outcome.missing,
         "missing_target_birth_debts": outcome.missing_target_birth_debts,
-        "entries": outcome.entries.iter().map(|entry| convergence_entry_receipt(entry, apply)).collect::<Vec<_>>(),
-        "first_missing_signal": if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
+        "state": if held { "held/authority-refused" } else if outcome.ok { "converged" } else { "incomplete" },
+        "entries": outcome.entries.iter().map(|entry| convergence_entry_receipt(entry, apply, held)).collect::<Vec<_>>(),
+        "first_missing_signal": if held { "authority-refused" } else if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
     });
     let mut receipt_name = request.receipt_name.clone();
     if receipt_name.is_empty() {
