@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "system-packages",
   "version": "1.0.0",
-  "description": "tv system package upgrade ladder using the package tool.",
+  "description": "homeserver system package upgrade ladder using the package tool.",
   "optional": false,
   "constants": {},
   "ladder": [
