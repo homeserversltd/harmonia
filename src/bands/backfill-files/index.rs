@@ -586,6 +586,24 @@ pub(crate) fn execute_routine_child(
     }
     let name = tool.to_string();
     match tool {
+        "files" if permutation.name == "managed-files" => {
+            let step = crate::ladder::ValidatedStep {
+                step_id: "managed-files".into(),
+                tool: "files".into(),
+                permutation: "managed-files".into(),
+                args: args.clone(),
+                on_failure: crate::ladder::OnFailure::Stop,
+            };
+            // Managed-file configuration remains proposal-only for routine children.
+            let out = crate::tools::files::managed_files_step(
+                &step,
+                manifest,
+                receipt_dir,
+                false,
+                invocation,
+            )?;
+            Ok((out, std::collections::BTreeMap::new()))
+        }
         "place-file" => {
             let path = Path::new(
                 args.get("path")
