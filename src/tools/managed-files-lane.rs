@@ -84,8 +84,12 @@ pub(crate) fn structural_file_blocker(
         }
     }
     for target in targets {
+        let managed_directory_under_home = step.permutation == "managed-directories"
+            && target.starts_with("/home/");
         match crate::atoms::files::classify_target(&target) {
-            crate::atoms::files::TargetClass::Config if step.permutation != "managed-files" => {
+            crate::atoms::files::TargetClass::Config
+                if !managed_directory_under_home && step.permutation != "managed-files" =>
+            {
                 return Some(format!(
                     "configuration-actuator-authority-refused {}",
                     target.display()
