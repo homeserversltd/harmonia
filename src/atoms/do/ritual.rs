@@ -865,6 +865,7 @@ pub(crate) struct SealedProjection {
 pub(crate) struct ProjectionTransaction {
     pub sealed: SealedProjection,
     pub state: TransactionState,
+    applied_children: BTreeSet<usize>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TransactionReceipt {
@@ -957,6 +958,7 @@ pub(crate) fn seal_projection(
             caduceus_count: plan.caduceus_count,
         },
         state: TransactionState::Open,
+        applied_children: BTreeSet::new(),
     })
 }
 pub(crate) fn apply_projection(
@@ -964,11 +966,14 @@ pub(crate) fn apply_projection(
     child: usize,
     _key: InvocationKey,
 ) -> Result<(), String> {
-    if txn.state != TransactionState::Open {
+    if !matches!(txn.state, TransactionState::Open | TransactionState::Applied) {
         return Err("transaction-not-open".into());
     }
     if child >= txn.sealed.children.len() {
         return Err("sealed-child-out-of-range".into());
+    }
+    if !txn.applied_children.insert(child) {
+        return Err("sealed-child-already-applied".into());
     }
     txn.state = TransactionState::Applied;
     Ok(())
@@ -993,7 +998,9 @@ pub(crate) fn commit_projection(
     if t.state == TransactionState::Committed {
         return Ok(receipt_for(t));
     }
-    if t.state != TransactionState::Applied {
+    if t.state != TransactionState::Applied
+        || t.applied_children.len() != t.sealed.children.len()
+    {
         return Err("transaction-not-applied".into());
     }
     t.state = TransactionState::Committed;
@@ -1108,8 +1115,14 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         && declared_null_members == ["caduceus"];
 
     let undeclared_plan = derive_plan(&p, &modules, Some(&root))?;
-    let undeclared_sealed = seal_projection(&undeclared_plan, "bench-undeclared", "bench", "bench")?;
-    let undeclared_members = undeclared_sealed.sealed.children.iter().map(|child| child.member.clone()).collect::<Vec<_>>();
+    let mut undeclared_transaction =
+        seal_projection(&undeclared_plan, "bench-undeclared", "bench", "bench")?;
+    let undeclared_members = undeclared_transaction
+        .sealed
+        .children
+        .iter()
+        .map(|child| child.member.clone())
+        .collect::<Vec<_>>();
     let undeclared_ok = undeclared_plan.gui_face.as_deref() == Some("Arcadia")
         && undeclared_members == ["Arcadia", "caduceus", "agathodaimon"];
     println!("projection_decision declared_face=true gui_face={} members={} exact_members={} sealable_atomic={}", declared_face_plan.gui_face.as_deref().unwrap_or("null"), declared_face_members.join(","), declared_face_ok, matches!(declared_face_sealed.state, TransactionState::Open));
@@ -1118,6 +1131,27 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
     if !(declared_face_ok && declared_null_ok && undeclared_ok) {
         return Err("projection decision matrix failed".into());
     }
+    let child_count = undeclared_transaction.sealed.children.len();
+    for child in 0..child_count {
+        apply_projection(&mut undeclared_transaction, child, _ctx.key)?;
+    }
+    let applied_ordinals = undeclared_transaction
+        .applied_children
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    let undeclared_receipt = commit_projection(&mut undeclared_transaction)?;
+    let committed = undeclared_transaction.state == TransactionState::Committed
+        && undeclared_receipt.state == TransactionState::Committed;
+    if !committed {
+        return Err("undeclared projection transaction did not commit".into());
+    }
+    println!(
+        "projection_transaction children={} applied={} ordinals={:?} committed=true",
+        child_count,
+        applied_ordinals.len(),
+        applied_ordinals
+    );
     if args.iter().any(|arg| arg == "--config-census") {
         let manifest_path = modules.join("caduceus/manifest.json");
         let config_manifest = fs::read_to_string(&manifest_path)

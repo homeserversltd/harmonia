@@ -62,6 +62,19 @@ pub(crate) enum SettlementOutcome {
     ApplyFailure(String),
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct DeferredRunSummary {
+    pub profile_id: String,
+    pub apply: bool,
+    pub ok: bool,
+    pub suite_ok: bool,
+    pub changed: bool,
+    pub first_missing_signal: String,
+    pub module_count: usize,
+    pub operation_count: usize,
+    pub duration_ms: u128,
+}
+
 pub(crate) struct RunState {
     pub run_id: String,
     pub apply: bool,
@@ -76,6 +89,7 @@ pub(crate) struct RunState {
     pub run_started: Instant,
     pub transaction_state: serde_json::Value,
     pub settlement: Option<SettlementOutcome>,
+    pub defer_terminal: bool,
 }
 
 pub(crate) fn settle(
@@ -84,6 +98,7 @@ pub(crate) fn settle(
     projection: &ProfileProjection,
     module_root: &Path,
     receipt_dir: &Path,
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
 ) -> Result<(), String> {
     let _serialized_transaction_state = state
         .transaction_state
@@ -112,6 +127,30 @@ pub(crate) fn settle(
         &receipt_dir.join("band-walk.receipt.json"),
         &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>() }),
     )?;
+    let settlement = state
+        .settlement
+        .clone()
+        .expect("settlement must be computed before report-home");
+    if state.defer_terminal {
+        let Some(carrier) = carrier else {
+            return Err("report-transaction-carrier-missing".to_string());
+        };
+        carrier.borrow_mut().deferred_terminal_summary = Some(DeferredRunSummary {
+            profile_id: profile.id.clone(),
+            apply: state.apply,
+            ok: state.ok,
+            suite_ok: state.suite_ok,
+            changed: state.changed,
+            first_missing_signal: state.first_missing_signal.clone(),
+            module_count: state.module_count,
+            operation_count: state.operation_count,
+            duration_ms: state.run_started.elapsed().as_millis(),
+        });
+        return match settlement {
+            SettlementOutcome::Success | SettlementOutcome::ReportOnlyFailure => Ok(()),
+            SettlementOutcome::ApplyFailure(signal) => Err(signal),
+        };
+    }
     write_engine_run_receipt_with_duration(
         receipt_dir,
         profile,
@@ -139,11 +178,44 @@ pub(crate) fn settle(
     println!("operation_count={}", state.operation_count);
     println!("first_missing_signal={}", state.first_missing_signal);
     println!("receipt_dir={}", receipt_dir.display());
-    match state
-        .settlement
-        .expect("settlement must be computed before report-home")
-    {
+    match settlement {
         SettlementOutcome::Success | SettlementOutcome::ReportOnlyFailure => Ok(()),
         SettlementOutcome::ApplyFailure(signal) => Err(signal),
     }
+}
+
+pub(crate) fn finalize_deferred_terminal(
+    summary: DeferredRunSummary,
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+) -> Result<(), String> {
+    write_engine_run_receipt_with_duration(
+        receipt_dir,
+        profile,
+        summary.apply,
+        summary.ok,
+        summary.changed,
+        summary.module_count,
+        summary.operation_count,
+        &summary.first_missing_signal,
+        module_root,
+        summary.suite_ok,
+        summary.duration_ms,
+    )?;
+    println!("schema=harmonia.run_profile.v1");
+    crate::hyalos::forward_receipt(
+        "schema=harmonia.run_profile.v1",
+        &format!("schema=harmonia.run_profile.v1 ok={}", summary.ok),
+        Some(json!({"schema":"harmonia.run_profile.v1","ok":summary.ok})),
+        Some(summary.ok),
+    );
+    println!("ok={}", summary.ok);
+    println!("changed={}", summary.changed);
+    println!("profile_id={}", summary.profile_id);
+    println!("module_count={}", summary.module_count);
+    println!("operation_count={}", summary.operation_count);
+    println!("first_missing_signal={}", summary.first_missing_signal);
+    println!("receipt_dir={}", receipt_dir.display());
+    Ok(())
 }
