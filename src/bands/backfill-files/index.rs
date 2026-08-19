@@ -366,9 +366,8 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 .insert("files".into(), Value::Array(configuration));
             proposal.tool = "files".into();
             proposal.permutation = Some("managed-files".into());
-            // The service epilogue consumes managed-files.changed. Keep the
-            // proposal producer in the linear routine before every consumer,
-            // rather than appending it after daemon-reload/enable/restart.
+            // Keep the configuration-only proposal before the service epilogue;
+            // it is not an executable managed-file producer for those consumers.
             let service_index = step
                 .steps
                 .iter()
@@ -376,18 +375,34 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 .unwrap_or(step.steps.len());
             step.steps.insert(service_index, proposal);
         }
-        let managed_files_producer = step.steps.iter().any(|child| {
-            (child.name == "managed-files"
-                && child.tool == "files"
-                && child.permutation.as_deref() == Some("managed-files"))
-                || [
-                    "managed-place-",
-                    "managed-backfill-",
-                    "managed-remove-",
-                    "managed-symlink-",
-                ]
-                .iter()
-                .any(|prefix| child.name.starts_with(prefix))
+        // A stamp is valid only when the final lowered managed-files producer
+        // is placed in RestartServices, the band that executes its consumers.
+        let same_band_managed_file_producer = step.steps.iter().any(|child| {
+            let managed_identity =
+                (child.name == "managed-files"
+                    && child.tool == "files"
+                    && child.permutation.as_deref() == Some("managed-files"))
+                    || (child.name.starts_with("managed-place-")
+                        && child.tool == "place-file"
+                        && child.permutation.as_deref() == Some("place"))
+                    || (child.name.starts_with("managed-backfill-")
+                        && child.tool == "backfill-file"
+                        && child.permutation.as_deref() == Some("backfill"))
+                    || (child.name.starts_with("managed-remove-")
+                        && child.tool == "remove-file"
+                        && child.permutation.as_deref() == Some("remove-file"))
+                    || (child.name.starts_with("managed-symlink-")
+                        && child.tool == "files"
+                        && child.permutation.as_deref() == Some("symlink-converge"));
+            let placement = child
+                .permutation
+                .as_deref()
+                .and_then(|permutation| {
+                    crate::tools::get(&child.tool).and_then(|tool| tool.permutation(permutation))
+                })
+                .and_then(|permutation| permutation.placement)
+                .map(crate::tools::Placement::band);
+            managed_identity && placement == Some(crate::bands::Band::RestartServices)
         });
         for child in &mut step.steps {
             if matches!(
@@ -396,7 +411,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             ) {
                 child.args.insert(
                     "managed_files_changed".into(),
-                    if managed_files_producer {
+                    if same_band_managed_file_producer {
                         serde_json::json!({"from":"managed-files.changed"})
                     } else {
                         Value::Bool(false)
