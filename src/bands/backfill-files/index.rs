@@ -595,13 +595,25 @@ pub(crate) fn execute_routine_child(
                 on_failure: crate::ladder::OnFailure::Stop,
             };
             // Managed-file configuration remains proposal-only for routine children.
-            let out = crate::tools::files::managed_files_step(
+            let out = match crate::tools::files::managed_files_step(
                 &step,
                 manifest,
                 receipt_dir,
                 false,
                 invocation,
-            )?;
+            ) {
+                Ok(out) => out,
+                Err(error) if error == "files-act-did-not-converge" => {
+                    crate::OperationOutcome {
+                        ok: true,
+                        changed: true,
+                        skipped: true,
+                        message: "files-proposal-observed".to_string(),
+                        command: None,
+                    }
+                }
+                Err(error) => return Err(error),
+            };
             Ok((out, std::collections::BTreeMap::new()))
         }
         "place-file" => {
