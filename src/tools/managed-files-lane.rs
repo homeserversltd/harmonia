@@ -85,12 +85,13 @@ pub(crate) fn structural_file_blocker(
     }
     for target in targets {
         match crate::atoms::files::classify_target(&target) {
-            crate::atoms::files::TargetClass::Config => {
+            crate::atoms::files::TargetClass::Config if step.permutation != "managed-files" => {
                 return Some(format!(
                     "configuration-actuator-authority-refused {}",
                     target.display()
                 ))
             }
+            crate::atoms::files::TargetClass::Config => {}
             crate::atoms::files::TargetClass::Refused(reason) => return Some(reason),
             crate::atoms::files::TargetClass::Software => {}
         }
