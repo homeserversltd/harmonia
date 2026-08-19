@@ -3,8 +3,10 @@ use super::comparison::{self, DiffDecision};
 use crate::{write_json, CmdResult, OperationOutcome, PackageBackend};
 use serde::Serialize;
 use std::env;
+use std::ffi::CString;
 use std::fs;
-use std::io::{Read, Seek};
+use std::io::{self, Read, Seek};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -658,8 +660,22 @@ fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObserva
     match b {
         PackageBackend::Pacman => {
             let d = update_sandbox(r);
-            let setup = fs::create_dir_all(&d)
-                .and_then(|_| std::os::unix::fs::symlink("/var/lib/pacman/local", d.join("local")));
+            let setup = fs::create_dir_all(&d).and_then(|_| {
+                if unsafe { libc::geteuid() } == 0 {
+                    fs::set_permissions(&d, fs::Permissions::from_mode(0o755))?;
+                    let name = CString::new("alpm").map_err(io::Error::other)?;
+                    let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
+                    if passwd.is_null() {
+                        return Err(io::Error::other("pacman sandbox alpm user lookup failed"));
+                    }
+                    std::os::unix::fs::chown(
+                        &d,
+                        Some(unsafe { (*passwd).pw_uid } as u32),
+                        Some(unsafe { (*passwd).pw_gid } as u32),
+                    )?;
+                }
+                std::os::unix::fs::symlink("/var/lib/pacman/local", d.join("local"))
+            });
             let (refresh, q, p, ok) = if let Err(e) = setup {
                 (
                     synthetic(&format!("pacman sandbox setup failed: {e}")),
