@@ -88,7 +88,11 @@ pub(crate) fn structural_file_blocker(
             && target.starts_with("/home/");
         match crate::atoms::files::classify_target(&target) {
             crate::atoms::files::TargetClass::Config
-                if !managed_directory_under_home && step.permutation != "managed-files" =>
+                if !managed_directory_under_home
+                    && !matches!(
+                        step.permutation.as_str(),
+                        "managed-files" | "validated-sudoers-converge"
+                    ) =>
             {
                 return Some(format!(
                     "configuration-actuator-authority-refused {}",
