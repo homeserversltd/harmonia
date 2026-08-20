@@ -733,7 +733,11 @@ fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObserva
         }
         PackageBackend::Apt => {
             let x = apt_program();
-            let refresh = command::capture_with_timeout(&x, &["update"], t);
+            let refresh = command::capture_with_timeout(
+                &x,
+                &["update", "--allow-releaseinfo-change"],
+                t,
+            );
             let sim = if a == "check" {
                 "upgrade"
             } else {
@@ -783,7 +787,14 @@ fn package_update_tool(
 ) -> Result<OperationOutcome, String> {
     let pre = observe_update(r, a, t, b);
     let different = !pre.probe_ok || pre.pending_count > 0;
+    let release_info_change_accepted = match b {
+        PackageBackend::Apt => apt_release_info_change_accepted(&pre.refresh_command),
+        PackageBackend::Pacman => false,
+    };
     let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":if !pre.probe_ok {"probe-failed"} else if pre.pending_count==0 {"empty"} else {"pending"},"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":false,"changed":false,"skipped":false});
+    if let PackageBackend::Apt = b {
+        out["release_info_change_accepted"] = serde_json::json!(release_info_change_accepted);
+    }
     let (outcome, msg, should_err) = if !pre.probe_ok {
         let m = "package update probe failed".to_string();
         (
@@ -833,7 +844,11 @@ fn package_update_tool(
                 command::capture_with_timeout(&pacman_program(), &["-Syu", "--noconfirm"], t),
             ),
             PackageBackend::Apt => {
-                let u = command::capture_with_timeout(&apt_program(), &["update"], t);
+                let u = command::capture_with_timeout(
+                    &apt_program(),
+                    &["update", "--allow-releaseinfo-change"],
+                    t,
+                );
                 if u.ok {
                     (
                         Some(u),
@@ -870,6 +885,10 @@ fn package_update_tool(
             "package-act-did-not-converge".to_string()
         };
         out["act_refresh_command"] = serde_json::to_value(&refresh).map_err(|e| e.to_string())?;
+        if let PackageBackend::Apt = b {
+            out["act_release_info_change_accepted"] =
+                serde_json::json!(refresh.as_ref().is_some_and(apt_release_info_change_accepted));
+        }
         out["act"] = serde_json::json!({"ok":act.ok,"changed":changed,"skipped":false,"message":format!("package {a}"),"command":act,"act_refresh_command":refresh});
         out["movement"] = out["act"].clone();
         out["observed_after"] = serde_json::to_value(&post).map_err(|e| e.to_string())?;
@@ -902,6 +921,14 @@ fn package_update_tool(
         return Err("package-act-did-not-converge".into());
     }
     Ok(outcome)
+}
+
+fn apt_release_info_change_accepted(result: &CmdResult) -> bool {
+    if !result.ok {
+        return false;
+    }
+    let combined = format!("{}\n{}", result.stdout, result.stderr);
+    combined.contains(" changed its '") && combined.contains("' value from ")
 }
 
 fn apt_stdout_indicates_change(stdout: &str) -> bool {
@@ -1469,6 +1496,8 @@ fn write_package_receipt_with_backend(
             "upgraded",
             "backend_log_tail",
             "act_refresh_command",
+            "release_info_change_accepted",
+            "act_release_info_change_accepted",
         ] {
             if let Some(value) = comparison.get(field) {
                 receipt[field] = value.clone();
