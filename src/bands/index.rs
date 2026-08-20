@@ -105,6 +105,7 @@ pub(crate) fn run_profile_engine_with_projection(
 ) -> Result<(), String> {
     let mut active_profile = profile.clone();
     let mut active_projection = projection.clone();
+    let mut rerun_preflight_after_stage = false;
     let apply = mode.is_software_apply();
     let invocation = mode.invocation();
     let run_started = Instant::now();
@@ -167,16 +168,32 @@ pub(crate) fn run_profile_engine_with_projection(
                         if !preflight.ok {
                             let preflight_signal = preflight
                                 .first_missing_signal
+                                .clone()
                                 .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
-                            event(
-                                &mut events,
-                                "engine-preflight-honest-staleness",
-                                false,
-                                &preflight_signal,
-                            )?;
-                            state.ok = false;
-                            if state.first_missing_signal == "none" {
-                                state.first_missing_signal = preflight_signal;
+                            if apply
+                                && materialize_on_stage
+                                && crate::bands::renew_self::is_stale_staged_validation_failure(
+                                    &preflight,
+                                )
+                            {
+                                rerun_preflight_after_stage = true;
+                                event(
+                                    &mut events,
+                                    "engine-preflight-deferred-stale-validation",
+                                    false,
+                                    &preflight_signal,
+                                )?;
+                            } else {
+                                event(
+                                    &mut events,
+                                    "engine-preflight-honest-staleness",
+                                    false,
+                                    &preflight_signal,
+                                )?;
+                                state.ok = false;
+                                if state.first_missing_signal == "none" {
+                                    state.first_missing_signal = preflight_signal;
+                                }
                             }
                         }
                     }
@@ -265,6 +282,42 @@ pub(crate) fn run_profile_engine_with_projection(
                         .projection
                         .clone()
                         .ok_or_else(|| "stage-profile-projection-not-sealed".to_string())?;
+                    // The initial preflight may have observed the old installed module
+                    // root. Once molt has installed the fresh profile, proof that same
+                    // fresh root before any later band can consume the deferred result.
+                    if rerun_preflight_after_stage {
+                        rerun_preflight_after_stage = false;
+                        let fresh = crate::bands::renew_self::run(
+                            module_root,
+                            receipt_dir,
+                            apply,
+                            invocation,
+                        )?;
+                        state.operation_count += fresh.operation_count;
+                        state.changed |= fresh.changed;
+                        if !fresh.ok {
+                            let signal = fresh
+                                .first_missing_signal
+                                .unwrap_or_else(|| "harmonia-engine-preflight-failed".into());
+                            state.ok = false;
+                            if state.first_missing_signal == "none" {
+                                state.first_missing_signal = signal.clone();
+                            }
+                            event(
+                                &mut events,
+                                "engine-preflight-fresh-root-failed",
+                                false,
+                                &signal,
+                            )?;
+                        } else {
+                            event(
+                                &mut events,
+                                "engine-preflight-stale-validation-cleared",
+                                true,
+                                "fresh installed module root proved",
+                            )?;
+                        }
+                    }
                 }
             }
             crate::bands::Band::Compare => {

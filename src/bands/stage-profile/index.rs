@@ -39,12 +39,6 @@ pub(crate) fn materialize(
         .map_err(|e| format!("{profile_id}-profile-source-read-failed: {e}"))?;
     refreshed.syzygy_declaration = syzygy_declaration;
     let source_modules_root = source_root.join(format!("profiles/{}/modules", refreshed.id));
-    let projection = crate::bands::stage_profile::projection::load_profile_projection(
-        &refreshed,
-        &source_modules_root,
-        &std::collections::BTreeSet::new(),
-    )?;
-    let update_plan = projection.derive_update_plan(&refreshed, &source_modules_root)?;
     let head = tools::command::capture_with_cwd_as_bearer(
         "git",
         &["rev-parse", "HEAD"],
@@ -58,6 +52,21 @@ pub(crate) fn materialize(
     if source_head.is_empty() {
         return Err(format!("{profile_id}-source-head-empty"));
     }
+    molt(
+        source_root,
+        profile_id,
+        installed_root,
+        receipt_dir,
+        MoltMode::Copy,
+    )?;
+    // Re-read the freshly staged module tree. The pre-stage projection may describe
+    // stale installed content; apply must reach molt before current validation runs.
+    let projection = crate::bands::stage_profile::projection::load_profile_projection(
+        &refreshed,
+        installed_module_root,
+        &std::collections::BTreeSet::new(),
+    )?;
+    let update_plan = projection.derive_update_plan(&refreshed, installed_module_root)?;
     let sealed_projection = crate::atoms::r#do::transaction::seal_projection(
         &update_plan,
         &refreshed.id,
@@ -88,15 +97,7 @@ pub(crate) fn materialize(
         value.refreshed_profile = Some(refreshed_identity);
         value.transaction_census = Some(transaction_census);
     }
-    molt(
-        source_root,
-        profile_id,
-        installed_root,
-        receipt_dir,
-        MoltMode::Copy,
-    )?;
-    let source_tree_sha256 =
-        crate::atoms::tree_hash::content_tree_sha256(&source_modules_root)?;
+    let source_tree_sha256 = crate::atoms::tree_hash::content_tree_sha256(&source_modules_root)?;
     let installed_tree_sha256 =
         crate::atoms::tree_hash::content_tree_sha256(installed_module_root)?;
     if source_tree_sha256 != installed_tree_sha256 {

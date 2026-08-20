@@ -198,8 +198,15 @@ fn projection_derive_plan_inner(
     } else {
         let face = if faces.len() == 1 {
             Some(faces.iter().next().unwrap().clone())
-        } else if faces.is_empty() && projected.iter().any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("hyprland")) {
-            Some("Hyprland".into())
+        } else if faces.is_empty() {
+            if projected
+                .iter()
+                .any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("hyprland"))
+            {
+                Some("Hyprland".into())
+            } else {
+                None
+            }
         } else {
             return Err(format!("gui-selection-ambiguous count={}", faces.len()));
         };
