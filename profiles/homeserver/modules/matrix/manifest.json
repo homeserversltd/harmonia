@@ -25,8 +25,8 @@
       "tool": "command",
       "permutation": "capture",
       "args": {
-        "program": "/usr/local/sbin/agathodaimon/cli.py",
-        "args": ["matrix", "matrix-converge"],
+        "program": "/usr/bin/python3",
+        "args": ["/usr/local/sbin/agathodaimon/cli.py", "matrix", "matrix-converge"],
         "timeout_secs": 1800
       }
     },
