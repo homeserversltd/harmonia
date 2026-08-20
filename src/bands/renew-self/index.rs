@@ -41,8 +41,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
-use std::io::Read;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 
 pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
@@ -234,14 +234,7 @@ fn validate_declared_source_path(field: &str, path: &Path) -> Result<(), String>
     Ok(())
 }
 
-pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlaneConfig>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
-    let config: EnginePlaneConfig = serde_json::from_str(&text)
-        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
+fn validate_engine_plane_config(config: EnginePlaneConfig) -> Result<EnginePlaneConfig, String> {
     if config.git_bearer != "owner" {
         return Err(format!(
             "engine-config-git-bearer-forbidden expected=owner actual={}",
@@ -253,6 +246,142 @@ pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlane
     if let Some(checkout) = config.local_source_checkout.as_deref() {
         validate_declared_source_path("local-source-checkout", checkout)?;
     }
+    Ok(config)
+}
+
+fn parse_validate_engine_plane_config(
+    text: &str,
+    path: &Path,
+) -> Result<EnginePlaneConfig, String> {
+    let config: EnginePlaneConfig = serde_json::from_str(text)
+        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
+    validate_engine_plane_config(config)
+}
+
+fn migrate_retired_engine_config(path: &Path, receipt_dir: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
+    let Some(object) = value.as_object_mut() else {
+        return Err(format!(
+            "engine-config-parse-failed {}: top-level-not-object",
+            path.display()
+        ));
+    };
+    let retired = [
+        "git_https_credential_host",
+        "git_https_credential_token_path",
+    ];
+    let migrated: Vec<&str> = retired
+        .iter()
+        .copied()
+        .filter(|key| object.remove(*key).is_some())
+        .collect();
+    if migrated.is_empty() {
+        return Ok(());
+    }
+    let cleaned = serde_json::to_string_pretty(&value)
+        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
+    let _ = parse_validate_engine_plane_config(&cleaned, path)?;
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("engine-config-stat-failed {}: {e}", path.display()))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temp = parent.join(format!(
+        ".{}.migration-{}",
+        path.file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("engine.json"),
+        std::process::id()
+    ));
+    let cleanup = |error: String| {
+        let _ = fs::remove_file(&temp);
+        Err(error)
+    };
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+        Ok(file) => file,
+        Err(e) => {
+            return Err(format!(
+                "engine-config-migration-write-failed {}: {e}",
+                temp.display()
+            ))
+        }
+    };
+    if let Err(e) = file.write_all(cleaned.as_bytes()) {
+        return cleanup(format!(
+            "engine-config-migration-write-failed {}: {e}",
+            temp.display()
+        ));
+    }
+    if let Err(e) = file.set_permissions(metadata.permissions()) {
+        return cleanup(format!(
+            "engine-config-migration-permissions-failed {}: {e}",
+            temp.display()
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+        let name = match CString::new(temp.as_os_str().as_bytes()) {
+            Ok(name) => name,
+            Err(_) => {
+                return cleanup(format!(
+                    "engine-config-migration-owner-failed {}",
+                    temp.display()
+                ))
+            }
+        };
+        if unsafe { libc::chown(name.as_ptr(), metadata.uid(), metadata.gid()) } != 0 {
+            return cleanup(format!(
+                "engine-config-migration-owner-failed {}: {}",
+                temp.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    if let Err(e) = file.sync_all() {
+        return cleanup(format!(
+            "engine-config-migration-sync-failed {}: {e}",
+            temp.display()
+        ));
+    }
+    drop(file);
+    if let Err(e) = fs::rename(&temp, path) {
+        return cleanup(format!(
+            "engine-config-migration-promote-failed {}: {e}",
+            path.display()
+        ));
+    }
+    if let Ok(dir) = fs::File::open(parent) {
+        dir.sync_all().map_err(|e| {
+            format!(
+                "engine-config-migration-parent-sync-failed {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+    write_json(
+        &receipt_dir.join("engine-config-migration.json"),
+        &json!({
+            "schema": "harmonia.engine.config_migration.v1", "ok": true,
+            "path": path, "migrated_keys": migrated, "unknown_keys_remain_fatal": true,
+        }),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlaneConfig>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
+    let config = parse_validate_engine_plane_config(&text, path)?;
     Ok(Some(config))
 }
 
@@ -796,6 +925,7 @@ pub(crate) fn run_engine_preflight(
     let preflight_dir = receipt_dir.join("engine-preflight");
     crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
     let config_path = engine_config_path();
+    migrate_retired_engine_config(&config_path, &preflight_dir)?;
     let Some(config) = load_engine_plane_config(&config_path)? else {
         let signal = "engine-self-possession-unconfigured";
         emit_preflight_receipt(
