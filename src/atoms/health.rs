@@ -1,6 +1,9 @@
 use crate::CmdResult;
+use std::fs::{self, OpenOptions};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const BODY_EXCERPT_LIMIT: usize = 4096;
 
 const NAME: &str = "health";
 
@@ -67,27 +70,67 @@ pub(crate) fn curl_probe(request: &ProbeRequest<'_>) -> CmdResult {
     let mut last = run_probe(request);
     for _ in 0..request.retries {
         if matches_expected(&last, request.expected_contains) {
-            return last;
+            return last.result;
         }
         thread::sleep(Duration::from_secs(1));
         last = run_probe(request);
     }
-    if last.ok && !matches_expected(&last, request.expected_contains) {
-        last.ok = false;
-        last.stderr = request
+    if last.result.ok && !last.expected_matched {
+        last.result.ok = false;
+        last.result.stderr = request
             .expected_contains
             .map(|needle| format!("health-expected-content-missing: {needle}"))
-            .unwrap_or_else(|| last.stderr.clone());
+            .unwrap_or_else(|| last.result.stderr.clone());
     }
-    last
+    last.result
 }
-fn run_probe(request: &ProbeRequest<'_>) -> CmdResult {
+
+struct ProbeRun {
+    result: CmdResult,
+    expected_matched: bool,
+}
+
+fn run_probe(request: &ProbeRequest<'_>) -> ProbeRun {
     let mut curl_args = vec![
         "-fsS".into(),
         "--max-time".into(),
         request.timeout_secs.to_string(),
     ];
-    if request.expected_contains.is_none() {
+    let temp_path = request.expected_contains.and_then(|_| {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        (0..100).find_map(|attempt| {
+            let path = std::env::temp_dir().join(format!(
+                "harmonia-health-probe-{}-{stamp}-{attempt}",
+                std::process::id()
+            ));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => Some(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(_) => None,
+            }
+        })
+    });
+    let temp_path = match (request.expected_contains, temp_path) {
+        (None, _) => None,
+        (Some(_), Some(path)) => Some(path),
+        (Some(_), None) => {
+            return ProbeRun {
+                result: CmdResult {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: "health-probe-temp-file-create-failed".into(),
+                },
+                expected_matched: false,
+            }
+        }
+    };
+    if let Some(path) = &temp_path {
+        curl_args.extend(["-o".into(), path.to_string_lossy().into_owned()]);
+    } else {
         curl_args.extend(["-o".into(), "/dev/null".into()]);
     }
     curl_args.push(request.url.into());
@@ -96,18 +139,69 @@ fn run_probe(request: &ProbeRequest<'_>) -> CmdResult {
         &curl_args,
         Duration::from_secs(request.timeout_secs.saturating_add(1)),
     );
-    CmdResult {
-        ok: observed.ok,
-        code: observed.code.unwrap_or(-1),
-        stdout: observed.stdout,
-        stderr: observed.stderr,
+    let (stdout, stderr, expected_matched, read_ok) = if let Some(path) = temp_path {
+        let body = fs::read(&path);
+        let _ = fs::remove_file(&path);
+        match body {
+            Ok(body) => {
+                let expected_matched = body_contains(&body, request.expected_contains);
+                (
+                    body_excerpt(&body, request.expected_contains),
+                    observed.stderr,
+                    expected_matched,
+                    true,
+                )
+            }
+            Err(error) => (
+                String::new(),
+                format!(
+                    "{}; health-probe-temp-file-read-failed: {error}",
+                    observed.stderr
+                ),
+                false,
+                false,
+            ),
+        }
+    } else {
+        (String::new(), observed.stderr, true, true)
+    };
+    ProbeRun {
+        result: CmdResult {
+            ok: observed.ok && read_ok,
+            code: observed.code.unwrap_or(-1),
+            stdout,
+            stderr,
+        },
+        expected_matched,
     }
 }
-fn matches_expected(result: &CmdResult, expected: Option<&str>) -> bool {
-    result.ok
-        && expected
-            .map(|needle| result.stdout.contains(needle))
-            .unwrap_or(true)
+
+fn body_contains(body: &[u8], expected: Option<&str>) -> bool {
+    match expected.map(str::as_bytes) {
+        None => true,
+        Some([]) => true,
+        Some(needle) => body.windows(needle.len()).any(|window| window == needle),
+    }
+}
+
+fn body_excerpt(body: &[u8], expected: Option<&str>) -> String {
+    let needle = expected.map(str::as_bytes);
+    let match_start = needle.and_then(|needle| {
+        if needle.is_empty() {
+            Some(0)
+        } else {
+            body.windows(needle.len())
+                .position(|window| window == needle)
+        }
+    });
+    let start = match_start
+        .map(|position| position.saturating_sub(BODY_EXCERPT_LIMIT / 2))
+        .unwrap_or(0);
+    String::from_utf8_lossy(&body[start..body.len().min(start + BODY_EXCERPT_LIMIT)]).into_owned()
+}
+
+fn matches_expected(run: &ProbeRun, expected: Option<&str>) -> bool {
+    run.result.ok && expected.map(|_| run.expected_matched).unwrap_or(true)
 }
 
 pub(crate) fn execute_validated_step(
