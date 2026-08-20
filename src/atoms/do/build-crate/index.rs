@@ -1,6 +1,6 @@
+use crate::atoms::comparison::{self, ActionAuthorization};
 use crate::atoms::r#do::{apply, InvocationKey};
 use crate::atoms::{CommandObservation, Drift, Receipt};
-use crate::atoms::comparison::{self, ActionAuthorization};
 use std::path::Path;
 use std::time::Duration;
 
@@ -52,6 +52,7 @@ pub(crate) fn cargo_build_and_stamp(
     timeout: Duration,
     artifact: &Path,
     source_build_sha: &str,
+    environment_sha: &str,
 ) -> Result<CommandObservation, String> {
     let observation = cargo_build(authorization, invocation, cwd, environment, bearer, timeout)?;
     if observation.ok {
@@ -66,7 +67,9 @@ pub(crate) fn cargo_build_and_stamp(
                     .parent()
                     .ok_or("build-crate-staged-artifact-parent-missing")?,
             )
-            .map_err(|error| format!("build-crate-staged-artifact-parent-create-failed: {error}"))?;
+            .map_err(|error| {
+                format!("build-crate-staged-artifact-parent-create-failed: {error}")
+            })?;
             std::fs::copy(&built, artifact).map_err(|error| {
                 format!(
                     "build-crate-staged-artifact-copy-failed {} -> {}: {error}",
@@ -78,6 +81,10 @@ pub(crate) fn cargo_build_and_stamp(
         let stamp = artifact.with_file_name(format!("{artifact_name}.source-build-sha"));
         std::fs::write(stamp, format!("{source_build_sha}\n"))
             .map_err(|error| format!("build-crate-source-head-stamp-write-failed: {error}"))?;
+        let environment_stamp =
+            artifact.with_file_name(format!("{artifact_name}.build-environment-sha"));
+        std::fs::write(environment_stamp, format!("{environment_sha}\n"))
+            .map_err(|error| format!("build-crate-environment-stamp-write-failed: {error}"))?;
     }
     Ok(observation)
 }
@@ -123,4 +130,16 @@ pub(crate) fn bench_build_guard(
     )
 }
 
-pub(crate) fn failure(log: &Path, artifact: &Path, source_build_sha: &str, before: &crate::atoms::ask::build_crate::Observation, after: &crate::atoms::ask::build_crate::Observation, movement_ok: bool) -> Result<(), String> { crate::write_json(&log.with_file_name("service-runtime-build-failure.json"), &serde_json::json!({"signal":"service-runtime-act-did-not-converge","artifact":artifact,"source_build_sha":source_build_sha,"before":before.artifact_build_sha,"after":after.artifact_build_sha,"movement_ok":movement_ok})) }
+pub(crate) fn failure(
+    log: &Path,
+    artifact: &Path,
+    source_build_sha: &str,
+    before: &crate::atoms::ask::build_crate::Observation,
+    after: &crate::atoms::ask::build_crate::Observation,
+    movement_ok: bool,
+) -> Result<(), String> {
+    crate::write_json(
+        &log.with_file_name("service-runtime-build-failure.json"),
+        &serde_json::json!({"signal":"service-runtime-act-did-not-converge","artifact":artifact,"source_build_sha":source_build_sha,"before":before.artifact_build_sha,"after":after.artifact_build_sha,"movement_ok":movement_ok}),
+    )
+}

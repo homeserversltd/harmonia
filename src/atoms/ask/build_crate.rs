@@ -14,6 +14,7 @@ pub(crate) struct Observation {
     pub(crate) source_build_sha: String,
     pub(crate) artifact_present: bool,
     pub(crate) artifact_build_sha: Option<String>,
+    pub(crate) artifact_environment_sha: Option<String>,
     pub(crate) artifact_digest: Option<String>,
     pub(crate) artifact_executable: bool,
     pub(crate) identity_mode: IdentityMode,
@@ -33,6 +34,7 @@ impl Observation {
                 self.artifact_executable
                     && crate::bands::compare::is_hex_sha(&self.source_build_sha)
                     && self.artifact_build_sha.as_deref() == Some(self.source_build_sha.as_str())
+                    && self.artifact_environment_sha.is_some()
             }
         }
     }
@@ -53,9 +55,25 @@ pub(crate) fn build_identity(
 
 pub(crate) fn build_identity_with_mode(
     source_build_sha: &str,
+    installed_build_sha: Option<&str>,
+    artifact: &Path,
+    identity_mode: IdentityMode,
+) -> Result<Observation, String> {
+    build_identity_with_environment(
+        source_build_sha,
+        installed_build_sha,
+        artifact,
+        identity_mode,
+        &[],
+    )
+}
+
+pub(crate) fn build_identity_with_environment(
+    source_build_sha: &str,
     _installed_build_sha: Option<&str>,
     artifact: &Path,
     identity_mode: IdentityMode,
+    environment: &[(String, String)],
 ) -> Result<Observation, String> {
     let source_build_sha = source_build_sha.trim().to_string();
     if !crate::bands::compare::is_hex_sha(&source_build_sha) {
@@ -76,17 +94,38 @@ pub(crate) fn build_identity_with_mode(
         IdentityMode::RegularExecutable => artifact
             .with_file_name(format!(
                 "{}.source-build-sha",
-                artifact.file_name().and_then(|name| name.to_str()).unwrap_or("artifact")
+                artifact
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("artifact")
             ))
             .is_file()
-            .then(|| artifact.with_file_name(format!(
-                "{}.source-build-sha",
-                artifact.file_name().and_then(|name| name.to_str()).unwrap_or("artifact")
-            )))
+            .then(|| {
+                artifact.with_file_name(format!(
+                    "{}.source-build-sha",
+                    artifact
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("artifact")
+                ))
+            })
             .and_then(|stamp| fs::read_to_string(stamp).ok())
             .map(|stamp| stamp.trim().to_string())
             .filter(|stamp| crate::bands::compare::is_hex_sha(stamp)),
     };
+    let artifact_environment_sha = (identity_mode == IdentityMode::RegularExecutable)
+        .then(|| {
+            artifact.with_file_name(format!(
+                "{}.build-environment-sha",
+                artifact
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("artifact")
+            ))
+        })
+        .and_then(|stamp| fs::read_to_string(stamp).ok())
+        .map(|stamp| stamp.trim().to_string())
+        .filter(|stamp| stamp == &environment_sha(environment));
     let artifact_digest = (identity_mode == IdentityMode::RegularExecutable)
         .then(|| bytes.as_deref())
         .flatten()
@@ -102,8 +141,18 @@ pub(crate) fn build_identity_with_mode(
         source_build_sha,
         artifact_present,
         artifact_build_sha,
+        artifact_environment_sha,
         artifact_digest,
         artifact_executable,
         identity_mode,
     })
+}
+
+pub(crate) fn environment_sha(environment: &[(String, String)]) -> String {
+    let environment = environment
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let encoded = serde_json::to_vec(&environment).expect("build environment is serializable");
+    atoms::file_sha256(&encoded)
 }
