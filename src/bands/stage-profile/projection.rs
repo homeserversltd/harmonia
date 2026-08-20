@@ -148,6 +148,20 @@ fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> 
     });
     Ok(())
 }
+fn projection_add_census_target(
+    out: &mut Vec<Target>,
+    path: PathBuf,
+    member: &str,
+) -> Result<(), String> {
+    if matches!(
+        crate::tools::files::classify_target(&path),
+        crate::tools::files::TargetClass::Config
+    ) {
+        println!("census-config-skip path={}", path.display());
+        return Ok(());
+    }
+    projection_add_target(out, path, member)
+}
 fn projection_add_service(
     out: &mut Vec<ServiceBinding>,
     name: String,
@@ -234,19 +248,12 @@ fn projection_derive_plan_inner(
                 continue;
             };
             if let Some(p) = projection_text(args, "install_bin") {
-                projection_add_target(&mut targets, p.into(), member)?;
+                projection_add_census_target(&mut targets, p.into(), member)?;
             }
             if let Some(a) = args.get("managed_files").and_then(Value::as_array) {
                 for x in a {
                     if let Some(p) = projection_value_path(x, "path") {
-                        if matches!(
-                            crate::tools::files::classify_target(&p),
-                            crate::tools::files::TargetClass::Config
-                        ) {
-                            println!("census-config-skip path={}", p.display());
-                            continue;
-                        }
-                        projection_add_target(&mut targets, p, member)?;
+                        projection_add_census_target(&mut targets, p, member)?;
                     }
                 }
             }
@@ -254,14 +261,7 @@ fn projection_derive_plan_inner(
                 .get("caduceus_profile_source")
                 .and_then(|x| projection_value_path(x, "path"))
             {
-                if matches!(
-                    crate::tools::files::classify_target(&p),
-                    crate::tools::files::TargetClass::Config
-                ) {
-                    println!("census-config-skip path={}", p.display());
-                } else {
-                    projection_add_target(&mut targets, p, member)?;
-                }
+                projection_add_census_target(&mut targets, p, member)?;
             }
             if let Some(name) = projection_text(args, "service") {
                 projection_add_service(&mut services, name, false, None, member);
@@ -277,7 +277,7 @@ fn projection_derive_plan_inner(
             {
                 let staff_member = if module_id == "sbin" { "sbin" } else { "agathodaimon" };
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
-                    projection_add_target(&mut targets, p.into(), staff_member)?;
+                    projection_add_census_target(&mut targets, p.into(), staff_member)?;
                 }
                 if projection_text(&s.args, "launcher_pattern").is_none() {
                     continue;
@@ -305,7 +305,7 @@ fn projection_derive_plan_inner(
                     }
                 }
                 for n in names {
-                    projection_add_target(&mut targets, tr.join(n), staff_member)?;
+                    projection_add_census_target(&mut targets, tr.join(n), staff_member)?;
                 }
             }
             if is_gui && s.tool == "files" && s.permutation == "converge" {
@@ -315,14 +315,11 @@ fn projection_derive_plan_inner(
                 ) {
                     for f in files.iter().filter_map(Value::as_str) {
                         let p = PathBuf::from(&r).join(f);
-                        if matches!(
-                            crate::tools::files::classify_target(&p),
-                            crate::tools::files::TargetClass::Config
-                        ) {
-                            println!("census-config-skip path={}", p.display());
-                            continue;
-                        }
-                        projection_add_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
+                        projection_add_census_target(
+                            &mut targets,
+                            p,
+                            face.as_deref().unwrap_or(""),
+                        )?;
                     }
                 }
             }
@@ -352,14 +349,7 @@ fn projection_derive_plan_inner(
                     } else {
                         continue;
                     };
-                    if matches!(
-                        crate::tools::files::classify_target(&p),
-                        crate::tools::files::TargetClass::Config
-                    ) {
-                        println!("census-config-skip path={}", p.display());
-                        continue;
-                    }
-                    projection_add_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
+                    projection_add_census_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
                 }
             }
             for (key, user) in [("services", false), ("user_services", true)] {
