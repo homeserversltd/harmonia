@@ -1,8 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
-  "id": "caduceus-public-lever",
+  "id": "install-caduceus",
   "version": "1.1.1",
-  "description": "TV Caduceus public lever: sync/build/install caduceus from main (dual-snake cert face), converge profile/routes, install additive agathodaimon house_ca Python snake, stand up caduceus.service.",
+  "description": "TV module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "optional": false,
   "constants": {},
   "ladder": [
@@ -11,7 +11,7 @@
       "tool": "service-runtime",
       "permutation": "converge",
       "args": {
-        "module_id": "caduceus-public-lever",
+        "module_id": "install-caduceus",
         "component": "caduceus",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
@@ -19,7 +19,7 @@
         "url": "http://127.0.0.1:8787/health",
         "binary_name": "caduceus",
         "op_prefix": "caduceus",
-        "run_schema": "harmonia.tv.caduceus_public_lever.v1",
+        "run_schema": "harmonia.tv.install_caduceus.v1",
         "managed_files_schema": "harmonia.tv.caduceus_managed_files.v1",
         "managed_files": [
           {

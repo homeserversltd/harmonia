@@ -20,7 +20,7 @@
     "homeconsole-update-runtime",
     "homeconsole-sync-runtime",
     "household-time",
-    "homeconsole-caduceus-public-lever",
+    "install-caduceus",
     "sbin",
     "sudoers",
     "controller-streaming-config"

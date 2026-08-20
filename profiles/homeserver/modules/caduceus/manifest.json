@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
   "version": "1.3.4",
-  "description": "HOMESERVER Caduceus public lever with a provisioned agathodaimon Python environment and sudoers refresh consumer declaration.",
+  "description": "HOMESERVER module installs and maintains Caduceus. It provisions the agathodaimon Python environment and maintains the sudoers refresh consumer.",
   "constants": {
     "staff_venv": "/var/lib/caduceus/venv",
     "staff_module_root": "/usr/local/sbin"
@@ -49,7 +49,7 @@
         "url": "http://127.0.0.1:3014/health",
         "binary_name": "caduceus",
         "op_prefix": "caduceus",
-        "run_schema": "harmonia.homeserver.caduceus_public_lever.v1",
+        "run_schema": "harmonia.homeserver.install_caduceus.v1",
         "managed_files_schema": "harmonia.homeserver.caduceus_managed_files.v1",
         "managed_files": [
           {
@@ -60,7 +60,7 @@
           {
             "path": "/etc/systemd/system/caduceus.service",
             "mode": 420,
-            "content": "[Unit]\nDescription=Caduceus HOMESERVER public appliance lever\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nEnvironment=PYTHONPATH=/usr/local/sbin\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
+            "content": "[Unit]\nDescription=Caduceus HOMESERVER appliance API\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nEnvironment=PYTHONPATH=/usr/local/sbin\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
           },
           {
             "path": "/var/lib/caduceus/state.json",
