@@ -1794,6 +1794,14 @@ struct SourceShelfSweepProvenance {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceShelfSweepOrphanRemoval {
+    pub target: PathBuf,
+    pub path: String,
+    pub pre_removal_size_hint: u64,
+    pub pre_removal_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SourceShelfSweepEntry {
     pub kind: String,
     pub relative_path: String,
@@ -1816,6 +1824,8 @@ pub struct SourceShelfSweepEntry {
     pub readback_ok: bool,
     pub rollback_action: String,
     pub rollback_readback_ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orphan_removal: Option<SourceShelfSweepOrphanRemoval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2187,6 +2197,35 @@ fn inventory_sweep_tree_if_present(
             root.display()
         )),
     }
+}
+
+fn orphan_removal_state(
+    target: &Path,
+    relative: &Path,
+) -> Result<SourceShelfSweepOrphanRemoval, String> {
+    let metadata = fs::symlink_metadata(target).map_err(|error| {
+        format!(
+            "source-shelf-sweep-orphan-metadata-failed {}: {error}",
+            target.display()
+        )
+    })?;
+    let file_type = metadata.file_type();
+    if !file_type.is_file() && !file_type.is_dir() {
+        return Err(format!(
+            "source-shelf-sweep-orphan-entry-kind-rejected {}",
+            target.display()
+        ));
+    }
+    Ok(SourceShelfSweepOrphanRemoval {
+        target: target.to_path_buf(),
+        path: relative.display().to_string(),
+        pre_removal_size_hint: metadata.len(),
+        pre_removal_sha256: if file_type.is_file() {
+            Some(digest_file(target)?)
+        } else {
+            None
+        },
+    })
 }
 
 fn digest_file(path: &Path) -> Result<String, String> {
@@ -2669,6 +2708,7 @@ fn build_sweep_entries(
             readback_ok: after || current,
             rollback_action: "not-needed".into(),
             rollback_readback_ok: None,
+            orphan_removal: None,
         });
     }
     for (name, source) in launchers {
@@ -2721,6 +2761,7 @@ fn build_sweep_entries(
             readback_ok: after || current,
             rollback_action: "not-needed".into(),
             rollback_readback_ok: None,
+            orphan_removal: None,
         });
     }
     for name in stale {
@@ -2757,6 +2798,7 @@ fn build_sweep_entries(
             readback_ok: after || !request.prune,
             rollback_action: "not-needed".into(),
             rollback_readback_ok: None,
+            orphan_removal: None,
         });
     }
     Ok(entries)
@@ -3123,13 +3165,14 @@ fn source_shelf_owned_recursive_sweep(
             .is_none_or(|relative| !source_shelf_excluded(&sweep_exclude, relative))
     });
     let target_inventory = inventory_sweep_tree_if_present(&request.target_shelf, &sweep_exclude)?;
+    let mut orphan_stale = BTreeSet::new();
     for target_entry in target_inventory
         .iter()
         .filter(|entry| entry.relative_path != Path::new("."))
     {
         // A committed sweep intentionally retains its rollback quarantine under
         // the target root. It is internal sweep state, not foreign material;
-        // every other absent-source, unledgered path remains a refusal.
+        // absent-source, unledgered paths are removable only in prune mode.
         if sweep_internal_quarantine_path(&request.target_shelf, &target_entry.relative_path) {
             continue;
         }
@@ -3138,6 +3181,10 @@ fn source_shelf_owned_recursive_sweep(
         if !desired_paths.contains(&target_path_string)
             && !provenance.paths.contains(&target_path_string)
         {
+            if request.prune {
+                orphan_stale.insert(target_entry.relative_path.clone());
+                continue;
+            }
             let blocker = format!(
                 "source-shelf-sweep-provenance-refused-unowned-target {}",
                 target_path.display()
@@ -3177,7 +3224,9 @@ fn source_shelf_owned_recursive_sweep(
                 })
         })
         .collect();
+    stale.extend(orphan_stale.iter().cloned());
     stale.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    stale.dedup();
     let mut entries = Vec::new();
     let mut drift = !stale.is_empty();
     for entry in &desired {
@@ -3237,6 +3286,7 @@ fn source_shelf_owned_recursive_sweep(
             readback_ok: current,
             rollback_action: "not-needed".into(),
             rollback_readback_ok: None,
+            orphan_removal: None,
         });
     }
     for relative in &stale {
@@ -3262,6 +3312,14 @@ fn source_shelf_owned_recursive_sweep(
             readback_ok: false,
             rollback_action: "quarantine-preserved".into(),
             rollback_readback_ok: None,
+            orphan_removal: if orphan_stale.contains(relative) {
+                Some(orphan_removal_state(
+                    &request.target_shelf.join(relative),
+                    relative,
+                )?)
+            } else {
+                None
+            },
         });
     }
     if !apply {
