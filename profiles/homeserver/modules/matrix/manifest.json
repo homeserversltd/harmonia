@@ -25,7 +25,8 @@
       "tool": "command",
       "permutation": "capture",
       "args": {
-        "program": "/usr/local/sbin/agathodaimon/caduceus-matrix-converge",
+        "program": "/usr/local/sbin/agathodaimon/cli.py",
+        "args": ["matrix", "matrix-converge"],
         "timeout_secs": 1800
       }
     },
