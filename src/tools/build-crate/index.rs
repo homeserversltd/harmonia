@@ -13,7 +13,14 @@ pub(crate) fn build(
     timeout_secs: u64,
     bearer: &str,
 ) -> Result<crate::atoms::CommandObservation, String> {
-    crate::atoms::r#do::build_crate::cargo_build(auth, key, cwd, environment, bearer, std::time::Duration::from_secs(timeout_secs))
+    crate::atoms::r#do::build_crate::cargo_build(
+        auth,
+        key,
+        cwd,
+        environment,
+        bearer,
+        std::time::Duration::from_secs(timeout_secs),
+    )
 }
 
 pub(crate) fn cargo_build(
@@ -74,11 +81,12 @@ pub(crate) fn run_build_with_mode(
         "build-crate",
         "build-crate",
         || {
-            crate::atoms::ask::build_crate::build_identity_with_mode(
+            crate::atoms::ask::build_crate::build_identity_with_environment(
                 source_build_sha,
                 installed_build_sha,
                 artifact,
                 identity_mode,
+                environment,
             )
         },
         |observation| {
@@ -100,6 +108,7 @@ pub(crate) fn run_build_with_mode(
                     std::time::Duration::from_secs(timeout_secs),
                     artifact,
                     source_build_sha,
+                    &crate::atoms::ask::build_crate::environment_sha(environment),
                 )
             } else {
                 crate::atoms::r#do::build_crate::cargo_build(
@@ -123,7 +132,14 @@ pub(crate) fn run_build_with_mode(
                 bearer,
                 environment,
             )?;
-            crate::atoms::r#do::build_crate::failure(log, artifact, source_build_sha, before, after, movement.ok)
+            crate::atoms::r#do::build_crate::failure(
+                log,
+                artifact,
+                source_build_sha,
+                before,
+                after,
+                movement.ok,
+            )
         },
     )?;
     match run {
@@ -186,10 +202,12 @@ pub(crate) fn run(
     .is_none_or(|result| result.ok))
 }
 
-pub(crate) fn bench_build_guard(root: &Path, source_build_sha: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn bench_build_guard(
+    root: &Path,
+    source_build_sha: &str,
+) -> Result<serde_json::Value, String> {
     crate::atoms::r#do::build_crate::bench_build_guard(root, source_build_sha)
 }
-
 
 pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
     crate::tools::declaration::get("build-crate")
