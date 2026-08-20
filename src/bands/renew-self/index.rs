@@ -26,6 +26,15 @@ pub(crate) fn run(
     run_engine_preflight(module_root, receipt_dir, apply, invocation)
 }
 
+/// Only this proof result is safe to defer until StageProfile has molted the
+/// installed module root. All other preflight failures retain normal semantics.
+pub(crate) fn is_stale_staged_validation_failure(execution: &ModuleExecution) -> bool {
+    matches!(
+        execution.first_missing_signal.as_deref(),
+        Some("engine-proof-validate-ladder-failed") | Some("engine-proof-plan-run-failed")
+    )
+}
+
 use crate::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

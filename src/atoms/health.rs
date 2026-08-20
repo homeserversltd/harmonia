@@ -82,14 +82,18 @@ pub(crate) fn curl_probe(request: &ProbeRequest<'_>) -> CmdResult {
     last
 }
 fn run_probe(request: &ProbeRequest<'_>) -> CmdResult {
+    let mut curl_args = vec![
+        "-fsS".into(),
+        "--max-time".into(),
+        request.timeout_secs.to_string(),
+    ];
+    if request.expected_contains.is_none() {
+        curl_args.extend(["-o".into(), "/dev/null".into()]);
+    }
+    curl_args.push(request.url.into());
     let observed = crate::atoms::ask::read_only_command_with_timeout(
         "/usr/bin/curl",
-        &[
-            "-fsS".into(),
-            "--max-time".into(),
-            request.timeout_secs.to_string(),
-            request.url.into(),
-        ],
+        &curl_args,
         Duration::from_secs(request.timeout_secs.saturating_add(1)),
     );
     CmdResult {
