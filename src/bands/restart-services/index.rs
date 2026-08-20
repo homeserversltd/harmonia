@@ -143,6 +143,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                             ("source_reference", "pull-repo.source_reference"),
                             ("source_remote", "pull-repo.source_remote"),
                             ("source_changed", "pull-repo.changed"),
+                            ("build_changed", "build.changed"),
                             ("binary_changed", "binary-install.changed"),
                         ] {
                             c.insert(k.into(), serde_json::json!({"from":r}));
@@ -511,13 +512,17 @@ pub(crate) fn execute_routine_child(
                 .get("binary_changed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let build_changed = args
+                .get("build_changed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let managed_files_changed = args
                 .get("managed_files_changed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let material_changed = match permutation.name {
                 "daemon-reload" => managed_files_changed,
-                "restart" => binary_changed || managed_files_changed,
+                "restart" => build_changed || binary_changed || managed_files_changed,
                 _ => false,
             };
             let restart_policy = args.get("restart_policy").and_then(Value::as_str);
