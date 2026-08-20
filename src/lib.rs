@@ -36,7 +36,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{self};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const SOURCE_ROOT: &str = "/opt/harmonia/source";
@@ -335,12 +334,9 @@ mod invocation_face {
     }
 }
 
-pub fn invoke(args: Vec<String>) {
+pub fn invoke(args: Vec<String>) -> Result<(), String> {
     let invocation = invocation_face::mint(&args);
-    if let Err(err) = run(args, invocation) {
-        eprintln!("harmonia_error={}", err);
-        process::exit(1);
-    }
+    run(args, invocation)
 }
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {

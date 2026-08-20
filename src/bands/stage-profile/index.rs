@@ -1,5 +1,7 @@
 use super::Band;
 use crate::*;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[path = "capsule/index.rs"]
@@ -97,15 +99,36 @@ pub(crate) fn materialize(
         value.refreshed_profile = Some(refreshed_identity);
         value.transaction_census = Some(transaction_census);
     }
-    let source_tree_sha256 = crate::atoms::tree_hash::content_tree_sha256(&source_modules_root)?;
-    let installed_tree_sha256 =
-        crate::atoms::tree_hash::content_tree_sha256(installed_module_root)?;
-    if source_tree_sha256 != installed_tree_sha256 {
-        return Err(format!(
-            "{profile_id}-module-root-inconsistent source={} installed={}",
-            source_tree_sha256, installed_tree_sha256
-        ));
+    // Compare only modules declared by this profile. Undeclared directories and
+    // staging debris are outside this spine's content contract.
+    let mut source_module_hashes = BTreeMap::new();
+    let mut installed_module_hashes = BTreeMap::new();
+    for id in &refreshed.modules {
+        let source_hash =
+            crate::atoms::tree_hash::content_tree_sha256(&source_modules_root.join(id))?;
+        let installed_hash =
+            crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
+        if source_hash != installed_hash {
+            return Err(format!(
+                "{profile_id}-module-root-inconsistent module={id} source={} installed={}",
+                source_hash, installed_hash
+            ));
+        }
+        source_module_hashes.insert(id.clone(), source_hash);
+        installed_module_hashes.insert(id.clone(), installed_hash);
     }
+    let declared_hash = |hashes: &BTreeMap<String, String>| {
+        let mut digest = Sha256::new();
+        for (id, hash) in hashes {
+            digest.update(id.as_bytes());
+            digest.update([0]);
+            digest.update(hash.as_bytes());
+            digest.update([0]);
+        }
+        format!("{:x}", digest.finalize())
+    };
+    let source_tree_sha256 = declared_hash(&source_module_hashes);
+    let installed_tree_sha256 = declared_hash(&installed_module_hashes);
     let modules = refreshed
         .modules
         .iter()
@@ -120,7 +143,9 @@ pub(crate) fn materialize(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let key = context.map(|value| value.key).ok_or_else(|| "subscription-invocation-key-missing".to_string())?;
+    let key = context
+        .map(|value| value.key)
+        .ok_or_else(|| "subscription-invocation-key-missing".to_string())?;
     update_subscription_record_with_invocation(
         &subscription_path(),
         SubscriptionUpdate {
@@ -141,7 +166,7 @@ pub(crate) fn materialize(
                 installed_root: installed_module_root.display().to_string(),
                 source_tree_sha256: source_tree_sha256.clone(),
                 installed_tree_sha256: installed_tree_sha256.clone(),
-                matches: true,
+                matches: source_tree_sha256 == installed_tree_sha256,
             });
     }
     Ok(refreshed)

@@ -84,29 +84,39 @@ pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, Engine
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
                 use std::io::Write;
-                writeln!(file, "pid={}", std::process::id()).map_err(|error| {
-                    EngineRunLockFailure::Unavailable(format!(
+                if let Err(error) = writeln!(file, "pid={}", std::process::id()) {
+                    let _ = fs::remove_file(&path);
+                    return Err(EngineRunLockFailure::Unavailable(format!(
                         "engine-run-lock-write-failed {}: {error}",
                         path.display()
-                    ))
-                })?;
-                file.sync_all().map_err(|error| {
-                    EngineRunLockFailure::Unavailable(format!(
+                    )));
+                }
+                if let Err(error) = file.sync_all() {
+                    let _ = fs::remove_file(&path);
+                    return Err(EngineRunLockFailure::Unavailable(format!(
                         "engine-run-lock-sync-failed {}: {error}",
                         path.display()
-                    ))
-                })?;
+                    )));
+                }
                 return Ok(EngineRunLockGuard { path, _file: file });
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 match engine_run_lock_pid(&path) {
+                    Ok(Some(pid)) if pid == std::process::id() => {
+                        fs::remove_file(&path).map_err(|error| {
+                            EngineRunLockFailure::Unavailable(format!(
+                                "engine-run-lock-inherited-remove-failed {}: {error}",
+                                path.display()
+                            ))
+                        })?;
+                    }
                     Ok(Some(pid))
                         if engine_run_lock_pid_is_live(pid)
                             .map_err(EngineRunLockFailure::Unavailable)? =>
                     {
                         return Err(EngineRunLockFailure::Busy);
                     }
-                    Ok(Some(_)) | Err(_) => {
+                    Ok(Some(_)) => {
                         fs::remove_file(&path).map_err(|error| {
                             EngineRunLockFailure::Unavailable(format!(
                                 "engine-run-lock-stale-remove-failed {}: {error}",
@@ -114,6 +124,7 @@ pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, Engine
                             ))
                         })?;
                     }
+                    Err(error) => return Err(EngineRunLockFailure::Unavailable(error)),
                     Ok(None) => continue,
                 }
             }
