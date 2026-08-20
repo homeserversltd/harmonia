@@ -109,7 +109,7 @@ Install contract:
     install_p.add_argument("--apply", action="store_true", help="Actually write install surfaces. Omit for dry-run.")
     install_p.add_argument("--skip-build", action="store_true", help="Install existing target artifact without running cargo build.")
     install_p.add_argument("--debug", action="store_true", help="Use target/debug/harmonia instead of target/release/harmonia.")
-    install_p.add_argument("--profile", default="homeconsole", help="Profile to install under /etc/harmonia/profiles/<profile>.")
+    install_p.add_argument("--profile", default=None, help="Profile override to install under /etc/harmonia/profiles/<profile>; otherwise derive from the appliance profile certificate.")
     install_p.add_argument("--lane", default="upstream", choices=("upstream", "owner"), help="Machine subscription lane to seed after apply.")
     install_p.add_argument("--source", default=None, help="Machine subscription source repo URL or capsule origin. Defaults to git origin or repo path.")
     install_p.add_argument("--local-source-checkout", default=None, help=f"Owner-refreshed local checkout for root read/build/promotion; defaults to {SOURCE_ROOT} and disables root network fetch in preflight.")
@@ -199,17 +199,39 @@ def build(args: argparse.Namespace) -> int:
     return run_checked_as_source_owner(cmd, cwd=SOURCE_ROOT)
 
 
+def resolve_profile_identity(override: str | None) -> tuple[str | None, str]:
+    if override is not None:
+        profile = override.strip()
+        return (profile, "--profile") if valid_profile_identity(profile) else (None, "--profile")
+    path = Path(os.environ.get("HARMONIA_APPLIANCE_PROFILE_PATH", "/etc/appliance/profile.json"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        profile = payload.get("profile") if isinstance(payload, dict) else None
+        profile = profile.strip() if isinstance(profile, str) else None
+    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+        return None, str(path)
+    return (profile, str(path)) if profile and valid_profile_identity(profile) else (None, str(path))
+
+
+def valid_profile_identity(profile: str) -> bool:
+    return bool(profile) and "/" not in profile and "\\" not in profile and profile not in {".", ".."}
+
+
 def install(args: argparse.Namespace) -> int:
     paths = InstallPaths.from_args(args)
+    profile, profile_source = resolve_profile_identity(args.profile)
+    if profile is None:
+        print("profile-identity-missing")
+        return 1
     apply = bool(args.apply)
     with_systemd = bool(args.with_systemd or args.enable_timer)
     artifact = SOURCE_ROOT / "target" / ("debug" if getattr(args, "debug", False) else "release") / "harmonia"
-    capsule_dir = paths.state_dir / "capsules" / args.profile
+    capsule_dir = paths.state_dir / "capsules" / profile
     plan = [
         f"build binary with cargo unless --skip-build ({artifact})",
         f"install binary -> {paths.bin_path}",
         f"seed kernel-owned engine config -> {paths.config_dir / 'engine.json'}",
-        f"pack capsule for profile {args.profile} -> {capsule_dir}",
+        f"pack capsule for profile {profile} -> {capsule_dir}",
         f"install capsule into {paths.config_dir} (lane=capsule)",
         f"ensure state/log/receipt dirs -> {paths.state_dir}, {paths.log_dir}, {paths.receipt_dir}",
     ]
@@ -217,6 +239,7 @@ def install(args: argparse.Namespace) -> int:
         plan.append(
             f"install profile-independent systemd units -> {paths.systemd_dir}/harmonia.service and harmonia.timer"
         )
+    print(f"profile={profile} source={profile_source}")
     emit_plan("harmonia.installer.install_plan.v1", apply, plan)
     if not apply:
         return 0
@@ -249,7 +272,7 @@ def install(args: argparse.Namespace) -> int:
     for directory in [paths.state_dir, paths.receipt_dir, paths.log_dir]:
         directory.mkdir(parents=True, exist_ok=True)
     pack_code = run_checked(
-        [str(paths.bin_path), "capsule", "pack", args.profile, "--out", str(capsule_dir), "--harmonia-root", str(SOURCE_ROOT)],
+        [str(paths.bin_path), "capsule", "pack", profile, "--out", str(capsule_dir), "--harmonia-root", str(SOURCE_ROOT)],
         cwd=SOURCE_ROOT,
     )
     print(f"capsule_pack_exit={pack_code}")
@@ -257,7 +280,7 @@ def install(args: argparse.Namespace) -> int:
         print("ok=false")
         return pack_code
     try:
-        packed_module_count = validate_packed_capsule(SOURCE_ROOT, capsule_dir, args.profile)
+        packed_module_count = validate_packed_capsule(SOURCE_ROOT, capsule_dir, profile)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"capsule_pack_validation_failed={exc}", file=sys.stderr)
         print("ok=false")
@@ -277,7 +300,7 @@ def install(args: argparse.Namespace) -> int:
         lane=args.lane,
         source=args.source or repo_source(),
         ref=args.ref or repo_ref(),
-        selected_profile=args.profile,
+        selected_profile=profile,
     )
     if with_systemd:
         install_systemd_units(paths)
@@ -301,7 +324,7 @@ def install(args: argparse.Namespace) -> int:
                 return enable_timer
     print("schema=harmonia.installer.install.v1")
     print("ok=true")
-    print("profile=" + args.profile)
+    print(f"profile={profile} source={profile_source}")
     print("lane=capsule")
     print(f"subscription={paths.state_dir / 'subscription.json'}")
     print(f"binary={paths.bin_path}")
