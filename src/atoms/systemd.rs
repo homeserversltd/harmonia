@@ -297,7 +297,7 @@ pub(crate) fn snapshot_service_state(
     user: bool,
     target_user: Option<&str>,
 ) -> Result<ServiceStateSnapshot, String> {
-    if !is_unit_basename(name) {
+    if !is_removable_unit_basename(name) {
         return Err(format!("systemd-unit-name-invalid-{name}"));
     }
     let observation = observe_systemd_state("is-active-probe", name, user, target_user, 30);
