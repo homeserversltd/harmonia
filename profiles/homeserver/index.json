@@ -41,14 +41,12 @@
       "searx",
       "rust-build-toolchain",
       "sudoers",
-      "matrix",
-      "work-lane-root-provisioning"
+      "matrix"
     ]
   },
   "identity": "homeserver",
   "modules": [
     "harmonia",
-    "work-lane-root-provisioning",
     "rust-build-toolchain",
     "nginx",
     "postgres",
