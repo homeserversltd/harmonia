@@ -89,8 +89,12 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                         );
                         let component = args.get("component").and_then(Value::as_str).unwrap_or("component");
                         let build_sha_key = format!("{}_BUILD_SHA", component.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_uppercase() } else { '_' }).collect::<String>());
+                        let source_sha_ref = serde_json::json!({"from":"pull-repo.resolved_commit"});
                         let mut environment = args.get("build_environment").and_then(Value::as_object).cloned().unwrap_or_default();
-                        environment.insert(build_sha_key, serde_json::json!({"from":"pull-repo.resolved_commit"}));
+                        environment.insert(build_sha_key, source_sha_ref.clone());
+                        if component == "coronatio" {
+                            environment.insert("CORONATIO_SOURCE_SHA".into(), source_sha_ref);
+                        }
                         c.insert("environment".into(), Value::Object(environment));
                         c
                     }
@@ -155,12 +159,25 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                     }
                     _ => {
                         let mut c = args.clone();
-                        c.insert(
-                            "url".into(),
-                            args.get("url")
-                                .cloned()
-                                .unwrap_or(Value::String(String::new())),
-                        );
+                        let url = args
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let health_url = if args
+                            .get("component")
+                            .and_then(Value::as_str)
+                            == Some("coronatio")
+                        {
+                            let base = url.trim_end_matches('/');
+                            if base.ends_with("/health") {
+                                base.to_string()
+                            } else {
+                                format!("{base}/health")
+                            }
+                        } else {
+                            url.to_string()
+                        };
+                        c.insert("url".into(), Value::String(health_url));
                         if let Some(v) = args.get("health_expected_contains") {
                             c.insert("expected_contains".into(), v.clone());
                         } else {
