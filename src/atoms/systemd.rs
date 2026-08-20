@@ -22,7 +22,7 @@ pub(crate) fn validate_candidate_units(
         let Some(unit) = value.as_str() else {
             return Err("systemd-candidate-unit-not-string".to_string());
         };
-        if !is_unit_basename(unit) {
+        if !is_removable_unit_basename(unit) {
             return Err(format!("systemd-candidate-unit-invalid-{unit}"));
         }
     }
@@ -86,7 +86,7 @@ pub(crate) fn run_permutation_with_policy(
         let valid = if matches!(action, "disable-stop" | "disable-stop-remove") {
             is_removable_unit_basename(selected)
         } else {
-            is_unit_basename(selected)
+            is_removable_unit_basename(selected)
         };
         if !valid {
             return Err(format!("systemd-unit-name-invalid-{selected}"));
@@ -198,10 +198,6 @@ fn annotate_candidate_selection(
     object.insert("candidate_units".to_string(), json!(candidate_units));
     object.insert("selected_service".to_string(), json!(selected_service));
     write_json(&path, &receipt)
-}
-
-fn is_unit_basename(unit: &str) -> bool {
-    is_syntactic_unit_basename(unit) && unit.ends_with(".service")
 }
 
 fn is_removable_unit_basename(unit: &str) -> bool {
