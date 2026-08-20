@@ -2521,6 +2521,12 @@ fn source_launchers(
         })? {
             let entry = entry.map_err(|error| error.to_string())?;
             let path = entry.path();
+            let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+            // An excluded entry owns no recursive walk: do this before kind
+            // checks so excluded symlinks (for example venv/lib64) are inert.
+            if source_shelf_excluded(exclude, relative) {
+                continue;
+            }
             let kind = entry.file_type().map_err(|error| error.to_string())?;
             if kind.is_symlink() {
                 return Err(format!(
@@ -2528,7 +2534,6 @@ fn source_launchers(
                     path.display()
                 ));
             }
-            let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
             if kind.is_dir() {
                 walk(root, &path, pattern, exclude, out)?;
                 continue;
@@ -2579,8 +2584,13 @@ fn target_pattern_files(
         })? {
             let entry = entry.map_err(|error| error.to_string())?;
             let path = entry.path();
-            let kind = entry.file_type().map_err(|error| error.to_string())?;
             let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+            // Match the source walk: an excluded subtree is not inspected,
+            // classified, or treated as an orphan candidate.
+            if source_shelf_excluded(exclude, relative) {
+                continue;
+            }
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
             if kind.is_dir() {
                 walk(root, &path, pattern, exclude, out)?;
                 continue;
