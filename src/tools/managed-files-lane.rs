@@ -91,7 +91,7 @@ pub(crate) fn structural_file_blocker(
                 if !managed_directory_under_home
                     && !matches!(
                         step.permutation.as_str(),
-                        "managed-files" | "converge" | "validated-sudoers-converge"
+                        "managed-files" | "converge" | "validated-sudoers-converge" | "validated-symlink"
                     ) =>
             {
                 return Some(format!(
