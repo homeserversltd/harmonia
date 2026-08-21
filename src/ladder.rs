@@ -220,6 +220,12 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
             if manifest.schema == SCHEMA {
                 validate_package_pins(&manifest.package_pins)
                     .map_err(|e| format!("ladder-manifest-pin-validation-failed {e}"))?;
+                let module_name = path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                validate_package_pin_module(module_name, &manifest.id, &manifest.package_pins)?;
                 lower_service_runtime_steps(&mut manifest)
                     .map_err(|e| format!("ladder-manifest-lowering-failed {e}"))?;
                 manifest.base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
@@ -255,6 +261,17 @@ pub(crate) fn validate_package_pins(pins: &BTreeMap<String, String>) -> Result<(
         {
             return Err(format!("package-pin-version-unsafe-{name}"));
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_package_pin_module(
+    module_name: &str,
+    manifest_id: &str,
+    pins: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if !pins.is_empty() && (module_name != "pins" || manifest_id != "pins") {
+        return Err("pin-declared-outside-pins-module".into());
     }
     Ok(())
 }
@@ -644,25 +661,4 @@ pub(crate) fn validate_group(
         args: resolved,
         on_failure: OnFailure::Stop,
     })
-}
-
-#[cfg(test)]
-mod package_pin_validation_tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    #[test]
-    fn rejects_empty_and_unsafe_declarations() {
-        let mut pins = BTreeMap::new();
-        pins.insert("".into(), "1".into());
-        assert!(validate_package_pins(&pins).is_err());
-        pins.clear();
-        pins.insert("safe-name".into(), "".into());
-        assert!(validate_package_pins(&pins).is_err());
-        pins.clear();
-        pins.insert("safe-name".into(), "1; rm".into());
-        assert!(validate_package_pins(&pins).is_err());
-        pins.clear();
-        pins.insert("safe-name".into(), "1.2.3-1".into());
-        assert!(validate_package_pins(&pins).is_ok());
-    }
 }

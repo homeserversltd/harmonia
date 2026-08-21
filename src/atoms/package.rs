@@ -1785,7 +1785,7 @@ pub(crate) fn slice4_bench(
     let log = root.join("pacman.log");
     let receipts = root.join("receipts");
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
-    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) exit 0;; -Qu) test -f {}.state || echo 'pendingpkg 1 -> 2'; exit 0;; -Syu) echo Upgrading slice4; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
+    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\n'; exit 0;; -Qu) test -f {}.state || echo 'pendingpkg 1 -> 2'; exit 0;; -Syu) echo Upgrading slice4; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| e.to_string())?;
@@ -1804,10 +1804,118 @@ pub(crate) fn slice4_bench(
         invocation,
     );
     match old {
-        Some(v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
         None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
     };
     let out = result?;
+    let mut validation_cases = Vec::new();
+    for (label, name, version, expected_ok) in [
+        ("empty-name", "", "1", false),
+        ("unsafe-name", "bad name", "1", false),
+        ("empty-version", "safe-name", "", false),
+        ("shell-metachar-version", "safe-name", "1; rm", false),
+        ("valid-pin", "safe-name", "1.2.3-1", true),
+    ] {
+        let mut pins = std::collections::BTreeMap::new();
+        pins.insert(name.into(), version.into());
+        let actual_ok = crate::ladder::validate_package_pins(&pins).is_ok();
+        validation_cases
+            .push(serde_json::json!({"case": label, "ok": actual_ok, "expected_ok": expected_ok}));
+    }
+    let fixture_root = root.join("pin-profile");
+    let pins_dir = fixture_root.join("modules/pins");
+    let other_dir = fixture_root.join("modules/other");
+    let refusal_dir = fixture_root.join("modules/refusal");
+    std::fs::create_dir_all(&pins_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&other_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&refusal_dir).map_err(|e| e.to_string())?;
+    let pin_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "pins", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
+    let other_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "other", "version": "1", "constants": {}, "ladder": []});
+    let refusal_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "refusal", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
+    for (dir, manifest) in [
+        (pins_dir, pin_manifest),
+        (other_dir, other_manifest),
+        (refusal_dir, refusal_manifest),
+    ] {
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let profile = crate::Profile {
+        id: "pin-fixture".into(),
+        identity: "pin-fixture".into(),
+        package_authority: Some(crate::PackageAuthority {
+            os_family: "arch".into(),
+            package_manager: "pacman".into(),
+        }),
+        modules: vec!["pins".into(), "other".into()],
+        hotfixes: Vec::new(),
+        syzygy_declaration: None,
+    };
+    let projection = crate::bands::stage_profile::projection::load_profile_projection(
+        &profile,
+        &fixture_root.join("modules"),
+        &std::collections::BTreeSet::new(),
+    )?;
+    let expected_pins =
+        std::collections::BTreeMap::from([("heldpkg".to_string(), "1.2.3".to_string())]);
+    let projected_pins = match projection.modules.get("pins").map(|module| &module.loaded) {
+        Some(crate::LoadedModule::Ladder(manifest)) => manifest.package_pins.clone(),
+        _ => return Err("pins-fixture-not-projected-ladder".into()),
+    };
+    let ordinary_projected_pins = match projection.modules.get("other").map(|module| &module.loaded)
+    {
+        Some(crate::LoadedModule::Ladder(manifest)) => manifest.package_pins.clone(),
+        _ => return Err("ordinary-fixture-not-projected-ladder".into()),
+    };
+    let projection_propagation =
+        projected_pins == expected_pins && ordinary_projected_pins == expected_pins;
+    let refusal_result = crate::bands::stage_profile::groups::load_profile_module(
+        &fixture_root.join("modules"),
+        "refusal",
+    );
+    let non_pins_refusal = match refusal_result {
+        Err(error) => error == "pin-declared-outside-pins-module",
+        Ok(_) => false,
+    };
+    std::env::set_var("HARMONIA_PACMAN_PATH", &fake);
+    let fixture_result = package_tool_with_policy_for_backend_and_pins(
+        &receipts,
+        "fixture",
+        "upgrade",
+        &[],
+        true,
+        None,
+        &[],
+        2,
+        PackageBackend::Pacman,
+        invocation,
+        &ordinary_projected_pins,
+    );
+    match old {
+        Some(v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
+    let fixture_out = fixture_result?;
+    let fixture_receipt: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("fixture.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let fixture_witness: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("fixture.pin-witness.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let transaction_exclusion = fixture_out.ok
+        && fixture_receipt["exclusion_set"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == "heldpkg"));
+    let witness = fixture_witness["witness"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item["name"] == "heldpkg" && item["state"] == "held/green")
+    });
     let text = std::fs::read_to_string(&log).map_err(|e| e.to_string())?;
     let argv = text.lines().map(str::to_string).collect::<Vec<_>>();
     let exact = argv.iter().any(|line| line == "-Syu --noconfirm");
@@ -1820,7 +1928,18 @@ pub(crate) fn slice4_bench(
         "pacman_argv": argv,
         "skipped": out.skipped,
         "skip_refusal_truthful": out.ok && !out.skipped,
-        "ok": out.ok && exact && !out.skipped && typed_receipt,
+        "pin_validation_cases": validation_cases,
+        "pin_validation_all_cases": validation_cases.iter().all(|case| case["ok"] == case["expected_ok"]),
+        "projection_propagation": projection_propagation,
+        "transaction_exclusion": transaction_exclusion,
+        "witness": witness,
+        "non_pins_refusal": non_pins_refusal,
+        "ok": out.ok && exact && !out.skipped && typed_receipt
+            && validation_cases.iter().all(|case| case["ok"] == case["expected_ok"])
+            && projection_propagation
+            && transaction_exclusion
+            && witness
+            && non_pins_refusal,
     }))
 }
 
