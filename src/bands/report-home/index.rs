@@ -8,7 +8,7 @@ use crate::receipts::{
 use crate::Profile;
 use serde::Serialize;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -92,6 +92,48 @@ pub(crate) struct RunState {
     pub defer_terminal: bool,
 }
 
+fn collect_package_pin_witnesses(receipt_dir: &Path) -> (Vec<serde_json::Value>, BTreeSet<String>) {
+    let mut paths = Vec::new();
+    let mut pending = vec![receipt_dir.join("modules")];
+    while let Some(path) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .is_some_and(|v| v.ends_with(".pin-witness.json"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    let mut witnesses = Vec::new();
+    let mut exclusions = BTreeSet::new();
+    for path in paths {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if let Some(items) = value.get("exclusion_set").and_then(|v| v.as_array()) {
+            for item in items {
+                if let Some(name) = item.as_str() {
+                    exclusions.insert(name.to_string());
+                }
+            }
+        }
+        witnesses.push(value);
+    }
+    (witnesses, exclusions)
+}
+
 pub(crate) fn settle(
     state: RunState,
     profile: &Profile,
@@ -123,9 +165,11 @@ pub(crate) fn settle(
             )?;
         }
     }
+    let (package_pin_witnesses, package_pin_exclusion_set) =
+        collect_package_pin_witnesses(receipt_dir);
     write_json(
         &receipt_dir.join("band-walk.receipt.json"),
-        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>() }),
+        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>(),"package_pin_exclusion_set":package_pin_exclusion_set,"package_pin_witnesses":package_pin_witnesses}),
     )?;
     let settlement = state
         .settlement
@@ -218,4 +262,61 @@ pub(crate) fn finalize_deferred_terminal(
     println!("first_missing_signal={}", summary.first_missing_signal);
     println!("receipt_dir={}", receipt_dir.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod package_pin_witness_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn report_home_collects_nested_module_witnesses_and_dedupes_exclusions() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-report-home-pin-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("modules/alpha/deep")).unwrap();
+        fs::create_dir_all(root.join("modules/beta")).unwrap();
+        fs::write(
+            root.join("root.pin-witness.json"),
+            r#"{"exclusion_set":["ignored"]}"#,
+        )
+        .unwrap();
+        for (path, name, state) in [
+            (
+                "modules/alpha/alpha.pin-witness.json",
+                "exact",
+                "held/green",
+            ),
+            (
+                "modules/alpha/deep/deep.pin-witness.json",
+                "absent",
+                "absent",
+            ),
+            (
+                "modules/beta/beta.pin-witness.json",
+                "divergent",
+                "divergent",
+            ),
+        ] {
+            fs::write(root.join(path), serde_json::json!({"exclusion_set":[name,"shared"],"witness":[{"name":name,"state":state}]}).to_string()).unwrap();
+        }
+        let (witnesses, exclusions) = collect_package_pin_witnesses(&root);
+        assert_eq!(witnesses.len(), 3);
+        assert_eq!(
+            exclusions.into_iter().collect::<Vec<_>>(),
+            vec!["absent", "divergent", "exact", "shared"]
+        );
+        assert!(witnesses
+            .iter()
+            .any(|v| v["witness"][0]["state"] == "held/green"));
+        assert!(witnesses
+            .iter()
+            .any(|v| v["witness"][0]["state"] == "absent"));
+        assert!(witnesses
+            .iter()
+            .any(|v| v["witness"][0]["state"] == "divergent"));
+        let _ = fs::remove_dir_all(root);
+    }
 }

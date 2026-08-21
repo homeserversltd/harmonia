@@ -62,7 +62,7 @@ pub(crate) fn execute_step(
                 | ("venv", "converge")
         );
     match (s.tool.as_str(), s.permutation.as_str()) {
-        ("package", p) => package_step(s, d, apply, pa, key, p),
+        ("package", p) => package_step(s, m, d, apply, pa, key, p),
         ("aur", p) => aur_step(s, m, d, apply, key, p),
         ("venv", "converge") => {
             crate::tools::venv::execute_step(&s.args, d, &s.step_id, apply, key)
@@ -75,6 +75,7 @@ pub(crate) fn execute_step(
 }
 fn package_step(
     s: &ValidatedStep,
+    m: &LadderManifest,
     d: &Path,
     apply: bool,
     pa: Option<&PackageAuthority>,
@@ -90,7 +91,7 @@ fn package_step(
         "check" => crate::tools::package::package_tool_for_backend(
             d, &s.step_id, "check", &packages, apply, backend, key,
         ),
-        "install" => crate::tools::package::package_tool_with_policy_for_backend(
+        "install" => crate::tools::package::package_tool_with_policy_for_backend_and_pins(
             d,
             &s.step_id,
             "install",
@@ -101,8 +102,9 @@ fn package_step(
             timeout,
             backend,
             key,
+            &m.package_pins,
         ),
-        "upgrade" => crate::tools::package::package_tool_with_policy_for_backend(
+        "upgrade" => crate::tools::package::package_tool_with_policy_for_backend_and_pins(
             d,
             &s.step_id,
             "upgrade",
@@ -113,6 +115,7 @@ fn package_step(
             timeout,
             backend,
             key,
+            &m.package_pins,
         ),
         "keyring-repair" if backend == PackageBackend::Pacman => {
             crate::tools::package::keyring_repair_tool(
@@ -121,6 +124,7 @@ fn package_step(
                 optional_string_arg(&s.args, "package").unwrap_or("archlinux-keyring"),
                 apply,
                 timeout,
+                &m.package_pins,
             )
         }
         "keyring-repair" => Err("package-keyring-repair-backend-unsupported".into()),
@@ -144,6 +148,7 @@ fn aur_step(
             integer_arg(&s.args, "timeout_secs", 3600),
             apply,
             key,
+            &m.package_pins,
         ),
         "check" => crate::tools::aur::check(
             d,
@@ -167,6 +172,7 @@ fn aur_step(
                 .unwrap_or(false),
             apply,
             key,
+            &m.package_pins,
         ),
         other => Err(format!("aur-permutation-unsupported-{other}")),
     }

@@ -154,6 +154,7 @@ fn declaration_fixture(root: &Path, declarations: Value) -> crate::ladder::Ladde
         optional_warning: None,
         group: None,
         constants: BTreeMap::new(),
+        package_pins: BTreeMap::new(),
         caduceus_commands: vec![],
         files_root: None,
         config_deploy: None,
@@ -689,6 +690,7 @@ fn manifest(root: &Path, interactable: bool) -> crate::ladder::LadderManifest {
         optional_warning: None,
         group: None,
         constants: BTreeMap::new(),
+        package_pins: BTreeMap::new(),
         caduceus_commands: Vec::new(),
         files_root: None,
         config_deploy: if interactable {

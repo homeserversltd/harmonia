@@ -113,6 +113,9 @@ pub(crate) struct LadderManifest {
     pub group: Option<LadderGroup>,
     #[serde(default)]
     pub constants: BTreeMap<String, Value>,
+    /// Package names mapped to the exact installed version Harmonia must hold.
+    #[serde(default)]
+    pub package_pins: BTreeMap<String, String>,
     #[serde(default)]
     pub caduceus_commands: Vec<String>,
     #[serde(default)]
@@ -215,6 +218,8 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
         .and_then(|mut manifest| {
             if manifest.schema == SCHEMA {
+                validate_package_pins(&manifest.package_pins)
+                    .map_err(|e| format!("ladder-manifest-pin-validation-failed {e}"))?;
                 lower_service_runtime_steps(&mut manifest)
                     .map_err(|e| format!("ladder-manifest-lowering-failed {e}"))?;
                 manifest.base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
@@ -227,6 +232,31 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
                 ))
             }
         })
+}
+
+pub(crate) fn validate_package_pins(pins: &BTreeMap<String, String>) -> Result<(), String> {
+    for (name, version) in pins {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"@._+:-".contains(&b))
+        {
+            return Err(format!("package-pin-name-unsafe-{name}"));
+        }
+        if version.is_empty()
+            || version.chars().any(|c| {
+                c.is_whitespace()
+                    || c.is_control()
+                    || matches!(
+                        c,
+                        ';' | '&' | '|' | '$' | '`' | '>' | '<' | '\\' | '\'' | '"'
+                    )
+            })
+        {
+            return Err(format!("package-pin-version-unsafe-{name}"));
+        }
+    }
+    Ok(())
 }
 
 fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Result<(), String> {
@@ -614,4 +644,25 @@ pub(crate) fn validate_group(
         args: resolved,
         on_failure: OnFailure::Stop,
     })
+}
+
+#[cfg(test)]
+mod package_pin_validation_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    #[test]
+    fn rejects_empty_and_unsafe_declarations() {
+        let mut pins = BTreeMap::new();
+        pins.insert("".into(), "1".into());
+        assert!(validate_package_pins(&pins).is_err());
+        pins.clear();
+        pins.insert("safe-name".into(), "".into());
+        assert!(validate_package_pins(&pins).is_err());
+        pins.clear();
+        pins.insert("safe-name".into(), "1; rm".into());
+        assert!(validate_package_pins(&pins).is_err());
+        pins.clear();
+        pins.insert("safe-name".into(), "1.2.3-1".into());
+        assert!(validate_package_pins(&pins).is_ok());
+    }
 }

@@ -1,6 +1,6 @@
+use crate::atoms::command;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::CommandObservation;
-use crate::atoms::command;
 use crate::CmdResult;
 
 #[allow(clippy::too_many_arguments)]
@@ -12,9 +12,32 @@ pub(crate) fn pacman_mutate_packages_with_options(
     conflict_paths: &[String],
     timeout_secs: u64,
 ) -> Result<CmdResult, String> {
+    pacman_mutate_packages_with_ignores(
+        receipt_dir,
+        sync,
+        packages,
+        &[],
+        conflict_policy,
+        conflict_paths,
+        timeout_secs,
+    )
+}
+
+pub(crate) fn pacman_mutate_packages_with_ignores(
+    receipt_dir: &Path,
+    sync: bool,
+    packages: &[String],
+    ignored: &[String],
+    conflict_policy: Option<&str>,
+    conflict_paths: &[String],
+    timeout_secs: u64,
+) -> Result<CmdResult, String> {
     let program = crate::atoms::package::pacman_program();
     crate::atoms::package::reclaim_pacman_database_lock(receipt_dir, &program, true)?;
     let mut args = crate::atoms::package::pacman_base_args(sync);
+    for package in ignored {
+        args.extend(["--ignore", package.as_str()]);
+    }
     args.extend(packages.iter().map(String::as_str));
     crate::atoms::package::capture_overwrite_preimage(receipt_dir, conflict_paths)?;
     let result = command::capture_with_timeout(&program, &args, timeout_secs);
@@ -37,10 +60,13 @@ pub(crate) fn pacman_mutate_packages_with_options(
             .to_string(),
         });
     }
-    let Some(mut overwrite_args) = crate::atoms::package::overwrite_allowed_args(
-        &crate::atoms::package::pacman_base_args(sync),
-        conflict_paths,
-    ) else {
+    let mut overwrite_base = crate::atoms::package::pacman_base_args(sync);
+    for package in ignored {
+        overwrite_base.extend(["--ignore", package.as_str()]);
+    }
+    let Some(mut overwrite_args) =
+        crate::atoms::package::overwrite_allowed_args(&overwrite_base, conflict_paths)
+    else {
         return Ok(CmdResult {
             ok: false,
             code: result.code,
@@ -55,7 +81,10 @@ pub(crate) fn pacman_mutate_packages_with_options(
     };
     overwrite_args.extend(packages.iter().map(String::as_str));
     let second = command::capture_with_timeout(&program, &overwrite_args, timeout_secs);
-    crate::write_json(&receipt_dir.join("pacman-package-transaction.json"), &serde_json::json!({"schema":"harmonia.pacman_package_transaction.v1", "first_ok": result.ok, "second_ok": second.ok, "overwrite_paths": conflict_paths}))?;
+    crate::write_json(
+        &receipt_dir.join("pacman-package-transaction.json"),
+        &serde_json::json!({"schema":"harmonia.pacman_package_transaction.v1", "first_ok": result.ok, "second_ok": second.ok, "overwrite_paths": conflict_paths}),
+    )?;
     Ok(CmdResult {
         ok: second.ok,
         code: second.code,
@@ -82,25 +111,54 @@ use crate::atoms::comparison::ActionAuthorization;
 use std::path::Path;
 
 pub(crate) fn package_install(
-    _authorization: ActionAuthorization,
-    _invocation: InvocationKey,
+    authorization: ActionAuthorization,
+    invocation: InvocationKey,
     receipt_dir: &Path,
     packages: &[String],
     conflict_policy: Option<&str>,
     conflict_paths: &[String],
     timeout_secs: u64,
 ) -> Result<CommandObservation, String> {
-    let result = pacman_mutate_packages_with_options(
+    package_install_with_ignores(
+        authorization,
+        invocation,
+        receipt_dir,
+        packages,
+        &[],
+        conflict_policy,
+        conflict_paths,
+        timeout_secs,
+    )
+}
+
+pub(crate) fn package_install_with_ignores(
+    _authorization: ActionAuthorization,
+    _invocation: InvocationKey,
+    receipt_dir: &Path,
+    packages: &[String],
+    ignored: &[String],
+    conflict_policy: Option<&str>,
+    conflict_paths: &[String],
+    timeout_secs: u64,
+) -> Result<CommandObservation, String> {
+    let result = pacman_mutate_packages_with_ignores(
         receipt_dir,
         false,
         packages,
+        ignored,
         conflict_policy,
         conflict_paths,
         timeout_secs,
     )?;
     Ok(CommandObservation {
         program: crate::atoms::package::pacman_program(),
-        args: vec!["-S".into(), "--noconfirm".into(), "--needed".into()],
+        args: {
+            let mut a = vec!["-S".into(), "--noconfirm".into(), "--needed".into()];
+            for p in ignored {
+                a.extend(["--ignore".into(), p.clone()]);
+            }
+            a
+        },
         ok: result.ok,
         code: Some(result.code),
         stdout: result.stdout,
