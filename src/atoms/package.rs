@@ -14,6 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const NAME: &str = "package";
 
+pub(crate) const PACKAGE_PIN_SCOPE_LIMITATION: &str =
+    "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
+
 const HARMONIA_PACMAN_PATH_ENV: &str = "HARMONIA_PACMAN_PATH";
 const HARMONIA_PACMAN_KEY_PATH_ENV: &str = "HARMONIA_PACMAN_KEY_PATH";
 const DEFAULT_PACKAGE_TIMEOUT_SECS: u64 = 1800;

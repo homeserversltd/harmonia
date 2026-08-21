@@ -169,7 +169,7 @@ pub(crate) fn settle(
         collect_package_pin_witnesses(receipt_dir);
     write_json(
         &receipt_dir.join("band-walk.receipt.json"),
-        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>(),"package_pin_exclusion_set":package_pin_exclusion_set,"package_pin_witnesses":package_pin_witnesses}),
+        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>(),"package_pin_exclusion_set":package_pin_exclusion_set,"package_pin_witnesses":package_pin_witnesses,"pin_scope_limitation":crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION}),
     )?;
     let settlement = state
         .settlement
@@ -300,7 +300,7 @@ mod package_pin_witness_tests {
                 "divergent",
             ),
         ] {
-            fs::write(root.join(path), serde_json::json!({"exclusion_set":[name,"shared"],"witness":[{"name":name,"state":state}]}).to_string()).unwrap();
+            fs::write(root.join(path), serde_json::json!({"exclusion_set":[name,"shared"],"witness":[{"name":name,"state":state}],"pin_scope_limitation":crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION}).to_string()).unwrap();
         }
         let (witnesses, exclusions) = collect_package_pin_witnesses(&root);
         assert_eq!(witnesses.len(), 3);
@@ -317,6 +317,14 @@ mod package_pin_witness_tests {
         assert!(witnesses
             .iter()
             .any(|v| v["witness"][0]["state"] == "divergent"));
+        assert_eq!(
+            crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION,
+            "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`)."
+        );
+        assert!(witnesses
+            .iter()
+            .all(|v| v["pin_scope_limitation"]
+                == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION));
         let _ = fs::remove_dir_all(root);
     }
 }
