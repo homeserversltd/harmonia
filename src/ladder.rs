@@ -279,9 +279,40 @@ impl LadderValidationError {
 }
 
 pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String> {
+    load_ladder_manifest_with_category_requirement(path, false)
+}
+
+pub(crate) fn load_ladder_manifest_with_category_requirement(
+    path: &Path,
+    categories_required: bool,
+) -> Result<LadderManifest, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("ladder-manifest-read-failed {}: {e}", path.display()))?;
-    serde_json::from_str::<LadderManifest>(&text)
+    let mut raw = serde_json::from_str::<Value>(&text)
+        .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))?;
+    let module_category = match raw.get("category") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| {
+                    "step_id=module defect=managed-file-category-unknown-type".to_string()
+                })?
+                .to_owned(),
+        ),
+    };
+    if let Some(category) = module_category.as_deref() {
+        if !MANAGED_FILE_CATEGORIES.contains(&category) {
+            return Err(format!(
+                "step_id=module defect=managed-file-category-unknown-{category}"
+            ));
+        }
+    }
+    raw.as_object_mut()
+        .and_then(|object| object.remove("category"));
+    normalize_managed_file_categories(&mut raw, module_category.as_deref())?;
+    validate_raw_managed_file_categories(&raw, categories_required)?;
+    serde_json::from_value::<LadderManifest>(raw)
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
         .and_then(|mut manifest| {
             if manifest.schema == SCHEMA {
@@ -305,6 +336,143 @@ pub(crate) fn load_ladder_manifest(path: &Path) -> Result<LadderManifest, String
                 ))
             }
         })
+}
+
+const MANAGED_FILE_CATEGORIES: [&str; 5] = ["Owned", "Seed", "Presented", "Hotfix", "Untouchable"];
+
+fn normalize_managed_file_categories(
+    value: &mut Value,
+    module_category: Option<&str>,
+) -> Result<(), String> {
+    if let Some(object) = value.as_object_mut() {
+        let target = object.get("tool").and_then(Value::as_str) == Some("files")
+            && object.get("permutation").and_then(Value::as_str) == Some("managed-files")
+            || object.get("tool").and_then(Value::as_str) == Some("service-runtime");
+        if target {
+            if let Some(args) = object.get_mut("args").and_then(Value::as_object_mut) {
+                let key = if args.contains_key("files") {
+                    "files"
+                } else {
+                    "managed_files"
+                };
+                if let Some(files) = args.get_mut(key).and_then(Value::as_array_mut) {
+                    for file in files {
+                        if let Some(file) = file.as_object_mut() {
+                            if let Some(category) = module_category {
+                                file.entry("category")
+                                    .or_insert_with(|| Value::String(category.to_owned()));
+                            }
+                            if file.get("category").and_then(Value::as_str) == Some("Presented")
+                                && !file.contains_key("on_drift")
+                            {
+                                file.insert("on_drift".into(), Value::String("Propose".into()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for child in object.values_mut() {
+            normalize_managed_file_categories(child, module_category)?;
+        }
+    } else if let Some(items) = value.as_array_mut() {
+        for item in items {
+            normalize_managed_file_categories(item, module_category)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_raw_managed_file_categories(raw: &Value, required: bool) -> Result<(), String> {
+    fn walk(value: &Value, required: bool, step_id: &str) -> Result<(), String> {
+        if let Some(object) = value.as_object() {
+            let target = object.get("tool").and_then(Value::as_str) == Some("files")
+                && object.get("permutation").and_then(Value::as_str) == Some("managed-files")
+                || object.get("tool").and_then(Value::as_str) == Some("service-runtime");
+            let current = object
+                .get("step_id")
+                .and_then(Value::as_str)
+                .unwrap_or(step_id);
+            if target {
+                if let Some(args) = object.get("args").and_then(Value::as_object) {
+                    if let Some(files_value) =
+                        args.get("files").or_else(|| args.get("managed_files"))
+                    {
+                        let files = files_value.as_array().ok_or_else(|| {
+                            format!("step_id={current} defect=managed-file-category-unknown-type")
+                        })?;
+                        for file in files {
+                            let file = file.as_object().ok_or_else(|| {
+                                format!(
+                                    "step_id={current} defect=managed-file-category-unknown-type"
+                                )
+                            })?;
+                            let Some(category_value) = file.get("category") else {
+                                if required {
+                                    return Err(format!(
+                                        "step_id={current} defect=managed-file-category-missing"
+                                    ));
+                                } else {
+                                    continue;
+                                }
+                            };
+                            let category = category_value.as_str().ok_or_else(|| {
+                                format!(
+                                    "step_id={current} defect=managed-file-category-unknown-type"
+                                )
+                            })?;
+                            if !MANAGED_FILE_CATEGORIES.contains(&category) {
+                                return Err(format!("step_id={current} defect=managed-file-category-unknown-{category}"));
+                            }
+                            let drift = file.get("on_drift");
+                            let valid = match category {
+                                "Presented" => drift.and_then(Value::as_str) == Some("Propose"),
+                                "Hotfix" => drift
+                                    .and_then(|v| v.get("Replace"))
+                                    .and_then(|v| v.get("only_if_exact"))
+                                    .and_then(Value::as_str)
+                                    .is_some(),
+                                "Seed" | "Untouchable" => {
+                                    drift.is_none() || drift == Some(&Value::String("Hold".into()))
+                                }
+                                "Owned" => drift.is_none(),
+                                _ => false,
+                            };
+                            if !valid {
+                                return Err(format!("step_id={current} defect=managed-file-category-conflict-on_drift"));
+                            }
+                            if category == "Untouchable" && file.get("operation").is_some() {
+                                return Err(format!("step_id={current} defect=managed-file-category-untouchable-actuation"));
+                            }
+                        }
+                    }
+                }
+            }
+            for child in object.values() {
+                walk(child, required, current)?;
+            }
+        } else if let Some(items) = value.as_array() {
+            for item in items {
+                walk(item, required, step_id)?;
+            }
+        }
+        Ok(())
+    }
+    walk(raw, required, "module")
+}
+
+pub(crate) fn validate_profile_managed_file_categories(
+    profile: &crate::Profile,
+    module_root: &Path,
+    required: bool,
+) -> Result<(), String> {
+    for module in &profile.modules {
+        let path = module_root.join(module).join("manifest.json");
+        if path.exists() && is_ladder_manifest(&path) {
+            load_ladder_manifest_with_category_requirement(&path, required)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_package_pins(pins: &BTreeMap<String, String>) -> Result<(), String> {

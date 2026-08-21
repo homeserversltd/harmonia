@@ -118,6 +118,8 @@ struct ManagedFileManifest {
     mode: Option<u32>,
     #[serde(default)]
     on_drift: OnDrift,
+    #[serde(default)]
+    category: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -416,7 +418,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let path = args
                 .get(1)
                 .ok_or("validate-ladder requires <manifest.json>")?;
-            let manifest = load_ladder_manifest(Path::new(path))?;
+            let manifest = load_ladder_manifest_with_category_requirement(
+                Path::new(path),
+                args.iter().any(|arg| arg == "--require-categories"),
+            )?;
             match validate_ladder(&manifest) {
                 Ok(steps) => {
                     println!("schema=harmonia.ladder.validate.v1");
@@ -576,6 +581,20 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let profile_path = Path::new(path);
             let profile = load_profile(profile_path).map_err(|e| e.to_string())?;
             let module_root = default_module_root(profile_path);
+            let profile_requires_categories = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|value| {
+                    value
+                        .get("categories_required")
+                        .and_then(serde_json::Value::as_bool)
+                })
+                .unwrap_or(false);
+            validate_profile_managed_file_categories(
+                &profile,
+                &module_root,
+                profile_requires_categories || args.iter().any(|arg| arg == "--require-categories"),
+            )?;
             write_plan_receipts(&profile, &module_root, &receipt_dir).map_err(|e| e.to_string())?;
             println!("schema=harmonia.plan_run.v1");
             hyalos::forward_receipt(
@@ -602,6 +621,18 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             );
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            let profile_requires_categories = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|value| {
+                    value
+                        .get("categories_required")
+                        .and_then(serde_json::Value::as_bool)
+                })
+                .unwrap_or(false);
+            let require_categories =
+                args.iter().any(|arg| arg == "--require-categories") || profile_requires_categories;
+            validate_profile_managed_file_categories(&profile, &module_root, require_categories)?;
             if profile.id == "homeserver" && profile.identity == "homeserver" {
                 homeserver_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {

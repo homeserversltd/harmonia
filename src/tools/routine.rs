@@ -309,6 +309,7 @@ fn execute_routine_tool(
     manifest: &crate::ladder::LadderManifest,
     receipt_dir: &Path,
     apply: bool,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<
     (
@@ -325,13 +326,12 @@ fn execute_routine_tool(
             args: args.clone(),
             on_failure: OnFailure::Stop,
         };
-        // ConfigPlane comparison is proposal-only: never pass apply authority
-        // through this routine child, even when the surrounding ladder applies.
-        let outcome = match tools::files::managed_files_step(
+        // The declared category selects whether this routine child may apply.
+        let outcome = match tools::files::managed_files_step_with_authorization(
             &step,
             manifest,
             receipt_dir,
-            false,
+            software_authorization,
             invocation,
         ) {
             Ok(outcome) => outcome,
@@ -527,7 +527,7 @@ pub(crate) fn execute_routine(
     step: &ValidatedStep,
     manifest: &LadderManifest,
     module_dir: &Path,
-    _software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     _package_authority: Option<&crate::PackageAuthority>,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
@@ -646,6 +646,7 @@ pub(crate) fn execute_routine(
                             manifest,
                             &child_dir,
                             apply,
+                            software_authorization,
                             invocation,
                         )
                     },
