@@ -277,7 +277,7 @@ pub(crate) fn update_from_certificate(
         }
     };
     let certificate_path = device_profile_certificate_path();
-    if let Err(reason) = validate_declared_sources(&certificate_path) {
+    if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
         write_json(
             &receipt_dir.join("run.json"),
             &json!({
