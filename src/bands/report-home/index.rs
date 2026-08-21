@@ -2,7 +2,7 @@ use super::Band;
 use crate::bands::stage_profile::ProfileProjection;
 use crate::module_dispatch::ModuleExecution;
 use crate::receipts::{
-    append_profile_ledger_entry, write_engine_run_receipt_with_duration, write_json,
+    append_profile_ledger_entry, write_engine_run_receipt_with_duration_and_steps, write_json,
     ProfileLedgerEntry,
 };
 use crate::Profile;
@@ -73,6 +73,7 @@ pub(crate) struct DeferredRunSummary {
     pub module_count: usize,
     pub operation_count: usize,
     pub duration_ms: u128,
+    pub module_steps: Vec<serde_json::Value>,
 }
 
 pub(crate) struct RunState {
@@ -92,7 +93,9 @@ pub(crate) struct RunState {
     pub defer_terminal: bool,
 }
 
-pub(crate) fn collect_package_pin_witnesses(receipt_dir: &Path) -> (Vec<serde_json::Value>, BTreeSet<String>) {
+pub(crate) fn collect_package_pin_witnesses(
+    receipt_dir: &Path,
+) -> (Vec<serde_json::Value>, BTreeSet<String>) {
     let mut paths = Vec::new();
     let mut pending = vec![receipt_dir.join("modules")];
     while let Some(path) = pending.pop() {
@@ -132,6 +135,73 @@ pub(crate) fn collect_package_pin_witnesses(receipt_dir: &Path) -> (Vec<serde_js
         witnesses.push(value);
     }
     (witnesses, exclusions)
+}
+
+fn closing_module_steps(state: &RunState, receipt_dir: &Path) -> Vec<serde_json::Value> {
+    state
+        .module_states
+        .iter()
+        .map(|(module_id, step)| {
+            let attempt = step
+                .placements
+                .iter()
+                .map(|placement| {
+                    let mut value = placement.clone();
+                    if let Some(object) = value.as_object_mut() {
+                        let step_id = object
+                            .get("step_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                        let result = step_id.as_deref().and_then(|id| {
+                            let path = receipt_dir.join("modules").join(module_id).join(format!("{id}.json"));
+                            std::fs::read(path)
+                                .ok()
+                                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                        });
+                        if let Some(result) = result {
+                            if let Some(result_object) = result.as_object() {
+                                for field in ["ok", "changed", "status", "first_missing_signal"] {
+                                    if !object.contains_key(field) {
+                                        if let Some(value) = result_object.get(field) {
+                                            object.insert(field.to_string(), value.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            object.insert("result".into(), result);
+                        }
+                        let ok = object.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(step.ok);
+                        let changed = object.get("changed").and_then(serde_json::Value::as_bool).unwrap_or(step.changed);
+                        let status = object.get("status").cloned().unwrap_or_else(|| json!("unknown"));
+                        object.entry("outcome").or_insert_with(|| json!({"ok": ok, "changed": changed, "status": status}));
+                        let outcome_fields = object
+                            .get("outcome")
+                            .and_then(serde_json::Value::as_object)
+                            .map(|outcome| {
+                                ["ok", "changed", "status", "first_missing_signal"]
+                                    .into_iter()
+                                    .filter_map(|field| outcome.get(field).map(|value| (field, value.clone())))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        for (field, value) in outcome_fields {
+                            if !object.contains_key(field) {
+                                object.insert(field.to_string(), value);
+                            }
+                        }
+                    }
+                    value
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "module": module_id,
+                "observed": {"ok": step.ok, "changed": step.changed, "first_missing_signal": step.first_missing_signal},
+                "could_change_to": serde_json::Value::Null,
+                "attempt": attempt,
+                "outcome": {"ok": step.ok, "changed": step.changed, "first_missing_signal": step.first_missing_signal},
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn settle(
@@ -179,27 +249,30 @@ pub(crate) fn settle(
         let Some(carrier) = carrier else {
             return Err("report-transaction-carrier-missing".to_string());
         };
+        let module_steps = closing_module_steps(&state, receipt_dir);
         carrier.borrow_mut().deferred_terminal_summary = Some(DeferredRunSummary {
             profile_id: profile.id.clone(),
             apply: state.apply,
-            ok: state.ok,
+            ok: state.ok && state.module_states.values().all(|step| step.ok),
             suite_ok: state.suite_ok,
             changed: state.changed,
             first_missing_signal: state.first_missing_signal.clone(),
             module_count: state.module_count,
             operation_count: state.operation_count,
             duration_ms: state.run_started.elapsed().as_millis(),
+            module_steps,
         });
         return match settlement {
             SettlementOutcome::Success | SettlementOutcome::ReportOnlyFailure => Ok(()),
             SettlementOutcome::ApplyFailure(signal) => Err(signal),
         };
     }
-    write_engine_run_receipt_with_duration(
+    let module_steps = closing_module_steps(&state, receipt_dir);
+    write_engine_run_receipt_with_duration_and_steps(
         receipt_dir,
         profile,
         state.apply,
-        state.ok,
+        state.ok && state.module_states.values().all(|step| step.ok),
         state.changed,
         state.module_count,
         state.operation_count,
@@ -207,6 +280,7 @@ pub(crate) fn settle(
         module_root,
         state.suite_ok,
         state.run_started.elapsed().as_millis(),
+        Some(&module_steps),
     )?;
     println!("schema=harmonia.run_profile.v1");
     crate::hyalos::forward_receipt(
@@ -234,7 +308,7 @@ pub(crate) fn finalize_deferred_terminal(
     module_root: &Path,
     receipt_dir: &Path,
 ) -> Result<(), String> {
-    write_engine_run_receipt_with_duration(
+    write_engine_run_receipt_with_duration_and_steps(
         receipt_dir,
         profile,
         summary.apply,
@@ -246,6 +320,7 @@ pub(crate) fn finalize_deferred_terminal(
         module_root,
         summary.suite_ok,
         summary.duration_ms,
+        Some(&summary.module_steps),
     )?;
     println!("schema=harmonia.run_profile.v1");
     crate::hyalos::forward_receipt(

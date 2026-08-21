@@ -2887,6 +2887,10 @@ fn write_sweep_receipts(
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let base = request.receipt_name.trim_end_matches(".json");
     for (index, entry) in outcome.entries.iter().enumerate() {
+        // Unchanged observations belong in the closing run receipt only.
+        if !entry.changed {
+            continue;
+        }
         let safe = entry
             .relative_path
             .replace(['/', '\\'], "_")
@@ -3025,7 +3029,11 @@ pub fn source_shelf_sweep(
                     shelf_outcome.rollback_state, launcher_outcome.rollback_state
                 )
             },
-            first_blocker: "none".into(),
+            first_blocker: if shelf_outcome.first_blocker != "none" {
+                shelf_outcome.first_blocker.clone()
+            } else {
+                launcher_outcome.first_blocker.clone()
+            },
             entries: shelf_outcome.entries,
             message: "owned recursive source shelf and flat launchers observed".into(),
         };
@@ -3333,7 +3341,7 @@ fn source_shelf_owned_recursive_sweep(
     }
     if !apply {
         let outcome = SourceShelfSweepOutcome {
-            ok: true,
+            ok: !drift,
             changed: false,
             current: !drift,
             source_inventory_count: desired.len(),
@@ -3343,7 +3351,11 @@ fn source_shelf_owned_recursive_sweep(
             removed_count: 0,
             transaction_state: if drift { "planned" } else { "unchanged" }.into(),
             rollback_state: "not-needed".into(),
-            first_blocker: "none".into(),
+            first_blocker: if drift {
+                "source-shelf-sweep-not-converged".into()
+            } else {
+                "none".into()
+            },
             entries,
             message: "owned recursive source shelf sweep planned".into(),
         };
@@ -3740,7 +3752,7 @@ fn source_shelf_sweep_with_fault(
     )?;
     if !apply {
         let outcome = SourceShelfSweepOutcome {
-            ok: true,
+            ok: !drift,
             changed: false,
             current: !drift,
             source_inventory_count: source_entries.len() + launchers.len(),
@@ -3750,13 +3762,9 @@ fn source_shelf_sweep_with_fault(
             removed_count: 0,
             transaction_state: if drift { "planned" } else { "unchanged" }.into(),
             rollback_state: "not-needed".into(),
-            first_blocker: "none".into(),
+            first_blocker: if drift { "source-shelf-sweep-not-converged".into() } else { "none".into() },
             entries: planned_entries,
-            message: if drift {
-                "source shelf sweep planned".into()
-            } else {
-                "source shelf and launchers current".into()
-            },
+            message: if drift { "source-shelf-sweep-not-converged".into() } else { "source shelf and launchers current".into() },
         };
         write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
         return Ok(outcome);
