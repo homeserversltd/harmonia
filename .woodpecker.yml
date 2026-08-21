@@ -62,3 +62,67 @@ steps:
             raise SystemExit(f"{child_repo} registry-pen: Kether stamp failed with HTTP {status}")
         print(f"{child_repo} registry-pen: stamped by Kether/Azoth blood lane")
         PY
+
+  - name: make-modern-harmonia
+    image: python:3.12-alpine
+    backend_options:
+      docker:
+        user: "0"
+    environment:
+      KETHER_URL:
+        from_secret: KETHER_URL
+    commands:
+      - |
+        set -eu
+        if [ "${CI_COMMIT_BRANCH:-}" != "main" ]; then
+          echo "harmonia make-modern: skipped non-main branch ${CI_COMMIT_BRANCH:-unknown}"
+          exit 0
+        fi
+        KETHER_ENDPOINT="${KETHER_URL:-}"
+        KETHER_ENDPOINT="${KETHER_ENDPOINT%/}"
+        if [ -z "$KETHER_ENDPOINT" ]; then
+          KETHER_ENDPOINT="http://192.168.123.1:7100"
+        fi
+        export KETHER_ENDPOINT
+        python3 - <<'PY'
+        import json
+        import os
+        import sys
+        import urllib.error
+        import urllib.request
+
+        unit = "harmonia"
+        endpoint = os.environ["KETHER_ENDPOINT"].rstrip("/")
+        payload = {
+            "unit": unit,
+            "source": {
+                "repo": os.environ.get("CI_REPO", ""),
+                "build": os.environ.get("CI_PIPELINE_NUMBER", ""),
+                "url": os.environ.get("CI_PIPELINE_URL", ""),
+                "branch": os.environ.get("CI_COMMIT_BRANCH", ""),
+                "commit": os.environ.get("CI_COMMIT_SHA", ""),
+            },
+        }
+        request = urllib.request.Request(
+            endpoint + "/v1/make-modern/admit",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        print(f"{unit} make-modern: POST {endpoint}/v1/make-modern/admit")
+        try:
+            with urllib.request.urlopen(request, timeout=1800) as response:
+                status = response.status
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            raw = exc.read()
+        print(f"{unit} make-modern: http_status={status}")
+        if raw:
+            print("response_body first 4096 bytes=")
+            sys.stdout.write(raw[:4096].decode("utf-8", errors="replace"))
+            print()
+        if status < 200 or status >= 300:
+            raise SystemExit(f"{unit} make-modern: admission failed with HTTP {status}")
+        print(f"{unit} make-modern: admitted by Kether; closure/pass/fail will be signaled by Kether")
+        PY
