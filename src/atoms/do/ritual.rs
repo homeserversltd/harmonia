@@ -916,7 +916,11 @@ pub(crate) fn seal_projection(
                 members.push(t.member.clone());
             }
         }
-        for m in [Some("caduceus"), Some("agathodaimon"), plan.gui_member.as_deref()] {
+        for m in [
+            (plan.caduceus_count > 0).then_some("caduceus"),
+            Some("agathodaimon"),
+            plan.gui_member.as_deref(),
+        ] {
             if let Some(m) = m {
                 if !members.iter().any(|x| x == m) {
                     members.push(m.to_string());

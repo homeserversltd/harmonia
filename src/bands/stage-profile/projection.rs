@@ -380,7 +380,7 @@ fn projection_derive_plan_inner(
             }
         }
     }
-    if caduceus_count != 1 {
+    if caduceus_count > 1 {
         return Err(format!(
             "caduceus-selection-ambiguous count={caduceus_count}"
         ));
