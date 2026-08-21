@@ -62,7 +62,6 @@ pub(crate) struct SyzygyDeclaration {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 struct PackageAuthority {
     os_family: String,
     package_manager: String,
@@ -96,7 +95,6 @@ impl PackageBackend {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 /// Hold/Propose/Replace are the drift behaviors of the Presented/Seed/Hotfix categories; full per-file category declaration is a follow-up slice.
 pub(crate) enum OnDrift {
     Hold,
