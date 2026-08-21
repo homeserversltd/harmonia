@@ -571,6 +571,38 @@ fn validate_routine(
     Ok(())
 }
 
+pub(crate) fn validate_on_drift(
+    step_id: &str,
+    child_name: &str,
+    value: &Value,
+) -> Result<(), LadderValidationError> {
+    let defect = |detail: String| LadderValidationError {
+        step_id: step_id.into(),
+        defect: format!("managed-file-on_drift-{}-{}", child_name, detail),
+    };
+    match value {
+        Value::String(mode) if mode == "Hold" || mode == "Propose" => Ok(()),
+        Value::Object(object) if object.len() == 1 => {
+            let Some(Value::Object(replace)) = object.get("Replace") else {
+                return Err(defect("replace-shape-invalid".into()));
+            };
+            let Some(Value::String(hash)) = replace.get("only_if_exact") else {
+                return Err(defect("replace-only_if_exact-missing".into()));
+            };
+            if replace.len() == 1
+                && hash.len() == 64
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                Ok(())
+            } else {
+                Err(defect("replace-only_if_exact-invalid".into()))
+            }
+        }
+        Value::Object(_) => Err(defect("replace-shape-invalid".into())),
+        _ => Err(defect("unknown".into())),
+    }
+}
+
 pub(crate) fn validate_group(
     group: &LadderGroup,
     constants: &BTreeMap<String, Value>,
