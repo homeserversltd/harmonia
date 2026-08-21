@@ -116,6 +116,27 @@ pub(crate) fn write_engine_run_receipt_with_duration(
     suite_ok: bool,
     run_duration_ms: u128,
 ) -> Result<(), String> {
+    write_engine_run_receipt_with_duration_and_steps(
+        receipt_dir, profile, apply, ok, changed, module_count,
+        operation_count, first_missing_signal, module_root, suite_ok,
+        run_duration_ms, None,
+    )
+}
+
+pub(crate) fn write_engine_run_receipt_with_duration_and_steps(
+    receipt_dir: &Path,
+    profile: &Profile,
+    apply: bool,
+    ok: bool,
+    changed: bool,
+    module_count: usize,
+    operation_count: usize,
+    first_missing_signal: &str,
+    module_root: &Path,
+    suite_ok: bool,
+    run_duration_ms: u128,
+    module_steps: Option<&[serde_json::Value]>,
+) -> Result<(), String> {
     write_json(
         &receipt_dir.join("run.json"),
         &json!({
@@ -135,6 +156,8 @@ pub(crate) fn write_engine_run_receipt_with_duration(
             "module_spine_entered": module_root,
             "selected_profile": profile.id,
             "suite_ok": suite_ok,
+            // Additive closing surface: older readers may ignore this field.
+            "steps": module_steps.map_or_else(|| serde_json::Value::Null, |steps| json!(steps)),
         }),
     )
 }

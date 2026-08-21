@@ -218,10 +218,11 @@ pub(crate) fn run_profile_engine_with_projection(
                             false,
                             &preflight_signal,
                         )?;
-                        if apply {
-                            state.ok = false;
-                            state.first_missing_signal = preflight_signal;
-                        }
+                        // An observation failure is a named blocker in both
+                        // report-only and apply modes; never report convergence
+                        // from an unavailable probe.
+                        state.ok = false;
+                        state.first_missing_signal = preflight_signal;
                     }
                 }
 

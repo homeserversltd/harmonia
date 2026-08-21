@@ -29,12 +29,44 @@ pub(crate) struct PackageObservation {
     pub(crate) current: Option<CmdResult>,
 }
 
+fn pacman_observed_state(result: &CmdResult) -> String {
+    if pacman_update_query_is_empty(result) {
+        if result.code == 1 {
+            "pacman-query-no-pending-exit-1-empty".into()
+        } else {
+            "pacman-query-no-pending-exit-0-empty".into()
+        }
+    } else if result.ok {
+        result.stdout.clone()
+    } else {
+        format!("probe-failed:{}", result.code)
+    }
+}
+
 pub(crate) fn package_receipt_fields(
     observation: &PackageObservation,
     decision: DiffDecision,
     movement: Option<&OperationOutcome>,
     changed: bool,
 ) -> serde_json::Value {
+    let lawful_no_pending = matches!(decision, DiffDecision::Empty)
+        && (observation.current.as_ref().is_some_and(|current| current.ok)
+            || observation.observed_state == "empty"
+            || observation
+                .observed_state
+                .starts_with("pacman-query-no-pending-exit-"));
+    let converged = movement.map_or(lawful_no_pending, |movement| movement.ok);
+    let first_missing_signal = if converged {
+        "none".to_string()
+    } else if movement.is_some_and(|movement| !movement.ok) {
+        "package-operation-failed".to_string()
+    } else if observation.current.is_none() {
+        "package-probe-unavailable".to_string()
+    } else if matches!(decision, DiffDecision::Different) {
+        "pending-package-updates-report-only".to_string()
+    } else {
+        "package-state-not-converged".to_string()
+    };
     serde_json::json!({
         "observed_state": observation.observed_state,
         "desired_state": observation.desired_state,
@@ -49,7 +81,8 @@ pub(crate) fn package_receipt_fields(
         "observed_before": serde_json::Value::Null,
         "act": serde_json::Value::Null,
         "observed_after": serde_json::Value::Null,
-        "converged": false,
+        "converged": converged,
+        "first_missing_signal": first_missing_signal,
         "changed": changed,
     })
 }
@@ -795,6 +828,9 @@ fn observe_update(
                 backend: bn,
                 observed_state: if !probe_ok {
                     "probe-failed".into()
+                } else if p.is_empty() && q.code == 1 && q.stdout.is_empty() && q.stderr.is_empty()
+                {
+                    "pacman-query-no-pending-exit-1-empty".into()
                 } else if p.is_empty() {
                     "empty".into()
                 } else {
@@ -991,7 +1027,14 @@ fn package_update_tool(
         PackageBackend::Apt => apt_release_info_change_accepted(&pre.refresh_command),
         PackageBackend::Pacman => false,
     };
-    let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":if !pre.probe_ok {"probe-failed"} else if pre.pending_count==0 {"empty"} else {"pending"},"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":false,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
+    let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":pre.observed_state.clone(),"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":pre.probe_ok && pre.pending_count == 0,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
+    out["first_missing_signal"] = serde_json::json!(if !pre.probe_ok {
+        "package-probe-unavailable"
+    } else if pre.pending_count > 0 {
+        "pending-package-updates-report-only"
+    } else {
+        "none"
+    });
     if let PackageBackend::Apt = b {
         out["release_info_change_accepted"] = serde_json::json!(release_info_change_accepted);
     }
@@ -1023,7 +1066,7 @@ fn package_update_tool(
         };
         (
             OperationOutcome {
-                ok: true,
+                ok: pre.pending_count == 0,
                 changed: false,
                 skipped: true,
                 message: m.clone(),
@@ -1275,10 +1318,10 @@ pub(crate) fn package_tool_with_policy(
     let pacman = pacman_program();
     if !pacman_available(&pacman) {
         let outcome = OperationOutcome {
-            ok: true,
+            ok: false,
             changed: false,
             skipped: true,
-            message: "non-Arch bootstrap not applicable".to_string(),
+            message: "package-manager-unavailable".to_string(),
             command: None,
         };
         let observation = PackageObservation {
@@ -1286,10 +1329,12 @@ pub(crate) fn package_tool_with_policy(
             desired_state: format!("{action}-declared"),
             current: None,
         };
-        write_json(
-            &receipt_dir.join(format!("{name}.comparison.json")),
-            &package_receipt_fields(&observation, DiffDecision::Empty, None, false),
-        )?;
+        let mut comparison = package_receipt_fields(&observation, DiffDecision::Empty, None, false);
+        if let Some(fields) = comparison.as_object_mut() {
+            fields.insert("converged".into(), serde_json::Value::Bool(false));
+            fields.insert("first_missing_signal".into(), serde_json::Value::String("package-manager-unavailable".into()));
+        }
+        write_json(&receipt_dir.join(format!("{name}.comparison.json")), &comparison)?;
         write_package_receipt(receipt_dir, name, action, &outcome)?;
         return Ok(outcome);
     }
@@ -1297,10 +1342,8 @@ pub(crate) fn package_tool_with_policy(
         "install" => command::capture(&pacman, &["-Q"]),
         _ => command::capture(&pacman, &["-Qu"]),
     };
-    let observed_state = if matches!(action, "check" | "upgrade" | "update")
-        && pacman_update_query_is_empty(&observe_result)
-    {
-        String::new()
+    let observed_state = if matches!(action, "check" | "upgrade" | "update") {
+        pacman_observed_state(&observe_result)
     } else if observe_result.ok {
         observe_result.stdout.clone()
     } else {
@@ -1327,10 +1370,8 @@ pub(crate) fn package_tool_with_policy(
                 "install" => command::capture(&pacman, &["-Q"]),
                 _ => command::capture(&pacman, &["-Qu"]),
             };
-            let observed_state = if matches!(action, "check" | "upgrade" | "update")
-                && pacman_update_query_is_empty(&result)
-            {
-                String::new()
+            let observed_state = if matches!(action, "check" | "upgrade" | "update") {
+                pacman_observed_state(&result)
             } else if result.ok {
                 result.stdout.clone()
             } else {
@@ -1376,7 +1417,7 @@ pub(crate) fn package_tool_with_policy(
                 other => return Err(format!("unsupported package action {other}")),
             };
             let ok = match action {
-                "check" | "upgrade" | "update" if !apply => result.ok || result.code == 1,
+                "check" | "upgrade" | "update" if !apply => { result.ok || (result.code == 1 && pacman_update_query_is_empty(&result)) },
                 _ => result.ok,
             };
             Ok(OperationOutcome {
@@ -1444,7 +1485,6 @@ pub(crate) fn package_tool_with_policy(
             "observed_after".into(),
             serde_json::to_value(&final_observation).map_err(|e| e.to_string())?,
         );
-        fields.insert("converged".into(), serde_json::json!(true));
         let witness_path = receipt_dir.join(format!("{name}.pin-witness.json"));
         if let Ok(bytes) = fs::read(witness_path) {
             if let Ok(witness) = serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -1707,6 +1747,7 @@ fn write_package_receipt_with_backend(
             "act",
             "observed_after",
             "converged",
+            "first_missing_signal",
             "backend",
             "probe_ok",
             "pending_count",

@@ -750,6 +750,7 @@ pub(crate) fn execute_manifest_band(
                 manifest,
                 module_dir,
             )?;
+            result.placements.push(serde_json::json!({"step_id":format!("{}#precondition", step.step_id),"tool":step.tool,"permutation":step.permutation,"band":"PullSource","status":if probe.ok {"completed"} else {"blocked"},"ok":probe.ok,"changed":probe.changed,"skipped":probe.skipped,"message":probe.message,"command":probe.command,"module":manifest.id,"precondition_for":step.step_id}));
             if !probe.ok {
                 result.ok = false;
                 let detail = probe
@@ -762,7 +763,6 @@ pub(crate) fn execute_manifest_band(
                     step.step_id
                 );
                 result.first_missing_signal.get_or_insert(signal);
-                result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"PullSource","status":"blocked","module":manifest.id}));
                 break;
             }
         }
@@ -808,7 +808,7 @@ pub(crate) fn execute_manifest_band(
                 result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":"PullSource","status":receipt.get("state").and_then(Value::as_str).unwrap_or("failed"),"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
             }
         } else {
-            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"PullSource","status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
+            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"PullSource","status":if outcome.ok {"completed"} else {"failed"},"ok":outcome.ok,"changed":outcome.changed,"skipped":outcome.skipped,"message":outcome.message,"command":outcome.command,"module":manifest.id}));
         }
         result.changed |= outcome.changed;
         if !outcome.ok {
