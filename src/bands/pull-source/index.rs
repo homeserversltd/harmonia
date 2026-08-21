@@ -73,7 +73,6 @@ struct Certificate {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SourceDeclaration {
     #[serde(rename = "ref")]
     reference: String,
@@ -81,7 +80,6 @@ struct SourceDeclaration {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SourceCandidate {
     kind: String,
     #[serde(default)]

@@ -304,7 +304,6 @@ pub enum SourceCandidateKind {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct CredentialScope {
     pub ssh_key_path: Option<PathBuf>,
     pub https_host: Option<String>,

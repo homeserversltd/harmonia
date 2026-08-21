@@ -15,7 +15,6 @@ pub(crate) const DEFAULT_BUILD_ROOT: &str = "/var/tmp/harmonia/aur";
 const HARMONIA_AUR_UPSTREAM_STATE_ENV: &str = "HARMONIA_AUR_UPSTREAM_STATE";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct AurRatchetLock {
     pub schema: String,
     pub package: String,
@@ -26,7 +25,6 @@ pub(crate) struct AurRatchetLock {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct AurUpstreamState {
     pub schema: String,
     pub package: String,

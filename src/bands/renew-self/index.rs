@@ -51,7 +51,6 @@ const LEGACY_ROOT_FORGEJO_STORE: &str = "/root/.git-credentials-forgejo";
 const LEGACY_OWNER_FORGEJO_STORE: &str = "/home/owner/.git-credentials-forgejo";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct EnginePlaneConfig {
     pub source_repo_url: String,
     pub branch: String,
@@ -93,7 +92,6 @@ pub(crate) struct EnginePlaneConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct EngineSourceComponent {
     pub repo_url: String,
     #[serde(default = "default_artifact_branch")]
@@ -110,7 +108,6 @@ impl EnginePlaneConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct EngineArtifactTransport {
     #[serde(default)]
     pub name: Option<String>,
@@ -135,7 +132,6 @@ fn default_artifact_branch() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct EngineRatchetLock {
     pub schema: String,
     pub engine_version: String,
@@ -146,7 +142,6 @@ pub(crate) struct EngineRatchetLock {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct EngineRatchetArtifact {
     pub name: String,
     pub sha256: String,

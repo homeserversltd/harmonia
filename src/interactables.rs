@@ -7,7 +7,6 @@ const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct InteractablesFeed {
     schema: String,
     #[serde(default)]
@@ -15,7 +14,6 @@ pub(crate) struct InteractablesFeed {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct Interactable {
     pub(crate) id: String,
     pub(crate) module_id: String,
@@ -55,7 +53,6 @@ pub(crate) struct Interactable {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct DriftSummary {
     pub(crate) content: bool,
     pub(crate) mode: bool,

@@ -163,7 +163,6 @@ pub(crate) fn ladder_bench(
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct LadderManifest {
     pub schema: String,
     pub id: String,
@@ -195,7 +194,6 @@ pub(crate) struct LadderManifest {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct LadderGroup {
     pub group_id: String,
     pub group_order: i64,
@@ -203,7 +201,6 @@ pub(crate) struct LadderGroup {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct LadderProbe {
     pub tool: String,
     pub permutation: String,
@@ -244,7 +241,6 @@ fn default_execute_permutation() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct CommandPrecondition {
     pub(crate) program: String,
     #[serde(default)]

@@ -648,7 +648,6 @@ pub(crate) struct ManagedFilesRequest<'a> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ManagedDirectorySpec {
     pub path: String,
     pub mode: u32,
