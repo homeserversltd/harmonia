@@ -191,7 +191,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             let legacy_implied_place = !object.contains_key("operation") && category.is_none();
             let simple_category_shape =
                 !object.contains_key("operation") && matches!(category, Some("Owned" | "Seed"));
-            let operation = if legacy_implied_place {
+            let operation = if legacy_implied_place || simple_category_shape {
                 "place"
             } else {
                 object

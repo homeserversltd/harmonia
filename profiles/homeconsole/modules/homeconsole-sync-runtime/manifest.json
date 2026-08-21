@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "homeconsole-sync-runtime",
+  "category": "Owned",
   "version": "1.1.0",
   "description": "HomeConsole game-library directory-tree declaration: ensures the Games ROM/ISO directory tree that caduceus sync now converges into exists with correct ownership.",
   "constants": {},

@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "pinned-artifacts-runtime",
+  "category": "Owned",
   "version": "3.6.0",
   "description": "Pinned artifact verification ladder using artifact-lock directly, preserving operator CLI subcommands outside module execution.",
   "constants": {},

@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "household-time",
+  "category": "Owned",
   "version": "2.1.1",
   "optional": false,
   "description": "Household time watched consumer: applies only a fresh valid resolver fact and proves NTP through systemd.",

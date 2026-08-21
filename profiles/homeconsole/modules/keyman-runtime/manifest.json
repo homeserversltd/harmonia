@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "keyman-runtime",
+  "category": "Owned",
   "version": "3.6.1",
   "description": "HomeConsole Keyman source ladder: synchronize Keyman into /opt/keyman/source.",
   "constants": {},

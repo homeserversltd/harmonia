@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "identity",
+  "category": "Owned",
   "version": "1.0.0",
   "description": "HomeConsole identity module. Ladder owns the uname proof receipt.",
   "optional": false,
