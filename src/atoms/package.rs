@@ -1818,7 +1818,7 @@ fn write_keyring_receipt(
     write_json(&receipt_dir.join(format!("{}.json", name)), &receipt)
 }
 
-pub(crate) fn package_bench(
+pub(crate) fn demo(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -1826,7 +1826,7 @@ pub(crate) fn package_bench(
     let log = root.join("pacman.log");
     let receipts = root.join("receipts");
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
-    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\n'; exit 0;; -Qu) test -f {}.state || echo 'pendingpkg 1 -> 2'; exit 0;; -Syu) echo Upgrading package; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
+    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\n'; exit 0;; -Qu) test -f {}.state || echo 'pendingpkg 1 -> 2'; exit 0;; -Syu) echo Upgrading demo; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| e.to_string())?;
@@ -1834,7 +1834,7 @@ pub(crate) fn package_bench(
     std::env::set_var("HARMONIA_PACMAN_PATH", &fake);
     let result = package_tool_with_policy_for_backend(
         &receipts,
-        "bench",
+        "demo",
         "upgrade",
         &[],
         true,
@@ -1960,7 +1960,7 @@ pub(crate) fn package_bench(
     let text = std::fs::read_to_string(&log).map_err(|e| e.to_string())?;
     let argv = text.lines().map(str::to_string).collect::<Vec<_>>();
     let exact = argv.iter().any(|line| line == "-Syu --noconfirm");
-    let typed_receipt = receipts.join("bench.json").is_file();
+    let typed_receipt = receipts.join("demo.json").is_file();
     let mut proof_pins = std::collections::BTreeMap::new();
     proof_pins.insert("heldpkg".to_string(), "1.2.3".to_string());
     let exact_root = root.join("exact-pin-proof");

@@ -238,7 +238,7 @@ fn capture(
         gid: m.gid(),
         xattrs: xattrs(p)?,
         service: s
-            .map(|x| x.observe(service_name.unwrap_or("bench.service")))
+            .map(|x| x.observe(service_name.unwrap_or("demo.service")))
             .transpose()?,
     })
 }
@@ -435,7 +435,7 @@ impl Transaction {
             crate::atoms::r#do::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None },
         )?;
         self.target_write_count += 1;
-        let mut changed_service = self.service.observe("bench.service")?;
+        let mut changed_service = self.service.observe("demo.service")?;
         changed_service.enabled = false;
         changed_service.active = false;
         self.service.restore(&changed_service)?;
@@ -522,10 +522,10 @@ fn recover_open(j: &Path, c: &Path, s: &mut dyn ServiceState) -> Result<(), Stri
     Ok(())
 }
 #[derive(Clone)]
-struct BenchService {
+struct DemoService {
     image: Rc<RefCell<ServiceImage>>,
 }
-impl BenchService {
+impl DemoService {
     fn new(name: &str) -> (Self, Rc<RefCell<ServiceImage>>) {
         let shared = Rc::new(RefCell::new(ServiceImage {
             name: name.into(),
@@ -540,7 +540,7 @@ impl BenchService {
         )
     }
 }
-impl ServiceState for BenchService {
+impl ServiceState for DemoService {
     fn observe(&self, _n: &str) -> Result<ServiceImage, String> {
         Ok(self.image.borrow().clone())
     }
@@ -1041,15 +1041,15 @@ pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
     json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
 }
 
-pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), String> {
-    bench(&[], _ctx.clone())?;
+pub(crate) fn update_set_demo(args: &[String], _ctx: RunContext) -> Result<(), String> {
+    demo(&[], _ctx.clone())?;
     let sbin_shelf_target_lawful =
         validate_member_scoped_target(Path::new("/usr/local/sbin"), "sbin").is_ok()
             && validate_member_scoped_target(Path::new("/usr/local/sbin"), "anyother").is_err();
     if args.iter().any(|arg| arg == "--broad-parent") {
         let error = snapshot(&[Target {
             path: PathBuf::from("/etc"),
-            member: "bench".into(),
+            member: "demo".into(),
         }])
         .expect_err("broad parent must be refused");
         println!("no_broad_parent={error}");
@@ -1060,7 +1060,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         .find(|w| w[0] == "--fail")
         .map(|w| w[1].clone());
     let root = std::env::temp_dir().join(format!(
-        "harmonia-update-set-bench-{}",
+        "harmonia-update-set-demo-{}",
         crate::run_id_from_stamp()
     ));
     let modules = root.join("modules");
@@ -1074,11 +1074,11 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
     for (id, manifest) in [
         (
             "caduceus",
-            json!({"schema":"harmonia.module.ladder.v1","id":"caduceus","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"caduceus","component":"caduceus","source_dir":"/opt/caduceus/source","install_bin":"/usr/local/bin/caduceus","service":"caduceus.service","url":"http://127.0.0.1:1/","binary_name":"caduceus","op_prefix":"caduceus","run_schema":"bench.caduceus.v1","managed_files_schema":"bench.caduceus.files.v1","managed_files":[]}},{"step_id":"s","tool":"files","permutation":"source-shelf-sweep","args":{"source_root":"/nonexistent","shelf_source":"agathodaimon","target_shelf":"/usr/local/sbin/agathodaimon","launcher_target_root":"/usr/local/sbin","launcher_source_root":"/nonexistent","launcher_pattern":"caduceus-*","shelf_owner":"root","shelf_group":"root","shelf_directory_mode":493,"shelf_file_mode":420,"launcher_mode":493,"prune":true}}]}),
+            json!({"schema":"harmonia.module.ladder.v1","id":"caduceus","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"caduceus","component":"caduceus","source_dir":"/opt/caduceus/source","install_bin":"/usr/local/bin/caduceus","service":"caduceus.service","url":"http://127.0.0.1:1/","binary_name":"caduceus","op_prefix":"caduceus","run_schema":"demo.caduceus.v1","managed_files_schema":"demo.caduceus.files.v1","managed_files":[]}},{"step_id":"s","tool":"files","permutation":"source-shelf-sweep","args":{"source_root":"/nonexistent","shelf_source":"agathodaimon","target_shelf":"/usr/local/sbin/agathodaimon","launcher_target_root":"/usr/local/sbin","launcher_source_root":"/nonexistent","launcher_pattern":"caduceus-*","shelf_owner":"root","shelf_group":"root","shelf_directory_mode":493,"shelf_file_mode":420,"launcher_mode":493,"prune":true}}]}),
         ),
         (
             "arcadia-gui-runtime",
-            json!({"schema":"harmonia.module.ladder.v1","id":"arcadia-gui-runtime","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"arcadia-gui-runtime","component":"arcadia","source_dir":"/opt/arcadia/source","install_bin":"/usr/local/bin/arcadia","service":"arcadia.service","url":"http://127.0.0.1:2/","binary_name":"arcadia","op_prefix":"arcadia","run_schema":"bench.arcadia.v1","managed_files_schema":"bench.arcadia.files.v1","managed_files":[]}}]}),
+            json!({"schema":"harmonia.module.ladder.v1","id":"arcadia-gui-runtime","version":"1","ladder":[{"step_id":"r","tool":"service-runtime","permutation":"converge","args":{"module_id":"arcadia-gui-runtime","component":"arcadia","source_dir":"/opt/arcadia/source","install_bin":"/usr/local/bin/arcadia","service":"arcadia.service","url":"http://127.0.0.1:2/","binary_name":"arcadia","op_prefix":"arcadia","run_schema":"demo.arcadia.v1","managed_files_schema":"demo.arcadia.files.v1","managed_files":[]}}]}),
         ),
     ] {
         let d = modules.join(id);
@@ -1086,8 +1086,8 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         fs::write(d.join("manifest.json"), manifest.to_string()).map_err(|e| e.to_string())?;
     }
     let p = Profile {
-        id: "bench".into(),
-        identity: "bench".into(),
+        id: "demo".into(),
+        identity: "demo".into(),
         package_authority: None,
         modules: vec!["caduceus".into(), "arcadia-gui-runtime".into()],
         hotfixes: vec![],
@@ -1100,7 +1100,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         gui_face: Some("Hyprland".into()),
     });
     let declared_face_plan = derive_plan(&declared_face_profile, &modules, Some(&root))?;
-    let declared_face_sealed = seal_projection(&declared_face_plan, "bench-declared-face", "bench", "bench")?;
+    let declared_face_sealed = seal_projection(&declared_face_plan, "demo-declared-face", "demo", "demo")?;
     let declared_face_members = declared_face_sealed.sealed.children.iter().map(|child| child.member.clone()).collect::<Vec<_>>();
     let declared_face_ok = declared_face_plan.gui_face.as_deref() == Some("Hyprland")
         && declared_face_members == ["caduceus", "declared-face"];
@@ -1112,7 +1112,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         gui_face: None,
     });
     let declared_null_plan = derive_plan(&declared_null_profile, &modules, Some(&root))?;
-    let declared_null_sealed = seal_projection(&declared_null_plan, "bench-declared-null", "bench", "bench")?;
+    let declared_null_sealed = seal_projection(&declared_null_plan, "demo-declared-null", "demo", "demo")?;
     let declared_null_members = declared_null_sealed.sealed.children.iter().map(|child| child.member.clone()).collect::<Vec<_>>();
     let declared_null_ok = declared_null_plan.gui_face.is_none()
         && declared_null_plan.gui_member.is_none()
@@ -1120,7 +1120,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
 
     let undeclared_plan = derive_plan(&p, &modules, Some(&root))?;
     let mut undeclared_transaction =
-        seal_projection(&undeclared_plan, "bench-undeclared", "bench", "bench")?;
+        seal_projection(&undeclared_plan, "demo-undeclared", "demo", "demo")?;
     let undeclared_members = undeclared_transaction
         .sealed
         .children
@@ -1180,11 +1180,11 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
             .map_err(|e| e.to_string())?
             .replace(
                 "\"managed_files\":[]",
-                "\"managed_files\":[{\"path\":\"/home/owner/.config/hypr/harmonia.conf\",\"content\":\"bench\"}]",
+                "\"managed_files\":[{\"path\":\"/home/owner/.config/hypr/harmonia.conf\",\"content\":\"demo\"}]",
             );
         fs::write(&manifest_path, managed_manifest).map_err(|e| e.to_string())?;
         let plan = derive_plan(&p, &modules, Some(&root))?;
-        let _sealed = seal_projection(&plan, "bench", "bench", "bench")?;
+        let _sealed = seal_projection(&plan, "demo", "demo", "demo")?;
         println!("config_skipped_census_sealed=true");
         return Ok(());
     }
@@ -1210,7 +1210,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
             );
         fs::write(&caduceus_manifest_path, caduceus_manifest).map_err(|e| e.to_string())?;
         let plan = derive_plan(&p, &modules, None)?;
-        let _sealed = seal_projection(&plan, "bench", "bench", "bench")?;
+        let _sealed = seal_projection(&plan, "demo", "demo", "demo")?;
         let expected_files_config_skipped = !plan
             .targets
             .iter()
@@ -1332,7 +1332,7 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
         })
         .unwrap_or(true);
     println!(
-        "update-set-bench root={} receipt={} rollback_verified={} failed_member_unchanged={} receipt_line={}",
+        "update-set-demo root={} receipt={} rollback_verified={} failed_member_unchanged={} receipt_line={}",
         root.display(),
         dir.join("update-set.json").display(),
         (fail.is_none() || verdict == "failed-rolled-back") && failed_member_unchanged,
@@ -1357,32 +1357,32 @@ pub(crate) fn update_set_bench(args: &[String], _ctx: RunContext) -> Result<(), 
     }
 }
 
-pub(crate) fn bench(args: &[String], ctx: RunContext) -> Result<(), String> {
+pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
     let root = PathBuf::from(args.first().cloned().unwrap_or_else(|| std::env::temp_dir().join(format!("harmonia-{}", ctx.run_id)).display().to_string()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let target = root.join("fixture.txt");
     fs::write(&target, b"before").map_err(|e| e.to_string())?;
-    let (service, _shared) = BenchService::new(args.get(1).map(String::as_str).unwrap_or("bench.service"));
+    let (service, _shared) = DemoService::new(args.get(1).map(String::as_str).unwrap_or("demo.service"));
     let mut t = Transaction::admit(ctx.clone(), &root, Box::new(service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..t.old.clone() };
-    let committed = t.one_breath(SourceKey::mint("bench-source", "rev-1"), DeedKey::mint("bench-proposal", "deed-1"), desired, TerminalIntent::Commit)?;
+    let committed = t.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-1"), desired, TerminalIntent::Commit)?;
     let committed_before = fs::read(&target).map_err(|e| e.to_string())?;
-    recover_open(&t.journal, &t.capsule, &mut BenchService::new("ignored").0)?;
+    recover_open(&t.journal, &t.capsule, &mut DemoService::new("ignored").0)?;
     let terminal_commit_readmission = fs::read(&target).map_err(|e| e.to_string())? == committed_before;
 
     let empty_root = root.join("empty-root");
     fs::create_dir_all(&empty_root).map_err(|e| e.to_string())?;
     let empty_target = empty_root.join("fixture.txt");
     fs::write(&empty_target, b"same").map_err(|e| e.to_string())?;
-    let (empty_service, empty_shared) = BenchService::new("empty.service");
+    let (empty_service, empty_shared) = DemoService::new("empty.service");
     let mut empty = Transaction::admit(ctx.clone(), &empty_root, Box::new(empty_service))?;
     let empty_before_meta = fs::symlink_metadata(&empty_target).map_err(|e| e.to_string())?;
-    let empty_before = capture(&empty_target, Some(&BenchService { image: empty_shared.clone() }), Some("empty.service"))?;
+    let empty_before = capture(&empty_target, Some(&DemoService { image: empty_shared.clone() }), Some("empty.service"))?;
     let empty_desired = empty_before.clone();
     let _empty_result = empty.one_breath(SourceKey::mint("empty-source", "empty-rev"), DeedKey::mint("empty-proposal", "empty-deed"), empty_desired, TerminalIntent::Commit)?;
     let empty_after_meta = fs::symlink_metadata(&empty_target).map_err(|e| e.to_string())?;
-    let empty_after = capture(&empty_target, Some(&BenchService { image: empty_shared.clone() }), Some("empty.service"))?;
+    let empty_after = capture(&empty_target, Some(&DemoService { image: empty_shared.clone() }), Some("empty.service"))?;
     let empty_events = fs::read_to_string(&empty.journal).map_err(|e| e.to_string())?.lines().map(|line| serde_json::from_str::<Value>(line).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
     let empty_order = empty_events.iter().map(|event| event["event"].as_str().unwrap_or_default()).collect::<Vec<_>>();
     let movement_none_index = empty_order.iter().position(|event| *event == "movement-none");
@@ -1402,23 +1402,23 @@ pub(crate) fn bench(args: &[String], ctx: RunContext) -> Result<(), String> {
     let normal_target = normal_root.join("fixture.txt");
     fs::write(&normal_target, b"before").map_err(|e| e.to_string())?;
     fs::set_permissions(&normal_target, fs::Permissions::from_mode(0o640)).map_err(|e| e.to_string())?;
-    let xattr_supported = set_bench_xattr(&normal_target, b"before-xattr");
-    let (normal_service, normal_shared) = BenchService::new("bench.service");
+    let xattr_supported = set_demo_xattr(&normal_target, b"before-xattr");
+    let (normal_service, normal_shared) = DemoService::new("demo.service");
     let mut normal = Transaction::admit(ctx.clone(), &normal_root, Box::new(normal_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..normal.old.clone() };
-    let _ = normal.one_breath(SourceKey::mint("bench-source", "rev-1"), DeedKey::mint("bench-proposal", "deed-2"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = normal.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-2"), desired, TerminalIntent::LeaveApplied)?;
     let normal_after_service = normal_shared.borrow().clone();
     let rollback = normal.rollback()?;
-    let restored = capture(&normal_target, Some(&BenchService { image: normal_shared.clone() }), Some("bench.service"))? == normal.old;
+    let restored = capture(&normal_target, Some(&DemoService { image: normal_shared.clone() }), Some("demo.service"))? == normal.old;
 
     let foreign_root = root.join("foreign-guard");
     fs::create_dir_all(&foreign_root).map_err(|e| e.to_string())?;
     let foreign_target = foreign_root.join("fixture.txt");
     fs::write(&foreign_target, b"before").map_err(|e| e.to_string())?;
-    let (foreign_service, _) = BenchService::new("bench.service");
+    let (foreign_service, _) = DemoService::new("demo.service");
     let mut foreign = Transaction::admit(ctx.clone(), &foreign_root, Box::new(foreign_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..foreign.old.clone() };
-    let _ = foreign.one_breath(SourceKey::mint("bench-source", "rev-1"), DeedKey::mint("bench-proposal", "deed-3"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = foreign.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-3"), desired, TerminalIntent::LeaveApplied)?;
     fs::write(&foreign_target, b"foreign").map_err(|e| e.to_string())?;
     let foreign_err = foreign.rollback().unwrap_err();
     let journal = fs::read_to_string(&foreign.journal).map_err(|e| e.to_string())?;
@@ -1428,12 +1428,12 @@ pub(crate) fn bench(args: &[String], ctx: RunContext) -> Result<(), String> {
     fs::create_dir_all(&crash_root).map_err(|e| e.to_string())?;
     let crash_target = crash_root.join("fixture.txt");
     fs::write(&crash_target, b"before").map_err(|e| e.to_string())?;
-    let (crash_service, crash_shared) = BenchService::new("bench.service");
+    let (crash_service, crash_shared) = DemoService::new("demo.service");
     let mut crash = Transaction::admit(ctx.clone(), &crash_root, Box::new(crash_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..crash.old.clone() };
-    let _ = crash.one_breath(SourceKey::mint("bench-source", "rev-1"), DeedKey::mint("bench-proposal", "deed-4"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = crash.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-4"), desired, TerminalIntent::LeaveApplied)?;
     drop(crash);
-    let recovered_service = BenchService { image: crash_shared.clone() };
+    let recovered_service = DemoService { image: crash_shared.clone() };
     let _ = Transaction::admit(ctx.clone(), &crash_root, Box::new(recovered_service))?;
     let crash_journal = fs::read_to_string(&crash_root.join("journal.jsonl")).map_err(|e| e.to_string())?;
     let crash_recovery = fs::read(&crash_target).map_err(|e| e.to_string())? == b"before" && crash_shared.borrow().enabled && crash_shared.borrow().active && crash_journal.contains("recovered-rolled-back");
@@ -1441,9 +1441,9 @@ pub(crate) fn bench(args: &[String], ctx: RunContext) -> Result<(), String> {
     let open_root = root.join("open-without-apply");
     fs::create_dir_all(&open_root).map_err(|e| e.to_string())?;
     fs::write(open_root.join("fixture.txt"), b"before").map_err(|e| e.to_string())?;
-    let (open_service, _) = BenchService::new("open.service");
+    let (open_service, _) = DemoService::new("open.service");
     let _ = Transaction::admit(ctx.clone(), &open_root, Box::new(open_service))?;
-    let (open_recovery_service, _) = BenchService::new("open.service");
+    let (open_recovery_service, _) = DemoService::new("open.service");
     let _ = Transaction::admit(ctx.clone(), &open_root, Box::new(open_recovery_service))?;
     let open_journal = fs::read_to_string(&open_root.join("journal.jsonl")).map_err(|e| e.to_string())?;
     let recovered_open_without_apply = open_journal.contains("recovered-open-without-apply");
@@ -1452,13 +1452,13 @@ pub(crate) fn bench(args: &[String], ctx: RunContext) -> Result<(), String> {
     fs::create_dir_all(&recovery_foreign_root).map_err(|e| e.to_string())?;
     let recovery_foreign_target = recovery_foreign_root.join("fixture.txt");
     fs::write(&recovery_foreign_target, b"before").map_err(|e| e.to_string())?;
-    let (recovery_foreign_service, _) = BenchService::new("bench.service");
+    let (recovery_foreign_service, _) = DemoService::new("demo.service");
     let mut recovery_foreign = Transaction::admit(ctx.clone(), &recovery_foreign_root, Box::new(recovery_foreign_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..recovery_foreign.old.clone() };
-    let _ = recovery_foreign.one_breath(SourceKey::mint("bench-source", "rev-1"), DeedKey::mint("bench-proposal", "deed-6"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = recovery_foreign.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-6"), desired, TerminalIntent::LeaveApplied)?;
     fs::write(&recovery_foreign_target, b"foreign").map_err(|e| e.to_string())?;
     drop(recovery_foreign);
-    let (recovery_foreign_service, _) = BenchService::new("bench.service");
+    let (recovery_foreign_service, _) = DemoService::new("demo.service");
     let recovery_foreign_err = match Transaction::admit(ctx, &recovery_foreign_root, Box::new(recovery_foreign_service)) { Err(error) => error, Ok(_) => "unexpected-success".into() };
     let recovery_foreign_journal = fs::read_to_string(&recovery_foreign_root.join("journal.jsonl")).map_err(|e| e.to_string())?;
     let recovery_foreign_guard = recovery_foreign_err == "recovery-rollback-incomplete" && recovery_foreign_journal.contains("failed-rollback-incomplete");
@@ -1469,7 +1469,7 @@ pub(crate) fn bench(args: &[String], ctx: RunContext) -> Result<(), String> {
     Ok(())
 }
 
-fn set_bench_xattr(p: &Path, value: &[u8]) -> bool {
+fn set_demo_xattr(p: &Path, value: &[u8]) -> bool {
     let Ok(c) = cp(p) else { return false };
     let k = CString::new("user.harmonia-before").unwrap();
     unsafe {

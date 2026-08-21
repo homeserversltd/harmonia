@@ -5833,7 +5833,7 @@ pub(crate) fn validated_symlink(
     )
 }
 
-pub(crate) fn files_bench(
+pub(crate) fn demo(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -5853,7 +5853,7 @@ pub(crate) fn files_bench(
             mode: Some(0o644),
         }],
         backup_existing: true,
-        receipt_name: "bench".into(),
+        receipt_name: "demo".into(),
         owner: None,
         group: None,
     };

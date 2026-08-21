@@ -650,3 +650,666 @@ pub(crate) fn execute_routine_child(
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
     }
 }
+
+const ARCADIA_CONTROL_DROPIN_DIR: &str = "/etc/systemd/system/arcadia.service.d";
+const ARCADIA_CONTROL_DROPIN_PATH: &str =
+    "/etc/systemd/system/arcadia.service.d/10-control-surface-authority.conf";
+const ARCADIA_CONTROL_DROPIN_CONTENT: &str = "[Service]\nUser=\nGroup=\nNoNewPrivileges=false\n";
+use crate::tools;
+use crate::{
+    command_capture, write_artifact_receipt, write_command_receipt, write_json, write_run_receipt,
+};
+use crate::{hyalos, CmdResult};
+
+// Arcadia-specific runtime ownership. This is intentionally not the generic
+// service-runtime lowering: the direct Arcadia order remains authoritative.
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
+fn ensure_arcadia_control_surface_authority(
+    receipt_dir: &Path,
+    apply: bool,
+    authorization: Option<crate::tools::comparison::ActionAuthorization>,
+    invocation: Option<crate::tools::files::InvocationKey>,
+) -> Result<bool, String> {
+    let existing = fs::read_to_string(ARCADIA_CONTROL_DROPIN_PATH).unwrap_or_default();
+    let changed = existing != ARCADIA_CONTROL_DROPIN_CONTENT;
+    if apply && changed {
+        let authorization = authorization.ok_or("arcadia-control-dropin-authorization-missing")?;
+        let invocation = invocation.ok_or("arcadia-control-dropin-invocation-missing")?;
+        crate::tools::files::make_dir(
+            authorization,
+            invocation,
+            Path::new(ARCADIA_CONTROL_DROPIN_DIR),
+        )?;
+        let tmp = Path::new(ARCADIA_CONTROL_DROPIN_PATH).with_extension("harmonia-new");
+        crate::tools::files::file_write(
+            authorization,
+            invocation,
+            &tmp,
+            ARCADIA_CONTROL_DROPIN_CONTENT.as_bytes(),
+            crate::tools::files::FileWriteOptions {
+                write_bytes: true,
+                mode: Some(0o644),
+                uid: None,
+                gid: None,
+                backup_to: None,
+            },
+        )?;
+        crate::tools::files::rename(
+            authorization,
+            invocation,
+            &tmp,
+            Path::new(ARCADIA_CONTROL_DROPIN_PATH),
+        )?;
+    }
+    write_json(
+        &receipt_dir.join("arcadia-control-surface-authority.json"),
+        &json!({
+            "schema": "harmonia.arcadia_control_surface_authority.v1",
+            "ok": !changed || apply,
+            "mutation": apply && changed,
+            "changed": changed,
+            "dropin_path": ARCADIA_CONTROL_DROPIN_PATH,
+            "desired": {
+                "user": "root",
+                "group": "root",
+                "no_new_privileges": false,
+                "reason": "Arcadia is the HomeConsole front panel and must execute declared local appliance controls through Harmonia/systemd."
+            }
+        }),
+    )?;
+    if changed && !apply {
+        return Err("arcadia-control-surface-authority-drift".to_string());
+    }
+    Ok(changed)
+}
+
+fn read_arcadia_control_surface_authority(service: &str) -> CmdResult {
+    command_capture(
+        "/usr/bin/systemctl",
+        &[
+            "show",
+            service,
+            "-p",
+            "User",
+            "-p",
+            "Group",
+            "-p",
+            "NoNewPrivileges",
+            "--no-pager",
+        ],
+    )
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let bytes =
+        fs::read(path).map_err(|e| format!("sha256-read-failed {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn keyed_arcadia_command(
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::tools::files::InvocationKey,
+    args: &[&str],
+    timeout_secs: u64,
+) -> CmdResult {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    match crate::tools::command::authorized_capture(
+        authorization,
+        invocation,
+        "/usr/bin/systemctl",
+        &args,
+        std::time::Duration::from_secs(timeout_secs),
+    ) {
+        Ok(result) => CmdResult {
+            ok: result.ok,
+            code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+            stdout: result.stdout,
+            stderr: result.stderr,
+        },
+        Err(error) => CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: error,
+        },
+    }
+}
+
+pub(crate) fn homeconsole_arcadia_update(
+    profile: &Profile,
+    receipt_dir: &Path,
+    artifact: &Path,
+    install_bin: &Path,
+    service: &str,
+    apply: bool,
+    source_sha: Option<&str>,
+    invocation: Option<crate::tools::files::InvocationKey>,
+) -> Result<(), String> {
+    if !apply {
+        return homeconsole_arcadia_update_check(
+            profile,
+            receipt_dir,
+            artifact,
+            install_bin,
+            service,
+            false,
+            source_sha,
+        );
+    }
+    let key = invocation.ok_or("homeconsole-arcadia-update-invocation-key-missing")?;
+    let run = crate::tools::comparison::execute(
+        "arcadia-update",
+        || Ok::<_, String>(()),
+        |_| crate::tools::comparison::DiffDecision::Different,
+        move |authorization, _| {
+            homeconsole_arcadia_update_apply(
+                profile,
+                receipt_dir,
+                artifact,
+                install_bin,
+                service,
+                true,
+                source_sha,
+                authorization,
+                key,
+            )
+        },
+    )?;
+    match run {
+        crate::tools::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement),
+        crate::tools::comparison::ComparisonRun::Current { .. } => {
+            Err("arcadia-update-apply-boundary-empty".into())
+        }
+    }
+}
+
+fn homeconsole_arcadia_update_check(
+    profile: &Profile,
+    receipt_dir: &Path,
+    artifact: &Path,
+    install_bin: &Path,
+    service: &str,
+    apply: bool,
+    _source_sha: Option<&str>,
+) -> Result<(), String> {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
+        return Err(format!(
+            "homeconsole-arcadia-update requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+    let mut events = crate::atoms::attest::open_event_stream(&receipt_dir.join("events.jsonl"))?;
+    event(&mut events, "arcadia-start", true, "Arcadia update started")?;
+    let metadata = fs::metadata(artifact).map_err(|e| format!("artifact-missing: {e}"))?;
+    let artifact_len = metadata.len();
+    let artifact_sha = sha256_file(artifact)?;
+    event(&mut events, "artifact", true, "Arcadia artifact present")?;
+    let mut ok = true;
+    let mut changed = false;
+    let mut first_missing_signal = "none".to_string();
+    if apply {
+        return Err("arcadia-check-apply-forbidden".into());
+    }
+    if !apply {
+        if let Err(signal) =
+            ensure_arcadia_control_surface_authority(receipt_dir, false, None, None)
+        {
+            ok = false;
+            if first_missing_signal == "none" {
+                first_missing_signal = signal;
+            }
+        }
+    }
+    let status = command_capture("/usr/bin/systemctl", &["is-active", service]);
+    write_command_receipt(receipt_dir, "arcadia-service-active", &status)?;
+    if apply && !status.ok {
+        ok = false;
+        if first_missing_signal == "none" {
+            first_missing_signal = "arcadia-service-not-active".to_string();
+        }
+    }
+    let authority_readback = read_arcadia_control_surface_authority(service);
+    write_command_receipt(
+        receipt_dir,
+        "arcadia-control-surface-authority-readback",
+        &authority_readback,
+    )?;
+    if apply
+        && (!authority_readback.ok || !authority_readback.stdout.contains("NoNewPrivileges=no"))
+    {
+        ok = false;
+        if first_missing_signal == "none" {
+            first_missing_signal = "arcadia-control-surface-authority-unproven".to_string();
+        }
+    }
+    let installed_sha = sha256_file(install_bin).ok();
+    write_artifact_receipt(
+        receipt_dir,
+        artifact,
+        install_bin,
+        service,
+        apply,
+        ok,
+        changed,
+        &first_missing_signal,
+        artifact_len,
+        &artifact_sha,
+        installed_sha.as_deref(),
+    )?;
+    write_run_receipt(receipt_dir, profile, apply, ok, &first_missing_signal)?;
+    println!("schema=harmonia.homeconsole_arcadia_update.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.homeconsole_arcadia_update.v1",
+        &format!("schema=harmonia.homeconsole_arcadia_update.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_update.v1", "ok": ok})),
+        Some(ok),
+    );
+    println!("ok={}", ok);
+    println!("changed={}", changed);
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("artifact={}", artifact.display());
+    println!("install_bin={}", install_bin.display());
+    println!("service={}", service);
+    println!("receipt_dir={}", receipt_dir.display());
+    if ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal)
+    }
+}
+
+fn homeconsole_arcadia_update_apply(
+    profile: &Profile,
+    receipt_dir: &Path,
+    artifact: &Path,
+    install_bin: &Path,
+    service: &str,
+    apply: bool,
+    _source_sha: Option<&str>,
+    authorization: crate::tools::comparison::ActionAuthorization,
+    invocation: crate::tools::files::InvocationKey,
+) -> Result<(), String> {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
+        return Err(format!(
+            "homeconsole-arcadia-update requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+    let mut events = crate::atoms::attest::open_event_stream(&receipt_dir.join("events.jsonl"))?;
+    event(&mut events, "arcadia-start", true, "Arcadia update started")?;
+    let metadata = fs::metadata(artifact).map_err(|e| format!("artifact-missing: {e}"))?;
+    let artifact_len = metadata.len();
+    let artifact_sha = sha256_file(artifact)?;
+    event(&mut events, "artifact", true, "Arcadia artifact present")?;
+    let mut ok = true;
+    let mut changed = false;
+    let mut first_missing_signal = "none".to_string();
+    if apply {
+        if let Some(parent) = install_bin.parent() {
+            crate::tools::files::make_dir(authorization, invocation, parent)?;
+        }
+        let before_sha = sha256_file(install_bin).ok();
+        let binary_changed = before_sha.as_deref() != Some(artifact_sha.as_str());
+        if binary_changed {
+            changed = crate::bands::ratchet_binaries::promote_arcadia_artifact(
+                artifact,
+                install_bin,
+                invocation,
+            )?;
+            event(
+                &mut events,
+                "artifact-installed",
+                true,
+                "Arcadia artifact installed",
+            )?;
+        } else {
+            event(&mut events, "artifact-current", true, "converged-quiet")?;
+        }
+        let authority_changed = ensure_arcadia_control_surface_authority(
+            receipt_dir,
+            true,
+            Some(authorization),
+            Some(invocation),
+        )?;
+        changed = changed || authority_changed;
+        event(
+            &mut events,
+            "control-surface-authority",
+            true,
+            "Arcadia control-surface authority installed",
+        )?;
+        if authority_changed {
+            let daemon_reload =
+                keyed_arcadia_command(authorization, invocation, &["daemon-reload"], 30);
+            write_command_receipt(receipt_dir, "arcadia-daemon-reload", &daemon_reload)?;
+            if !daemon_reload.ok {
+                ok = false;
+                first_missing_signal = "systemd-daemon-reload-failed".to_string();
+            }
+        }
+        if changed {
+            let restart =
+                keyed_arcadia_command(authorization, invocation, &["restart", service], 30);
+            write_command_receipt(receipt_dir, "arcadia-service-restart", &restart)?;
+            if !restart.ok {
+                ok = false;
+                if first_missing_signal == "none" {
+                    first_missing_signal = "arcadia-service-restart-failed".to_string();
+                }
+            }
+        } else {
+            event(&mut events, "service", true, "converged-quiet")?;
+        }
+    }
+    if !apply {
+        if let Err(signal) =
+            ensure_arcadia_control_surface_authority(receipt_dir, false, None, None)
+        {
+            ok = false;
+            if first_missing_signal == "none" {
+                first_missing_signal = signal;
+            }
+        }
+    }
+    let status = command_capture("/usr/bin/systemctl", &["is-active", service]);
+    write_command_receipt(receipt_dir, "arcadia-service-active", &status)?;
+    if apply && !status.ok {
+        ok = false;
+        if first_missing_signal == "none" {
+            first_missing_signal = "arcadia-service-not-active".to_string();
+        }
+    }
+    let authority_readback = read_arcadia_control_surface_authority(service);
+    write_command_receipt(
+        receipt_dir,
+        "arcadia-control-surface-authority-readback",
+        &authority_readback,
+    )?;
+    if apply
+        && (!authority_readback.ok || !authority_readback.stdout.contains("NoNewPrivileges=no"))
+    {
+        ok = false;
+        if first_missing_signal == "none" {
+            first_missing_signal = "arcadia-control-surface-authority-unproven".to_string();
+        }
+    }
+    let installed_sha = sha256_file(install_bin).ok();
+    write_artifact_receipt(
+        receipt_dir,
+        artifact,
+        install_bin,
+        service,
+        apply,
+        ok,
+        changed,
+        &first_missing_signal,
+        artifact_len,
+        &artifact_sha,
+        installed_sha.as_deref(),
+    )?;
+    write_run_receipt(receipt_dir, profile, apply, ok, &first_missing_signal)?;
+    println!("schema=harmonia.homeconsole_arcadia_update.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.homeconsole_arcadia_update.v1",
+        &format!("schema=harmonia.homeconsole_arcadia_update.v1 ok={}", ok),
+        Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_update.v1", "ok": ok})),
+        Some(ok),
+    );
+    println!("ok={}", ok);
+    println!("changed={}", changed);
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("artifact={}", artifact.display());
+    println!("install_bin={}", install_bin.display());
+    println!("service={}", service);
+    println!("receipt_dir={}", receipt_dir.display());
+    if ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn homeconsole_arcadia_gui_update(
+    profile: &Profile,
+    receipt_dir: &Path,
+    component: &str,
+    source_dir: &Path,
+    install_bin: &Path,
+    service: &str,
+    apply: bool,
+    invocation: Option<crate::tools::files::InvocationKey>,
+) -> Result<(), String> {
+    if profile.id != "homeconsole" || profile.identity != "homeconsole" {
+        return Err(format!(
+            "homeconsole-arcadia-gui-update requires homeconsole/homeconsole profile, got {}/{}",
+            profile.id, profile.identity
+        ));
+    }
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+
+    let certificate = crate::device_profile_certificate_path();
+    let resolution = crate::bands::pull_source::resolve_source(
+        &certificate,
+        component,
+        "arcadia-gui-runtime",
+        "arcadia-source-git-artifact",
+    );
+    if let Some(blocker) = resolution.blocker {
+        return Err(format!(
+            "arcadia-source-resolution-blocked component={component} blocker={blocker}"
+        ));
+    }
+    let resolution = resolution
+        .resolution
+        .ok_or_else(|| "arcadia-source-resolution-plan-missing".to_string())?;
+    let config = crate::bands::renew_self::load_engine_plane_config(
+        &crate::bands::renew_self::engine_config_path(),
+    )?;
+    let credentials = config
+        .as_ref()
+        .map(crate::bands::renew_self::credential_scopes)
+        .unwrap_or_default();
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
+        &resolution,
+        source_dir.to_path_buf(),
+        "owner".to_string(),
+        expected_commit,
+        credentials,
+    );
+    let git_outcome =
+        crate::bands::pull_source::acquire_arcadia_source(&source_plan, apply, invocation);
+    let repo = component;
+    let branch = source_plan.reference.as_str();
+    let git_cmd = crate::bands::pull_source::source_outcome_cmd(&git_outcome);
+    write_command_receipt(receipt_dir, "arcadia-source-git-artifact", &git_cmd)?;
+    if !git_outcome.ok {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            false,
+            git_outcome.changed,
+            "arcadia-source-git-artifact-failed",
+            repo,
+            branch,
+            source_dir,
+            None,
+        )?;
+        return Err("arcadia-source-git-artifact-failed".to_string());
+    }
+
+    let source_sha = crate::bands::compare::observe_arcadia_source_sha(source_dir);
+    write_command_receipt(receipt_dir, "arcadia-source-sha", &source_sha)?;
+    let source_sha_value = source_sha.stdout.trim().to_string();
+    if !source_sha.ok || !crate::bands::compare::is_hex_sha(&source_sha_value) {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            false,
+            git_outcome.changed,
+            "arcadia-source-sha-missing",
+            repo,
+            branch,
+            source_dir,
+            None,
+        )?;
+        return Err("arcadia-source-sha-missing".to_string());
+    }
+
+    if !apply {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            true,
+            git_outcome.changed,
+            "none",
+            repo,
+            branch,
+            source_dir,
+            Some(&source_sha_value),
+        )?;
+        println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
+        hyalos::forward_receipt(
+            "schema=harmonia.homeconsole_arcadia_gui_update.v1",
+            &format!(
+                "schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}",
+                true
+            ),
+            Some(
+                serde_json::json!({"schema": "harmonia.homeconsole_arcadia_gui_update.v1", "ok": true}),
+            ),
+            Some(true),
+        );
+        println!("ok=true");
+        println!("changed={}", git_outcome.changed);
+        println!("first_missing_signal=none");
+        println!("source_sha={}", source_sha_value);
+        println!("receipt_dir={}", receipt_dir.display());
+        return Ok(());
+    }
+
+    let build = crate::bands::ratchet_binaries::build_arcadia(
+        source_dir,
+        invocation.ok_or("homeconsole-arcadia-update-invocation-key-missing")?,
+    );
+    write_command_receipt(receipt_dir, "arcadia-cargo-build", &build)?;
+    if !build.ok {
+        write_arcadia_gui_run_receipt(
+            receipt_dir,
+            profile,
+            apply,
+            false,
+            git_outcome.changed,
+            "arcadia-cargo-build-failed",
+            repo,
+            branch,
+            source_dir,
+            Some(&source_sha_value),
+        )?;
+        return Err("arcadia-cargo-build-failed".to_string());
+    }
+
+    let artifact = source_dir.join("target/release/arcadia");
+    homeconsole_arcadia_update(
+        profile,
+        receipt_dir,
+        &artifact,
+        install_bin,
+        service,
+        true,
+        Some(&source_sha_value),
+        invocation,
+    )?;
+
+    let health = arcadia_health_with_retry();
+    write_command_receipt(receipt_dir, "arcadia-health", &health)?;
+    let ok = health.ok;
+    let first_missing_signal = if ok { "none" } else { "arcadia-health-failed" };
+    write_arcadia_gui_run_receipt(
+        receipt_dir,
+        profile,
+        apply,
+        ok,
+        true,
+        first_missing_signal,
+        repo,
+        branch,
+        source_dir,
+        Some(&source_sha_value),
+    )?;
+    println!("schema=harmonia.homeconsole_arcadia_gui_update.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.homeconsole_arcadia_gui_update.v1",
+        &format!(
+            "schema=harmonia.homeconsole_arcadia_gui_update.v1 ok={}",
+            ok
+        ),
+        Some(serde_json::json!({"schema": "harmonia.homeconsole_arcadia_gui_update.v1", "ok": ok})),
+        Some(ok),
+    );
+    println!("ok={}", ok);
+    println!("changed=true");
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("source_sha={}", source_sha_value);
+    println!("receipt_dir={}", receipt_dir.display());
+    if ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal.to_string())
+    }
+}
+
+fn arcadia_health_with_retry() -> CmdResult {
+    tools::health::curl_probe(&tools::health::ProbeRequest::new(
+        "http://127.0.0.1:8080/health",
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_arcadia_gui_run_receipt(
+    receipt_dir: &Path,
+    profile: &Profile,
+    apply: bool,
+    ok: bool,
+    changed: bool,
+    first_missing_signal: &str,
+    repo: &str,
+    branch: &str,
+    source_dir: &Path,
+    source_sha: Option<&str>,
+) -> Result<(), String> {
+    write_json(
+        &receipt_dir.join("run.json"),
+        &json!({
+            "schema": "harmonia.homeconsole_arcadia_gui_update.v1",
+            "ok": ok,
+            "changed": changed,
+            "mutation": apply,
+            "profile_id": profile.id,
+            "profile_family": profile.identity,
+            "repo": repo,
+            "branch": branch,
+            "source_dir": source_dir,
+            "source_sha": source_sha,
+            "first_missing_signal": first_missing_signal,
+        }),
+    )
+}

@@ -13,33 +13,33 @@ use std::thread;
 
 pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
     let invocation =
-        invocation.ok_or_else(|| "stillness-bench-invocation-key-missing".to_string())?;
+        invocation.ok_or_else(|| "stillness-demo-invocation-key-missing".to_string())?;
     let root = std::env::temp_dir().join(format!(
-        "harmonia-stillness-bench-{}",
+        "harmonia-stillness-demo-{}",
         crate::run_id_from_stamp()
     ));
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
 
-    let git_artifact = git_artifact_bench(&root, invocation)?;
-    let caduceus = caduceus_bench(&root, invocation)?;
-    let service_runtime_build_sha = service_runtime_build_sha_bench(&root, invocation)?;
+    let git_artifact = git_artifact_demo(&root, invocation)?;
+    let caduceus = caduceus_demo(&root, invocation)?;
+    let service_runtime_build_sha = service_runtime_build_sha_demo(&root, invocation)?;
     let source_gate = json!({"fresh_source":true,"stale_service_ignored":true,"changed":false});
-    let venv = venv_bench(&root, invocation)?;
-    let package = match package_bench(&root, invocation) {
+    let venv = venv_demo(&root, invocation)?;
+    let package = match package_demo(&root, invocation) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("package_root={} error={}", root.display(), e);
             return Err(e);
         }
     };
-    let aur_pinned = aur_pinned_bench(&root, invocation)?;
-    let never = never_converge_bench()?;
+    let aur_pinned = aur_pinned_demo(&root, invocation)?;
+    let never = never_converge_demo()?;
     let overall_ok = service_runtime_build_sha
         .get("ok")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let receipt = json!({
-        "schema": "harmonia.stillness-bench.v1",
+        "schema": "harmonia.stillness-demo.v1",
         "ok": overall_ok,
         "git_artifact": git_artifact,
         "caduceus": caduceus,
@@ -50,12 +50,19 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         "aur_pinned": aur_pinned,
         "never_converge": never,
     });
+    let actual_cleanup_observed = fs::remove_dir_all(&root).is_ok() && !root.exists();
+    let mut receipt = receipt;
+    receipt["actual_cleanup_observed"] = json!(actual_cleanup_observed);
+    receipt["ok"] = json!(receipt["ok"].as_bool().unwrap_or(false) && actual_cleanup_observed);
     println!(
         "{}",
         serde_json::to_string(&receipt).map_err(|error| error.to_string())?
     );
-    fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
-    Ok(())
+    if actual_cleanup_observed {
+        Ok(())
+    } else {
+        Err("stillness-demo-cleanup-failed".into())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +196,13 @@ fn path_attestation(path: &Path) -> serde_json::Value {
         let Ok(meta) = fs::symlink_metadata(path) else {
             return;
         };
-        let kind = if meta.is_dir() { "dir" } else if meta.is_file() { "file" } else { "other" };
+        let kind = if meta.is_dir() {
+            "dir"
+        } else if meta.is_file() {
+            "file"
+        } else {
+            "other"
+        };
         let hash = if meta.is_file() {
             crate::bands::renew_self::install_bin_fingerprint(path)
         } else {
@@ -200,7 +213,10 @@ fn path_attestation(path: &Path) -> serde_json::Value {
         }));
         if meta.is_dir() {
             if let Ok(children) = fs::read_dir(path) {
-                let mut children = children.flatten().map(|child| child.path()).collect::<Vec<_>>();
+                let mut children = children
+                    .flatten()
+                    .map(|child| child.path())
+                    .collect::<Vec<_>>();
                 children.sort();
                 for child in children {
                     visit(&child, base, entries);
@@ -215,11 +231,11 @@ fn path_attestation(path: &Path) -> serde_json::Value {
     json!({"path": path, "entries": entries})
 }
 
-pub(crate) fn renew_schedule_bench(
+pub(crate) fn renew_schedule_demo(
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let root = std::env::temp_dir().join(format!(
-        "harmonia-renew-schedule-{}",
+        "harmonia-renew_schedule-renew-schedule-{}",
         crate::run_id_from_stamp()
     ));
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -236,7 +252,7 @@ pub(crate) fn renew_schedule_bench(
     .trim()
     .to_string();
     if source_head.len() != 40 {
-        return Err("renew-schedule-source-head-not-a-commit".into());
+        return Err("renew_schedule-source-head-not-a-commit".into());
     }
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let install_bin = root.join("installed-successor");
@@ -280,7 +296,7 @@ pub(crate) fn renew_schedule_bench(
     }
     renewal
         .as_ref()
-        .map_err(|e| format!("renew-self-bench: {e}"))?;
+        .map_err(|e| format!("renew-self-demo: {e}"))?;
     let mut receipt_names = std::collections::BTreeSet::new();
     for entry in walk_receipts(&renew_receipts).map_err(|e| e.to_string())? {
         receipt_names.insert(entry);
@@ -302,13 +318,19 @@ pub(crate) fn renew_schedule_bench(
     .map_err(|e| format!("renew-run-receipt-json: {e}"))?;
     let built_successor_identity =
         crate::bands::renew_self::install_bin_fingerprint(&staged_bin)
-            .ok_or_else(|| "renew-schedule-built-successor-fingerprint-missing".to_string())?;
+            .ok_or_else(|| "renew_schedule-built-successor-fingerprint-missing".to_string())?;
     let installed_successor_identity =
         crate::bands::renew_self::install_bin_fingerprint(&install_bin)
-            .ok_or_else(|| "renew-schedule-installed-successor-fingerprint-missing".to_string())?;
+            .ok_or_else(|| "renew_schedule-installed-successor-fingerprint-missing".to_string())?;
     let installer = root.join("installer.py");
     let argv_log = root.join("argv.log");
-    fs::write(&installer, format!("import pathlib,sys\npathlib.Path({argv_log:?}).write_text(repr(sys.argv[1:]))\npass\n")).map_err(|e| e.to_string())?;
+    fs::write(
+        &installer,
+        format!(
+            "import pathlib,sys\npathlib.Path({argv_log:?}).write_text(repr(sys.argv[1:]))\npass\n"
+        ),
+    )
+    .map_err(|e| e.to_string())?;
     let prior = env::var_os("HARMONIA_INSTALLER");
     env::set_var("HARMONIA_INSTALLER", &installer);
     let systemd_root = root.join("systemd");
@@ -436,7 +458,7 @@ pub(crate) fn renew_schedule_bench(
         && actual_service_unchanged
         && actual_timer_unchanged;
     let receipt = json!({
-        "schema":"harmonia.renew-schedule-bench.v3", "ok": renew_ok && schedule_ok,
+        "schema":"harmonia.renew-schedule-demo.v3", "ok": renew_ok && schedule_ok,
         "source_head": source_head, "built_successor_identity": built_successor_identity,
         "renew_self": {"receipt_names": receipt_names, "execution_ok": execution_ok, "actual_source_head": source_head_observed, "successor_identity_tied_to_build_receipt": built_identity_tied, "explain": explain, "validate_ladder": validate_ladder, "plan_run_gate": plan_run_gate, "promotion_after_all_green": promotion_after_all_green, "final_receipt_before_exec": final_receipt_before_exec, "reentry_guard": reentry_guard, "quiet_no_reexec": quiet_no_reexec, "replacement": {"receipt_path": replacement_receipt_path, "receipt_observed": replacement_receipt_observed, "schema": replacement_receipt.schema, "proof": replacement_receipt.proof, "synced": replacement_receipt.synced, "contents_observed": replacement_contents, "identity_observed": replacement_identity, "refusal": replacement_refusal, "receipt_unchanged_after_refusal": replacement_bytes_before == replacement_bytes_after}},
         "schedule": {"dry_run": true, "argv": argv, "argv_exact": argv == expected, "systemd_root_before": systemd_root_before, "systemd_root_after": systemd_root_after, "systemd_root_unchanged": systemd_root_unchanged, "actual_service_before": actual_service_before, "actual_service_after": actual_service_after, "actual_service_unchanged": actual_service_unchanged, "actual_timer_before": actual_timer_before, "actual_timer_after": actual_timer_after, "actual_timer_unchanged": actual_timer_unchanged, "attest_owner": "hyalos.forward_receipt"}
@@ -449,20 +471,18 @@ pub(crate) fn renew_schedule_bench(
     if renew_ok && schedule_ok {
         Ok(())
     } else {
-        Err("renew-schedule-required-predicate-failed".into())
+        Err("renew_schedule-required-predicate-failed".into())
     }
 }
 
-pub(crate) fn clock_bench(
-    invocation: crate::atoms::r#do::InvocationKey,
-) -> Result<(), String> {
+pub(crate) fn clock_demo(invocation: crate::atoms::r#do::InvocationKey) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let _env = ClockEnvGuard {
         timedatectl: std::env::var("HARMONIA_CLOCK_TIMEDATECTL").ok(),
         caduceus: std::env::var("HARMONIA_CLOCK_CADUCEUS").ok(),
     };
     let root = std::env::temp_dir().join(format!(
-        "harmonia-clock-{}",
+        "harmonia-clock-clock-{}",
         crate::run_id_from_stamp()
     ));
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -563,12 +583,12 @@ esac
     {
         return Err("clock-refusal-proof-failed".into());
     }
-    println!("clock-bench ok preimage=Etc/UTC|no requested=Europe/Berlin|yes readback=verified elapsed=non-reversing quiet=no-write refusal=backend-refused host_mutation=false");
+    println!("clock-clock-demo ok preimage=Etc/UTC|no requested=Europe/Berlin|yes readback=verified elapsed=non-reversing quiet=no-write refusal=backend-refused host_mutation=false");
     std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn git_artifact_bench(
+fn git_artifact_demo(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
@@ -593,8 +613,8 @@ fn git_artifact_bench(
     let dst = dir.join("destination");
     fs::create_dir_all(&seed).map_err(|e| e.to_string())?;
     git(&seed, &["init", "-b", "main"])?;
-    git(&seed, &["config", "user.email", "bench@example.invalid"])?;
-    git(&seed, &["config", "user.name", "bench"])?;
+    git(&seed, &["config", "user.email", "demo@example.invalid"])?;
+    git(&seed, &["config", "user.name", "demo"])?;
     fs::write(seed.join("state"), "one\n").map_err(|e| e.to_string())?;
     git(&seed, &["add", "state"])?;
     git(&seed, &["commit", "-m", "one"])?;
@@ -653,9 +673,9 @@ fn git_artifact_bench(
     let dirty_snapshot = snapshot_predicates(&dirty_before, &dirty_after);
     let dirty_refused_without_write = !dirty.ok && !dirty.changed && dirty_before == dirty_after;
     let config = fs::read_to_string(dst.join(".git/config")).map_err(|e| e.to_string())?;
-    let dummy_ssh_key = PathBuf::from("/tmp/bench-scope-dummy-id_ed25519");
+    let dummy_ssh_key = PathBuf::from("/tmp/demo-scope-dummy-id_ed25519");
     let dummy_https_host = "scope.example.invalid".to_string();
-    let dummy_token_path = PathBuf::from("/tmp/bench-scope-dummy-token");
+    let dummy_token_path = PathBuf::from("/tmp/demo-scope-dummy-token");
     let scope = crate::tools::git_artifact::CredentialScope {
         ssh_key_path: Some(dummy_ssh_key.clone()),
         https_host: Some(dummy_https_host.clone()),
@@ -760,21 +780,21 @@ fn git_artifact_bench(
         || !credential_scope_preserved
         || !failed_source_refusal
     {
-        return Err("git-artifact-three-case-bench-failed".into());
+        return Err("git-artifact-three-case-demo-failed".into());
     }
     Ok(
         json!({"setup":{"commit_1":c1,"destination_before":before,"commit_2_remote_head":remote,"setup_checked":true,"changed_then_quiet":r1.changed && !r2.changed},"run1":{"ok":r1.ok,"changed":r1.changed,"destination_head":head,"declared_remote_head":remote,"attempts":r1.receipt.attempts.len(),"promotion":r1.receipt.promotion},"run2":{"ok":r2.ok,"changed":r2.changed,"attempts":r2.receipt.attempts.len(),"promotion":r2.receipt.promotion,"requested_ref_equals_head":head == remote,"second_pass_zero_movement":!r2.changed,"second_pass_zero_writes":second_pass_zero_writes,"snapshot":second_pass_snapshot},"dirty_refusal":{"ok":dirty.ok,"changed":dirty.changed,"refused_without_destination_write":dirty_refused_without_write,"structural_zero_writes":dirty_before == dirty_after,"snapshot":dirty_snapshot},"credential_scope":{"preserved":credential_scope_preserved,"exact_scope_projection":exact_scope_projection,"selector_preserved":credential_selector_preserved,"only_declared_scope_used":only_declared_scope_used,"no_credential_material_persisted":no_credential_material_persisted,"declared":{"ssh_key_path":dummy_ssh_key,"https_host":dummy_https_host,"https_token_path":dummy_token_path,"bearer":scope_plan.bearer,"safe_directories":[]},"projected":{"ssh_key_path":scoped.ssh_key_path,"https_host":scoped.git_https_credential_host,"https_token_path":scoped.git_https_credential_token_path,"bearer":scoped.bearer,"safe_directories":scoped.safe_directories},"local_safe_directory_projection":local_scoped.safe_directories},"wrong_selector":{"predicate":failed_source_refusal,"ok":ru.ok,"changed":ru.changed,"disposition":wrong_selector_attempt.map(|a| a.disposition.clone()),"detail":wrong_selector_attempt.map(|a| a.detail.clone()),"hard_red_credential":wrong_selector_attempt.is_some_and(|a| a.disposition == "hard-red-credential"),"destination_and_staging_unchanged":failed_before == failed_after && failed_parent_before == failed_parent_after,"destination_snapshot_unchanged":failed_before == failed_after,"parent_snapshot_unchanged":failed_parent_before == failed_parent_after,"promotion":ru.receipt.promotion},"unreachable":{"ok":ru.ok,"changed":ru.changed,"attempts_count":ru.receipt.attempts.len(),"failed_source_refusal":failed_source_refusal,"destination_snapshot_unchanged":failed_before == failed_after,"dispositions":ru.receipt.attempts.iter().map(|a|a.disposition.clone()).collect::<Vec<_>>(),"promotion":ru.receipt.promotion}}),
     )
 }
 
-fn caduceus_bench(
+fn caduceus_demo(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     let dir = root.join("caduceus");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let source_sha = "0123456789abcdef0123456789abcdef01234567";
-    let build = crate::build_crate::bench_build_guard(&dir, source_sha)?;
+    let build = crate::build_crate::demo_build_guard(&dir, source_sha)?;
     let artifact = dir.join("target/release/caduceus");
     let install = dir.join("usr/local/bin/caduceus");
     fs::create_dir_all(install.parent().ok_or("install-parent-missing")?)
@@ -827,14 +847,14 @@ fn caduceus_bench(
         || !health1.ok
         || health_bad.ok
     {
-        return Err("caduceus-primitive-stillness-bench-failed".into());
+        return Err("caduceus-primitive-stillness-demo-failed".into());
     }
     Ok(
         json!({"source_gate":{"fresh_source":true,"source_sha":source_sha,"stale_service_ignored":true},"build":build,"run1":{"ok":run1.receipt.ok,"changed":run1.movement.changed()},"run2":{"ok":run2.receipt.ok,"changed":run2.movement.changed()},"health":{"matching_identity":{"ok":health1.ok},"mismatched_identity":{"ok":health_bad.ok,"stderr":health_bad.stderr}}}),
     )
 }
 
-fn service_runtime_build_sha_bench(
+fn service_runtime_build_sha_demo(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
@@ -844,7 +864,9 @@ fn service_runtime_build_sha_bench(
     let install_bin = dir.join("installed/fixture");
     let source_sha = "0123456789abcdef0123456789abcdef01234567";
     fs::create_dir_all(source_dir.join("src")).map_err(|e| e.to_string())?;
-    if let Some(parent) = install_bin.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    if let Some(parent) = install_bin.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     fs::create_dir_all(dir.join("managed")).map_err(|e| e.to_string())?;
     fs::write(
         source_dir.join("Cargo.toml"),
@@ -857,15 +879,15 @@ fn service_runtime_build_sha_bench(
     )
     .map_err(|e| e.to_string())?;
 
-    let mut manifest: crate::tools::ladder::LadderManifest = serde_json::from_value(json!({
-        "schema":"harmonia.ladder.v1", "id":"service-runtime-build-sha-bench",
+    let mut manifest: crate::ladder::LadderManifest = serde_json::from_value(json!({
+        "schema":"harmonia.ladder.v1", "id":"service-runtime-build-sha-demo",
         "version":"1.0.0", "constants": {}, "ladder":[{
             "step_id":"runtime", "tool":"service-runtime", "permutation":"converge",
             "args": {
                 "component":"fixture", "source_dir":source_dir, "install_bin":install_bin,
                 "service":"fixture.service", "url":"http://127.0.0.1:1/health",
-                "binary_name":"fixture", "op_prefix":"fixture", "run_schema":"bench.v1",
-                "managed_files_schema":"bench.v1", "managed_files":[{
+                "binary_name":"fixture", "op_prefix":"fixture", "run_schema":"demo.v1",
+                "managed_files_schema":"demo.v1", "managed_files":[{
                     "path":dir.join("managed/fixture.txt"), "content":"fixture-managed\n", "mode":420,
                     "operation":"place", "xattrs":{}, "no_follow":true, "uid":1000, "gid":1000,
                     "collision_policy":"refuse", "rollback_policy":"exact"
@@ -874,7 +896,9 @@ fn service_runtime_build_sha_bench(
             }
         }]
     })).map_err(|e| e.to_string())?;
-    let binary_name = manifest.ladder.first()
+    let binary_name = manifest
+        .ladder
+        .first()
         .and_then(|step| step.args.get("binary_name"))
         .and_then(Value::as_str)
         .ok_or_else(|| "service-runtime-binary-name-missing".to_string())?
@@ -891,39 +915,58 @@ fn service_runtime_build_sha_bench(
             let _ = stream.read(&mut request).map_err(|e| e.to_string())?;
             let body = json!({"ok":true,"build_sha":source_sha}).to_string();
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
-            stream.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+            stream
+                .write_all(response.as_bytes())
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     });
     let health_url = format!("http://{health_address}/health");
     let projected_health_children = [
-        "service-daemon-reload", "service-enable", "service-restart", "service-active", "health-proof",
+        "service-daemon-reload",
+        "service-enable",
+        "service-restart",
+        "service-active",
+        "health-proof",
     ];
-    let source = manifest.ladder.first().ok_or_else(|| "service-runtime-step-missing".to_string())?;
-    let build = source.steps.iter().find(|child| child.name == "build")
+    let source = manifest
+        .ladder
+        .first()
+        .ok_or_else(|| "service-runtime-step-missing".to_string())?;
+    let build = source
+        .steps
+        .iter()
+        .find(|child| child.name == "build")
         .ok_or_else(|| "service-runtime-build-child-missing".to_string())?;
-    let mut projected = crate::tools::routine::project_routine_children(source, &manifest.constants)
-        .map_err(|e| e.first_missing_signal())?;
+    let mut projected =
+        crate::tools::routine::project_routine_children(source, &manifest.constants)
+            .map_err(|e| e.first_missing_signal())?;
     for child in &mut projected {
         if projected_health_children.contains(&child.name.as_str()) {
             child.tool = "check-health".into();
             child.permutation = "probe".into();
             child.args.insert("url".into(), json!(health_url));
-            child.args.insert("expected_contains".into(), json!(source_sha));
+            child
+                .args
+                .insert("expected_contains".into(), json!(source_sha));
         }
     }
     if build.args.contains_key("artifact") {
         return Err("service-runtime-build-artifact-override-present".into());
     }
     let expected_artifact = source_dir.join("target/release").join(&binary_name);
-    let lowered_environment = build.args.get("environment").and_then(Value::as_object)
+    let lowered_environment = build
+        .args
+        .get("environment")
+        .and_then(Value::as_object)
         .ok_or_else(|| "service-runtime-build-environment-missing".to_string())?;
-    let build_sha_ref = lowered_environment.get("FIXTURE_BUILD_SHA")
+    let build_sha_ref = lowered_environment
+        .get("FIXTURE_BUILD_SHA")
         .ok_or_else(|| "service-runtime-build-sha-env-missing".to_string())?;
     let environment_preserved = lowered_environment.get("CARGO_HOME") == Some(&json!(cargo_home));
     let generic_environment_ref = build_sha_ref == &json!({"from":"pull-repo.resolved_commit"});
     if !environment_preserved || !generic_environment_ref {
-        return Err("service-runtime-build-sha-lowering-bench-failed".into());
+        return Err("service-runtime-build-sha-lowering-demo-failed".into());
     }
 
     let mut unresolved_manifest = manifest.clone();
@@ -959,8 +1002,7 @@ fn service_runtime_build_sha_bench(
     };
     let unresolved_module_dir = dir.join("unresolved-reference");
     let unresolved_routine_dir = unresolved_module_dir.join("runtime");
-    fs::create_dir_all(unresolved_routine_dir.join("pull-repo"))
-        .map_err(|e| e.to_string())?;
+    fs::create_dir_all(unresolved_routine_dir.join("pull-repo")).map_err(|e| e.to_string())?;
     let unresolved_pull_receipt = json!({
         "schema":"harmonia.routine.child-receipt.v1", "name":"pull-repo", "tool":"pull-repo",
         "state":"completed", "ok":true, "changed":false, "outputs":{
@@ -973,11 +1015,28 @@ fn service_runtime_build_sha_bench(
     )
     .map_err(|e| e.to_string())?;
     let mut unresolved_states = BTreeMap::new();
-    unresolved_states.insert("runtime".into(), crate::ModuleWalkState {
-        context: [("pull-repo.path".into(), json!(source_dir)), ("pull-repo.resolved_commit".into(), json!(source_sha)), ("pull-repo.changed".into(), json!(false)), ("pull-repo.source_reference".into(), json!("main")), ("pull-repo.source_remote".into(), json!("https://example.invalid/fixture.git"))].into_iter().collect(),
-        children: vec![unresolved_pull_receipt], blocked_by: None, ok: true, changed: false,
-        first_missing_signal: None,
-    });
+    unresolved_states.insert(
+        "runtime".into(),
+        crate::ModuleWalkState {
+            context: [
+                ("pull-repo.path".into(), json!(source_dir)),
+                ("pull-repo.resolved_commit".into(), json!(source_sha)),
+                ("pull-repo.changed".into(), json!(false)),
+                ("pull-repo.source_reference".into(), json!("main")),
+                (
+                    "pull-repo.source_remote".into(),
+                    json!("https://example.invalid/fixture.git"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            children: vec![unresolved_pull_receipt],
+            blocked_by: None,
+            ok: true,
+            changed: false,
+            first_missing_signal: None,
+        },
+    );
     let unresolved_outcome = crate::tools::routine::execute_routine(
         &unresolved_step,
         &unresolved_manifest,
@@ -997,9 +1056,12 @@ fn service_runtime_build_sha_bench(
         && unresolved_signal
             == Some("step_id=build defect=missing-stamp-pull-repo.unresolved_nested_reference");
 
-    let step = crate::tools::ladder::ValidatedStep {
-        step_id: source.step_id.clone(), tool: "routine".into(), permutation: "execute".into(),
-        args: BTreeMap::new(), on_failure: crate::tools::ladder::OnFailure::Stop,
+    let step = crate::ladder::ValidatedStep {
+        step_id: source.step_id.clone(),
+        tool: "routine".into(),
+        permutation: "execute".into(),
+        args: BTreeMap::new(),
+        on_failure: crate::ladder::OnFailure::Stop,
     };
     let projected_names: Vec<&str> = projected.iter().map(|child| child.name.as_str()).collect();
     let managed_producer_index = projected_names
@@ -1011,16 +1073,22 @@ fn service_runtime_build_sha_bench(
         .position(|name| *name == "service-daemon-reload")
         .ok_or_else(|| "service-runtime-daemon-reload-child-missing".to_string())?;
     let stamp_consumers = [
-        "service-daemon-reload", "service-enable", "service-restart", "service-active",
+        "service-daemon-reload",
+        "service-enable",
+        "service-restart",
+        "service-active",
     ];
     let service_stamp_wiring = stamp_consumers.iter().all(|name| {
-        source.steps.iter().find(|child| child.name == *name)
+        source
+            .steps
+            .iter()
+            .find(|child| child.name == *name)
             .and_then(|child| child.args.get("managed_files_changed"))
             == Some(&json!({"from":"managed-files.changed"}))
     });
     let managed_stamp_precedes_consumers = managed_producer_index < daemon_index;
     if !service_stamp_wiring || !managed_stamp_precedes_consumers {
-        return Err("service-runtime-stamp-wiring-bench-failed".into());
+        return Err("service-runtime-stamp-wiring-demo-failed".into());
     }
     let binary_install = source
         .steps
@@ -1042,30 +1110,74 @@ fn service_runtime_build_sha_bench(
             "path":source_dir, "resolved_commit":source_sha
         }
     });
-    let run_once = |label: &str| -> Result<(crate::OperationOutcome, serde_json::Value, bool, PathBuf, bool, Vec<serde_json::Value>), String> {
+    let run_once = |label: &str| -> Result<
+        (
+            crate::OperationOutcome,
+            serde_json::Value,
+            bool,
+            PathBuf,
+            bool,
+            Vec<serde_json::Value>,
+        ),
+        String,
+    > {
         let module_dir = dir.join(label);
         let routine_dir = module_dir.join("runtime");
         fs::create_dir_all(routine_dir.join("pull-repo")).map_err(|e| e.to_string())?;
-        fs::write(routine_dir.join("pull-repo/routine-child.json"), pull_receipt.to_string())
-            .map_err(|e| e.to_string())?;
+        fs::write(
+            routine_dir.join("pull-repo/routine-child.json"),
+            pull_receipt.to_string(),
+        )
+        .map_err(|e| e.to_string())?;
         let mut states = BTreeMap::new();
-        states.insert("runtime".into(), crate::ModuleWalkState {
-            context: [("pull-repo.path".into(), json!(source_dir)), ("pull-repo.resolved_commit".into(), json!(source_sha)), ("pull-repo.changed".into(), json!(false)), ("pull-repo.source_reference".into(), json!("main")), ("pull-repo.source_remote".into(), json!("https://example.invalid/fixture.git"))].into_iter().collect(),
-            children: vec![pull_receipt.clone()], blocked_by: None, ok: true, changed: false,
-            first_missing_signal: None,
-        });
+        states.insert(
+            "runtime".into(),
+            crate::ModuleWalkState {
+                context: [
+                    ("pull-repo.path".into(), json!(source_dir)),
+                    ("pull-repo.resolved_commit".into(), json!(source_sha)),
+                    ("pull-repo.changed".into(), json!(false)),
+                    ("pull-repo.source_reference".into(), json!("main")),
+                    (
+                        "pull-repo.source_remote".into(),
+                        json!("https://example.invalid/fixture.git"),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                children: vec![pull_receipt.clone()],
+                blocked_by: None,
+                ok: true,
+                changed: false,
+                first_missing_signal: None,
+            },
+        );
         let bands = [
             crate::bands::Band::RatchetBinaries,
             crate::bands::Band::BackfillFiles,
             crate::bands::Band::RestartServices,
         ];
-        let mut outcome = crate::OperationOutcome { ok: true, changed: false, skipped: false, message: "routine-complete".into(), command: None };
+        let mut outcome = crate::OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: "routine-complete".into(),
+            command: None,
+        };
         for band in bands {
             // The projected RestartServices children are all loopback probes.
             let band_apply = true;
             let pass = crate::tools::routine::execute_routine(
-                &step, &manifest, &module_dir, None, None, band_apply, Some(invocation),
-                Some(&mut states), band, &projected,
+                &step,
+                &manifest,
+                &module_dir,
+                None,
+                None,
+                band_apply,
+                Some(invocation),
+                Some(&mut states),
+                band,
+                &projected,
             )?;
             outcome.ok &= pass.ok;
             outcome.changed |= pass.changed;
@@ -1073,43 +1185,122 @@ fn service_runtime_build_sha_bench(
                 outcome.message = pass.message;
             }
         }
-        let receipt: Value = serde_json::from_str(&fs::read_to_string(module_dir.join("runtime.routine.json")).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        let actual_receipts = states.get("runtime").map(|state| state.children.clone()).unwrap_or_default();
-        let artifact = states.get("runtime").and_then(|state| state.context.get("build.artifact"))
-            .and_then(Value::as_str).ok_or_else(|| "service-runtime-artifact-output-missing".to_string())?;
+        let receipt: Value = serde_json::from_str(
+            &fs::read_to_string(module_dir.join("runtime.routine.json"))
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let actual_receipts = states
+            .get("runtime")
+            .map(|state| state.children.clone())
+            .unwrap_or_default();
+        let artifact = states
+            .get("runtime")
+            .and_then(|state| state.context.get("build.artifact"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "service-runtime-artifact-output-missing".to_string())?;
         let artifact_path = PathBuf::from(artifact);
         let artifact_selection_matches = artifact_path == expected_artifact;
         let artifact_bytes = fs::read(&artifact_path).map_err(|e| e.to_string())?;
-        let artifact_embeds = artifact_bytes.windows(source_sha.len()).any(|window| window == source_sha.as_bytes());
-        Ok((outcome, receipt, artifact_embeds, artifact_path, artifact_selection_matches, actual_receipts))
+        let artifact_embeds = artifact_bytes
+            .windows(source_sha.len())
+            .any(|window| window == source_sha.as_bytes());
+        Ok((
+            outcome,
+            receipt,
+            artifact_embeds,
+            artifact_path,
+            artifact_selection_matches,
+            actual_receipts,
+        ))
     };
-    let (first, first_receipt, artifact_embeds_first, first_artifact, first_selection_matches, first_child_receipts) = run_once("first")?;
-    let (second, second_receipt, artifact_embeds_second, second_artifact, second_selection_matches, second_child_receipts) = run_once("second")?;
-    health_server.join().map_err(|_| "health-bench-server-panicked".to_string())??;
-    let first_changed = first.ok && first.changed && first_receipt.get("changed").and_then(Value::as_bool) == Some(true);
-    let second_quiet = second.ok && !second.changed && second_receipt.get("changed").and_then(Value::as_bool) == Some(false);
-    let actual_stage_order = |receipts: &[serde_json::Value]| receipts.iter().filter_map(|receipt| receipt.get("name").and_then(Value::as_str)).map(str::to_string).collect::<Vec<_>>();
+    let (
+        first,
+        first_receipt,
+        artifact_embeds_first,
+        first_artifact,
+        first_selection_matches,
+        first_child_receipts,
+    ) = run_once("first")?;
+    let (
+        second,
+        second_receipt,
+        artifact_embeds_second,
+        second_artifact,
+        second_selection_matches,
+        second_child_receipts,
+    ) = run_once("second")?;
+    health_server
+        .join()
+        .map_err(|_| "health-demo-server-panicked".to_string())??;
+    let first_changed = first.ok
+        && first.changed
+        && first_receipt.get("changed").and_then(Value::as_bool) == Some(true);
+    let second_quiet = second.ok
+        && !second.changed
+        && second_receipt.get("changed").and_then(Value::as_bool) == Some(false);
+    let actual_stage_order = |receipts: &[serde_json::Value]| {
+        receipts
+            .iter()
+            .filter_map(|receipt| receipt.get("name").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
     let first_actual_stage_order = actual_stage_order(&first_child_receipts);
     let second_actual_stage_order = actual_stage_order(&second_child_receipts);
-    let expected_stage_order = ["pull-repo", "build", "binary-install", "managed-place-0", "service-daemon-reload", "service-enable", "service-restart", "service-active", "health-proof"];
-    let service_stages_exercised = first_actual_stage_order == expected_stage_order && second_actual_stage_order == expected_stage_order;
-    let all_actual_receipts_ok = first_child_receipts.iter().chain(second_child_receipts.iter()).all(|receipt| receipt.get("ok").and_then(Value::as_bool) == Some(true));
-    let no_missing_stamp_failures = first_child_receipts.iter().chain(second_child_receipts.iter()).all(|receipt| receipt.get("first_missing_signal").is_none() && !receipt.get("state").and_then(Value::as_str).is_some_and(|state| state == "missing"));
+    let expected_stage_order = [
+        "pull-repo",
+        "build",
+        "binary-install",
+        "managed-place-0",
+        "service-daemon-reload",
+        "service-enable",
+        "service-restart",
+        "service-active",
+        "health-proof",
+    ];
+    let service_stages_exercised = first_actual_stage_order == expected_stage_order
+        && second_actual_stage_order == expected_stage_order;
+    let all_actual_receipts_ok = first_child_receipts
+        .iter()
+        .chain(second_child_receipts.iter())
+        .all(|receipt| receipt.get("ok").and_then(Value::as_bool) == Some(true));
+    let no_missing_stamp_failures = first_child_receipts
+        .iter()
+        .chain(second_child_receipts.iter())
+        .all(|receipt| {
+            receipt.get("first_missing_signal").is_none()
+                && !receipt
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .is_some_and(|state| state == "missing")
+        });
     let service_fixture_isolated = true;
     let artifact_embeds = artifact_embeds_first && artifact_embeds_second;
-    let artifact_selection_matches = first_selection_matches && second_selection_matches
-        && first_artifact == expected_artifact && second_artifact == expected_artifact;
+    let artifact_selection_matches = first_selection_matches
+        && second_selection_matches
+        && first_artifact == expected_artifact
+        && second_artifact == expected_artifact;
     let executed_output = Command::new(&first_artifact)
-        .output().map_err(|e| e.to_string())?;
+        .output()
+        .map_err(|e| e.to_string())?;
     let artifact_executes = executed_output.status.success()
         && String::from_utf8_lossy(&executed_output.stdout).trim() == source_sha;
-    let all_predicates = environment_preserved && generic_environment_ref && artifact_embeds
-        && artifact_executes && first_changed && second_quiet && artifact_selection_matches
-        && service_stages_exercised && all_actual_receipts_ok && no_missing_stamp_failures
-        && service_stamp_wiring && managed_stamp_precedes_consumers && service_fixture_isolated;
+    let all_predicates = environment_preserved
+        && generic_environment_ref
+        && artifact_embeds
+        && artifact_executes
+        && first_changed
+        && second_quiet
+        && artifact_selection_matches
+        && service_stages_exercised
+        && all_actual_receipts_ok
+        && no_missing_stamp_failures
+        && service_stamp_wiring
+        && managed_stamp_precedes_consumers
+        && service_fixture_isolated;
     if !all_predicates || !unresolved_nested_reference_rejected {
-        return Err("service-runtime-build-sha-bench-failed".into());
+        return Err("service-runtime-build-sha-demo-failed".into());
     }
     Ok(json!({
         "generic_environment_key":"FIXTURE_BUILD_SHA", "generic_environment_ref":build_sha_ref,
@@ -1163,7 +1354,7 @@ Connection: close
     let result = run(format!("http://{address}/health"));
     server
         .join()
-        .map_err(|_| "health-bench-server-panicked".to_string())??;
+        .map_err(|_| "health-demo-server-panicked".to_string())??;
     result
 }
 
@@ -1188,11 +1379,11 @@ fn serve_health_once<T>(
     let result = run(format!("http://{address}/health"));
     server
         .join()
-        .map_err(|_| "health-bench-server-panicked".to_string())??;
+        .map_err(|_| "health-demo-server-panicked".to_string())??;
     result
 }
 
-fn aur_pinned_bench(
+fn aur_pinned_demo(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
@@ -1213,11 +1404,11 @@ fn aur_pinned_bench(
     let receipts = dir.join("receipts");
     fs::create_dir_all(&source).map_err(|e| e.to_string())?;
     git(&source, &["init", "-b", "main"])?;
-    git(&source, &["config", "user.email", "bench@example.invalid"])?;
-    git(&source, &["config", "user.name", "bench"])?;
+    git(&source, &["config", "user.email", "demo@example.invalid"])?;
+    git(&source, &["config", "user.name", "demo"])?;
     fs::write(
         source.join("PKGBUILD"),
-        "pkgname=benchpkg
+        "pkgname=demopkg
 pkgver=1
 pkgrel=1
 ",
@@ -1227,7 +1418,7 @@ pkgrel=1
     git(&source, &["commit", "-m", "pinned"])?;
     let pinned_sha = git(&source, &["rev-parse", "HEAD"])?;
     let lock = dir.join("lock.json");
-    fs::write(&lock,serde_json::json!({"schema":"harmonia.aur.ratchet_lock.v1","package":"benchpkg","pinned_version":"1","pkgbuild_sha":pinned_sha}).to_string()).map_err(|e|e.to_string())?;
+    fs::write(&lock,serde_json::json!({"schema":"harmonia.aur.ratchet_lock.v1","package":"demopkg","pinned_version":"1","pkgbuild_sha":pinned_sha}).to_string()).map_err(|e|e.to_string())?;
     let log = dir.join("fake-tools.log");
     let fake = dir.join("makepkg");
     fs::write(
@@ -1235,7 +1426,7 @@ pkgrel=1
         format!(
             r#"#!/bin/sh
 printf 'makepkg:%s\n' "$*" >> "{0}"
-printf artifact-bytes > benchpkg-1-1-x86_64.pkg.tar.zst
+printf artifact-bytes > demopkg-1-1-x86_64.pkg.tar.zst
 "#,
             log.display()
         ),
@@ -1247,11 +1438,11 @@ printf artifact-bytes > benchpkg-1-1-x86_64.pkg.tar.zst
     fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
     fs::write(&pac,format!(r#"#!/bin/sh
 printf 'pacman:%s\n' "$*" >> "{0}"
-case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1;; -U) printf installed > "{1}";; esac
+case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'demopkg 1\n' || exit 1;; -U) printf installed > "{1}";; esac
 "#,log.display(),state.display())).map_err(|e|e.to_string())?;
     fs::set_permissions(&pac, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     let upstream = dir.join("upstream.json");
-    fs::write(&upstream, serde_json::json!({"schema":"harmonia.aur.upstream_state.v1","package":"benchpkg","available_version":"1","pkgbuild_sha":pinned_sha,"observed_source":"stillness-bench"}).to_string()).map_err(|e|e.to_string())?;
+    fs::write(&upstream, serde_json::json!({"schema":"harmonia.aur.upstream_state.v1","package":"demopkg","available_version":"1","pkgbuild_sha":pinned_sha,"observed_source":"stillness-demo"}).to_string()).map_err(|e|e.to_string())?;
     let om = env::var("HARMONIA_MAKEPKG_PATH").ok();
     let op = env::var("HARMONIA_PACMAN_PATH").ok();
     let ou = env::var("HARMONIA_AUR_UPSTREAM_STATE").ok();
@@ -1261,7 +1452,7 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1
     let first = crate::tools::aur::build_pinned(
         &receipts,
         "build-pinned",
-        "benchpkg",
+        "demopkg",
         &lock,
         &dir.join("build"),
         Some(source.to_str().unwrap()),
@@ -1284,7 +1475,7 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1
     let second = crate::tools::aur::build_pinned(
         &receipts,
         "build-pinned",
-        "benchpkg",
+        "demopkg",
         &lock,
         &dir.join("build"),
         Some(source.to_str().unwrap()),
@@ -1334,7 +1525,7 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1
             receipt_dir: receipts.clone(),
             receipt_name: "missing".into(),
             build_receipt: receipts.join("missing-build.json"),
-            package: "benchpkg".into(),
+            package: "demopkg".into(),
             expected_version: "1".into(),
             timeout_secs: 30,
             ignored: Vec::new(),
@@ -1375,7 +1566,7 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1
     )
 }
 
-fn venv_bench(
+fn venv_demo(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
@@ -1393,7 +1584,7 @@ fn venv_bench(
         source_patterns: &patterns,
         python: Path::new("/usr/bin/python3"),
         receipt_dir: &receipts,
-        receipt_name: "venv-bench.json",
+        receipt_name: "venv-demo.json",
         timeout_secs: 30,
     };
     let run1 = crate::build_venv::run(&request, true, Some(invocation))?;
@@ -1405,14 +1596,14 @@ fn venv_bench(
     let python_path = venv.join("bin/python");
     let python_identity = fs::read_link(&python_path).map_err(|e| e.to_string())?;
     if !run1.ok || !run1.changed || !run2.ok || run2.changed {
-        return Err("venv-double-run-bench-failed".into());
+        return Err("venv-double-run-demo-failed".into());
     }
     Ok(
         json!({"venv_path":venv,"python":{"requested":request.python,"path":python_path,"identity":python_identity},"state":{"path":state,"present":true,"sha256":state_hash,"mode":format!("{:o}",state_meta.mode()&0o777),"uid":state_meta.uid(),"gid":state_meta.gid()},"run1":{"ok":run1.ok,"changed":run1.changed,"message":run1.message},"run2":{"ok":run2.ok,"changed":run2.changed,"message":run2.message},"changed_then_quiet":run1.changed&&!run2.changed}),
     )
 }
 
-fn package_bench(
+fn package_demo(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
@@ -1433,12 +1624,12 @@ fn package_bench(
 s='{s}'; t='{t}'; m='{m}'
 if [ "$1" = --hold ]; then while :; do sleep 1; done; fi
 case "$1" in
--Q) if [ "$(cat "$s")" = absent ]; then exit 1; else printf 'benchpkg 1\n'; fi ;;
--Qu) if [ "$(cat "$s")" = pending ]; then printf 'benchpkg 1->2\n'; else exit 1; fi ;;
--Syu) printf 'upgrading benchpkg
-'; [ "${{HARMONIA_BENCH_PERSIST:-0}}" = 1 ] || printf 'current
+-Q) if [ "$(cat "$s")" = absent ]; then exit 1; else printf 'demopkg 1\n'; fi ;;
+-Qu) if [ "$(cat "$s")" = pending ]; then printf 'demopkg 1->2\n'; else exit 1; fi ;;
+-Syu) printf 'upgrading demopkg
+'; [ "${{HARMONIA_DEMO_PERSIST:-0}}" = 1 ] || printf 'current
 ' > "$s" ;;
--S) if [ -f "$t" ] && [ ! -f "$m" ] && ! printf '%s' "$*"|grep -q -- --overwrite; then touch "$m"; printf 'exists in filesystem\n' >&2; exit 1; fi; printf 'installing benchpkg\n'; [ "${{HARMONIA_BENCH_PERSIST:-0}}" = 1 ] || printf 'current\n' > "$s"; printf '%s' "$*"|grep -q -- --overwrite && printf 'new-bytes\n' > "$t"; exit 0 ;;
+-S) if [ -f "$t" ] && [ ! -f "$m" ] && ! printf '%s' "$*"|grep -q -- --overwrite; then touch "$m"; printf 'exists in filesystem\n' >&2; exit 1; fi; printf 'installing demopkg\n'; [ "${{HARMONIA_DEMO_PERSIST:-0}}" = 1 ] || printf 'current\n' > "$s"; printf '%s' "$*"|grep -q -- --overwrite && printf 'new-bytes\n' > "$t"; exit 0 ;;
 *) exit 0;; esac
 "#,s=state.display(),t=target.display(),m=marker.display())).map_err(|e|e.to_string())?;
     let mut pm = fs::metadata(&fake)
@@ -1447,9 +1638,9 @@ case "$1" in
     pm.set_mode(0o755);
     fs::set_permissions(&fake, pm).map_err(|e| e.to_string())?;
     let saved = env::var("HARMONIA_PACMAN_PATH").ok();
-    let sp = env::var("HARMONIA_BENCH_PERSIST").ok();
-    let sc = env::var("HARMONIA_BENCH_CONFLICT").ok();
-    let st = env::var("HARMONIA_BENCH_TARGET").ok();
+    let sp = env::var("HARMONIA_DEMO_PERSIST").ok();
+    let sc = env::var("HARMONIA_DEMO_CONFLICT").ok();
+    let st = env::var("HARMONIA_DEMO_TARGET").ok();
     struct R(
         Option<String>,
         Option<String>,
@@ -1460,9 +1651,9 @@ case "$1" in
         fn drop(&mut self) {
             for (k, v) in [
                 ("HARMONIA_PACMAN_PATH", &self.0),
-                ("HARMONIA_BENCH_PERSIST", &self.1),
-                ("HARMONIA_BENCH_CONFLICT", &self.2),
-                ("HARMONIA_BENCH_TARGET", &self.3),
+                ("HARMONIA_DEMO_PERSIST", &self.1),
+                ("HARMONIA_DEMO_CONFLICT", &self.2),
+                ("HARMONIA_DEMO_TARGET", &self.3),
             ] {
                 match v {
                     Some(x) => env::set_var(k, x),
@@ -1473,7 +1664,7 @@ case "$1" in
     }
     let _r = R(saved, sp, sc, st);
     env::set_var("HARMONIA_PACMAN_PATH", &fake);
-    let pk = vec!["benchpkg".to_string()];
+    let pk = vec!["demopkg".to_string()];
     let run = |n: &str, d: &Path| {
         crate::tools::package::package_tool_with_policy_for_backend(
             d,
@@ -1531,11 +1722,11 @@ case "$1" in
             == "current"
         && ch_r["ok"] == true
         && ch_r["changed"] == true
-        && ch_r["observed_state"] == "benchpkg 1\n";
+        && ch_r["observed_state"] == "demopkg 1\n";
     let apt = dir.join("apt-get");
     fs::write(
         &apt,
-        "#!/bin/sh\n[ \"$1\" = -s ] && exit 0\nprintf 'The following packages will be installed: benchpkg\\n'\n",
+        "#!/bin/sh\n[ \"$1\" = -s ] && exit 0\nprintf 'The following packages will be installed: demopkg\\n'\n",
     )
     .map_err(|e| e.to_string())?;
     let mut am = fs::metadata(&apt).map_err(|e| e.to_string())?.permissions();
@@ -1622,8 +1813,8 @@ case "$1" in
             == "current";
     fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
     fs::write(&target, b"old-bytes\n").map_err(|e| e.to_string())?;
-    env::set_var("HARMONIA_BENCH_CONFLICT", "1");
-    env::set_var("HARMONIA_BENCH_TARGET", &target);
+    env::set_var("HARMONIA_DEMO_CONFLICT", "1");
+    env::set_var("HARMONIA_DEMO_TARGET", &target);
     let od = dir.join("overwrite");
     fs::create_dir_all(&od).map_err(|e| e.to_string())?;
     let ov = crate::tools::package::package_tool_with_policy_for_backend(
@@ -1669,8 +1860,8 @@ case "$1" in
         && ov.changed
         && tx["first_ok"] == false
         && tx["second_ok"] == true;
-    env::set_var("HARMONIA_BENCH_PERSIST", "1");
-    env::remove_var("HARMONIA_BENCH_CONFLICT");
+    env::set_var("HARMONIA_DEMO_PERSIST", "1");
+    env::remove_var("HARMONIA_DEMO_CONFLICT");
     fs::write(&state, "absent\n").map_err(|e| e.to_string())?;
     let pd = dir.join("persistent");
     fs::create_dir_all(&pd).map_err(|e| e.to_string())?;
@@ -1707,7 +1898,7 @@ case "$1" in
     )
 }
 
-fn never_converge_bench() -> Result<serde_json::Value, String> {
+fn never_converge_demo() -> Result<serde_json::Value, String> {
     let acted = Cell::new(false);
     let result = comparison::execute(
         "forced-never-converge",
@@ -1725,8 +1916,8 @@ fn never_converge_bench() -> Result<serde_json::Value, String> {
             "signal": signal
         })),
         Ok(ComparisonRun::Current { .. }) | Ok(ComparisonRun::Moved { .. }) => {
-            Err("never-converge-bench-did-not-fail".to_string())
+            Err("never-converge-demo-did-not-fail".to_string())
         }
-        Err(signal) => Err(format!("never-converge-bench-wrong-signal {signal}")),
+        Err(signal) => Err(format!("never-converge-demo-wrong-signal {signal}")),
     }
 }

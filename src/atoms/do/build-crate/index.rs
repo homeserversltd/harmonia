@@ -89,7 +89,7 @@ pub(crate) fn cargo_build_and_stamp(
     Ok(observation)
 }
 
-pub(crate) fn bench_build_guard(
+pub(crate) fn demo_build_guard(
     root: &Path,
     source_build_sha: &str,
 ) -> Result<serde_json::Value, String> {
@@ -101,7 +101,7 @@ pub(crate) fn bench_build_guard(
     let run_once = |action_count: &Cell<u32>| -> Result<bool, String> {
         let run = crate::atoms::declaration::execute(
             "build-crate",
-            "bench-build-crate",
+            "demo-build-crate",
             || crate::atoms::ask::build_crate::build_identity(source_build_sha, None, &artifact),
             |observation| {
                 if observation.identity_matches() {
@@ -112,7 +112,7 @@ pub(crate) fn bench_build_guard(
             },
             |_, _| {
                 action_count.set(action_count.get() + 1);
-                std::fs::write(&artifact, format!("bench artifact {source_build_sha}\n"))
+                std::fs::write(&artifact, format!("demo artifact {source_build_sha}\n"))
                     .map_err(|e| e.to_string())
             },
         )?;
@@ -123,7 +123,7 @@ pub(crate) fn bench_build_guard(
     let changed2 = run_once(&action_count)?;
     let ops2 = action_count.get() - ops1;
     if !changed1 || changed2 || ops1 != 1 || ops2 != 0 {
-        return Err("build-guard-bench-failed".into());
+        return Err("build-guard-demo-failed".into());
     }
     Ok(
         serde_json::json!({"run1":{"changed":changed1,"action_count":ops1},"run2":{"changed":changed2,"operations":ops2},"artifact":artifact,"environment":{"CADUCEUS_BUILD_SHA":source_build_sha}}),

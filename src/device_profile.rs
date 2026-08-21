@@ -69,7 +69,10 @@ fn load_certificate() -> Result<DeviceProfileCertificate, String> {
 
 fn validate_syzygy_declaration(declaration: &crate::SyzygyDeclaration) -> Result<(), String> {
     if declaration.schema != "appliance.syzygy.v1" {
-        return Err(format!("device-profile-syzygy-schema-unsupported {}", declaration.schema));
+        return Err(format!(
+            "device-profile-syzygy-schema-unsupported {}",
+            declaration.schema
+        ));
     }
     if let Some(face) = declaration.gui_face.as_deref() {
         if !matches!(face, "Hyprland" | "Arcadia" | "Coronatio") {
@@ -108,8 +111,15 @@ pub(crate) fn verify_asserted_profile(asserted_profile: &str) -> Result<(), Stri
 pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String> {
     let certificate = load_certificate()?;
     let profile_id = certificate.kernel.profile.trim().to_string();
-    if profile_id.is_empty() || profile_id.contains('/') || profile_id.contains('\\') || profile_id == "." || profile_id == ".." {
-        return Err(format!("device-profile-certificate-profile-invalid profile={profile_id}"));
+    if profile_id.is_empty()
+        || profile_id.contains('/')
+        || profile_id.contains('\\')
+        || profile_id == "."
+        || profile_id == ".."
+    {
+        return Err(format!(
+            "device-profile-certificate-profile-invalid profile={profile_id}"
+        ));
     }
     let profile_dir = Path::new(HARMONIA_MODULE_ROOT)
         .join("profiles")

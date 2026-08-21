@@ -88,12 +88,11 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         && refused_rows_preserved
         && sentinel_parent_rows_preserved
         && proposal_count == 1;
-    let ok = ok && xattr["ok"] == true;
-    let registry = registry_proof(&root, invocation)?;
-    let ok = ok && registry["ok"].as_bool().unwrap_or(false);
-    let receipt = json!({"schema":"harmonia.bench-structural-wall.v5","ok":ok,"xattr":xattr,"registry":registry,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
-    let matrix_path =
-        PathBuf::from("/var/opt/hermes/workspace/structural-wall-matrix.json");
+    let ok = ok && slice2["ok"] == true;
+    let slice11 = slice11_proof(&root, invocation)?;
+    let ok = ok && slice11["ok"].as_bool().unwrap_or(false);
+    let receipt = json!({"schema":"harmonia.demo-structural-wall.v5","ok":ok,"slice2":slice2,"slice11":slice11,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
+    let matrix_path = PathBuf::from("/var/opt/hermes/workspace/structural-wall-demo-matrix.json");
     fs::write(
         &matrix_path,
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
@@ -104,12 +103,15 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
             matrix_path.display()
         )
     })?;
+    let actual_cleanup_observed = fs::remove_dir_all(&root).is_ok() && !root.exists();
+    let mut receipt = receipt;
+    receipt["actual_cleanup_observed"] = json!(actual_cleanup_observed);
+    receipt["ok"] = json!(ok && actual_cleanup_observed);
     println!(
         "{}",
         serde_json::to_string(&receipt).map_err(|e| e.to_string())?
     );
-    fs::remove_dir_all(&root).map_err(|e| e.to_string())?;
-    if ok {
+    if ok && actual_cleanup_observed {
         Ok(())
     } else {
         Err("structural-wall-authority-proof-failed".into())
@@ -679,12 +681,12 @@ fn hash(p: &Path) -> String {
     walk(p, &mut h);
     format!("sha256:{:x}", h.finalize())
 }
-fn manifest(root: &Path, interactable: bool) -> crate::tools::ladder::LadderManifest {
-    crate::tools::ladder::LadderManifest {
-        schema: crate::tools::ladder::SCHEMA.into(),
-        id: "structural-wall-bench".into(),
+fn manifest(root: &Path, interactable: bool) -> crate::ladder::LadderManifest {
+    crate::ladder::LadderManifest {
+        schema: crate::ladder::SCHEMA.into(),
+        id: "slice-9-demo".into(),
         version: "1".into(),
-        description: "bench".into(),
+        description: "demo".into(),
         role: None,
         optional: false,
         optional_warning: None,
@@ -786,8 +788,8 @@ fn row(
     } else {
         "converge"
     };
-    let step = crate::tools::ladder::ValidatedStep {
-        step_id: format!("bench-{name}"),
+    let step = crate::ladder::ValidatedStep {
+        step_id: format!("demo-{name}"),
         tool: "files".into(),
         permutation: dispatch.into(),
         args: args(dispatch, &target, source),
@@ -800,10 +802,10 @@ fn row(
             root.join("interactables.json"),
         );
     }
-    let bench_manifest = manifest(root, interactable);
+    let demo_manifest = manifest(root, interactable);
     let result = crate::tools::routine::execute_validated_step(
         &step,
-        &bench_manifest,
+        &demo_manifest,
         &root.join("receipts"),
         Some(auth),
         None,
@@ -881,8 +883,8 @@ fn routine_row(
         args: ca,
         extra: BTreeMap::new(),
     };
-    let routine = crate::tools::ladder::LadderStep {
-        step_id: "bench-routine".into(),
+    let routine = crate::ladder::LadderStep {
+        step_id: "demo-routine".into(),
         tool: "routine".into(),
         permutation: "execute".into(),
         args: BTreeMap::new(),
@@ -897,8 +899,8 @@ fn routine_row(
     let children =
         crate::tools::routine::project_routine_children(&manifest.ladder[0], &manifest.constants)
             .map_err(|e| e.defect)?;
-    let step = crate::tools::ladder::ValidatedStep {
-        step_id: "bench-routine".into(),
+    let step = crate::ladder::ValidatedStep {
+        step_id: "demo-routine".into(),
         tool: "routine".into(),
         permutation: "execute".into(),
         args: BTreeMap::new(),
@@ -907,7 +909,7 @@ fn routine_row(
     let mut states: BTreeMap<String, crate::ModuleWalkState> = BTreeMap::new();
     let mut projected: BTreeMap<String, Vec<crate::tools::ladder::ProjectedRoutineChild>> =
         BTreeMap::new();
-    projected.insert("bench-routine".into(), children);
+    projected.insert("demo-routine".into(), children);
     let band = crate::tools::Placement::BackfillFiles.band();
     let execution = crate::tools::routine::execute_routine(
         &step,
@@ -920,7 +922,7 @@ fn routine_row(
         Some(&mut states),
         band,
         projected
-            .get("bench-routine")
+            .get("demo-routine")
             .map(Vec::as_slice)
             .unwrap_or(&[]),
     );
@@ -931,7 +933,7 @@ fn routine_row(
         Ok(o) => (
             Some(o.changed),
             states
-                .get("bench-routine")
+                .get("demo-routine")
                 .and_then(|s| s.first_missing_signal.clone())
                 .unwrap_or_default(),
         ),

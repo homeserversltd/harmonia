@@ -7,7 +7,7 @@ mod band;
 
 pub(crate) use band::{execute, ValidatedFileSymlinkRequest};
 
-pub(crate) fn make_symlink_bench(
+pub(crate) fn demo(
     root: &std::path::Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -24,7 +24,7 @@ pub(crate) fn make_symlink_bench(
         crate::tools::make_symlink::execute(
             ValidatedFileSymlinkRequest {
                 receipt_dir: &receipts,
-                name: "bench",
+                name: "demo",
                 desired_source: &desired,
                 source: &source,
                 target: &target,

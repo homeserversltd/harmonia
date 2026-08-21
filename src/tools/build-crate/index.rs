@@ -202,11 +202,11 @@ pub(crate) fn run(
     .is_none_or(|result| result.ok))
 }
 
-pub(crate) fn bench_build_guard(
+pub(crate) fn demo_build_guard(
     root: &Path,
     source_build_sha: &str,
 ) -> Result<serde_json::Value, String> {
-    crate::atoms::r#do::build_crate::bench_build_guard(root, source_build_sha)
+    crate::atoms::r#do::build_crate::demo_build_guard(root, source_build_sha)
 }
 
 pub fn declaration() -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
