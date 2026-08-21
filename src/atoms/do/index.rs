@@ -27,8 +27,6 @@ pub(crate) mod change_mode;
 pub(crate) mod change_owner;
 #[path = "change-unit/index.rs"]
 pub(crate) mod change_unit;
-#[path = "compatibility.rs"]
-pub(crate) mod compatibility;
 #[path = "convergence-lock.rs"]
 pub(crate) mod convergence_lock;
 #[path = "copy-file/index.rs"]
@@ -66,12 +64,20 @@ pub(crate) mod write_file;
 #[path = "source-shelf.rs"]
 pub(crate) mod source_shelf;
 
-pub(crate) use compatibility::{
-    apply, aur_build_pinned, aur_install, aur_install_pinned, cargo_build, command_with_timeout,
-    command_with_timeout_in_dir, command_with_timeout_in_dir_env, create_dir_all, file_write,
-    git_acquire, git_pull, mutating_command, package_install, remove_file, rename, symlink,
-    unit_change, unit_change_scoped, FileWriteOptions, FileWriteResult, InvocationKey, UnitVerb,
-};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvocationKey(());
+
+impl InvocationKey {
+    pub(crate) fn for_apply() -> Self {
+        Self(())
+    }
+    pub(crate) fn from_apply_or_timer(
+        v: bool,
+        _mint: crate::invocation_face::Mint,
+    ) -> Option<Self> {
+        v.then_some(Self(()))
+    }
+}
 
 #[path = "symlink-converge.rs"]
 pub(crate) mod symlink_converge;

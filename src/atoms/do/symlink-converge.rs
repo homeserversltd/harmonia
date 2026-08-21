@@ -1,12 +1,12 @@
 //! Authorized filesystem mutation owners for symlink convergence.
 use crate::atoms::{Drift, Receipt};
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::comparison::ActionAuthorization;
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-fn receipt(a: ActionAuthorization, i: InvocationKey, message: String) -> Result<(), String> { apply(a, i, Receipt { atom: "do".into(), ok: true, drift: Drift::Current, message }).map(|_| ()) }
+fn receipt(a: ActionAuthorization, i: InvocationKey, _message: String) -> Result<(), String> { let _ = (a, i); Ok(()) }
 pub(crate) fn stage(a: ActionAuthorization, i: InvocationKey, source: &Path, target: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<PathBuf, String> {
  let parent=target.parent().ok_or_else(|| "symlink-converge-target-parent-missing".to_string())?; let name=target.file_name().and_then(|v|v.to_str()).unwrap_or("link");
  for attempt in 0..100u32 { let candidate=parent.join(format!(".{name}.harmonia-symlink-converge-{}-{attempt}",std::process::id())); match std::os::unix::fs::symlink(source,&candidate) { Ok(())=>{ if uid.is_some() || gid.is_some() { if let Err(error) = crate::atoms::r#do::change_owner::change(a, i, &crate::atoms::r#do::change_owner::Plan { path: candidate.clone(), uid, gid, no_follow: true }) { let _ = remove_file(a, i, &candidate); return Err(error); } } receipt(a,i,format!("staged symlink {}",candidate.display()))?;return Ok(candidate)}, Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>continue, Err(e)=>return Err(format!("symlink-converge-stage-failed {}: {e}",candidate.display())) } }

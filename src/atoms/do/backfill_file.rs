@@ -152,12 +152,12 @@ mod mutation {
             let path = action.backup_to.expect("backup path for existing target");
             return Err(format!("backfill-file-backup-exists {}", path.display()));
         }
-        let result = atoms::r#do::file_write(
+        let result = atoms::r#do::write_file::file_write(
             authorization,
             invocation,
             path,
             declared_bytes,
-            atoms::r#do::FileWriteOptions {
+            atoms::r#do::write_file::FileWriteOptions {
                 write_bytes: action.bytes,
                 mode: if action.bytes {
                     declared_mode

@@ -105,7 +105,7 @@ pub(crate) fn authorized_capture(
     args: &[String],
     timeout: Duration,
 ) -> Result<crate::atoms::CommandObservation, String> {
-    crate::atoms::r#do::command_with_timeout(authorization, invocation, program, args, timeout)
+    crate::atoms::r#do::run_command::command_with_timeout(authorization, invocation, program, args, timeout)
 }
 
 pub fn plan(request: &Request) -> Outcome {

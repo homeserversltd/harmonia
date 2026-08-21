@@ -1,31 +1,21 @@
 use crate::*;
 use serde_json::json;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) const HOME_CONSOLE_UPDATE_RECEIPT_LATEST: &str =
     "/var/lib/harmonia/receipts/homeconsole-update-latest";
-pub(crate) const HOME_CONSOLE_UPDATE_RECEIPT_LEGACY: &str =
-    "/var/lib/harmonia/receipts/homeconsole-latest";
 pub(crate) const HOME_SERVER_UPDATE_RECEIPT_LATEST: &str =
     "/var/lib/harmonia/receipts/homeserver-update-latest";
 pub(crate) const TV_UPDATE_RECEIPT_LATEST: &str = "/var/lib/harmonia/receipts/tv-update-latest";
-pub(crate) const TV_UPDATE_RECEIPT_LEGACY: &str = "/var/lib/harmonia/receipts/tv-latest";
 
 pub(crate) fn homeconsole_update_receipt_latest() -> PathBuf {
     PathBuf::from(HOME_CONSOLE_UPDATE_RECEIPT_LATEST)
-}
-pub(crate) fn homeconsole_update_receipt_legacy() -> PathBuf {
-    PathBuf::from(HOME_CONSOLE_UPDATE_RECEIPT_LEGACY)
 }
 pub(crate) fn homeserver_update_receipt_latest() -> PathBuf {
     PathBuf::from(HOME_SERVER_UPDATE_RECEIPT_LATEST)
 }
 pub(crate) fn tv_update_receipt_latest() -> PathBuf {
     PathBuf::from(TV_UPDATE_RECEIPT_LATEST)
-}
-pub(crate) fn tv_update_receipt_legacy() -> PathBuf {
-    PathBuf::from(TV_UPDATE_RECEIPT_LEGACY)
 }
 pub(crate) fn materialize_tv_receipt_dir(
     receipt_dir: &Path,
@@ -50,30 +40,8 @@ pub(crate) fn materialize_tv_receipt_dir(
         .unwrap_or("tv-update");
     let per_run = parent.join(format!("{base}-{run_id}"));
     crate::atoms::attest::prepare_receipt_parent(&per_run)?;
-    migrate_tv_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_tv_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
-}
-fn migrate_tv_blocking_receipt_path(latest_path: &Path, run_id: &str) -> Result<(), String> {
-    if !latest_path.exists() || latest_path.is_symlink() {
-        return Ok(());
-    }
-    if latest_path.is_dir() {
-        let parent = latest_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| latest_path.to_path_buf());
-        let migrated = parent.join(format!("tv-update-legacy-{run_id}"));
-        fs::rename(latest_path, &migrated).map_err(|e| {
-            format!(
-                "tv-update-latest-migrate-failed {} -> {}: {e}",
-                latest_path.display(),
-                migrated.display()
-            )
-        })?;
-        return Ok(());
-    }
-    fs::remove_file(latest_path).map_err(|e| e.to_string())
 }
 fn refresh_tv_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), String> {
     crate::atoms::attest::promote_current_link(latest_path, target, "tv-update-latest", false)
@@ -101,7 +69,6 @@ pub(crate) fn materialize_homeconsole_receipt_dir(
         .unwrap_or("homeconsole-update");
     let per_run = parent.join(format!("{base}-{run_id}"));
     crate::atoms::attest::prepare_receipt_parent(&per_run)?;
-    migrate_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
 }
@@ -128,57 +95,8 @@ pub(crate) fn materialize_homeserver_receipt_dir(
         .unwrap_or("homeserver-update");
     let per_run = parent.join(format!("{base}-{run_id}"));
     crate::atoms::attest::prepare_receipt_parent(&per_run)?;
-    migrate_homeserver_blocking_receipt_path(receipt_dir, run_id)?;
     refresh_homeserver_latest_symlink(receipt_dir, &per_run)?;
     Ok(per_run)
-}
-fn migrate_homeserver_blocking_receipt_path(
-    latest_path: &Path,
-    run_id: &str,
-) -> Result<(), String> {
-    if !latest_path.exists() || latest_path.is_symlink() {
-        return Ok(());
-    }
-    if latest_path.is_dir() {
-        let parent = latest_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| latest_path.to_path_buf());
-        let migrated = parent.join(format!("homeserver-update-legacy-{run_id}"));
-        fs::rename(latest_path, &migrated).map_err(|e| {
-            format!(
-                "homeserver-update-latest-migrate-failed {} -> {}: {e}",
-                latest_path.display(),
-                migrated.display()
-            )
-        })?;
-        return Ok(());
-    }
-    fs::remove_file(latest_path).map_err(|e| e.to_string())
-}
-pub(crate) fn migrate_blocking_receipt_path(
-    latest_path: &Path,
-    run_id: &str,
-) -> Result<(), String> {
-    if !latest_path.exists() || latest_path.is_symlink() {
-        return Ok(());
-    }
-    if latest_path.is_dir() {
-        let parent = latest_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| latest_path.to_path_buf());
-        let migrated = parent.join(format!("homeconsole-update-legacy-{run_id}"));
-        fs::rename(latest_path, &migrated).map_err(|e| {
-            format!(
-                "homeconsole-update-latest-migrate-failed {} -> {}: {e}",
-                latest_path.display(),
-                migrated.display()
-            )
-        })?;
-        return Ok(());
-    }
-    fs::remove_file(latest_path).map_err(|e| e.to_string())
 }
 fn refresh_homeserver_latest_symlink(latest_path: &Path, target: &Path) -> Result<(), String> {
     crate::atoms::attest::promote_current_link(

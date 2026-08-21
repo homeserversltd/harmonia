@@ -1,4 +1,4 @@
-//! Legacy enable-now delegation organ.
+//! Enable-now delegation organ.
 use crate::atoms;
 use crate::CmdResult;
 
@@ -86,11 +86,11 @@ mod mutation {
         target: Option<&str>,
         timeout: u64,
     ) -> Result<CmdResult, String> {
-        let result = atoms::r#do::unit_change_scoped(
+        let result = atoms::r#do::change_unit::unit_change_scoped(
             authorization,
             invocation,
             unit,
-            atoms::r#do::UnitVerb::EnableNow,
+            atoms::r#do::change_unit::UnitVerb::EnableNow,
             user,
             target,
             timeout,

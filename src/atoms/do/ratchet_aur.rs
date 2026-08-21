@@ -182,7 +182,7 @@ mod mutation {
         if observation.verdict != Verdict::BehindPin {
             return Err("ratchet-aur-package-act-without-behind-pin".into());
         }
-        let built = atoms::r#do::aur_build_pinned(authorization, invocation, || {
+        let built = atoms::r#do::build_aur_pinned::aur_build_pinned(authorization, invocation, || {
             atoms::r#do::build_aur_pinned::aur_build_pinned_action(
                 receipt_dir,
                 receipt_name,
@@ -200,7 +200,7 @@ mod mutation {
             return Ok(built);
         }
         let lock = crate::atoms::aur::read_lock(lock_path, package)?;
-        atoms::r#do::aur_install_pinned(authorization, invocation, || {
+        atoms::r#do::install_aur_pinned::aur_install_pinned(authorization, invocation, || {
             atoms::r#do::install_aur_pinned::run(
                 &atoms::r#do::install_aur_pinned::Plan {
                     receipt_dir: receipt_dir.to_path_buf(),
@@ -232,7 +232,7 @@ mod mutation {
         apply: bool,
         pins: &BTreeMap<String, String>,
     ) -> Result<OperationOutcome, String> {
-        atoms::r#do::aur_install(authorization, invocation, || {
+        atoms::r#do::install_aur::aur_install(authorization, invocation, || {
             atoms::r#do::install_aur::aur_install_action(
                 receipt_dir,
                 receipt_name,

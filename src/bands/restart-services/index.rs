@@ -506,9 +506,7 @@ pub(crate) fn execute_routine_child(
                 expected_contains: args.get("expected_contains").and_then(Value::as_str),
             };
             let result = crate::tools::health::curl_probe(&request);
-            if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
-                crate::write_command_receipt(receipt_dir, legacy, &result)?;
-            }
+
             crate::write_json(
                 &receipt_dir.join(format!("{name}.json")),
                 &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":result.ok,"changed":false,"skipped":!apply,"stdout":result.stdout,"stderr":result.stderr}),
@@ -593,13 +591,7 @@ pub(crate) fn execute_routine_child(
                 restart_policy,
                 invocation,
             )?;
-            if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
-                crate::atoms::attest::copy_artifact(
-                    &receipt_dir.join(format!("{name}.json")),
-                    &receipt_dir.join(format!("{legacy}.json")),
-                )
-                .map_err(|e| e.to_string())?;
-            }
+
             Ok((
                 o,
                 [("service".into(), serde_json::json!(service.unwrap_or("")))]
@@ -630,13 +622,7 @@ pub(crate) fn execute_routine_child(
                 false,
                 invocation,
             )?;
-            if let Some(legacy) = args.get("legacy_receipt").and_then(Value::as_str) {
-                crate::atoms::attest::copy_artifact(
-                    &receipt_dir.join(format!("{name}.json")),
-                    &receipt_dir.join(format!("{legacy}.json")),
-                )
-                .map_err(|e| e.to_string())?;
-            }
+
             Ok((
                 o,
                 [

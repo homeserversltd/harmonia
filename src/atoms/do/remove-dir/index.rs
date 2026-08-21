@@ -1,5 +1,5 @@
 //! Exact directory image capture/removal/restoration; symlink-safe and byte-preserving.
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
@@ -183,16 +183,7 @@ pub(crate) fn remove_authorized(
     root: &Path,
 ) -> Result<(), String> {
     remove(root)?;
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: format!("directory removed {}", root.display()),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(())
 }
 
@@ -343,16 +334,7 @@ pub(crate) fn replace_authorized(
             Err(rollback) => Err(format!("{original}; rollback failed: {rollback}")),
         };
     }
-    apply(
-        a,
-        i,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: "exact directory replacement".into(),
-        },
-    )?;
+    let _ = (a, i);
     Ok(())
 }
 
@@ -367,15 +349,6 @@ pub(crate) fn operate(
     if let Some(x) = restore_image {
         restore(root, x)?
     };
-    apply(
-        a,
-        i,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: "exact directory operation".into(),
-        },
-    )?;
+    let _ = (a, i);
     Ok(image)
 }

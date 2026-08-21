@@ -332,22 +332,7 @@ pub(crate) fn execute_routine_child(
                 invocation,
                 crate::build_crate::IdentityMode::RegularExecutable,
             )?;
-            if let Some(legacy_name) = args.get("legacy_build_receipt").and_then(Value::as_str) {
-                if let Some(observation) = &moved {
-                    let command = crate::CmdResult {
-                        ok: observation.ok,
-                        code: observation.code.unwrap_or(-1),
-                        stdout: observation.stdout.clone(),
-                        stderr: observation.stderr.clone(),
-                    };
-                    crate::write_command_receipt(receipt_dir, legacy_name, &command)?;
-                } else {
-                    crate::write_json(
-                        &receipt_dir.join(format!("{legacy_name}.json")),
-                        &serde_json::json!({"schema":"harmonia.service-runtime.cargo-build.v1","state":"converged-quiet","ok":true,"changed":false,"invoked":false,"reason":"source-sha-matches-promoted-source-and-installed-binary","remote_sha":"","promoted_source_sha":source_sha}),
-                    )?;
-                }
-            }
+
             let result = OperationOutcome {
                 ok: moved.as_ref().map_or(true, |x| x.ok),
                 changed: apply && moved.is_some(),
@@ -356,7 +341,6 @@ pub(crate) fn execute_routine_child(
                 command: None,
             };
             let result_changed = result.changed;
-            // Legacy cargo-build receipt is authoritative; avoid a duplicate routine-tool writer.
             Ok((
                 result,
                 [

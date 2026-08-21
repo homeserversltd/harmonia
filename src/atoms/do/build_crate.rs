@@ -11,7 +11,7 @@ use crate::atoms;
         timeout_secs: u64,
         bearer: &str,
     ) -> Result<crate::atoms::CommandObservation, String> {
-        crate::atoms::r#do::cargo_build(
+        crate::atoms::r#do::build_crate::cargo_build(
             auth,
             key,
             cwd,

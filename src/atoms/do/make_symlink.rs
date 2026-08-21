@@ -145,12 +145,12 @@ fn restore_file(
     saved: &SavedFile,
 ) -> Result<(), String> {
     match &saved.bytes {
-        Some(bytes) => atoms::r#do::file_write(
+        Some(bytes) => atoms::r#do::write_file::file_write(
             authorization,
             invocation,
             path,
             bytes,
-            atoms::r#do::FileWriteOptions {
+            atoms::r#do::write_file::FileWriteOptions {
                 write_bytes: true,
                 mode: saved.mode,
                 uid: None,
@@ -161,7 +161,7 @@ fn restore_file(
         .map(|_| ()),
         None => {
             if atoms::ask::path_kind(path)?.is_some() {
-                atoms::r#do::remove_file(authorization, invocation, path).map_err(|e| {
+                atoms::r#do::remove_file::remove_file(authorization, invocation, path).map_err(|e| {
                     format!(
                         "validated-file-symlink-restore-source-remove-failed {}: {e}",
                         path.display()
@@ -180,7 +180,7 @@ fn restore_link(
     saved: &SavedLink,
 ) -> Result<(), String> {
     if atoms::ask::path_kind(path)?.is_some() {
-        atoms::r#do::remove_file(authorization, invocation, path).map_err(|e| {
+        atoms::r#do::remove_file::remove_file(authorization, invocation, path).map_err(|e| {
             format!(
                 "validated-file-symlink-restore-link-remove-failed {}: {e}",
                 path.display()
@@ -192,7 +192,7 @@ fn restore_link(
             .target
             .as_ref()
             .ok_or_else(|| "validated-file-symlink-restore-link-unobserved".to_string())?;
-        atoms::r#do::symlink(authorization, invocation, link, path).map_err(|e| {
+        atoms::r#do::make_link::symlink(authorization, invocation, link, path).map_err(|e| {
             format!(
                 "validated-file-symlink-restore-link-create-failed {}: {e}",
                 path.display()
@@ -316,7 +316,7 @@ fn rollback_file_symlink(
     first_error
 }
 
-/// Comparison is the sole gate for promotion; the legacy body is reachable only
+/// Comparison is the sole gate for promotion; the mutation body is reachable only
 /// from the non-empty action arm.
 pub(crate) fn execute(
     request: ValidatedFileSymlinkRequest<'_>,
@@ -421,30 +421,30 @@ fn execute_action(
         .target
         .parent()
         .ok_or_else(|| "validated-file-symlink-target-parent-missing".to_string())?;
-    atoms::r#do::create_dir_all(authorization, invocation, source_parent)?;
-    atoms::r#do::create_dir_all(authorization, invocation, target_parent)?;
+    atoms::r#do::make_dir::create_dir_all(authorization, invocation, source_parent)?;
+    atoms::r#do::make_dir::create_dir_all(authorization, invocation, target_parent)?;
     let source_candidate_exists = std::cell::Cell::new(source_candidate_observed);
     let link_candidate_exists = std::cell::Cell::new(link_candidate_observed);
     let mut clean = || {
         if source_candidate_exists.get()
-            && atoms::r#do::remove_file(authorization, invocation, &source_candidate).is_ok()
+            && atoms::r#do::remove_file::remove_file(authorization, invocation, &source_candidate).is_ok()
         {
             source_candidate_exists.set(false);
         }
         if link_candidate_exists.get()
-            && atoms::r#do::remove_file(authorization, invocation, &link_candidate).is_ok()
+            && atoms::r#do::remove_file::remove_file(authorization, invocation, &link_candidate).is_ok()
         {
             link_candidate_exists.set(false);
         }
     };
     clean();
     if let Err(error) = file_symlink_fault(FileSymlinkFault::StageSource).and_then(|_| {
-        atoms::r#do::file_write(
+        atoms::r#do::write_file::file_write(
             authorization,
             invocation,
             &source_candidate,
             desired,
-            atoms::r#do::FileWriteOptions {
+            atoms::r#do::write_file::FileWriteOptions {
                 write_bytes: true,
                 mode: Some(desired_mode),
                 uid: None,
@@ -466,7 +466,7 @@ fn execute_action(
     }
     #[cfg(unix)]
     if let Err(error) = file_symlink_fault(FileSymlinkFault::StageLink).and_then(|_| {
-        atoms::r#do::symlink(
+        atoms::r#do::make_link::symlink(
             authorization,
             invocation,
             &source_candidate,
@@ -503,7 +503,7 @@ fn execute_action(
     if !source_current {
         if let Err(error) =
             file_symlink_fault(FileSymlinkFault::BeforeSourcePromotion).and_then(|_| {
-                atoms::r#do::rename(authorization, invocation, &source_candidate, request.source)
+                atoms::r#do::rename::rename(authorization, invocation, &source_candidate, request.source)
             })
         {
             promotion_error = Some(format!(
@@ -521,13 +521,13 @@ fn execute_action(
     }
     if promotion_error.is_none() && !link_current {
         if link_candidate_exists.get()
-            && atoms::r#do::remove_file(authorization, invocation, &link_candidate).is_ok()
+            && atoms::r#do::remove_file::remove_file(authorization, invocation, &link_candidate).is_ok()
         {
             link_candidate_exists.set(false);
         }
         #[cfg(unix)]
         if let Err(error) = file_symlink_fault(FileSymlinkFault::BeforeLinkRestage).and_then(|_| {
-            atoms::r#do::symlink(authorization, invocation, request.source, &link_candidate).map(
+            atoms::r#do::make_link::symlink(authorization, invocation, request.source, &link_candidate).map(
                 |_| {
                     link_candidate_exists.set(true);
                 },
@@ -540,7 +540,7 @@ fn execute_action(
         if promotion_error.is_none() {
             if let Err(error) =
                 file_symlink_fault(FileSymlinkFault::BeforeLinkPromotion).and_then(|_| {
-                    atoms::r#do::rename(authorization, invocation, &link_candidate, request.target)
+                    atoms::r#do::rename::rename(authorization, invocation, &link_candidate, request.target)
                 })
             {
                 promotion_error = Some(format!(
@@ -612,7 +612,7 @@ fn execute_action(
     let mut changed = promotion.source || promotion.link;
     let mut signal = "none".to_string();
     if let Some(program) = request.reload_program.filter(|value| !value.is_empty()) {
-        let observed = atoms::r#do::command_with_timeout(
+        let observed = atoms::r#do::run_command::command_with_timeout(
             authorization,
             invocation,
             program,

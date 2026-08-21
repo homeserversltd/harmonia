@@ -112,7 +112,7 @@ use crate::atoms::comparison::ActionAuthorization;
                 })
             }
         };
-        let result = atoms::r#do::command_with_timeout(
+        let result = atoms::r#do::run_command::command_with_timeout(
             authorization,
             invocation,
             &program,
