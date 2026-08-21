@@ -402,11 +402,3 @@ pub(crate) fn git_ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> Cm
 pub(crate) fn is_hex_sha(s: &str) -> bool {
     s.len() >= 7 && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
-
-pub(crate) fn observe_arcadia_source_sha(source_dir: &Path) -> CmdResult {
-    crate::command_capture_with_cwd(
-        "/usr/bin/git",
-        &["rev-parse", "HEAD"],
-        source_dir.to_str(),
-    )
-}
