@@ -172,20 +172,23 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         let manifest = module_dir.join("manifest.json");
         let module_output_dir = output_dir.join("modules").join(module);
         let source_tree_sha256 = crate::atoms::tree_hash::content_tree_sha256(&module_dir)?;
-        let subscription_current = subscription_statuses
-            .iter()
-            .find(|status| status.id == *module)
-            .is_some_and(|status| status.status == "current");
         let installed_clean = !forced_modules.contains(module)
             && module_output_dir.is_dir()
-            && (subscription_current
-                || crate::atoms::tree_hash::content_tree_sha256(&module_output_dir)?
-                    == source_tree_sha256);
+            && crate::atoms::tree_hash::content_tree_sha256(&module_output_dir)?
+                == source_tree_sha256;
         if installed_clean {
             untouched_modules.push(module.clone());
             continue;
         }
         refreshed_modules.push(module.clone());
+        if ensure_dir(key, &module_dir, &module_output_dir)? {
+            artifacts.push(MoltArtifact {
+                kind: "export-directory",
+                source: module_dir.display().to_string(),
+                output: module_output_dir.display().to_string(),
+                mode: mode.as_str(),
+            });
+        }
         if manifest.exists() && is_ladder_manifest(&manifest) {
             let ladder = load_ladder_manifest(&manifest)?;
             export_one(
