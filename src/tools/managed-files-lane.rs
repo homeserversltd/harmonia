@@ -170,13 +170,15 @@ pub(crate) fn managed_files_step(
     _apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    managed_files_step_with_authorization(
-        step,
-        manifest,
-        module_dir,
-        None,
-        invocation,
-    )
+    managed_files_step_with_authorization(step, manifest, module_dir, None, invocation)
+}
+
+fn owned_configuration_file(file: &crate::ManagedFileManifest) -> bool {
+    file.category.as_deref() == Some("Owned")
+        && matches!(
+            crate::tools::files::classify_target(Path::new(&file.path)),
+            crate::tools::files::TargetClass::Config
+        )
 }
 
 pub(crate) fn managed_files_step_with_authorization(
@@ -201,7 +203,11 @@ pub(crate) fn managed_files_step_with_authorization(
     let mut owned = Vec::new();
     let mut seed = Vec::new();
     for file in files {
+        // ConfigPlane is proposal-only even when the module law says Owned;
+        // ownership must not bypass the configuration actuator boundary.
+        let owned_configuration = owned_configuration_file(&file);
         match file.category.as_deref() {
+            Some("Owned") if owned_configuration => proposals.push(file),
             Some("Owned") => owned.push(file),
             Some("Seed") => seed.push(file),
             _ => match &file.on_drift {
