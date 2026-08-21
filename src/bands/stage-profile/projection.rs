@@ -57,7 +57,7 @@ pub(crate) fn load_profile_projection(
         };
         let (steps, group_probe, routines) = match &loaded {
             LoadedModule::Ladder(m) => {
-                let steps = match crate::ladder::validate_ladder(m) {
+                let steps = match crate::tools::ladder::validate_ladder(m) {
                     Ok(steps) => steps,
                     Err(e) => {
                         errors.insert(
@@ -70,7 +70,7 @@ pub(crate) fn load_profile_projection(
                 let group_probe = match m
                     .group
                     .as_ref()
-                    .map(|g| crate::ladder::validate_group(g, &m.constants))
+                    .map(|g| crate::tools::ladder::validate_group(g, &m.constants))
                     .transpose()
                 {
                     Ok(probe) => probe,
@@ -411,7 +411,7 @@ fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, 
             manifest
                 .ladder
                 .iter()
-                .filter_map(crate::ladder::service_runtime_converge_args),
+                .filter_map(crate::tools::ladder::service_runtime_converge_args),
         );
     }
     for children in projected.routines.values() {

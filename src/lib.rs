@@ -266,7 +266,6 @@ pub(crate) use ratchet_aur_package::pinned_artifacts_command;
 
 pub mod device_profile;
 mod interactables;
-mod ladder;
 mod module_dispatch;
 mod receipts;
 mod subscription;
@@ -284,7 +283,7 @@ pub(crate) use bands::{
 };
 pub(crate) use device_profile::*;
 pub(crate) use interactables::*;
-pub(crate) use ladder::*;
+pub(crate) use tools::ladder::*;
 pub(crate) use module_dispatch::*;
 pub(crate) use receipts::*;
 pub(crate) use subscription::*;

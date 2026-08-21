@@ -167,7 +167,7 @@ pub(crate) fn execute(
 }
 
 pub(crate) fn execute_validated_step(
-    step: &crate::ladder::ValidatedStep,
+    step: &crate::tools::ladder::ValidatedStep,
     module_dir: &Path,
     apply: bool,
     invocation: Option<atoms::r#do::InvocationKey>,

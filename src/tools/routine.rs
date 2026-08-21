@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::fs::{self};
 use std::path::Path;
 
-use crate::ladder::{
+use crate::tools::ladder::{
     CommandPrecondition, LadderManifest, LadderStep, LadderValidationError, OnFailure,
 };
 
@@ -306,7 +306,7 @@ fn execute_routine_tool(
     tool: &str,
     requested_permutation: Option<&str>,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
-    manifest: &crate::ladder::LadderManifest,
+    manifest: &crate::tools::ladder::LadderManifest,
     receipt_dir: &Path,
     apply: bool,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,

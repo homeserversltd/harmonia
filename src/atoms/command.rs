@@ -427,7 +427,7 @@ fn redact(text: &str, redactions: &BTreeSet<String>) -> String {
 }
 
 pub(crate) fn execute_validated_step(
-    step: &crate::ladder::ValidatedStep,
+    step: &crate::tools::ladder::ValidatedStep,
     module_dir: &std::path::Path,
     apply: bool,
     active_lane: Option<&str>,

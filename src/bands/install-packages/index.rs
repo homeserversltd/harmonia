@@ -1,5 +1,5 @@
 use super::Band;
-use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
+use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::ModuleExecution;
 use crate::{OperationOutcome, PackageAuthority, PackageBackend, SoftwareApplyAuthorization};
 use serde_json::Value;
@@ -293,7 +293,7 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::ladder::OnFailure::Stop {
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
                 break;
             }
         }

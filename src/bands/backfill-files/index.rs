@@ -1,4 +1,4 @@
-use crate::ladder::{LadderManifest, OnFailure, ProjectedRoutineChild, RoutineStep, ValidatedStep};
+use crate::tools::ladder::{LadderManifest, OnFailure, ProjectedRoutineChild, RoutineStep, ValidatedStep};
 use crate::ModuleExecution;
 use crate::OperationOutcome;
 use serde_json::Value;
@@ -226,7 +226,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             } else {
                 operation
             };
-            crate::ladder::validate_on_drift(
+            crate::tools::ladder::validate_on_drift(
                 &step.step_id,
                 &format!("managed-{ordinal}"),
                 &on_drift,
@@ -603,7 +603,7 @@ pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
-    manifest: &crate::ladder::LadderManifest,
+    manifest: &crate::tools::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
@@ -645,12 +645,12 @@ pub(crate) fn execute_routine_child(
     let name = tool.to_string();
     match tool {
         "files" if permutation.name == "managed-files" => {
-            let step = crate::ladder::ValidatedStep {
+            let step = crate::tools::ladder::ValidatedStep {
                 step_id: "managed-files".into(),
                 tool: "files".into(),
                 permutation: "managed-files".into(),
                 args: args.clone(),
-                on_failure: crate::ladder::OnFailure::Stop,
+                on_failure: crate::tools::ladder::OnFailure::Stop,
             };
             // Managed-file configuration remains proposal-only for routine children.
             let out = match crate::tools::files::managed_files_step(

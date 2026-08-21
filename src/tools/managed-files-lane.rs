@@ -1,6 +1,6 @@
 pub(crate) fn execute_validated_step(
-    step: &crate::ladder::ValidatedStep,
-    manifest: &crate::ladder::LadderManifest,
+    step: &crate::tools::ladder::ValidatedStep,
+    manifest: &crate::tools::ladder::LadderManifest,
     module_dir: &std::path::Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
@@ -51,7 +51,7 @@ pub(crate) fn execute_validated_step(
 
 pub(crate) fn structural_file_blocker(
     step: &crate::tools::routine::ValidatedStep,
-    _manifest: &crate::ladder::LadderManifest,
+    _manifest: &crate::tools::ladder::LadderManifest,
 ) -> Option<String> {
     if step.tool != "files" {
         return None;
@@ -119,7 +119,7 @@ pub(crate) fn structural_file_blocker(
 // File permutation preflight and operation ownership.
 use crate::atoms;
 use crate::atoms::command;
-use crate::ladder::{LadderManifest, ProjectedRoutineChild};
+use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild};
 use crate::tools::routine::ValidatedStep;
 use crate::OperationOutcome;
 use serde_json::Value;

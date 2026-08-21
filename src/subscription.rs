@@ -168,8 +168,8 @@ pub(crate) fn subscription_bench(
             ),
         ]),
     )?;
-    let manifest = crate::ladder::LadderManifest {
-        schema: crate::ladder::SCHEMA.into(),
+    let manifest = crate::tools::ladder::LadderManifest {
+        schema: crate::tools::ladder::SCHEMA.into(),
         id: module_id.into(),
         version: "1.0.0".into(),
         description: "subscription interactables bench".into(),

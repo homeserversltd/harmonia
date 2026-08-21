@@ -1,6 +1,6 @@
 use super::Band;
 use crate::interactables::{self, DriftSummary, Interactable};
-use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
+use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::tools::files::{FileConvergenceOutcome, FileConvergenceRequest};
 use crate::ModuleExecution;
 use crate::{
@@ -471,7 +471,7 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::ladder::OnFailure::Stop {
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
                 break;
             }
         }

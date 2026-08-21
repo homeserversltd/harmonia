@@ -1818,7 +1818,7 @@ pub(crate) fn package_bench(
     ] {
         let mut pins = std::collections::BTreeMap::new();
         pins.insert(name.into(), version.into());
-        let actual_ok = crate::ladder::validate_package_pins(&pins).is_ok();
+        let actual_ok = crate::tools::ladder::validate_package_pins(&pins).is_ok();
         validation_cases
             .push(serde_json::json!({"case": label, "ok": actual_ok, "expected_ok": expected_ok}));
     }
@@ -1829,9 +1829,9 @@ pub(crate) fn package_bench(
     std::fs::create_dir_all(&pins_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&other_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&refusal_dir).map_err(|e| e.to_string())?;
-    let pin_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "pins", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
-    let other_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "other", "version": "1", "constants": {}, "ladder": []});
-    let refusal_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "refusal", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
+    let pin_manifest = serde_json::json!({"schema": crate::tools::ladder::SCHEMA, "id": "pins", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
+    let other_manifest = serde_json::json!({"schema": crate::tools::ladder::SCHEMA, "id": "other", "version": "1", "constants": {}, "ladder": []});
+    let refusal_manifest = serde_json::json!({"schema": crate::tools::ladder::SCHEMA, "id": "refusal", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
     for (dir, manifest) in [
         (pins_dir, pin_manifest),
         (other_dir, other_manifest),

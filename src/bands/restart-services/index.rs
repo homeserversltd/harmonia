@@ -1,6 +1,6 @@
 use super::Band;
-use crate::ladder::RoutineStep;
-use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
+use crate::tools::ladder::RoutineStep;
+use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::ModuleExecution;
 use crate::OperationOutcome;
 use crate::{
@@ -345,7 +345,7 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::ladder::OnFailure::Stop {
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
                 break;
             }
         }
@@ -471,7 +471,7 @@ pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
-    manifest: &crate::ladder::LadderManifest,
+    manifest: &crate::tools::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::tools::files::InvocationKey>,

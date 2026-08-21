@@ -1,5 +1,5 @@
 use super::Band;
-use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
+use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::tools::routine::execute_validated_step;
 use crate::ModuleExecution;
 use crate::{validate_group, OperationOutcome};
@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::Path;
 
-pub(crate) fn execute_command_precondition(step: &ValidatedStep, precondition: &crate::ladder::CommandPrecondition, manifest: &LadderManifest, module_dir: &Path) -> Result<OperationOutcome, String> {
+pub(crate) fn execute_command_precondition(step: &ValidatedStep, precondition: &crate::tools::ladder::CommandPrecondition, manifest: &LadderManifest, module_dir: &Path) -> Result<OperationOutcome, String> {
     let argv: Vec<&str> = precondition.args.iter().map(String::as_str).collect();
     let result = crate::tools::command::capture_with_options(&precondition.program, &argv, crate::tools::command::CaptureOptions::new().cwd(precondition.cwd.as_deref()).timeout_secs(precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS)));
     crate::write_json(&module_dir.join(format!("{}-precondition.json", step.step_id)), &serde_json::json!({"schema":"harmonia.command_precondition.v1","module":manifest.id,"step_id":step.step_id,"state":if result.ok {"satisfied"} else {"blocked"},"program":precondition.program,"args":precondition.args,"cwd":precondition.cwd,"timeout_secs":precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),"raw_command_ran":false,"probe":result,"probe_error":if result.ok {"none".to_string()} else {format!("exit_code={} stderr={}",result.code,result.stderr)},"first_missing_signal":if result.ok {"none"} else {"command-precondition-blocked"}}))?;
@@ -140,7 +140,7 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::ladder::OnFailure::Stop {
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
                 break;
             }
         }
