@@ -173,14 +173,6 @@ pub(crate) fn managed_files_step(
     managed_files_step_with_authorization(step, manifest, module_dir, None, invocation)
 }
 
-fn owned_configuration_file(file: &crate::ManagedFileManifest) -> bool {
-    file.category.as_deref() == Some("Owned")
-        && matches!(
-            crate::tools::files::classify_target(Path::new(&file.path)),
-            crate::tools::files::TargetClass::Config
-        )
-}
-
 pub(crate) fn managed_files_step_with_authorization(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -199,22 +191,11 @@ pub(crate) fn managed_files_step_with_authorization(
     };
     let mut hold = Vec::new();
     let mut proposals = Vec::new();
-    let mut replacements = Vec::new();
-    let mut owned = Vec::new();
-    let mut seed = Vec::new();
     for file in files {
-        // ConfigPlane is proposal-only even when the module law says Owned;
-        // ownership must not bypass the configuration actuator boundary.
-        let owned_configuration = owned_configuration_file(&file);
         match file.category.as_deref() {
-            Some("Owned") if owned_configuration => proposals.push(file),
-            Some("Owned") => owned.push(file),
-            Some("Seed") => seed.push(file),
-            _ => match &file.on_drift {
-                crate::OnDrift::Hold => hold.push(file),
-                crate::OnDrift::Propose => proposals.push(file),
-                crate::OnDrift::Replace { .. } => replacements.push(file),
-            },
+            Some("interactable") => proposals.push(file),
+            None | Some("known-good") => hold.push(file),
+            Some(_) => continue,
         }
     }
     let mut result = crate::OperationOutcome {
@@ -225,69 +206,6 @@ pub(crate) fn managed_files_step_with_authorization(
         command: None,
     };
     let attest_log = module_dir.join("managed-files.attest.jsonl");
-    for (file, absent_only) in owned
-        .into_iter()
-        .map(|file| (file, false))
-        .chain(seed.into_iter().map(|file| (file, true)))
-    {
-        let path = Path::new(&file.path);
-        crate::atoms::ask::backfill_file::validate_target(path)?;
-        let class = crate::tools::files::classify_target(path);
-        match class {
-            crate::tools::files::TargetClass::Software => {}
-            crate::tools::files::TargetClass::Config => {
-                return Err(format!(
-                    "configuration-actuator-authority-refused {}",
-                    path.display()
-                ))
-            }
-            crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
-        }
-        if absent_only && path.exists() {
-            continue;
-        }
-        let relative = path
-            .strip_prefix("/")
-            .map_err(|_| "managed-file-target-invalid")?;
-        let source_root = module_dir.join("managed-files").join("sources");
-        let source = source_root.join(relative);
-        if let Some(parent) = source.parent() {
-            atoms::attest::prepare_receipt_parent(parent)?;
-        }
-        atoms::attest::write_bytes_atomic(&source, file.content.as_bytes())?;
-        let outcome = crate::atoms::files::converge_files_authorized(
-            &crate::atoms::files::FileConvergenceRequest {
-                source_root,
-                target_root: PathBuf::from("/"),
-                files: vec![crate::atoms::files::FileSpec {
-                    mode: file.mode,
-                    relative_path: relative.to_path_buf(),
-                }],
-                backup_existing: false,
-                receipt_name: format!(
-                    "{}-{}",
-                    step.step_id,
-                    path.file_name()
-                        .and_then(|v| v.to_str())
-                        .unwrap_or("managed")
-                ),
-                owner: step
-                    .args
-                    .get("owner")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                group: step
-                    .args
-                    .get("group")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            },
-            module_dir,
-            software_authorization,
-            invocation,
-        )?;
-        result.changed |= outcome.changed;
-    }
     for file in hold {
         let path = Path::new(&file.path);
         crate::atoms::ask::backfill_file::validate_target(path)?;
@@ -305,9 +223,13 @@ pub(crate) fn managed_files_step_with_authorization(
                     actual_sha256: actual,
                 },
                 message: format!(
-                    "on_drift=Hold path={} target_exists={} apply=false",
+                    "state=known-good path={} target_exists={} apply=false{}",
                     path.display(),
-                    path.exists()
+                    path.exists(),
+                    file.legacy_transition_note
+                        .as_deref()
+                        .map(|note| format!(" {note}"))
+                        .unwrap_or_default()
                 ),
             },
             &[],
@@ -332,7 +254,14 @@ pub(crate) fn managed_files_step_with_authorization(
                 relative_path: relative.to_path_buf(),
             }],
             backup_existing: false,
-            receipt_name: format!("{}-propose", step.step_id),
+            receipt_name: format!(
+                "{}-interactable-{}",
+                step.step_id,
+                target
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("managed")
+            ),
             owner: step
                 .args
                 .get("owner")
@@ -350,38 +279,19 @@ pub(crate) fn managed_files_step_with_authorization(
         crate::bands::propose_edits::refresh_interactables_for_convergence(
             manifest, &request, &observed,
         )?;
-    }
-    for file in replacements {
-        let expected = match &file.on_drift {
-            crate::OnDrift::Replace { only_if_exact } => only_if_exact,
-            _ => unreachable!(),
-        };
-        let path = Path::new(&file.path);
-        crate::atoms::ask::backfill_file::validate_target(path)?;
-        let predicate = serde_json::json!({"family":"FileMatchesExactly","args":{"target_path":file.path,"sha256":expected}});
-        let payload = serde_json::json!({"target_path":file.path});
-        let (exact_match, predicate_receipt) =
-            crate::backfill_file::observe_predicate(Some(&predicate), Some(&payload))?;
-        let mut changed = false;
-        if apply && exact_match {
-            let ownership = crate::backfill_file::resolve_ownership(
-                step.args.get("owner").and_then(|value| value.as_str()),
-            )?;
-            let out = crate::backfill_file::execute(crate::backfill_file::BackfillFileRequest {
-                path,
-                declared_bytes: file.content.as_bytes(),
-                mode: file.mode,
-                ownership,
-                backup: crate::backfill_file::BackupPolicy::None,
-                invocation,
-            })?;
-            changed = out.movement.changed();
-        }
-        atoms::attest::attest(&attest_log, &crate::atoms::Receipt {
-            atom: "managed-files".into(), ok: true, drift: crate::atoms::Drift::Current,
-            message: serde_json::json!({"on_drift":"Replace","path":file.path,"predicate":predicate_receipt,"exact_match":exact_match,"apply":apply,"changed":changed}).to_string(),
-        }, &[])?;
-        result.changed |= changed;
+        atoms::attest::attest(
+            &attest_log,
+            &crate::atoms::Receipt {
+                atom: "managed-files".into(),
+                ok: true,
+                drift: crate::atoms::Drift::Current,
+                message: format!(
+                    "state=interactable path={} proposal_count=1 target_write=false",
+                    target.display()
+                ),
+            },
+            &[],
+        )?;
     }
     Ok(result)
 }
@@ -453,8 +363,8 @@ fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileMa
                     path: format!("/{}", rel.to_string_lossy()),
                     content,
                     mode,
-                    on_drift: crate::OnDrift::default(),
-                    category: None,
+                    category: Some("known-good".into()),
+                    legacy_transition_note: None,
                 });
             }
         }
