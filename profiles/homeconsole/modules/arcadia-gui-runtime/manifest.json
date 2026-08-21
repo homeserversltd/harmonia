@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "arcadia-gui-runtime",
+  "category": "Owned",
   "version": "3.6.0",
   "description": "Arcadia GUI runtime ladder: source sync, cargo build, binary promote, systemd, health, and source SHA state. Arcadia is the HomeConsole front panel and must execute declared local appliance controls through Harmonia/systemd.",
   "constants": {},
