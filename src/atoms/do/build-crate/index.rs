@@ -1,5 +1,5 @@
 use crate::atoms::comparison::{self, ActionAuthorization};
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{CommandObservation, Drift, Receipt};
 use std::path::Path;
 use std::time::Duration;
@@ -23,16 +23,7 @@ pub(crate) fn cargo_build(
         bearer,
         env,
     );
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: result.ok,
-            drift: Drift::Current,
-            message: format!("cargo build code={}", result.code),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(CommandObservation {
         program: "cargo".into(),
         args: vec!["build".into(), "--release".into()],

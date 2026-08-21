@@ -24,7 +24,7 @@ pub(crate) fn converge(
 ) -> Result<&'static str, String> {
     let mut movement = "none";
     if !observation.venv_valid {
-        let result = crate::atoms::r#do::command_with_timeout(
+        let result = crate::atoms::r#do::run_command::command_with_timeout(
             authorization,
             invocation,
             request.python.to_str().ok_or("venv-python-path-utf8")?,
@@ -60,7 +60,7 @@ pub(crate) fn converge(
                             None,
                         )
                     };
-                let result = crate::atoms::r#do::command_with_timeout_in_dir(
+                let result = crate::atoms::r#do::run_command::command_with_timeout_in_dir(
                     authorization,
                     invocation,
                     python.to_str().ok_or("venv-python-path-utf8")?,
@@ -70,12 +70,12 @@ pub(crate) fn converge(
                 )?;
                 ensure_ok(&result, python.to_string_lossy().as_ref())?;
             }
-            crate::atoms::r#do::file_write(
+            crate::atoms::r#do::write_file::file_write(
                 authorization,
                 invocation,
                 &request.venv.join(".harmonia-sbin-dependency-sha256"),
                 format!("{hash}\n").as_bytes(),
-                crate::atoms::r#do::FileWriteOptions {
+                crate::atoms::r#do::write_file::FileWriteOptions {
                     write_bytes: true,
                     mode: Some(0o600),
                     uid: Some(unsafe { libc::geteuid() }),

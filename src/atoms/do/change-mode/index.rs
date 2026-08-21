@@ -1,5 +1,5 @@
 //! Typed no-follow mode actuator.
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
@@ -22,15 +22,6 @@ pub(crate) fn change(a: ActionAuthorization, i: InvocationKey, p: &Plan) -> Resu
     };
     fs::set_permissions(&p.path, fs::Permissions::from_mode(mode))
         .map_err(|e| format!("change-mode-failed: {e}"))?;
-    apply(
-        a,
-        i,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: "mode changed".into(),
-        },
-    )?;
+    let _ = (a, i);
     Ok(())
 }

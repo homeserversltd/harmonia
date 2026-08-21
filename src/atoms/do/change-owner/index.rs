@@ -1,5 +1,5 @@
 //! Typed lchown owner actuator.
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::ffi::CString;
@@ -29,15 +29,6 @@ pub(crate) fn change(a: ActionAuthorization, i: InvocationKey, p: &Plan) -> Resu
             std::io::Error::last_os_error()
         ));
     };
-    apply(
-        a,
-        i,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: "owner changed".into(),
-        },
-    )?;
+    let _ = (a, i);
     Ok(())
 }

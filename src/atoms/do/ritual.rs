@@ -427,12 +427,12 @@ impl Transaction {
         if a.target != self.target || a.old != self.old || a.new.bytes != b"after" {
             return Err("path-mismatch".into());
         }
-        crate::atoms::r#do::file_write(
+        crate::atoms::r#do::write_file::file_write(
             action_authorization,
             a.key,
             &self.target,
             b"after",
-            crate::atoms::r#do::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None },
+            crate::atoms::r#do::write_file::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None },
         )?;
         self.target_write_count += 1;
         let mut changed_service = self.service.observe("demo.service")?;

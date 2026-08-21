@@ -351,7 +351,7 @@ pub(crate) fn observe_request_current(
     })
 }
 
-pub(crate) fn legacy_plan(
+pub(crate) fn plan(
     request: &crate::atoms::git_artifact::Request,
 ) -> crate::atoms::git_artifact::Outcome {
     let command = if request.path.join(".git").exists() {

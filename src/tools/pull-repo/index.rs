@@ -5,7 +5,7 @@ use crate::{
 };
 
 pub(crate) fn plan(request: &Request) -> Outcome {
-    crate::atoms::ask::legacy_plan(request)
+    crate::atoms::ask::plan(request)
 }
 pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
     let run = crate::tools::declaration::execute(
@@ -24,7 +24,7 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
                 authorization,
                 invocation,
                 request,
-                || crate::atoms::r#do::pull_repo::apply_legacy(request),
+                || crate::atoms::r#do::pull_repo::apply(request),
             ))
         },
     );

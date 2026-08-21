@@ -412,7 +412,7 @@ fn write_unified_diff_receipt(
     })
 }
 
-pub(crate) use crate::remove_file::{FileRemovalEntry, FileRemovalOutcome};
+pub(crate) use crate::atoms::r#do::remove_file_organ::{FileRemovalEntry, FileRemovalOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -4717,7 +4717,7 @@ pub fn remove_declared_files(
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileRemovalOutcome, String> {
-    crate::remove_file::execute(
+    crate::atoms::r#do::remove_file_organ::execute(
         target_root,
         paths,
         receipt_dir,

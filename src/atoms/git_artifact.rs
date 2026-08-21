@@ -269,9 +269,6 @@ pub(crate) fn observe_request_current(request: &Request) -> Option<Outcome> {
     crate::atoms::ask::observe_request_current(request)
 }
 
-pub(crate) fn legacy_plan(request: &Request) -> Outcome {
-    crate::atoms::ask::legacy_plan(request)
-}
 
 pub fn stdout_changed(stdout: &str) -> bool {
     stdout.lines().any(|line| line.trim() == "changed=true")

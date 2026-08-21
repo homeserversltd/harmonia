@@ -28,7 +28,7 @@ pub(crate) fn preserved_non_git_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.non-git-preserved-{stamp}"))
 }
 
-pub(crate) fn apply_legacy(request: &Request) -> Outcome {
+pub(crate) fn apply(request: &Request) -> Outcome {
     let sync = sync_repo(request);
     Outcome {
         ok: sync.command.ok,
@@ -1062,7 +1062,7 @@ pub(crate) fn git_pull(
     request: &Request,
     _callback: impl FnOnce() -> Outcome,
 ) -> Outcome {
-    apply_legacy(request)
+    apply(request)
 }
 
 pub(crate) fn git_acquire(

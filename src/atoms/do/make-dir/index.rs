@@ -1,4 +1,4 @@
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
@@ -10,15 +10,6 @@ pub(crate) fn create_dir_all(
     path: &Path,
 ) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| error.to_string())?;
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: format!("directory created {}", path.display()),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(())
 }

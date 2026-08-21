@@ -1,4 +1,4 @@
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{CommandObservation, Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::io::Read;
@@ -30,19 +30,7 @@ pub(crate) fn command_with_timeout_in_dir_env(
     timeout: Duration,
 ) -> Result<CommandObservation, String> {
     let result = run_with_timeout_in_dir_env(program, args, cwd, environment, timeout);
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: result.ok,
-            drift: Drift::Current,
-            message: format!(
-                "program={program}; args={args:?}; code={:?}; stdout={:?}; stderr={:?}",
-                result.code, result.stdout, result.stderr
-            ),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(CommandObservation {
         program: program.into(),
         args: args.to_vec(),
@@ -61,19 +49,7 @@ pub(crate) fn command_with_timeout(
     timeout: Duration,
 ) -> Result<CommandObservation, String> {
     let result = run_with_timeout(program, args, timeout);
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: result.ok,
-            drift: Drift::Current,
-            message: format!(
-                "program={program}; args={args:?}; code={:?}; stdout={:?}; stderr={:?}",
-                result.code, result.stdout, result.stderr
-            ),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(CommandObservation {
         program: program.into(),
         args: args.to_vec(),
@@ -90,10 +66,7 @@ pub(crate) fn mutating_command(
     args: &[String],
 ) -> Result<Receipt, String> {
     let result = run(program, args);
-    apply(
-        authorization,
-        invocation,
-        Receipt {
+    Ok(Receipt {
             atom: "do".into(),
             ok: result.ok,
             drift: Drift::Current,
@@ -101,7 +74,7 @@ pub(crate) fn mutating_command(
                 "program={program}; args={args:?}; code={:?}; stdout={:?}; stderr={:?}",
                 result.code, result.stdout, result.stderr
             ),
-        },
+        }
     )
 }
 

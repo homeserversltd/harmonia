@@ -172,11 +172,11 @@ fn run_mask(
             .ok_or_else(|| "systemd-mask-state-read-failed".to_string()),
         |observed| if observed == "masked" { DiffDecision::Empty } else { DiffDecision::Different },
         |authorization, _observed| {
-            let result = crate::atoms::r#do::unit_change_scoped(
+            let result = crate::atoms::r#do::change_unit::unit_change_scoped(
                 authorization,
                 invocation.ok_or("invocation-key-missing")?,
                 service,
-                crate::atoms::r#do::UnitVerb::Mask,
+                crate::atoms::r#do::change_unit::UnitVerb::Mask,
                 false,
                 None,
                 timeout_secs,
@@ -669,11 +669,11 @@ fn run_action_with_policy(
         |authorization, before| {
             let result: Result<CmdResult, String> = if apply {
                 let command = if action == "enable-now" {
-                    crate::atoms::r#do::unit_change_scoped(
+                    crate::atoms::r#do::change_unit::unit_change_scoped(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
                         service,
-                        crate::atoms::r#do::UnitVerb::EnableNow,
+                        crate::atoms::r#do::change_unit::UnitVerb::EnableNow,
                         user,
                         target_user,
                         timeout_secs,
@@ -685,11 +685,11 @@ fn run_action_with_policy(
                         stderr: result.stderr,
                     })
                 } else if matches!(action, "disable-stop" | "disable-stop-remove") {
-                    crate::atoms::r#do::unit_change_scoped(
+                    crate::atoms::r#do::change_unit::unit_change_scoped(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
                         service,
-                        crate::atoms::r#do::UnitVerb::DisableNow,
+                        crate::atoms::r#do::change_unit::UnitVerb::DisableNow,
                         user,
                         target_user,
                         timeout_secs,
@@ -703,13 +703,13 @@ fn run_action_with_policy(
                 } else {
                     let invocation = invocation.ok_or("invocation-key-missing")?;
                     let verb = match action {
-                        "daemon-reload" => crate::atoms::r#do::UnitVerb::DaemonReload,
-                        "restart" => crate::atoms::r#do::UnitVerb::Restart,
-                        "stop" => crate::atoms::r#do::UnitVerb::Stop,
-                        "enable" => crate::atoms::r#do::UnitVerb::Enable,
+                        "daemon-reload" => crate::atoms::r#do::change_unit::UnitVerb::DaemonReload,
+                        "restart" => crate::atoms::r#do::change_unit::UnitVerb::Restart,
+                        "stop" => crate::atoms::r#do::change_unit::UnitVerb::Stop,
+                        "enable" => crate::atoms::r#do::change_unit::UnitVerb::Enable,
                         other => return Err(format!("systemd-action-unsupported-{other}")),
                     };
-                    crate::atoms::r#do::unit_change_scoped(
+                    crate::atoms::r#do::change_unit::unit_change_scoped(
                         authorization,
                         invocation,
                         service,

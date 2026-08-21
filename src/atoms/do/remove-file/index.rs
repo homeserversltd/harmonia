@@ -1,4 +1,4 @@
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
@@ -25,16 +25,7 @@ pub(crate) fn remove_file_with_policy(
         return Err("remove-file-collision-refused".into());
     }
     fs::remove_file(path).map_err(|error| error.to_string())?;
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: format!("file removed {}", path.display()),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(())
 }
 

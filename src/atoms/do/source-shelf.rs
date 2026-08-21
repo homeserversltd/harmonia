@@ -1,5 +1,5 @@
 //! Typed filesystem mutations owned by the source-shelf transaction.
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs::{self, OpenOptions};
@@ -15,7 +15,7 @@ fn receipt(message: String) -> Receipt { Receipt { atom: "do".into(), ok: true, 
 
 pub(crate) fn mkdir_all(a: ActionAuthorization, i: InvocationKey, path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| e.to_string())?;
-    apply(a, i, receipt(format!("source-shelf mkdir {}", path.display()))).map(|_| ())
+    { let _ = (a, i, path); Ok(()) }
 }
 
 pub(crate) fn copy(a: ActionAuthorization, i: InvocationKey, source: &Path, target: &Path, mode: Option<u32>, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
@@ -41,7 +41,7 @@ fn atomic_write(a: ActionAuthorization, i: InvocationKey, target: &Path, bytes: 
         set_ownership(&temp, uid, gid)?;
         fs::rename(&temp, target).map_err(|e| format!("files-atomic-promote-failed {} -> {}: {e}", temp.display(), target.display()))?;
         sync_directory(parent)?;
-        apply(a, i, receipt(format!("source-shelf copy {}", target.display())))?;
+        let _ = (a, i, target);
         Ok(())
     })();
     if result.is_err() { let _ = fs::remove_file(&temp); let _ = sync_directory(parent); }
@@ -95,5 +95,5 @@ pub(crate) fn remove_tree(a: ActionAuthorization, i: InvocationKey, path: &Path)
         Ok(_) => {}
     }
     fs::remove_dir_all(path).map_err(|e| e.to_string())?;
-    apply(a, i, receipt(format!("source-shelf remove tree {}", path.display()))).map(|_| ())
+    { let _ = (a, i, path); Ok(()) }
 }

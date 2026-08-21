@@ -683,24 +683,7 @@ pub(crate) fn execute_routine_child(
             };
             let placed = crate::place_file::execute(request)?;
             let changed = apply && placed.movement.changed();
-            if permutation.name == "binary-promotion" {
-                if let Some(legacy_name) = args
-                    .get("legacy_binary_install_receipt")
-                    .and_then(Value::as_str)
-                {
-                    let mut legacy = serde_json::json!({"schema":"harmonia.service-runtime.binary-install.v1","artifact":source.unwrap_or(""),"install_bin":path,"apply":apply,"ok":placed.receipt.ok,"changed":changed,"state":if changed { "binary-swapped" } else { "converged-quiet" }});
-                    if !changed {
-                        if let Some(object) = legacy.as_object_mut() {
-                            object.remove("artifact");
-                            object.insert(
-                                "reason".into(),
-                                serde_json::json!("source-sha-gate-preserved-installed-binary"),
-                            );
-                        }
-                    }
-                    crate::write_json(&receipt_dir.join(format!("{legacy_name}.json")), &legacy)?;
-                }
-            }
+
             crate::write_json(
                 &receipt_dir.join(format!("{name}.json")),
                 &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up}}),
@@ -737,7 +720,7 @@ pub(crate) fn execute_routine_child(
                 .and_then(|v| v.to_str())
                 .ok_or("remove-file-name-missing")?
                 .to_string();
-            let out = crate::remove_file::execute(
+            let out = crate::atoms::r#do::remove_file_organ::execute(
                 root,
                 &[name],
                 receipt_dir,

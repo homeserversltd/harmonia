@@ -1,5 +1,5 @@
 //! Typed copy-file actuator: explicit authorization, invocation, and mutation inputs.
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
@@ -47,15 +47,6 @@ pub(crate) fn copy(a: ActionAuthorization, i: InvocationKey, p: &Plan) -> Result
             ));
         }
     }
-    apply(
-        a,
-        i,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: format!("copy {} -> {}", p.source.display(), p.target.display()),
-        },
-    )?;
+    let _ = (a, i);
     Ok(())
 }

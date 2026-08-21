@@ -12,7 +12,7 @@ use crate::atoms;
         conflict_paths: &[String],
         timeout_secs: u64,
     ) -> Result<atoms::CommandObservation, String> {
-        atoms::r#do::package_install(
+        atoms::r#do::install_package::package_install(
             authorization,
             invocation,
             receipt_dir,

@@ -1,4 +1,4 @@
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs::{self, OpenOptions};
@@ -56,16 +56,7 @@ pub(crate) fn file_write(
         }
         set_ownership(path, options.uid, options.gid)?;
     }
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: "file write complete".into(),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(FileWriteResult { backed_up })
 }
 
@@ -184,7 +175,8 @@ pub(crate) fn atomic_write_bytes_with_ownership(
         let _ = OpenOptions::new().read(true).open(parent).and_then(|directory| directory.sync_all());
     }
     result?;
-    apply(authorization, invocation, Receipt { atom: "do".into(), ok: true, drift: Drift::Current, message: "managed file write complete".into() }).map(|_| ())
+    let _ = (authorization, invocation);
+    Ok(())
 }
 
 #[cfg(unix)]

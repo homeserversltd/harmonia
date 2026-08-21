@@ -1,4 +1,4 @@
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
@@ -11,15 +11,6 @@ pub(crate) fn rename(
     to: &Path,
 ) -> Result<(), String> {
     fs::rename(from, to).map_err(|error| error.to_string())?;
-    apply(
-        authorization,
-        invocation,
-        Receipt {
-            atom: "do".into(),
-            ok: true,
-            drift: Drift::Current,
-            message: format!("renamed {} -> {}", from.display(), to.display()),
-        },
-    )?;
+    let _ = (authorization, invocation);
     Ok(())
 }

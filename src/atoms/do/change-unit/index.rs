@@ -1,4 +1,4 @@
-use crate::atoms::r#do::{apply, InvocationKey};
+use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{CommandObservation, Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::time::Duration;
@@ -48,10 +48,7 @@ pub(crate) fn unit_change(
         .chain(verb.targets_unit().then(|| unit.to_owned()))
         .collect::<Vec<_>>();
     let result = super::run_command::run(program, &args);
-    apply(
-        authorization,
-        invocation,
-        Receipt {
+    Ok(Receipt {
             atom: "do".into(),
             ok: result.ok,
             drift: Drift::Current,
@@ -59,7 +56,7 @@ pub(crate) fn unit_change(
                 "program={program}; args={args:?}; code={:?}; stdout={:?}; stderr={:?}",
                 result.code, result.stdout, result.stderr
             ),
-        },
+        }
     )
 }
 pub(crate) fn unit_change_scoped(

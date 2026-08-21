@@ -455,12 +455,12 @@ mod mutation {
             BackupPolicy::To(path) if observation.existed && (bytes || mode || owner) => Some(path),
             BackupPolicy::None | BackupPolicy::To(_) => None,
         };
-        let result = atoms::r#do::file_write(
+        let result = atoms::r#do::write_file::file_write(
             authorization,
             invocation,
             path,
             declared_bytes,
-            atoms::r#do::FileWriteOptions {
+            atoms::r#do::write_file::FileWriteOptions {
                 write_bytes: bytes,
                 mode: if bytes {
                     declared_mode.or(observation.mode)
