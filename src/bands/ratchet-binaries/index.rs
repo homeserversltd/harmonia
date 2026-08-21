@@ -1,7 +1,8 @@
+use std::path::PathBuf;
+use crate::OperationOutcome;
 use super::Band;
 use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::ModuleExecution;
-use crate::OperationOutcome;
 use crate::{
     LoadedModule, PackageAuthority, Profile, ProfileProjection, SoftwareApplyAuthorization,
     UpdateMode,
@@ -10,71 +11,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::Path;
-use std::path::PathBuf;
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RatchetBinaries)
 }
 
-pub(crate) fn build_arcadia(
-    source_dir: &Path,
-    key: crate::tools::files::InvocationKey,
-) -> crate::CmdResult {
-    let run = crate::tools::comparison::execute(
-        "arcadia-cargo-build",
-        || Ok::<_, String>(()),
-        |_| crate::tools::comparison::DiffDecision::Different,
-        |authorization, _| {
-            crate::build_crate::cargo_build(
-                authorization,
-                key,
-                source_dir,
-                &[],
-                "owner",
-                std::time::Duration::from_secs(crate::tools::command::DEFAULT_TIMEOUT_SECS),
-            )
-        },
-    );
-    match run {
-        Ok(crate::tools::comparison::ComparisonRun::Moved { movement, .. }) => crate::CmdResult {
-            ok: movement.ok,
-            code: movement.code.unwrap_or(if movement.ok { 0 } else { -1 }),
-            stdout: movement.stdout,
-            stderr: movement.stderr,
-        },
-        Ok(crate::tools::comparison::ComparisonRun::Current { .. }) => crate::CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: "arcadia-cargo-build-apply-boundary-empty".into(),
-        },
-        Err(error) => crate::CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: error,
-        },
-    }
-}
-
-pub(crate) fn promote_arcadia_artifact(
-    artifact: &Path,
-    install_bin: &Path,
-    key: crate::tools::files::InvocationKey,
-) -> Result<bool, String> {
-    let bytes = fs::read(artifact).map_err(|e| format!("artifact-read-failed: {e}"))?;
-    let outcome = crate::place_file::execute(crate::place_file::PlaceFileRequest {
-        path: install_bin,
-        declared_bytes: &bytes,
-        mode: Some(0o755),
-        ownership: crate::place_file::DeclaredOwnership {
-            uid: None,
-            gid: None,
-        },
-        backup: crate::place_file::BackupPolicy::None,
-        invocation: Some(key),
-    })?;
-    Ok(outcome.movement.changed())
-}
 
 /// Execute the complete RatchetBinaries band lifecycle for one projected module.
 /// Selection, preconditions, authority gating, failure policy, and accumulation
@@ -315,6 +255,7 @@ pub(crate) fn execute_manifest_modules(
     Ok(())
 }
 
+
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -323,19 +264,9 @@ pub(crate) fn execute_routine_child(
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::tools::files::InvocationKey>,
-) -> Result<
-    (
-        crate::OperationOutcome,
-        std::collections::BTreeMap<String, serde_json::Value>,
-    ),
-    String,
-> {
-    let contract =
-        crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = requested_permutation
-        .and_then(|name| contract.permutation(name))
-        .or_else(|| contract.permutations.first())
-        .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
+    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {

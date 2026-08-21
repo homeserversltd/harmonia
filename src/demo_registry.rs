@@ -150,8 +150,8 @@ pub(crate) fn run(
         "ladder-profile" => receipt(
             surface,
             &root,
-            "crate::ladder::demo",
-            crate::ladder::demo(&root, invocation)?,
+            "crate::tools::ladder::demo",
+            crate::tools::ladder::demo(&root, invocation)?,
             authorized,
         ),
         "renew-self" => receipt(

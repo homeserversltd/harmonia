@@ -879,7 +879,7 @@ fn service_runtime_build_sha_demo(
     )
     .map_err(|e| e.to_string())?;
 
-    let mut manifest: crate::ladder::LadderManifest = serde_json::from_value(json!({
+    let mut manifest: crate::tools::ladder::LadderManifest = serde_json::from_value(json!({
         "schema":"harmonia.ladder.v1", "id":"service-runtime-build-sha-demo",
         "version":"1.0.0", "constants": {}, "ladder":[{
             "step_id":"runtime", "tool":"service-runtime", "permutation":"converge",
@@ -1056,12 +1056,12 @@ fn service_runtime_build_sha_demo(
         && unresolved_signal
             == Some("step_id=build defect=missing-stamp-pull-repo.unresolved_nested_reference");
 
-    let step = crate::ladder::ValidatedStep {
+    let step = crate::tools::ladder::ValidatedStep {
         step_id: source.step_id.clone(),
         tool: "routine".into(),
         permutation: "execute".into(),
         args: BTreeMap::new(),
-        on_failure: crate::ladder::OnFailure::Stop,
+        on_failure: crate::tools::ladder::OnFailure::Stop,
     };
     let projected_names: Vec<&str> = projected.iter().map(|child| child.name.as_str()).collect();
     let managed_producer_index = projected_names

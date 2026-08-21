@@ -88,10 +88,9 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         && refused_rows_preserved
         && sentinel_parent_rows_preserved
         && proposal_count == 1;
-    let ok = ok && slice2["ok"] == true;
-    let slice11 = slice11_proof(&root, invocation)?;
-    let ok = ok && slice11["ok"].as_bool().unwrap_or(false);
-    let receipt = json!({"schema":"harmonia.demo-structural-wall.v5","ok":ok,"slice2":slice2,"slice11":slice11,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
+    let registry = registry_proof(&root, invocation)?;
+    let ok = ok && registry["ok"].as_bool().unwrap_or(false);
+    let receipt = json!({"schema":"harmonia.demo-structural-wall.v5","ok":ok,"registry":registry,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
     let matrix_path = PathBuf::from("/var/opt/hermes/workspace/structural-wall-demo-matrix.json");
     fs::write(
         &matrix_path,
@@ -681,9 +680,9 @@ fn hash(p: &Path) -> String {
     walk(p, &mut h);
     format!("sha256:{:x}", h.finalize())
 }
-fn manifest(root: &Path, interactable: bool) -> crate::ladder::LadderManifest {
-    crate::ladder::LadderManifest {
-        schema: crate::ladder::SCHEMA.into(),
+fn manifest(root: &Path, interactable: bool) -> crate::tools::ladder::LadderManifest {
+    crate::tools::ladder::LadderManifest {
+        schema: crate::tools::ladder::SCHEMA.into(),
         id: "slice-9-demo".into(),
         version: "1".into(),
         description: "demo".into(),
@@ -788,7 +787,7 @@ fn row(
     } else {
         "converge"
     };
-    let step = crate::ladder::ValidatedStep {
+    let step = crate::tools::ladder::ValidatedStep {
         step_id: format!("demo-{name}"),
         tool: "files".into(),
         permutation: dispatch.into(),
@@ -883,7 +882,7 @@ fn routine_row(
         args: ca,
         extra: BTreeMap::new(),
     };
-    let routine = crate::ladder::LadderStep {
+    let routine = crate::tools::ladder::LadderStep {
         step_id: "demo-routine".into(),
         tool: "routine".into(),
         permutation: "execute".into(),
@@ -899,7 +898,7 @@ fn routine_row(
     let children =
         crate::tools::routine::project_routine_children(&manifest.ladder[0], &manifest.constants)
             .map_err(|e| e.defect)?;
-    let step = crate::ladder::ValidatedStep {
+    let step = crate::tools::ladder::ValidatedStep {
         step_id: "demo-routine".into(),
         tool: "routine".into(),
         permutation: "execute".into(),

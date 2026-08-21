@@ -10,7 +10,7 @@ pub(crate) fn verify(
 }
 
 pub(crate) fn execute_validated_step(
-    step: &crate::ladder::ValidatedStep,
+    step: &crate::tools::ladder::ValidatedStep,
     module_dir: &Path,
 ) -> Result<OperationOutcome, String> {
     verify(

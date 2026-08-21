@@ -326,22 +326,26 @@ fn execute_routine_tool(
             args: args.clone(),
             on_failure: OnFailure::Stop,
         };
-=======
-        // ConfigPlane comparison is proposal-only: never pass apply authority
-        // through this routine child, even when the surrounding ladder applies.
-        let outcome =
-            match tools::files::managed_files_step(&step, manifest, receipt_dir, false, invocation)
-            {
-                Ok(outcome) => outcome,
-                Err(error) if error == "files-act-did-not-converge" => crate::OperationOutcome {
+        // The declared category selects whether this routine child may apply.
+        let outcome = match tools::files::managed_files_step_with_authorization(
+            &step,
+            manifest,
+            receipt_dir,
+            software_authorization,
+            invocation,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) if error == "files-act-did-not-converge" => {
+                crate::OperationOutcome {
                     ok: true,
                     changed: true,
                     skipped: true,
                     message: "files-proposal-observed".to_string(),
                     command: None,
-                },
-                Err(error) => return Err(error),
-            };
+                }
+            }
+            Err(error) => return Err(error),
+        };
         return Ok((outcome, BTreeMap::new()));
     }
     match tool {
