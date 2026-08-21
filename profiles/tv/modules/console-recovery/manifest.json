@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "console-recovery",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.1",
   "description": "TV console-recovery module. Rust owns TTY recovery, SSH continuity, git, tmux, kitty, curl, and jq are maintained; this sidecar carries constants only.",
   "optional": false,

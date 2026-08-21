@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "operator-rc-profile",
-  "category": "Presented",
+  "category": "interactable",
   "version": "1.0.0",
   "description": "TV operator rc profile. This module is the sole owner and converger of the operator shell rc set, including the Fulcrum PATH export, zsh helpers, Oh My Posh config paths, and bin helpers; oh-my-posh package currentness remains owned by oh-my-posh-aur-ratchet.",
   "optional": false,

@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "calibreweb",
-  "category": "Presented",
+  "category": "interactable",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Calibre-Web service configuration: assert birth-provided application and watcher executables, converge product-owned units with backups, validate both units, and restart only after this module changed managed material.",
   "constants": {},

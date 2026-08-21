@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "yarr",
-  "category": "Presented",
+  "category": "interactable",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Yarr service configuration: assert the birth-provided Go runtime and Yarr source tree, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "files_root": "files_root",

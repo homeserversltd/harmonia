@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "power-controller-maintenance",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.1",
   "description": "TV power-controller-maintenance module. Rust owns fstrim and optional Bluetooth/controller support are maintained; this sidecar carries constants only.",
   "optional": false,

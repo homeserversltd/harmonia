@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "homeserver-update-runtime",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "HOMESERVER rolling-release convergence scheduler ladder: retire profile-named units and assert the installer-owned timer is present.",
   "constants": {},

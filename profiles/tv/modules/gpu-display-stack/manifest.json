@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "gpu-display-stack",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "TV gpu-display-stack module. Rust owns GPU/Vulkan display stack for the TV appliance is maintained; this sidecar carries constants only.",
   "optional": false,

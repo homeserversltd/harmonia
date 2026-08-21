@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "identity",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "TV identity module. Ladder owns the uname proof receipt.",
   "optional": false,
