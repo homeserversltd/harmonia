@@ -573,6 +573,15 @@ pub(crate) fn execute_routine(
         };
         &mut owned
     };
+    let managed_child_will_execute = projected_children.iter().any(|child|
+        (local || child.band == band) && is_managed_child_name(&child.name)
+    );
+    if !managed_child_will_execute {
+        state
+            .context
+            .entry("managed-files.changed".into())
+            .or_insert(Value::Bool(false));
+    }
     for child in projected_children {
         if !local && child.band != band {
             continue;
