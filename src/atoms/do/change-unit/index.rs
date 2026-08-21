@@ -11,6 +11,7 @@ pub(crate) enum UnitVerb {
     Disable,
     EnableNow,
     DisableNow,
+    Mask,
     DaemonReload,
 }
 
@@ -24,6 +25,7 @@ impl UnitVerb {
             Self::Disable => &["disable"],
             Self::EnableNow => &["enable", "--now"],
             Self::DisableNow => &["disable", "--now"],
+            Self::Mask => &["mask"],
             Self::DaemonReload => &["daemon-reload"],
         }
     }

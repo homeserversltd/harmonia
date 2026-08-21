@@ -1347,6 +1347,23 @@
           "placement": "RestartServices"
         },
         {
+          "name": "mask",
+          "description": "converge a persistent system unit mask without touching its active state",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
           "name": "disable-stop-remove",
           "description": "disable and stop a system unit, then remove its unit file",
           "args": [

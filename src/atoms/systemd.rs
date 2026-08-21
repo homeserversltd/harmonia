@@ -70,6 +70,16 @@ pub(crate) fn run_permutation_with_policy(
     restart_policy: Option<&str>,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    if permutation == "mask" {
+        return run_mask(
+            receipt_dir,
+            name,
+            service.unwrap_or(""),
+            timeout_secs,
+            apply,
+            invocation,
+        );
+    }
     if permutation == "enable-first-present-now" {
         return run_enable_first_present_now(
             receipt_dir,
@@ -118,6 +128,73 @@ pub(crate) fn run_permutation_with_policy(
         module_changed_before_step,
         invocation,
     )
+}
+
+fn run_mask(
+    receipt_dir: &Path,
+    name: &str,
+    service: &str,
+    timeout_secs: u64,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let before = state("is-enabled", service, false, None, timeout_secs);
+    let Some(before) = before else {
+        let command = CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: "systemd-mask-state-read-failed".into(),
+        };
+        write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
+            None, None, None, None, false, None, None, false)?;
+        return Ok(OperationOutcome { ok: false, changed: false, skipped: true,
+            message: "systemd-mask-state-read-failed".into(), command: Some(command) });
+    };
+    if before == "masked" {
+        let command = CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() };
+        write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
+            Some(&before), None, Some(&before), None, false, None, None, false)?;
+        return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
+            message: "converged-quiet".into(), command: Some(command) });
+    }
+    if !apply {
+        let command = CmdResult { ok: true, code: 0,
+            stdout: format!("planned systemd mask {service}"), stderr: String::new() };
+        write_systemd_receipt(receipt_dir, name, "mask", service, false, false, &command,
+            Some(&before), None, Some(&before), None, false, None, None, false)?;
+        return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
+            message: format!("planned systemd mask {service}"), command: Some(command) });
+    }
+    let run = comparison::execute_with_failure_receipt(
+        "systemd-mask",
+        || state("is-enabled", service, false, None, timeout_secs)
+            .ok_or_else(|| "systemd-mask-state-read-failed".to_string()),
+        |observed| if observed == "masked" { DiffDecision::Empty } else { DiffDecision::Different },
+        |authorization, _observed| {
+            let result = crate::atoms::r#do::unit_change_scoped(
+                authorization,
+                invocation.ok_or("invocation-key-missing")?,
+                service,
+                crate::atoms::r#do::UnitVerb::Mask,
+                false,
+                None,
+                timeout_secs,
+            )?;
+            Ok(CmdResult { ok: result.ok, code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+                stdout: result.stdout, stderr: result.stderr })
+        },
+        |_before, _movement, _after| Ok(()),
+    )?;
+    let command = match run {
+        comparison::ComparisonRun::Current { .. } => CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() },
+        comparison::ComparisonRun::Moved { movement, .. } => movement,
+    };
+    write_systemd_receipt(receipt_dir, name, "mask", service, false, true, &command,
+        Some(&before), None, Some("masked"), None, command.ok && before != "masked", None, None, false)?;
+    Ok(OperationOutcome { ok: command.ok, changed: command.ok && before != "masked", skipped: false,
+        message: if command.ok { format!("systemd mask {service}") } else { "systemd-mask-command-failed".into() },
+        command: Some(command) })
 }
 
 fn run_enable_first_present_now(
@@ -912,7 +989,8 @@ fn state(
     if result.code == -1 {
         None
     } else {
-        Some(result.stdout.trim().to_string())
+        let value = result.stdout.trim();
+        (!value.is_empty()).then(|| value.to_string())
     }
 }
 
