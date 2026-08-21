@@ -43,11 +43,6 @@
             "content": "/usr/local/sbin\n"
           },
           {
-            "path": "/etc/caduceus/identity.json",
-            "mode": 420,
-            "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeconsole/index.json\"\n}\n"
-          },
-          {
             "path": "/var/lib/caduceus/state.json",
             "mode": 420,
             "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n"
