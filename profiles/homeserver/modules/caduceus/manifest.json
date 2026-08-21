@@ -54,14 +54,6 @@
         "managed_files_schema": "harmonia.homeserver.caduceus_managed_files.v1",
         "managed_files": [
           {
-            "path": "/etc/caduceus/identity.json",
-            "operation": "place",
-            "mode": 420,
-            "uid": 0,
-            "gid": 0,
-            "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeserver/index.json\"\n}\n"
-          },
-          {
             "path": "/etc/systemd/system/caduceus.service",
             "operation": "place",
             "mode": 420,
