@@ -135,7 +135,7 @@ impl Drop for CapsuleStageGuard {
     }
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn demo(
     root: &Path,
     key: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
@@ -257,8 +257,7 @@ pub(crate) fn slice4_bench(
                 0,
                 0,
             )?;
-        let root_owned_full_fidelity_differs =
-            source_module_hash != root_owned_full_sha256;
+        let root_owned_full_fidelity_differs = source_module_hash != root_owned_full_sha256;
         let packed_module_directory_real = fs::symlink_metadata(&packed_module_path)
             .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
             .unwrap_or(false);

@@ -826,11 +826,11 @@ fn emit_preflight_receipt(
     )
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn demo(
     root: &Path,
     key: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
-    let key = key.ok_or("renew-self-slice4-invocation-key-missing")?;
+    let key = key.ok_or("renew-self-demo-invocation-key-missing")?;
     let receipts = root.join("receipts");
     let module_root = root.join("profiles/tv/modules");
     let identity = module_root.join("identity");

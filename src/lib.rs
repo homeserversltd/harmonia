@@ -10,6 +10,7 @@ pub(crate) mod check_health;
 #[path = "tools/enable-unit/index.rs"]
 pub(crate) mod enable_unit;
 pub(crate) use atoms::attest::hyalos;
+mod demo_registry;
 #[path = "tools/install-package/index.rs"]
 pub(crate) mod install_package;
 #[path = "tools/place-file/index.rs"]
@@ -24,9 +25,8 @@ mod remove_file;
 pub(crate) mod remove_unit;
 #[path = "tools/set-clock/index.rs"]
 pub(crate) mod set_clock;
-mod slice4_bench;
-mod stillness_bench;
-mod structural_wall_bench;
+mod stillness_demo;
+mod structural_wall_demo;
 #[path = "tools/index.rs"]
 pub mod tools;
 
@@ -306,29 +306,7 @@ mod invocation_face {
             || args.first().is_some_and(|arg| {
                 matches!(
                     arg.as_str(),
-                    "capsule"
-                        | "acquire-source"
-                        | "bench-stillness"
-                        | "bench-proposal-refresh"
-                        | "bench-structural-wall"
-                        | "bench-harmonia-foundation"
-                        | "bench-update-set"
-                        | "bench-slice12-clock"
-                        | "bench-slice4-files-transaction"
-                        | "bench-slice4-make-symlink"
-                        | "bench-slice4-aur"
-                        | "bench-slice4-git-artifact"
-                        | "bench-slice4-systemd-unit"
-                        | "bench-slice4-package"
-                        | "bench-slice4-command"
-                        | "bench-slice4-subscription-interactables"
-                        | "bench-slice4-ladder-profile"
-                        | "bench-slice4-renew-self"
-                        | "bench-slice4-capsule"
-                        | "bench-slice4-household-time"
-                        | "bench-slice13-renew-schedule"
-                        | "install-timer"
-                        | "uninstall-timer"
+                    "capsule" | "acquire-source" | "demo" | "install-timer" | "uninstall-timer"
                 )
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
@@ -353,39 +331,7 @@ pub fn invoke(args: Vec<String>) -> Result<(), String> {
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("bench-slice4") => {
-            Err("bench-slice4-aggregate-retired-use-one-surface-dispatch".into())
-        }
-        Some(name) if name.strip_prefix("bench-slice4-").is_some() => {
-            slice4_bench::run(name.strip_prefix("bench-slice4-").unwrap(), invocation.0)
-        }
-        Some("bench-update-set") => atoms::r#do::transaction::update_set_bench(
-            &args[1..],
-            invocation
-                .1
-                .clone()
-                .ok_or_else(|| "update-set-invocation-key-missing".to_string())?,
-        ),
-        Some("bench-harmonia-foundation") => atoms::r#do::transaction::bench(
-            &args[1..],
-            invocation
-                .1
-                .clone()
-                .ok_or_else(|| "foundation-invocation-key-missing".to_string())?,
-        ),
-        Some("bench-slice13-renew-schedule") => stillness_bench::slice13_renew_schedule_bench(
-            invocation
-                .0
-                .ok_or_else(|| "slice13-renew-schedule-invocation-key-missing".to_string())?,
-        ),
-        Some("bench-slice12-clock") => stillness_bench::slice12_clock_bench(
-            invocation
-                .0
-                .ok_or_else(|| "slice12-clock-invocation-key-missing".to_string())?,
-        ),
-        Some("bench-stillness") => stillness_bench::run(invocation.0),
-        Some("bench-proposal-refresh") => crate::bands::propose_edits::proposal_refresh_bench(),
-        Some("bench-structural-wall") => structural_wall_bench::run(invocation.0),
+        Some("demo") => demo_command(&args[1..], invocation),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
         }
@@ -458,7 +404,12 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let step_id = value_arg(&args, "--step-id")
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "source-resolution".to_string());
-            let receipt = crate::bands::pull_source::resolve_source_json(&certificate, component, &owning_module, &step_id);
+            let receipt = crate::bands::pull_source::resolve_source_json(
+                &certificate,
+                component,
+                &owning_module,
+                &step_id,
+            );
             println!(
                 "{}",
                 serde_json::to_string_pretty(&receipt)
@@ -1017,31 +968,30 @@ pub(crate) fn explain() -> Result<(), String> {
     Ok(())
 }
 
+fn demo_command(args: &[String], invocation: Invocation) -> Result<(), String> {
+    let name = args.first().map(String::as_str);
+    if name.is_none() || name == Some("list") {
+        println!("schema=harmonia.demo.list.v1");
+        println!("ok=true");
+        for name in demo_registry::NAMES {
+            println!("name={name}");
+        }
+        return Ok(());
+    }
+    let name = name.unwrap();
+    if !demo_registry::NAMES.contains(&name) {
+        return Err(format!("unknown-demo-name={name}"));
+    }
+    demo_registry::run(name, invocation.0, invocation.1)
+}
+
 pub(crate) fn usage() -> Result<(), String> {
     println!("harmonia {}", VERSION);
     println!("usage:");
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
-    println!("  harmonia bench-proposal-refresh");
-    println!("  harmonia bench-structural-wall");
-    println!("  harmonia bench-stillness");
-    println!("  harmonia bench-harmonia-foundation");
-    println!("  harmonia bench-update-set");
-    println!("  harmonia bench-slice12-clock");
-    println!("  harmonia bench-slice4-files-transaction");
-    println!("  harmonia bench-slice4-make-symlink");
-    println!("  harmonia bench-slice4-aur");
-    println!("  harmonia bench-slice4-git-artifact");
-    println!("  harmonia bench-slice4-systemd-unit");
-    println!("  harmonia bench-slice4-package");
-    println!("  harmonia bench-slice4-command");
-    println!("  harmonia bench-slice4-subscription-interactables");
-    println!("  harmonia bench-slice4-ladder-profile");
-    println!("  harmonia bench-slice4-renew-self");
-    println!("  harmonia bench-slice4-capsule");
-    println!("  harmonia bench-slice4-household-time");
-    println!("  harmonia bench-slice13-renew-schedule");
+    println!("  harmonia demo [<name>|list]");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id>");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");

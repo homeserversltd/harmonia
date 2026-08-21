@@ -12,11 +12,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::Path;
 
-pub(crate) fn execute_command_precondition(step: &ValidatedStep, precondition: &crate::ladder::CommandPrecondition, manifest: &LadderManifest, module_dir: &Path) -> Result<OperationOutcome, String> {
+pub(crate) fn execute_command_precondition(
+    step: &ValidatedStep,
+    precondition: &crate::ladder::CommandPrecondition,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+) -> Result<OperationOutcome, String> {
     let argv: Vec<&str> = precondition.args.iter().map(String::as_str).collect();
-    let result = crate::tools::command::capture_with_options(&precondition.program, &argv, crate::tools::command::CaptureOptions::new().cwd(precondition.cwd.as_deref()).timeout_secs(precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS)));
-    crate::write_json(&module_dir.join(format!("{}-precondition.json", step.step_id)), &serde_json::json!({"schema":"harmonia.command_precondition.v1","module":manifest.id,"step_id":step.step_id,"state":if result.ok {"satisfied"} else {"blocked"},"program":precondition.program,"args":precondition.args,"cwd":precondition.cwd,"timeout_secs":precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),"raw_command_ran":false,"probe":result,"probe_error":if result.ok {"none".to_string()} else {format!("exit_code={} stderr={}",result.code,result.stderr)},"first_missing_signal":if result.ok {"none"} else {"command-precondition-blocked"}}))?;
-    Ok(OperationOutcome { ok:result.ok, changed:false, skipped:false, message:format!("command precondition {}",precondition.program), command:Some(result) })
+    let result = crate::tools::command::capture_with_options(
+        &precondition.program,
+        &argv,
+        crate::tools::command::CaptureOptions::new()
+            .cwd(precondition.cwd.as_deref())
+            .timeout_secs(
+                precondition
+                    .timeout_secs
+                    .unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),
+            ),
+    );
+    crate::write_json(
+        &module_dir.join(format!("{}-precondition.json", step.step_id)),
+        &serde_json::json!({"schema":"harmonia.command_precondition.v1","module":manifest.id,"step_id":step.step_id,"state":if result.ok {"satisfied"} else {"blocked"},"program":precondition.program,"args":precondition.args,"cwd":precondition.cwd,"timeout_secs":precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),"raw_command_ran":false,"probe":result,"probe_error":if result.ok {"none".to_string()} else {format!("exit_code={} stderr={}",result.code,result.stderr)},"first_missing_signal":if result.ok {"none"} else {"command-precondition-blocked"}}),
+    )?;
+    Ok(OperationOutcome {
+        ok: result.ok,
+        changed: false,
+        skipped: false,
+        message: format!("command precondition {}", precondition.program),
+        command: Some(result),
+    })
 }
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
@@ -279,14 +303,12 @@ pub(crate) fn execute_group_live_probe(
     execute_group_live_probe_validated(manifest, &step, receipt_dir)
 }
 
-
 // Arcadia fast-check ownership: preserve the legacy CLI surface while keeping
 // source comparison and SHA probes in the Compare band.
+use crate::{hyalos, CmdResult};
+use crate::{write_command_receipt, write_json};
 use serde_json::json;
 use std::time::Instant;
-use crate::{CmdResult, hyalos};
-use crate::{write_command_receipt, write_json};
-
 
 pub(crate) fn homeconsole_arcadia_check(
     profile: &Profile,
@@ -404,9 +426,5 @@ pub(crate) fn is_hex_sha(s: &str) -> bool {
 }
 
 pub(crate) fn observe_arcadia_source_sha(source_dir: &Path) -> CmdResult {
-    crate::command_capture_with_cwd(
-        "/usr/bin/git",
-        &["rev-parse", "HEAD"],
-        source_dir.to_str(),
-    )
+    crate::command_capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], source_dir.to_str())
 }

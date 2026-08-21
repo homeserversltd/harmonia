@@ -426,7 +426,7 @@ pub fn acquire_source(
     crate::pull_repo::acquire_source(plan, invocation)
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn demo(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -435,17 +435,17 @@ pub(crate) fn slice4_bench(
     std::fs::create_dir_all(&source).map_err(|e| e.to_string())?;
     for args in [
         &["init", "-b", "main"][..],
-        &["config", "user.email", "bench@example.invalid"],
-        &["config", "user.name", "Slice4 Bench"],
+        &["config", "user.email", "demo@example.invalid"],
+        &["config", "user.name", "Harmonia Demo"],
     ] {
         if !command::capture_with_cwd("/usr/bin/git", args, source.to_str()).ok {
-            return Err("git-bench-init-failed".into());
+            return Err("git-demo-init-failed".into());
         }
     }
     std::fs::write(source.join("payload"), b"source-bytes\n").map_err(|e| e.to_string())?;
     for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
         if !command::capture_with_cwd("/usr/bin/git", args, source.to_str()).ok {
-            return Err("git-bench-commit-failed".into());
+            return Err("git-demo-commit-failed".into());
         }
     }
     let head_before =

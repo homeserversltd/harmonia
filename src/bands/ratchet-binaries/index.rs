@@ -1,8 +1,7 @@
-use std::path::PathBuf;
-use crate::OperationOutcome;
 use super::Band;
 use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::ModuleExecution;
+use crate::OperationOutcome;
 use crate::{
     LoadedModule, PackageAuthority, Profile, ProfileProjection, SoftwareApplyAuthorization,
     UpdateMode,
@@ -11,10 +10,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::Path;
+use std::path::PathBuf;
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RatchetBinaries)
 }
-
 
 pub(crate) fn build_arcadia(
     source_dir: &Path,
@@ -67,7 +66,10 @@ pub(crate) fn promote_arcadia_artifact(
         path: install_bin,
         declared_bytes: &bytes,
         mode: Some(0o755),
-        ownership: crate::place_file::DeclaredOwnership { uid: None, gid: None },
+        ownership: crate::place_file::DeclaredOwnership {
+            uid: None,
+            gid: None,
+        },
         backup: crate::place_file::BackupPolicy::None,
         invocation: Some(key),
     })?;
@@ -313,7 +315,6 @@ pub(crate) fn execute_manifest_modules(
     Ok(())
 }
 
-
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -322,9 +323,19 @@ pub(crate) fn execute_routine_child(
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::tools::files::InvocationKey>,
-) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
-    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+) -> Result<
+    (
+        crate::OperationOutcome,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let contract =
+        crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = requested_permutation
+        .and_then(|name| contract.permutation(name))
+        .or_else(|| contract.permutations.first())
+        .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {

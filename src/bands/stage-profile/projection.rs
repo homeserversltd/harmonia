@@ -48,7 +48,8 @@ pub(crate) fn load_profile_projection(
         if disabled.contains(id) {
             continue;
         }
-        let loaded = match crate::bands::stage_profile::groups::load_profile_module(module_root, id) {
+        let loaded = match crate::bands::stage_profile::groups::load_profile_module(module_root, id)
+        {
             Ok(v) => v,
             Err(e) => {
                 errors.insert(id.clone(), e);
@@ -221,7 +222,10 @@ fn projection_derive_plan_inner(
         .collect();
     let faces: BTreeSet<String> = runtime_faces.into_iter().collect();
     let (face, pinned_members) = if let Some(declaration) = &profile.syzygy_declaration {
-        (declaration.gui_face.clone(), Some(declaration.members.clone()))
+        (
+            declaration.gui_face.clone(),
+            Some(declaration.members.clone()),
+        )
     } else {
         let face = if faces.len() == 1 {
             Some(faces.iter().next().unwrap().clone())
@@ -249,7 +253,9 @@ fn projection_derive_plan_inner(
         };
         let module_id = projected.loaded.id();
         let steps = &projected.steps;
-        let is_gui = face.as_deref().is_some_and(|face| projected_gui_module(projected, face));
+        let is_gui = face
+            .as_deref()
+            .is_some_and(|face| projected_gui_module(projected, face));
         for args in projected_runtime_args(projected) {
             let component = args.get("component").and_then(Value::as_str).unwrap_or("");
             let member = if component == "caduceus" {
@@ -288,7 +294,11 @@ fn projection_derive_plan_inner(
                         args.get("component").and_then(Value::as_str) == Some("caduceus")
                     }))
             {
-                let staff_member = if module_id == "sbin" { "sbin" } else { "agathodaimon" };
+                let staff_member = if module_id == "sbin" {
+                    "sbin"
+                } else {
+                    "agathodaimon"
+                };
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
                     projection_add_census_target(&mut targets, p.into(), staff_member)?;
                 }
@@ -340,7 +350,13 @@ fn projection_derive_plan_inner(
                 let user = s.permutation.starts_with("user-");
                 let target_user = projection_text(&s.args, "user");
                 if let Some(name) = projection_text(&s.args, "service") {
-                    projection_add_service(&mut services, name, user, target_user, face.as_deref().unwrap_or(""));
+                    projection_add_service(
+                        &mut services,
+                        name,
+                        user,
+                        target_user,
+                        face.as_deref().unwrap_or(""),
+                    );
                 }
             }
         }

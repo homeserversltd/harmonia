@@ -1,9 +1,9 @@
-use crate::OperationOutcome;
 use super::Band;
 use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::tools;
-use crate::ModuleExecution;
 use crate::CmdResult;
+use crate::ModuleExecution;
+use crate::OperationOutcome;
 use crate::{
     LoadedModule, PackageAuthority, Profile, ProfileProjection, SoftwareApplyAuthorization,
     UpdateMode,
@@ -565,10 +565,16 @@ pub(crate) fn routine_source_plan(
                 manifest.id, step.step_id
             )
         })?;
-    let config = crate::bands::renew_self::load_engine_plane_config(&crate::bands::renew_self::engine_config_path())?;
+    let config = crate::bands::renew_self::load_engine_plane_config(
+        &crate::bands::renew_self::engine_config_path(),
+    )?;
     let certificate = crate::device_profile_certificate_path();
-    let certificate_resolution =
-        crate::bands::pull_source::resolve_source(&certificate, component, &manifest.id, &step.step_id);
+    let certificate_resolution = crate::bands::pull_source::resolve_source(
+        &certificate,
+        component,
+        &manifest.id,
+        &step.step_id,
+    );
     let resolution = match certificate_resolution.resolution {
         Some(resolution) => resolution,
         None if certificate_resolution
@@ -953,15 +959,26 @@ fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdRe
     }
 }
 
-
-pub(crate) fn acquire_arcadia_source(plan: &tools::git_artifact::SourcePlan, apply: bool, invocation: Option<crate::atoms::r#do::InvocationKey>) -> tools::git_artifact::SourceOutcome {
+pub(crate) fn acquire_arcadia_source(
+    plan: &tools::git_artifact::SourcePlan,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> tools::git_artifact::SourceOutcome {
     if apply {
         tools::git_artifact::acquire_source(plan, invocation)
     } else {
-        tools::git_artifact::SourceOutcome { ok: true, changed: false, receipt: tools::git_artifact::SourceReceipt { attempts: Vec::new(), served_index: None, resolved_commit: None, promotion: "planned source acquisition".to_string() } }
+        tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: "planned source acquisition".to_string(),
+            },
+        }
     }
 }
-
 
 pub(crate) fn execute_routine_child(
     tool: &str,
@@ -971,9 +988,19 @@ pub(crate) fn execute_routine_child(
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
-    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+) -> Result<
+    (
+        crate::OperationOutcome,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let contract =
+        crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = requested_permutation
+        .and_then(|name| contract.permutation(name))
+        .or_else(|| contract.permutations.first())
+        .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {
@@ -1016,13 +1043,16 @@ pub(crate) fn execute_routine_child(
     }
 }
 
-
 // Arcadia source acquisition receipt conversion.
 pub(crate) fn source_outcome_cmd(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
     CmdResult {
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { 1 },
         stdout: outcome.receipt.promotion.clone(),
-        stderr: if outcome.ok { String::new() } else { outcome.receipt.promotion.clone() },
+        stderr: if outcome.ok {
+            String::new()
+        } else {
+            outcome.receipt.promotion.clone()
+        },
     }
 }

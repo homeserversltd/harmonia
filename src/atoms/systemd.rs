@@ -961,7 +961,7 @@ fn write_systemd_receipt(
     )
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn demo(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -969,9 +969,9 @@ pub(crate) fn slice4_bench(
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
     let out = run_permutation(
         &receipts,
-        "bench",
+        "demo",
         "disable-stop-remove",
-        Some("harmonia-slice4-never.service"),
+        Some("harmonia-demo-never.service"),
         &[],
         None,
         1,
@@ -979,9 +979,9 @@ pub(crate) fn slice4_bench(
         false,
         invocation,
     )?;
-    let receipt = receipts.join("bench.json").exists();
+    let receipt = receipts.join("demo.json").exists();
     Ok(
-        serde_json::json!({"planned":out.ok,"apply":false,"typed_receipt":receipt,"argv_candidate":"harmonia-slice4-never.service","removal_planned":false,"restart_restrained":true,"no_live_mutation":true,"ok":out.ok && receipt && !out.changed}),
+        serde_json::json!({"planned":out.ok,"apply":false,"typed_receipt":receipt,"argv_candidate":"harmonia-demo-never.service","removal_planned":false,"restart_restrained":true,"no_live_mutation":true,"ok":out.ok && receipt && !out.changed}),
     )
 }
 

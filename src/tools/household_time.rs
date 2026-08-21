@@ -54,7 +54,7 @@ pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
 pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
     CmdResult { ok: true, code: 0, stdout: format!("{{\"schema\":\"harmonia.household-time.receipt.v1\",\"changed\":false,\"preserved\":true,\"first_missing_signal\":\"{reason}\"}}"), stderr: source.stderr }
 }
-pub(crate) fn slice4_bench(
+pub(crate) fn demo(
     root: &Path,
     _key: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {

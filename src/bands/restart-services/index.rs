@@ -87,10 +87,28 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                                 .cloned()
                                 .unwrap_or_else(|| Value::String("owner".into())),
                         );
-                        let component = args.get("component").and_then(Value::as_str).unwrap_or("component");
-                        let build_sha_key = format!("{}_BUILD_SHA", component.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_uppercase() } else { '_' }).collect::<String>());
-                        let source_sha_ref = serde_json::json!({"from":"pull-repo.resolved_commit"});
-                        let mut environment = args.get("build_environment").and_then(Value::as_object).cloned().unwrap_or_default();
+                        let component = args
+                            .get("component")
+                            .and_then(Value::as_str)
+                            .unwrap_or("component");
+                        let build_sha_key = format!(
+                            "{}_BUILD_SHA",
+                            component
+                                .chars()
+                                .map(|ch| if ch.is_ascii_alphanumeric() {
+                                    ch.to_ascii_uppercase()
+                                } else {
+                                    '_'
+                                })
+                                .collect::<String>()
+                        );
+                        let source_sha_ref =
+                            serde_json::json!({"from":"pull-repo.resolved_commit"});
+                        let mut environment = args
+                            .get("build_environment")
+                            .and_then(Value::as_object)
+                            .cloned()
+                            .unwrap_or_default();
                         environment.insert(build_sha_key, source_sha_ref.clone());
                         if component == "coronatio" {
                             environment.insert("CORONATIO_SOURCE_SHA".into(), source_sha_ref);
@@ -160,24 +178,18 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                     }
                     _ => {
                         let mut c = args.clone();
-                        let url = args
-                            .get("url")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
-                        let health_url = if args
-                            .get("component")
-                            .and_then(Value::as_str)
-                            == Some("coronatio")
-                        {
-                            let base = url.trim_end_matches('/');
-                            if base.ends_with("/health") {
-                                base.to_string()
+                        let url = args.get("url").and_then(Value::as_str).unwrap_or("");
+                        let health_url =
+                            if args.get("component").and_then(Value::as_str) == Some("coronatio") {
+                                let base = url.trim_end_matches('/');
+                                if base.ends_with("/health") {
+                                    base.to_string()
+                                } else {
+                                    format!("{base}/health")
+                                }
                             } else {
-                                format!("{base}/health")
-                            }
-                        } else {
-                            url.to_string()
-                        };
+                                url.to_string()
+                            };
                         c.insert("url".into(), Value::String(health_url));
                         if let Some(v) = args.get("health_expected_contains") {
                             c.insert("expected_contains".into(), v.clone());
@@ -811,7 +823,9 @@ fn homeconsole_arcadia_update_check(
         return Err("arcadia-check-apply-forbidden".into());
     }
     if !apply {
-        if let Err(signal) = ensure_arcadia_control_surface_authority(receipt_dir, false, None, None) {
+        if let Err(signal) =
+            ensure_arcadia_control_surface_authority(receipt_dir, false, None, None)
+        {
             ok = false;
             if first_missing_signal == "none" {
                 first_missing_signal = signal;
@@ -924,7 +938,12 @@ fn homeconsole_arcadia_update_apply(
         } else {
             event(&mut events, "artifact-current", true, "converged-quiet")?;
         }
-        let authority_changed = ensure_arcadia_control_surface_authority(receipt_dir, true, Some(authorization), Some(invocation))?;
+        let authority_changed = ensure_arcadia_control_surface_authority(
+            receipt_dir,
+            true,
+            Some(authorization),
+            Some(invocation),
+        )?;
         changed = changed || authority_changed;
         event(
             &mut events,
@@ -956,7 +975,9 @@ fn homeconsole_arcadia_update_apply(
         }
     }
     if !apply {
-        if let Err(signal) = ensure_arcadia_control_surface_authority(receipt_dir, false, None, None) {
+        if let Err(signal) =
+            ensure_arcadia_control_surface_authority(receipt_dir, false, None, None)
+        {
             ok = false;
             if first_missing_signal == "none" {
                 first_missing_signal = signal;
@@ -1055,7 +1076,9 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     let resolution = resolution
         .resolution
         .ok_or_else(|| "arcadia-source-resolution-plan-missing".to_string())?;
-    let config = crate::bands::renew_self::load_engine_plane_config(&crate::bands::renew_self::engine_config_path())?;
+    let config = crate::bands::renew_self::load_engine_plane_config(
+        &crate::bands::renew_self::engine_config_path(),
+    )?;
     let credentials = config
         .as_ref()
         .map(crate::bands::renew_self::credential_scopes)

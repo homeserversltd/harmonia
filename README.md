@@ -21,29 +21,36 @@ src/tools/       composition tools and re-export seats
 profiles/        selected profile and module declarations
 installer/       installation support
 docs/            architecture and engine notes
-src/*_bench.rs    production bench routes and receipt guidance
+src/*_demo.rs    production demo routes and receipt guidance
 ```
 
-## Bench routes
+## One demo door
 
-A bench is a real production walk through one route. It creates a scratch root, runs the production implementation, emits a receipt, and observes cleanup. The binary exposes these Slice 4 routes:
+Every production tool has a live demo with a receipt through the single `demo` command. `demo` and `demo list` print the complete registry; a name is an argument, never part of the route name.
 
 ```text
-bench-slice4-files-transaction
-bench-slice4-make-symlink
-bench-slice4-aur
-bench-slice4-git-artifact
-bench-slice4-systemd-unit
-bench-slice4-package
-bench-slice4-command
-bench-slice4-subscription-interactables
-bench-slice4-ladder-profile
-bench-slice4-renew-self
-bench-slice4-capsule
-bench-slice4-household-time
+demo files-transaction
+demo make-symlink
+demo aur
+demo git-artifact
+demo systemd-unit
+demo package
+demo command
+demo subscription-interactables
+demo ladder-profile
+demo renew-self
+demo capsule
+demo household-time
+demo stillness
+demo proposal-refresh
+demo structural-wall
+demo foundation
+demo update-set
+demo clock
+demo renew-schedule
 ```
 
-The binary also exposes the pre-existing `bench-proposal-refresh`, `bench-structural-wall`, `bench-stillness`, `bench-harmonia-foundation`, `bench-update-set`, `bench-slice12-clock`, and `bench-slice13-renew-schedule` routes.
+Each demo creates or uses its bounded scratch surface, runs the production implementation, emits a receipt, and observes cleanup where applicable.
 
 ## Safe development commands
 

@@ -100,7 +100,7 @@ pub(crate) fn persist_feed_with_writes(
     Ok(writes)
 }
 
-pub(crate) fn proposal_refresh_bench() -> Result<(), String> {
+pub(crate) fn proposal_refresh_demo() -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -183,17 +183,17 @@ pub(crate) fn proposal_refresh_bench() -> Result<(), String> {
     }
 
     let root = std::env::temp_dir().join(format!(
-        "harmonia-proposal-refresh-bench-{}",
+        "harmonia-proposal-refresh-demo-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let feed_path = root.join("interactables.json");
     let item = Interactable {
-        id: "config-proposal-bench".into(),
-        module_id: "bench".into(),
-        name: "bench proposal".into(),
-        description: "proposal refresh bench".into(),
+        id: "config-proposal-demo".into(),
+        module_id: "demo".into(),
+        name: "demo proposal".into(),
+        description: "proposal refresh demo".into(),
         kind: "hard-stamp".into(),
         target_path: root.join("target"),
         reference_source_path: root.join("source"),
@@ -219,7 +219,7 @@ pub(crate) fn proposal_refresh_bench() -> Result<(), String> {
     let second_writes = persist_feed_with_writes(&feed_path, &feed)?;
     let quiet_after = snapshot(&root.join("proposals"))?;
     let target_snapshot_unchanged = quiet_before == quiet_after;
-    let record_path = root.join("proposals/config-proposal-bench.json");
+    let record_path = root.join("proposals/config-proposal-demo.json");
     let metadata = std::fs::metadata(&record_path).map_err(|error| error.to_string())?;
     let mode_ok = metadata.permissions().mode() & 0o777 == 0o644;
     let owner_ok = (metadata.uid(), metadata.gid())
@@ -249,7 +249,7 @@ pub(crate) fn proposal_refresh_bench() -> Result<(), String> {
     let collision_snapshot_unchanged = collision_before == collision_after;
     let _ = std::fs::remove_file(root.join("proposals/config-proposal-collision.json"));
     let result = serde_json::json!({
-        "schema": "harmonia.proposal-refresh-bench.v1",
+        "schema": "harmonia.proposal-refresh-demo.v1",
         "ok": first_writes > 0 && mode_ok && owner_ok && stale_removed && collision_blocked && second_writes == 0 && target_snapshot_unchanged && collision_snapshot_unchanged,
         "first_writes": first_writes,
         "mode": "0644",
@@ -268,7 +268,7 @@ pub(crate) fn proposal_refresh_bench() -> Result<(), String> {
         serde_json::to_string(&result).map_err(|error| error.to_string())?
     );
     if result["ok"] != true {
-        return Err("proposal-refresh-bench-failed".into());
+        return Err("proposal-refresh-demo-failed".into());
     }
     Ok(())
 }
@@ -440,7 +440,14 @@ pub(crate) fn execute_manifest_band(
             )?
         } else {
             crate::tools::routine::execute_validated_step(
-                step, manifest, module_dir, auth, pa, false, key, active_lane,
+                step,
+                manifest,
+                module_dir,
+                auth,
+                pa,
+                false,
+                key,
+                active_lane,
             )?
         };
         if step.tool == "routine" {

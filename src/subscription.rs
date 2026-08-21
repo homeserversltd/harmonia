@@ -68,10 +68,7 @@ struct SubscriptionShowReceipt {
     first_missing_signal: String,
 }
 
-pub(crate) fn slice4_bench(
-    root: &Path,
-    key: crate::atoms::r#do::InvocationKey,
-) -> Result<Value, String> {
+pub(crate) fn demo(root: &Path, key: crate::atoms::r#do::InvocationKey) -> Result<Value, String> {
     let path = root.join("subscription.json");
     let seed = SubscriptionUpdate {
         lane: "owner".into(),
@@ -91,7 +88,7 @@ pub(crate) fn slice4_bench(
         .map_err(|e| e.to_string())?;
     value
         .as_object_mut()
-        .ok_or("subscription-bench-object")?
+        .ok_or("subscription-demo-object")?
         .insert("machine_note".into(), json!("keep-me"));
     write_json_value_atomic_with_invocation(&path, &value, key)?;
     update_subscription_record_with_invocation(
@@ -121,7 +118,7 @@ pub(crate) fn slice4_bench(
     let machine_local_fields_preserved = updated["machine_note"] == "keep-me";
 
     let interactables_path = root.join("interactables.json");
-    let module_id = "subscription-interactables-bench";
+    let module_id = "subscription-interactables-demo";
     let stale_target = root.join("targets/stale");
     let unrelated_target = root.join("targets/unrelated");
     let stable_id = |module: &str, target: &Path| {
@@ -172,7 +169,7 @@ pub(crate) fn slice4_bench(
         schema: crate::ladder::SCHEMA.into(),
         id: module_id.into(),
         version: "1.0.0".into(),
-        description: "subscription interactables bench".into(),
+        description: "subscription interactables demo".into(),
         role: None,
         optional: false,
         optional_warning: None,
@@ -220,7 +217,7 @@ pub(crate) fn slice4_bench(
             changed: false,
             backed_up_to: None,
             final_mode: Some(0o644),
-            ownership_source: "bench".into(),
+            ownership_source: "demo".into(),
             observed_uid_before: None,
             observed_gid_before: None,
             observed_uid_after: None,
@@ -231,7 +228,7 @@ pub(crate) fn slice4_bench(
             diff: None,
             diff_omitted: None,
         }],
-        message: "bench".into(),
+        message: "demo".into(),
     };
     crate::bands::propose_edits::refresh_interactables_at_path(
         &interactables_path,

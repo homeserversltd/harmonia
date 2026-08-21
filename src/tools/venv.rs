@@ -3,7 +3,6 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
-
 fn safe_absolute_path(value: &str) -> bool {
     let path = Path::new(value);
     path.is_absolute()

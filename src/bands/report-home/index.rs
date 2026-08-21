@@ -92,7 +92,9 @@ pub(crate) struct RunState {
     pub defer_terminal: bool,
 }
 
-pub(crate) fn collect_package_pin_witnesses(receipt_dir: &Path) -> (Vec<serde_json::Value>, BTreeSet<String>) {
+pub(crate) fn collect_package_pin_witnesses(
+    receipt_dir: &Path,
+) -> (Vec<serde_json::Value>, BTreeSet<String>) {
     let mut paths = Vec::new();
     let mut pending = vec![receipt_dir.join("modules")];
     while let Some(path) = pending.pop() {

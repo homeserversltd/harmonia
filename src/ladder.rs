@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const SCHEMA: &str = "harmonia.module.ladder.v1";
 
-pub(crate) fn slice4_bench(
+pub(crate) fn demo(
     root: &Path,
     _key: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -107,7 +107,8 @@ pub(crate) fn slice4_bench(
         )
         .map_err(|e| e.to_string())?;
     }
-    let (report_witnesses, report_exclusions) = crate::bands::report_home::collect_package_pin_witnesses(&witness_root);
+    let (report_witnesses, report_exclusions) =
+        crate::bands::report_home::collect_package_pin_witnesses(&witness_root);
     let report_home_nested_witnesses = report_witnesses.len() == 3;
     let report_home_root_ignored = !report_witnesses.iter().any(|v| {
         v["exclusion_set"]
@@ -116,17 +117,15 @@ pub(crate) fn slice4_bench(
     });
     let report_home_exclusions_deduped = report_exclusions.into_iter().collect::<Vec<_>>()
         == ["absent", "divergent", "exact", "shared"];
-    let report_home_states = ["held/green", "absent", "divergent"]
-        .iter()
-        .all(|state| {
-            report_witnesses
-                .iter()
-                .any(|v| v["witness"][0]["state"] == *state)
-        });
-    let exact_scope_limitation = "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
-    let report_home_scope_limitation = report_witnesses.iter().all(|v| {
-        v["pin_scope_limitation"] == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION
+    let report_home_states = ["held/green", "absent", "divergent"].iter().all(|state| {
+        report_witnesses
+            .iter()
+            .any(|v| v["witness"][0]["state"] == *state)
     });
+    let exact_scope_limitation = "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
+    let report_home_scope_limitation = report_witnesses
+        .iter()
+        .all(|v| v["pin_scope_limitation"] == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION);
     let report_home_scope_exact_literal = report_witnesses
         .iter()
         .all(|v| v["pin_scope_limitation"] == exact_scope_limitation);
