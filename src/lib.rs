@@ -95,29 +95,15 @@ impl PackageBackend {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-/// Hold/Propose/Replace are the drift behaviors of the Presented/Seed/Hotfix categories; full per-file category declaration is a follow-up slice.
-pub(crate) enum OnDrift {
-    Hold,
-    Propose,
-    Replace { only_if_exact: String },
-}
-
-impl Default for OnDrift {
-    fn default() -> Self {
-        Self::Hold
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 struct ManagedFileManifest {
     path: String,
     content: String,
     #[serde(default)]
     mode: Option<u32>,
     #[serde(default)]
-    on_drift: OnDrift,
-    #[serde(default)]
     category: Option<String>,
+    #[serde(default)]
+    legacy_transition_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

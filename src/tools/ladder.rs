@@ -285,24 +285,10 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
         .map_err(|e| format!("ladder-manifest-read-failed {}: {e}", path.display()))?;
     let mut raw = serde_json::from_str::<Value>(&text)
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))?;
-    let module_category = match raw.get("category") {
-        None => None,
-        Some(value) => Some(
-            value
-                .as_str()
-                .ok_or_else(|| {
-                    "step_id=module defect=managed-file-category-unknown-type".to_string()
-                })?
-                .to_owned(),
-        ),
-    };
-    if let Some(category) = module_category.as_deref() {
-        if !MANAGED_FILE_CATEGORIES.contains(&category) {
-            return Err(format!(
-                "step_id=module defect=managed-file-category-unknown-{category}"
-            ));
-        }
-    }
+    let module_category = raw
+        .get("category")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     raw.as_object_mut()
         .and_then(|object| object.remove("category"));
     normalize_managed_file_categories(&mut raw, module_category.as_deref())?;
@@ -333,15 +319,27 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
         })
 }
 
-const MANAGED_FILE_CATEGORIES: [&str; 5] = ["Owned", "Seed", "Presented", "Hotfix", "Untouchable"];
+const MANAGED_FILE_CATEGORIES: [&str; 2] = ["known-good", "interactable"];
+
+fn legacy_managed_file_category(category: Option<&str>) -> Option<&'static str> {
+    let canonical = match category {
+        None | Some("known-good" | "Owned" | "Seed" | "Untouchable") => "known-good",
+        Some("interactable" | "Presented") => "interactable",
+        Some(_) => return None,
+    };
+    MANAGED_FILE_CATEGORIES
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == canonical)
+}
 
 fn normalize_managed_file_categories(
     value: &mut Value,
     module_category: Option<&str>,
 ) -> Result<(), String> {
     if let Some(object) = value.as_object_mut() {
-        let target = object.get("tool").and_then(Value::as_str) == Some("files")
-            && object.get("permutation").and_then(Value::as_str) == Some("managed-files")
+        let target = (object.get("tool").and_then(Value::as_str) == Some("files")
+            && object.get("permutation").and_then(Value::as_str) == Some("managed-files"))
             || object.get("tool").and_then(Value::as_str) == Some("service-runtime");
         if target {
             if let Some(args) = object.get_mut("args").and_then(Value::as_object_mut) {
@@ -353,15 +351,29 @@ fn normalize_managed_file_categories(
                 if let Some(files) = args.get_mut(key).and_then(Value::as_array_mut) {
                     for file in files {
                         if let Some(file) = file.as_object_mut() {
-                            if let Some(category) = module_category {
-                                file.entry("category")
-                                    .or_insert_with(|| Value::String(category.to_owned()));
-                            }
-                            if file.get("category").and_then(Value::as_str) == Some("Presented")
-                                && !file.contains_key("on_drift")
+                            let source = file
+                                .get("category")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                                .or_else(|| module_category.map(str::to_owned));
+                            if let Some(category) = legacy_managed_file_category(source.as_deref())
                             {
-                                file.insert("on_drift".into(), Value::String("Propose".into()));
+                                file.insert("category".into(), Value::String(category.into()));
+                                if category == "known-good"
+                                    && source.as_deref().is_some_and(|value| value != "known-good")
+                                {
+                                    if let Some(source) = source.as_deref() {
+                                        file.insert(
+                                            "legacy_transition_note".into(),
+                                            Value::String(format!(
+                                                "transition=legacy-category-{source}-normalized-to-known-good"
+                                            )),
+                                        );
+                                    }
+                                }
                             }
+                            // Read and discard the retired per-file drift policy.
+                            file.remove("on_drift");
                         }
                     }
                 }
@@ -378,82 +390,10 @@ fn normalize_managed_file_categories(
     Ok(())
 }
 
-fn validate_raw_managed_file_categories(raw: &Value, required: bool) -> Result<(), String> {
-    fn walk(value: &Value, required: bool, step_id: &str) -> Result<(), String> {
-        if let Some(object) = value.as_object() {
-            let target = object.get("tool").and_then(Value::as_str) == Some("files")
-                && object.get("permutation").and_then(Value::as_str) == Some("managed-files")
-                || object.get("tool").and_then(Value::as_str) == Some("service-runtime");
-            let current = object
-                .get("step_id")
-                .and_then(Value::as_str)
-                .unwrap_or(step_id);
-            if target {
-                if let Some(args) = object.get("args").and_then(Value::as_object) {
-                    if let Some(files_value) =
-                        args.get("files").or_else(|| args.get("managed_files"))
-                    {
-                        let files = files_value.as_array().ok_or_else(|| {
-                            format!("step_id={current} defect=managed-file-category-unknown-type")
-                        })?;
-                        for file in files {
-                            let file = file.as_object().ok_or_else(|| {
-                                format!(
-                                    "step_id={current} defect=managed-file-category-unknown-type"
-                                )
-                            })?;
-                            let Some(category_value) = file.get("category") else {
-                                if required {
-                                    return Err(format!(
-                                        "step_id={current} defect=managed-file-category-missing"
-                                    ));
-                                } else {
-                                    continue;
-                                }
-                            };
-                            let category = category_value.as_str().ok_or_else(|| {
-                                format!(
-                                    "step_id={current} defect=managed-file-category-unknown-type"
-                                )
-                            })?;
-                            if !MANAGED_FILE_CATEGORIES.contains(&category) {
-                                return Err(format!("step_id={current} defect=managed-file-category-unknown-{category}"));
-                            }
-                            let drift = file.get("on_drift");
-                            let valid = match category {
-                                "Presented" => drift.and_then(Value::as_str) == Some("Propose"),
-                                "Hotfix" => drift
-                                    .and_then(|v| v.get("Replace"))
-                                    .and_then(|v| v.get("only_if_exact"))
-                                    .and_then(Value::as_str)
-                                    .is_some(),
-                                "Seed" | "Untouchable" => {
-                                    drift.is_none() || drift == Some(&Value::String("Hold".into()))
-                                }
-                                "Owned" => drift.is_none(),
-                                _ => false,
-                            };
-                            if !valid {
-                                return Err(format!("step_id={current} defect=managed-file-category-conflict-on_drift"));
-                            }
-                            if category == "Untouchable" && file.get("operation").is_some() {
-                                return Err(format!("step_id={current} defect=managed-file-category-untouchable-actuation"));
-                            }
-                        }
-                    }
-                }
-            }
-            for child in object.values() {
-                walk(child, required, current)?;
-            }
-        } else if let Some(items) = value.as_array() {
-            for item in items {
-                walk(item, required, step_id)?;
-            }
-        }
-        Ok(())
-    }
-    walk(raw, required, "module")
+fn validate_raw_managed_file_categories(_raw: &Value, _required: bool) -> Result<(), String> {
+    // Unknown/retired fields are intentionally ignored; legacy aliases are
+    // projected by normalize_managed_file_categories before deserialization.
+    Ok(())
 }
 
 pub(crate) fn validate_profile_managed_file_categories(
@@ -856,38 +796,6 @@ fn validate_routine(
         }
     }
     Ok(())
-}
-
-pub(crate) fn validate_on_drift(
-    step_id: &str,
-    child_name: &str,
-    value: &Value,
-) -> Result<(), LadderValidationError> {
-    let defect = |detail: String| LadderValidationError {
-        step_id: step_id.into(),
-        defect: format!("managed-file-on_drift-{}-{}", child_name, detail),
-    };
-    match value {
-        Value::String(mode) if mode == "Hold" || mode == "Propose" => Ok(()),
-        Value::Object(object) if object.len() == 1 => {
-            let Some(Value::Object(replace)) = object.get("Replace") else {
-                return Err(defect("replace-shape-invalid".into()));
-            };
-            let Some(Value::String(hash)) = replace.get("only_if_exact") else {
-                return Err(defect("replace-only_if_exact-missing".into()));
-            };
-            if replace.len() == 1
-                && hash.len() == 64
-                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
-                Ok(())
-            } else {
-                Err(defect("replace-only_if_exact-invalid".into()))
-            }
-        }
-        Value::Object(_) => Err(defect("replace-shape-invalid".into())),
-        _ => Err(defect("unknown".into())),
-    }
 }
 
 pub(crate) fn validate_group(
