@@ -961,7 +961,7 @@ fn write_systemd_receipt(
     )
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn systemd_bench(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -971,7 +971,7 @@ pub(crate) fn slice4_bench(
         &receipts,
         "bench",
         "disable-stop-remove",
-        Some("harmonia-slice4-never.service"),
+        Some("harmonia-never.service"),
         &[],
         None,
         1,
@@ -981,7 +981,7 @@ pub(crate) fn slice4_bench(
     )?;
     let receipt = receipts.join("bench.json").exists();
     Ok(
-        serde_json::json!({"planned":out.ok,"apply":false,"typed_receipt":receipt,"argv_candidate":"harmonia-slice4-never.service","removal_planned":false,"restart_restrained":true,"no_live_mutation":true,"ok":out.ok && receipt && !out.changed}),
+        serde_json::json!({"planned":out.ok,"apply":false,"typed_receipt":receipt,"argv_candidate":"harmonia-never.service","removal_planned":false,"restart_restrained":true,"no_live_mutation":true,"ok":out.ok && receipt && !out.changed}),
     )
 }
 

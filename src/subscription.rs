@@ -68,7 +68,7 @@ struct SubscriptionShowReceipt {
     first_missing_signal: String,
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn subscription_bench(
     root: &Path,
     key: crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {

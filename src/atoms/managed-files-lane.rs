@@ -5826,7 +5826,7 @@ pub(crate) fn validated_symlink(
     )
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn files_bench(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {

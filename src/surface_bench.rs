@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 fn scratch(surface: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "harmonia-slice4-{surface}-{}",
+        "harmonia-{surface}-{}",
         crate::run_id_from_stamp()
     ))
 }
@@ -39,8 +39,8 @@ pub(crate) fn run(
         "files-transaction" => receipt(
             surface,
             &root,
-            "crate::atoms::files::slice4_bench",
-            match crate::atoms::files::slice4_bench(&root, invocation) {
+            "crate::atoms::files::files_bench",
+            match crate::atoms::files::files_bench(&root, invocation) {
                 Ok(v) => v,
                 Err(e) => serde_json::json!({"ok":false,"error":e}),
             },
@@ -49,15 +49,15 @@ pub(crate) fn run(
         "make-symlink" => receipt(
             surface,
             &root,
-            "crate::tools::make_symlink::slice4_bench",
-            crate::tools::make_symlink::slice4_bench(&root, invocation)?,
+            "crate::tools::make_symlink::make_symlink_bench",
+            crate::tools::make_symlink::make_symlink_bench(&root, invocation)?,
             key,
         ),
         "aur" => receipt(
             surface,
             &root,
-            "crate::atoms::aur::slice4_bench",
-            match crate::atoms::aur::slice4_bench(&root, invocation) {
+            "crate::atoms::aur::aur_bench",
+            match crate::atoms::aur::aur_bench(&root, invocation) {
                 Ok(v) => v,
                 Err(e) => serde_json::json!({"ok":false,"error":e}),
             },
@@ -66,8 +66,8 @@ pub(crate) fn run(
         "git-artifact" => receipt(
             surface,
             &root,
-            "crate::atoms::git_artifact::slice4_bench",
-            match crate::atoms::git_artifact::slice4_bench(&root, invocation) {
+            "crate::atoms::git_artifact::git_artifact_bench",
+            match crate::atoms::git_artifact::git_artifact_bench(&root, invocation) {
                 Ok(v) => v,
                 Err(e) => serde_json::json!({"ok":false,"error":e}),
             },
@@ -76,15 +76,15 @@ pub(crate) fn run(
         "systemd-unit" => receipt(
             surface,
             &root,
-            "crate::atoms::systemd::slice4_bench",
-            crate::atoms::systemd::slice4_bench(&root, invocation)?,
+            "crate::atoms::systemd::systemd_bench",
+            crate::atoms::systemd::systemd_bench(&root, invocation)?,
             key,
         ),
         "package" => receipt(
             surface,
             &root,
-            "crate::atoms::package::slice4_bench",
-            match crate::atoms::package::slice4_bench(&root, invocation) {
+            "crate::atoms::package::package_bench",
+            match crate::atoms::package::package_bench(&root, invocation) {
                 Ok(v) => v,
                 Err(e) => serde_json::json!({"ok":false,"error":e}),
             },
@@ -93,15 +93,15 @@ pub(crate) fn run(
         "command" => receipt(
             surface,
             &root,
-            "crate::atoms::command::slice4_bench",
-            crate::atoms::command::slice4_bench(&root, invocation)?,
+            "crate::atoms::command::command_bench",
+            crate::atoms::command::command_bench(&root, invocation)?,
             key,
         ),
         "subscription-interactables" => receipt(
             surface,
             &root,
-            "crate::subscription::slice4_bench",
-            crate::subscription::slice4_bench(
+            "crate::subscription::subscription_bench",
+            crate::subscription::subscription_bench(
                 &root,
                 invocation.unwrap_or_else(crate::atoms::r#do::InvocationKey::for_apply),
             )?,
@@ -110,22 +110,22 @@ pub(crate) fn run(
         "ladder-profile" => receipt(
             surface,
             &root,
-            "crate::ladder::slice4_bench",
-            crate::ladder::slice4_bench(&root, invocation)?,
+            "crate::ladder::ladder_bench",
+            crate::ladder::ladder_bench(&root, invocation)?,
             key,
         ),
         "renew-self" => receipt(
             surface,
             &root,
-            "crate::bands::renew_self::slice4_bench",
-            crate::bands::renew_self::slice4_bench(&root, invocation)?,
+            "crate::bands::renew_self::renew_self_bench",
+            crate::bands::renew_self::renew_self_bench(&root, invocation)?,
             key,
         ),
         "capsule" => receipt(
             surface,
             &root,
-            "crate::bands::stage_profile::capsule::slice4_bench",
-            crate::bands::stage_profile::capsule::slice4_bench(
+            "crate::bands::stage_profile::capsule::capsule_bench",
+            crate::bands::stage_profile::capsule::capsule_bench(
                 &root,
                 invocation.unwrap_or_else(crate::atoms::r#do::InvocationKey::for_apply),
             )?,
@@ -134,10 +134,10 @@ pub(crate) fn run(
         "household-time" => receipt(
             surface,
             &root,
-            "crate::tools::household_time::slice4_bench",
-            crate::tools::household_time::slice4_bench(&root, invocation)?,
+            "crate::tools::household_time::household_time_bench",
+            crate::tools::household_time::household_time_bench(&root, invocation)?,
             key,
         ),
-        _ => Err("unknown-slice4-surface".into()),
+        _ => Err("unknown-bench-surface".into()),
     }
 }

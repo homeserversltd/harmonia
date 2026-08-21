@@ -120,7 +120,7 @@ pub(crate) fn capture(program: &str, args: &[&str]) -> CmdResult {
     capture_with_options(program, args, CaptureOptions::new())
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn command_bench(
     _root: &Path,
     _invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {

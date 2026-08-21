@@ -215,11 +215,11 @@ fn path_attestation(path: &Path) -> serde_json::Value {
     json!({"path": path, "entries": entries})
 }
 
-pub(crate) fn slice13_renew_schedule_bench(
+pub(crate) fn renew_schedule_bench(
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let root = std::env::temp_dir().join(format!(
-        "harmonia-slice13-renew-schedule-{}",
+        "harmonia-renew-schedule-{}",
         crate::run_id_from_stamp()
     ));
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -236,7 +236,7 @@ pub(crate) fn slice13_renew_schedule_bench(
     .trim()
     .to_string();
     if source_head.len() != 40 {
-        return Err("slice13-source-head-not-a-commit".into());
+        return Err("renew-schedule-source-head-not-a-commit".into());
     }
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let install_bin = root.join("installed-successor");
@@ -302,10 +302,10 @@ pub(crate) fn slice13_renew_schedule_bench(
     .map_err(|e| format!("renew-run-receipt-json: {e}"))?;
     let built_successor_identity =
         crate::bands::renew_self::install_bin_fingerprint(&staged_bin)
-            .ok_or_else(|| "slice13-built-successor-fingerprint-missing".to_string())?;
+            .ok_or_else(|| "renew-schedule-built-successor-fingerprint-missing".to_string())?;
     let installed_successor_identity =
         crate::bands::renew_self::install_bin_fingerprint(&install_bin)
-            .ok_or_else(|| "slice13-installed-successor-fingerprint-missing".to_string())?;
+            .ok_or_else(|| "renew-schedule-installed-successor-fingerprint-missing".to_string())?;
     let installer = root.join("installer.py");
     let argv_log = root.join("argv.log");
     fs::write(&installer, format!("import pathlib,sys\npathlib.Path({argv_log:?}).write_text(repr(sys.argv[1:]))\npass\n")).map_err(|e| e.to_string())?;
@@ -436,7 +436,7 @@ pub(crate) fn slice13_renew_schedule_bench(
         && actual_service_unchanged
         && actual_timer_unchanged;
     let receipt = json!({
-        "schema":"harmonia.slice13-renew-schedule-bench.v3", "ok": renew_ok && schedule_ok,
+        "schema":"harmonia.renew-schedule-bench.v3", "ok": renew_ok && schedule_ok,
         "source_head": source_head, "built_successor_identity": built_successor_identity,
         "renew_self": {"receipt_names": receipt_names, "execution_ok": execution_ok, "actual_source_head": source_head_observed, "successor_identity_tied_to_build_receipt": built_identity_tied, "explain": explain, "validate_ladder": validate_ladder, "plan_run_gate": plan_run_gate, "promotion_after_all_green": promotion_after_all_green, "final_receipt_before_exec": final_receipt_before_exec, "reentry_guard": reentry_guard, "quiet_no_reexec": quiet_no_reexec, "replacement": {"receipt_path": replacement_receipt_path, "receipt_observed": replacement_receipt_observed, "schema": replacement_receipt.schema, "proof": replacement_receipt.proof, "synced": replacement_receipt.synced, "contents_observed": replacement_contents, "identity_observed": replacement_identity, "refusal": replacement_refusal, "receipt_unchanged_after_refusal": replacement_bytes_before == replacement_bytes_after}},
         "schedule": {"dry_run": true, "argv": argv, "argv_exact": argv == expected, "systemd_root_before": systemd_root_before, "systemd_root_after": systemd_root_after, "systemd_root_unchanged": systemd_root_unchanged, "actual_service_before": actual_service_before, "actual_service_after": actual_service_after, "actual_service_unchanged": actual_service_unchanged, "actual_timer_before": actual_timer_before, "actual_timer_after": actual_timer_after, "actual_timer_unchanged": actual_timer_unchanged, "attest_owner": "hyalos.forward_receipt"}
@@ -449,11 +449,11 @@ pub(crate) fn slice13_renew_schedule_bench(
     if renew_ok && schedule_ok {
         Ok(())
     } else {
-        Err("slice13-required-predicate-failed".into())
+        Err("renew-schedule-required-predicate-failed".into())
     }
 }
 
-pub(crate) fn slice12_clock_bench(
+pub(crate) fn clock_bench(
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -462,7 +462,7 @@ pub(crate) fn slice12_clock_bench(
         caduceus: std::env::var("HARMONIA_CLOCK_CADUCEUS").ok(),
     };
     let root = std::env::temp_dir().join(format!(
-        "harmonia-slice12-clock-{}",
+        "harmonia-clock-{}",
         crate::run_id_from_stamp()
     ));
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -537,11 +537,11 @@ esac
         || readback != "Europe/Berlin|yes\n"
         || actions != expected_actions
     {
-        return Err("slice12-posture-readback-failed".into());
+        return Err("clock-posture-readback-failed".into());
     }
     std::thread::sleep(std::time::Duration::from_millis(20));
     if std::fs::read_to_string(&state).map_err(|e| e.to_string())? != readback {
-        return Err("slice12-elapsed-reversal".into());
+        return Err("clock-elapsed-reversal".into());
     }
     let state_before_quiet = std::fs::read(&state).map_err(|e| e.to_string())?;
     let writes_before = std::fs::read(&log).map_err(|e| e.to_string())?;
@@ -550,7 +550,7 @@ esac
         || std::fs::read(&state).map_err(|e| e.to_string())? != state_before_quiet
         || std::fs::read(&log).map_err(|e| e.to_string())? != writes_before
     {
-        return Err("slice12-quiet-write".into());
+        return Err("clock-quiet-write".into());
     }
     std::fs::write(&state, "Etc/UTC|no\n").map_err(|e| e.to_string())?;
     std::env::set_var("HARMONIA_CLOCK_CADUCEUS", &refusal);
@@ -561,9 +561,9 @@ esac
         || std::fs::read(&state).map_err(|e| e.to_string())? != refusal_state
         || std::fs::read(&log).map_err(|e| e.to_string())? != refusal_writes
     {
-        return Err("slice12-refusal-proof-failed".into());
+        return Err("clock-refusal-proof-failed".into());
     }
-    println!("slice12-clock-bench ok preimage=Etc/UTC|no requested=Europe/Berlin|yes readback=verified elapsed=non-reversing quiet=no-write refusal=backend-refused host_mutation=false");
+    println!("clock-bench ok preimage=Etc/UTC|no requested=Europe/Berlin|yes readback=verified elapsed=non-reversing quiet=no-write refusal=backend-refused host_mutation=false");
     std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
     Ok(())
 }

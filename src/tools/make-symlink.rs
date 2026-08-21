@@ -7,7 +7,7 @@ mod band;
 
 pub(crate) use band::{execute, ValidatedFileSymlinkRequest};
 
-pub(crate) fn slice4_bench(
+pub(crate) fn make_symlink_bench(
     root: &std::path::Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {

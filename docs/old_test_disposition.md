@@ -1,21 +1,21 @@
-# Harmonia Slice 4 old-test disposition
+# Harmonia old-test disposition
 
 Every exact base-revision `#[test]` path-qualified name appears exactly once. Absorbed means a green dispatched real-route bench derives the named fact; Dropped is not claimed by a real bench.
 
 ## Absorbed
 
-- ``src/atoms/command.rs::root_is_not_a_valid_git_bearer`` — `bench-slice4-command`; named bench fact `root_bearer_refused`.
-- ``src/atoms/command.rs::unknown_git_bearer_fails_closed`` — `bench-slice4-command`; named bench fact `unknown_bearer_refused`.
-- ``src/atoms/command.rs::bare_programs_receive_the_portable_system_path`` — `bench-slice4-command`; named bench fact `path_capture_succeeded`.
-- ``src/atoms/command.rs::command_timeout_kills_sleeping_child`` — `bench-slice4-command`; named bench fact `timeout_failure_observed`.
-- ``src/interactables.rs::refresh_prunes_interactable_no_longer_declared_by_its_module`` — `bench-slice4-subscription-interactables`; named bench fact `stale_interactable_pruned`.
-- ``src/subscription.rs::subscription_seed_and_atomic_update_preserve_machine_local_fields`` — `bench-slice4-subscription-interactables`; named bench fact `machine_local_fields_preserved`.
-- ``src/tools/household_time.rs::rejects_unsafe_semantic_inputs`` — `bench-slice4-household-time`; named bench fact `unsafe_input_rejected`.
-- ``src/tools/household_time.rs::planned_operation_writes_a_typed_receipt`` — `bench-slice4-household-time`; named bench fact `typed_receipt_written`.
-- ``src/atoms/git_artifact.rs::local_checkout_projects_external_checkout_into_absent_destination_without_mutating_source`` — `bench-slice4-git-artifact`; named bench fact `destination_exact + source_head_unchanged`.
-- ``src/atoms/package.rs::sync_package_mutation_uses_full_upgrade_semantics`` — `bench-slice4-package`; named bench fact `upgrade_argv_exact`.
-- ``src/tools/make-symlink/tests/behavior/index.rs::first_change_reconciles_once_then_exact_second_run_is_a_noop`` — `bench-slice4-make-symlink`; named bench fact `second_quiet`.
-- ``src/tools/make-symlink/tests/transaction/index.rs::promotion_preserves_desired_bytes_and_link_target`` — `bench-slice4-make-symlink`; named bench fact `source_promoted + link_promoted`.
+- ``src/atoms/command.rs::root_is_not_a_valid_git_bearer`` — `bench-command`; named bench fact `root_bearer_refused`.
+- ``src/atoms/command.rs::unknown_git_bearer_fails_closed`` — `bench-command`; named bench fact `unknown_bearer_refused`.
+- ``src/atoms/command.rs::bare_programs_receive_the_portable_system_path`` — `bench-command`; named bench fact `path_capture_succeeded`.
+- ``src/atoms/command.rs::command_timeout_kills_sleeping_child`` — `bench-command`; named bench fact `timeout_failure_observed`.
+- ``src/interactables.rs::refresh_prunes_interactable_no_longer_declared_by_its_module`` — `bench-subscription-interactables`; named bench fact `stale_interactable_pruned`.
+- ``src/subscription.rs::subscription_seed_and_atomic_update_preserve_machine_local_fields`` — `bench-subscription-interactables`; named bench fact `machine_local_fields_preserved`.
+- ``src/tools/household_time.rs::rejects_unsafe_semantic_inputs`` — `bench-household-time`; named bench fact `unsafe_input_rejected`.
+- ``src/tools/household_time.rs::planned_operation_writes_a_typed_receipt`` — `bench-household-time`; named bench fact `typed_receipt_written`.
+- ``src/atoms/git_artifact.rs::local_checkout_projects_external_checkout_into_absent_destination_without_mutating_source`` — `bench-git-artifact`; named bench fact `destination_exact + source_head_unchanged`.
+- ``src/atoms/package.rs::sync_package_mutation_uses_full_upgrade_semantics`` — `bench-package`; named bench fact `upgrade_argv_exact`.
+- ``src/tools/make-symlink/tests/behavior/index.rs::first_change_reconciles_once_then_exact_second_run_is_a_noop`` — `bench-make-symlink`; named bench fact `second_quiet`.
+- ``src/tools/make-symlink/tests/transaction/index.rs::promotion_preserves_desired_bytes_and_link_target`` — `bench-make-symlink`; named bench fact `source_promoted + link_promoted`.
 
 ## Dropped
 
@@ -151,16 +151,16 @@ Every exact base-revision `#[test]` path-qualified name appears exactly once. Ab
 - ``src/lib.rs::package_family_modules_are_ladder_manifests`` — Dropped: static manifest/parser/validator/root-only or redundant pure-helper behavior; no green real-route bench derives a named fact for this exact assertion.
 - ``src/lib.rs::tranche_3_c4_runtime_and_rebis_modules_are_ladder_manifests`` — Dropped: static manifest/parser/validator/root-only or redundant pure-helper behavior; no green real-route bench derives a named fact for this exact assertion.
 
-- ``src/bands/renew-self/index.rs::staged_promote_happy_path_uses_proved_successor`` — `bench-slice4-renew-self`; named bench facts `success_swap_after_proof + proof_failure_preserves_old_binary`.
-- ``src/bands/renew-self/index.rs::proof_failure_blocks_swap_and_preserves_old_binary`` — `bench-slice4-renew-self`; named bench facts `success_swap_after_proof + proof_failure_preserves_old_binary`.
-- ``src/bands/stage-profile/capsule/index.rs::pack_verify_install_roundtrip_and_prune`` — `bench-slice4-capsule`; named bench facts cover capsule create/verify/install/prune and unowned subscription preservation.
-- ``src/bands/stage-profile/capsule/index.rs::capsule_plan_and_apply_preserve_unowned_subscription_fields`` — `bench-slice4-capsule`; named bench facts cover capsule create/verify/install/prune and unowned subscription preservation.
-- ``src/lib.rs::files_convergence_error_path_still_writes_partial_receipt`` — `bench-slice4-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
-- ``src/lib.rs::files_convergence_plan_reports_byte_and_mode_drift_without_mutation`` — `bench-slice4-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
-- ``src/lib.rs::files_convergence_apply_backs_up_existing_file_and_sets_mode`` — `bench-slice4-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
-- ``src/lib.rs::files_convergence_apply_is_idempotent_after_byte_equal_mode_equal`` — `bench-slice4-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
-- ``src/lib.rs::files_convergence_rejects_absolute_or_parent_relative_paths`` — `bench-slice4-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
-- ``src/lib.rs::files_convergence_rejects_unsafe_receipt_duplicate_paths_and_modes`` — `bench-slice4-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
-- ``src/atoms/aur.rs::check_compares_pin_to_injected_upstream_without_mutation`` — `bench-slice4-aur`; named bench facts `check_route_ok + unprivileged_plan + lock_unchanged`.
-- ``src/atoms/aur.rs::build_pinned_plans_with_unprivileged_safety_receipt`` — `bench-slice4-aur`; named bench facts `check_route_ok + unprivileged_plan + lock_unchanged`.
-- ``src/atoms/aur.rs::build_pinned_neutralizes_pkgver_function_before_exact_package_selection`` — `bench-slice4-aur`; named bench facts `check_route_ok + unprivileged_plan + lock_unchanged`.
+- ``src/bands/renew-self/index.rs::staged_promote_happy_path_uses_proved_successor`` — `bench-renew-self`; named bench facts `success_swap_after_proof + proof_failure_preserves_old_binary`.
+- ``src/bands/renew-self/index.rs::proof_failure_blocks_swap_and_preserves_old_binary`` — `bench-renew-self`; named bench facts `success_swap_after_proof + proof_failure_preserves_old_binary`.
+- ``src/bands/stage-profile/capsule/index.rs::pack_verify_install_roundtrip_and_prune`` — `bench-capsule`; named bench facts cover capsule create/verify/install/prune and unowned subscription preservation.
+- ``src/bands/stage-profile/capsule/index.rs::capsule_plan_and_apply_preserve_unowned_subscription_fields`` — `bench-capsule`; named bench facts cover capsule create/verify/install/prune and unowned subscription preservation.
+- ``src/lib.rs::files_convergence_error_path_still_writes_partial_receipt`` — `bench-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
+- ``src/lib.rs::files_convergence_plan_reports_byte_and_mode_drift_without_mutation`` — `bench-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
+- ``src/lib.rs::files_convergence_apply_backs_up_existing_file_and_sets_mode`` — `bench-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
+- ``src/lib.rs::files_convergence_apply_is_idempotent_after_byte_equal_mode_equal`` — `bench-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
+- ``src/lib.rs::files_convergence_rejects_absolute_or_parent_relative_paths`` — `bench-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
+- ``src/lib.rs::files_convergence_rejects_unsafe_receipt_duplicate_paths_and_modes`` — `bench-files-transaction`; named bench facts `bytes_changed + declared_mode + backup_old_bytes + second_quiet + controlled_target_not_file`.
+- ``src/atoms/aur.rs::check_compares_pin_to_injected_upstream_without_mutation`` — `bench-aur`; named bench facts `check_route_ok + unprivileged_plan + lock_unchanged`.
+- ``src/atoms/aur.rs::build_pinned_plans_with_unprivileged_safety_receipt`` — `bench-aur`; named bench facts `check_route_ok + unprivileged_plan + lock_unchanged`.
+- ``src/atoms/aur.rs::build_pinned_neutralizes_pkgver_function_before_exact_package_selection`` — `bench-aur`; named bench facts `check_route_ok + unprivileged_plan + lock_unchanged`.
