@@ -1,4 +1,10 @@
+use super::Band;
 use crate::{subscription_path, tools, write_json, Profile};
+
+pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
+    enter(Band::Migrations)
+}
+
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -70,7 +76,7 @@ fn run_one(
     } else {
         tools::comparison::DiffDecision::Empty
     };
-    let run = tools::comparison::execute(
+    let run = tools::comparison::execute_mode(
         "hotfix",
         || Ok::<_, String>(()),
         |_| decision,
@@ -90,6 +96,7 @@ fn run_one(
                 })?;
             Ok(outcome.hotfix_receipt)
         },
+        false,
     )?;
 
     let (movement, changed, tool_receipt) = match run {

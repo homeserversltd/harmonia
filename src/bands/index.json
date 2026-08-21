@@ -9,56 +9,62 @@
       "movement_status": "fronted"
     },
     {
-      "id": "pull-source",
+      "id": "migrations",
       "charter_order": 2,
+      "deed": "Apply scoped profile migrations through the additive hotfix declaration and per-body ledger.",
+      "movement_status": "fronted"
+    },
+    {
+      "id": "pull-source",
+      "charter_order": 3,
       "deed": "Acquire source through the owning pull-repo tool at the rolling-update boundary.",
       "movement_status": "fronted"
     },
     {
       "id": "stage-profile",
-      "charter_order": 3,
+      "charter_order": 4,
       "deed": "Materialize the profile and refresh its projection at the update prelude.",
       "movement_status": "fronted"
     },
     {
       "id": "compare",
-      "charter_order": 4,
+      "charter_order": 5,
       "deed": "Compare the projected profile and modules before execution.",
       "movement_status": "fronted"
     },
     {
       "id": "install-packages",
-      "charter_order": 5,
+      "charter_order": 6,
       "deed": "Execute the owning package, binary, service, file, and proposal tools in module order.",
       "movement_status": "fronted"
     },
     {
       "id": "ratchet-binaries",
-      "charter_order": 6,
+      "charter_order": 7,
       "deed": "Execute binary builds and promotion through the owning build-crate and place-file tools.",
       "movement_status": "fronted"
     },
     {
       "id": "restart-services",
-      "charter_order": 7,
+      "charter_order": 8,
       "deed": "Execute service transitions through the owning service and health tools.",
       "movement_status": "fronted"
     },
     {
       "id": "backfill-files",
-      "charter_order": 8,
+      "charter_order": 9,
       "deed": "Execute managed-file work through the owning file and symlink tools.",
       "movement_status": "fronted"
     },
     {
       "id": "propose-edits",
-      "charter_order": 9,
-      "deed": "Use the owning file tools and proposal projection for proposal and hotfix work.",
+      "charter_order": 10,
+      "deed": "Use the owning file tools and proposal projection for proposal work.",
       "movement_status": "fronted"
     },
     {
       "id": "report-home",
-      "charter_order": 10,
+      "charter_order": 11,
       "deed": "Report the run receipt, stdout, and result.",
       "movement_status": "fronted"
     }
@@ -67,14 +73,14 @@
     "rolling_update": [
       "renew-self engine preflight",
       "pull-source acquisition and stage-profile materialization",
-      "renew-self hotfix selection and engine preflight",
+      "migrations hotfix selection",
       "compare profile shape and module-group selection",
       "install-packages package and virtual-environment tools, followed by owning binary, service, file, and proposal tools",
       "ratchet-binaries, restart-services, backfill-files, and propose-edits tools in their declared module order",
       "report-home receipt and stdout reporting"
     ],
     "direct_profile_run": [
-      "renew-self face: existing hotfix then engine preflight",
+      "renew-self face: engine preflight then migrations hotfix",
       "compare profile shape and module-group selection",
       "install-packages package and virtual-environment tools, followed by owning binary, service, file, and proposal tools",
       "ratchet-binaries, restart-services, backfill-files, and propose-edits tools in their declared module order",

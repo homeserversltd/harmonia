@@ -263,17 +263,16 @@ pub(crate) use bands::compare::homeconsole_arcadia_check;
 pub(crate) use ratchet_aur_package::pinned_artifacts_command;
 
 pub mod device_profile;
-mod hotfix;
 mod interactables;
 mod ladder;
 mod module_dispatch;
 mod receipts;
-mod schedule;
 mod subscription;
 
 pub(crate) use atoms::attest::convergence_receipts::*;
 pub(crate) use atoms::r#do::convergence_lock::*;
 pub(crate) use atoms::r#do::transaction::RunContext;
+pub(crate) use bands::renew_self::schedule;
 pub(crate) use bands::stage_profile::capsule::*;
 pub(crate) use bands::stage_profile::groups::*;
 pub(crate) use bands::stage_profile::molt::*;
@@ -282,7 +281,6 @@ pub(crate) use bands::{
     run_profile_engine, run_profile_engine_with_preflight, run_profile_engine_with_projection,
 };
 pub(crate) use device_profile::*;
-pub(crate) use hotfix::*;
 pub(crate) use interactables::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
@@ -398,13 +396,13 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
         }
-        Some("install-timer") => schedule::install_timer(
+        Some("install-timer") => bands::renew_self::schedule::install_timer(
             &args[1..],
             invocation
                 .0
                 .ok_or_else(|| "schedule-invocation-key-missing".to_string())?,
         ),
-        Some("uninstall-timer") => schedule::uninstall_timer(
+        Some("uninstall-timer") => bands::renew_self::schedule::uninstall_timer(
             &args[1..],
             invocation
                 .0
