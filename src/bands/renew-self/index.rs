@@ -3,17 +3,11 @@ use std::path::Path;
 
 use crate::module_dispatch::ModuleExecution;
 
+#[path = "schedule.rs"]
+pub(crate) mod schedule;
+
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RenewSelf)
-}
-
-/// Renewal owns hotfix selection policy; the established hotfix organ owns operations.
-pub(crate) fn select_hotfixes(
-    profile: &crate::Profile,
-    receipt_dir: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) {
-    crate::run_profile_hotfixes(profile, receipt_dir, invocation);
 }
 
 /// Renew-self band entry point for the existing engine-preflight implementation.

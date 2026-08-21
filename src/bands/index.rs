@@ -12,6 +12,8 @@ pub(crate) mod pull_source;
 pub(crate) mod ratchet_binaries;
 #[path = "renew-self/index.rs"]
 pub(crate) mod renew_self;
+#[path = "migrations/index.rs"]
+pub(crate) mod migrations;
 #[path = "report-home/index.rs"]
 pub(crate) mod report_home;
 #[path = "restart-services/index.rs"]
@@ -22,6 +24,7 @@ pub(crate) mod stage_profile;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Band {
     RenewSelf,
+    Migrations,
     PullSource,
     StageProfile,
     Compare,
@@ -35,6 +38,7 @@ pub(crate) enum Band {
 
 pub(crate) fn walk(mut enter: impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     renew_self::enter(&mut enter)?;
+    migrations::enter(&mut enter)?;
     pull_source::enter(&mut enter)?;
     stage_profile::enter(&mut enter)?;
     compare::enter(&mut enter)?;
@@ -144,8 +148,6 @@ pub(crate) fn run_profile_engine_with_projection(
         state.visited_bands.push(format!("{:?}", band));
         match band {
             crate::bands::Band::RenewSelf => {
-                crate::bands::renew_self::select_hotfixes(profile, receipt_dir, invocation);
-
                 if let Some(suite_debt) = suite_debt {
                     state.ok = false;
                     state.suite_ok = false;
@@ -233,6 +235,9 @@ pub(crate) fn run_profile_engine_with_projection(
                         "profile module spine is empty",
                     )?;
                 }
+            }
+            crate::bands::Band::Migrations => {
+                crate::bands::migrations::run_profile_hotfixes(profile, receipt_dir, invocation);
             }
             crate::bands::Band::PullSource => {
                 // Primitive rolling-update acquisition already ran; routine children still visit this band.

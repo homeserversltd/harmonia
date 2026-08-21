@@ -244,6 +244,18 @@ pub(crate) mod probe {
                     json!({"family":family,"target_path":path,"expected_sha256":expected,"actual_sha256":actual,"condition":if matches{"matches"}else{"different-or-absent"}}),
                 ))
             }
+            "EngineAtOrAbove" => {
+                let args =
+                    args.ok_or_else(|| "hotfix-engine-at-or-above-args-missing".to_string())?;
+                let minimum =
+                    required_string(args, "minimum", "hotfix-engine-at-or-above-minimum-missing")?;
+                let observed = crate::VERSION;
+                let at_or_above = !version_below(observed, minimum);
+                Ok((
+                    at_or_above,
+                    json!({"family":family,"observed_version":observed,"minimum":minimum,"condition":if at_or_above{"at-or-above"}else{"below-minimum"}}),
+                ))
+            }
             "VersionBelow" => {
                 let args = args.ok_or_else(|| "hotfix-version-below-args-missing".to_string())?;
                 let path =
