@@ -135,7 +135,7 @@ impl Drop for CapsuleStageGuard {
     }
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn capsule_bench(
     root: &Path,
     key: crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {

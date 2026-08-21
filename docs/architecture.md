@@ -14,7 +14,7 @@ The ten bands run in charter order: `renew-self`, `pull-source`, `stage-profile`
 
 ## Bench routes
 
-A bench is a real production walk with a scratch root and a receipt. The Slice 4 routes are `bench-slice4-files-transaction`, `bench-slice4-make-symlink`, `bench-slice4-aur`, `bench-slice4-git-artifact`, `bench-slice4-systemd-unit`, `bench-slice4-package`, `bench-slice4-command`, `bench-slice4-subscription-interactables`, `bench-slice4-ladder-profile`, `bench-slice4-renew-self`, `bench-slice4-capsule`, and `bench-slice4-household-time`. Pre-existing bench routes remain available: `bench-proposal-refresh`, `bench-structural-wall`, `bench-stillness`, `bench-harmonia-foundation`, `bench-update-set`, `bench-slice12-clock`, and `bench-slice13-renew-schedule`.
+A bench is a real production walk with a scratch root and a receipt. The surface bench routes are `bench-files-transaction`, `bench-make-symlink`, `bench-aur`, `bench-git-artifact`, `bench-systemd-unit`, `bench-package`, `bench-command`, `bench-subscription-interactables`, `bench-ladder-profile`, `bench-renew-self`, `bench-capsule`, and `bench-household-time`. Pre-existing bench routes remain available: `bench-proposal-refresh`, `bench-structural-wall`, `bench-stillness`, `bench-harmonia-foundation`, `bench-update-set`, `bench-clock`, and `bench-renew-schedule`.
 
 ## Checkable sources
 

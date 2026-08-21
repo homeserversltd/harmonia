@@ -406,7 +406,7 @@ pub(crate) fn resolve_source(
 
 /// Validate every declared source entry before any profile or module execution.
 /// An omitted `sources` object is deliberately an empty declaration set, allowing
-/// slice-1 certificates to remain valid until a later slice names consumers.
+/// source certificates to remain valid until a later slice names consumers.
 pub(crate) fn validate_declared_sources(
     certificate_path: &Path,
 ) -> Result<Vec<SourceResolutionReceipt>, String> {

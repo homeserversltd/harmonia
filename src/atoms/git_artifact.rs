@@ -426,7 +426,7 @@ pub fn acquire_source(
     crate::pull_repo::acquire_source(plan, invocation)
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn git_artifact_bench(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -436,7 +436,7 @@ pub(crate) fn slice4_bench(
     for args in [
         &["init", "-b", "main"][..],
         &["config", "user.email", "bench@example.invalid"],
-        &["config", "user.name", "Slice4 Bench"],
+        &["config", "user.name", "Harmonia Bench"],
     ] {
         if !command::capture_with_cwd("/usr/bin/git", args, source.to_str()).ok {
             return Err("git-bench-init-failed".into());

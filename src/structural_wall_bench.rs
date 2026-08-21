@@ -21,7 +21,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         .join(format!("structural-wall-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    let slice2 = slice2_proof(&root, authorization, invocation)?;
+    let xattr = xattr_proof(&root, authorization, invocation)?;
     let source = root.join("source");
     fs::create_dir_all(&source).map_err(|e| e.to_string())?;
     fs::write(source.join("sentinel"), b"desired").map_err(|e| e.to_string())?;
@@ -88,12 +88,12 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
         && refused_rows_preserved
         && sentinel_parent_rows_preserved
         && proposal_count == 1;
-    let ok = ok && slice2["ok"] == true;
-    let slice11 = slice11_proof(&root, invocation)?;
-    let ok = ok && slice11["ok"].as_bool().unwrap_or(false);
-    let receipt = json!({"schema":"harmonia.bench-structural-wall.v5","ok":ok,"slice2":slice2,"slice11":slice11,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
+    let ok = ok && xattr["ok"] == true;
+    let registry = registry_proof(&root, invocation)?;
+    let ok = ok && registry["ok"].as_bool().unwrap_or(false);
+    let receipt = json!({"schema":"harmonia.bench-structural-wall.v5","ok":ok,"xattr":xattr,"registry":registry,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
     let matrix_path =
-        PathBuf::from("/var/opt/hermes/workspace/slice-9-structural-wall-matrix.json");
+        PathBuf::from("/var/opt/hermes/workspace/structural-wall-matrix.json");
     fs::write(
         &matrix_path,
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
@@ -127,7 +127,7 @@ fn declaration_fixture(root: &Path, declarations: Value) -> crate::ladder::Ladde
         extra: BTreeMap::new(),
     };
     let mut ra = BTreeMap::new();
-    ra.insert("service".into(), Value::String("slice11.service".into()));
+    ra.insert("service".into(), Value::String("registry.service".into()));
     let restart = crate::ladder::RoutineStep {
         name: "service-restart".into(),
         tool: "systemd".into(),
@@ -146,7 +146,7 @@ fn declaration_fixture(root: &Path, declarations: Value) -> crate::ladder::Ladde
     };
     crate::ladder::LadderManifest {
         schema: crate::ladder::SCHEMA.into(),
-        id: "slice11-declarations".into(),
+        id: "registry-declarations".into(),
         version: "1".into(),
         description: "proof".into(),
         role: None,
@@ -187,7 +187,7 @@ fn strict_declaration(op: &str, path: &Path) -> Value {
         "symlink" => {
             d.insert(
                 "source".into(),
-                json!("/var/opt/hermes/workspace/slice11-source"),
+                json!("/var/opt/hermes/workspace/registry-source"),
             );
             d.insert("target".into(), json!(path.display().to_string()));
             d.insert("required_source_kind".into(), json!("regular-executable"));
@@ -279,17 +279,17 @@ fn declaration_lowering_refusal_proof(root: &Path) -> Result<bool, String> {
     Ok(ok)
 }
 
-fn slice11_proof(
+fn registry_proof(
     root: &Path,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let dir = root.join("slice11");
+    let dir = root.join("registry");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let uid = fs::metadata(&dir).map_err(|e| e.to_string())?.uid();
     let gid = fs::metadata(&dir).map_err(|e| e.to_string())?.gid();
     let mode = 0o640;
-    let bytes = b"slice11-strict-bytes";
+    let bytes = b"registry-strict-bytes";
     let attrs = BTreeMap::new();
     let snap = |p: &Path| -> Result<Value, String> {
         match fs::symlink_metadata(p) {
@@ -423,7 +423,7 @@ fn slice11_proof(
             mode: Some(mode),
         }],
         backup_existing: false,
-        receipt_name: "slice11-dry-run".into(),
+        receipt_name: "registry-dry-run".into(),
         owner: None,
         group: None,
     };
@@ -478,16 +478,16 @@ fn slice11_proof(
     )
 }
 
-fn slice2_proof(
+fn xattr_proof(
     root: &Path,
     _auth: &crate::SoftwareApplyAuthorization,
     invocation: crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {
-    let tree = root.join("slice2-tree");
+    let tree = root.join("xattr-tree");
     fs::create_dir_all(tree.join("nested")).map_err(|e| e.to_string())?;
     let file = tree.join("nested/file");
     fs::write(&file, b"non-utf8\0payload").map_err(|e| e.to_string())?;
-    let xattr_supported = set_slice2_xattr(&file)?;
+    let xattr_supported = set_proof_xattr(&file)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -542,13 +542,13 @@ fn slice2_proof(
                 n.xattrs
                     .values
                     .iter()
-                    .any(|x| x.name == b"user.harmonia_slice2" && x.value == b"slice2")
+                    .any(|x| x.name == b"user.harmonia_xattr" && x.value == b"xattr")
             }));
-    let receipt_path = root.join("slice2-replace.json");
+    let receipt_path = root.join("xattr-replace.json");
     let plan = crate::atoms::r#do::replace_process::Plan {
         successor: PathBuf::from("/bin/true"),
-        argv: vec!["--slice2".into(), "exact".into()],
-        guard_name: "HARMONIA_SLICE2_GUARD".into(),
+        argv: vec!["--xattr".into(), "exact".into()],
+        guard_name: "HARMONIA_XATTR_GUARD".into(),
         guard_value: "1".into(),
         receipt_path,
     };
@@ -619,10 +619,10 @@ fn paired_metadata_equal(
         })
 }
 
-fn set_slice2_xattr(path: &Path) -> Result<bool, String> {
+fn set_proof_xattr(path: &Path) -> Result<bool, String> {
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-    let name = std::ffi::CString::new("user.harmonia_slice2").unwrap();
-    let value = b"slice2";
+    let name = std::ffi::CString::new("user.harmonia_xattr").unwrap();
+    let value = b"xattr";
     let result = unsafe {
         libc::lsetxattr(
             c.as_ptr(),
@@ -682,7 +682,7 @@ fn hash(p: &Path) -> String {
 fn manifest(root: &Path, interactable: bool) -> crate::ladder::LadderManifest {
     crate::ladder::LadderManifest {
         schema: crate::ladder::SCHEMA.into(),
-        id: "slice-9-bench".into(),
+        id: "structural-wall-bench".into(),
         version: "1".into(),
         description: "bench".into(),
         role: None,
@@ -753,14 +753,14 @@ fn row(
         root.join("interactable-dir")
     } else if name == "desktop-config" {
         PathBuf::from(format!(
-            "/home/owner/.config/hermes-slice-9-{}/nested/desktop-config",
+            "/home/owner/.config/hermes-structural-wall-{}/nested/desktop-config",
             std::process::id()
         ))
     } else if name == "protected-path" {
-        root.join("absent-protected-parent").join("id_slice9.key")
+        root.join("absent-protected-parent").join("id_protected.key")
     } else {
         PathBuf::from(format!(
-            "/etc/hermes-slice-9-{}/{}",
+            "/etc/hermes-structural-wall-{}/{}",
             std::process::id(),
             name
         ))
@@ -864,7 +864,7 @@ fn routine_row(
     inv: crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {
     let target = PathBuf::from(format!(
-        "/etc/hermes-slice-9-{}/routine-child",
+        "/etc/hermes-structural-wall-{}/routine-child",
         std::process::id()
     ));
     let parent = target.parent().unwrap();

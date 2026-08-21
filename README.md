@@ -26,24 +26,24 @@ src/*_bench.rs    production bench routes and receipt guidance
 
 ## Bench routes
 
-A bench is a real production walk through one route. It creates a scratch root, runs the production implementation, emits a receipt, and observes cleanup. The binary exposes these Slice 4 routes:
+A bench is a real production walk through one route. It creates a scratch root, runs the production implementation, emits a receipt, and observes cleanup. The binary exposes these surface bench routes:
 
 ```text
-bench-slice4-files-transaction
-bench-slice4-make-symlink
-bench-slice4-aur
-bench-slice4-git-artifact
-bench-slice4-systemd-unit
-bench-slice4-package
-bench-slice4-command
-bench-slice4-subscription-interactables
-bench-slice4-ladder-profile
-bench-slice4-renew-self
-bench-slice4-capsule
-bench-slice4-household-time
+bench-files-transaction
+bench-make-symlink
+bench-aur
+bench-git-artifact
+bench-systemd-unit
+bench-package
+bench-command
+bench-subscription-interactables
+bench-ladder-profile
+bench-renew-self
+bench-capsule
+bench-household-time
 ```
 
-The binary also exposes the pre-existing `bench-proposal-refresh`, `bench-structural-wall`, `bench-stillness`, `bench-harmonia-foundation`, `bench-update-set`, `bench-slice12-clock`, and `bench-slice13-renew-schedule` routes.
+The binary also exposes the pre-existing `bench-proposal-refresh`, `bench-structural-wall`, `bench-stillness`, `bench-harmonia-foundation`, `bench-update-set`, `bench-clock`, and `bench-renew-schedule` routes.
 
 ## Safe development commands
 

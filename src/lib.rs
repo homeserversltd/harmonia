@@ -24,7 +24,7 @@ mod remove_file;
 pub(crate) mod remove_unit;
 #[path = "tools/set-clock/index.rs"]
 pub(crate) mod set_clock;
-mod slice4_bench;
+mod surface_bench;
 mod stillness_bench;
 mod structural_wall_bench;
 #[path = "tools/index.rs"]
@@ -313,20 +313,20 @@ mod invocation_face {
                         | "bench-structural-wall"
                         | "bench-harmonia-foundation"
                         | "bench-update-set"
-                        | "bench-slice12-clock"
-                        | "bench-slice4-files-transaction"
-                        | "bench-slice4-make-symlink"
-                        | "bench-slice4-aur"
-                        | "bench-slice4-git-artifact"
-                        | "bench-slice4-systemd-unit"
-                        | "bench-slice4-package"
-                        | "bench-slice4-command"
-                        | "bench-slice4-subscription-interactables"
-                        | "bench-slice4-ladder-profile"
-                        | "bench-slice4-renew-self"
-                        | "bench-slice4-capsule"
-                        | "bench-slice4-household-time"
-                        | "bench-slice13-renew-schedule"
+                        | "bench-clock"
+                        | "bench-files-transaction"
+                        | "bench-make-symlink"
+                        | "bench-aur"
+                        | "bench-git-artifact"
+                        | "bench-systemd-unit"
+                        | "bench-package"
+                        | "bench-command"
+                        | "bench-subscription-interactables"
+                        | "bench-ladder-profile"
+                        | "bench-renew-self"
+                        | "bench-capsule"
+                        | "bench-household-time"
+                        | "bench-renew-schedule"
                         | "install-timer"
                         | "uninstall-timer"
                 )
@@ -353,11 +353,23 @@ pub fn invoke(args: Vec<String>) -> Result<(), String> {
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("bench-slice4") => {
-            Err("bench-slice4-aggregate-retired-use-one-surface-dispatch".into())
-        }
-        Some(name) if name.strip_prefix("bench-slice4-").is_some() => {
-            slice4_bench::run(name.strip_prefix("bench-slice4-").unwrap(), invocation.0)
+        Some(name)
+            if matches!(
+                name,
+                "bench-files-transaction"
+                    | "bench-make-symlink"
+                    | "bench-aur"
+                    | "bench-git-artifact"
+                    | "bench-systemd-unit"
+                    | "bench-package"
+                    | "bench-command"
+                    | "bench-subscription-interactables"
+                    | "bench-ladder-profile"
+                    | "bench-renew-self"
+                    | "bench-capsule"
+                    | "bench-household-time"
+            ) => {
+            surface_bench::run(name.strip_prefix("bench-").unwrap(), invocation.0)
         }
         Some("bench-update-set") => atoms::r#do::transaction::update_set_bench(
             &args[1..],
@@ -373,15 +385,15 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .clone()
                 .ok_or_else(|| "foundation-invocation-key-missing".to_string())?,
         ),
-        Some("bench-slice13-renew-schedule") => stillness_bench::slice13_renew_schedule_bench(
+        Some("bench-renew-schedule") => stillness_bench::renew_schedule_bench(
             invocation
                 .0
-                .ok_or_else(|| "slice13-renew-schedule-invocation-key-missing".to_string())?,
+                .ok_or_else(|| "renew-schedule-bench-invocation-key-missing".to_string())?,
         ),
-        Some("bench-slice12-clock") => stillness_bench::slice12_clock_bench(
+        Some("bench-clock") => stillness_bench::clock_bench(
             invocation
                 .0
-                .ok_or_else(|| "slice12-clock-invocation-key-missing".to_string())?,
+                .ok_or_else(|| "clock-bench-invocation-key-missing".to_string())?,
         ),
         Some("bench-stillness") => stillness_bench::run(invocation.0),
         Some("bench-proposal-refresh") => crate::bands::propose_edits::proposal_refresh_bench(),
@@ -1028,20 +1040,20 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia bench-stillness");
     println!("  harmonia bench-harmonia-foundation");
     println!("  harmonia bench-update-set");
-    println!("  harmonia bench-slice12-clock");
-    println!("  harmonia bench-slice4-files-transaction");
-    println!("  harmonia bench-slice4-make-symlink");
-    println!("  harmonia bench-slice4-aur");
-    println!("  harmonia bench-slice4-git-artifact");
-    println!("  harmonia bench-slice4-systemd-unit");
-    println!("  harmonia bench-slice4-package");
-    println!("  harmonia bench-slice4-command");
-    println!("  harmonia bench-slice4-subscription-interactables");
-    println!("  harmonia bench-slice4-ladder-profile");
-    println!("  harmonia bench-slice4-renew-self");
-    println!("  harmonia bench-slice4-capsule");
-    println!("  harmonia bench-slice4-household-time");
-    println!("  harmonia bench-slice13-renew-schedule");
+    println!("  harmonia bench-clock");
+    println!("  harmonia bench-files-transaction");
+    println!("  harmonia bench-make-symlink");
+    println!("  harmonia bench-aur");
+    println!("  harmonia bench-git-artifact");
+    println!("  harmonia bench-systemd-unit");
+    println!("  harmonia bench-package");
+    println!("  harmonia bench-command");
+    println!("  harmonia bench-subscription-interactables");
+    println!("  harmonia bench-ladder-profile");
+    println!("  harmonia bench-renew-self");
+    println!("  harmonia bench-capsule");
+    println!("  harmonia bench-household-time");
+    println!("  harmonia bench-renew-schedule");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id>");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");

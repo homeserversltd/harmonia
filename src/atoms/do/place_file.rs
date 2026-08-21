@@ -150,7 +150,7 @@ pub fn declaration() -> Result<Option<&'static crate::atoms::declaration::Declar
     crate::atoms::declaration::get("place-file")
 }
 
-/// Strict Slice 11 request. Unlike the compatibility request above, all metadata
+/// Strict metadata request. Unlike the compatibility request above, all metadata
 /// is explicit and xattrs are compared by name and value without following links.
 pub(crate) struct StrictPlaceFileRequest<'a> {
     pub path: &'a Path,

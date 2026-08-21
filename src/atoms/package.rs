@@ -1777,7 +1777,7 @@ fn write_keyring_receipt(
     write_json(&receipt_dir.join(format!("{}.json", name)), &receipt)
 }
 
-pub(crate) fn slice4_bench(
+pub(crate) fn package_bench(
     root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -1785,7 +1785,7 @@ pub(crate) fn slice4_bench(
     let log = root.join("pacman.log");
     let receipts = root.join("receipts");
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
-    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\n'; exit 0;; -Qu) test -f {}.state || echo 'pendingpkg 1 -> 2'; exit 0;; -Syu) echo Upgrading slice4; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
+    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\n'; exit 0;; -Qu) test -f {}.state || echo 'pendingpkg 1 -> 2'; exit 0;; -Syu) echo Upgrading package; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| e.to_string())?;

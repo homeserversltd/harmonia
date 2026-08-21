@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const SCHEMA: &str = "harmonia.module.ladder.v1";
 
-pub(crate) fn slice4_bench(
+pub(crate) fn ladder_bench(
     root: &Path,
     _key: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
