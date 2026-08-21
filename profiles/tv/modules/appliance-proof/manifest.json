@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "appliance-proof",
+  "category": "Owned",
   "version": "1.0.0",
   "description": "TV appliance-proof module. Rust owns terminal proof that Arch TV behaves as a Hyprland living-room appliance with optional game lane and recovery paths; this sidecar carries constants only.",
   "optional": false,

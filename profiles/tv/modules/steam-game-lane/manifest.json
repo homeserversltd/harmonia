@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "steam-game-lane",
+  "category": "Owned",
   "version": "1.0.1",
   "description": "TV steam-game-lane module. Rust owns Steam and Gamescope exist as optional game lane, not the main Arch TV session; this sidecar carries constants only.",
   "optional": true,

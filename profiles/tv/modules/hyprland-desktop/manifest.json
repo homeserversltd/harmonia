@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "hyprland-desktop",
+  "category": "Owned",
   "version": "1.0.0",
   "description": "TV hyprland-desktop module. Rust owns Hyprland, portals, desktop shell, browser, audio, and KDE integration packages are maintained; this sidecar carries constants only.",
   "optional": false,

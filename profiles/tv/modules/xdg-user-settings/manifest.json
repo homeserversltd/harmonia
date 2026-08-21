@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "xdg-user-settings",
+  "category": "Presented",
   "version": "1.0.0",
   "description": "TV XDG user settings and launcher payload module. Files live inside this module under files/<intent>/...; Rust verifies and installs Harmonia-owned TV config files; this sidecar carries constants only.",
   "optional": false,
