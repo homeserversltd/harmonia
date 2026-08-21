@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "arcadia-gui-runtime",
   "version": "3.6.0",
-  "description": "Arcadia GUI runtime ladder: source sync, cargo build, binary promote, systemd, health, and source SHA state.",
+  "description": "Arcadia GUI runtime ladder: source sync, cargo build, binary promote, systemd, health, and source SHA state. Arcadia is the HomeConsole front panel and must execute declared local appliance controls through Harmonia/systemd.",
   "constants": {},
   "ladder": [
     {
@@ -12,6 +12,7 @@
       "args": {
         "module_id": "arcadia-gui-runtime",
         "component": "arcadia",
+        "bearer": "owner",
         "source_dir": "/opt/arcadia/source",
         "install_bin": "/usr/local/bin/arcadia",
         "service": "arcadia.service",
@@ -20,14 +21,29 @@
         "op_prefix": "arcadia-gui",
         "run_schema": "harmonia.arcadia_gui_runtime.v1",
         "managed_files_schema": "harmonia.arcadia_gui_runtime.managed_files.v1",
+        "build_environment": {
+          "RUSTUP_HOME": "/opt/rustup",
+          "CARGO_HOME": "/opt/cargo"
+        },
         "managed_files": [
           {
             "path": "/etc/systemd/system/arcadia.service",
             "mode": 420,
             "content": "[Unit]\nDescription=Arcadia appliance GUI\nAfter=network.target caduceus.service\n\n[Service]\nExecStart=/usr/local/bin/arcadia\nRestart=on-failure\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nEnvironment=CADUCEUS_HTTP_BASE=http://127.0.0.1:8787\nEnvironment=ARCADIA_TLS_CERT=/var/lib/arcadia/tls/chain.pem\nEnvironment=ARCADIA_TLS_KEY=/var/lib/arcadia/tls/key.pem\nEnvironment=ARCADIA_HTTPS_BIND=0.0.0.0:443\n\n[Install]\nWantedBy=multi-user.target\n"
+          },
+          {
+            "path": "/etc/systemd/system/arcadia.service.d/10-control-surface-authority.conf",
+            "mode": 420,
+            "content": "[Service]\nUser=\nGroup=\nNoNewPrivileges=false\n"
           }
-        ]
-      }
+        ],
+        "expected_unit_properties": {
+          "User": "root",
+          "Group": "root",
+          "NoNewPrivileges": "no"
+        }
+      },
+      "on_failure": "stop"
     }
   ]
 }

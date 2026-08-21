@@ -159,7 +159,8 @@ pub use crate::atoms::package;
 pub(crate) mod routine;
 #[path = "service-runtime/index.rs"]
 pub(crate) mod service_runtime;
-pub use crate::atoms::systemd;
+#[path = "systemd/index.rs"]
+pub(crate) mod systemd;
 pub mod venv;
 
 #[derive(serde::Deserialize)]

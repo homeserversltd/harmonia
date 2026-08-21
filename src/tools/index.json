@@ -1415,6 +1415,23 @@
           "placement": "RestartServices"
         },
         {
+          "name": "show-assert",
+          "description": "observe exact systemd unit properties without mutation and assert expected values",
+          "args": [
+            {
+              "name": "service",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "expected",
+              "kind": "json",
+              "required": true
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
           "name": "user-daemon-reload",
           "description": "reload the user systemd manager only when this module changed managed material",
           "args": [

@@ -359,6 +359,7 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
         ("service-enable", "enable-unit", "enable"),
         ("service-restart", "systemd", "restart"),
         ("service-active", "systemd", "is-active-probe"),
+        ("unit-authority-proof", "systemd", "show-assert"),
         ("health-proof", "check-health", "probe"),
     ];
     // The managed-files proposal is optional: the bounded shape is either
@@ -396,7 +397,18 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
     } else {
         step.steps.len()
     };
-    if suffix_end != suffix_start + 5 {
+    let suffix = &step.steps[suffix_start..suffix_end];
+    let authority_present = suffix.get(4).is_some_and(|child| {
+        child.name == "unit-authority-proof"
+            && child.tool == "systemd"
+            && child.permutation.as_deref() == Some("show-assert")
+    });
+    let expected_suffix = if authority_present {
+        &stages[4..]
+    } else {
+        &[stages[4], stages[5], stages[6], stages[7], stages[9]][..]
+    };
+    if suffix.len() != expected_suffix.len() {
         return false;
     }
     let mut config_count = 0;
@@ -417,14 +429,12 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             return false;
         }
     }
-    if config_count > 1
-        || !step.steps[suffix_start..]
-            .iter()
-            .zip(stages.iter().skip(4))
-            .all(|(c, (n, t, p))| {
-                c.name == *n && c.tool == *t && c.permutation.as_deref() == Some(*p)
-            })
-    {
+    if config_count > 1 {
+        return false;
+    }
+    if !suffix.iter().zip(expected_suffix.iter()).all(|(c, (n, t, p))| {
+        c.name == *n && c.tool == *t && c.permutation.as_deref() == Some(*p)
+    }) {
         return false;
     }
     let (Some(pull), Some(build), Some(install), Some(epilogue)) = (

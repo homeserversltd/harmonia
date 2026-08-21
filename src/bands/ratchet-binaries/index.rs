@@ -9,70 +9,12 @@ use crate::{
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs::File;
 use std::path::Path;
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RatchetBinaries)
 }
 
-
-pub(crate) fn build_arcadia(
-    source_dir: &Path,
-    key: crate::tools::files::InvocationKey,
-) -> crate::CmdResult {
-    let run = crate::tools::comparison::execute(
-        "arcadia-cargo-build",
-        || Ok::<_, String>(()),
-        |_| crate::tools::comparison::DiffDecision::Different,
-        |authorization, _| {
-            crate::build_crate::cargo_build(
-                authorization,
-                key,
-                source_dir,
-                &[],
-                "owner",
-                std::time::Duration::from_secs(crate::tools::command::DEFAULT_TIMEOUT_SECS),
-            )
-        },
-    );
-    match run {
-        Ok(crate::tools::comparison::ComparisonRun::Moved { movement, .. }) => crate::CmdResult {
-            ok: movement.ok,
-            code: movement.code.unwrap_or(if movement.ok { 0 } else { -1 }),
-            stdout: movement.stdout,
-            stderr: movement.stderr,
-        },
-        Ok(crate::tools::comparison::ComparisonRun::Current { .. }) => crate::CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: "arcadia-cargo-build-apply-boundary-empty".into(),
-        },
-        Err(error) => crate::CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: error,
-        },
-    }
-}
-
-pub(crate) fn promote_arcadia_artifact(
-    artifact: &Path,
-    install_bin: &Path,
-    key: crate::tools::files::InvocationKey,
-) -> Result<bool, String> {
-    let bytes = fs::read(artifact).map_err(|e| format!("artifact-read-failed: {e}"))?;
-    let outcome = crate::place_file::execute(crate::place_file::PlaceFileRequest {
-        path: install_bin,
-        declared_bytes: &bytes,
-        mode: Some(0o755),
-        ownership: crate::place_file::DeclaredOwnership { uid: None, gid: None },
-        backup: crate::place_file::BackupPolicy::None,
-        invocation: Some(key),
-    })?;
-    Ok(outcome.movement.changed())
-}
 
 /// Execute the complete RatchetBinaries band lifecycle for one projected module.
 /// Selection, preconditions, authority gating, failure policy, and accumulation
