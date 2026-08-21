@@ -209,6 +209,7 @@ pub(crate) fn rolling_update_run(
                     profile,
                     module_root,
                     "transaction-engine-failed",
+                    Some(&error),
                 )?;
                 return Err(error);
             };
@@ -217,6 +218,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 "transaction-engine-failed",
+                Some(&error),
             );
             if let Some(key) = mode.invocation() {
                 if let Ok(receipt) =
@@ -238,6 +240,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 "transaction-missing",
+                None,
             )?;
             return Err("stage-profile-transaction-missing".to_string());
         };
@@ -251,6 +254,7 @@ pub(crate) fn rolling_update_run(
                         profile,
                         module_root,
                         "transaction-apply-failed",
+                        Some(&error),
                     );
                     if let Ok(receipt) =
                         crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
@@ -271,6 +275,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 "transaction-invocation-missing",
+                None,
             )?;
             return Err("stage-profile-invocation-missing".to_string());
         }
@@ -282,6 +287,7 @@ pub(crate) fn rolling_update_run(
                     profile,
                     module_root,
                     "transaction-commit-failed",
+                    Some(&error),
                 )?;
                 return Err(error);
             }
@@ -294,6 +300,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 "transaction-receipt-failed",
+                Some(&error),
             )?;
             return Err(error);
         }
@@ -303,6 +310,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 "transaction-terminal-summary-missing",
+                None,
             )?;
             return Err("stage-profile-terminal-summary-missing".to_string());
         };
@@ -317,6 +325,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 "transaction-terminal-receipt-failed",
+                Some(&error),
             )?;
             return Err(error);
         }
@@ -347,8 +356,10 @@ fn write_transaction_failure_run_receipt(
     receipt_dir: &Path,
     profile: &Profile,
     module_root: &Path,
-    signal: &str,
+    fallback_signal: &str,
+    error: Option<&str>,
 ) -> Result<(), String> {
+    let signal = transaction_failure_signal(error, fallback_signal);
     write_engine_run_receipt_with_duration(
         receipt_dir,
         profile,
@@ -357,10 +368,28 @@ fn write_transaction_failure_run_receipt(
         false,
         profile.modules.len(),
         0,
-        signal,
+        &signal,
         module_root,
         false,
         0,
+    )?;
+    let mut run = serde_json::from_reader::<_, serde_json::Value>(
+        fs::File::open(receipt_dir.join("run.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(error_text) = error {
+        run["error"] = serde_json::Value::String(error_text.to_string());
+        write_json(&receipt_dir.join("run.json"), &run)?;
+    }
+    crate::atoms::attest::append_jsonl(
+        &receipt_dir.join("events.jsonl"),
+        &serde_json::json!({
+            "event": "transaction-failed",
+            "ok": false,
+            "first_missing_signal": signal,
+            "message": error.unwrap_or(fallback_signal),
+            "error": error.unwrap_or(fallback_signal),
+        }),
     )?;
     println!("schema=harmonia.run_profile.v1");
     crate::hyalos::forward_receipt(
@@ -377,6 +406,35 @@ fn write_transaction_failure_run_receipt(
     println!("first_missing_signal={}", signal);
     println!("receipt_dir={}", receipt_dir.display());
     Ok(())
+}
+
+fn transaction_failure_signal(error: Option<&str>, fallback: &str) -> String {
+    let Some(error) = error else {
+        return fallback.to_string();
+    };
+    if let Some(signal) = error
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("harmonia_error="))
+    {
+        if stable_transaction_signal(signal) {
+            return signal.to_string();
+        }
+    }
+    if let Some(signal) = error.split_whitespace().next() {
+        let signal = signal.strip_suffix(':').unwrap_or(signal);
+        if stable_transaction_signal(signal) {
+            return signal.to_string();
+        }
+    }
+    fallback.to_string()
+}
+
+fn stable_transaction_signal(value: &str) -> bool {
+    !value.is_empty()
+        && value.contains('-')
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        })
 }
 
 pub(crate) fn rolling_update_from_certificate_with_context(
