@@ -1041,7 +1041,7 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
 
     let certificate = crate::device_profile_certificate_path();
-    let resolution = crate::resolve_source(
+    let resolution = crate::bands::pull_source::resolve_source(
         &certificate,
         component,
         "arcadia-gui-runtime",
@@ -1055,10 +1055,10 @@ pub(crate) fn homeconsole_arcadia_gui_update(
     let resolution = resolution
         .resolution
         .ok_or_else(|| "arcadia-source-resolution-plan-missing".to_string())?;
-    let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
+    let config = crate::bands::renew_self::load_engine_plane_config(&crate::bands::renew_self::engine_config_path())?;
     let credentials = config
         .as_ref()
-        .map(crate::credential_scopes)
+        .map(crate::bands::renew_self::credential_scopes)
         .unwrap_or_default();
     let expected_commit = (resolution.requested_ref.len() == 40
         && resolution
@@ -1066,7 +1066,7 @@ pub(crate) fn homeconsole_arcadia_gui_update(
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit()))
     .then(|| resolution.requested_ref.clone());
-    let source_plan = crate::bridge_acquisition_plan(
+    let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
         &resolution,
         source_dir.to_path_buf(),
         "owner".to_string(),

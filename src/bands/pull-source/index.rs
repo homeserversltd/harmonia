@@ -565,10 +565,10 @@ pub(crate) fn routine_source_plan(
                 manifest.id, step.step_id
             )
         })?;
-    let config = crate::load_engine_plane_config(&crate::engine_config_path())?;
+    let config = crate::bands::renew_self::load_engine_plane_config(&crate::bands::renew_self::engine_config_path())?;
     let certificate = crate::device_profile_certificate_path();
     let certificate_resolution =
-        crate::resolve_source(&certificate, component, &manifest.id, &step.step_id);
+        crate::bands::pull_source::resolve_source(&certificate, component, &manifest.id, &step.step_id);
     let resolution = match certificate_resolution.resolution {
         Some(resolution) => resolution,
         None if certificate_resolution
@@ -595,7 +595,7 @@ pub(crate) fn routine_source_plan(
     };
     let credentials = config
         .as_ref()
-        .map(crate::credential_scopes)
+        .map(crate::bands::renew_self::credential_scopes)
         .unwrap_or_default();
     let expected_commit = (resolution.requested_ref.len() == 40
         && resolution
@@ -603,7 +603,7 @@ pub(crate) fn routine_source_plan(
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit()))
     .then(|| resolution.requested_ref.clone());
-    Ok(crate::bridge_acquisition_plan(
+    Ok(crate::bands::pull_source::bridge_acquisition_plan(
         &resolution,
         PathBuf::from(destination),
         optional_string_arg(&step.args, "bearer")
@@ -644,7 +644,7 @@ pub(crate) fn execute_source(
 
 fn engine_source_resolution(
     component: &str,
-    config: &crate::EnginePlaneConfig,
+    config: &crate::bands::renew_self::EnginePlaneConfig,
 ) -> Result<SourceResolution, String> {
     let declared = config.source_components.get(component);
     let (source_repo_url, branch) = if let Some(declared) = declared {

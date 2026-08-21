@@ -14,7 +14,6 @@ pub(crate) use atoms::attest::hyalos;
 pub(crate) mod install_package;
 #[path = "tools/place-file/index.rs"]
 mod place_file;
-mod proposal_refresh_bench;
 #[path = "tools/pull-repo/index.rs"]
 pub(crate) mod pull_repo;
 #[path = "tools/ratchet-aur-package/index.rs"]
@@ -271,10 +270,8 @@ mod hotfix;
 mod interactables;
 mod ladder;
 mod module_dispatch;
-mod preflight;
 mod receipts;
 mod schedule;
-mod source_resolver;
 mod subscription;
 
 pub(crate) use atoms::attest::convergence_receipts::*;
@@ -292,9 +289,7 @@ pub(crate) use hotfix::*;
 pub(crate) use interactables::*;
 pub(crate) use ladder::*;
 pub(crate) use module_dispatch::*;
-pub(crate) use preflight::*;
 pub(crate) use receipts::*;
-pub(crate) use source_resolver::*;
 pub(crate) use subscription::*;
 pub(crate) use tools::command::harmonia_root_from_module_root;
 pub(crate) use tools::command::{
@@ -389,7 +384,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or_else(|| "slice12-clock-invocation-key-missing".to_string())?,
         ),
         Some("bench-stillness") => stillness_bench::run(invocation.0),
-        Some("bench-proposal-refresh") => proposal_refresh_bench::run(),
+        Some("bench-proposal-refresh") => crate::bands::propose_edits::proposal_refresh_bench(),
         Some("bench-structural-wall") => structural_wall_bench::run(invocation.0),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.0)
@@ -463,7 +458,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let step_id = value_arg(&args, "--step-id")
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "source-resolution".to_string());
-            let receipt = resolve_source_json(&certificate, component, &owning_module, &step_id);
+            let receipt = crate::bands::pull_source::resolve_source_json(&certificate, component, &owning_module, &step_id);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&receipt)
@@ -487,7 +482,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or("acquire-source requires <component> --certificate <path> --engine-config <path> --destination <path>")?;
             let destination = value_arg(&args, "--destination")
                 .ok_or("acquire-source requires <component> --certificate <path> --engine-config <path> --destination <path>")?;
-            let resolution = resolve_source(
+            let resolution = crate::bands::pull_source::resolve_source(
                 &certificate,
                 component,
                 "engine-plane",
@@ -504,11 +499,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let plan = resolution
                 .resolution
                 .ok_or("source-acquisition-plan-missing")?;
-            let config = load_engine_plane_config(&engine_config)?
+            let config = crate::bands::renew_self::load_engine_plane_config(&engine_config)?
                 .ok_or_else(|| format!("engine-config-missing {}", engine_config.display()))?;
             let bearer = value_arg_string(&args, "--bearer").unwrap_or_else(|| "owner".to_string());
             let expected_commit = value_arg_string(&args, "--expected-commit");
-            let acquisition = bridge_acquisition_plan(
+            let acquisition = crate::bands::pull_source::bridge_acquisition_plan(
                 &plan,
                 destination,
                 bearer,
