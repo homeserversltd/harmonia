@@ -7,7 +7,13 @@ pub(crate) fn execute_validated_step(
 ) -> Result<crate::OperationOutcome, String> {
     let apply = software_authorization.is_some();
     match step.permutation.as_str() {
-        "managed-files" => managed_files_step(step, manifest, module_dir, apply, invocation),
+        "managed-files" => managed_files_step_with_authorization(
+            step,
+            manifest,
+            module_dir,
+            software_authorization,
+            invocation,
+        ),
         "managed-directories" => managed_directories_step(step, module_dir, apply, invocation),
         "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, false, invocation),
@@ -161,9 +167,26 @@ pub(crate) fn managed_files_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
     module_dir: &Path,
-    apply: bool,
+    _apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    managed_files_step_with_authorization(
+        step,
+        manifest,
+        module_dir,
+        None,
+        invocation,
+    )
+}
+
+pub(crate) fn managed_files_step_with_authorization(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let apply = software_authorization.is_some();
     let files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
         serde_json::from_value(files_value.clone())
             .map_err(|e| format!("managed-files-args-invalid: {e}"))?
@@ -175,11 +198,17 @@ pub(crate) fn managed_files_step(
     let mut hold = Vec::new();
     let mut proposals = Vec::new();
     let mut replacements = Vec::new();
+    let mut owned = Vec::new();
+    let mut seed = Vec::new();
     for file in files {
-        match &file.on_drift {
-            crate::OnDrift::Hold => hold.push(file),
-            crate::OnDrift::Propose => proposals.push(file),
-            crate::OnDrift::Replace { .. } => replacements.push(file),
+        match file.category.as_deref() {
+            Some("Owned") => owned.push(file),
+            Some("Seed") => seed.push(file),
+            _ => match &file.on_drift {
+                crate::OnDrift::Hold => hold.push(file),
+                crate::OnDrift::Propose => proposals.push(file),
+                crate::OnDrift::Replace { .. } => replacements.push(file),
+            },
         }
     }
     let mut result = crate::OperationOutcome {
@@ -190,6 +219,69 @@ pub(crate) fn managed_files_step(
         command: None,
     };
     let attest_log = module_dir.join("managed-files.attest.jsonl");
+    for (file, absent_only) in owned
+        .into_iter()
+        .map(|file| (file, false))
+        .chain(seed.into_iter().map(|file| (file, true)))
+    {
+        let path = Path::new(&file.path);
+        crate::atoms::ask::backfill_file::validate_target(path)?;
+        let class = crate::tools::files::classify_target(path);
+        match class {
+            crate::tools::files::TargetClass::Software => {}
+            crate::tools::files::TargetClass::Config => {
+                return Err(format!(
+                    "configuration-actuator-authority-refused {}",
+                    path.display()
+                ))
+            }
+            crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
+        }
+        if absent_only && path.exists() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix("/")
+            .map_err(|_| "managed-file-target-invalid")?;
+        let source_root = module_dir.join("managed-files").join("sources");
+        let source = source_root.join(relative);
+        if let Some(parent) = source.parent() {
+            atoms::attest::prepare_receipt_parent(parent)?;
+        }
+        atoms::attest::write_bytes_atomic(&source, file.content.as_bytes())?;
+        let outcome = crate::atoms::files::converge_files_authorized(
+            &crate::atoms::files::FileConvergenceRequest {
+                source_root,
+                target_root: PathBuf::from("/"),
+                files: vec![crate::atoms::files::FileSpec {
+                    mode: file.mode,
+                    relative_path: relative.to_path_buf(),
+                }],
+                backup_existing: false,
+                receipt_name: format!(
+                    "{}-{}",
+                    step.step_id,
+                    path.file_name()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or("managed")
+                ),
+                owner: step
+                    .args
+                    .get("owner")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                group: step
+                    .args
+                    .get("group")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            },
+            module_dir,
+            software_authorization,
+            invocation,
+        )?;
+        result.changed |= outcome.changed;
+    }
     for file in hold {
         let path = Path::new(&file.path);
         crate::atoms::ask::backfill_file::validate_target(path)?;
@@ -356,6 +448,7 @@ fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileMa
                     content,
                     mode,
                     on_drift: crate::OnDrift::default(),
+                    category: None,
                 });
             }
         }

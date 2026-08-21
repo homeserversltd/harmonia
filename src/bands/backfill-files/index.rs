@@ -187,7 +187,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             let object = declaration
                 .as_object()
                 .ok_or_else(|| format!("managed-file-declaration-{ordinal}-not-object"))?;
-            let legacy_implied_place = !object.contains_key("operation");
+            let category = object.get("category").and_then(Value::as_str);
+            let legacy_implied_place = !object.contains_key("operation") && category.is_none();
+            let simple_category_shape =
+                !object.contains_key("operation") && matches!(category, Some("Owned" | "Seed"));
             let operation = if legacy_implied_place {
                 "place"
             } else {
@@ -204,17 +207,43 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             if path.is_empty() {
                 return Err(format!("managed-file-declaration-{ordinal}-path-invalid"));
             }
-            let on_drift = object
+            let mut on_drift = object
                 .get("on_drift")
                 .cloned()
                 .unwrap_or_else(|| Value::String("Hold".into()));
+            let operation = if let Some(category) = category {
+                match category {
+                    "Owned" => "place",
+                    "Seed" => "backfill",
+                    "Presented" => {
+                        on_drift = Value::String("Propose".into());
+                        "present"
+                    }
+                    "Hotfix" => "hotfix",
+                    "Untouchable" => "untouchable",
+                    other => return Err(format!("managed-file-category-unknown-{other}")),
+                }
+            } else {
+                operation
+            };
             crate::ladder::validate_on_drift(
                 &step.step_id,
                 &format!("managed-{ordinal}"),
                 &on_drift,
             )
             .map_err(|error| error.first_missing_signal())?;
-            if operation == "place" {
+            if simple_category_shape
+                || matches!(operation, "present" | "hotfix" | "untouchable")
+                || (operation == "place"
+                    && matches!(
+                        crate::tools::files::classify_target(Path::new(path)),
+                        crate::tools::files::TargetClass::Config
+                    ))
+            {
+                let mut declaration = declaration;
+                if let Some(object) = declaration.as_object_mut() {
+                    object.insert("on_drift".into(), on_drift.clone());
+                }
                 configuration.push(declaration);
                 continue;
             }
