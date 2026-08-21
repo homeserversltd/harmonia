@@ -1270,6 +1270,7 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1
         true,
         true,
         Some(invocation),
+        &std::collections::BTreeMap::new(),
     )?;
     let fb: serde_json::Value = serde_json::from_slice(
         &fs::read(receipts.join("build-pinned.json")).map_err(|e| e.to_string())?,
@@ -1292,6 +1293,7 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1
         true,
         true,
         Some(invocation),
+        &std::collections::BTreeMap::new(),
     )?;
     let sb: serde_json::Value = serde_json::from_slice(
         &fs::read(receipts.join("build-pinned.json")).map_err(|e| e.to_string())?,
@@ -1335,6 +1337,8 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'benchpkg 1\n' || exit 1
             package: "benchpkg".into(),
             expected_version: "1".into(),
             timeout_secs: 30,
+            ignored: Vec::new(),
+            target_pinned: false,
         },
         true,
     )?;

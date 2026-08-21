@@ -1,6 +1,7 @@
 pub(crate) use crate::atoms::ask::ratchet_aur::{ArtifactLockObservation, Observation, Verdict};
 use crate::atoms::comparison::{self, DiffDecision};
 use crate::{OperationOutcome, Profile};
+use std::collections::BTreeMap;
 use std::path::Path;
 pub(crate) fn install(
     receipt_dir: &Path,
@@ -9,6 +10,7 @@ pub(crate) fn install(
     timeout_secs: u64,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    pins: &BTreeMap<String, String>,
 ) -> Result<comparison::ComparisonRun<Option<String>, OperationOutcome>, String> {
     crate::atoms::declaration::execute(
         "ratchet-aur-package",
@@ -36,6 +38,7 @@ pub(crate) fn install(
                 package,
                 timeout_secs,
                 apply,
+                pins,
             )
         },
     )
@@ -54,6 +57,7 @@ pub(crate) fn build_pinned(
     install: bool,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    pins: &BTreeMap<String, String>,
 ) -> Result<comparison::ComparisonRun<Observation, OperationOutcome>, String> {
     crate::atoms::declaration::execute(
         "ratchet-aur-package",
@@ -83,6 +87,7 @@ pub(crate) fn build_pinned(
                 install,
                 apply,
                 observation,
+                pins,
             )
         },
     )
@@ -152,6 +157,7 @@ mod mutation {
         Profile,
     };
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -171,6 +177,7 @@ mod mutation {
         install: bool,
         apply: bool,
         observation: &Observation,
+        pins: &BTreeMap<String, String>,
     ) -> Result<OperationOutcome, String> {
         if observation.verdict != Verdict::BehindPin {
             return Err("ratchet-aur-package-act-without-behind-pin".into());
@@ -202,6 +209,12 @@ mod mutation {
                     package: package.to_string(),
                     expected_version: lock.pinned_version,
                     timeout_secs,
+                    ignored: pins
+                        .keys()
+                        .filter(|name| name.as_str() != package)
+                        .cloned()
+                        .collect(),
+                    target_pinned: pins.contains_key(package),
                 },
                 apply,
             )
@@ -217,6 +230,7 @@ mod mutation {
         package: &str,
         timeout_secs: u64,
         apply: bool,
+        pins: &BTreeMap<String, String>,
     ) -> Result<OperationOutcome, String> {
         atoms::r#do::aur_install(authorization, invocation, || {
             atoms::r#do::install_aur::aur_install_action(
@@ -225,6 +239,7 @@ mod mutation {
                 package,
                 timeout_secs,
                 apply,
+                pins,
             )
         })
     }
@@ -409,6 +424,7 @@ mod receipt {
     use super::{ArtifactLockObservation, Verdict};
     use crate::atoms;
     use crate::OperationOutcome;
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     pub(super) fn write_pinned_artifacts_receipt(

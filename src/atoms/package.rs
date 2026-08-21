@@ -6,13 +6,16 @@ use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Seek};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const NAME: &str = "package";
+
+pub(crate) const PACKAGE_PIN_SCOPE_LIMITATION: &str =
+    "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
 
 const HARMONIA_PACMAN_PATH_ENV: &str = "HARMONIA_PACMAN_PATH";
 const HARMONIA_PACMAN_KEY_PATH_ENV: &str = "HARMONIA_PACMAN_KEY_PATH";
@@ -274,17 +277,58 @@ pub(crate) fn package_tool_with_policy_for_backend(
     backend: PackageBackend,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    package_tool_with_policy_for_backend_and_pins(
+        receipt_dir,
+        name,
+        action,
+        packages,
+        apply,
+        conflict_policy,
+        conflict_paths,
+        timeout_secs,
+        backend,
+        invocation,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn package_tool_with_policy_for_backend_and_pins(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    packages: &[String],
+    apply: bool,
+    conflict_policy: Option<&str>,
+    conflict_paths: &[String],
+    timeout_secs: u64,
+    backend: PackageBackend,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    pins: &std::collections::BTreeMap<String, String>,
+) -> Result<OperationOutcome, String> {
+    if !pins.is_empty() {
+        write_pin_witness(receipt_dir, name, pins, backend)?;
+        let witness_path = receipt_dir.join(format!("{name}.pin-witness.json"));
+        let _witness: serde_json::Value =
+            serde_json::from_slice(&fs::read(&witness_path).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+    }
     match backend {
-        PackageBackend::Pacman if action == "install" => crate::install_package::run(
+        PackageBackend::Pacman if action == "install" => crate::install_package::run_with_ignores(
             receipt_dir,
             name,
-            packages,
+            &packages
+                .iter()
+                .filter(|package| !pins.contains_key(*package))
+                .cloned()
+                .collect::<Vec<_>>(),
             apply,
             conflict_policy,
             conflict_paths,
             timeout_secs,
             &pacman_program(),
             invocation,
+            &pins.keys().cloned().collect::<Vec<_>>(),
         ),
         PackageBackend::Pacman if matches!(action, "check" | "upgrade" | "update") => {
             package_update_tool(
@@ -295,6 +339,7 @@ pub(crate) fn package_tool_with_policy_for_backend(
                 apply,
                 timeout_secs,
                 PackageBackend::Pacman,
+                pins,
             )
         }
         PackageBackend::Pacman => package_tool_with_policy(
@@ -316,11 +361,18 @@ pub(crate) fn package_tool_with_policy_for_backend(
                 apply,
                 timeout_secs,
                 PackageBackend::Apt,
+                pins,
             )
         }
-        PackageBackend::Apt => {
-            apt_package_tool(receipt_dir, name, action, packages, apply, timeout_secs)
-        }
+        PackageBackend::Apt => apt_package_tool(
+            receipt_dir,
+            name,
+            action,
+            packages,
+            apply,
+            timeout_secs,
+            pins,
+        ),
     }
 }
 
@@ -338,6 +390,7 @@ fn apt_package_tool(
     packages: &[String],
     apply: bool,
     timeout_secs: u64,
+    pins: &std::collections::BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     let program = apt_program();
     let mut observe_args = match action {
@@ -349,20 +402,29 @@ fn apt_package_tool(
     if action == "install" {
         observe_args.extend(packages.iter().cloned());
     }
-    let observe_refs: Vec<&str> = observe_args.iter().map(String::as_str).collect();
     let observation = PackageObservation {
         observed_state: "apt-current-state-observed".to_string(),
         desired_state: format!("apt-{action}-declared"),
-        current: Some(command::capture_with_timeout(
+        current: Some(run_apt_command(
+            receipt_dir,
+            name,
             &program,
-            &observe_refs,
+            observe_args.clone(),
             timeout_secs,
+            pins,
         )),
     };
     let run = comparison::execute_with_failure_receipt(
         "package",
         || {
-            let current = command::capture_with_timeout(&program, &observe_refs, timeout_secs);
+            let current = run_apt_command(
+                receipt_dir,
+                name,
+                &program,
+                observe_args.clone(),
+                timeout_secs,
+                pins,
+            );
             Ok(PackageObservation {
                 observed_state: "apt-current-state-observed".to_string(),
                 desired_state: format!("apt-{action}-declared"),
@@ -383,15 +445,16 @@ fn apt_package_tool(
         |_authorization, _| {
             let mut args: Vec<String> = match (action, apply) {
                 ("check", _) => vec!["-s".into(), "upgrade".into()],
-                ("install", true) => vec!["install".into(), "--yes".into()],
+                ("install", true) => vec!["install".into(), "--yes".into(), "--no-remove".into()],
                 ("install", false) => vec!["-s".into(), "install".into()],
-                ("upgrade" | "update", true) => vec!["full-upgrade".into(), "--yes".into()],
+                ("upgrade" | "update", true) => {
+                    vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()]
+                }
                 ("upgrade" | "update", false) => vec!["-s".into(), "full-upgrade".into()],
                 (other, _) => return Err(format!("apt-package-action-unsupported-{other}")),
             };
             args.extend(packages.iter().cloned());
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            let result = command::capture_with_timeout(&program, &refs, timeout_secs);
+            let result = run_apt_command(receipt_dir, name, &program, args, timeout_secs, pins);
             Ok(OperationOutcome {
                 ok: result.ok,
                 changed: apply && result.ok && apt_stdout_indicates_change(&result.stdout),
@@ -437,9 +500,19 @@ fn apt_package_tool(
         message: format!("apt package {action} already current"),
         command: observation.current.clone(),
     });
+    let mut comparison =
+        package_receipt_fields(&observation, decision, movement.as_ref(), outcome.changed);
+    if let Ok(bytes) = fs::read(receipt_dir.join(format!("{name}.pin-witness.json"))) {
+        if let Ok(witness) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(fields) = comparison.as_object_mut() {
+                fields.insert("exclusion_set".into(), witness["exclusion_set"].clone());
+                fields.insert("pin_witness".into(), witness);
+            }
+        }
+    }
     write_json(
         &receipt_dir.join(format!("{name}.comparison.json")),
-        &package_receipt_fields(&observation, decision, movement.as_ref(), outcome.changed),
+        &comparison,
     )?;
     write_package_receipt_with_backend(receipt_dir, name, action, &outcome, PackageBackend::Apt)?;
     Ok(outcome)
@@ -655,7 +728,13 @@ fn fallback_upgraded(b: PackageBackend, p: &[PendingPackage], t: u64) -> Vec<Upg
         })
         .collect()
 }
-fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObservation {
+fn observe_update(
+    r: &Path,
+    a: &str,
+    t: u64,
+    b: PackageBackend,
+    pins: &std::collections::BTreeMap<String, String>,
+) -> UpdateObservation {
     let bn = b.name().into();
     match b {
         PackageBackend::Pacman => {
@@ -676,7 +755,7 @@ fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObserva
                 }
                 std::os::unix::fs::symlink("/var/lib/pacman/local", d.join("local"))
             });
-            let (refresh, q, p, ok) = if let Err(e) = setup {
+            let (refresh, q, mut p, ok) = if let Err(e) = setup {
                 (
                     synthetic(&format!("pacman sandbox setup failed: {e}")),
                     synthetic("pacman query skipped after sandbox setup failure"),
@@ -711,6 +790,7 @@ fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObserva
             };
             let cleanup = fs::remove_dir_all(&d).err().map(|e| e.to_string());
             let probe_ok = ok && cleanup.is_none();
+            p.retain(|item| !pins.contains_key(&item.name));
             UpdateObservation {
                 backend: bn,
                 observed_state: if !probe_ok {
@@ -733,27 +813,25 @@ fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObserva
         }
         PackageBackend::Apt => {
             let x = apt_program();
-            let refresh = command::capture_with_timeout(
-                &x,
-                &["update", "--allow-releaseinfo-change"],
-                t,
-            );
+            let refresh =
+                command::capture_with_timeout(&x, &["update", "--allow-releaseinfo-change"], t);
             let sim = if a == "check" {
                 "upgrade"
             } else {
                 "full-upgrade"
             };
             let q = if refresh.ok {
-                command::capture_with_timeout(&x, &["-s", sim], t)
+                run_apt_command(r, a, &x, vec!["-s".into(), sim.into()], t, pins)
             } else {
                 synthetic("apt query skipped after refresh failure")
             };
             let ok = refresh.ok && q.ok;
-            let p = if ok {
+            let mut p = if ok {
                 parse_apt_pending(&q.stdout)
             } else {
                 Vec::new()
             };
+            p.retain(|item| !pins.contains_key(&item.name));
             UpdateObservation {
                 backend: bn,
                 observed_state: if !ok {
@@ -776,6 +854,126 @@ fn observe_update(r: &Path, a: &str, t: u64, b: PackageBackend) -> UpdateObserva
         }
     }
 }
+fn capture_owned_with_timeout(program: &str, args: Vec<String>, timeout: u64) -> CmdResult {
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    command::capture_with_timeout(program, &refs, timeout)
+}
+
+fn pin_args(
+    base: &[&str],
+    pins: &std::collections::BTreeMap<String, String>,
+    pacman: bool,
+) -> Vec<String> {
+    let mut args = base.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    if pacman {
+        for name in pins.keys() {
+            args.extend(["--ignore".into(), name.clone()]);
+        }
+    }
+    args
+}
+
+pub(crate) fn write_pin_witness(
+    receipt_dir: &Path,
+    name: &str,
+    pins: &std::collections::BTreeMap<String, String>,
+    backend: PackageBackend,
+) -> Result<(), String> {
+    let mut witness = Vec::new();
+    for (package, expected) in pins {
+        let result = match backend {
+            PackageBackend::Pacman => command::capture(&pacman_program(), &["-Q", package]),
+            PackageBackend::Apt => {
+                command::capture("/usr/bin/dpkg-query", &["-W", "-f=${Version}", package])
+            }
+        };
+        let installed = result
+            .stdout
+            .split_whitespace()
+            .nth(if backend == PackageBackend::Pacman {
+                1
+            } else {
+                0
+            })
+            .map(str::to_string);
+        let state = match installed.as_deref() {
+            Some(v) if v == expected => "held/green",
+            Some(_) => "divergent",
+            None => "absent",
+        };
+        witness.push(serde_json::json!({"name":package,"expected_version":expected,"installed_version":installed,"state":state,"report_home_divergence":state != "held/green"}));
+    }
+    write_json(
+        &receipt_dir.join(format!("{name}.pin-witness.json")),
+        &serde_json::json!({"schema":"harmonia.package_pin_witness.v1","exclusion_set":pins.keys().collect::<Vec<_>>(),"witness":witness,"pin_scope_limitation":PACKAGE_PIN_SCOPE_LIMITATION}),
+    )
+}
+
+fn run_apt_command(
+    receipt_dir: &Path,
+    name: &str,
+    program: &str,
+    mut args: Vec<String>,
+    timeout_secs: u64,
+    pins: &std::collections::BTreeMap<String, String>,
+) -> CmdResult {
+    let pref = receipt_dir.join(format!(
+        ".harmonia-apt-preferences-{name}-{}",
+        UPDATE_SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut created = false;
+    if !pins.is_empty() {
+        let bytes = match apt_preferences_bytes(pins) {
+            Ok(bytes) => bytes,
+            Err(error) => return synthetic(&format!("apt preferences generation failed: {error}")),
+        };
+        if let Err(error) = fs::write(&pref, bytes) {
+            return synthetic(&format!("apt preferences write failed: {error}"));
+        }
+        created = true;
+        args.splice(
+            0..0,
+            [
+                "-o".into(),
+                format!("Dir::Etc::preferences={}", pref.display()),
+                "-o".into(),
+                "Dir::Etc::preferencesparts=-".into(),
+            ],
+        );
+    }
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let result = command::capture_with_timeout(program, &refs, timeout_secs);
+    if created {
+        if let Err(error) = fs::remove_file(&pref) {
+            return synthetic(&format!(
+                "apt preferences cleanup failed: {error}; apt result: ok={} code={}",
+                result.ok, result.code
+            ));
+        }
+    }
+    result
+}
+
+fn apt_preferences_bytes(
+    pins: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<u8>, String> {
+    let mut out = String::new();
+    for (package, _expected) in pins {
+        if package.trim().is_empty() {
+            return Err("empty package name".to_string());
+        }
+        let result = command::capture("/usr/bin/dpkg-query", &["-W", "-f=${Version}", package]);
+        if result.ok && !result.stdout.trim().is_empty() {
+            out.push_str(&format!(
+                "Package: {package}\nPin: version {}\nPin-Priority: 1001\n\n",
+                result.stdout.trim()
+            ));
+        }
+        out.push_str(&format!("Package: {package}\nPin: *\nPin-Priority: -1\n\n"));
+    }
+    Ok(out.into_bytes())
+}
+
 fn package_update_tool(
     r: &Path,
     n: &str,
@@ -784,14 +982,16 @@ fn package_update_tool(
     apply: bool,
     t: u64,
     b: PackageBackend,
+    pins: &std::collections::BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
-    let pre = observe_update(r, a, t, b);
+    let pre = observe_update(r, a, t, b, pins);
+    write_pin_witness(r, n, pins, b)?;
     let different = !pre.probe_ok || pre.pending_count > 0;
     let release_info_change_accepted = match b {
         PackageBackend::Apt => apt_release_info_change_accepted(&pre.refresh_command),
         PackageBackend::Pacman => false,
     };
-    let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":if !pre.probe_ok {"probe-failed"} else if pre.pending_count==0 {"empty"} else {"pending"},"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":false,"changed":false,"skipped":false});
+    let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":if !pre.probe_ok {"probe-failed"} else if pre.pending_count==0 {"empty"} else {"pending"},"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":false,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
     if let PackageBackend::Apt = b {
         out["release_info_change_accepted"] = serde_json::json!(release_info_change_accepted);
     }
@@ -841,21 +1041,31 @@ fn package_update_tool(
         let (refresh, act) = match b {
             PackageBackend::Pacman => (
                 None,
-                command::capture_with_timeout(&pacman_program(), &["-Syu", "--noconfirm"], t),
+                capture_owned_with_timeout(
+                    &pacman_program(),
+                    pin_args(["-Syu", "--noconfirm"].as_slice(), pins, true),
+                    t,
+                ),
             ),
             PackageBackend::Apt => {
-                let u = command::capture_with_timeout(
+                let u = run_apt_command(
+                    r,
+                    n,
                     &apt_program(),
-                    &["update", "--allow-releaseinfo-change"],
+                    vec!["update".into(), "--allow-releaseinfo-change".into()],
                     t,
+                    pins,
                 );
                 if u.ok {
                     (
                         Some(u),
-                        command::capture_with_timeout(
+                        run_apt_command(
+                            r,
+                            n,
                             &apt_program(),
-                            &["full-upgrade", "--yes"],
+                            vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()],
                             t,
+                            pins,
                         ),
                     )
                 } else {
@@ -874,7 +1084,7 @@ fn package_update_tool(
         if upgraded.is_empty() && act.ok {
             upgraded = fallback_upgraded(b, &pre.pending, t);
         }
-        let post = observe_update(r, a, t, b);
+        let post = observe_update(r, a, t, b, pins);
         let changed = act.ok && !upgraded.is_empty();
         let converged = act.ok && post.probe_ok && post.pending_count == 0;
         let m = if converged {
@@ -886,8 +1096,9 @@ fn package_update_tool(
         };
         out["act_refresh_command"] = serde_json::to_value(&refresh).map_err(|e| e.to_string())?;
         if let PackageBackend::Apt = b {
-            out["act_release_info_change_accepted"] =
-                serde_json::json!(refresh.as_ref().is_some_and(apt_release_info_change_accepted));
+            out["act_release_info_change_accepted"] = serde_json::json!(refresh
+                .as_ref()
+                .is_some_and(apt_release_info_change_accepted));
         }
         out["act"] = serde_json::json!({"ok":act.ok,"changed":changed,"skipped":false,"message":format!("package {a}"),"command":act,"act_refresh_command":refresh});
         out["movement"] = out["act"].clone();
@@ -1234,6 +1445,13 @@ pub(crate) fn package_tool_with_policy(
             serde_json::to_value(&final_observation).map_err(|e| e.to_string())?,
         );
         fields.insert("converged".into(), serde_json::json!(true));
+        let witness_path = receipt_dir.join(format!("{name}.pin-witness.json"));
+        if let Ok(bytes) = fs::read(witness_path) {
+            if let Ok(witness) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                fields.insert("exclusion_set".into(), witness["exclusion_set"].clone());
+                fields.insert("pin_witness".into(), witness);
+            }
+        }
     }
     write_json(
         &receipt_dir.join(format!("{name}.comparison.json")),
@@ -1249,6 +1467,7 @@ pub(crate) fn keyring_repair_tool(
     package_name: &str,
     apply: bool,
     timeout_secs: u64,
+    pins: &std::collections::BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     let pacman = pacman_program();
     let pacman_key = pacman_key_program();
@@ -1293,7 +1512,7 @@ pub(crate) fn keyring_repair_tool(
             }
         },
         |_authorization, _| {
-            keyring_repair_action(receipt_dir, name, package_name, apply, timeout_secs)
+            keyring_repair_action(receipt_dir, name, package_name, apply, timeout_secs, pins)
         },
         |before, movement, after| {
             let mut _receipt = package_receipt_fields(
@@ -1352,6 +1571,7 @@ fn keyring_repair_action(
     package_name: &str,
     apply: bool,
     timeout_secs: u64,
+    pins: &std::collections::BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     let pacman = pacman_program();
     let pacman_key = pacman_key_program();
@@ -1400,10 +1620,11 @@ fn keyring_repair_action(
         ));
         commands.push((
             "archlinux-keyring-refresh",
-            crate::atoms::r#do::install_package::pacman_mutate_packages_with_options(
+            crate::atoms::r#do::install_package::pacman_mutate_packages_with_ignores(
                 receipt_dir,
                 false,
                 &[package_name.to_string()],
+                &pins.keys().cloned().collect::<Vec<_>>(),
                 None,
                 &[],
                 timeout_secs,
@@ -1498,6 +1719,8 @@ fn write_package_receipt_with_backend(
             "act_refresh_command",
             "release_info_change_accepted",
             "act_release_info_change_accepted",
+            "exclusion_set",
+            "pin_witness",
         ] {
             if let Some(value) = comparison.get(field) {
                 receipt[field] = value.clone();
@@ -1562,7 +1785,7 @@ pub(crate) fn slice4_bench(
     let log = root.join("pacman.log");
     let receipts = root.join("receipts");
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
-    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) exit 0;; -Qu) test -f {}.state || echo pending-update; exit 0;; -Syu) echo Upgrading slice4; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
+    std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\n'; exit 0;; -Qu) test -f {}.state || echo 'pendingpkg 1 -> 2'; exit 0;; -Syu) echo Upgrading slice4; touch {}.state; exit 0;; esac\nexit 0\n", log.display(), log.display(), log.display())).map_err(|e| e.to_string())?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| e.to_string())?;
@@ -1581,14 +1804,323 @@ pub(crate) fn slice4_bench(
         invocation,
     );
     match old {
-        Some(v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
         None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
     };
     let out = result?;
+    let mut validation_cases = Vec::new();
+    for (label, name, version, expected_ok) in [
+        ("empty-name", "", "1", false),
+        ("unsafe-name", "bad name", "1", false),
+        ("empty-version", "safe-name", "", false),
+        ("shell-metachar-version", "safe-name", "1; rm", false),
+        ("valid-pin", "safe-name", "1.2.3-1", true),
+    ] {
+        let mut pins = std::collections::BTreeMap::new();
+        pins.insert(name.into(), version.into());
+        let actual_ok = crate::ladder::validate_package_pins(&pins).is_ok();
+        validation_cases
+            .push(serde_json::json!({"case": label, "ok": actual_ok, "expected_ok": expected_ok}));
+    }
+    let fixture_root = root.join("pin-profile");
+    let pins_dir = fixture_root.join("modules/pins");
+    let other_dir = fixture_root.join("modules/other");
+    let refusal_dir = fixture_root.join("modules/refusal");
+    std::fs::create_dir_all(&pins_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&other_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&refusal_dir).map_err(|e| e.to_string())?;
+    let pin_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "pins", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
+    let other_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "other", "version": "1", "constants": {}, "ladder": []});
+    let refusal_manifest = serde_json::json!({"schema": crate::ladder::SCHEMA, "id": "refusal", "version": "1", "constants": {}, "package_pins": {"heldpkg": "1.2.3"}, "ladder": []});
+    for (dir, manifest) in [
+        (pins_dir, pin_manifest),
+        (other_dir, other_manifest),
+        (refusal_dir, refusal_manifest),
+    ] {
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let profile = crate::Profile {
+        id: "pin-fixture".into(),
+        identity: "pin-fixture".into(),
+        package_authority: Some(crate::PackageAuthority {
+            os_family: "arch".into(),
+            package_manager: "pacman".into(),
+        }),
+        modules: vec!["pins".into(), "other".into()],
+        hotfixes: Vec::new(),
+        syzygy_declaration: None,
+    };
+    let projection = crate::bands::stage_profile::projection::load_profile_projection(
+        &profile,
+        &fixture_root.join("modules"),
+        &std::collections::BTreeSet::new(),
+    )?;
+    let expected_pins =
+        std::collections::BTreeMap::from([("heldpkg".to_string(), "1.2.3".to_string())]);
+    let projected_pins = match projection.modules.get("pins").map(|module| &module.loaded) {
+        Some(crate::LoadedModule::Ladder(manifest)) => manifest.package_pins.clone(),
+        _ => return Err("pins-fixture-not-projected-ladder".into()),
+    };
+    let ordinary_projected_pins = match projection.modules.get("other").map(|module| &module.loaded)
+    {
+        Some(crate::LoadedModule::Ladder(manifest)) => manifest.package_pins.clone(),
+        _ => return Err("ordinary-fixture-not-projected-ladder".into()),
+    };
+    let projection_propagation =
+        projected_pins == expected_pins && ordinary_projected_pins == expected_pins;
+    let refusal_result = crate::bands::stage_profile::groups::load_profile_module(
+        &fixture_root.join("modules"),
+        "refusal",
+    );
+    let non_pins_refusal = match refusal_result {
+        Err(error) => error == "pin-declared-outside-pins-module",
+        Ok(_) => false,
+    };
+    std::env::set_var("HARMONIA_PACMAN_PATH", &fake);
+    let fixture_result = package_tool_with_policy_for_backend_and_pins(
+        &receipts,
+        "fixture",
+        "upgrade",
+        &[],
+        true,
+        None,
+        &[],
+        2,
+        PackageBackend::Pacman,
+        invocation,
+        &ordinary_projected_pins,
+    );
+    match old {
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
+    let fixture_out = fixture_result?;
+    let fixture_receipt: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("fixture.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let fixture_witness: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("fixture.pin-witness.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let transaction_exclusion = fixture_out.ok
+        && fixture_receipt["exclusion_set"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == "heldpkg"));
+    let witness = fixture_witness["witness"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item["name"] == "heldpkg" && item["state"] == "held/green")
+    });
     let text = std::fs::read_to_string(&log).map_err(|e| e.to_string())?;
     let argv = text.lines().map(str::to_string).collect::<Vec<_>>();
     let exact = argv.iter().any(|line| line == "-Syu --noconfirm");
     let typed_receipt = receipts.join("bench.json").is_file();
+    let mut proof_pins = std::collections::BTreeMap::new();
+    proof_pins.insert("heldpkg".to_string(), "1.2.3".to_string());
+    let exact_root = root.join("exact-pin-proof");
+    std::fs::create_dir_all(&exact_root).map_err(|e| e.to_string())?;
+    let exact_action = exact_root.join("actions");
+    let exact_fake = exact_root.join("pacman");
+    std::fs::write(
+        &exact_fake,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\\n';; -Qu) exit 0;; -Syu) touch '{}';; esac\n",
+            exact_action.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(
+        &exact_fake,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .map_err(|e| e.to_string())?;
+    std::env::set_var("HARMONIA_PACMAN_PATH", &exact_fake);
+    let exact_result = package_tool_with_policy_for_backend_and_pins(
+        &exact_root,
+        "exact",
+        "upgrade",
+        &[],
+        false,
+        None,
+        &[],
+        2,
+        PackageBackend::Pacman,
+        invocation,
+        &proof_pins,
+    )?;
+    let exact_witness: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(exact_root.join("exact.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let exact_pin_no_actuation = exact_result.ok
+        && exact_witness["witness"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["name"] == "heldpkg" && item["state"] == "held/green"
+            })
+        })
+        && exact_witness["exclusion_set"] == serde_json::json!(["heldpkg"])
+        && !exact_action.exists();
+    match old {
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
+    let apt_root = root.join("apt-proof");
+    std::fs::create_dir_all(&apt_root).map_err(|e| e.to_string())?;
+    let apt_log = apt_root.join("argv");
+    let apt_fake = apt_root.join("apt-get");
+    std::fs::write(
+        &apt_fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nexit 0\n",
+            apt_log.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&apt_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let apt_result = run_apt_command(
+        &apt_root,
+        "apt",
+        &apt_fake.to_string_lossy(),
+        vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_argv = std::fs::read_to_string(&apt_log).unwrap_or_default();
+    let apt_preferences_argv = apt_argv.contains("Dir::Etc::preferences=")
+        && apt_argv.contains("Dir::Etc::preferencesparts=-");
+    let apt_no_remove = apt_argv.contains("--no-remove");
+    let apt_guard_removed = !std::fs::read_dir(&apt_root)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".harmonia-apt-preferences")
+            })
+        })
+        .unwrap_or(false);
+    let apt_success_proof =
+        apt_result.ok && apt_preferences_argv && apt_no_remove && apt_guard_removed;
+
+    let write_root = root.join("apt-write-failure");
+    std::fs::write(&write_root, b"file").map_err(|e| e.to_string())?;
+    let invoked = root.join("apt-invoked");
+    let write_fake = root.join("apt-write-failure-bin");
+    std::fs::write(
+        &write_fake,
+        format!("#!/bin/sh\ntouch '{}'\n", invoked.display()),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&write_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let write_result = run_apt_command(
+        &write_root,
+        "apt",
+        &write_fake.to_string_lossy(),
+        vec!["full-upgrade".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_guard_write_failure_fail_closed = !write_result.ok
+        && write_result.stderr.contains("apt preferences write failed")
+        && !invoked.exists();
+
+    let exec_root = root.join("apt-exec-failure");
+    std::fs::create_dir_all(&exec_root).map_err(|e| e.to_string())?;
+    let exec_fake = exec_root.join("apt-get");
+    std::fs::write(&exec_fake, "#!/bin/sh\nexit 17\n").map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&exec_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let exec_result = run_apt_command(
+        &exec_root,
+        "apt",
+        &exec_fake.to_string_lossy(),
+        vec!["full-upgrade".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_failed_execution_cleans_guard = !exec_result.ok
+        && !std::fs::read_dir(&exec_root)
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .contains(".harmonia-apt-preferences")
+                })
+            })
+            .unwrap_or(false);
+
+    let cleanup_root = root.join("apt-cleanup-failure");
+    std::fs::create_dir_all(&cleanup_root).map_err(|e| e.to_string())?;
+    let cleanup_fake = cleanup_root.join("apt-get");
+    std::fs::write(
+        &cleanup_fake,
+        "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in Dir::Etc::preferences=*) rm -f \"${arg#*=}\";; esac; done\nexit 0\n",
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&cleanup_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let cleanup_result = run_apt_command(
+        &cleanup_root,
+        "apt",
+        &cleanup_fake.to_string_lossy(),
+        vec!["full-upgrade".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_cleanup_failure_non_green =
+        !cleanup_result.ok && cleanup_result.stderr.contains("apt preferences cleanup failed");
+
+    let divergent_root = root.join("divergent-proof");
+    std::fs::create_dir_all(&divergent_root).map_err(|e| e.to_string())?;
+    let divergent_fake = divergent_root.join("pacman");
+    let acted = divergent_root.join("acted");
+    std::fs::write(
+        &divergent_fake,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in -Q) printf 'heldpkg 9.9.9\n';; -Syu) touch '{}';; esac\n",
+            acted.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&divergent_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    std::env::set_var("HARMONIA_PACMAN_PATH", &divergent_fake);
+    let divergent = package_tool_with_policy_for_backend_and_pins(
+        &divergent_root,
+        "divergent",
+        "upgrade",
+        &[],
+        true,
+        None,
+        &[],
+        2,
+        PackageBackend::Pacman,
+        invocation,
+        &proof_pins,
+    )?;
+    let divergent_witness: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(divergent_root.join("divergent.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let divergent_pin_no_remediation = divergent.ok
+        && divergent_witness["witness"].as_array().is_some_and(|items| {
+            items.iter().any(|item| item["state"] == "divergent")
+        })
+        && !acted.exists();
+    match old {
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
     Ok(serde_json::json!({
         "production_ok": out.ok,
         "typed_receipt": typed_receipt,
@@ -1597,6 +2129,31 @@ pub(crate) fn slice4_bench(
         "pacman_argv": argv,
         "skipped": out.skipped,
         "skip_refusal_truthful": out.ok && !out.skipped,
-        "ok": out.ok && exact && !out.skipped && typed_receipt,
+        "pin_validation_cases": validation_cases,
+        "pin_validation_all_cases": validation_cases.iter().all(|case| case["ok"] == case["expected_ok"]),
+        "projection_propagation": projection_propagation,
+        "transaction_exclusion": transaction_exclusion,
+        "witness": witness,
+        "non_pins_refusal": non_pins_refusal,
+        "exact_pin_no_actuation": exact_pin_no_actuation,
+        "apt_preferences_argv": apt_preferences_argv,
+        "apt_no_remove": apt_no_remove,
+        "apt_guard_removed_after_success": apt_guard_removed,
+        "apt_guard_write_failure_fail_closed": apt_guard_write_failure_fail_closed,
+        "apt_failed_execution_cleans_guard": apt_failed_execution_cleans_guard,
+        "apt_cleanup_failure_non_green": apt_cleanup_failure_non_green,
+        "divergent_pin_no_remediation": divergent_pin_no_remediation,
+        "ok": out.ok && exact && !out.skipped && typed_receipt
+            && validation_cases.iter().all(|case| case["ok"] == case["expected_ok"])
+            && projection_propagation
+            && transaction_exclusion
+            && witness
+            && non_pins_refusal
+            && exact_pin_no_actuation
+            && apt_success_proof
+        && apt_guard_write_failure_fail_closed
+        && apt_failed_execution_cleans_guard
+        && apt_cleanup_failure_non_green
+        && divergent_pin_no_remediation,
     }))
 }

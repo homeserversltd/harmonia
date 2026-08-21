@@ -1,9 +1,9 @@
 //! Pinned AUR install atom. Installation is gated by a successful pinned-build proof.
-use crate::atoms::r#do::InvocationKey;
 use crate::atoms::aur::{
     first_blocker, install_built_package, installed_version_command, installed_version_from_result,
 };
 use crate::atoms::comparison::ActionAuthorization;
+use crate::atoms::r#do::InvocationKey;
 use crate::write_json;
 use crate::OperationOutcome;
 use serde_json::Value;
@@ -17,6 +17,8 @@ pub(crate) struct Plan {
     pub package: String,
     pub expected_version: String,
     pub timeout_secs: u64,
+    pub ignored: Vec<String>,
+    pub target_pinned: bool,
 }
 
 pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
@@ -103,6 +105,21 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
         });
     }
     receipt["artifact_sha256"] = Value::String(artifact_sha256);
+    if p.target_pinned {
+        receipt["ok"] = Value::Bool(true);
+        receipt["first_blocker"] = Value::String("profile-pinned-target-witness-only".into());
+        write_json(
+            &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
+            &receipt,
+        )?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "aur install-pinned target witnessed".into(),
+            command: None,
+        });
+    }
     if !apply {
         receipt["ok"] = Value::Bool(true);
         receipt["first_blocker"] = Value::String("planned-only".into());
@@ -118,7 +135,11 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
             command: None,
         });
     }
-    let install = install_built_package(package_path, p.timeout_secs);
+    let install = crate::atoms::aur::install_built_package_with_ignores(
+        package_path,
+        p.timeout_secs,
+        &p.ignored,
+    );
     let verify = installed_version_command(&p.package);
     let version = installed_version_from_result(&verify);
     let ok = install.ok && version.as_deref() == Some(p.expected_version.as_str());

@@ -8,7 +8,7 @@ use crate::receipts::{
 use crate::Profile;
 use serde::Serialize;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -92,6 +92,48 @@ pub(crate) struct RunState {
     pub defer_terminal: bool,
 }
 
+pub(crate) fn collect_package_pin_witnesses(receipt_dir: &Path) -> (Vec<serde_json::Value>, BTreeSet<String>) {
+    let mut paths = Vec::new();
+    let mut pending = vec![receipt_dir.join("modules")];
+    while let Some(path) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .is_some_and(|v| v.ends_with(".pin-witness.json"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    let mut witnesses = Vec::new();
+    let mut exclusions = BTreeSet::new();
+    for path in paths {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if let Some(items) = value.get("exclusion_set").and_then(|v| v.as_array()) {
+            for item in items {
+                if let Some(name) = item.as_str() {
+                    exclusions.insert(name.to_string());
+                }
+            }
+        }
+        witnesses.push(value);
+    }
+    (witnesses, exclusions)
+}
+
 pub(crate) fn settle(
     state: RunState,
     profile: &Profile,
@@ -123,9 +165,11 @@ pub(crate) fn settle(
             )?;
         }
     }
+    let (package_pin_witnesses, package_pin_exclusion_set) =
+        collect_package_pin_witnesses(receipt_dir);
     write_json(
         &receipt_dir.join("band-walk.receipt.json"),
-        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>() }),
+        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>(),"package_pin_exclusion_set":package_pin_exclusion_set,"package_pin_witnesses":package_pin_witnesses,"pin_scope_limitation":crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION}),
     )?;
     let settlement = state
         .settlement

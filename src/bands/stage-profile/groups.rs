@@ -132,7 +132,14 @@ pub(crate) fn load_profile_module(
     let module_dir = module_root.join(module_id);
     let manifest_path = module_dir.join("manifest.json");
     if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
-        return load_ladder_manifest(&manifest_path).map(LoadedModule::Ladder);
+        return load_ladder_manifest(&manifest_path).and_then(|manifest| {
+            crate::ladder::validate_package_pin_module(
+                module_id,
+                &manifest.id,
+                &manifest.package_pins,
+            )?;
+            Ok(LoadedModule::Ladder(manifest))
+        });
     }
     let sidecar_path = module_dir.join("sidecar.json");
     if sidecar_path.exists() {

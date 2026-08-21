@@ -3,6 +3,7 @@ use super::comparison::{self, DiffDecision};
 use crate::{write_json, CmdResult, OperationOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::CString;
 use std::fs;
@@ -269,6 +270,7 @@ pub(crate) fn install(
     timeout_secs: u64,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    pins: &BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     let timeout_secs = bounded_timeout(timeout_secs);
     let build_dir = Path::new(DEFAULT_BUILD_ROOT).join(package);
@@ -284,6 +286,7 @@ pub(crate) fn install(
         timeout_secs,
         apply,
         invocation,
+        pins,
     )?;
     let decision = run.decision();
     let observed = run.observation().clone();
@@ -354,9 +357,20 @@ pub(crate) fn build_pinned(
     install: bool,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    pins: &BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     let lock = read_lock(lock_path, package)?;
     let timeout_secs = bounded_timeout(timeout_secs);
+    if !pins.is_empty() {
+        package_pin_witness(
+            receipt_dir,
+            receipt_name,
+            package,
+            pins,
+            pins.contains_key(package),
+            false,
+        )?;
+    }
     let build_dir = build_root.join(package);
     let builder = if unsafe { libc::geteuid() } == 0 {
         builder_user.unwrap_or("nobody").to_string()
@@ -375,6 +389,7 @@ pub(crate) fn build_pinned(
         install,
         apply,
         invocation,
+        pins,
     )?;
     let decision = run.decision();
     let observed = run.observation().installed_version.clone();
@@ -460,9 +475,44 @@ pub(crate) fn installed_version_from_result(result: &CmdResult) -> Option<String
 }
 
 pub(crate) fn install_built_package(path: &Path, timeout_secs: u64) -> CmdResult {
+    install_built_package_with_ignores(path, timeout_secs, &[])
+}
+
+pub(crate) fn install_built_package_with_ignores(
+    path: &Path,
+    timeout_secs: u64,
+    ignored: &[String],
+) -> CmdResult {
     let pacman = crate::atoms::package::pacman_program();
     let path = path.to_string_lossy().to_string();
-    command::capture_with_timeout(&pacman, &["-U", "--noconfirm", &path], timeout_secs)
+    let mut args: Vec<String> = vec!["-U".into(), "--noconfirm".into()];
+    for package in ignored {
+        args.push("--ignore".into());
+        args.push(package.clone());
+    }
+    args.push(path);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    command::capture_with_timeout(&pacman, &refs, timeout_secs)
+}
+
+pub(crate) fn package_pin_witness(
+    receipt_dir: &Path,
+    receipt_name: &str,
+    target: &str,
+    pins: &BTreeMap<String, String>,
+    target_pinned: bool,
+    mutation: bool,
+) -> Result<(), String> {
+    let exclusion_set: Vec<&String> = pins.keys().filter(|name| name.as_str() != target).collect();
+    write_json(
+        &receipt_dir.join(format!("{receipt_name}.pin-witness.json")),
+        &serde_json::json!({
+            "schema": "harmonia.package_pin_witness.v1", "target": target,
+            "target_pinned": target_pinned, "mutation": mutation,
+            "exclusion_set": exclusion_set, "witness": "aur-local-package-install-guard",
+            "pin_scope_limitation": crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION
+        }),
+    )
 }
 
 pub(crate) fn bounded_timeout(timeout_secs: u64) -> u64 {
@@ -948,11 +998,76 @@ pub(crate) fn slice4_bench(
         false,
         false,
         None,
+        &BTreeMap::new(),
     )?;
     let lock_unchanged = std::fs::read(&lock).map_err(|e| e.to_string())? == before;
     env::remove_var(HARMONIA_AUR_UPSTREAM_STATE_ENV);
     let neutralized = neutralize_pkgver_function_text(pkgbuild)?.1;
+    let mut scope_pins = BTreeMap::new();
+    scope_pins.insert("heldpkg".to_string(), "1.2.3".to_string());
+    crate::atoms::package::write_pin_witness(
+        &receipts,
+        "package-scope",
+        &scope_pins,
+        crate::PackageBackend::Pacman,
+    )?;
+    package_pin_witness(
+        &receipts,
+        "aur-scope",
+        "slice4-bench",
+        &scope_pins,
+        true,
+        false,
+    )?;
+    let package_scope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("package-scope.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let aur_scope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("aur-scope.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let exact_scope_limitation = "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
+    let package_pin_scope_limitation = package_scope["pin_scope_limitation"]
+        == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION;
+    let aur_pin_scope_limitation =
+        aur_scope["pin_scope_limitation"] == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION;
+    let package_pin_scope_exact_literal = package_scope["pin_scope_limitation"]
+        == exact_scope_limitation;
+    let aur_pin_scope_exact_literal = aur_scope["pin_scope_limitation"] == exact_scope_limitation;
+    let package_scope_semantics = package_scope["exclusion_set"]
+        .as_array()
+        .is_some_and(|v| v.iter().any(|x| x == "heldpkg"));
+    let aur_target_and_exclusion_semantics = aur_scope["target"] == "slice4-bench"
+        && aur_scope["exclusion_set"].as_array().is_some_and(|v| {
+            v.iter().any(|x| x == "heldpkg") && !v.iter().any(|x| x == "slice4-bench")
+        });
     Ok(
-        serde_json::json!({"check_route_ok":checked.ok,"unprivileged_plan":plan.ok && !plan.changed,"lock_unchanged":lock_unchanged,"pkgbuild_neutralization_supported":neutralized,"exact_package_selection_supported":true,"ok":checked.ok && plan.ok && !plan.changed && lock_unchanged && neutralized}),
+        serde_json::json!({
+            "check_route_ok": checked.ok,
+            "unprivileged_plan": plan.ok && !plan.changed,
+            "lock_unchanged": lock_unchanged,
+            "pkgbuild_neutralization_supported": neutralized,
+            "package_pin_scope_limitation": package_pin_scope_limitation,
+            "aur_pin_scope_limitation": aur_pin_scope_limitation,
+            "package_pin_scope_exact_literal": package_pin_scope_exact_literal,
+            "aur_pin_scope_exact_literal": aur_pin_scope_exact_literal,
+            "package_scope_semantics": package_scope_semantics,
+            "aur_target_and_exclusion_semantics": aur_target_and_exclusion_semantics,
+            "exact_package_selection_supported": true,
+            "ok": checked.ok
+                && plan.ok
+                && !plan.changed
+                && lock_unchanged
+                && neutralized
+                && package_pin_scope_limitation
+                && aur_pin_scope_limitation
+                && package_pin_scope_exact_literal
+                && aur_pin_scope_exact_literal
+                && package_scope_semantics
+                && aur_target_and_exclusion_semantics,
+        }),
     )
 }

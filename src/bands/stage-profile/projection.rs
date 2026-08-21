@@ -114,6 +114,19 @@ pub(crate) fn load_profile_projection(
             },
         );
     }
+    let profile_pins = modules
+        .get("pins")
+        .and_then(|projected| match &projected.loaded {
+            LoadedModule::Ladder(manifest) => Some(manifest.package_pins.clone()),
+            LoadedModule::Sidecar(_) => None,
+        });
+    if let Some(profile_pins) = profile_pins {
+        for projected in modules.values_mut() {
+            if let LoadedModule::Ladder(manifest) = &mut projected.loaded {
+                manifest.package_pins = profile_pins.clone();
+            }
+        }
+    }
     Ok(ProfileProjection { modules, errors })
 }
 

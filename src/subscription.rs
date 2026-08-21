@@ -178,6 +178,7 @@ pub(crate) fn slice4_bench(
         optional_warning: None,
         group: None,
         constants: BTreeMap::new(),
+        package_pins: BTreeMap::new(),
         caduceus_commands: Vec::new(),
         files_root: Some("files".into()),
         config_deploy: Some("interactable".into()),
