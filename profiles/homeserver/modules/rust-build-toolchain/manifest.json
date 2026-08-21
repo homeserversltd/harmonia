@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "rust-build-toolchain",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "homeserver Rust build toolchain ladder using package install.",
   "optional": false,

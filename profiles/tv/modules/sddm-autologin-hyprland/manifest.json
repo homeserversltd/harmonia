@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "sddm-autologin-hyprland",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.1",
   "description": "TV sddm-autologin-hyprland module. Rust owns SDDM autologin enters owner Arch TV Hyprland session; Gamescope is not the main session; this sidecar carries constants only.",
   "optional": false,

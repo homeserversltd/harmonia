@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "controller-streaming-config",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "HomeConsole operator-ruled controller and streaming configuration for Sunshine, uinput access, and RetroArch DualSense mappings.",
   "optional": false,

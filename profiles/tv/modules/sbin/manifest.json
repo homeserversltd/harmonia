@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "sbin",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.1.0",
   "description": "Synchronize the sbin repository, converge its whole owned recursive shelf, and refresh the staff venv only when dependency bytes change.",
   "optional": false,

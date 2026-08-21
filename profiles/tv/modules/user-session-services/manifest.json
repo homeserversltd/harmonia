@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "user-session-services",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.1",
   "description": "TV user-session-services module. Rust owns Dunst, Waybar, PipeWire, Bluetooth, HDMI audio fallback, and TV user session services are maintained; this sidecar carries constants only.",
   "optional": false,

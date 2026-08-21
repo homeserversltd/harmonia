@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "linker",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "Synchronize the canonical Linker Python source and self-clobber its complete live hardlink-management shelf.",
   "constants": {},

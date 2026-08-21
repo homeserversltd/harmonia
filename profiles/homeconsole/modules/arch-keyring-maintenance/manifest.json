@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "arch-keyring-maintenance",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "homeconsole Arch keyring maintenance ladder using the package tool.",
   "optional": false,

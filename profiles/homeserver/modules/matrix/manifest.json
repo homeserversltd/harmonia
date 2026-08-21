@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "matrix",
-  "category": "Presented",
+  "category": "interactable",
   "version": "1.0.1",
   "description": "Matrix Synapse host server and Element Web chat portal: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback API, LAN/Tailscale web entry points, DNS, Caduceus-delegated portal registration, log rotation, and health proof.",
   "constants": {

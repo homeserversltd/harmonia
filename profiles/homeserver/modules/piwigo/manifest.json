@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "piwigo",
-  "category": "Presented",
+  "category": "interactable",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Piwigo configuration: assert birth-provided PHP-FPM and application material, preserve the birth-filled database configuration, converge product-owned PHP-FPM configuration and unit bytes with backups, validate them, and restart only after this module changed managed material.",
   "constants": {},

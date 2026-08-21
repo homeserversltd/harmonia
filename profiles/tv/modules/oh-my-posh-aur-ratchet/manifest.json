@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "oh-my-posh-aur-ratchet",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.1",
   "description": "TV oh-my-posh AUR ratchet module. Public TV data owns the blessed oh-my-posh-bin pin, checks upstream every cycle, and installs the pinned package only when installed state diverges.",
   "optional": false,

@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "local-ai-runtime",
-  "category": "Owned",
+  "category": "known-good",
   "version": "3.6.1",
   "description": "Local AI runtime ladder: package install, model/state directories, compatibility links, binary readback, service status readback.",
   "constants": {},

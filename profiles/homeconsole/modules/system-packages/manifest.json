@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "system-packages",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "homeconsole system package upgrade ladder using the package tool.",
   "optional": false,

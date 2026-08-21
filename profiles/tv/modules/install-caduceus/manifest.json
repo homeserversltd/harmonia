@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "install-caduceus",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.1.1",
   "description": "TV module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "optional": false,

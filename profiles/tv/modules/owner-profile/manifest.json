@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "owner-profile",
-  "category": "Presented",
+  "category": "interactable",
   "version": "1.0.1",
   "description": "TV owner-profile module. Rust owns owner account, sudo posture, shell, and TV operator groups are maintained; this sidecar carries constants only.",
   "optional": false,

@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "coronatio",
-  "category": "Owned",
+  "category": "known-good",
   "version": "2.1.1",
   "description": "HOMESERVER Coronatio crown currentness: synchronize the declared source, build and install the native binary, restart and prove the crown, then preserve and validate the user-editable household memory and secret-free product factory baseline.",
   "files_root": "files_root",

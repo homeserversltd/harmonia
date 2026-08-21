@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "udev",
-  "category": "Owned",
+  "category": "known-good",
   "version": "1.0.0",
   "description": "Quarry-lifted HOMESERVER udev configuration: assert the birth-provided udev administrator, converge the product-owned static rule with backups, validate it, and reload and trigger udev only after this module changed the managed rule.",
   "files_root": "files_root",
