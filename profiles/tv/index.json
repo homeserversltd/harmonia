@@ -1,5 +1,6 @@
 {
   "schema": "harmonia.profile.v1",
+  "categories_required": true,
   "id": "tv",
   "package_authority": {
     "os_family": "arch",

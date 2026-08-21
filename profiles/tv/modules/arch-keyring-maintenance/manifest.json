@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "arch-keyring-maintenance",
+  "category": "Owned",
   "version": "1.0.0",
   "description": "tv Arch keyring maintenance ladder using the package tool.",
   "optional": false,

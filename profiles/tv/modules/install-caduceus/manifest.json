@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "install-caduceus",
+  "category": "Owned",
   "version": "1.1.1",
   "description": "TV module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "optional": false,
@@ -24,28 +25,39 @@
         "managed_files": [
           {
             "path": "/etc/systemd/system/caduceus.service",
+            "operation": "place",
             "mode": 420,
             "content": "[Unit]\nDescription=Caduceus LAN-open appliance API (TV)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:8787\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
           },
           {
             "path": "/etc/caduceus/identity.json",
+            "operation": "place",
             "mode": 420,
             "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"device\": \"arch-tv\",\n  \"profile\": \"tv\",\n  \"mode\": \"tv\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/tv/index.json\"\n}\n"
           },
           {
             "path": "/etc/caduceus/profile.yaml",
+            "operation": "place",
             "mode": 420,
             "content": "schema: caduceus.profile.v1\nprofile: tv\ncapability:\n  household_verifying_key:\n  default_ttl_seconds: 60\nmode: tv\nharmonia_profile: /etc/harmonia/profiles/tv/index.json\ncommands:\n- help\n- identity show\n- profile show\n- health\n- receipts latest\n- update status\n- update check\n- update now\n- update service status\n- update service toggle\n- staff intent\n- cert status\n- cert issue-leaf\n- cert rotate-ca\n- cert bundle create\nservices:\n  update:\n    timer: harmonia.timer\n    latest_receipt: /var/lib/harmonia/receipts/update-latest/run.json\nharmonia_routes:\n  update_now:\n    bin: /usr/local/bin/harmonia\n    args:\n    - tv-update\n    - /etc/harmonia/profiles/tv/index.json\n    - --apply\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/update-latest\n  update_check:\n    bin: /usr/local/bin/harmonia\n    args:\n    - tv-update\n    - /etc/harmonia/profiles/tv/index.json\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/tv-check-latest\noperator_aliases:\n  update: caduceus update now\n  update-check: caduceus update check\n  update-status: caduceus update status\n  health: caduceus health\n"
           },
           {
             "path": "/etc/caduceus/policies/update.json",
+            "operation": "place",
             "mode": 420,
             "content": "{\n  \"schema\": \"caduceus.policy.v1\",\n  \"profile\": \"tv\",\n  \"allowed_public_actions\": [\n    \"identity show\",\n    \"profile show\",\n    \"health\",\n    \"receipts latest\",\n    \"update status\",\n    \"update check\",\n    \"update now\",\n    \"update service status\",\n    \"update service toggle on\",\n    \"update service toggle off\",\n    \"cert status\",\n    \"cert issue-leaf\",\n    \"cert rotate-ca\",\n    \"cert bundle create\"\n  ],\n  \"private_land_organs_exposed\": false\n}\n"
           },
           {
             "path": "/var/lib/caduceus/state.json",
+            "operation": "place",
             "mode": 420,
-            "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n"
+            "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n",
+            "xattrs": {},
+            "no_follow": true,
+            "collision_policy": "refuse",
+            "rollback_policy": "exact",
+            "uid": 0,
+            "gid": 0
           }
         ]
       }

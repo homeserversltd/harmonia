@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "desktop-config-payload",
+  "category": "Presented",
   "version": "1.0.0",
   "description": "TV desktop configuration payload module. Files live inside this module under files/<intent>/...; Rust verifies and installs Harmonia-owned TV config files; this sidecar carries constants only.",
   "optional": false,
