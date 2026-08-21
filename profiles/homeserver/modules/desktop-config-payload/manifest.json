@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "desktop-config-payload",
+  "category": "Presented",
   "version": "1.0.0",
   "description": "Homeserver shell configuration payload. Harmonia converges the canonical Debian backend-server dotfiles into the owner home without installing software or managing services.",
   "optional": false,

@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "tailscale",
+  "category": "Presented",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Tailscale daemon configuration: assert the birth-provided binary, converge the product-owned daemon defaults with backup, and restart only after this module changed managed material.",
   "files_root": "files_root",

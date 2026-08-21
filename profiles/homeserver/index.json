@@ -6,6 +6,7 @@
     "package_manager": "apt"
   },
   "visibility": "public",
+  "categories_required": true,
   "installs_now": [
     "rust-build-toolchain",
     "keyman",

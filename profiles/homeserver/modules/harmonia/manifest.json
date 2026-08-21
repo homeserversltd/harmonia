@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "harmonia",
+  "category": "Owned",
   "version": "1.0.0",
   "description": "HOMESERVER Harmonia self-maintenance declaration: source acquisition is owner-borne and the engine's native preflight performs change-gated build and installed-binary promotion; the repository installer remains the sole writer and enabler of the program-owned harmonia.timer.",
   "constants": {},

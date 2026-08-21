@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "filebrowser",
+  "category": "Presented",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER File Browser service configuration: assert the birth-provided binary, converge the product-owned unit with backup, preserve the instance database, and restart only after this module changed managed material.",
   "files_root": "files_root",

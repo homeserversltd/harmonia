@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "gogs",
+  "category": "Presented",
   "version": "1.0.1",
   "description": "Generic Gogs legacy git host maintenance competitor: package currentness, gogs.service convergence, and default localhost web health proof.",
   "group": {

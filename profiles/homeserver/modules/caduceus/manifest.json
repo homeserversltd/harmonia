@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
+  "category": "Owned",
   "version": "1.3.4",
   "description": "HOMESERVER module installs and maintains Caduceus. It provisions the agathodaimon Python environment and maintains the sudoers refresh consumer.",
   "constants": {
@@ -54,17 +55,30 @@
         "managed_files": [
           {
             "path": "/etc/caduceus/identity.json",
+            "operation": "place",
             "mode": 420,
+            "uid": 0,
+            "gid": 0,
             "content": "{\n  \"schema\": \"caduceus.identity.v1\",\n  \"public_surface\": true,\n  \"harmonia_profile\": \"/etc/harmonia/profiles/homeserver/index.json\"\n}\n"
           },
           {
             "path": "/etc/systemd/system/caduceus.service",
+            "operation": "place",
             "mode": 420,
+            "uid": 0,
+            "gid": 0,
             "content": "[Unit]\nDescription=Caduceus HOMESERVER appliance API\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nEnvironment=PYTHONPATH=/usr/local/sbin\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
           },
           {
             "path": "/var/lib/caduceus/state.json",
+            "operation": "place",
+            "xattrs": {},
+            "no_follow": true,
+            "collision_policy": "refuse",
+            "rollback_policy": "exact",
             "mode": 420,
+            "uid": 0,
+            "gid": 0,
             "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"profile\": \"homeserver\"\n  },\n  \"caduceus\": {\n    \"household\": {\n      \"tls\": {\n        \"schema\": \"caduceus.household.tls.v1\",\n        \"root\": {},\n        \"leaves\": {},\n        \"bundles\": {},\n        \"constituents\": {},\n        \"trust\": {}\n      }\n    }\n  }\n}\n"
           }
         ],

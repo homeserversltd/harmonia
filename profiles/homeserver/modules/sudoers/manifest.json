@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "sudoers",
+  "category": "Owned",
   "version": "1.0.0",
   "description": "Operator ruling (2026-08-06): ‘sudoers is like sbin where it has to be maintained live... there are a few parts of harmonia that have to be forcibly rolling release clobbers. sbin is one. sudoers is one. both the user don't need to touch to do what they need to do — they are explicitly ours. and sudoers needs to be per appliance.’ This module forcibly converges only its declared estate-owned caduceus-* sudoers.d fragments; it is not report-only.",
   "optional": false,

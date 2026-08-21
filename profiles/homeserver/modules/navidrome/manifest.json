@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "navidrome",
+  "category": "Presented",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER Navidrome configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing configuration seed, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
   "files_root": "files_root",
