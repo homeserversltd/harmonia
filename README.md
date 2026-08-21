@@ -21,7 +21,7 @@ src/tools/       composition tools and re-export seats
 profiles/        selected profile and module declarations
 installer/       installation support
 docs/            architecture and engine notes
-tests/           test guidance
+src/*_bench.rs    production bench routes and receipt guidance
 ```
 
 ## Bench routes
