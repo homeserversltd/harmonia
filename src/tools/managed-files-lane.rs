@@ -84,14 +84,17 @@ pub(crate) fn structural_file_blocker(
         }
     }
     for target in targets {
-        let managed_directory_under_home = step.permutation == "managed-directories"
-            && target.starts_with("/home/");
+        let managed_directory_under_home =
+            step.permutation == "managed-directories" && target.starts_with("/home/");
         match crate::atoms::files::classify_target(&target) {
             crate::atoms::files::TargetClass::Config
                 if !managed_directory_under_home
                     && !matches!(
                         step.permutation.as_str(),
-                        "managed-files" | "converge" | "validated-sudoers-converge" | "validated-symlink"
+                        "managed-files"
+                            | "converge"
+                            | "validated-sudoers-converge"
+                            | "validated-symlink"
                     ) =>
             {
                 return Some(format!(
@@ -169,26 +172,120 @@ pub(crate) fn managed_files_step(
     } else {
         Vec::new()
     };
-    let config_write = files.iter().any(|file| {
-        matches!(
-            crate::atoms::files::classify_target(Path::new(&file.path)),
-            crate::atoms::files::TargetClass::Config
-        )
-    });
-    atoms::files::converge_managed_files(
-        &atoms::files::ManagedFilesRequest {
-            module_id: "ladder",
-            files: &files,
-            owner: step.args.get("owner").and_then(|value| value.as_str()),
-            group: step.args.get("group").and_then(|value| value.as_str()),
-            receipt_name: &step.step_id,
-            schema: "harmonia.ladder.files.v1",
-            first_missing_signal: "managed-files-drift",
-        },
-        module_dir,
-        apply && !config_write,
-        invocation,
-    )
+    let mut hold = Vec::new();
+    let mut proposals = Vec::new();
+    let mut replacements = Vec::new();
+    for file in files {
+        match &file.on_drift {
+            crate::OnDrift::Hold => hold.push(file),
+            crate::OnDrift::Propose => proposals.push(file),
+            crate::OnDrift::Replace { .. } => replacements.push(file),
+        }
+    }
+    let mut result = crate::OperationOutcome {
+        ok: true,
+        changed: false,
+        skipped: !apply,
+        message: "managed-files".into(),
+        command: None,
+    };
+    let attest_log = module_dir.join("managed-files.attest.jsonl");
+    for file in hold {
+        let path = Path::new(&file.path);
+        crate::atoms::ask::backfill_file::validate_target(path)?;
+        let actual = fs::read(path)
+            .ok()
+            .map(|bytes| crate::atoms::file_sha256(&bytes));
+        let expected = crate::atoms::file_sha256(file.content.as_bytes());
+        atoms::attest::attest(
+            &attest_log,
+            &crate::atoms::Receipt {
+                atom: "managed-files".into(),
+                ok: true,
+                drift: crate::atoms::Drift::File {
+                    expected_sha256: expected,
+                    actual_sha256: actual,
+                },
+                message: format!(
+                    "on_drift=Hold path={} target_exists={} apply=false",
+                    path.display(),
+                    path.exists()
+                ),
+            },
+            &[],
+        )?;
+    }
+    for file in proposals {
+        let target = PathBuf::from(&file.path);
+        let relative = target
+            .strip_prefix("/")
+            .map_err(|_| "managed-file-propose-target-invalid")?;
+        let source_root = module_dir.join("proposals").join("sources");
+        let source = source_root.join(relative);
+        if let Some(parent) = source.parent() {
+            atoms::attest::prepare_receipt_parent(parent)?;
+        }
+        atoms::attest::write_bytes_atomic(&source, file.content.as_bytes())?;
+        let request = crate::atoms::files::FileConvergenceRequest {
+            source_root,
+            target_root: PathBuf::from("/"),
+            files: vec![crate::atoms::files::FileSpec {
+                mode: file.mode,
+                relative_path: relative.to_path_buf(),
+            }],
+            backup_existing: false,
+            receipt_name: format!("{}-propose", step.step_id),
+            owner: step
+                .args
+                .get("owner")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            group: step
+                .args
+                .get("group")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let observed = crate::atoms::files::converge_files_authorized_with_config_policy(
+            &request, module_dir, None, invocation, true,
+        )?;
+        crate::bands::propose_edits::refresh_interactables_for_convergence(
+            manifest, &request, &observed,
+        )?;
+    }
+    for file in replacements {
+        let expected = match &file.on_drift {
+            crate::OnDrift::Replace { only_if_exact } => only_if_exact,
+            _ => unreachable!(),
+        };
+        let path = Path::new(&file.path);
+        crate::atoms::ask::backfill_file::validate_target(path)?;
+        let predicate = serde_json::json!({"family":"FileMatchesExactly","args":{"target_path":file.path,"sha256":expected}});
+        let payload = serde_json::json!({"target_path":file.path});
+        let (exact_match, predicate_receipt) =
+            crate::backfill_file::observe_predicate(Some(&predicate), Some(&payload))?;
+        let mut changed = false;
+        if apply && exact_match {
+            let ownership = crate::backfill_file::resolve_ownership(
+                step.args.get("owner").and_then(|value| value.as_str()),
+            )?;
+            let out = crate::backfill_file::execute(crate::backfill_file::BackfillFileRequest {
+                path,
+                declared_bytes: file.content.as_bytes(),
+                mode: file.mode,
+                ownership,
+                backup: crate::backfill_file::BackupPolicy::None,
+                invocation,
+            })?;
+            changed = out.movement.changed();
+        }
+        atoms::attest::attest(&attest_log, &crate::atoms::Receipt {
+            atom: "managed-files".into(), ok: true, drift: crate::atoms::Drift::Current,
+            message: serde_json::json!({"on_drift":"Replace","path":file.path,"predicate":predicate_receipt,"exact_match":exact_match,"apply":apply,"changed":changed}).to_string(),
+        }, &[])?;
+        result.changed |= changed;
+    }
+    Ok(result)
 }
 pub(crate) fn is_configuration_path(path: &Path) -> bool {
     let path = path.to_string_lossy();
@@ -258,6 +355,7 @@ fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileMa
                     path: format!("/{}", rel.to_string_lossy()),
                     content,
                     mode,
+                    on_drift: crate::OnDrift::default(),
                 });
             }
         }

@@ -204,6 +204,20 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             if path.is_empty() {
                 return Err(format!("managed-file-declaration-{ordinal}-path-invalid"));
             }
+            let on_drift = object
+                .get("on_drift")
+                .cloned()
+                .unwrap_or_else(|| Value::String("Hold".into()));
+            crate::ladder::validate_on_drift(
+                &step.step_id,
+                &format!("managed-{ordinal}"),
+                &on_drift,
+            )
+            .map_err(|error| error.first_missing_signal())?;
+            if operation == "place" {
+                configuration.push(declaration);
+                continue;
+            }
             if legacy_implied_place {
                 if matches!(
                     crate::tools::files::classify_target(Path::new(path)),
@@ -364,6 +378,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             proposal
                 .args
                 .insert("files".into(), Value::Array(configuration));
+            proposal.name = "managed-place-0".into();
             proposal.tool = "files".into();
             proposal.permutation = Some("managed-files".into());
             // Keep the configuration-only proposal before the service epilogue;
@@ -374,26 +389,40 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 .position(|child| child.name == "service-daemon-reload")
                 .unwrap_or(step.steps.len());
             step.steps.insert(service_index, proposal);
+            for child in &mut step.steps {
+                if matches!(
+                    child.name.as_str(),
+                    "service-daemon-reload"
+                        | "service-enable"
+                        | "service-restart"
+                        | "service-active"
+                ) {
+                    child.args.insert(
+                        "managed_files_changed".into(),
+                        serde_json::json!({"from":"managed-files.changed"}),
+                    );
+                }
+            }
         }
-        // A stamp is valid only when the final lowered managed-files producer
-        // is placed in RestartServices, the band that executes its consumers.
+        // A stamp is valid when the exact managed-files producer is declared in
+        // BackfillFiles; its changed state is carried to RestartServices consumers.
         let same_band_managed_file_producer = step.steps.iter().any(|child| {
-            let managed_identity =
-                (child.name == "managed-files"
+            let managed_identity = ((child.name == "managed-files"
+                || child.name.starts_with("managed-place-"))
+                && child.tool == "files"
+                && child.permutation.as_deref() == Some("managed-files"))
+                || (child.name.starts_with("managed-place-")
+                    && child.tool == "place-file"
+                    && child.permutation.as_deref() == Some("place"))
+                || (child.name.starts_with("managed-backfill-")
+                    && child.tool == "backfill-file"
+                    && child.permutation.as_deref() == Some("backfill"))
+                || (child.name.starts_with("managed-remove-")
+                    && child.tool == "remove-file"
+                    && child.permutation.as_deref() == Some("remove-file"))
+                || (child.name.starts_with("managed-symlink-")
                     && child.tool == "files"
-                    && child.permutation.as_deref() == Some("managed-files"))
-                    || (child.name.starts_with("managed-place-")
-                        && child.tool == "place-file"
-                        && child.permutation.as_deref() == Some("place"))
-                    || (child.name.starts_with("managed-backfill-")
-                        && child.tool == "backfill-file"
-                        && child.permutation.as_deref() == Some("backfill"))
-                    || (child.name.starts_with("managed-remove-")
-                        && child.tool == "remove-file"
-                        && child.permutation.as_deref() == Some("remove-file"))
-                    || (child.name.starts_with("managed-symlink-")
-                        && child.tool == "files"
-                        && child.permutation.as_deref() == Some("symlink-converge"));
+                    && child.permutation.as_deref() == Some("symlink-converge"));
             let placement = child
                 .permutation
                 .as_deref()
@@ -402,7 +431,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 })
                 .and_then(|permutation| permutation.placement)
                 .map(crate::tools::Placement::band);
-            managed_identity && placement == Some(crate::bands::Band::RestartServices)
+            managed_identity && placement == Some(crate::bands::Band::BackfillFiles)
         });
         for child in &mut step.steps {
             if matches!(
@@ -599,19 +628,17 @@ pub(crate) fn execute_routine_child(
                 &step,
                 manifest,
                 receipt_dir,
-                false,
+                apply,
                 invocation,
             ) {
                 Ok(out) => out,
-                Err(error) if error == "files-act-did-not-converge" => {
-                    crate::OperationOutcome {
-                        ok: true,
-                        changed: true,
-                        skipped: true,
-                        message: "files-proposal-observed".to_string(),
-                        command: None,
-                    }
-                }
+                Err(error) if error == "files-act-did-not-converge" => crate::OperationOutcome {
+                    ok: true,
+                    changed: true,
+                    skipped: true,
+                    message: "files-proposal-observed".to_string(),
+                    command: None,
+                },
                 Err(error) => return Err(error),
             };
             Ok((out, std::collections::BTreeMap::new()))
