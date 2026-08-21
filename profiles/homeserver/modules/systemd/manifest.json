@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "systemd",
+  "category": "Owned",
   "version": "1.0.1",
   "description": "Quarry-lifted residual HOMESERVER systemd wiring: assert birth-provided systemd and vault prerequisites, converge product-owned units with backups, validate them, and restart only after this module changed managed material.",
   "files_root": "files_root",

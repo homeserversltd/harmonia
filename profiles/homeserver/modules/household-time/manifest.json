@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "household-time",
+  "category": "Owned",
   "version": "2.1.1",
   "optional": false,
   "description": "Household time resolver and LAN NTP gateway: retain the household timezone fact, then serve synchronized NTP through chrony.",

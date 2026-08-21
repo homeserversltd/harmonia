@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "postgres",
+  "category": "Presented",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER PostgreSQL configuration: assert the birth-provided binary, converge product-owned configuration and unit bytes with backups, preserve the one-unit design, validate the installed configuration, and restart only after this module changed managed material.",
   "files_root": "files_root",

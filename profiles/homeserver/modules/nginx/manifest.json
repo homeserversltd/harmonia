@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "nginx",
+  "category": "Presented",
   "version": "1.1.0",
   "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration, and restart only after this module changed managed material.",
   "constants": {
@@ -56,6 +57,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-calibre-web",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-calibre-web",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -69,6 +71,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-filebrowser",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-filebrowser",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -82,6 +85,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-forgejo",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-forgejo",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -95,6 +99,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-jellyfin",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-jellyfin",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -108,6 +113,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-main",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-main",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -121,6 +127,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-mkdocs",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-mkdocs",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -134,6 +141,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-navidrome",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-navidrome",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -147,6 +155,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-piwigo",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-piwigo",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -160,6 +169,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-transmission",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-transmission",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -173,6 +183,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-vaultwarden",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-vaultwarden",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
@@ -186,6 +197,7 @@
       "permutation": "validated-symlink",
       "args": {
         "source": "/etc/nginx/sites-available/homeserver-yarr",
+        "category": "Owned",
         "target": "/etc/nginx/sites-enabled/homeserver-yarr",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
