@@ -170,13 +170,15 @@ pub(crate) fn managed_files_step(
     _apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    managed_files_step_with_authorization(
-        step,
-        manifest,
-        module_dir,
-        None,
-        invocation,
-    )
+    managed_files_step_with_authorization(step, manifest, module_dir, None, invocation)
+}
+
+fn owned_configuration_file(file: &crate::ManagedFileManifest) -> bool {
+    file.category.as_deref() == Some("Owned")
+        && matches!(
+            crate::tools::files::classify_target(Path::new(&file.path)),
+            crate::tools::files::TargetClass::Config
+        )
 }
 
 pub(crate) fn managed_files_step_with_authorization(
@@ -201,7 +203,11 @@ pub(crate) fn managed_files_step_with_authorization(
     let mut owned = Vec::new();
     let mut seed = Vec::new();
     for file in files {
+        // ConfigPlane is proposal-only even when the module law says Owned;
+        // ownership must not bypass the configuration actuator boundary.
+        let owned_configuration = owned_configuration_file(&file);
         match file.category.as_deref() {
+            Some("Owned") if owned_configuration => proposals.push(file),
             Some("Owned") => owned.push(file),
             Some("Seed") => seed.push(file),
             _ => match &file.on_drift {
@@ -1011,4 +1017,122 @@ fn string_array_arg(
 }
 fn integer_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &str, d: u64) -> u64 {
     a.get(n).and_then(serde_json::Value::as_u64).unwrap_or(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ladder::{self, ValidatedStep};
+    use std::fs;
+
+    struct TestEnvironmentGuard {
+        previous_interactables: Option<std::ffi::OsString>,
+        proof_dir: std::path::PathBuf,
+    }
+
+    impl Drop for TestEnvironmentGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous_interactables.take() {
+                std::env::set_var("HARMONIA_INTERACTABLES_PATH", previous);
+            } else {
+                std::env::remove_var("HARMONIA_INTERACTABLES_PATH");
+            }
+            let _ = fs::remove_dir_all(&self.proof_dir);
+        }
+    }
+
+    #[test]
+    fn owned_configuration_managed_file_reaches_proposal_executor() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/homeserver/modules/caduceus/manifest.json");
+        let mut manifest = ladder::load_ladder_manifest(&manifest_path).expect("load caduceus");
+        crate::bands::backfill_files::lower_service_runtime_steps(&mut manifest)
+            .expect("lower service runtime");
+        let routine = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "caduceus-service-runtime")
+            .expect("service runtime routine");
+        let proposal = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "managed-place-0")
+            .expect("configuration proposal child");
+        let files = proposal
+            .args
+            .get("files")
+            .and_then(Value::as_array)
+            .unwrap();
+        let identity = files
+            .iter()
+            .find(|file| {
+                file.get("path").and_then(Value::as_str) == Some("/etc/caduceus/identity.json")
+            })
+            .expect("identity proposal");
+        assert_eq!(
+            identity.get("category").and_then(Value::as_str),
+            Some("Owned")
+        );
+
+        let proof_dir = {
+            let base = std::env::temp_dir();
+            let mut attempt = 0_u32;
+            loop {
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock before unix epoch")
+                    .as_nanos();
+                let candidate = base.join(format!(
+                    "harmonia-managed-files-{}-{nonce}-{attempt}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&candidate) {
+                    Ok(()) => break candidate,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        attempt += 1;
+                    }
+                    Err(error) => panic!("create proof directory: {error}"),
+                }
+            }
+        };
+        let interactables = proof_dir.join("interactables.json");
+        let previous_interactables = std::env::var_os("HARMONIA_INTERACTABLES_PATH");
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &interactables);
+        let _environment_guard = TestEnvironmentGuard {
+            previous_interactables,
+            proof_dir: proof_dir.clone(),
+        };
+        let step = ValidatedStep {
+            step_id: proposal.name.clone(),
+            tool: proposal.tool.clone(),
+            permutation: proposal
+                .permutation
+                .clone()
+                .expect("managed-files permutation"),
+            args: proposal.args.clone(),
+            on_failure: crate::tools::ladder::OnFailure::Stop,
+        };
+        let outcome = execute_validated_step(&step, &manifest, &proof_dir, None, None)
+            .expect("managed-files proposal execution");
+        assert!(outcome.ok);
+        assert!(outcome.skipped);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.message, "managed-files");
+
+        let proposal_source = proof_dir.join("proposals/sources/etc/caduceus/identity.json");
+        assert!(proposal_source.is_file(), "proposal source missing");
+        let proposal_receipt = proof_dir.join("proposals.attest.jsonl");
+        assert!(proposal_receipt.is_file(), "proposal receipt missing");
+        let receipt = fs::read_to_string(proposal_receipt).expect("read proposal receipt");
+        assert!(receipt.contains("proposal-feed-refreshed"));
+
+        let identity_manifest: crate::ManagedFileManifest =
+            serde_json::from_value(identity.clone()).expect("identity managed file");
+        assert!(owned_configuration_file(&identity_manifest));
+        assert!(!owned_configuration_file(&crate::ManagedFileManifest {
+            path: "/var/lib/caduceus/state.json".into(),
+            category: Some("Owned".into()),
+            ..identity_manifest
+        }));
+    }
 }
