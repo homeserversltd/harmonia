@@ -46,6 +46,7 @@ struct MoltReceipt {
     output_dir: String,
     mode: &'static str,
     artifacts: Vec<MoltArtifact>,
+    refreshed_modules: Vec<String>,
     untouched_modules: Vec<String>,
     pruned_modules: Vec<String>,
     pruned_paths: Vec<String>,
@@ -79,6 +80,26 @@ pub(crate) fn molt_at_subscription_path(
     receipt_dir: &Path,
     subscription_path: &Path,
     mode: MoltMode,
+) -> Result<(), String> {
+    molt_at_subscription_path_for_modules(
+        harmonia_root,
+        profile_id,
+        output_dir,
+        receipt_dir,
+        subscription_path,
+        mode,
+        &BTreeSet::new(),
+    )
+}
+
+pub(crate) fn molt_at_subscription_path_for_modules(
+    harmonia_root: &Path,
+    profile_id: &str,
+    output_dir: &Path,
+    receipt_dir: &Path,
+    subscription_path: &Path,
+    mode: MoltMode,
+    forced_modules: &BTreeSet<String>,
 ) -> Result<(), String> {
     let key = crate::invocation_face::mint(&["molt".into(), "--apply".into()])
         .0
@@ -116,8 +137,20 @@ pub(crate) fn molt_at_subscription_path(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let subscription_statuses =
-        diff_subscription_modules(&subscription_path, &subscription_modules)?;
+        diff_subscription_modules(&subscription_path, &subscription_modules)?
+            .into_iter()
+            .map(|mut status| {
+                // Ordinary molt is version-pinned. A same-version capsule is current
+                // for subscription purposes; the installed tree is compared separately
+                // by StageProfile and may trigger a targeted lawful refresh.
+                if status.record_version.as_deref() == Some(status.capsule_version.as_str()) {
+                    status.status = "current".to_string();
+                }
+                status
+            })
+            .collect::<Vec<_>>();
     let mut artifacts = Vec::new();
+    let mut refreshed_modules = Vec::new();
     let mut pruned_paths = Vec::new();
     let mut untouched_modules = Vec::new();
     export_one(
@@ -139,13 +172,20 @@ pub(crate) fn molt_at_subscription_path(
         let manifest = module_dir.join("manifest.json");
         let module_output_dir = output_dir.join("modules").join(module);
         let source_tree_sha256 = crate::atoms::tree_hash::content_tree_sha256(&module_dir)?;
-        let installed_clean = module_output_dir.is_dir()
-            && crate::atoms::tree_hash::content_tree_sha256(&module_output_dir)?
-                == source_tree_sha256;
+        let subscription_current = subscription_statuses
+            .iter()
+            .find(|status| status.id == *module)
+            .is_some_and(|status| status.status == "current");
+        let installed_clean = !forced_modules.contains(module)
+            && module_output_dir.is_dir()
+            && (subscription_current
+                || crate::atoms::tree_hash::content_tree_sha256(&module_output_dir)?
+                    == source_tree_sha256);
         if installed_clean {
             untouched_modules.push(module.clone());
             continue;
         }
+        refreshed_modules.push(module.clone());
         if manifest.exists() && is_ladder_manifest(&manifest) {
             let ladder = load_ladder_manifest(&manifest)?;
             export_one(
@@ -235,6 +275,7 @@ pub(crate) fn molt_at_subscription_path(
         output_dir: output_dir.display().to_string(),
         mode: mode.as_str(),
         artifacts,
+        refreshed_modules,
         untouched_modules,
         pruned_modules,
         pruned_paths,
@@ -260,6 +301,7 @@ pub(crate) fn molt_at_subscription_path(
     println!("profile_id={}", profile.id);
     println!("identity={}", profile.identity);
     println!("artifact_count={}", receipt.artifacts.len());
+    println!("refreshed_modules={}", receipt.refreshed_modules.join(","));
     println!("untouched_modules={}", receipt.untouched_modules.join(","));
     println!("pruned_count={}", receipt.pruned_paths.len());
     println!("pruned_module_count={}", receipt.pruned_modules.len());

@@ -100,7 +100,31 @@ pub(crate) fn materialize(
         value.transaction_census = Some(transaction_census);
     }
     // Compare only modules declared by this profile. Undeclared directories and
-    // staging debris are outside this spine's content contract.
+    // staging debris are outside this spine's content contract. A stale installed
+    // module is a lawful molt concern: refresh through molt once more, then retain
+    // the post-act hash proof and fail closed if it still does not converge.
+    let mut divergent_modules: Vec<String> = Vec::new();
+    for id in &refreshed.modules {
+        let source_hash =
+            crate::atoms::tree_hash::content_tree_sha256(&source_modules_root.join(id))?;
+        let installed_hash =
+            crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
+        if source_hash != installed_hash {
+            divergent_modules.push(id.clone());
+        }
+    }
+    if !divergent_modules.is_empty() {
+        let forced_modules = divergent_modules.iter().cloned().collect();
+        molt_at_subscription_path_for_modules(
+            source_root,
+            profile_id,
+            installed_root,
+            receipt_dir,
+            &subscription_path(),
+            MoltMode::Copy,
+            &forced_modules,
+        )?;
+    }
     let mut source_module_hashes = BTreeMap::new();
     let mut installed_module_hashes = BTreeMap::new();
     for id in &refreshed.modules {
