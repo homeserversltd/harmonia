@@ -965,7 +965,7 @@ pub(crate) fn validate_ladder_args(
     Ok(())
 }
 
-pub(crate) fn aur_bench(
+pub(crate) fn demo(
     root: &Path,
     _invocation: Option<crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
@@ -973,8 +973,8 @@ pub(crate) fn aur_bench(
     let receipts = root.join("receipts");
     std::fs::create_dir_all(&source).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
-    let package = "aur-bench";
-    let pkgbuild = "pkgname=aur-bench\npkgver=1.0.0\npkgrel=1\npkgver() { echo moving; }\n";
+    let package = "demo-demo";
+    let pkgbuild = "pkgname=demo-demo\npkgver=1.0.0\npkgrel=1\npkgver() { echo moving; }\n";
     std::fs::write(source.join("PKGBUILD"), pkgbuild).map_err(|e| e.to_string())?;
     let lock = root.join("lock.json");
     let sha = "1111111111111111111111111111111111111111";
@@ -1012,7 +1012,7 @@ pub(crate) fn aur_bench(
     package_pin_witness(
         &receipts,
         "aur-scope",
-        "aur-bench",
+        "demo-demo",
         &scope_pins,
         true,
         false,
@@ -1038,9 +1038,9 @@ pub(crate) fn aur_bench(
     let package_scope_semantics = package_scope["exclusion_set"]
         .as_array()
         .is_some_and(|v| v.iter().any(|x| x == "heldpkg"));
-    let aur_target_and_exclusion_semantics = aur_scope["target"] == "aur-bench"
+    let aur_target_and_exclusion_semantics = aur_scope["target"] == "demo-demo"
         && aur_scope["exclusion_set"].as_array().is_some_and(|v| {
-            v.iter().any(|x| x == "heldpkg") && !v.iter().any(|x| x == "aur-bench")
+            v.iter().any(|x| x == "heldpkg") && !v.iter().any(|x| x == "demo-demo")
         });
     Ok(
         serde_json::json!({

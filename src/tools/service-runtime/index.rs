@@ -2,7 +2,6 @@ pub(crate) const DEFAULT_BEARER: &str = "owner";
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-
 fn string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> Result<&'a str, String> {
     args.get(name)
         .and_then(Value::as_str)

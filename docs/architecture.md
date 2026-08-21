@@ -12,9 +12,9 @@ The direct-atom exception is intentional and narrow: `renew-self` uses the `repl
 
 The ten bands run in charter order: `renew-self`, `pull-source`, `stage-profile`, `compare`, `install-packages`, `ratchet-binaries`, `restart-services`, `backfill-files`, `propose-edits`, and `report-home`. `restart-services` precedes `backfill-files`.
 
-## Bench routes
+## One demo door
 
-A bench is a real production walk with a scratch root and a receipt. The surface bench routes are `bench-files-transaction`, `bench-make-symlink`, `bench-aur`, `bench-git-artifact`, `bench-systemd-unit`, `bench-package`, `bench-command`, `bench-subscription-interactables`, `bench-ladder-profile`, `bench-renew-self`, `bench-capsule`, and `bench-household-time`. Pre-existing bench routes remain available: `bench-proposal-refresh`, `bench-structural-wall`, `bench-stillness`, `bench-harmonia-foundation`, `bench-update-set`, `bench-clock`, and `bench-renew-schedule`.
+The production demo surface is one command: `harmonia demo [<name>|list]`. The name is an argument, not a route. `demo` and `demo list` enumerate the same complete registry: `files-transaction`, `make-symlink`, `aur`, `git-artifact`, `systemd-unit`, `package`, `command`, `subscription-interactables`, `ladder-profile`, `renew-self`, `capsule`, `household-time`, `stillness`, `proposal-refresh`, `structural-wall`, `foundation`, `update-set`, `clock`, and `renew-schedule`. Every production tool has a live demo with a receipt through this door, and each demo preserves its existing behavior while observing its bounded cleanup.
 
 ## Checkable sources
 

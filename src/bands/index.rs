@@ -262,8 +262,10 @@ pub(crate) fn run_profile_engine_with_projection(
             }
             crate::bands::Band::StageProfile => {
                 if apply && materialize_on_stage {
-                    let engine = crate::bands::renew_self::load_engine_plane_config(&crate::bands::renew_self::engine_config_path())?
-                        .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
+                    let engine = crate::bands::renew_self::load_engine_plane_config(
+                        &crate::bands::renew_self::engine_config_path(),
+                    )?
+                    .ok_or_else(|| "engine-self-possession-unconfigured".to_string())?;
                     let refreshed = crate::bands::stage_profile::materialize(
                         &engine.source_dir,
                         &active_profile.id,
