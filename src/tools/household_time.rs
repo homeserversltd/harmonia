@@ -150,7 +150,7 @@ fn parse_utc(value: &str) -> Option<i64> {
 }
 
 pub(crate) fn execute_validated_step(
-    step: &crate::ladder::ValidatedStep,
+    step: &crate::tools::ladder::ValidatedStep,
     module_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,

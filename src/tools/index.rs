@@ -156,6 +156,7 @@ pub mod household_time;
 #[path = "make-symlink.rs"]
 pub(crate) mod make_symlink;
 pub use crate::atoms::package;
+pub(crate) mod ladder;
 pub(crate) mod routine;
 #[path = "service-runtime/index.rs"]
 pub(crate) mod service_runtime;

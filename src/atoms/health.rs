@@ -205,7 +205,7 @@ fn matches_expected(run: &ProbeRun, expected: Option<&str>) -> bool {
 }
 
 pub(crate) fn execute_validated_step(
-    step: &crate::ladder::ValidatedStep,
+    step: &crate::tools::ladder::ValidatedStep,
     module_dir: &std::path::Path,
     apply: bool,
 ) -> Result<crate::OperationOutcome, String> {

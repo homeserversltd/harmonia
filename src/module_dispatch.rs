@@ -63,7 +63,7 @@ pub(crate) fn execute_profile_module(
     let manifest_path = module_root.join(&module.id).join("manifest.json");
     if crate::atoms::ask::exists(&manifest_path) && is_ladder_manifest(&manifest_path) {
         let manifest = load_ladder_manifest(&manifest_path)?;
-        crate::ladder::validate_package_pin_module(
+        crate::tools::ladder::validate_package_pin_module(
             &module.id,
             &manifest.id,
             &manifest.package_pins,

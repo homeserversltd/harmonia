@@ -1,6 +1,6 @@
 use crate::OperationOutcome;
 use super::Band;
-use crate::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
+use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::tools;
 use crate::ModuleExecution;
 use crate::CmdResult;
@@ -816,7 +816,7 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::ladder::OnFailure::Stop {
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
                 break;
             }
         }
@@ -956,7 +956,7 @@ pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
-    manifest: &crate::ladder::LadderManifest,
+    manifest: &crate::tools::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
@@ -967,12 +967,12 @@ pub(crate) fn execute_routine_child(
     let name = tool.to_string();
     match tool {
         "pull-repo" => {
-            let step = crate::ladder::ValidatedStep {
+            let step = crate::tools::ladder::ValidatedStep {
                 step_id: name.clone(),
                 tool: tool.into(),
                 permutation: permutation.name.into(),
                 args: args.clone(),
-                on_failure: crate::ladder::OnFailure::Stop,
+                on_failure: crate::tools::ladder::OnFailure::Stop,
             };
             let plan = crate::bands::pull_source::routine_source_plan(&step, manifest)?;
             let o = crate::bands::pull_source::execute_source(&plan, apply, invocation);

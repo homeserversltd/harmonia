@@ -116,10 +116,10 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     }
 }
 
-fn declaration_fixture(root: &Path, declarations: Value) -> crate::ladder::LadderManifest {
+fn declaration_fixture(root: &Path, declarations: Value) -> crate::tools::ladder::LadderManifest {
     let mut a = BTreeMap::new();
     a.insert("files".into(), declarations);
-    let managed = crate::ladder::RoutineStep {
+    let managed = crate::tools::ladder::RoutineStep {
         name: "managed-files".into(),
         tool: "files".into(),
         permutation: Some("managed-files".into()),
@@ -128,24 +128,24 @@ fn declaration_fixture(root: &Path, declarations: Value) -> crate::ladder::Ladde
     };
     let mut ra = BTreeMap::new();
     ra.insert("service".into(), Value::String("registry.service".into()));
-    let restart = crate::ladder::RoutineStep {
+    let restart = crate::tools::ladder::RoutineStep {
         name: "service-restart".into(),
         tool: "systemd".into(),
         permutation: Some("restart".into()),
         args: ra,
         extra: BTreeMap::new(),
     };
-    let routine = crate::ladder::LadderStep {
+    let routine = crate::tools::ladder::LadderStep {
         step_id: "declaration-routine".into(),
         tool: "routine".into(),
         permutation: "execute".into(),
         args: BTreeMap::new(),
         steps: vec![restart, managed],
-        on_failure: crate::ladder::OnFailure::Stop,
+        on_failure: crate::tools::ladder::OnFailure::Stop,
         extra: BTreeMap::new(),
     };
-    crate::ladder::LadderManifest {
-        schema: crate::ladder::SCHEMA.into(),
+    crate::tools::ladder::LadderManifest {
+        schema: crate::tools::ladder::SCHEMA.into(),
         id: "registry-declarations".into(),
         version: "1".into(),
         description: "proof".into(),
@@ -221,7 +221,7 @@ fn declaration_lowering_graph_proof(root: &Path) -> Result<bool, String> {
             .iter()
             .zip(want)
             .all(|(c, (t, q))| c.tool == t && c.permutation.as_deref() == Some(q));
-    let projected_routine = crate::ladder::LadderStep {
+    let projected_routine = crate::tools::ladder::LadderStep {
         steps: routine
             .steps
             .iter()
@@ -679,9 +679,9 @@ fn hash(p: &Path) -> String {
     walk(p, &mut h);
     format!("sha256:{:x}", h.finalize())
 }
-fn manifest(root: &Path, interactable: bool) -> crate::ladder::LadderManifest {
-    crate::ladder::LadderManifest {
-        schema: crate::ladder::SCHEMA.into(),
+fn manifest(root: &Path, interactable: bool) -> crate::tools::ladder::LadderManifest {
+    crate::tools::ladder::LadderManifest {
+        schema: crate::tools::ladder::SCHEMA.into(),
         id: "structural-wall-bench".into(),
         version: "1".into(),
         description: "bench".into(),
@@ -786,12 +786,12 @@ fn row(
     } else {
         "converge"
     };
-    let step = crate::ladder::ValidatedStep {
+    let step = crate::tools::ladder::ValidatedStep {
         step_id: format!("bench-{name}"),
         tool: "files".into(),
         permutation: dispatch.into(),
         args: args(dispatch, &target, source),
-        on_failure: crate::ladder::OnFailure::Stop,
+        on_failure: crate::tools::ladder::OnFailure::Stop,
     };
     let old = env::var_os("HARMONIA_INTERACTABLES_PATH");
     if interactable {
@@ -874,38 +874,38 @@ fn routine_row(
     ca.insert("source_root".into(), json!(source.display().to_string()));
     ca.insert("target_root".into(), json!(target.display().to_string()));
     ca.insert("files".into(), json!(["sentinel"]));
-    let child = crate::ladder::RoutineStep {
+    let child = crate::tools::ladder::RoutineStep {
         name: "routine-child".into(),
         tool: "files".into(),
         permutation: Some("converge".into()),
         args: ca,
         extra: BTreeMap::new(),
     };
-    let routine = crate::ladder::LadderStep {
+    let routine = crate::tools::ladder::LadderStep {
         step_id: "bench-routine".into(),
         tool: "routine".into(),
         permutation: "execute".into(),
         args: BTreeMap::new(),
         steps: vec![child],
-        on_failure: crate::ladder::OnFailure::Stop,
+        on_failure: crate::tools::ladder::OnFailure::Stop,
         extra: BTreeMap::new(),
     };
-    let manifest = crate::ladder::LadderManifest {
+    let manifest = crate::tools::ladder::LadderManifest {
         ladder: vec![routine],
         ..manifest(root, false)
     };
     let children =
         crate::tools::routine::project_routine_children(&manifest.ladder[0], &manifest.constants)
             .map_err(|e| e.defect)?;
-    let step = crate::ladder::ValidatedStep {
+    let step = crate::tools::ladder::ValidatedStep {
         step_id: "bench-routine".into(),
         tool: "routine".into(),
         permutation: "execute".into(),
         args: BTreeMap::new(),
-        on_failure: crate::ladder::OnFailure::Stop,
+        on_failure: crate::tools::ladder::OnFailure::Stop,
     };
     let mut states: BTreeMap<String, crate::ModuleWalkState> = BTreeMap::new();
-    let mut projected: BTreeMap<String, Vec<crate::ladder::ProjectedRoutineChild>> =
+    let mut projected: BTreeMap<String, Vec<crate::tools::ladder::ProjectedRoutineChild>> =
         BTreeMap::new();
     projected.insert("bench-routine".into(), children);
     let band = crate::tools::Placement::BackfillFiles.band();

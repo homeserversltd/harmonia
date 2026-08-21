@@ -110,8 +110,8 @@ pub(crate) fn run(
         "ladder-profile" => receipt(
             surface,
             &root,
-            "crate::ladder::ladder_bench",
-            crate::ladder::ladder_bench(&root, invocation)?,
+            "crate::tools::ladder::ladder_bench",
+            crate::tools::ladder::ladder_bench(&root, invocation)?,
             key,
         ),
         "renew-self" => receipt(
