@@ -71,6 +71,65 @@ pub(crate) fn slice4_bench(
             .map_err(|e| format!("{}: {e}", path.display()))
     };
     let first = read_json(&first_receipts.join("molt.json"))?;
+    let witness_root = receipts.join("report-home-proof");
+    fs::create_dir_all(witness_root.join("modules/alpha/deep")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(witness_root.join("modules/beta")).map_err(|e| e.to_string())?;
+    fs::write(
+        witness_root.join("root.pin-witness.json"),
+        r#"{"exclusion_set":["ignored"]}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    for (path, name, state) in [
+        (
+            "modules/alpha/alpha.pin-witness.json",
+            "exact",
+            "held/green",
+        ),
+        (
+            "modules/alpha/deep/deep.pin-witness.json",
+            "absent",
+            "absent",
+        ),
+        (
+            "modules/beta/beta.pin-witness.json",
+            "divergent",
+            "divergent",
+        ),
+    ] {
+        fs::write(
+            witness_root.join(path),
+            serde_json::json!({
+                "exclusion_set": [name, "shared"],
+                "witness": [{"name": name, "state": state}],
+                "pin_scope_limitation": crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION,
+            })
+            .to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let (report_witnesses, report_exclusions) = crate::bands::report_home::collect_package_pin_witnesses(&witness_root);
+    let report_home_nested_witnesses = report_witnesses.len() == 3;
+    let report_home_root_ignored = !report_witnesses.iter().any(|v| {
+        v["exclusion_set"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == "ignored"))
+    });
+    let report_home_exclusions_deduped = report_exclusions.into_iter().collect::<Vec<_>>()
+        == ["absent", "divergent", "exact", "shared"];
+    let report_home_states = ["held/green", "absent", "divergent"]
+        .iter()
+        .all(|state| {
+            report_witnesses
+                .iter()
+                .any(|v| v["witness"][0]["state"] == *state)
+        });
+    let exact_scope_limitation = "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
+    let report_home_scope_limitation = report_witnesses.iter().all(|v| {
+        v["pin_scope_limitation"] == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION
+    });
+    let report_home_scope_exact_literal = report_witnesses
+        .iter()
+        .all(|v| v["pin_scope_limitation"] == exact_scope_limitation);
     let second = read_json(&second_receipts.join("molt.json"))?;
     let subscription_record = read_json(&subscription)?;
     let output_manifest = read_json(&output_dir.join("modules/synthetic-ladder/manifest.json"))?;
@@ -88,10 +147,18 @@ pub(crate) fn slice4_bench(
         "first_production_run_ok": first_production_run_ok,
         "second_production_run_quiet": second_production_run_quiet,
         "ledger_carries_version": ledger_carries_version,
+        "report_home_nested_witnesses": report_home_nested_witnesses,
+        "report_home_root_ignored": report_home_root_ignored,
+        "report_home_exclusions_deduped": report_home_exclusions_deduped,
+        "report_home_states": report_home_states,
+        "report_home_scope_limitation": report_home_scope_limitation,
+        "report_home_scope_exact_literal": report_home_scope_exact_literal,
         "production_route": "crate::bands::stage_profile::molt::molt_at_subscription_path",
         "receipt_paths": [first_receipts.join("molt.json"), second_receipts.join("molt.json")],
         "ledger_path": subscription,
-        "ok": first_production_run_ok && second_production_run_quiet && ledger_carries_version
+        "ok": first_production_run_ok && second_production_run_quiet && ledger_carries_version && report_home_nested_witnesses && report_home_root_ignored && report_home_exclusions_deduped && report_home_states
+            && report_home_scope_limitation
+            && report_home_scope_exact_literal
     }))
 }
 

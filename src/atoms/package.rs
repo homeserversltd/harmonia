@@ -873,7 +873,7 @@ fn pin_args(
     args
 }
 
-fn write_pin_witness(
+pub(crate) fn write_pin_witness(
     receipt_dir: &Path,
     name: &str,
     pins: &std::collections::BTreeMap<String, String>,
@@ -905,7 +905,7 @@ fn write_pin_witness(
     }
     write_json(
         &receipt_dir.join(format!("{name}.pin-witness.json")),
-        &serde_json::json!({"schema":"harmonia.package_pin_witness.v1","exclusion_set":pins.keys().collect::<Vec<_>>(),"witness":witness}),
+        &serde_json::json!({"schema":"harmonia.package_pin_witness.v1","exclusion_set":pins.keys().collect::<Vec<_>>(),"witness":witness,"pin_scope_limitation":PACKAGE_PIN_SCOPE_LIMITATION}),
     )
 }
 
@@ -1895,7 +1895,7 @@ pub(crate) fn slice4_bench(
         &ordinary_projected_pins,
     );
     match old {
-        Some(v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
         None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
     };
     let fixture_out = fixture_result?;
@@ -1920,6 +1920,207 @@ pub(crate) fn slice4_bench(
     let argv = text.lines().map(str::to_string).collect::<Vec<_>>();
     let exact = argv.iter().any(|line| line == "-Syu --noconfirm");
     let typed_receipt = receipts.join("bench.json").is_file();
+    let mut proof_pins = std::collections::BTreeMap::new();
+    proof_pins.insert("heldpkg".to_string(), "1.2.3".to_string());
+    let exact_root = root.join("exact-pin-proof");
+    std::fs::create_dir_all(&exact_root).map_err(|e| e.to_string())?;
+    let exact_action = exact_root.join("actions");
+    let exact_fake = exact_root.join("pacman");
+    std::fs::write(
+        &exact_fake,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in -Q) printf 'heldpkg 1.2.3\\n';; -Qu) exit 0;; -Syu) touch '{}';; esac\n",
+            exact_action.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(
+        &exact_fake,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .map_err(|e| e.to_string())?;
+    std::env::set_var("HARMONIA_PACMAN_PATH", &exact_fake);
+    let exact_result = package_tool_with_policy_for_backend_and_pins(
+        &exact_root,
+        "exact",
+        "upgrade",
+        &[],
+        false,
+        None,
+        &[],
+        2,
+        PackageBackend::Pacman,
+        invocation,
+        &proof_pins,
+    )?;
+    let exact_witness: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(exact_root.join("exact.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let exact_pin_no_actuation = exact_result.ok
+        && exact_witness["witness"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["name"] == "heldpkg" && item["state"] == "held/green"
+            })
+        })
+        && exact_witness["exclusion_set"] == serde_json::json!(["heldpkg"])
+        && !exact_action.exists();
+    match old {
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
+    let apt_root = root.join("apt-proof");
+    std::fs::create_dir_all(&apt_root).map_err(|e| e.to_string())?;
+    let apt_log = apt_root.join("argv");
+    let apt_fake = apt_root.join("apt-get");
+    std::fs::write(
+        &apt_fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nexit 0\n",
+            apt_log.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&apt_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let apt_result = run_apt_command(
+        &apt_root,
+        "apt",
+        &apt_fake.to_string_lossy(),
+        vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_argv = std::fs::read_to_string(&apt_log).unwrap_or_default();
+    let apt_preferences_argv = apt_argv.contains("Dir::Etc::preferences=")
+        && apt_argv.contains("Dir::Etc::preferencesparts=-");
+    let apt_no_remove = apt_argv.contains("--no-remove");
+    let apt_guard_removed = !std::fs::read_dir(&apt_root)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".harmonia-apt-preferences")
+            })
+        })
+        .unwrap_or(false);
+    let apt_success_proof =
+        apt_result.ok && apt_preferences_argv && apt_no_remove && apt_guard_removed;
+
+    let write_root = root.join("apt-write-failure");
+    std::fs::write(&write_root, b"file").map_err(|e| e.to_string())?;
+    let invoked = root.join("apt-invoked");
+    let write_fake = root.join("apt-write-failure-bin");
+    std::fs::write(
+        &write_fake,
+        format!("#!/bin/sh\ntouch '{}'\n", invoked.display()),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&write_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let write_result = run_apt_command(
+        &write_root,
+        "apt",
+        &write_fake.to_string_lossy(),
+        vec!["full-upgrade".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_guard_write_failure_fail_closed = !write_result.ok
+        && write_result.stderr.contains("apt preferences write failed")
+        && !invoked.exists();
+
+    let exec_root = root.join("apt-exec-failure");
+    std::fs::create_dir_all(&exec_root).map_err(|e| e.to_string())?;
+    let exec_fake = exec_root.join("apt-get");
+    std::fs::write(&exec_fake, "#!/bin/sh\nexit 17\n").map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&exec_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let exec_result = run_apt_command(
+        &exec_root,
+        "apt",
+        &exec_fake.to_string_lossy(),
+        vec!["full-upgrade".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_failed_execution_cleans_guard = !exec_result.ok
+        && !std::fs::read_dir(&exec_root)
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .contains(".harmonia-apt-preferences")
+                })
+            })
+            .unwrap_or(false);
+
+    let cleanup_root = root.join("apt-cleanup-failure");
+    std::fs::create_dir_all(&cleanup_root).map_err(|e| e.to_string())?;
+    let cleanup_fake = cleanup_root.join("apt-get");
+    std::fs::write(
+        &cleanup_fake,
+        "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in Dir::Etc::preferences=*) rm -f \"${arg#*=}\";; esac; done\nexit 0\n",
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&cleanup_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let cleanup_result = run_apt_command(
+        &cleanup_root,
+        "apt",
+        &cleanup_fake.to_string_lossy(),
+        vec!["full-upgrade".into()],
+        2,
+        &proof_pins,
+    );
+    let apt_cleanup_failure_non_green =
+        !cleanup_result.ok && cleanup_result.stderr.contains("apt preferences cleanup failed");
+
+    let divergent_root = root.join("divergent-proof");
+    std::fs::create_dir_all(&divergent_root).map_err(|e| e.to_string())?;
+    let divergent_fake = divergent_root.join("pacman");
+    let acted = divergent_root.join("acted");
+    std::fs::write(
+        &divergent_fake,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in -Q) printf 'heldpkg 9.9.9\n';; -Syu) touch '{}';; esac\n",
+            acted.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&divergent_fake, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    std::env::set_var("HARMONIA_PACMAN_PATH", &divergent_fake);
+    let divergent = package_tool_with_policy_for_backend_and_pins(
+        &divergent_root,
+        "divergent",
+        "upgrade",
+        &[],
+        true,
+        None,
+        &[],
+        2,
+        PackageBackend::Pacman,
+        invocation,
+        &proof_pins,
+    )?;
+    let divergent_witness: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(divergent_root.join("divergent.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let divergent_pin_no_remediation = divergent.ok
+        && divergent_witness["witness"].as_array().is_some_and(|items| {
+            items.iter().any(|item| item["state"] == "divergent")
+        })
+        && !acted.exists();
+    match old {
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
     Ok(serde_json::json!({
         "production_ok": out.ok,
         "typed_receipt": typed_receipt,
@@ -1934,233 +2135,25 @@ pub(crate) fn slice4_bench(
         "transaction_exclusion": transaction_exclusion,
         "witness": witness,
         "non_pins_refusal": non_pins_refusal,
+        "exact_pin_no_actuation": exact_pin_no_actuation,
+        "apt_preferences_argv": apt_preferences_argv,
+        "apt_no_remove": apt_no_remove,
+        "apt_guard_removed_after_success": apt_guard_removed,
+        "apt_guard_write_failure_fail_closed": apt_guard_write_failure_fail_closed,
+        "apt_failed_execution_cleans_guard": apt_failed_execution_cleans_guard,
+        "apt_cleanup_failure_non_green": apt_cleanup_failure_non_green,
+        "divergent_pin_no_remediation": divergent_pin_no_remediation,
         "ok": out.ok && exact && !out.skipped && typed_receipt
             && validation_cases.iter().all(|case| case["ok"] == case["expected_ok"])
             && projection_propagation
             && transaction_exclusion
             && witness
-            && non_pins_refusal,
+            && non_pins_refusal
+            && exact_pin_no_actuation
+            && apt_success_proof
+        && apt_guard_write_failure_fail_closed
+        && apt_failed_execution_cleans_guard
+        && apt_cleanup_failure_non_green
+        && divergent_pin_no_remediation,
     }))
-}
-
-#[cfg(test)]
-mod exact_pin_tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::os::unix::fs::PermissionsExt;
-    use std::sync::{Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn fixture(version: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!("harmonia-pin-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let fake = root.join("pacman");
-        fs::write(&fake, format!("#!/bin/sh\ncase \"$1\" in -Q) printf 'heldpkg {}\\n';; -Qu) exit 1;; -Syu) printf 'ACTED\\n' >> '{}';; esac\n", version, root.join("actions").display())).unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        (root, fake)
-    }
-
-    #[test]
-    fn exact_pin_is_witnessed_green_and_upgrade_is_not_invoked() {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let (root, fake) = fixture("1.2.3");
-        let old = env::var("HARMONIA_PACMAN_PATH").ok();
-        env::set_var("HARMONIA_PACMAN_PATH", &fake);
-        let mut pins = BTreeMap::new();
-        pins.insert("heldpkg".into(), "1.2.3".into());
-        let outcome = package_tool_with_policy_for_backend_and_pins(
-            &root,
-            "system",
-            "upgrade",
-            &[],
-            false,
-            None,
-            &[],
-            2,
-            PackageBackend::Pacman,
-            None,
-            &pins,
-        )
-        .unwrap();
-        let witness: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.join("system.pin-witness.json")).unwrap())
-                .unwrap();
-        assert!(outcome.ok);
-        assert_eq!(witness["witness"][0]["state"], "held/green");
-        assert_eq!(witness["exclusion_set"], serde_json::json!(["heldpkg"]));
-        assert!(!root.join("actions").exists());
-        match old {
-            Some(v) => env::set_var("HARMONIA_PACMAN_PATH", v),
-            None => env::remove_var("HARMONIA_PACMAN_PATH"),
-        }
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn apt_transaction_uses_ephemeral_preferences_and_no_remove() {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let root =
-            std::env::temp_dir().join(format!("harmonia-apt-pin-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let fake = root.join("apt-get");
-        let log = root.join("argv");
-        fs::write(
-            &fake,
-            format!(
-                "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nexit 0\n",
-                log.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut pins = BTreeMap::new();
-        pins.insert("heldpkg".into(), "1.2.3".into());
-        let result = run_apt_command(
-            &root,
-            "apt",
-            &fake.to_string_lossy(),
-            vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()],
-            2,
-            &pins,
-        );
-        assert!(result.ok);
-        let argv = fs::read_to_string(&log).unwrap();
-        assert!(argv.contains("Dir::Etc::preferences="));
-        assert!(argv.contains("Dir::Etc::preferencesparts=-"));
-        assert!(argv.contains("--no-remove"));
-        assert!(!root.join(".harmonia-apt-preferences-apt-0").exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn divergent_pin_reports_without_remediation() {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let (root, fake) = fixture("9.9.9");
-        let old = env::var("HARMONIA_PACMAN_PATH").ok();
-        env::set_var("HARMONIA_PACMAN_PATH", &fake);
-        let mut pins = BTreeMap::new();
-        pins.insert("heldpkg".into(), "1.2.3".into());
-        let outcome = package_tool_with_policy_for_backend_and_pins(
-            &root,
-            "system",
-            "upgrade",
-            &[],
-            true,
-            None,
-            &[],
-            2,
-            PackageBackend::Pacman,
-            None,
-            &pins,
-        )
-        .unwrap();
-        assert!(outcome.ok);
-        assert!(outcome.skipped || outcome.changed || outcome.message.contains("package"));
-        assert!(!root.join("actions").exists());
-        match old {
-            Some(v) => env::set_var("HARMONIA_PACMAN_PATH", v),
-            None => env::remove_var("HARMONIA_PACMAN_PATH"),
-        }
-        let _ = fs::remove_dir_all(root);
-    }
-}
-
-#[cfg(test)]
-mod apt_guard_tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-
-    fn pins() -> BTreeMap<String, String> {
-        [("heldpkg".to_string(), "1.2.3".to_string())]
-            .into_iter()
-            .collect()
-    }
-
-    #[test]
-    fn pinned_apt_guard_write_failure_is_fail_closed() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-apt-write-fail-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let fake = std::env::temp_dir().join(format!(
-            "harmonia-apt-write-fail-bin-{}",
-            std::process::id()
-        ));
-        fs::write(
-            &fake,
-            "#!/bin/sh\nprintf invoked >> /tmp/harmonia-apt-should-not-run\n",
-        )
-        .unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        let result = run_apt_command(
-            &root,
-            "apt",
-            &fake.to_string_lossy(),
-            vec!["full-upgrade".into()],
-            2,
-            &pins(),
-        );
-        assert!(!result.ok);
-        assert!(result.stderr.contains("apt preferences write failed"));
-        assert!(!Path::new("/tmp/harmonia-apt-should-not-run").exists());
-        let _ = fs::remove_file(fake);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn pinned_apt_failed_execution_cleans_guard() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-apt-exec-fail-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let fake = root.join("apt-get");
-        fs::write(&fake, "#!/bin/sh\nexit 17\n").unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        let result = run_apt_command(
-            &root,
-            "apt",
-            &fake.to_string_lossy(),
-            vec!["full-upgrade".into()],
-            2,
-            &pins(),
-        );
-        assert!(!result.ok);
-        assert!(!root.join(".harmonia-apt-preferences-apt-0").exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn pinned_apt_guard_cleanup_failure_is_not_green() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-apt-cleanup-fail-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let fake = root.join("apt-get");
-        fs::write(&fake, "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in Dir::Etc::preferences=*) rm -f \"${arg#*=}\";; esac; done\nexit 0\n").unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        let result = run_apt_command(
-            &root,
-            "apt",
-            &fake.to_string_lossy(),
-            vec!["full-upgrade".into()],
-            2,
-            &pins(),
-        );
-        assert!(!result.ok);
-        assert!(result.stderr.contains("apt preferences cleanup failed"));
-        let _ = fs::remove_dir_all(root);
-    }
 }

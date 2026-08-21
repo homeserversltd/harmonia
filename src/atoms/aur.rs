@@ -1003,39 +1003,71 @@ pub(crate) fn slice4_bench(
     let lock_unchanged = std::fs::read(&lock).map_err(|e| e.to_string())? == before;
     env::remove_var(HARMONIA_AUR_UPSTREAM_STATE_ENV);
     let neutralized = neutralize_pkgver_function_text(pkgbuild)?.1;
-    Ok(
-        serde_json::json!({"check_route_ok":checked.ok,"unprivileged_plan":plan.ok && !plan.changed,"lock_unchanged":lock_unchanged,"pkgbuild_neutralization_supported":neutralized,"exact_package_selection_supported":true,"ok":checked.ok && plan.ok && !plan.changed && lock_unchanged && neutralized}),
+    let mut scope_pins = BTreeMap::new();
+    scope_pins.insert("heldpkg".to_string(), "1.2.3".to_string());
+    crate::atoms::package::write_pin_witness(
+        &receipts,
+        "package-scope",
+        &scope_pins,
+        crate::PackageBackend::Pacman,
+    )?;
+    package_pin_witness(
+        &receipts,
+        "aur-scope",
+        "slice4-bench",
+        &scope_pins,
+        true,
+        false,
+    )?;
+    let package_scope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("package-scope.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
     )
-}
-
-#[cfg(test)]
-mod package_pin_scope_tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::fs;
-
-    #[test]
-    fn package_and_aur_pin_witnesses_carry_exact_scope_limitation() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-pin-scope-witness-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let mut pins = BTreeMap::new();
-        pins.insert("heldpkg".to_string(), "1.2.3".to_string());
-        package_pin_witness(&root, "package", "heldpkg", &pins, true, false).unwrap();
-        let package: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.join("package.pin-witness.json")).unwrap())
-                .unwrap();
-        package_pin_witness(&root, "aur", "heldpkg", &pins, true, false).unwrap();
-        let aur: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.join("aur.pin-witness.json")).unwrap()).unwrap();
-        for witness in [&package, &aur] {
-            assert_eq!(
-                witness["pin_scope_limitation"],
-                crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION
-            );
-            assert_eq!(witness["pin_scope_limitation"], "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).");
-        }
-        let _ = fs::remove_dir_all(root);
-    }
+    .map_err(|e| e.to_string())?;
+    let aur_scope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(receipts.join("aur-scope.pin-witness.json"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let exact_scope_limitation = "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
+    let package_pin_scope_limitation = package_scope["pin_scope_limitation"]
+        == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION;
+    let aur_pin_scope_limitation =
+        aur_scope["pin_scope_limitation"] == crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION;
+    let package_pin_scope_exact_literal = package_scope["pin_scope_limitation"]
+        == exact_scope_limitation;
+    let aur_pin_scope_exact_literal = aur_scope["pin_scope_limitation"] == exact_scope_limitation;
+    let package_scope_semantics = package_scope["exclusion_set"]
+        .as_array()
+        .is_some_and(|v| v.iter().any(|x| x == "heldpkg"));
+    let aur_target_and_exclusion_semantics = aur_scope["target"] == "slice4-bench"
+        && aur_scope["exclusion_set"].as_array().is_some_and(|v| {
+            v.iter().any(|x| x == "heldpkg") && !v.iter().any(|x| x == "slice4-bench")
+        });
+    Ok(
+        serde_json::json!({
+            "check_route_ok": checked.ok,
+            "unprivileged_plan": plan.ok && !plan.changed,
+            "lock_unchanged": lock_unchanged,
+            "pkgbuild_neutralization_supported": neutralized,
+            "package_pin_scope_limitation": package_pin_scope_limitation,
+            "aur_pin_scope_limitation": aur_pin_scope_limitation,
+            "package_pin_scope_exact_literal": package_pin_scope_exact_literal,
+            "aur_pin_scope_exact_literal": aur_pin_scope_exact_literal,
+            "package_scope_semantics": package_scope_semantics,
+            "aur_target_and_exclusion_semantics": aur_target_and_exclusion_semantics,
+            "exact_package_selection_supported": true,
+            "ok": checked.ok
+                && plan.ok
+                && !plan.changed
+                && lock_unchanged
+                && neutralized
+                && package_pin_scope_limitation
+                && aur_pin_scope_limitation
+                && package_pin_scope_exact_literal
+                && aur_pin_scope_exact_literal
+                && package_scope_semantics
+                && aur_target_and_exclusion_semantics,
+        }),
+    )
 }
