@@ -23,6 +23,25 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
     enter(Band::StageProfile)
 }
 
+pub(crate) fn source_module_path(
+    harmonia_root: &Path,
+    profile_id: &str,
+    module_id: &str,
+) -> std::path::PathBuf {
+    let profile_path = harmonia_root
+        .join("profiles")
+        .join(profile_id)
+        .join("modules")
+        .join(module_id);
+    if profile_path.exists() {
+        profile_path
+    } else {
+        harmonia_root
+            .join("profiles/shared/modules")
+            .join(module_id)
+    }
+}
+
 pub(crate) fn materialize(
     source_root: &Path,
     profile_id: &str,
@@ -105,8 +124,11 @@ pub(crate) fn materialize(
     // the post-act hash proof and fail closed if it still does not converge.
     let mut divergent_modules: Vec<String> = Vec::new();
     for id in &refreshed.modules {
-        let source_hash =
-            crate::atoms::tree_hash::content_tree_sha256(&source_modules_root.join(id))?;
+        let source_hash = crate::atoms::tree_hash::content_tree_sha256(&source_module_path(
+            source_root,
+            &refreshed.id,
+            id,
+        ))?;
         let installed_hash =
             crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
         if source_hash != installed_hash {
@@ -128,8 +150,11 @@ pub(crate) fn materialize(
     let mut source_module_hashes = BTreeMap::new();
     let mut installed_module_hashes = BTreeMap::new();
     for id in &refreshed.modules {
-        let source_hash =
-            crate::atoms::tree_hash::content_tree_sha256(&source_modules_root.join(id))?;
+        let source_hash = crate::atoms::tree_hash::content_tree_sha256(&source_module_path(
+            source_root,
+            &refreshed.id,
+            id,
+        ))?;
         let installed_hash =
             crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
         if source_hash != installed_hash {
@@ -157,7 +182,7 @@ pub(crate) fn materialize(
         .modules
         .iter()
         .map(|id| {
-            let module_dir = source_modules_root.join(id);
+            let module_dir = source_module_path(source_root, &refreshed.id, id);
             Ok(SubscriptionModuleUpdate {
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
@@ -194,4 +219,110 @@ pub(crate) fn materialize(
             });
     }
     Ok(refreshed)
+}
+
+#[cfg(test)]
+mod shared_dot_files_tests {
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    #[test]
+    fn materializes_shared_module_then_backfills_compiled_output() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-stage-shared-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let shared = root.join("profiles/shared/modules/dot-files");
+        let source = shared.join("files_root/functions");
+        fs::create_dir_all(source.join("all")).unwrap();
+        fs::create_dir_all(source.join("tv")).unwrap();
+        fs::create_dir_all(root.join("profiles/tv")).unwrap();
+        fs::create_dir_all(root.join("src/tools")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("profiles/tv/index.json"), r#"{"id":"tv","identity":"arch-tv","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["dot-files"]}"#).unwrap();
+        fs::write(shared.join("manifest.json"), r#"{"schema":"harmonia.module.ladder.v1","id":"dot-files","version":"1","files_root":"files_root","ladder":[]}"#).unwrap();
+        fs::write(source.join("all/00"), b"all").unwrap();
+        fs::write(source.join("tv/00"), b"tv").unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let installed_root = root.join("installed");
+        let stale = installed_root.join("modules/dot-files/files_root/functions/all/stale");
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(stale, b"stale").unwrap();
+        let subscription = root.join("subscription.json");
+        crate::bands::stage_profile::molt::molt_at_subscription_path(
+            &root,
+            "tv",
+            &installed_root,
+            &root.join("molt-receipts"),
+            &subscription,
+            crate::bands::stage_profile::molt::MoltMode::Copy,
+        )
+        .unwrap();
+        let installed = installed_root.join("modules/dot-files");
+        let manifest =
+            crate::tools::ladder::load_ladder_manifest(&installed.join("manifest.json")).unwrap();
+        let target = root.join("home/.functions");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let args = BTreeMap::from([
+            ("source_root".into(), json!("files_root/functions")),
+            ("target_path".into(), json!(target)),
+            ("backup_existing".into(), json!(true)),
+        ]);
+        let step = crate::tools::ladder::ValidatedStep {
+            step_id: "compile-fragments".into(),
+            tool: "files".into(),
+            permutation: "compile-fragments".into(),
+            args,
+            on_failure: crate::tools::ladder::OnFailure::Stop,
+        };
+        let invocation = Some(crate::atoms::r#do::InvocationKey::for_apply());
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, invocation);
+        let mut routine_states = BTreeMap::new();
+        let projected_routines = BTreeMap::new();
+        let execution = crate::bands::backfill_files::execute_files(
+            &manifest,
+            &installed,
+            mode.software_authorization(),
+            None,
+            mode.invocation(),
+            true,
+            false,
+            &mut routine_states,
+            &[step],
+            &projected_routines,
+        )
+        .unwrap();
+        assert!(execution.ok);
+        assert_eq!(execution.operation_count, 1);
+        assert_eq!(execution.placements.len(), 1);
+        assert_eq!(execution.placements[0]["band"], "BackfillFiles");
+        assert_eq!(fs::read(target).unwrap(), b"alltv");
+        fs::remove_dir_all(root).unwrap();
+    }
 }

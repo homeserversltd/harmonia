@@ -348,6 +348,18 @@ fn execute_routine_tool(
         };
         return Ok((outcome, BTreeMap::new()));
     }
+    if tool == "files" && requested_permutation == Some("compile-fragments") {
+        let step = ValidatedStep {
+            step_id: "compile-fragments".into(),
+            tool: "files".into(),
+            permutation: "compile-fragments".into(),
+            args: args.clone(),
+            on_failure: OnFailure::Stop,
+        };
+        let outcome =
+            tools::files::compile_fragments_step(&step, manifest, receipt_dir, apply, invocation)?;
+        return Ok((outcome, BTreeMap::new()));
+    }
     match tool {
         "pull-repo" => crate::bands::pull_source::execute_routine_child(
             "pull-repo",
@@ -418,6 +430,7 @@ pub(crate) fn execute_validated_step(
                 | ("files", "validated-sudoers-converge")
                 | ("files", "converge")
                 | ("files", "directory-sync")
+                | ("files", "compile-fragments")
                 | ("venv", "converge")
                 | ("aur", "install")
                 | ("aur", "build-pinned")

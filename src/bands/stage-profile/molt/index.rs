@@ -122,11 +122,7 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         .modules
         .iter()
         .map(|id| {
-            let module_dir = harmonia_root
-                .join("profiles")
-                .join(&profile.id)
-                .join("modules")
-                .join(id);
+            let module_dir = super::source_module_path(harmonia_root, &profile.id, id);
             Ok(SubscriptionModuleUpdate {
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
@@ -162,12 +158,8 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         &mut artifacts,
     )?;
 
-    let module_root = harmonia_root
-        .join("profiles")
-        .join(&profile.id)
-        .join("modules");
     for module in &profile.modules {
-        let module_dir = module_root.join(module);
+        let module_dir = super::source_module_path(harmonia_root, &profile.id, module);
         let sidecar = module_dir.join("sidecar.json");
         let manifest = module_dir.join("manifest.json");
         let module_output_dir = output_dir.join("modules").join(module);

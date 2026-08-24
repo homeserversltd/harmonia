@@ -35,6 +35,9 @@ pub(crate) fn execute_validated_step(
         "ensure-present" => {
             files_ensure_present_step(step, manifest, module_dir, false, invocation)
         }
+        "compile-fragments" => {
+            compile_fragments_step(step, manifest, module_dir, apply, invocation)
+        }
         "hotfix-file-backfill" | "converge" | "directory-sync" => files_converge_step(
             step,
             manifest,
@@ -101,6 +104,7 @@ pub(crate) fn structural_file_blocker(
                             | "converge"
                             | "validated-sudoers-converge"
                             | "validated-symlink"
+                            | "compile-fragments"
                     ) =>
             {
                 return Some(format!(
@@ -126,6 +130,141 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Concatenate static fragments in deterministic order without injecting bytes.
+pub(crate) fn compile_fragments(
+    source_root: &Path,
+    selected_appliance: &str,
+) -> Result<Vec<u8>, String> {
+    if selected_appliance.is_empty()
+        || selected_appliance.contains('/')
+        || matches!(selected_appliance, "." | "..")
+    {
+        return Err("compile-fragments-appliance-invalid".into());
+    }
+    let mut bytes = Vec::new();
+    for pool in ["all", selected_appliance] {
+        let directory = source_root.join(pool);
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "compile-fragments-read-dir-{}: {error}",
+                    directory.display()
+                ));
+            }
+        };
+        let mut paths = entries
+            .map(|entry| entry.map(|e| e.path()).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        paths.retain(|path| path.is_file());
+        paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        for path in paths {
+            bytes.extend(
+                fs::read(&path)
+                    .map_err(|e| format!("compile-fragments-read-{}: {e}", path.display()))?,
+            );
+        }
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn compile_fragments_step(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    apply: bool,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let source_root = step
+        .args
+        .get("source_root")
+        .and_then(Value::as_str)
+        .map(|path| resolve_ladder_path(manifest, path))
+        .ok_or("compile-fragments-source-root-missing")?;
+    let profile_index = manifest
+        .base_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("compile-fragments-profile-root-missing")?
+        .join("index.json");
+    let profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(&profile_index).map_err(|error| {
+            format!(
+                "compile-fragments-profile-index-read-failed {}: {error}",
+                profile_index.display()
+            )
+        })?)
+        .map_err(|error| {
+            format!(
+                "compile-fragments-profile-index-parse-failed {}: {error}",
+                profile_index.display()
+            )
+        })?;
+    let appliance = profile
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "compile-fragments-profile-id-missing {}",
+                profile_index.display()
+            )
+        })?;
+    let target = step
+        .args
+        .get("target_path")
+        .or_else(|| step.args.get("output_path"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or("compile-fragments-target-path-missing")?;
+    if step.args.get("backup_existing").and_then(Value::as_bool) != Some(true) {
+        return Err("compile-fragments-backup-existing-required".into());
+    }
+    let bytes = compile_fragments(&source_root, appliance)?;
+    let changed = fs::read(&target)
+        .map(|current| current != bytes)
+        .unwrap_or(true);
+    if apply && changed {
+        let backup_path = module_dir.join("backups/compile-fragments");
+        let request = crate::place_file::PlaceFileRequest {
+            path: &target,
+            declared_bytes: &bytes,
+            mode: step
+                .args
+                .get("mode")
+                .and_then(Value::as_u64)
+                .map(|v| v as u32),
+            ownership: crate::place_file::DeclaredOwnership {
+                uid: step
+                    .args
+                    .get("uid")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u32),
+                gid: step
+                    .args
+                    .get("gid")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u32),
+            },
+            backup: crate::place_file::BackupPolicy::To(&backup_path),
+            invocation,
+        };
+        crate::place_file::execute(request)?;
+    }
+    crate::write_json(
+        &module_dir.join("compile-fragments.json"),
+        &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":true,"changed":apply && changed,"skipped":!apply,"target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
+    )?;
+    Ok(OperationOutcome {
+        ok: true,
+        changed: apply && changed,
+        skipped: !apply,
+        message: "compile-fragments".into(),
+        command: None,
+    })
+}
 
 pub(crate) fn preflight_file_targets(
     manifest: &LadderManifest,
@@ -927,4 +1066,65 @@ fn string_array_arg(
 }
 fn integer_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &str, d: u64) -> u64 {
     a.get(n).and_then(serde_json::Value::as_u64).unwrap_or(d)
+}
+
+#[cfg(test)]
+mod compile_fragments_tests {
+    use super::compile_fragments;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-compile-fragments-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn compiles_sorted_all_then_appliance_without_separator() {
+        let root = fixture("normal");
+        fs::create_dir_all(root.join("all")).unwrap();
+        fs::create_dir_all(root.join("tv")).unwrap();
+        fs::write(root.join("all/z"), b"z").unwrap();
+        fs::write(root.join("all/a"), b"a").unwrap();
+        fs::write(root.join("tv/2"), b"2").unwrap();
+        fs::write(root.join("tv/1"), b"1").unwrap();
+        assert_eq!(compile_fragments(&root, "tv").unwrap(), b"az12");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_pools_are_empty() {
+        let root = fixture("missing-all");
+        fs::create_dir_all(root.join("tv")).unwrap();
+        fs::write(root.join("tv/only"), b"only").unwrap();
+        assert_eq!(compile_fragments(&root, "tv").unwrap(), b"only");
+        fs::remove_dir_all(&root).unwrap();
+
+        let root = fixture("missing-appliance");
+        fs::create_dir_all(root.join("all")).unwrap();
+        fs::write(root.join("all/only"), b"only").unwrap();
+        assert_eq!(compile_fragments(&root, "homeserver").unwrap(), b"only");
+        fs::remove_dir_all(&root).unwrap();
+
+        let root = fixture("missing-both");
+        assert!(compile_fragments(&root, "homeconsole").unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_exposes_compile_fragments_in_backfill_files() {
+        let permutation = crate::tools::get("files")
+            .unwrap()
+            .permutation("compile-fragments")
+            .unwrap();
+        assert_eq!(
+            permutation.placement,
+            Some(crate::tools::Placement::BackfillFiles)
+        );
+    }
 }

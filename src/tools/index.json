@@ -562,6 +562,19 @@
           "placement": "BackfillFiles"
         },
         {
+          "name": "compile-fragments",
+          "description": "compile sorted all and selected-appliance static fragments byte-for-byte",
+          "args": [
+            {"name": "source_root", "kind": "string", "required": true},
+            {"name": "target_path", "kind": "string", "required": true},
+            {"name": "mode", "kind": "integer", "required": false},
+            {"name": "uid", "kind": "integer", "required": false},
+            {"name": "gid", "kind": "integer", "required": false},
+            {"name": "backup_existing", "kind": "bool", "required": true}
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
           "name": "hotfix-file-backfill",
           "description": "comparison-gated tool operation that atomically backfills declared file bytes",
           "args": [
