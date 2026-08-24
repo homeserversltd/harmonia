@@ -2,9 +2,10 @@
 
 This module carries the HOMESERVER product crown configuration lifted from the original website configuration. Harmonia maintains configuration on an already-born appliance; it does not install or build Coronatio, install a unit, or own the service lifecycle.
 
+Fulcrum guardian care owns Coronatio runtime convergence; this module retains configuration-only custody.
+
 The ladder:
 
-- fails closed unless the birth-provided `coronatio` executable exists;
 - captures `/etc/appliance/config.json` as a non-empty, valid JSON household document but never overwrites it; Caduceus is its sole writer;
 - always converges the secret-free product baseline to `/etc/appliance/config.factory`, backing up replaced bytes; Harmonia owns that factory baseline;
 - performs no restart because Coronatio reads the household JSON when serving configuration-backed routes.

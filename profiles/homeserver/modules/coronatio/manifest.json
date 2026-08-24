@@ -2,44 +2,10 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "coronatio",
   "category": "known-good",
-  "version": "2.1.1",
-  "description": "HOMESERVER Coronatio crown currentness: synchronize the declared source, build and install the native binary, restart and prove the crown, then preserve and validate the user-editable household memory and secret-free product factory baseline.",
+  "version": "2.1.2",
+  "description": "HOMESERVER Coronatio configuration custody: preserve and validate the user-editable household memory and secret-free product factory baseline.",
   "files_root": "files_root",
   "ladder": [
-    {
-      "step_id": "coronatio-service-runtime",
-      "tool": "service-runtime",
-      "permutation": "converge",
-      "args": {
-        "module_id": "coronatio",
-        "component": "coronatio",
-        "bearer": "owner",
-        "source_dir": "/opt/coronatio/source",
-        "install_bin": "/usr/local/bin/coronatio",
-        "service": "coronatio.service",
-        "url": "http://127.0.0.1:3013/",
-        "binary_name": "coronatio",
-        "op_prefix": "coronatio",
-        "run_schema": "harmonia.homeserver.coronatio_runtime.v1",
-        "managed_files_schema": "harmonia.homeserver.coronatio_managed_files.v1",
-        "build_environment": {
-          "RUSTUP_HOME": "/opt/rustup",
-          "CARGO_HOME": "/opt/cargo"
-        },
-        "managed_files": []
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "coronatio-binary-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/usr/local/bin/coronatio",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
     {
       "step_id": "coronatio-live-config-present",
       "tool": "command",
