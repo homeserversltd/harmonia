@@ -71,9 +71,30 @@ pub(crate) struct PlaceFileOutcome {
 }
 
 pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome, String> {
+    execute_with_authority(request, Authority::Machine)
+}
+
+pub(crate) fn execute_with_operator_hand(
+    request: PlaceFileRequest<'_>,
+    operator_hand: crate::interactables::OperatorHand,
+) -> Result<PlaceFileOutcome, String> {
+    execute_with_authority(request, Authority::OperatorHand(operator_hand))
+}
+
+enum Authority {
+    Machine,
+    OperatorHand(crate::interactables::OperatorHand),
+}
+
+fn execute_with_authority(
+    request: PlaceFileRequest<'_>,
+    authority: Authority,
+) -> Result<PlaceFileOutcome, String> {
     match crate::atoms::files::classify_target(request.path) {
         crate::atoms::files::TargetClass::Refused(reason) => return Err(reason),
-        crate::atoms::files::TargetClass::Config if request.invocation.is_some() => {
+        crate::atoms::files::TargetClass::Config
+            if request.invocation.is_some() && matches!(authority, Authority::Machine) =>
+        {
             return Err("configuration-actuator-authority-refused".into())
         }
         _ => {}
@@ -516,5 +537,42 @@ mod receipt {
                     .unwrap_or_default()
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+
+    #[test]
+    fn machine_invocation_refuses_config_target_with_exact_signal() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-place-file-authority-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("config_deploy:interactable/target.conf");
+        let source = root.join("source.conf");
+        std::fs::write(&source, b"desired").unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"current").unwrap();
+        let result = execute(PlaceFileRequest {
+            path: &target,
+            declared_bytes: b"desired",
+            mode: None,
+            ownership: DeclaredOwnership {
+                uid: None,
+                gid: None,
+            },
+            backup: BackupPolicy::None,
+            invocation: Some(crate::atoms::r#do::InvocationKey::for_apply()),
+        });
+        assert_eq!(
+            result.unwrap_err(),
+            "configuration-actuator-authority-refused"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"current");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -4844,6 +4844,7 @@ pub(crate) fn hard_stamp_interactable(
     group: Option<&str>,
     backup_root: &Path,
     invocation: Option<crate::atoms::r#do::InvocationKey>,
+    operator_hand: crate::interactables::OperatorHand,
 ) -> Result<serde_json::Value, String> {
     validate_interactable_target(target)?;
     if !source.is_file() {
@@ -4884,17 +4885,20 @@ pub(crate) fn hard_stamp_interactable(
             .and_then(|name| name.to_str())
             .unwrap_or("target")
     ));
-    let place = crate::place_file::execute(crate::place_file::PlaceFileRequest {
-        path: target,
-        declared_bytes: &desired_bytes,
-        mode: mode.or_else(|| source_mode(source).ok()),
-        ownership: crate::place_file::DeclaredOwnership {
-            uid: desired_uid,
-            gid: desired_gid,
+    let place = crate::place_file::execute_with_operator_hand(
+        crate::place_file::PlaceFileRequest {
+            path: target,
+            declared_bytes: &desired_bytes,
+            mode: mode.or_else(|| source_mode(source).ok()),
+            ownership: crate::place_file::DeclaredOwnership {
+                uid: desired_uid,
+                gid: desired_gid,
+            },
+            backup: crate::place_file::BackupPolicy::To(&backup),
+            invocation,
         },
-        backup: crate::place_file::BackupPolicy::To(&backup),
-        invocation,
-    })?;
+        operator_hand,
+    )?;
     let changed = place.movement.changed();
     let backed_up_to = place.movement.backed_up;
     let before_sha256 = backed_up_to

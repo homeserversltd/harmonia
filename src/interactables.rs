@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
+pub(crate) struct OperatorHand(());
+
+fn operator_hand() -> OperatorHand {
+    OperatorHand(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct InteractablesFeed {
     schema: String,
@@ -179,6 +185,7 @@ fn interactable_run(
         item.group.as_deref(),
         &backup_root,
         invocation,
+        operator_hand(),
     )?;
     receipt["has_run"] = serde_json::Value::Bool(true);
     feed.interactables[position].has_run = true;
@@ -189,4 +196,95 @@ fn interactable_run(
         serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    static INTERACTABLES_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn fixture(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-interactable-accept-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn item(root: &std::path::Path) -> Interactable {
+        Interactable {
+            id: "config-proposal-accept-regression".into(),
+            module_id: "regression".into(),
+            name: "config proposal acceptance".into(),
+            description: String::new(),
+            kind: "hard-stamp".into(),
+            target_path: root.join("config_deploy:interactable/target.conf"),
+            reference_source_path: root.join("source.conf"),
+            drift: DriftSummary {
+                content: true,
+                mode: false,
+                ownership: false,
+            },
+            created_at: "0".into(),
+            refreshed_at: "0".into(),
+            available_at: None,
+            has_run: false,
+            mode: Some(0o644),
+            owner: None,
+            group: None,
+            source_sha: None,
+            target_sha: None,
+            commits_behind: None,
+        }
+    }
+
+    #[test]
+    fn config_proposal_accept_stamps_target_with_backup_and_readback() {
+        let root = fixture("operator");
+        let feed_path = root.join("interactables.json");
+        let target = root.join("config_deploy:interactable/target.conf");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(root.join("source.conf"), b"desired\n").unwrap();
+        fs::write(&target, b"current\n").unwrap();
+        let proposal = item(&root);
+        assert!(matches!(
+            crate::atoms::files::classify_target(&target),
+            crate::atoms::files::TargetClass::Config
+        ));
+        crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(vec![proposal.clone()]))
+            .unwrap();
+
+        let _env_lock = INTERACTABLES_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let prior_feed = std::env::var_os("HARMONIA_INTERACTABLES_PATH");
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
+        let result = interactable_run(
+            &[proposal.id],
+            Some(crate::atoms::r#do::InvocationKey::for_apply()),
+        );
+        match prior_feed {
+            Some(value) => std::env::set_var("HARMONIA_INTERACTABLES_PATH", value),
+            None => std::env::remove_var("HARMONIA_INTERACTABLES_PATH"),
+        }
+        result.unwrap();
+        let backup_root = feed_path
+            .parent()
+            .unwrap()
+            .join("interactables-backups/config-proposal-accept-regression");
+        let backup_dir = fs::read_dir(&backup_root).unwrap();
+        let backups: Vec<_> = backup_dir.map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), b"current\n");
+        assert_eq!(fs::read(&target).unwrap(), b"desired\n");
+        assert!(load_feed(&feed_path).unwrap().interactables.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
