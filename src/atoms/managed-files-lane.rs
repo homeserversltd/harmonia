@@ -3160,18 +3160,18 @@ fn source_shelf_owned_recursive_sweep(
         .map_err(|error| format!("source-shelf-sweep-owner-resolution-failed: {error}"))?;
     let gid = resolve_gid(&request.shelf_group)
         .map_err(|error| format!("source-shelf-sweep-group-resolution-failed: {error}"))?;
-    let desired: Vec<SweepTreeEntry> = inventory_sweep_tree(&shelf_source, &sweep_exclude)?
-        .into_iter()
-        .filter(|entry| entry.relative_path != Path::new("."))
-        .collect();
+    // Keep the source root in the inventory: it is an owned directory whose
+    // declared mode must converge just like every child directory.
+    let desired: Vec<SweepTreeEntry> = inventory_sweep_tree(&shelf_source, &sweep_exclude)?;
     let desired_paths: BTreeSet<String> = desired
         .iter()
         .map(|entry| {
-            request
-                .target_shelf
-                .join(&entry.relative_path)
-                .display()
-                .to_string()
+            let target = if entry.relative_path == Path::new(".") {
+                request.target_shelf.clone()
+            } else {
+                request.target_shelf.join(&entry.relative_path)
+            };
+            target.display().to_string()
         })
         .collect();
     let mut provenance = load_sweep_provenance(provenance_path)?;
@@ -3247,8 +3247,16 @@ fn source_shelf_owned_recursive_sweep(
     let mut entries = Vec::new();
     let mut drift = !stale.is_empty();
     for entry in &desired {
-        let source = shelf_source.join(&entry.relative_path);
-        let target = request.target_shelf.join(&entry.relative_path);
+        let source = if entry.relative_path == Path::new(".") {
+            shelf_source.to_path_buf()
+        } else {
+            shelf_source.join(&entry.relative_path)
+        };
+        let target = if entry.relative_path == Path::new(".") {
+            request.target_shelf.clone()
+        } else {
+            request.target_shelf.join(&entry.relative_path)
+        };
         // Source presence is explicit ownership for this sweep; the ledger
         // remains authoritative only for paths absent from the source.
         let source_owned = desired_paths.contains(&target.display().to_string());
@@ -3272,6 +3280,18 @@ fn source_shelf_owned_recursive_sweep(
             }
         };
         drift |= !current;
+        let (before_digest, before_mode, before_uid, before_gid) =
+            sweep_path_state(&target, entry.is_dir)?;
+        let source_digest = if entry.is_dir {
+            None
+        } else {
+            Some(digest_file(&source)?)
+        };
+        let desired_mode = if entry.is_dir {
+            request.shelf_directory_mode
+        } else {
+            request.shelf_file_mode
+        };
         entries.push(SourceShelfSweepEntry {
             kind: if entry.is_dir {
                 "owned-recursive-directory"
@@ -3282,22 +3302,18 @@ fn source_shelf_owned_recursive_sweep(
             relative_path: entry.relative_path.display().to_string(),
             source: Some(source),
             target,
-            source_digest: None,
-            before_digest: None,
-            after_digest: None,
-            desired_mode: if entry.is_dir {
-                request.shelf_directory_mode
-            } else {
-                request.shelf_file_mode
-            },
-            before_mode: None,
-            after_mode: None,
+            source_digest: source_digest.clone(),
+            before_digest: before_digest.clone(),
+            after_digest: before_digest,
+            desired_mode,
+            before_mode,
+            after_mode: before_mode,
             desired_uid: uid,
             desired_gid: gid,
-            before_uid: None,
-            before_gid: None,
-            after_uid: None,
-            after_gid: None,
+            before_uid,
+            before_gid,
+            after_uid: before_uid,
+            after_gid: before_gid,
             action: if current { "unchanged" } else { "planned" }.into(),
             changed: !current,
             readback_ok: current,
@@ -3370,7 +3386,13 @@ fn source_shelf_owned_recursive_sweep(
     let movement = crate::atoms::comparison::execute_once(
         "source-shelf-owned-recursive",
         || Ok::<_, String>(true),
-        |_| crate::atoms::comparison::DiffDecision::Different,
+        |_| {
+            if drift {
+                crate::atoms::comparison::DiffDecision::Different
+            } else {
+                crate::atoms::comparison::DiffDecision::Empty
+            }
+        },
         |authorization, _| {
             (|| -> Result<(), String> {
                 let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
@@ -3380,8 +3402,16 @@ fn source_shelf_owned_recursive_sweep(
                     &quarantine,
                 )?;
                 for entry in &desired {
-                    let source = shelf_source.join(&entry.relative_path);
-                    let target = request.target_shelf.join(&entry.relative_path);
+                    let source = if entry.relative_path == Path::new(".") {
+                        shelf_source.to_path_buf()
+                    } else {
+                        shelf_source.join(&entry.relative_path)
+                    };
+                    let target = if entry.relative_path == Path::new(".") {
+                        request.target_shelf.clone()
+                    } else {
+                        request.target_shelf.join(&entry.relative_path)
+                    };
                     let target_path = target.display().to_string();
                     let source_owned = desired_paths.contains(&target_path);
                     let ledger_owned = provenance.paths.contains(&target_path);
@@ -3424,25 +3454,38 @@ fn source_shelf_owned_recursive_sweep(
                             provenance.paths.insert(target.display().to_string());
                             promoted_count += 1;
                         } else {
-                            crate::atoms::r#do::change_mode::change(
-                                authorization,
-                                invocation,
-                                &crate::atoms::r#do::change_mode::Plan {
-                                    path: target.clone(),
-                                    mode: Some(request.shelf_directory_mode),
-                                    no_follow: true,
-                                },
-                            )?;
-                            crate::atoms::r#do::change_owner::change(
-                                authorization,
-                                invocation,
-                                &crate::atoms::r#do::change_owner::Plan {
-                                    path: target.clone(),
-                                    uid: Some(uid),
-                                    gid: Some(gid),
-                                    no_follow: true,
-                                },
-                            )?;
+                            let (_, observed_mode, observed_uid, observed_gid) =
+                                sweep_path_state(&target, true)?;
+                            let directory_changed = observed_mode
+                                != Some(request.shelf_directory_mode)
+                                || observed_uid != Some(uid)
+                                || observed_gid != Some(gid);
+                            if observed_mode != Some(request.shelf_directory_mode) {
+                                crate::atoms::r#do::change_mode::change(
+                                    authorization,
+                                    invocation,
+                                    &crate::atoms::r#do::change_mode::Plan {
+                                        path: target.clone(),
+                                        mode: Some(request.shelf_directory_mode),
+                                        no_follow: true,
+                                    },
+                                )?;
+                            }
+                            if observed_uid != Some(uid) || observed_gid != Some(gid) {
+                                crate::atoms::r#do::change_owner::change(
+                                    authorization,
+                                    invocation,
+                                    &crate::atoms::r#do::change_owner::Plan {
+                                        path: target.clone(),
+                                        uid: Some(uid),
+                                        gid: Some(gid),
+                                        no_follow: true,
+                                    },
+                                )?;
+                            }
+                            if directory_changed {
+                                promoted_count += 1;
+                            }
                             provenance.paths.insert(target.display().to_string());
                         }
                     } else {
@@ -3567,8 +3610,19 @@ fn source_shelf_owned_recursive_sweep(
     for entry in &mut entries {
         entry.readback_ok = if entry.action == "quarantined" {
             !entry.target.exists()
+        } else if let Ok((digest, mode, observed_uid, observed_gid)) =
+            sweep_path_state(&entry.target, entry.kind.contains("directory"))
+        {
+            entry.after_digest = digest;
+            entry.after_mode = mode;
+            entry.after_uid = observed_uid;
+            entry.after_gid = observed_gid;
+            mode == Some(entry.desired_mode)
+                && observed_uid == Some(entry.desired_uid)
+                && observed_gid == Some(entry.desired_gid)
+                && (entry.source_digest.is_none() || entry.after_digest == entry.source_digest)
         } else {
-            entry.target.exists()
+            false
         };
         entry.action = if entry.action == "unchanged" {
             "unchanged".into()
@@ -5905,4 +5959,171 @@ pub(crate) fn demo(
     Ok(
         serde_json::json!({"first_ok":first.ok,"bytes_changed":bytes_changed,"declared_mode":mode_ok,"backup_old_bytes":backup_ok,"second_quiet":quiet,"controlled_target_not_file":controlled_error,"ok":first.ok && first.changed && bytes_changed && mode_ok && backup_ok && quiet && controlled_error}),
     )
+}
+
+#[cfg(test)]
+mod source_shelf_sweep_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn request(
+        source_root: &Path,
+        target_shelf: &Path,
+        mode: u32,
+        provenance_state: &Path,
+    ) -> SourceShelfSweepRequest {
+        let metadata = fs::symlink_metadata(target_shelf).unwrap();
+        let owner = metadata.uid().to_string();
+        let group = metadata.gid().to_string();
+        SourceShelfSweepRequest {
+            source_root: source_root.to_path_buf(),
+            shelf_source: PathBuf::from("agathodaimon"),
+            target_shelf: target_shelf.to_path_buf(),
+            launcher_source_root: source_root.to_path_buf(),
+            launcher_target_root: target_shelf.parent().unwrap().to_path_buf(),
+            launcher_pattern: ".harmonia-no-flat-launchers".into(),
+            shelf_owner: owner,
+            shelf_group: group,
+            shelf_directory_mode: mode,
+            shelf_file_mode: 0o644,
+            launcher_mode: 0o755,
+            prune: false,
+            launcher_exclude: Vec::new(),
+            provenance_state: Some(provenance_state.to_path_buf()),
+            owned_recursive: true,
+            receipt_name: "test".into(),
+        }
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn owned_recursive_apply_converges_root_and_reads_receipts() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-shelf-root-apply-{}", sweep_nonce()));
+        let source_root = root.join("source");
+        let source = source_root.join("agathodaimon");
+        let target = root.join("target/agathodaimon");
+        let receipts = root.join("receipts");
+        let provenance = root.join("state/provenance.json");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        let request = request(&source_root, &target, 0o755, &provenance);
+        let outcome = source_shelf_sweep(
+            &request,
+            &receipts,
+            true,
+            Some(crate::atoms::r#do::InvocationKey::for_apply()),
+        )
+        .unwrap();
+        assert_eq!(mode(&target), 0o755);
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(outcome.promoted_count, 1);
+        let root_entry = outcome
+            .entries
+            .iter()
+            .find(|entry| entry.relative_path == ".")
+            .unwrap();
+        assert_eq!(root_entry.before_mode, Some(0o700));
+        assert_eq!(root_entry.after_mode, Some(0o755));
+        assert_eq!(root_entry.action, "promoted");
+        assert!(root_entry.changed);
+        assert!(root_entry.readback_ok);
+
+        let transaction: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("test.json")).unwrap()).unwrap();
+        assert_eq!(transaction["changed"], true);
+        assert_eq!(transaction["promoted_count"], 1);
+        assert_eq!(transaction["entries"][0]["relative_path"], ".");
+        assert_eq!(transaction["entries"][0]["before_mode"], 0o700);
+        assert_eq!(transaction["entries"][0]["after_mode"], 0o755);
+        assert_eq!(transaction["entries"][0]["action"], "promoted");
+        assert_eq!(transaction["entries"][0]["readback_ok"], true);
+
+        let entry_receipt = fs::read_dir(&receipts)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.file_name().unwrap() != "test.json")
+            .unwrap();
+        let entry_receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(entry_receipt).unwrap()).unwrap();
+        assert_eq!(entry_receipt["entry"]["relative_path"], ".");
+        assert_eq!(entry_receipt["entry"]["before_mode"], 0o700);
+        assert_eq!(entry_receipt["entry"]["after_mode"], 0o755);
+        assert_eq!(entry_receipt["movement"], "promoted");
+        assert_eq!(entry_receipt["truthful_changed"], true);
+        assert_eq!(entry_receipt["entry"]["readback_ok"], true);
+        assert!(provenance.exists());
+        let provenance_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&provenance).unwrap()).unwrap();
+        let provenance_paths = provenance_json["paths"].as_array().unwrap();
+        let target_string = target.display().to_string();
+        let dot_target_string = target.join(".").display().to_string();
+        assert!(provenance_paths.iter().any(|path| path == &target_string));
+        assert!(!provenance_paths.iter().any(|path| path == &dot_target_string));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn owned_recursive_apply_empty_diff_does_not_mutate_target_or_provenance() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-shelf-root-empty-{}", sweep_nonce()));
+        let source_root = root.join("source");
+        let source = source_root.join("agathodaimon");
+        let target = root.join("target/agathodaimon");
+        let receipts = root.join("receipts");
+        let provenance = root.join("state/provenance.json");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        let request = request(&source_root, &target, 0o755, &provenance);
+        let before_meta = fs::symlink_metadata(&target).unwrap();
+        let before_children: Vec<_> = fs::read_dir(&target)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let outcome = source_shelf_sweep(
+            &request,
+            &receipts,
+            true,
+            Some(crate::atoms::r#do::InvocationKey::for_apply()),
+        )
+        .unwrap();
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.promoted_count, 0);
+        let root_entry = outcome
+            .entries
+            .iter()
+            .find(|entry| entry.relative_path == ".")
+            .unwrap();
+        assert_eq!(root_entry.before_mode, Some(0o755));
+        assert_eq!(root_entry.after_mode, Some(0o755));
+        assert_eq!(root_entry.action, "unchanged");
+        assert!(!root_entry.changed);
+        assert!(root_entry.readback_ok);
+        let after_meta = fs::symlink_metadata(&target).unwrap();
+        let after_children: Vec<_> = fs::read_dir(&target)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(before_meta.mode(), after_meta.mode());
+        assert_eq!(before_meta.uid(), after_meta.uid());
+        assert_eq!(before_meta.gid(), after_meta.gid());
+        assert_eq!(before_children, after_children);
+        assert!(!provenance.exists());
+        let transaction: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("test.json")).unwrap()).unwrap();
+        assert_eq!(transaction["changed"], false);
+        assert_eq!(transaction["promoted_count"], 0);
+        assert_eq!(transaction["entries"][0]["relative_path"], ".");
+        assert_eq!(transaction["entries"][0]["action"], "unchanged");
+        assert_eq!(transaction["entries"][0]["changed"], false);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
