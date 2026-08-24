@@ -1,0 +1,12 @@
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias .....='cd ../../../..'
+if [[ -x "$(command -v bat)" ]]; then
+	alias bat='bat --paging=never --style=header,grid --theme=Visual Studio Dark+'
+	alias cat='bat'
+fi
+alias c='clear'
+alias calc='bc'
+alias calculator='bc'
+alias cd..='cd ..'

@@ -1,0 +1,37 @@
+_rebuild_yay() {
+    echo "=== Rebuilding yay ==="
+
+    # Check if yay is installed
+    if ! command -v yay &> /dev/null; then
+        echo "yay is not installed. Cannot rebuild."
+        return 1
+    fi
+
+    # Ensure git and base-devel are installed
+    echo "Ensuring git and base-devel are installed..."
+    sudo pacman -S --needed --noconfirm git base-devel
+
+    # Clone yay-bin (binary version, faster than compiling)
+    echo "Cloning yay-bin repository..."
+    rm -rf /tmp/yay-bin
+    if ! git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin; then
+        echo "Failed to clone yay-bin repository."
+        return 1
+    fi
+
+    # Build and install
+    echo "Building and installing yay..."
+    cd /tmp/yay-bin
+    if makepkg -si --noconfirm; then
+        echo "✅ yay rebuilt successfully!"
+        cd - > /dev/null
+        rm -rf /tmp/yay-bin
+        return 0
+    else
+        echo "❌ Failed to rebuild yay."
+        cd - > /dev/null
+        return 1
+    fi
+}
+
+# Wrapper function that auto-rebuilds yay on library errors

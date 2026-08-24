@@ -1,0 +1,28 @@
+_listcommands() {
+    # Use Zsh's print with ANSI colors for consistency
+    local RED="%F{red}"
+    local YELLOW="%F{yellow}"
+    local BLUE="%F{blue}"
+    local NOCOLOR="%f"
+
+print -P "${RED}Aliases:${NOCOLOR}"
+for alias in ${(ok)aliases}; do
+    alias_name=$alias
+    alias_command=${aliases[$alias]}
+    print -P "${YELLOW}${alias_name}${NOCOLOR}='${BLUE}${alias_command}${NOCOLOR}'"
+done
+
+print -P "\n${RED}Functions:${NOCOLOR}"
+# Correctly sort function names alphabetically, excluding those starting with an underscore
+func_names=(${(ok)functions})
+for func in "${func_names[@]}"; do
+    [[ $func == _* ]] && continue  # Skip functions starting with an underscore
+    print -P "${YELLOW}$func${NOCOLOR}"
+done
+
+}
+
+#nnn file manager
+
+
+alias aliases.set='_listcommands | $PAGER'

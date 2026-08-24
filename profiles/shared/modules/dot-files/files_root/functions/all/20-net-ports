@@ -1,0 +1,4 @@
+net.ports() {
+    echo "=== Open Ports ==="
+    sudo ss -tulpn | grep LISTEN
+    }

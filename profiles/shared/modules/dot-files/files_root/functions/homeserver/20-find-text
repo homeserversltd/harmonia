@@ -1,0 +1,18 @@
+find.text() {
+	# Use The Silver Searcher if installed
+	if [[ -x "$(command -v ag)" ]]; then
+		ag --color --ignore-case --hidden --literal "${@}" 2> /dev/null
+
+	# Use ripgrep if installed
+	elif [[ -x "$(command -v rg)" ]]; then
+		rg --pretty "${@}" | more
+
+	else # Use grep
+		# -i case-insensitive
+		# -I ignore binary files
+		# -H print filename
+		# -r recursive search
+		# -n print line number
+		grep -iIHrn --color=always "${@}" . | $PAGER -r
+	fi
+}

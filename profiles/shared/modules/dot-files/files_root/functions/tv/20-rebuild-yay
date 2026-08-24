@@ -1,0 +1,5 @@
+rebuild.yay() {
+    _rebuild_yay
+}
+
+# Function to update oh-my-posh if there's a version change

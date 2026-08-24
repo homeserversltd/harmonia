@@ -1,0 +1,5 @@
+_update_atuin(){
+    bash <(curl --proto '=https' --tlsv1.2 -sSf https://setup.atuin.sh) -- --non-interactive
+}
+
+# Function to rebuild yay when it breaks due to library updates

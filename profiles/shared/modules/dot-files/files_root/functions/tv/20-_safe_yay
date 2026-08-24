@@ -1,0 +1,42 @@
+_safe_yay() {
+    # Try running yay with the provided arguments
+    if ! command -v yay >/dev/null 2>&1; then
+        echo "yay is not installed."
+        return 127
+    fi
+    local yay_output
+    local yay_error
+    local yay_exit_code
+
+    # Capture both stdout and stderr
+    yay_output=$(yay "$@" 2>&1)
+    yay_exit_code=$?
+
+    # Check if the error is related to library issues
+    if [[ $yay_exit_code -ne 0 ]] && echo "$yay_output" | grep -q "libalpm.so"; then
+        echo "🔧 Detected yay library compatibility issue (libalpm.so error)"
+        echo "This typically happens after pacman updates. Rebuilding yay..."
+        echo ""
+
+        # Attempt to rebuild yay
+        if _rebuild_yay; then
+            echo ""
+            echo "Retrying original yay command..."
+            # Retry the original command
+            yay "$@"
+            return $?
+        else
+            echo "Failed to rebuild yay. Please rebuild manually with: rebuild.yay"
+            return 1
+        fi
+    else
+        # No library error, just return the output and exit code
+        echo "$yay_output"
+        return $yay_exit_code
+    fi
+}
+
+# User-facing function to manually rebuild yay
+
+
+alias update='sudo pacman -Syu --noconfirm && _safe_yay -Syu --aur --noconfirm && _update_oh_my_posh && _update_atuin && sudo reboot'

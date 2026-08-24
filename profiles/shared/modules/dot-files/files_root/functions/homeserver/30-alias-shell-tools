@@ -1,0 +1,5 @@
+alias fastfetch='fastfetch -c neofetch.jsonc'
+alias fetch='fastfetch'
+alias free='free -h'
+alias home='cd ~'
+alias logs.bluetooth='sudo journalctl -b | grep bluetooth | $PAGER'

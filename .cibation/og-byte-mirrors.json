@@ -1,0 +1,7 @@
+{
+  "og_byte_mirrors": [
+    "profiles/shared/modules/dot-files/files_root/functions/homeserver/30-alias-services-and-update",
+    "profiles/shared/modules/dot-files/files_root/profile/homeserver/20-profile",
+    "profiles/shared/modules/dot-files/files_root/zshrc/homeserver/20-zshrc"
+  ]
+}

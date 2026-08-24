@@ -1,0 +1,7 @@
+alias logs.boot='sudo journalctl -b | $PAGER'
+alias logs.networkmanager='sudo journalctl -u NetworkManager | $PAGER'
+alias logs.updates='sudo journalctl -b | grep pacman | $PAGER'
+alias logs.usb='sudo journalctl -b | grep usb | $PAGER'
+alias logs.wifi='sudo journalctl -b | grep wpa_supplicant | $PAGER'
+alias moar="less -RN --mouse --wheel-lines=10"
+alias more='less'

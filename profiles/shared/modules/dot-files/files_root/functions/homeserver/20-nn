@@ -1,0 +1,24 @@
+nn(){
+# Block nesting of nnn in subshells
+    [ "${NNNLVL:-0}" -eq 0 ] || {
+        echo "nnn is already running"
+        return
+    }
+    if [ -z "$EDITOR" ]; then
+        EDITOR=nano
+    fi
+
+    # Ensure FIFO exists for plugins
+    NNN_FIFO="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/fifo"
+    if [ ! -p "$NNN_FIFO" ]; then
+        mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/nnn"
+        (umask 077; mkfifo "$NNN_FIFO" 2>/dev/null)
+    fi
+    export NNN_FIFO
+    export NNN_TMPFILE="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.lastd"
+    command nnn -dHEPp "$@"
+    [ ! -f "$NNN_TMPFILE" ] || {
+        . "$NNN_TMPFILE"
+        rm -f -- "$NNN_TMPFILE" > /dev/null
+    }
+}

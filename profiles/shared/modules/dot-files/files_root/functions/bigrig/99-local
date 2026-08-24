@@ -1,0 +1,2 @@
+
+[[ -f ~/.functions.local ]] && source ~/.functions.local

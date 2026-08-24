@@ -1,0 +1,15 @@
+alias clear='clear; fastfetch'
+alias cls='clear'
+alias cpu='ps aux | sort -r -nk +4 | head | $PAGER'
+alias cpuinfo='lscpu | $PAGER'
+alias df='df --human-readable --print-type --block-size=1K --exclude type=squashfs'
+alias ds='df --exclude-type=tmpfs'
+alias editrc='edit ~/.zshrc'
+alias errors.boot='sudo journalctl -b -p err | $PAGER'
+alias errors.driver='sudo dmesg | grep -i error | $PAGER'
+alias errors.update='sudo grep -i error /var/log/pacman.log | $PAGER'
+if command -v eza >/dev/null 2>&1; then
+	alias ls='eza --icons --sort=modified --oneline --hyperlink'
+	alias la='eza --icons --sort=modified --all --reverse --classify=auto --across'
+	alias laa='eza --icons --sort=name --all --classify=auto --long'
+fi

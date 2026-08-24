@@ -1,0 +1,7 @@
+find.process() {
+    if [ -z "$1" ]; then
+    echo "Usage: proc.find <process_name>"
+    return 1
+fi
+ps aux | grep -i "$1" | grep -v grep
+}

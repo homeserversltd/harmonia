@@ -1,0 +1,11 @@
+purge() {
+    local programs=("$@")
+    uninstall_programs "${programs[@]}"
+}
+
+
+
+
+
+alias remove='purge'
+alias uninstall='purge'

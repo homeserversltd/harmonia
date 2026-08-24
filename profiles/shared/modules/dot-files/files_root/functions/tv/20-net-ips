@@ -1,0 +1,9 @@
+
+net.ips() {
+    echo "=== IP Addresses ==="
+    ip -br a
+    }
+
+
+
+# Extracts any archive(s)

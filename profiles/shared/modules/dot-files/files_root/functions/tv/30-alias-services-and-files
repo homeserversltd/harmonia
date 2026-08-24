@@ -1,0 +1,46 @@
+alias rr='refresh'
+# Aliases for systemd
+if [[ -x "$(command -v systemctl)" ]]; then
+	# Get a list of all services
+	alias services='systemctl list-units --type=service --state=running,failed'
+	alias services.all='systemctl list-units --type=service'
+
+	# Find what systemd services have failed
+	alias services.failed='systemctl --failed'
+
+	# Get the status of a services
+	alias service.status='sudo systemctl status'
+
+	# Start or stop services
+	alias service.start='sudo systemctl start'
+	alias service.stop='sudo systemctl stop'
+	alias service.kill='sudo systemctl kill'
+	alias service.restart='sudo systemctl restart' # Stop and start
+	alias service.reload='sudo systemctl reload'   # Reload configuration
+	alias service.enable='sudo systemctl enable'
+	alias service.disable='sudo systemctl disable'
+fi
+# Clear the screen with both clear and cls shorthand
+if [[ -x "$(command -v btop)" ]]; then
+	alias top='btop'
+elif [[ -x "$(command -v bpytop)" ]]; then
+	alias top='bpytop'
+elif [[ -x "$(command -v bashtop)" ]]; then
+	alias top='bashtop'
+elif [[ -x "$(command -v nmon)" ]]; then
+	alias top='nmon'
+elif [[ -x "$(command -v glances)" ]]; then
+	alias top='glances'
+elif [[ -x "$(command -v ytop)" ]]; then
+	alias top='ytop'
+elif [[ -x "$(command -v gtop)" ]]; then
+	alias top='gtop'
+elif [[ -x "$(command -v htop)" ]]; then
+	alias top='htop'
+fi
+alias tree='tree -CAhF --dirsfirst'
+alias treed='tree -CAFd'
+# Show the USB device tree
+if [[ -x "$(command -v lsusb)" ]]; then
+	alias usb='lsusb -t'
+fi

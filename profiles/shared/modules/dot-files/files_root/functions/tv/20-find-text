@@ -1,0 +1,25 @@
+find.text() {
+	# If The Silver Searcher is installed, use that
+	# Link: https://github.com/ggreer/the_silver_searcher
+	# Hint: You can use --ignore "dir/or/file"
+	if [[ -x "$(command -v ag)" ]]; then
+		ag --color --ignore-case --hidden --literal "${@}" 2> /dev/null
+
+	# If ripgrep is installed, use that
+	# Link: https://github.com/BurntSushi/ripgrep
+	elif [[ -x "$(command -v rg)" ]]; then
+		rg --pretty "${@}" | more
+
+	else # Use grep
+		# Link: https://www.howtogeek.com/496056/how-to-use-the-grep-command-on-linux/
+		# Hint: You can use --exclude='/dir/or/file'
+		# -i case-insensitive
+		# -I ignore binary files
+		# -H causes filename to be printed
+		# -r recursive search
+		# -n causes line number to be printed
+		# optional: -F treat search term as a literal, not a regular expression
+		# optional: -l only print filenames and not the matching lines ex. grep -irl "$@" *
+		grep -iIHrn --color=always "${@}" . | $PAGER -r
+	fi
+}

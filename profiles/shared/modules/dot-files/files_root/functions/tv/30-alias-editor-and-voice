@@ -1,0 +1,4 @@
+alias nano='nano --smarthome --multibuffer --const --autoindent'
+alias neofetch='fastfetch'
+alias nv='~/bin/piper-tts-prompt.sh'
+alias nvf='~/bin/piper-tts-prompt.sh -f'  # female voice (libritts_r-medium)
