@@ -150,7 +150,11 @@ pub use crate::atoms::command;
 pub(crate) use crate::atoms::comparison;
 pub use crate::atoms::declaration;
 pub mod files;
-pub use crate::atoms::git_artifact;
+pub mod git_artifact {
+    pub use crate::atoms::git_artifact::*;
+    pub(crate) use crate::atoms::git_artifact::scoped_request;
+    pub(crate) use crate::pull_repo::acquire_source;
+}
 #[path = "health/index.rs"]
 pub(crate) mod health;
 pub mod household_time;

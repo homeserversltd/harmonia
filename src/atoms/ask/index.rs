@@ -379,7 +379,27 @@ pub(crate) fn git_observe(
     args: &[&str],
     cwd: Option<&str>,
 ) -> crate::atoms::git_artifact::CommandReceipt {
-    crate::atoms::git_artifact::capture_git(request, args, cwd)
+    let context = match crate::atoms::git_artifact::git_command_context(request) {
+        Ok(context) => context,
+        Err(stderr) => {
+            return crate::atoms::git_artifact::CommandReceipt {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr,
+            };
+        }
+    };
+    let mut owned_args = context.config_args;
+    owned_args.extend(args.iter().map(|arg| (*arg).to_string()));
+    let refs = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::atoms::command::capture_with_cwd_as_bearer_and_env(
+        "/usr/bin/git",
+        &refs,
+        cwd,
+        &request.bearer,
+        context.env,
+    )
 }
 
 pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::atoms::git_artifact::CommandReceipt {
@@ -391,7 +411,7 @@ pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::atoms::git_artifa
     )
     .with_bearer(bearer)
     .with_safe_directory(path);
-    crate::atoms::git_artifact::capture_git(&request, &["rev-parse", "HEAD"], path.to_str())
+    git_observe(&request, &["rev-parse", "HEAD"], path.to_str())
 }
 
 pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
@@ -476,7 +496,7 @@ pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
             }
         }
         let request = scoped_request(plan, candidate, plan.destination.clone());
-        let command = crate::atoms::git_artifact::capture_git(
+        let command = git_observe(
             &request,
             &["ls-remote", "--refs", &candidate.locator, &reference],
             None,
@@ -563,7 +583,7 @@ pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome>
             return None;
         }
         let reference = format!("refs/heads/{}", plan.reference);
-        let remote = crate::atoms::git_artifact::capture_git(
+        let remote = git_observe(
             &request,
             &["ls-remote", "--refs", &candidate.locator, &reference],
             None,

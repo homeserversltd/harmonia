@@ -474,7 +474,7 @@ pub(crate) fn execute_git_artifact_step(
 ) -> Result<OperationOutcome, String> {
     let source_plan = routine_source_plan(step, manifest)?;
     let outcome = if apply {
-        tools::git_artifact::acquire_source(&source_plan, invocation)
+        crate::pull_repo::acquire_source(&source_plan, invocation)
     } else {
         tools::git_artifact::SourceOutcome {
             ok: true,

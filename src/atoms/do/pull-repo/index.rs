@@ -14,7 +14,49 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::atoms::git_artifact::{capture_git, is_lower_hex_sha, parse_declared_remote_head};
+use crate::atoms::git_artifact::{
+    credential_scope, git_command_context, is_lower_hex_sha, parse_declared_remote_head,
+};
+
+fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
+    let context = match git_command_context(request) {
+        Ok(context) => context,
+        Err(stderr) => return CommandReceipt {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr,
+        },
+    };
+    let mut owned_args = context.config_args;
+    owned_args.extend(args.iter().map(|arg| (*arg).to_string()));
+    let refs = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::atoms::command::capture_with_cwd_as_bearer_and_env(
+        "/usr/bin/git", &refs, cwd, &request.bearer, context.env,
+    )
+}
+
+fn destination_type(path: &Path) -> &'static str {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return "absent",
+        Err(_) => return "other",
+    };
+    if metadata.file_type().is_symlink() {
+        return "symlink";
+    }
+    if metadata.file_type().is_file() {
+        return "regular-file";
+    }
+    if metadata.is_dir() {
+        return if path.join(".git").exists() {
+            "git-checkout"
+        } else {
+            "non-git-directory"
+        };
+    }
+    "other"
+}
 
 pub(crate) fn preserved_non_git_path(path: &Path) -> PathBuf {
     let stamp = SystemTime::now()
@@ -71,6 +113,11 @@ fn ownership_prepared_result(
 }
 
 fn sync_repo(request: &Request) -> SyncResult {
+    let mut initial_transcript = vec![
+        format!("destination_type={}", destination_type(&request.path)),
+        format!("requested_ref={}", request.branch),
+        format!("credential_scope={}", credential_scope(request)),
+    ];
     let preparation = match prepare_bearer_writable_path(request) {
         Ok(preparation) => preparation,
         Err(stderr) => {
@@ -78,7 +125,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                 command: CommandReceipt {
                     ok: false,
                     code: -1,
-                    stdout: String::new(),
+                    stdout: initial_transcript.join("\n"),
                     stderr,
                 },
                 changed: false,
@@ -87,7 +134,8 @@ fn sync_repo(request: &Request) -> SyncResult {
     };
     let ownership_changed = preparation.changed;
     let mut repository_config_changed = false;
-    let mut transcript = preparation.transcript;
+    initial_transcript.extend(preparation.transcript);
+    let mut transcript = initial_transcript;
     if !request.path.join(".git").exists() {
         let Some(repo) = request.repo.as_deref() else {
             return ownership_prepared_result(
@@ -185,6 +233,14 @@ fn sync_repo(request: &Request) -> SyncResult {
                 changed: ownership_changed,
             };
         }
+        let resulting_head = capture_git(
+            request,
+            &["rev-parse", "HEAD^{commit}"],
+            request.path.to_str(),
+        );
+        if resulting_head.ok {
+            transcript.push(format!("resulting_head={}", resulting_head.stdout.trim()));
+        }
         return SyncResult {
             command: CommandReceipt {
                 ok: true,
@@ -209,6 +265,21 @@ fn sync_repo(request: &Request) -> SyncResult {
     if !dirty.ok {
         return ownership_prepared_result(dirty, ownership_changed, &transcript);
     }
+    let prior_branch =
+        crate::atoms::ask::git_observe(request, &["symbolic-ref", "--short", "HEAD"], cwd);
+    transcript.push(format!("prior_head={}", before.stdout.trim()));
+    transcript.push(format!(
+        "prior_branch={}",
+        if prior_branch.ok {
+            prior_branch.stdout.trim()
+        } else {
+            "detached-or-unavailable"
+        }
+    ));
+    transcript.push(format!(
+        "dirty_state={}",
+        if dirty.stdout.trim().is_empty() { "clean" } else { "dirty" }
+    ));
     if !dirty.stdout.trim().is_empty() {
         return ownership_prepared_result(
             CommandReceipt {
@@ -221,10 +292,32 @@ fn sync_repo(request: &Request) -> SyncResult {
             &transcript,
         );
     }
+    let configured = request.repo.as_deref().map(|repo| {
+        let probe = crate::atoms::ask::git_observe(
+            request,
+            &["remote", "get-url", &request.remote],
+            cwd,
+        );
+        transcript.push(format!("prior_remote_configured={}", probe.ok));
+        transcript.push(format!(
+            "prior_remote_matches_declared={}",
+            probe.ok && probe.stdout.trim() == repo
+        ));
+        probe
+    });
+    let local_helpers_probe = crate::atoms::ask::git_observe(
+        request,
+        &["config", "--local", "--get-all", "credential.helper"],
+        cwd,
+    );
+    let local_credential_helpers_present =
+        local_helpers_probe.ok && !local_helpers_probe.stdout.trim().is_empty();
+    transcript.push(format!(
+        "local_credential_helpers_present={local_credential_helpers_present}"
+    ));
 
     if let Some(repo) = request.repo.as_deref() {
-        let configured =
-            crate::atoms::ask::git_observe(request, &["remote", "get-url", &request.remote], cwd);
+        let configured = configured.expect("remote probe exists when repo is declared");
         if !configured.ok {
             return ownership_prepared_result(configured, ownership_changed, &transcript);
         }
@@ -249,12 +342,7 @@ fn sync_repo(request: &Request) -> SyncResult {
         }
     }
 
-    let local_helpers = crate::atoms::ask::git_observe(
-        request,
-        &["config", "--local", "--get-all", "credential.helper"],
-        cwd,
-    );
-    if local_helpers.ok && !local_helpers.stdout.trim().is_empty() {
+    if local_credential_helpers_present {
         let clear = capture_git(
             request,
             &["config", "--local", "--unset-all", "credential.helper"],
@@ -268,8 +356,8 @@ fn sync_repo(request: &Request) -> SyncResult {
             return ownership_prepared_result(clear, ownership_changed, &transcript);
         }
         repository_config_changed = true;
-    } else if !local_helpers.ok && local_helpers.code != 1 {
-        return ownership_prepared_result(local_helpers, ownership_changed, &transcript);
+    } else if !local_helpers_probe.ok && local_helpers_probe.code != 1 {
+        return ownership_prepared_result(local_helpers_probe, ownership_changed, &transcript);
     }
 
     let remote_tracking_refspec = format!(
@@ -292,6 +380,14 @@ fn sync_repo(request: &Request) -> SyncResult {
             },
             changed: ownership_changed,
         };
+    }
+    let intended = crate::atoms::ask::git_observe(
+        request,
+        &["rev-parse", &format!("{}/{}", request.remote, request.branch)],
+        cwd,
+    );
+    if intended.ok {
+        transcript.push(format!("intended_resulting_head={}", intended.stdout.trim()));
     }
     let checkout = capture_git(request, &["checkout", &request.branch], cwd);
     transcript.push(format!(
@@ -335,6 +431,7 @@ fn sync_repo(request: &Request) -> SyncResult {
         || before.stdout.trim() != after.stdout.trim();
     transcript.push(format!("before={}", before.stdout.trim()));
     transcript.push(format!("after={}", after.stdout.trim()));
+    transcript.push(format!("resulting_head={}", after.stdout.trim()));
     SyncResult {
         command: CommandReceipt {
             ok: true,
@@ -1084,4 +1181,71 @@ pub(crate) fn git_acquire(
     ) -> SourceOutcome,
 ) -> SourceOutcome {
     callback(authorization, invocation)
+}
+
+pub(crate) fn demo(
+    root: &Path,
+    invocation: Option<crate::atoms::r#do::InvocationKey>,
+) -> Result<serde_json::Value, String> {
+    let source = root.join("source");
+    let destination = root.join("destination");
+    fs::create_dir_all(&source).map_err(|e| e.to_string())?;
+    for args in [
+        &["init", "-b", "main"][..],
+        &["config", "user.email", "demo@example.invalid"],
+        &["config", "user.name", "Harmonia Demo"],
+    ] {
+        if !crate::atoms::command::capture_with_cwd("/usr/bin/git", args, source.to_str())
+            .ok
+        {
+            return Err("git-demo-init-failed".into());
+        }
+    }
+    fs::write(source.join("payload"), b"source-bytes\n").map_err(|e| e.to_string())?;
+    for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
+        if !crate::atoms::command::capture_with_cwd("/usr/bin/git", args, source.to_str())
+            .ok
+        {
+            return Err("git-demo-commit-failed".into());
+        }
+    }
+    let head_before = crate::atoms::command::capture_with_cwd(
+        "/usr/bin/git",
+        &["rev-parse", "HEAD"],
+        source.to_str(),
+    );
+    let plan = SourcePlan {
+        candidates: vec![SourceCandidate {
+            kind: SourceCandidateKind::LocalCheckout,
+            locator: source.display().to_string(),
+            credential_selector: None,
+        }],
+        reference: "main".into(),
+        destination: destination.clone(),
+        expected_commit: None,
+        bearer: "owner".into(),
+        credentials: std::collections::BTreeMap::new(),
+    };
+    let first = crate::pull_repo::acquire_source(&plan, invocation);
+    let first_changed = first.ok && first.changed;
+    let destination_payload = destination.join("payload");
+    let exact = destination_payload.is_file()
+        && fs::read(&destination_payload)
+            .map(|bytes| bytes == b"source-bytes\n")
+            .unwrap_or(false);
+    let second = crate::pull_repo::acquire_source(&plan, invocation);
+    let quiet = second.ok && !second.changed;
+    let head_after = crate::atoms::command::capture_with_cwd(
+        "/usr/bin/git",
+        &["rev-parse", "HEAD"],
+        source.to_str(),
+    );
+    let source_unchanged =
+        head_before.ok && head_after.ok && head_before.stdout == head_after.stdout;
+    Ok(serde_json::json!({
+        "source_head_unchanged": source_unchanged, "destination_exact": exact, "first_movement": first_changed, "second_quiet": quiet, "production_ok": first.ok && second.ok,
+        "first_ok": first.ok, "first_changed": first.changed, "first_message": format!("{:?}", first.receipt), "first_attempts": format!("{:?}", first.receipt.attempts),
+        "second_ok": second.ok, "second_changed": second.changed, "second_message": format!("{:?}", second.receipt), "second_attempts": format!("{:?}", second.receipt.attempts),
+        "source_head_before": head_before.stdout, "source_head_after": head_after.stdout, "ok": first_changed && exact && quiet && source_unchanged,
+    }))
 }

@@ -1,5 +1,3 @@
-use super::command;
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -75,69 +73,51 @@ impl Request {
     }
 }
 
-pub(crate) fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
-    let mut env = match git_ssh_env(request.ssh_key_path.as_deref()) {
-        Ok(env) => env,
-        Err(stderr) => {
-            return CommandReceipt {
-                ok: false,
-                code: -1,
-                stdout: String::new(),
-                stderr,
-            };
-        }
-    };
-    // Read-only Git probes must not refresh the index or create lock files.
+pub(crate) struct GitCommandContext {
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) config_args: Vec<String>,
+}
+
+pub(crate) fn git_command_context(request: &Request) -> Result<GitCommandContext, String> {
+    let mut env = git_ssh_env(request.ssh_key_path.as_deref())?;
     env.insert("GIT_OPTIONAL_LOCKS".into(), "0".into());
     let estate_single_source = request
         .repo
         .as_deref()
         .is_some_and(|repo| repo.starts_with(ESTATE_FORGEJO_PREFIX));
     let credential_helper = if estate_single_source {
-        match estate_forgejo_credential_helper() {
-            Ok(helper) => Some(helper),
-            Err(stderr) => {
-                return CommandReceipt {
-                    ok: false,
-                    code: -1,
-                    stdout: String::new(),
-                    stderr,
-                };
-            }
-        }
+        Some(estate_forgejo_credential_helper()?)
     } else {
         owner_https_credential_helper(request)
     };
     let mut safe_configs = Vec::with_capacity(request.safe_directories.len());
     for path in &request.safe_directories {
-        let path = match path.to_str() {
-            Some(path) => path,
-            None => {
-                return CommandReceipt {
-                    ok: false,
-                    code: -1,
-                    stdout: String::new(),
-                    stderr: format!("git-safe-directory-non-utf8 {}", path.display()),
-                };
-            }
-        };
+        let path = path
+            .to_str()
+            .ok_or_else(|| format!("git-safe-directory-non-utf8 {}", path.display()))?;
         safe_configs.push(format!("safe.directory={path}"));
     }
-    let mut git_args = Vec::with_capacity(args.len() + 4 + safe_configs.len() * 2);
+    let mut config_args = Vec::with_capacity(4 + safe_configs.len() * 2);
     for config in &safe_configs {
-        git_args.extend(["-c", config.as_str()]);
+        config_args.extend(["-c".to_string(), config.clone()]);
     }
     if let Some(helper) = credential_helper.as_deref() {
-        git_args.extend(["-c", "credential.helper="]);
-        git_args.extend(["-c", helper]);
+        config_args.extend(["-c".to_string(), "credential.helper=".to_string()]);
+        config_args.extend(["-c".to_string(), helper.to_string()]);
     }
-    git_args.extend_from_slice(args);
-    command::capture_with_cwd_as_bearer_and_env(
-        "/usr/bin/git",
-        &git_args,
-        cwd,
-        &request.bearer,
-        env,
+    Ok(GitCommandContext { env, config_args })
+}
+
+pub(crate) fn credential_scope(request: &Request) -> String {
+    format!(
+        "ssh_key_configured={};https_credentials_configured={};estate_forgejo={}",
+        request.ssh_key_path.is_some(),
+        request.git_https_credential_host.is_some()
+            && request.git_https_credential_token_path.is_some(),
+        request
+            .repo
+            .as_deref()
+            .is_some_and(|repo| repo.starts_with(ESTATE_FORGEJO_PREFIX)),
     )
 }
 
@@ -259,10 +239,6 @@ fn git_ssh_env(path: Option<&Path>) -> Result<BTreeMap<String, String>, String> 
 
 pub fn plan(request: &Request) -> Outcome {
     crate::pull_repo::plan(request)
-}
-
-pub fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
-    crate::pull_repo::apply(request, invocation)
 }
 
 pub(crate) fn observe_request_current(request: &Request) -> Option<Outcome> {
@@ -415,78 +391,4 @@ pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome>
     crate::atoms::ask::observe_source_current(plan)
 }
 
-pub fn acquire_source(
-    plan: &SourcePlan,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> SourceOutcome {
-    crate::pull_repo::acquire_source(plan, invocation)
-}
-
-pub(crate) fn demo(
-    root: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<serde_json::Value, String> {
-    let source = root.join("source");
-    let destination = root.join("destination");
-    std::fs::create_dir_all(&source).map_err(|e| e.to_string())?;
-    for args in [
-        &["init", "-b", "main"][..],
-        &["config", "user.email", "demo@example.invalid"],
-        &["config", "user.name", "Harmonia Demo"],
-    ] {
-        if !command::capture_with_cwd("/usr/bin/git", args, source.to_str()).ok {
-            return Err("git-demo-init-failed".into());
-        }
-    }
-    std::fs::write(source.join("payload"), b"source-bytes\n").map_err(|e| e.to_string())?;
-    for args in [&["add", "payload"][..], &["commit", "-m", "seed"]] {
-        if !command::capture_with_cwd("/usr/bin/git", args, source.to_str()).ok {
-            return Err("git-demo-commit-failed".into());
-        }
-    }
-    let head_before =
-        command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], source.to_str());
-    let plan = SourcePlan {
-        candidates: vec![SourceCandidate {
-            kind: SourceCandidateKind::LocalCheckout,
-            locator: source.display().to_string(),
-            credential_selector: None,
-        }],
-        reference: "main".into(),
-        destination: destination.clone(),
-        expected_commit: None,
-        bearer: DEFAULT_BEARER.into(),
-        credentials: BTreeMap::new(),
-    };
-    let first = crate::pull_repo::acquire_source(&plan, invocation);
-    let first_changed = first.ok && first.changed;
-    let destination_payload = destination.join("payload");
-    let exact = destination_payload.is_file()
-        && std::fs::read(&destination_payload)
-            .map(|bytes| bytes == b"source-bytes\n")
-            .unwrap_or(false);
-    let second = crate::pull_repo::acquire_source(&plan, invocation);
-    let quiet = second.ok && !second.changed;
-    let head_after =
-        command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], source.to_str());
-    let source_unchanged =
-        head_before.ok && head_after.ok && head_before.stdout == head_after.stdout;
-    Ok(serde_json::json!({
-        "source_head_unchanged": source_unchanged,
-        "destination_exact": exact,
-        "first_movement": first_changed,
-        "second_quiet": quiet,
-        "production_ok": first.ok && second.ok,
-        "first_ok": first.ok,
-        "first_changed": first.changed,
-        "first_message": format!("{:?}", first.receipt),
-        "first_attempts": format!("{:?}", first.receipt.attempts),
-        "second_ok": second.ok,
-        "second_changed": second.changed,
-        "second_message": format!("{:?}", second.receipt),
-        "second_attempts": format!("{:?}", second.receipt.attempts),
-        "source_head_before": head_before.stdout,
-        "source_head_after": head_after.stdout,
-        "ok": first_changed && exact && quiet && source_unchanged,
-    }))
-}
+pub(crate) use crate::atoms::r#do::pull_repo::demo;
