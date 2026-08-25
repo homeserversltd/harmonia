@@ -1,8 +1,0 @@
-
-procure() {
-    local programs=("$@")
-    _install_programs "${programs[@]}"
-}
-
-
-# Function to uninstall programs

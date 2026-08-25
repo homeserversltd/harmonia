@@ -1,5 +1,3 @@
-bindkey "^[[1;5C" forward-word
-bindkey "^[[1;5D" backward-word
 
 # Make the delete key behave sanely
 bindkey '^\[\[3~' delete-char

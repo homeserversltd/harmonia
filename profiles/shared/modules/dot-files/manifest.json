@@ -61,6 +61,17 @@
         "backup_existing": true
       },
       "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-tmux-conf",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/tmux-conf",
+        "target_path": "/home/owner/.tmux.conf",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
     }
   ]
 }

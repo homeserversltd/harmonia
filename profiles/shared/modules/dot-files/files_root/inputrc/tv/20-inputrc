@@ -18,8 +18,6 @@ set visible-stats on
 # Show common prefix for menu completion
 set menu-complete-display-prefix on
 
-bindkey "^[[1;5C" forward-word
-bindkey "^[[1;5D" backward-word
 bindkey "^[[3~" delete-char
 bindkey "^H" backward-delete-char
 bindkey "^?" backward-delete-char

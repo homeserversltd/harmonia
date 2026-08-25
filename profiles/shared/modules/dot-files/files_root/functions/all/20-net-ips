@@ -2,6 +2,3 @@ net.ips() {
     echo "=== IP Addresses ==="
     ip -br a
     }
-
-
-# Function to install programs

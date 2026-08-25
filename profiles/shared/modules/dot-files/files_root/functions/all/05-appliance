@@ -1,0 +1,12 @@
+_appliance() {
+    local appliance
+    appliance=$(python3 -c 'import json; print(json.load(open("/etc/appliance/profile.json"))["profile"])' 2>/dev/null) || return 1
+    case "$appliance" in homeserver|tv|homeconsole) print -r -- "$appliance";; *) return 1;; esac
+}
+_pkg() {
+    case "$(_appliance)" in
+        homeserver) print -r -- apt;;
+        tv|homeconsole) print -r -- pacman;;
+        *) return 1;;
+    esac
+}

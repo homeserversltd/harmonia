@@ -1,4 +1,10 @@
 
+if [ -f ~/.functions ]; then
+    source ~/.functions
+fi
+if [ -f ~/.profile ]; then
+    source ~/.profile
+fi
 if [ -f ~/.inputrc ]; then
     source ~/.inputrc
 fi
@@ -17,6 +23,7 @@ export PAGER=less
 export GOPATH=/usr/local/go
 export PATH="/usr/local/go/bin:/usr/local/sbin:/usr/sbin:/sbin:/usr/bin:/bin:$HOME/bin:$HOME/.local/bin:$PATH"
 
+export STARTUP_TIMER="true"
 if [[ "$STARTUP_TIMER" == "true" ]]; then
     START_TIME=$(date +%s%N)
 fi
@@ -55,6 +62,7 @@ location_color="%F{cyan}"
 hostname_color="%F{yellow}" 
 # Construct the prompt with dynamic hostname coloring
 PROMPT="${user_color}%n%f@${hostname_color}%m ${location_color}%~%f -> "
+setopt CORRECT
 
 #############################################
 # Plugins

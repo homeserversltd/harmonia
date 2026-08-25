@@ -1,0 +1,52 @@
+alias edit="$EDITOR"
+alias emacs='emacs --init-directory=~/.config/emacs'
+alias nv='~/bin/piper-tts-prompt.sh'
+alias nvf='~/bin/piper-tts-prompt.sh -f'  # female voice (libritts_r-medium)
+alias add='chezmoi add'
+if [[ -x "$(command -v bat)" ]]; then
+	alias bat='bat --paging=never --style=header,grid'
+	alias cat='bat'
+fi
+alias nvm='~/bin/piper-tts-prompt.sh'  # male voice (default)
+# Show the PCI device tree
+if [[ -x "$(command -v lspci)" ]]; then
+	alias pci='lspci -tv'
+fi
+alias hs='ssh homeserver'
+alias hsbuild='ssh homeserver "cd /var/www/homeserver && sudo npm run build"'
+alias hscp='scp homeserver:'
+alias hsinstall='ssh homeserver "cd /var/www/homeserver && sudo npm install"'
+alias hslogs='ssh -t homeserver "sudo journalctl -u gunicorn.service -f"'
+alias hsmount='sudo mount -t cifs //192.168.123.1/webroot /mnt/temp -o username=root,vers=3.0'
+alias hsreinstall='ssh homeserver "sudo python3 /var/www/homeserver/premium/installer.py reinstall"'
+alias hsrestart='ssh homeserver "sudo systemctl restart gunicorn.service"'
+alias hsstatus='ssh homeserver "systemctl status gunicorn.service"'
+alias hstabs='ssh homeserver "sudo python3 /var/www/homeserver/premium/installer.py --installed"'
+alias hsumount='sudo umount /mnt/temp'
+alias update='sudo pacman -Syu --noconfirm && _safe_yay -Syu --aur --noconfirm && _update_oh_my_posh && _update_atuin && sudo reboot'
+# Aliases for systemd
+if [[ -x "$(command -v systemctl)" ]]; then
+	# Get a list of all services
+	alias services='systemctl list-units --type=service --state=running,failed'
+	alias services.all='systemctl list-units --type=service'
+
+	# Find what systemd services have failed
+	alias services.failed='systemctl --failed'
+
+	# Get the status of a services
+	alias service.status='sudo systemctl status'
+
+	# Start or stop services
+	alias service.start='sudo systemctl start'
+	alias service.stop='sudo systemctl stop'
+	alias service.kill='sudo systemctl kill'
+	alias service.restart='sudo systemctl restart' # Stop and start
+	alias service.reload='sudo systemctl reload'   # Reload configuration
+	alias service.enable='sudo systemctl enable'
+	alias service.disable='sudo systemctl disable'
+fi
+if [[ -x "$(command -v lsusb)" ]]; then
+	alias usb='lsusb -t'
+fi
+alias fastping='ping -c 50 -i.2'
+alias gitpush='/home/anon/bin/gitpush.sh'

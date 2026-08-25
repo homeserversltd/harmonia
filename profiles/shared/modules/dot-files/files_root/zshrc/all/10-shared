@@ -1,0 +1,10 @@
+export STARTUP_TIMER="true"
+
+if [ -f ~/.functions ]; then
+    source ~/.functions
+fi
+if [ -f ~/.profile ]; then
+    source ~/.profile
+fi
+
+setopt CORRECT

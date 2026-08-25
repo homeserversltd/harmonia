@@ -223,6 +223,19 @@ pub(crate) fn compile_fragments_step(
         return Err("compile-fragments-backup-existing-required".into());
     }
     let bytes = compile_fragments(&source_root, appliance)?;
+    if bytes.is_empty() {
+        crate::write_json(
+            &module_dir.join("compile-fragments.json"),
+            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":true,"changed":false,"skipped":true,"artifact":"no-claim","target":target,"selected_appliance":appliance,"bytes":0}),
+        )?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "compile-fragments-no-claim".into(),
+            command: None,
+        });
+    }
     let changed = fs::read(&target)
         .map(|current| current != bytes)
         .unwrap_or(true);
@@ -1070,7 +1083,11 @@ fn integer_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &st
 
 #[cfg(test)]
 mod compile_fragments_tests {
-    use super::compile_fragments;
+    use super::{compile_fragments, compile_fragments_step};
+    use crate::tools::ladder::{LadderManifest, OnFailure};
+    use crate::tools::routine::ValidatedStep;
+    use serde_json::Value;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -1113,6 +1130,68 @@ mod compile_fragments_tests {
 
         let root = fixture("missing-both");
         assert!(compile_fragments(&root, "homeconsole").unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_compilation_is_a_skipped_no_claim_without_touching_target() {
+        let root = fixture("step-empty");
+        let profile_root = root.join("profile");
+        let module_dir = profile_root.join("modules/dot-files");
+        let source_root = root.join("source");
+        let target = root.join("target.conf");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(profile_root.join("index.json"), br#"{"id":"homeconsole"}"#).unwrap();
+        fs::write(&target, b"pre-existing").unwrap();
+
+        let mut args = BTreeMap::new();
+        args.insert(
+            "source_root".into(),
+            Value::String(source_root.display().to_string()),
+        );
+        args.insert(
+            "target_path".into(),
+            Value::String(target.display().to_string()),
+        );
+        args.insert("backup_existing".into(), Value::Bool(true));
+        let step = ValidatedStep {
+            step_id: "compile-fragments".into(),
+            tool: "files".into(),
+            permutation: "compile-fragments".into(),
+            args,
+            on_failure: OnFailure::Stop,
+        };
+        let manifest = LadderManifest {
+            schema: "test".into(),
+            id: "test".into(),
+            version: "1".into(),
+            description: String::new(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            group: None,
+            constants: BTreeMap::new(),
+            package_pins: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: None,
+            ladder: Vec::new(),
+            base_dir: module_dir.clone(),
+        };
+
+        let outcome = compile_fragments_step(&step, &manifest, &module_dir, true, None).unwrap();
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
+        assert!(outcome.skipped);
+        assert_eq!(outcome.message, "compile-fragments-no-claim");
+        assert_eq!(fs::read(&target).unwrap(), b"pre-existing");
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(module_dir.join("compile-fragments.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["artifact"], "no-claim");
+        assert_eq!(receipt["skipped"], true);
+        assert_eq!(receipt["bytes"], 0);
         fs::remove_dir_all(root).unwrap();
     }
 

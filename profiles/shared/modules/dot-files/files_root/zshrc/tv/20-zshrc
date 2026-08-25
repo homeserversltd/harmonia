@@ -1,12 +1,5 @@
-export STARTUP_TIMER="true"
 export EDITOR=micro
 
-if [ -f ~/.functions ]; then
-    source ~/.functions
-fi
-if [ -f ~/.profile ]; then
-    source ~/.profile
-fi
 if [ -f ~/.zshrc.secrets ]; then
     source ~/.zshrc.secrets
 fi
@@ -35,7 +28,6 @@ fi
 export WOODPECKER_SERVER='https://ci.home.arpa'
 
 
-setopt CORRECT
 
 #############################################
 # Plugins

@@ -1,5 +1,3 @@
-
-
 check_authorship() {
     echo "=== AUTHORSHIP VERIFICATION ==="
     echo "Current directory: $(pwd)"
@@ -28,5 +26,6 @@ check_authorship() {
     return 0
 }
 
-
-alias git-check="check_authorship"
+case "$(_appliance)" in
+    tv|homeconsole) alias git-check="check_authorship" ;;
+esac

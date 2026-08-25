@@ -1,4 +1,3 @@
-
 find.empty() {
     echo "Empty Directories:"
     echo "----------------"

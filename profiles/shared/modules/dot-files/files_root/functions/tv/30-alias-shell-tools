@@ -1,6 +1,0 @@
-alias fastfetch='fastfetch -c neofetch.jsonc'
-alias fastping='ping -c 50 -i.2'
-alias fetch='fastfetch'
-alias free='free -h'
-alias gitpush='/home/anon/bin/gitpush.sh'
-alias home='cd ~'

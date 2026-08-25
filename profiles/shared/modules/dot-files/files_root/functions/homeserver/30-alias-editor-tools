@@ -1,4 +1,0 @@
-alias nano='nano --smarthome --multibuffer --const --autoindent'
-alias neofetch='fastfetch'
-# PCI device tree
-if [[ -x "$(command -v lspci)" ]]; then alias pci='lspci -tv'; fi
