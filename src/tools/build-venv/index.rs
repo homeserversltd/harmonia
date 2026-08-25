@@ -16,7 +16,7 @@ pub(crate) struct Request<'a> {
 pub(crate) fn run(
     request: &Request<'_>,
     apply: bool,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let run = crate::tools::declaration::execute(
         "build-venv",
@@ -31,7 +31,7 @@ pub(crate) fn run(
         },
         |authorization, observation| {
             let key = invocation.ok_or_else(|| "build-venv-invocation-key-missing".to_string())?;
-            atoms::r#do::build_venv::converge(authorization, key, request, observation)
+            atoms::r#do::build_venv::converge(&authorization, key, request, observation)
         },
     )?;
     let (observation, movement) = match run {

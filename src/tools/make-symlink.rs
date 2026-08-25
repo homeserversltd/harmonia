@@ -9,7 +9,7 @@ pub(crate) use band::{execute, ValidatedFileSymlinkRequest};
 
 pub(crate) fn demo(
     root: &std::path::Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let receipts = root.join("receipts");
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;

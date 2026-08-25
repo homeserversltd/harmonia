@@ -15,7 +15,7 @@ pub(crate) fn run(
     module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     run_engine_preflight(module_root, receipt_dir, apply, invocation)
 }
@@ -648,7 +648,7 @@ fn copy_verified_artifact(
     source: &Path,
     expected_sha: &str,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     receipt_dir: &Path,
 ) -> Result<CmdResult, String> {
     if !apply {
@@ -706,7 +706,7 @@ fn promote_staged_binary(
     staged: &Path,
     install_bin: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     receipt_dir: &Path,
 ) -> Result<CmdResult, String> {
     if !staged.exists() {
@@ -817,7 +817,7 @@ fn emit_preflight_receipt(
 
 pub(crate) fn demo(
     root: &Path,
-    key: Option<crate::atoms::r#do::InvocationKey>,
+    key: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let key = key.ok_or("renew-self-demo-invocation-key-missing")?;
     let receipts = root.join("receipts");
@@ -909,7 +909,7 @@ pub(crate) fn run_engine_preflight(
     module_root: &Path,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
     let preflight_dir = receipt_dir.join("engine-preflight");
     crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;

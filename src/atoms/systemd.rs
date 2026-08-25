@@ -39,7 +39,7 @@ pub(crate) fn run_permutation(
     timeout_secs: u64,
     apply: bool,
     module_changed_before_step: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     run_permutation_with_policy(
         receipt_dir,
@@ -68,7 +68,7 @@ pub(crate) fn run_permutation_with_policy(
     apply: bool,
     module_changed_before_step: bool,
     restart_policy: Option<&str>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     if permutation == "mask" {
         return run_mask(
@@ -136,7 +136,7 @@ fn run_mask(
     service: &str,
     timeout_secs: u64,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let before = state("is-enabled", service, false, None, timeout_secs);
     let Some(before) = before else {
@@ -173,7 +173,7 @@ fn run_mask(
         |observed| if observed == "masked" { DiffDecision::Empty } else { DiffDecision::Different },
         |authorization, _observed| {
             let result = crate::atoms::r#do::change_unit::unit_change_scoped(
-                authorization,
+                &authorization,
                 invocation.ok_or("invocation-key-missing")?,
                 service,
                 crate::atoms::r#do::change_unit::UnitVerb::Mask,
@@ -203,7 +203,7 @@ fn run_enable_first_present_now(
     candidate_units: &[String],
     timeout_secs: u64,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let service = select_first_present_unit(candidate_units, timeout_secs)?;
     let outcome = run_action(
@@ -533,7 +533,7 @@ fn run_restart(
     apply: bool,
     service_material_changed: bool,
     restart_policy: Option<&str>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     run_action_with_policy(
         receipt_dir,
@@ -561,7 +561,7 @@ pub(crate) fn run_action(
     timeout_secs: u64,
     apply: bool,
     service_material_changed: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     run_action_with_policy(
         receipt_dir,
@@ -590,7 +590,7 @@ fn run_action_with_policy(
     apply: bool,
     service_material_changed: bool,
     restart_policy: Option<&str>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     // Edge-trigger actions are consumed only within this comparison run.
@@ -620,6 +620,7 @@ fn run_action_with_policy(
             }
         },
         |authorization, before| {
+            let authorization = &authorization;
             let result: Result<CmdResult, String> = if apply {
                 let command = if action == "enable-now" {
                     crate::atoms::r#do::change_unit::unit_change_scoped(
@@ -994,7 +995,7 @@ fn write_systemd_receipt(
 
 pub(crate) fn demo(
     root: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let receipts = root.join("receipts");
     std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
@@ -1021,7 +1022,7 @@ pub(crate) fn execute_validated_step(
     module_dir: &std::path::Path,
     apply: bool,
     changed: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     let units: Vec<String> = step
         .args

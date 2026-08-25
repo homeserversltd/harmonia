@@ -139,8 +139,8 @@ fn save_link(path: &Path) -> Result<SavedLink, String> {
 }
 
 fn restore_file(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
     path: &Path,
     saved: &SavedFile,
 ) -> Result<(), String> {
@@ -174,8 +174,8 @@ fn restore_file(
 }
 
 fn restore_link(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
     path: &Path,
     saved: &SavedLink,
 ) -> Result<(), String> {
@@ -289,8 +289,8 @@ fn file_symlink_fault(_fault: FileSymlinkFault) -> Result<(), String> {
 
 
 fn rollback_file_symlink(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
     mutations: &[FileSymlinkMutation],
     source: &Path,
     source_before: &SavedFile,
@@ -320,7 +320,7 @@ fn rollback_file_symlink(
 /// from the non-empty action arm.
 pub(crate) fn execute(
     request: ValidatedFileSymlinkRequest<'_>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     if request.apply && invocation.is_none() {
         return Err("validated-file-symlink-apply-invocation-required".into());
@@ -340,6 +340,7 @@ pub(crate) fn execute(
             }
         },
         |authorization, observation| {
+            let authorization = &authorization;
             let Some(invocation) = invocation else {
                 return write_receipt(&request, TerminalReceipt::no_change(true));
             };
@@ -393,8 +394,8 @@ pub(crate) fn execute(
 /// Validates desired bytes through a hidden source candidate and a non-hidden sibling
 /// link candidate, so Nginx's `sites-enabled/*` include observes the exact candidate.
 fn execute_action(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
     request: ValidatedFileSymlinkRequest<'_>,
     observation: &SymlinkObservation,
 ) -> Result<OperationOutcome, String> {

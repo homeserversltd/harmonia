@@ -13,7 +13,7 @@ pub(crate) fn execute_files(
     module_dir: &Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     package_authority: Option<&crate::PackageAuthority>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     mode_apply: bool,
     module_changed_before_step: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
@@ -466,7 +466,7 @@ use std::fs::File;
 pub(crate) fn execute_manifest_modules(
     profile: &Profile,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: &UpdateMode,
     mode_apply: bool,
     disabled_modules: &BTreeSet<String>,
     projection: &ProfileProjection,
@@ -584,7 +584,7 @@ pub(crate) fn execute_routine_child(
     manifest: &crate::tools::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<
     (
         crate::OperationOutcome,

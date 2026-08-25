@@ -4,8 +4,8 @@ use std::path::Path;
 
 // Operation-semantic symlink actuator seat owned by the files tool.
 pub(crate) fn make_link(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     target: &Path,
     link: &Path,
 ) -> Result<(), String> {
@@ -173,7 +173,7 @@ pub(crate) fn validated_symlink(
     reload_args: &[String],
     timeout_secs: u64,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     crate::atoms::r#do::make_symlink::execute(
         crate::atoms::r#do::make_symlink::ValidatedFileSymlinkRequest {

@@ -48,8 +48,8 @@ pub(crate) fn unit_change(
         .chain(verb.targets_unit().then(|| unit.to_owned()))
         .collect::<Vec<_>>();
     let result = unit_change_scoped(
-        authorization,
-        invocation,
+        &authorization,
+        &invocation,
         unit,
         verb,
         false,
@@ -67,7 +67,7 @@ pub(crate) fn unit_change(
     })
 }
 pub(crate) fn restore_service_state(
-    invocation: InvocationKey,
+    invocation: &InvocationKey,
     state_before: &crate::atoms::systemd::ServiceStateSnapshot,
 ) -> Result<(), String> {
     let before = crate::atoms::systemd::snapshot_service_state(
@@ -97,6 +97,7 @@ pub(crate) fn restore_service_state(
             }
         },
         |authorization, observed| {
+            let authorization = &authorization;
             let target_user = state_before.target_user.as_deref();
             if observed.enabled != state_before.enabled {
                 let verb = if state_before.enabled {
@@ -183,8 +184,8 @@ pub(crate) fn restore_service_state(
 }
 
 pub(crate) fn unit_change_scoped(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     unit: &str,
     verb: UnitVerb,
     user: bool,

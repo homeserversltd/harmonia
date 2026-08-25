@@ -23,8 +23,8 @@ fn receipt(message: String) -> Receipt {
 }
 
 pub(crate) fn mkdir_all(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| e.to_string())?;
@@ -35,8 +35,8 @@ pub(crate) fn mkdir_all(
 }
 
 pub(crate) fn copy(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     source: &Path,
     target: &Path,
     mode: Option<u32>,
@@ -49,8 +49,8 @@ pub(crate) fn copy(
 }
 
 pub(crate) fn rename(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     from: &Path,
     to: &Path,
 ) -> Result<(), String> {
@@ -58,8 +58,8 @@ pub(crate) fn rename(
 }
 
 pub(crate) fn copy_raw(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     source: &Path,
     target: &Path,
     mode: Option<u32>,
@@ -70,8 +70,8 @@ pub(crate) fn copy_raw(
 }
 
 fn atomic_write(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     target: &Path,
     bytes: &[u8],
     mode: Option<u32>,
@@ -179,8 +179,8 @@ fn sync_directory(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn remove_file(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     match fs::symlink_metadata(path) {
@@ -207,8 +207,8 @@ pub(crate) fn remove_file(
 }
 
 pub(crate) fn remove_tree(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     match fs::symlink_metadata(path) {
@@ -437,15 +437,15 @@ fn source_shelf_sweep_exclude(configured: &[String]) -> Vec<String> {
 }
 
 fn carry_excluded_shelf_entries(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     shelf_backup: &Path,
     promoted_shelf: &Path,
     exclude: &[String],
 ) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     fn carry(
-        authorization: crate::atoms::comparison::ActionAuthorization,
-        invocation: crate::atoms::r#do::InvocationKey,
+        authorization: &crate::atoms::comparison::ActionAuthorization,
+        invocation: &crate::atoms::r#do::InvocationKey,
         shelf_backup: &Path,
         promoted_shelf: &Path,
         path: &Path,
@@ -712,8 +712,8 @@ fn digest_file(path: &Path) -> Result<String, String> {
 }
 
 fn sync_authorized_parent(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     launcher_root: &Path,
     path: &Path,
     newly_created: &mut Vec<PathBuf>,
@@ -744,8 +744,8 @@ fn sync_authorized_parent(
 }
 
 fn remove_new_launcher_dirs(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     launcher_root: &Path,
     newly_created: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
@@ -793,8 +793,8 @@ fn sync_sweep_directory(path: &Path) -> Result<(), String> {
 }
 
 fn stage_sweep_tree(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     source: &Path,
     stage: &Path,
     entries: &[SweepTreeEntry],
@@ -1449,7 +1449,7 @@ pub fn source_shelf_sweep(
     request: &SourceShelfSweepRequest,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<SourceShelfSweepOutcome, String> {
     if apply && invocation.is_none() {
         return Err("source-shelf-sweep-invocation-key-missing".into());
@@ -1594,7 +1594,7 @@ fn source_shelf_owned_recursive_sweep(
     request: &SourceShelfSweepRequest,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<SourceShelfSweepOutcome, String> {
     if apply && invocation.is_none() {
         return Err("source-shelf-sweep-invocation-key-missing".into());
@@ -1872,6 +1872,7 @@ fn source_shelf_owned_recursive_sweep(
             }
         },
         |authorization, _| {
+            let authorization = &authorization;
             (|| -> Result<(), String> {
                 let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
                 crate::atoms::r#do::source_shelf::mkdir_all(
@@ -2138,7 +2139,7 @@ fn source_shelf_sweep_with_fault(
     receipt_dir: &Path,
     apply: bool,
     fault: SourceShelfSweepFault,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<SourceShelfSweepOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
     validate_source_shelf_relative_path(&request.shelf_source)?;
@@ -2362,6 +2363,7 @@ fn source_shelf_sweep_with_fault(
             }
         },
         |authorization, _| {
+            let authorization = &authorization;
             let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
             let shelf_parent = request.target_shelf.parent().ok_or_else(|| {
                 format!(

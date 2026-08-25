@@ -470,7 +470,7 @@ pub(crate) fn execute_git_artifact_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_plan = routine_source_plan(step, manifest)?;
     let outcome = if apply {
@@ -615,7 +615,7 @@ pub(crate) fn routine_source_plan(
 pub(crate) fn execute_source(
     plan: &tools::git_artifact::SourcePlan,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> tools::git_artifact::SourceOutcome {
     if apply {
         return crate::pull_repo::acquire_source(plan, invocation);
@@ -709,7 +709,7 @@ pub(crate) fn execute_manifest_band(
     module_dir: &Path,
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
-    key: Option<crate::atoms::r#do::InvocationKey>,
+    key: Option<&crate::atoms::r#do::InvocationKey>,
     mode_apply: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
@@ -828,7 +828,7 @@ use crate::receipts::event;
 pub(crate) fn execute_manifest_modules(
     profile: &Profile,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: &UpdateMode,
     mode_apply: bool,
     disabled_modules: &BTreeSet<String>,
     projection: &ProfileProjection,
@@ -959,7 +959,7 @@ pub(crate) fn execute_routine_child(
     manifest: &crate::tools::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
     let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
     let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;

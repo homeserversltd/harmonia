@@ -178,8 +178,8 @@ pub(crate) fn capture(root: &Path) -> Result<Image, String> {
     })
 }
 pub(crate) fn remove_authorized(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     root: &Path,
 ) -> Result<(), String> {
     remove(root)?;
@@ -303,8 +303,8 @@ pub(crate) fn exact(a: &Image, b: &Image) -> bool {
 /// image is restored before returning the original error. Any rollback failure
 /// is appended without hiding the original failure.
 pub(crate) fn replace_authorized(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     root: &Path,
     replacement: &Image,
 ) -> Result<(), String> {
@@ -339,8 +339,8 @@ pub(crate) fn replace_authorized(
 }
 
 pub(crate) fn operate(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     root: &Path,
     restore_image: Option<&Image>,
 ) -> Result<Image, String> {

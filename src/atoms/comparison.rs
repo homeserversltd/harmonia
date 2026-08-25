@@ -11,7 +11,7 @@ pub(crate) enum DiffDecision {
     Different,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct ActionAuthorization(());
 
 #[derive(Debug)]

@@ -64,7 +64,7 @@ pub(crate) mod write_file;
 #[path = "source-shelf.rs"]
 pub(crate) mod source_shelf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct InvocationKey(());
 
 impl InvocationKey {

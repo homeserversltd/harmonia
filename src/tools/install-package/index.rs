@@ -11,7 +11,7 @@ pub(crate) fn run(
     conflict_paths: &[String],
     timeout_secs: u64,
     program: &str,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     run_with_ignores(
         receipt_dir,
@@ -36,7 +36,7 @@ pub(crate) fn run_with_ignores(
     conflict_paths: &[String],
     timeout_secs: u64,
     program: &str,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     ignored: &[String],
 ) -> Result<OperationOutcome, String> {
     if !crate::tools::package::pacman_available(program) {
@@ -83,7 +83,7 @@ pub(crate) fn run_with_ignores(
                 let invocation = invocation
                     .ok_or_else(|| "package-install-invocation-key-missing".to_string())?;
                 let result = crate::atoms::r#do::install_package::package_install_with_ignores(
-                    authorization,
+                    &authorization,
                     invocation,
                     receipt_dir,
                     packages,

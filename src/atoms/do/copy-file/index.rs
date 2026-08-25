@@ -14,7 +14,7 @@ pub(crate) struct Plan {
     pub no_follow: bool,
     pub restore: Option<PathBuf>,
 }
-pub(crate) fn copy(a: ActionAuthorization, i: InvocationKey, p: &Plan) -> Result<(), String> {
+pub(crate) fn copy(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Result<(), String> {
     if p.source.as_os_str().is_empty() || p.target.as_os_str().is_empty() {
         return Err("copy-file-input-missing".into());
     };

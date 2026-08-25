@@ -22,7 +22,7 @@ pub(crate) struct BackfillFileRequest<'a> {
     pub mode: Option<u32>,
     pub ownership: DeclaredOwnership,
     pub backup: BackupPolicy<'a>,
-    pub invocation: Option<atoms::r#do::InvocationKey>,
+    pub invocation: Option<&'a atoms::r#do::InvocationKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

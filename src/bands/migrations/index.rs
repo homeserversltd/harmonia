@@ -28,7 +28,7 @@ struct Payload {
 pub(crate) fn run_profile_hotfixes(
     profile: &Profile,
     receipt_dir: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) {
     for (ordinal, declaration) in profile.hotfixes.iter().enumerate() {
         if let Err(blocker) = run_one(profile, receipt_dir, declaration, invocation) {
@@ -44,7 +44,7 @@ fn run_one(
     profile: &Profile,
     receipt_dir: &Path,
     declaration: &Value,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
     let object = declaration
         .as_object()

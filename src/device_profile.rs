@@ -158,19 +158,19 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SoftwareApplyAuthorization(());
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpdateMode {
+#[derive(Debug)]
+pub(crate) enum UpdateMode<'a> {
     Observe,
     ApplySoftware(
         SoftwareApplyAuthorization,
-        Option<crate::atoms::r#do::InvocationKey>,
+        Option<&'a crate::atoms::r#do::InvocationKey>,
     ),
 }
 
-impl UpdateMode {
+impl<'a> UpdateMode<'a> {
     pub(crate) fn from_apply_flag_with_invocation(
         apply: bool,
-        invocation: Option<crate::atoms::r#do::InvocationKey>,
+        invocation: Option<&'a crate::atoms::r#do::InvocationKey>,
     ) -> Self {
         if apply {
             Self::ApplySoftware(SoftwareApplyAuthorization(()), invocation)
@@ -186,7 +186,7 @@ impl UpdateMode {
         }
     }
 
-    pub(crate) fn invocation(&self) -> Option<crate::atoms::r#do::InvocationKey> {
+    pub(crate) fn invocation(&self) -> Option<&crate::atoms::r#do::InvocationKey> {
         match self {
             Self::Observe => None,
             Self::ApplySoftware(_, key) => *key,
@@ -198,10 +198,10 @@ impl UpdateMode {
     }
 }
 
-fn parse_update_mode(
+fn parse_update_mode<'a>(
     args: &[String],
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<UpdateMode, String> {
+    invocation: Option<&'a crate::atoms::r#do::InvocationKey>,
+  ) -> Result<UpdateMode<'a>, String> {
     let mut apply = false;
     let mut index = 0;
     while index < args.len() {
@@ -223,10 +223,10 @@ pub(crate) fn update_from_certificate(
     args: &[String],
     invocation: crate::Invocation,
 ) -> Result<(), String> {
-    let context = invocation.1.clone();
+    let context = invocation.context();
     let receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
-    let mode = match parse_update_mode(args, invocation.0) {
+    let mode = match parse_update_mode(args, invocation.key()) {
         Ok(mode) => mode,
         Err(reason) => {
             write_json(
@@ -342,7 +342,7 @@ pub(crate) fn homeconsole_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: UpdateMode<'_>,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         return Err(format!(
@@ -387,7 +387,7 @@ pub(crate) fn homeserver_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: UpdateMode<'_>,
 ) -> Result<(), String> {
     if profile.id != "homeserver" || profile.identity != "homeserver" {
         return Err(format!(
@@ -413,7 +413,7 @@ pub(crate) fn tv_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: UpdateMode<'_>,
 ) -> Result<(), String> {
     if profile.id != "tv" || profile.identity != "arch-tv" {
         return Err(format!(

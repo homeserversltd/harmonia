@@ -12,8 +12,8 @@ pub(crate) struct RemovePolicy {
 }
 
 pub(crate) fn remove_file_with_policy(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     path: &Path,
     policy: RemovePolicy,
 ) -> Result<(), String> {
@@ -30,8 +30,8 @@ pub(crate) fn remove_file_with_policy(
 }
 
 pub(crate) fn remove_file(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     remove_file_with_policy(

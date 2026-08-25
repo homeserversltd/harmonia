@@ -39,12 +39,13 @@ pub(crate) fn execute(request: BackfillFileRequest<'_>) -> Result<BackfillFileOu
             }
         },
         |authorization, observation| {
+            let authorization = &authorization;
             let Some(invocation) = request.invocation else {
                 return Ok(BackfillFileMovement::default());
             };
             mutation::place(
                 authorization,
-                invocation,
+                &invocation,
                 request.path,
                 request.declared_bytes,
                 request.mode,
@@ -147,8 +148,8 @@ mod mutation {
     }
 
     pub(super) fn place(
-        authorization: ActionAuthorization,
-        invocation: atoms::r#do::InvocationKey,
+        authorization: &ActionAuthorization,
+        invocation: &atoms::r#do::InvocationKey,
         path: &Path,
         declared_bytes: &[u8],
         declared_mode: Option<u32>,
@@ -241,7 +242,7 @@ pub(crate) fn converge_managed_directories(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(receipt_name)?;
     if directories.is_empty() {
@@ -299,6 +300,7 @@ pub(crate) fn converge_managed_directories(
                 }
             },
             |authorization, _| {
+            let authorization = &authorization;
                 if !apply {
                     return Ok(false);
                 }
@@ -449,7 +451,7 @@ pub(crate) fn converge_managed_files(
     request: &ManagedFilesRequest<'_>,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(request.receipt_name)?;
     let classes = request
@@ -512,6 +514,7 @@ pub(crate) fn converge_managed_files(
                 }
             },
             |authorization, observation| {
+            let authorization = &authorization;
                 if !apply {
                     return Ok(ManagedFileMovement::ReportOnly);
                 }
@@ -730,7 +733,7 @@ pub fn ensure_files_present(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
     ensure_files_present_with_invocation(request, receipt_dir, apply, invocation)
 }
@@ -739,7 +742,7 @@ pub(crate) fn ensure_files_present_with_invocation(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
         return Err("files-ensure-present-empty-request".to_string());
@@ -782,6 +785,7 @@ pub(crate) fn ensure_files_present_with_invocation(
                 }
             },
             |authorization, _| {
+            let authorization = &authorization;
                 if !apply {
                     return Ok(false);
                 }

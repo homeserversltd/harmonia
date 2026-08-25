@@ -16,7 +16,7 @@ pub(crate) struct Request<'a> {
 pub(crate) fn run(
     request: &Request<'_>,
     apply: bool,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
 ) -> Result<CmdResult, String> {
     if !apply {
         return Ok(crate::tools::household_time::planned(request.operation));
@@ -84,6 +84,7 @@ pub(crate) fn run(
                 }
             },
             |authorization, current| {
+                let authorization = &authorization;
                 let invocation =
                     invocation.ok_or_else(|| "set-clock-invocation-key-missing".to_string())?;
                 let desired = request.timezone.map(str::to_owned).or_else(|| {
@@ -115,7 +116,7 @@ pub(crate) fn execute(
     permutation: &str,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
     apply: bool,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     let timeout = args
         .get("timeout_secs")
@@ -170,7 +171,7 @@ pub(crate) fn execute_validated_step(
     step: &crate::tools::ladder::ValidatedStep,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     crate::tools::household_time::validate_ladder_args(&step.permutation, &step.args)?;
     execute(
@@ -187,8 +188,8 @@ use crate::atoms::comparison::ActionAuthorization;
 use std::time::Duration;
 
 pub(crate) fn apply(
-    authorization: ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
     request: &Request<'_>,
     timezone: Option<&str>,
 ) -> Result<CmdResult, String> {
@@ -215,8 +216,8 @@ pub(crate) fn apply(
 }
 
 fn command(
-    authorization: ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
     request: &Request<'_>,
     operation: &str,
     timezone: Option<&str>,

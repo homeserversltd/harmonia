@@ -49,10 +49,10 @@ pub(crate) const NAMES: &[&str] = &[
 
 pub(crate) fn run(
     surface: &str,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-    context: Option<crate::RunContext>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    context: Option<&crate::RunContext>,
 ) -> Result<(), String> {
-    let invocation = invocation.or_else(|| Some(crate::atoms::r#do::InvocationKey::for_apply()));
+    let authorized = invocation.is_some();
     let direct_surface = matches!(
         surface,
         "files-transaction"
@@ -74,7 +74,6 @@ pub(crate) fn run(
         let receipts = root.join("receipts");
         fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
     }
-    let authorized = invocation.is_some();
     let result = match surface {
         "files-transaction" => receipt(
             surface,
@@ -143,7 +142,7 @@ pub(crate) fn run(
             "crate::subscription::demo",
             crate::subscription::demo(
                 &root,
-                invocation.unwrap_or_else(crate::atoms::r#do::InvocationKey::for_apply),
+                invocation.ok_or("demo-invocation-key-missing")?,
             )?,
             authorized,
         ),
@@ -167,7 +166,7 @@ pub(crate) fn run(
             "crate::bands::stage_profile::capsule::demo",
             crate::bands::stage_profile::capsule::demo(
                 &root,
-                invocation.unwrap_or_else(crate::atoms::r#do::InvocationKey::for_apply),
+                invocation.ok_or("demo-invocation-key-missing")?,
             )?,
             authorized,
         ),
@@ -181,10 +180,12 @@ pub(crate) fn run(
         "update-set" => crate::atoms::r#do::transaction::update_set_demo(
             &[],
             context.ok_or("update-set-invocation-context-missing")?,
+            invocation.ok_or("update-set-invocation-key-missing")?,
         ),
         "foundation" => crate::atoms::r#do::ritual::demo(
             &[],
             context.ok_or("foundation-invocation-context-missing")?,
+            invocation.ok_or("foundation-invocation-key-missing")?,
         ),
         "renew-schedule" => crate::stillness_demo::renew_schedule_demo(
             invocation.ok_or("renew-schedule-invocation-key-missing")?,

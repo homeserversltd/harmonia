@@ -68,7 +68,7 @@ struct SubscriptionShowReceipt {
     first_missing_signal: String,
 }
 
-pub(crate) fn demo(root: &Path, key: crate::atoms::r#do::InvocationKey) -> Result<Value, String> {
+pub(crate) fn demo(root: &Path, key: &crate::atoms::r#do::InvocationKey) -> Result<Value, String> {
     let path = root.join("subscription.json");
     let seed = SubscriptionUpdate {
         lane: "owner".into(),
@@ -311,7 +311,7 @@ pub(crate) fn diff_subscription_modules(
 pub(crate) fn update_subscription_record_with_invocation(
     path: &Path,
     update: SubscriptionUpdate,
-    key: crate::atoms::r#do::InvocationKey,
+    key: &crate::atoms::r#do::InvocationKey,
 ) -> Result<SubscriptionRecord, String> {
     let existing_value = if path.exists() {
         let text = fs::read_to_string(path)
@@ -418,7 +418,7 @@ pub(crate) fn update_subscription_record_with_invocation(
         },
         |authorization, _| {
             crate::atoms::r#do::write_file::file_write(
-                authorization,
+                &authorization,
                 key,
                 path,
                 &bytes,
@@ -491,7 +491,7 @@ pub(crate) fn update_engine_plane(
     engine_version: &str,
     engine_lane: &str,
     lock_sha256: Option<&str>,
-    key: crate::atoms::r#do::InvocationKey,
+    key: &crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let existing_value = if path.exists() {
         let text = fs::read_to_string(path)
@@ -537,7 +537,7 @@ pub(crate) fn close_hotfix_ledger(
     body_identity: &str,
     closing_reason: &str,
     receipt_reference: &Path,
-    key: crate::atoms::r#do::InvocationKey,
+    key: &crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let existing = if path.exists() {
         let text = fs::read_to_string(path)
@@ -563,7 +563,7 @@ pub(crate) fn close_hotfix_ledger(
 pub(crate) fn write_json_value_atomic_with_invocation(
     path: &Path,
     value: &Value,
-    key: crate::atoms::r#do::InvocationKey,
+    key: &crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?
         + "
@@ -581,7 +581,7 @@ pub(crate) fn write_json_value_atomic_with_invocation(
                 crate::tools::comparison::DiffDecision::Different
             }
         },
-        |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent),
+        |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(&authorization, key, parent),
     )?;
     crate::tools::comparison::execute(
         "subscription-json-write",
@@ -595,7 +595,7 @@ pub(crate) fn write_json_value_atomic_with_invocation(
         },
         |authorization, _| {
             crate::atoms::r#do::write_file::file_write(
-                authorization,
+                &authorization,
                 key,
                 path,
                 text.as_bytes(),
@@ -614,7 +614,7 @@ pub(crate) fn write_json_value_atomic_with_invocation(
 }
 
 fn ensure_subscription_parent(
-    key: crate::atoms::r#do::InvocationKey,
+    key: &crate::atoms::r#do::InvocationKey,
     parent: &Path,
 ) -> Result<(), String> {
     if let Ok(meta) = fs::symlink_metadata(parent) {
@@ -640,7 +640,7 @@ fn ensure_subscription_parent(
                 crate::tools::comparison::DiffDecision::Different
             }
         },
-        |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent),
+        |authorization, _| crate::atoms::r#do::make_dir::create_dir_all(&authorization, key, parent),
     )?;
     Ok(())
 }

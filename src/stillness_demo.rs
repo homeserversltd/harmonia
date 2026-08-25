@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 
-pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
+pub(crate) fn run(
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
     let invocation =
         invocation.ok_or_else(|| "stillness-demo-invocation-key-missing".to_string())?;
     let root = std::env::temp_dir().join(format!(
@@ -232,7 +234,7 @@ fn path_attestation(path: &Path) -> serde_json::Value {
 }
 
 pub(crate) fn renew_schedule_demo(
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<(), String> {
     let root = std::env::temp_dir().join(format!(
         "harmonia-renew_schedule-renew-schedule-{}",
@@ -475,7 +477,7 @@ pub(crate) fn renew_schedule_demo(
     }
 }
 
-pub(crate) fn clock_demo(invocation: crate::atoms::r#do::InvocationKey) -> Result<(), String> {
+pub(crate) fn clock_demo(invocation: &crate::atoms::r#do::InvocationKey) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let _env = ClockEnvGuard {
         timedatectl: std::env::var("HARMONIA_CLOCK_TIMEDATECTL").ok(),
@@ -590,7 +592,7 @@ esac
 
 fn git_artifact_demo(
     root: &Path,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
         let o = Command::new("git")
@@ -789,7 +791,7 @@ fn git_artifact_demo(
 
 fn caduceus_demo(
     root: &Path,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     let dir = root.join("caduceus");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -856,7 +858,7 @@ fn caduceus_demo(
 
 fn service_runtime_build_sha_demo(
     root: &Path,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     let dir = root.join("service-runtime-build-sha");
     let source_dir = dir.join("fixture");
@@ -1385,7 +1387,7 @@ fn serve_health_once<T>(
 
 fn aur_pinned_demo(
     root: &Path,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -1568,7 +1570,7 @@ case $1 in -Q) [ "$(cat "{1}")" = installed ] && printf 'demopkg 1\n' || exit 1;
 
 fn venv_demo(
     root: &Path,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     use std::os::unix::fs::MetadataExt;
     let dir = root.join("venv");
@@ -1605,7 +1607,7 @@ fn venv_demo(
 
 fn package_demo(
     root: &Path,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Stdio;

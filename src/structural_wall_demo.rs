@@ -9,7 +9,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Result<(), String> {
+pub(crate) fn run(
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
     let invocation =
         invocation.ok_or_else(|| "structural-wall-invocation-key-missing".to_string())?;
     let mode =
@@ -282,7 +284,7 @@ fn declaration_lowering_refusal_proof(root: &Path) -> Result<bool, String> {
 
 fn registry_proof(
     root: &Path,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let dir = root.join("registry");
@@ -482,7 +484,7 @@ fn registry_proof(
 fn xattr_proof(
     root: &Path,
     _auth: &crate::SoftwareApplyAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {
     let tree = root.join("xattr-tree");
     fs::create_dir_all(tree.join("nested")).map_err(|e| e.to_string())?;
@@ -747,7 +749,7 @@ fn row(
     root: &Path,
     source: &Path,
     auth: &crate::SoftwareApplyAuthorization,
-    inv: crate::atoms::r#do::InvocationKey,
+    inv: &crate::atoms::r#do::InvocationKey,
     interactable: bool,
 ) -> Result<Value, String> {
     let target = if interactable {
@@ -862,7 +864,7 @@ fn routine_row(
     root: &Path,
     source: &Path,
     auth: &crate::SoftwareApplyAuthorization,
-    inv: crate::atoms::r#do::InvocationKey,
+    inv: &crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {
     let target = PathBuf::from(format!(
         "/etc/harmonia-structural-wall-{}/routine-child",

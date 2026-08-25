@@ -11,7 +11,7 @@ pub(crate) struct Plan {
     pub mode: Option<u32>,
     pub no_follow: bool,
 }
-pub(crate) fn change(a: ActionAuthorization, i: InvocationKey, p: &Plan) -> Result<(), String> {
+pub(crate) fn change(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Result<(), String> {
     let mode = p.mode.ok_or("change-mode-mode-missing")?;
     if !p.no_follow {
         return Err("change-mode-no-follow-required".into());

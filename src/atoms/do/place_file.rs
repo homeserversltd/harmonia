@@ -36,7 +36,7 @@ pub(crate) struct PlaceFileRequest<'a> {
     pub mode: Option<u32>,
     pub ownership: DeclaredOwnership,
     pub backup: BackupPolicy<'a>,
-    pub invocation: Option<atoms::r#do::InvocationKey>,
+    pub invocation: Option<&'a atoms::r#do::InvocationKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +136,7 @@ fn execute_with_authority(
             }
         },
         |authorization, observation| {
+            let authorization = &authorization;
             let Some(invocation) = request.invocation else {
                 return Ok(PlaceFileMovement::default());
             };
@@ -191,7 +192,7 @@ pub(crate) struct StrictPlaceFileRequest<'a> {
     pub gid: u32,
     pub xattrs: &'a BTreeMap<Vec<u8>, Vec<u8>>,
     pub backup: BackupPolicy<'a>,
-    pub invocation: atoms::r#do::InvocationKey,
+    pub invocation: &'a atoms::r#do::InvocationKey,
     pub fail_after_action: bool,
 }
 
@@ -469,8 +470,8 @@ mod mutation {
     use crate::atoms::comparison::ActionAuthorization;
 
     pub(super) fn place(
-        authorization: ActionAuthorization,
-        invocation: atoms::r#do::InvocationKey,
+        authorization: &ActionAuthorization,
+        invocation: &atoms::r#do::InvocationKey,
         path: &Path,
         declared_bytes: &[u8],
         declared_mode: Option<u32>,
@@ -603,7 +604,7 @@ pub(crate) fn converge_files_with_invocation(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
     if apply {
         return Err("software-authorization-required".into());
@@ -615,7 +616,7 @@ pub(crate) fn converge_files_authorized(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
     authorization: Option<&crate::SoftwareApplyAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
     converge_files_authorized_with_config_policy(
         request,
@@ -630,7 +631,7 @@ pub(crate) fn converge_files_authorized_with_config_policy(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
     authorization: Option<&crate::SoftwareApplyAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     allow_config_proposal: bool,
 ) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
@@ -1010,7 +1011,7 @@ pub(crate) fn hard_stamp_interactable(
     owner: Option<&str>,
     group: Option<&str>,
     backup_root: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     operator_hand: crate::interactables::OperatorHand,
 ) -> Result<serde_json::Value, String> {
     crate::atoms::files::validate_interactable_target(target)?;

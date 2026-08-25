@@ -3,7 +3,7 @@ pub(crate) fn execute_validated_step(
     manifest: &crate::tools::ladder::LadderManifest,
     module_dir: &std::path::Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     let apply = software_authorization.is_some();
     match step.permutation.as_str() {
@@ -175,7 +175,7 @@ pub(crate) fn compile_fragments_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = step
         .args
@@ -320,7 +320,7 @@ pub(crate) fn managed_files_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     _apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     managed_files_step_with_authorization(step, manifest, module_dir, None, invocation)
 }
@@ -330,7 +330,7 @@ pub(crate) fn managed_files_step_with_authorization(
     manifest: &LadderManifest,
     module_dir: &Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let apply = software_authorization.is_some();
     let files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
@@ -462,7 +462,7 @@ pub(crate) fn managed_directories_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let directories: Vec<atoms::files::ManagedDirectorySpec> = serde_json::from_value(
         step.args
@@ -530,7 +530,7 @@ pub(crate) fn validated_symlink_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     crate::atoms::files::validated_symlink(
         module_dir,
@@ -550,7 +550,7 @@ pub(crate) fn symlink_converge_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let required_source_kind = match string_arg(&step.args, "required_source_kind") {
         "regular-executable" => crate::atoms::files::SymlinkSourceKind::RegularExecutable,
@@ -590,7 +590,7 @@ pub(crate) fn validated_file_symlink_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let desired_source = resolve_ladder_path(manifest, string_arg(&step.args, "desired_source"));
     let source = PathBuf::from(string_arg(&step.args, "source"));
@@ -618,7 +618,7 @@ pub(crate) fn files_remove_step(
     step: &ValidatedStep,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let outcome = crate::atoms::files::remove_declared_files(
         &PathBuf::from(string_arg(&step.args, "target_root")),
@@ -667,7 +667,7 @@ pub(crate) fn files_source_shelf_sweep_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_shelf = PathBuf::from(string_arg(&step.args, "target_shelf"));
@@ -723,7 +723,7 @@ pub(crate) fn files_validated_sudoers_converge_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     authorization: Option<&crate::SoftwareApplyAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
@@ -808,7 +808,7 @@ pub(crate) fn files_converge_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
@@ -986,7 +986,7 @@ pub(crate) fn files_ensure_present_step(
     manifest: &LadderManifest,
     module_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let files = string_array_arg(&step.args, "files")
         .into_iter()

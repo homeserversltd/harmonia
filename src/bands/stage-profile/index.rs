@@ -48,6 +48,7 @@ pub(crate) fn materialize(
     installed_module_root: &Path,
     receipt_dir: &Path,
     git_bearer: &str,
+    key: &crate::atoms::r#do::InvocationKey,
     context: Option<&RunContext>,
     carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
     syzygy_declaration: Option<crate::SyzygyDeclaration>,
@@ -192,9 +193,7 @@ pub(crate) fn materialize(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let key = context
-        .map(|value| value.key)
-        .ok_or_else(|| "subscription-invocation-key-missing".to_string())?;
+    let key = key;
     update_subscription_record_with_invocation(
         &subscription_path(),
         SubscriptionUpdate {
@@ -301,8 +300,8 @@ mod shared_dot_files_tests {
             args,
             on_failure: crate::tools::ladder::OnFailure::Stop,
         };
-        let invocation = Some(crate::atoms::r#do::InvocationKey::for_apply());
-        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, invocation);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
         let mut routine_states = BTreeMap::new();
         let projected_routines = BTreeMap::new();
         let execution = crate::bands::backfill_files::execute_files(

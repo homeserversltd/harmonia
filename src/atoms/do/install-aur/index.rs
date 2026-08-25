@@ -137,7 +137,7 @@ pub(crate) fn install(
     package: &str,
     timeout_secs: u64,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     pins: &BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     let timeout_secs = bounded_timeout(timeout_secs);
@@ -197,8 +197,8 @@ pub(crate) fn install(
 use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::InvocationKey;
 pub(crate) fn aur_install(
-    _authorization: ActionAuthorization,
-    _invocation: InvocationKey,
+    _authorization: &ActionAuthorization,
+    _invocation: Option<&InvocationKey>,
     callback: impl FnOnce() -> Result<crate::OperationOutcome, String>,
 ) -> Result<crate::OperationOutcome, String> {
     callback()

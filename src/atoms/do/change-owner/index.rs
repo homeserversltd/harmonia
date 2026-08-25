@@ -12,7 +12,7 @@ pub(crate) struct Plan {
     pub gid: Option<u32>,
     pub no_follow: bool,
 }
-pub(crate) fn change(a: ActionAuthorization, i: InvocationKey, p: &Plan) -> Result<(), String> {
+pub(crate) fn change(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Result<(), String> {
     if p.uid.is_none() && p.gid.is_none() {
         return Err("change-owner-owner-missing".into());
     };

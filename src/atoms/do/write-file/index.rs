@@ -22,8 +22,8 @@ pub(crate) struct FileWriteResult {
 }
 
 pub(crate) fn file_write(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     path: &Path,
     bytes: &[u8],
     options: FileWriteOptions<'_>,
@@ -132,8 +132,8 @@ fn atomic_file_write(
 /// Authorized managed-file transactional writer. The comparison kernel supplies
 /// both capabilities; dry-run paths never enter this function.
 pub(crate) fn atomic_write_bytes_with_ownership(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     target: &Path,
     bytes: &[u8],
     mode: Option<u32>,

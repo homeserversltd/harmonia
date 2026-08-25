@@ -276,7 +276,19 @@ pub(crate) use tools::command::{
     command_capture, command_capture_with_timeout,
 };
 
+/// The outer invocation is the sole owner of both optional invocation state
+/// values. The run context deliberately does not own or clone the key.
 pub struct Invocation(Option<atoms::r#do::InvocationKey>, Option<RunContext>);
+
+impl Invocation {
+    pub(crate) fn key(&self) -> Option<&atoms::r#do::InvocationKey> {
+        self.0.as_ref()
+    }
+
+    pub(crate) fn context(&self) -> Option<&RunContext> {
+        self.1.as_ref()
+    }
+}
 
 mod invocation_face {
     pub(crate) struct Mint(());
@@ -291,11 +303,10 @@ mod invocation_face {
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
         let key = super::atoms::r#do::InvocationKey::from_apply_or_timer(applies, Mint(()));
-        let context = key.map(|key| super::RunContext {
+        let context = key.as_ref().map(|_| super::RunContext {
             run_id: super::run_id_from_stamp(),
             profile: "production".into(),
             face: args.first().cloned().unwrap_or_else(|| "invoke".into()),
-            key,
             carrier: std::rc::Rc::new(std::cell::RefCell::new(
                 crate::atoms::r#do::transaction::RunCarrier::default(),
             )),
@@ -311,23 +322,23 @@ pub fn invoke(args: Vec<String>) -> Result<(), String> {
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("demo") => demo_command(&args[1..], invocation),
+        Some("demo") => demo_command(&args[1..], &invocation),
         Some("interactable") | Some("config-proposal") => {
-            interactable_command(&args[1..], invocation.0)
+            interactable_command(&args[1..], invocation.key())
         }
         Some("install-timer") => bands::renew_self::schedule::install_timer(
             &args[1..],
             invocation
-                .0
+                .key()
                 .ok_or_else(|| "schedule-invocation-key-missing".to_string())?,
         ),
         Some("uninstall-timer") => bands::renew_self::schedule::uninstall_timer(
             &args[1..],
             invocation
-                .0
+                .key()
                 .ok_or_else(|| "schedule-invocation-key-missing".to_string())?,
         ),
-        Some("renew-self") => renew_self_command(&args[1..], invocation),
+        Some("renew-self") => renew_self_command(&args[1..], &invocation),
         Some("update") => update_from_certificate(&args[1..], invocation),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
@@ -444,7 +455,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 expected_commit,
                 std::collections::BTreeMap::new(),
             );
-            let outcome = tools::git_artifact::acquire_source(&acquisition, invocation.0);
+            let outcome = tools::git_artifact::acquire_source(&acquisition, invocation.key());
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -539,7 +550,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .unwrap_or_else(|| PathBuf::from("target/harmonia-run-profile"));
             let mode = UpdateMode::from_apply_flag_with_invocation(
                 args.iter().any(|arg| arg == "--apply"),
-                invocation.0,
+                invocation.key(),
             );
             let module_root = default_module_root(Path::new(path));
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
@@ -581,7 +592,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         &output_dir,
                         &harmonia_root,
                         invocation
-                            .0
+                            .key()
                             .ok_or_else(|| "capsule-pack-invocation-key-missing".to_string())?,
                     )
                 }
@@ -598,7 +609,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         Path::new(capsule_dir),
                         &config_dir,
                         apply,
-                        invocation.0,
+                        invocation.key(),
                     )
                 }
                 other => Err(format!("capsule-action-unsupported-{other}")),
@@ -642,7 +653,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 receipt_dir_arg(&args).unwrap_or_else(homeserver_update_receipt_latest);
             let mode = UpdateMode::from_apply_flag_with_invocation(
                 args.iter().any(|arg| arg == "--apply"),
-                invocation.0,
+                invocation.key(),
             );
             verify_asserted_profile("homeserver")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
@@ -657,7 +668,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 receipt_dir_arg(&args).unwrap_or_else(homeconsole_update_receipt_latest);
             let mode = UpdateMode::from_apply_flag_with_invocation(
                 args.iter().any(|arg| arg == "--apply"),
-                invocation.0,
+                invocation.key(),
             );
             verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
@@ -671,7 +682,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
             let mode = UpdateMode::from_apply_flag_with_invocation(
                 args.iter().any(|arg| arg == "--apply"),
-                invocation.0,
+                invocation.key(),
             );
             verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
@@ -687,7 +698,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             });
             let mode = UpdateMode::from_apply_flag_with_invocation(
                 args.iter().any(|arg| arg == "--apply"),
-                invocation.0,
+                invocation.key(),
             );
             let apply = mode.is_software_apply();
             let module_root = default_module_root(Path::new(path));
@@ -760,7 +771,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             });
             let mode = UpdateMode::from_apply_flag_with_invocation(
                 args.iter().any(|arg| arg == "--apply"),
-                invocation.0,
+                invocation.key(),
             );
             let apply = mode.is_software_apply();
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
@@ -937,7 +948,7 @@ pub(crate) fn explain() -> Result<(), String> {
     Ok(())
 }
 
-fn demo_command(args: &[String], invocation: Invocation) -> Result<(), String> {
+fn demo_command(args: &[String], invocation: &Invocation) -> Result<(), String> {
     let name = args.first().map(String::as_str);
     if name.is_none() || name == Some("list") {
         println!("schema=harmonia.demo.list.v1");
@@ -951,7 +962,7 @@ fn demo_command(args: &[String], invocation: Invocation) -> Result<(), String> {
     if !demo_registry::NAMES.contains(&name) {
         return Err(format!("unknown-demo-name={name}"));
     }
-    demo_registry::run(name, invocation.0, invocation.1)
+    demo_registry::run(name, invocation.key(), invocation.context())
 }
 
 pub(crate) fn usage() -> Result<(), String> {
@@ -986,7 +997,7 @@ pub(crate) fn usage() -> Result<(), String> {
     Ok(())
 }
 
-fn renew_self_command(args: &[String], invocation: Invocation) -> Result<(), String> {
+fn renew_self_command(args: &[String], invocation: &Invocation) -> Result<(), String> {
     if args == ["--help"] {
         println!("usage: harmonia renew-self (--plan|--apply) --receipt-dir <path> [--module-root <path>]");
         return Ok(());
@@ -995,7 +1006,7 @@ fn renew_self_command(args: &[String], invocation: Invocation) -> Result<(), Str
     let receipt_dir =
         value_arg(args, "--receipt-dir").ok_or("renew-self-requires---receipt-dir-<path>")?;
     let module_root = value_arg(args, "--module-root").unwrap_or_default();
-    let execution = bands::renew_self::run(&module_root, &receipt_dir, apply, invocation.0)?;
+    let execution = bands::renew_self::run(&module_root, &receipt_dir, apply, invocation.key())?;
     let output = json!({"schema": bands::renew_self::PREFLIGHT_SCHEMA, "ok": execution.ok, "apply": apply, "changed": execution.changed, "operation_count": execution.operation_count, "first_missing_signal": execution.first_missing_signal.as_deref().unwrap_or("none"), "receipt_dir": receipt_dir, "module_root": module_root, "authority": "engine-preflight-only", "module_bands": false});
     println!(
         "{}",

@@ -310,7 +310,7 @@ fn execute_routine_tool(
     receipt_dir: &Path,
     apply: bool,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<
     (
         OperationOutcome,
@@ -411,7 +411,7 @@ pub(crate) fn execute_validated_step(
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     package_authority: Option<&crate::PackageAuthority>,
     module_changed_before_step: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     active_lane: Option<&str>,
 ) -> Result<OperationOutcome, String> {
     if let Some(blocker) = structural_file_blocker(step, manifest) {
@@ -543,7 +543,7 @@ pub(crate) fn execute_routine(
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     _package_authority: Option<&crate::PackageAuthority>,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     mut states: Option<&mut BTreeMap<String, crate::ModuleWalkState>>,
     band: crate::bands::Band,
     projected_children: &[ProjectedRoutineChild],

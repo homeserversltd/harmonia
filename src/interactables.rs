@@ -119,7 +119,7 @@ pub(crate) fn pending_config_proposal_count() -> usize {
 
 pub(crate) fn interactable_command(
     args: &[String],
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
@@ -156,7 +156,7 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
 
 fn interactable_run(
     args: &[String],
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
     if args.len() != 1 {
         return Err("config-proposal accept requires exactly one <id>".to_string());
@@ -266,10 +266,8 @@ mod tests {
             .unwrap();
         let prior_feed = std::env::var_os("HARMONIA_INTERACTABLES_PATH");
         std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
-        let result = interactable_run(
-            &[proposal.id],
-            Some(crate::atoms::r#do::InvocationKey::for_apply()),
-        );
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let result = interactable_run(&[proposal.id], Some(&invocation));
         match prior_feed {
             Some(value) => std::env::set_var("HARMONIA_INTERACTABLES_PATH", value),
             None => std::env::remove_var("HARMONIA_INTERACTABLES_PATH"),

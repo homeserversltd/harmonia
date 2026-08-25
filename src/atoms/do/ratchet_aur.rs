@@ -9,7 +9,7 @@ pub(crate) fn install(
     package: &str,
     timeout_secs: u64,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     pins: &BTreeMap<String, String>,
 ) -> Result<comparison::ComparisonRun<Option<String>, OperationOutcome>, String> {
     crate::atoms::declaration::execute(
@@ -31,7 +31,7 @@ pub(crate) fn install(
             let invocation = invocation
                 .ok_or_else(|| "ratchet-aur-package-install-invocation-key-missing".to_string())?;
             mutation::install(
-                authorization,
+                &authorization,
                 invocation,
                 receipt_dir,
                 receipt_name,
@@ -56,7 +56,7 @@ pub(crate) fn build_pinned(
     timeout_secs: u64,
     install: bool,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     pins: &BTreeMap<String, String>,
 ) -> Result<comparison::ComparisonRun<Observation, OperationOutcome>, String> {
     crate::atoms::declaration::execute(
@@ -74,7 +74,7 @@ pub(crate) fn build_pinned(
             let invocation = invocation
                 .ok_or_else(|| "ratchet-aur-package-build-invocation-key-missing".to_string())?;
             mutation::build_pinned(
-                authorization,
+                &authorization,
                 invocation,
                 receipt_dir,
                 receipt_name,
@@ -164,8 +164,8 @@ mod mutation {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_pinned(
-        authorization: ActionAuthorization,
-        invocation: atoms::r#do::InvocationKey,
+        authorization: &ActionAuthorization,
+        invocation: &atoms::r#do::InvocationKey,
         receipt_dir: &Path,
         receipt_name: &str,
         package: &str,
@@ -223,8 +223,8 @@ mod mutation {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn install(
-        authorization: ActionAuthorization,
-        invocation: atoms::r#do::InvocationKey,
+        authorization: &ActionAuthorization,
+        invocation: &atoms::r#do::InvocationKey,
         receipt_dir: &Path,
         receipt_name: &str,
         package: &str,
@@ -232,7 +232,7 @@ mod mutation {
         apply: bool,
         pins: &BTreeMap<String, String>,
     ) -> Result<OperationOutcome, String> {
-        atoms::r#do::install_aur::aur_install(authorization, invocation, || {
+        atoms::r#do::install_aur::aur_install(authorization, Some(invocation), || {
             atoms::r#do::install_aur::aur_install_action(
                 receipt_dir,
                 receipt_name,

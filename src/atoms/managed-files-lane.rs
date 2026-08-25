@@ -12,8 +12,8 @@ pub(crate) use crate::atoms::r#do::copy_file::copy as copy_file;
 pub(crate) use crate::atoms::r#do::make_dir::create_dir_all as make_dir;
 pub(crate) use crate::atoms::r#do::remove_dir::capture as remove_dir_capture;
 pub(crate) fn remove_dir(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     path: &Path,
 ) -> Result<RemoveDirImage, String> {
     crate::atoms::r#do::remove_dir::operate(authorization, invocation, path, None)
@@ -1149,7 +1149,7 @@ pub(crate) fn write_convergence_receipt(
 #[cfg(unix)]
 pub(crate) fn demo(
     root: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let source = root.join("source");
     let target = root.join("target");
@@ -1276,7 +1276,7 @@ mod source_shelf_sweep_tests {
             &request,
             &receipts,
             true,
-            Some(crate::atoms::r#do::InvocationKey::for_apply()),
+            Some(&crate::atoms::r#do::InvocationKey::for_apply()),
         )
         .unwrap();
         assert_eq!(mode(&target), 0o755);
@@ -1353,7 +1353,7 @@ mod source_shelf_sweep_tests {
             &request,
             &receipts,
             true,
-            Some(crate::atoms::r#do::InvocationKey::for_apply()),
+            Some(&crate::atoms::r#do::InvocationKey::for_apply()),
         )
         .unwrap();
         assert!(outcome.ok);

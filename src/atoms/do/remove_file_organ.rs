@@ -54,7 +54,7 @@ pub(crate) fn execute(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
     no_follow: bool,
     collision_policy: &str,
     rollback_policy: &str,
@@ -81,6 +81,7 @@ pub(crate) fn execute(
                 RemovalObservation::Absent => crate::atoms::comparison::DiffDecision::Empty,
             },
             |authorization, _| {
+            let authorization = &authorization;
                 let Some(invocation) = invocation else {
                     return Ok(false);
                 };
@@ -219,7 +220,7 @@ pub fn remove_declared_files(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
 ) -> Result<FileRemovalOutcome, String> {
     execute(
         target_root,
@@ -262,8 +263,8 @@ mod mutation {
     use crate::atoms::comparison::ActionAuthorization;
 
     pub(super) fn remove(
-        authorization: ActionAuthorization,
-        invocation: atoms::r#do::InvocationKey,
+        authorization: &ActionAuthorization,
+        invocation: &atoms::r#do::InvocationKey,
         target: &Path,
         policy: atoms::r#do::remove_file::RemovePolicy,
     ) -> Result<bool, String> {

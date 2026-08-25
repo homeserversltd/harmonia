@@ -5,8 +5,8 @@ use std::fs;
 use std::path::Path;
 
 pub(crate) fn create_dir_all(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| error.to_string())?;

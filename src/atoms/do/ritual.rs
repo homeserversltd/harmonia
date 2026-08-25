@@ -333,7 +333,6 @@ fn restore_image(i: &RestorationImage, s: &mut dyn ServiceState) -> Result<(), S
 }
 #[derive(Clone)]
 struct ForwardAuthority {
-    key: InvocationKey,
     target: PathBuf,
     old: RestorationImage,
     new: RestorationImage,
@@ -346,7 +345,6 @@ enum TerminalIntent {
     LeaveApplied,
 }
 pub(crate) struct Transaction {
-    ctx: RunContext,
     journal: PathBuf,
     capsule: PathBuf,
     target: PathBuf,
@@ -359,23 +357,21 @@ pub(crate) struct Transaction {
 impl Transaction {
     fn compare(
         &self,
-        key: InvocationKey,
         old: &RestorationImage,
         new: &RestorationImage,
     ) -> Option<ForwardAuthority> {
         (old != new).then(|| ForwardAuthority {
-            key,
             target: self.target.clone(),
             old: old.clone(),
             new: new.clone(),
         })
     }
-    fn one_breath(&mut self, source: SourceKey, deed: DeedKey, desired: RestorationImage, intent: TerminalIntent) -> Result<Value, String> {
+    fn one_breath(&mut self, key: &InvocationKey, source: SourceKey, deed: DeedKey, desired: RestorationImage, intent: TerminalIntent) -> Result<Value, String> {
         let SourceKey { identity, revision } = source;
         let DeedKey { proposal, deed } = deed;
         let pre = capture(&self.target, Some(&*self.service), None)?;
         append(&self.journal, &Event { event:"capture_before_action".into(), status:Some("captured".into()), source_identity:Some(identity.clone()), source_revision:Some(revision.clone()), proposal:Some(proposal.clone()), deed:Some(deed.clone()), pre:Some(pre.clone()), post:None })?;
-        let Some(authority) = self.compare(self.ctx.key, &pre, &desired) else {
+        let Some(authority) = self.compare(&pre, &desired) else {
             self.post = Some(pre.clone());
             append(&self.journal, &Event { event:"movement-none".into(), status:Some("attested".into()), source_identity:Some(identity), source_revision:Some(revision), proposal:Some(proposal), deed:Some(deed), pre:Some(pre.clone()), post:Some(pre) })?;
             return match intent { TerminalIntent::Commit => self.commit(), TerminalIntent::LeaveApplied => Ok(json!({"file":"unchanged","status":"applied"})) };
@@ -384,12 +380,11 @@ impl Transaction {
             "ritual-write",
             || Ok::<_, String>(pre.clone()),
             |_| crate::atoms::comparison::DiffDecision::Different,
-            |action_authorization, _| self.apply(action_authorization, authority, (&identity, &revision, &proposal, &deed)),
+            |action_authorization, _| self.apply(&action_authorization, &authority, key, (&identity, &revision, &proposal, &deed)),
         )?;
         match intent { TerminalIntent::Commit => self.commit(), TerminalIntent::LeaveApplied => Ok(json!({"file":"after","status":"applied"})) }
     }
     fn admit(
-        ctx: RunContext,
         root: &Path,
         mut service: Box<dyn ServiceState>,
     ) -> Result<Self, String> {
@@ -411,7 +406,6 @@ impl Transaction {
             },
         )?;
         Ok(Self {
-            ctx,
             journal: j,
             capsule: c,
             target: t,
@@ -422,14 +416,14 @@ impl Transaction {
             service,
         })
     }
-    fn apply(&mut self, action_authorization: crate::atoms::comparison::ActionAuthorization, a: ForwardAuthority, keys: (&str, &str, &str, &str)) -> Result<(), String> {
+    fn apply(&mut self, action_authorization: &crate::atoms::comparison::ActionAuthorization, a: &ForwardAuthority, key: &InvocationKey, keys: (&str, &str, &str, &str)) -> Result<(), String> {
         self.action_count += 1;
         if a.target != self.target || a.old != self.old || a.new.bytes != b"after" {
             return Err("path-mismatch".into());
         }
         crate::atoms::r#do::write_file::file_write(
             action_authorization,
-            a.key,
+            key,
             &self.target,
             b"after",
             crate::atoms::r#do::write_file::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None },
@@ -719,18 +713,18 @@ fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String>
         }))
 }
 
-fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key: InvocationKey) -> Result<(), String> {
+fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key: &InvocationKey) -> Result<(), String> {
     let desired = bytes.to_vec();
     let path = path.to_path_buf();
     crate::atoms::comparison::execute_once(
         "ritual-restore-write",
         || Ok::<_, String>(fs::read(&path).ok()),
         |observed| if observed.as_deref() == Some(desired.as_slice()) { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
-        |authorization, _| crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(authorization, key, &path, &desired, mode, None, None),
+        |authorization, _| crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(&authorization, key, &path, &desired, mode, None, None),
     ).map(|_| ())
 }
 
-pub(crate) fn restore(s: &Snapshot, key: InvocationKey) -> Result<(), String> {
+pub(crate) fn restore(s: &Snapshot, key: &InvocationKey) -> Result<(), String> {
     let mut changed = Vec::new();
     for root in &s.roots {
         validate_member_scoped_target(&root.path, &root.member)?;
@@ -819,7 +813,7 @@ pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSna
         })
         .collect()
 }
-pub(crate) fn restore_services(states: &[ServiceStateSnapshot], key: InvocationKey) -> Result<(), String> {
+pub(crate) fn restore_services(states: &[ServiceStateSnapshot], key: &InvocationKey) -> Result<(), String> {
     for sealed in states {
         let observed = crate::atoms::systemd::snapshot_service_state(
             &sealed.name,
@@ -968,7 +962,7 @@ pub(crate) fn seal_projection(
 pub(crate) fn apply_projection(
     txn: &mut ProjectionTransaction,
     child: usize,
-    _key: InvocationKey,
+    _key: &InvocationKey,
 ) -> Result<(), String> {
     if !matches!(txn.state, TransactionState::Open | TransactionState::Applied) {
         return Err("transaction-not-open".into());
@@ -1012,7 +1006,7 @@ pub(crate) fn commit_projection(
 }
 pub(crate) fn rollback_projection(
     t: &mut ProjectionTransaction,
-    key: InvocationKey,
+    key: &InvocationKey,
 ) -> Result<TransactionReceipt, String> {
     if t.state == TransactionState::RolledBack {
         return Ok(receipt_for(t));
@@ -1041,8 +1035,8 @@ pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
     json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
 }
 
-pub(crate) fn update_set_demo(args: &[String], _ctx: RunContext) -> Result<(), String> {
-    demo(&[], _ctx.clone())?;
+pub(crate) fn update_set_demo(args: &[String], _ctx: &RunContext, key: &InvocationKey) -> Result<(), String> {
+    demo(&[], _ctx, key)?;
     let sbin_shelf_target_lawful =
         validate_member_scoped_target(Path::new("/usr/local/sbin"), "sbin").is_ok()
             && validate_member_scoped_target(Path::new("/usr/local/sbin"), "anyother").is_err();
@@ -1137,7 +1131,7 @@ pub(crate) fn update_set_demo(args: &[String], _ctx: RunContext) -> Result<(), S
     }
     let child_count = undeclared_transaction.sealed.children.len();
     for child in 0..child_count {
-        apply_projection(&mut undeclared_transaction, child, _ctx.key)?;
+        apply_projection(&mut undeclared_transaction, child, key)?;
     }
     let applied_ordinals = undeclared_transaction
         .applied_children
@@ -1299,14 +1293,14 @@ pub(crate) fn update_set_demo(args: &[String], _ctx: RunContext) -> Result<(), S
     for t in &plan.targets {
         if fail.as_deref() != Some(t.member.as_str()) {
             if matches!(fs::symlink_metadata(&t.path),Ok(m)if m.is_file()) {
-                comparison_authorized_write(&t.path, b"mutated", None, _ctx.key)?;
+                comparison_authorized_write(&t.path, b"mutated", None, key)?;
             }
         }
     }
     let dir = root.join("receipts");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let verdict = if fail.is_some() {
-        restore(&snap, _ctx.key)?;
+        restore(&snap, key)?;
         "failed-rolled-back"
     } else {
         "ok"
@@ -1357,16 +1351,16 @@ pub(crate) fn update_set_demo(args: &[String], _ctx: RunContext) -> Result<(), S
     }
 }
 
-pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
+pub(crate) fn demo(args: &[String], ctx: &RunContext, key: &InvocationKey) -> Result<(), String> {
     let root = PathBuf::from(args.first().cloned().unwrap_or_else(|| std::env::temp_dir().join(format!("harmonia-{}", ctx.run_id)).display().to_string()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let target = root.join("fixture.txt");
     fs::write(&target, b"before").map_err(|e| e.to_string())?;
     let (service, _shared) = DemoService::new(args.get(1).map(String::as_str).unwrap_or("demo.service"));
-    let mut t = Transaction::admit(ctx.clone(), &root, Box::new(service))?;
+    let mut t = Transaction::admit(&root, Box::new(service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..t.old.clone() };
-    let committed = t.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-1"), desired, TerminalIntent::Commit)?;
+    let committed = t.one_breath(key, SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-1"), desired, TerminalIntent::Commit)?;
     let committed_before = fs::read(&target).map_err(|e| e.to_string())?;
     recover_open(&t.journal, &t.capsule, &mut DemoService::new("ignored").0)?;
     let terminal_commit_readmission = fs::read(&target).map_err(|e| e.to_string())? == committed_before;
@@ -1376,11 +1370,11 @@ pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
     let empty_target = empty_root.join("fixture.txt");
     fs::write(&empty_target, b"same").map_err(|e| e.to_string())?;
     let (empty_service, empty_shared) = DemoService::new("empty.service");
-    let mut empty = Transaction::admit(ctx.clone(), &empty_root, Box::new(empty_service))?;
+    let mut empty = Transaction::admit(&empty_root, Box::new(empty_service))?;
     let empty_before_meta = fs::symlink_metadata(&empty_target).map_err(|e| e.to_string())?;
     let empty_before = capture(&empty_target, Some(&DemoService { image: empty_shared.clone() }), Some("empty.service"))?;
     let empty_desired = empty_before.clone();
-    let _empty_result = empty.one_breath(SourceKey::mint("empty-source", "empty-rev"), DeedKey::mint("empty-proposal", "empty-deed"), empty_desired, TerminalIntent::Commit)?;
+    let _empty_result = empty.one_breath(key, SourceKey::mint("empty-source", "empty-rev"), DeedKey::mint("empty-proposal", "empty-deed"), empty_desired, TerminalIntent::Commit)?;
     let empty_after_meta = fs::symlink_metadata(&empty_target).map_err(|e| e.to_string())?;
     let empty_after = capture(&empty_target, Some(&DemoService { image: empty_shared.clone() }), Some("empty.service"))?;
     let empty_events = fs::read_to_string(&empty.journal).map_err(|e| e.to_string())?.lines().map(|line| serde_json::from_str::<Value>(line).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
@@ -1404,9 +1398,9 @@ pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
     fs::set_permissions(&normal_target, fs::Permissions::from_mode(0o640)).map_err(|e| e.to_string())?;
     let xattr_supported = set_demo_xattr(&normal_target, b"before-xattr");
     let (normal_service, normal_shared) = DemoService::new("demo.service");
-    let mut normal = Transaction::admit(ctx.clone(), &normal_root, Box::new(normal_service))?;
+    let mut normal = Transaction::admit(&normal_root, Box::new(normal_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..normal.old.clone() };
-    let _ = normal.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-2"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = normal.one_breath(key, SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-2"), desired, TerminalIntent::LeaveApplied)?;
     let normal_after_service = normal_shared.borrow().clone();
     let rollback = normal.rollback()?;
     let restored = capture(&normal_target, Some(&DemoService { image: normal_shared.clone() }), Some("demo.service"))? == normal.old;
@@ -1416,9 +1410,9 @@ pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
     let foreign_target = foreign_root.join("fixture.txt");
     fs::write(&foreign_target, b"before").map_err(|e| e.to_string())?;
     let (foreign_service, _) = DemoService::new("demo.service");
-    let mut foreign = Transaction::admit(ctx.clone(), &foreign_root, Box::new(foreign_service))?;
+    let mut foreign = Transaction::admit(&foreign_root, Box::new(foreign_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..foreign.old.clone() };
-    let _ = foreign.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-3"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = foreign.one_breath(key, SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-3"), desired, TerminalIntent::LeaveApplied)?;
     fs::write(&foreign_target, b"foreign").map_err(|e| e.to_string())?;
     let foreign_err = foreign.rollback().unwrap_err();
     let journal = fs::read_to_string(&foreign.journal).map_err(|e| e.to_string())?;
@@ -1429,12 +1423,12 @@ pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
     let crash_target = crash_root.join("fixture.txt");
     fs::write(&crash_target, b"before").map_err(|e| e.to_string())?;
     let (crash_service, crash_shared) = DemoService::new("demo.service");
-    let mut crash = Transaction::admit(ctx.clone(), &crash_root, Box::new(crash_service))?;
+    let mut crash = Transaction::admit(&crash_root, Box::new(crash_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..crash.old.clone() };
-    let _ = crash.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-4"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = crash.one_breath(key, SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-4"), desired, TerminalIntent::LeaveApplied)?;
     drop(crash);
     let recovered_service = DemoService { image: crash_shared.clone() };
-    let _ = Transaction::admit(ctx.clone(), &crash_root, Box::new(recovered_service))?;
+    let _ = Transaction::admit(&crash_root, Box::new(recovered_service))?;
     let crash_journal = fs::read_to_string(&crash_root.join("journal.jsonl")).map_err(|e| e.to_string())?;
     let crash_recovery = fs::read(&crash_target).map_err(|e| e.to_string())? == b"before" && crash_shared.borrow().enabled && crash_shared.borrow().active && crash_journal.contains("recovered-rolled-back");
 
@@ -1442,9 +1436,9 @@ pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
     fs::create_dir_all(&open_root).map_err(|e| e.to_string())?;
     fs::write(open_root.join("fixture.txt"), b"before").map_err(|e| e.to_string())?;
     let (open_service, _) = DemoService::new("open.service");
-    let _ = Transaction::admit(ctx.clone(), &open_root, Box::new(open_service))?;
+    let _ = Transaction::admit(&open_root, Box::new(open_service))?;
     let (open_recovery_service, _) = DemoService::new("open.service");
-    let _ = Transaction::admit(ctx.clone(), &open_root, Box::new(open_recovery_service))?;
+    let _ = Transaction::admit(&open_root, Box::new(open_recovery_service))?;
     let open_journal = fs::read_to_string(&open_root.join("journal.jsonl")).map_err(|e| e.to_string())?;
     let recovered_open_without_apply = open_journal.contains("recovered-open-without-apply");
 
@@ -1453,13 +1447,13 @@ pub(crate) fn demo(args: &[String], ctx: RunContext) -> Result<(), String> {
     let recovery_foreign_target = recovery_foreign_root.join("fixture.txt");
     fs::write(&recovery_foreign_target, b"before").map_err(|e| e.to_string())?;
     let (recovery_foreign_service, _) = DemoService::new("demo.service");
-    let mut recovery_foreign = Transaction::admit(ctx.clone(), &recovery_foreign_root, Box::new(recovery_foreign_service))?;
+    let mut recovery_foreign = Transaction::admit(&recovery_foreign_root, Box::new(recovery_foreign_service))?;
     let desired = RestorationImage { bytes: b"after".to_vec(), ..recovery_foreign.old.clone() };
-    let _ = recovery_foreign.one_breath(SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-6"), desired, TerminalIntent::LeaveApplied)?;
+    let _ = recovery_foreign.one_breath(key, SourceKey::mint("demo-source", "rev-1"), DeedKey::mint("demo-proposal", "deed-6"), desired, TerminalIntent::LeaveApplied)?;
     fs::write(&recovery_foreign_target, b"foreign").map_err(|e| e.to_string())?;
     drop(recovery_foreign);
     let (recovery_foreign_service, _) = DemoService::new("demo.service");
-    let recovery_foreign_err = match Transaction::admit(ctx, &recovery_foreign_root, Box::new(recovery_foreign_service)) { Err(error) => error, Ok(_) => "unexpected-success".into() };
+    let recovery_foreign_err = match Transaction::admit(&recovery_foreign_root, Box::new(recovery_foreign_service)) { Err(error) => error, Ok(_) => "unexpected-success".into() };
     let recovery_foreign_journal = fs::read_to_string(&recovery_foreign_root.join("journal.jsonl")).map_err(|e| e.to_string())?;
     let recovery_foreign_guard = recovery_foreign_err == "recovery-rollback-incomplete" && recovery_foreign_journal.contains("failed-rollback-incomplete");
 

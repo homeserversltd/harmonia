@@ -7,7 +7,10 @@ use crate::{
 pub(crate) fn plan(request: &Request) -> Outcome {
     crate::atoms::ask::plan(request)
 }
-pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::InvocationKey) -> Outcome {
+pub(crate) fn apply(
+    request: &Request,
+    invocation: &crate::atoms::r#do::InvocationKey,
+) -> Outcome {
     let run = crate::tools::declaration::execute(
         "pull-repo",
         "pull-repo",
@@ -21,7 +24,7 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
         },
         |authorization, _| {
             Ok(crate::atoms::r#do::pull_repo::git_pull(
-                authorization,
+                &authorization,
                 invocation,
                 |authorization, invocation| {
                     crate::atoms::r#do::pull_repo::apply(authorization, invocation, request)
@@ -62,7 +65,7 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
 }
 pub(crate) fn acquire_source(
     plan: &SourcePlan,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> SourceOutcome {
     let Some(invocation) = invocation else {
         return SourceOutcome {
@@ -92,7 +95,7 @@ pub(crate) fn acquire_source(
         },
         |authorization, _| {
             let outcome = crate::atoms::r#do::pull_repo::git_acquire(
-                authorization,
+                &authorization,
                 invocation,
                 |authorization, invocation| {
                     crate::atoms::r#do::pull_repo::acquire_source(authorization, invocation, plan)

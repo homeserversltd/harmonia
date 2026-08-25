@@ -45,7 +45,7 @@ pub(crate) fn execute_step(
     receipt_dir: &Path,
     receipt_name: &str,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     validate_ladder_args(args)?;
     let venv = std::path::PathBuf::from(args.get("venv").and_then(Value::as_str).unwrap());

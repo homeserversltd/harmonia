@@ -5,8 +5,8 @@ use std::fs;
 use std::path::Path;
 
 pub(crate) fn rename(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     from: &Path,
     to: &Path,
 ) -> Result<(), String> {

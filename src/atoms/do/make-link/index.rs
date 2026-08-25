@@ -170,8 +170,8 @@ pub(crate) fn converge(
 
 #[cfg(unix)]
 pub(crate) fn symlink(
-    _authorization: ActionAuthorization,
-    _invocation: InvocationKey,
+    _authorization: &ActionAuthorization,
+    _invocation: &InvocationKey,
     target: &Path,
     link: &Path,
 ) -> Result<(), String> {
@@ -179,8 +179,8 @@ pub(crate) fn symlink(
 }
 #[cfg(not(unix))]
 pub(crate) fn symlink(
-    _: ActionAuthorization,
-    _: InvocationKey,
+    _: &ActionAuthorization,
+    _: &InvocationKey,
     _: &Path,
     _: &Path,
 ) -> Result<(), String> {

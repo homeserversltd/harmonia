@@ -83,8 +83,8 @@ mod mutation {
         timeout: u64,
     ) -> Result<CmdResult, String> {
         let result = atoms::r#do::change_unit::unit_change_scoped(
-            authorization,
-            invocation,
+            &authorization,
+            &invocation,
             unit,
             atoms::r#do::change_unit::UnitVerb::DisableNow,
             user,
@@ -96,7 +96,7 @@ mod mutation {
         let mut ok = result.ok;
         let mut code = result.code.unwrap_or(if ok { 0 } else { -1 });
         if ok && action == "disable-stop-remove" && path.is_some() {
-            if let Err(error) = atoms::r#do::remove_file::remove_file(authorization, invocation, path.unwrap()) {
+            if let Err(error) = atoms::r#do::remove_file::remove_file(&authorization, &invocation, path.unwrap()) {
                 ok = false;
                 code = -1;
                 stderr = format!(

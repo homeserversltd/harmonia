@@ -362,7 +362,7 @@ pub(crate) fn execute_manifest_band(
     module_dir: &Path,
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
-    key: Option<crate::atoms::r#do::InvocationKey>,
+    key: Option<&crate::atoms::r#do::InvocationKey>,
     mode_apply: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
@@ -490,7 +490,7 @@ use crate::receipts::event;
 pub(crate) fn execute_manifest_modules(
     profile: &Profile,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: &UpdateMode,
     mode_apply: bool,
     disabled_modules: &BTreeSet<String>,
     projection: &ProfileProjection,

@@ -10,8 +10,8 @@ const OUTPUT_LIMIT: usize = 16 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn command_with_timeout_in_dir(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     program: &str,
     args: &[String],
     cwd: Option<&Path>,
@@ -21,8 +21,8 @@ pub(crate) fn command_with_timeout_in_dir(
 }
 
 pub(crate) fn command_with_timeout_in_dir_env(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     program: &str,
     args: &[String],
     cwd: Option<&Path>,
@@ -42,8 +42,8 @@ pub(crate) fn command_with_timeout_in_dir_env(
 }
 
 pub(crate) fn command_with_timeout(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     program: &str,
     args: &[String],
     timeout: Duration,
@@ -60,8 +60,8 @@ pub(crate) fn command_with_timeout(
     })
 }
 pub(crate) fn mutating_command(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     program: &str,
     args: &[String],
 ) -> Result<Receipt, String> {

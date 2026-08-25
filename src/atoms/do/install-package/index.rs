@@ -73,8 +73,8 @@ fn live_pacman_process_exists(program: &Path) -> bool {
 }
 
 pub(crate) fn reclaim_pacman_database_lock(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     receipt_dir: &Path,
     program: &str,
     apply: bool,
@@ -154,8 +154,8 @@ pub(crate) fn capture_overwrite_preimage(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pacman_mutate_packages_with_options(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     receipt_dir: &Path,
     sync: bool,
     packages: &[String],
@@ -177,8 +177,8 @@ pub(crate) fn pacman_mutate_packages_with_options(
 }
 
 pub(crate) fn pacman_mutate_packages_with_ignores(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     receipt_dir: &Path,
     sync: bool,
     packages: &[String],
@@ -265,8 +265,8 @@ pub(crate) fn pacman_mutate_packages_with_ignores(
 use crate::atoms::comparison::ActionAuthorization;
 
 pub(crate) fn package_install(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     receipt_dir: &Path,
     packages: &[String],
     conflict_policy: Option<&str>,
@@ -286,8 +286,8 @@ pub(crate) fn package_install(
 }
 
 pub(crate) fn package_install_with_ignores(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     receipt_dir: &Path,
     packages: &[String],
     ignored: &[String],
@@ -341,7 +341,7 @@ pub(crate) fn package_tool_for_backend(
     packages: &[String],
     apply: bool,
     backend: PackageBackend,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     package_tool_with_policy_for_backend(
         receipt_dir,
@@ -368,7 +368,7 @@ pub(crate) fn package_tool_with_policy_for_backend(
     conflict_paths: &[String],
     timeout_secs: u64,
     backend: PackageBackend,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     package_tool_with_policy_for_backend_and_pins(
         receipt_dir,
@@ -396,7 +396,7 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
     conflict_paths: &[String],
     timeout_secs: u64,
     backend: PackageBackend,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     pins: &std::collections::BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     if !pins.is_empty() {
@@ -488,7 +488,7 @@ fn apt_package_tool(
     apply: bool,
     timeout_secs: u64,
     pins: &std::collections::BTreeMap<String, String>,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let program = apt_program();
     let mut observe_args = match action {
@@ -541,6 +541,7 @@ fn apt_package_tool(
             }
         },
         |authorization, _| {
+            let authorization = &authorization;
             let mut args: Vec<String> = match (action, apply) {
                 ("check", _) => vec!["-s".into(), "upgrade".into()],
                 ("install", true) => vec!["install".into(), "--yes".into(), "--no-remove".into()],
@@ -625,8 +626,8 @@ fn apt_package_tool(
 }
 
 fn run_apt_command_authorized(
-    _authorization: ActionAuthorization,
-    _invocation: InvocationKey,
+    _authorization: &ActionAuthorization,
+    _invocation: &InvocationKey,
     receipt_dir: &Path,
     name: &str,
     program: &str,
@@ -1018,8 +1019,8 @@ fn capture_owned_with_timeout(program: &str, args: Vec<String>, timeout: u64) ->
 }
 
 fn capture_owned_authorized(
-    _authorization: ActionAuthorization,
-    _invocation: InvocationKey,
+    _authorization: &ActionAuthorization,
+    _invocation: &InvocationKey,
     program: &str,
     args: Vec<String>,
     timeout: u64,
@@ -1151,7 +1152,7 @@ fn package_update_tool(
     t: u64,
     b: PackageBackend,
     pins: &std::collections::BTreeMap<String, String>,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let pre = observe_update(r, a, t, b, pins);
     write_pin_witness(r, n, pins, b)?;
@@ -1219,6 +1220,7 @@ fn package_update_tool(
             || Ok::<_, String>(pre.clone()),
             |_| DiffDecision::Different,
             |authorization, _| {
+                let authorization = &authorization;
                 let invocation = invocation
                     .ok_or_else(|| "package-mutation-invocation-missing".to_string())?;
                 let pair = match b {
@@ -1399,7 +1401,7 @@ pub(crate) fn package_tool_with_policy(
     conflict_policy: Option<&str>,
     conflict_paths: &[String],
     timeout_secs: u64,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let pacman = pacman_program();
     if !pacman_available(&pacman) {
@@ -1483,6 +1485,7 @@ pub(crate) fn package_tool_with_policy(
             }
         },
         |authorization, _| {
+            let authorization = &authorization;
             let result = match action {
                 "upgrade" | "update" if apply => {
                     let invocation = invocation.ok_or_else(|| "package-mutation-invocation-missing".to_string())?;
@@ -1604,7 +1607,7 @@ pub(crate) fn keyring_repair_tool(
     apply: bool,
     timeout_secs: u64,
     pins: &std::collections::BTreeMap<String, String>,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let pacman = pacman_program();
     let pacman_key = pacman_key_program();
@@ -1649,6 +1652,7 @@ pub(crate) fn keyring_repair_tool(
             }
         },
         |authorization, _| {
+            let authorization = &authorization;
             let invocation = invocation.ok_or_else(|| "keyring-repair-invocation-missing".to_string())?;
             keyring_repair_action(authorization, invocation, receipt_dir, name, package_name, apply, timeout_secs, pins)
         },
@@ -1704,8 +1708,8 @@ pub(crate) fn keyring_repair_tool(
 }
 
 fn keyring_repair_action(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     receipt_dir: &Path,
     name: &str,
     package_name: &str,

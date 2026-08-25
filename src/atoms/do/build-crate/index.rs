@@ -5,8 +5,8 @@ use std::path::Path;
 use std::time::Duration;
 
 pub(crate) fn cargo_build(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     cwd: &Path,
     environment: &[(String, String)],
     bearer: &str,
@@ -35,8 +35,8 @@ pub(crate) fn cargo_build(
 }
 
 pub(crate) fn cargo_build_and_stamp(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     cwd: &Path,
     environment: &[(String, String)],
     bearer: &str,

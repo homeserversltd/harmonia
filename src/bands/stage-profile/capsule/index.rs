@@ -109,12 +109,12 @@ pub(crate) struct InstallChange {
     module_id: Option<String>,
 }
 
-struct CapsuleStageGuard {
+struct CapsuleStageGuard<'a> {
     path: PathBuf,
-    key: InvocationKey,
+    key: &'a InvocationKey,
     active: bool,
 }
-impl Drop for CapsuleStageGuard {
+impl<'a> Drop for CapsuleStageGuard<'a> {
     fn drop(&mut self) {
         if self.active {
             let _ = comparison::execute(
@@ -128,7 +128,7 @@ impl Drop for CapsuleStageGuard {
                     }
                 },
                 |authorization, _| {
-                    crate::tools::files::remove_dir_authorized(authorization, self.key, &self.path)
+                    crate::tools::files::remove_dir_authorized(&authorization, &self.key, &self.path)
                 },
             );
         }
@@ -137,7 +137,7 @@ impl Drop for CapsuleStageGuard {
 
 pub(crate) fn demo(
     root: &Path,
-    key: crate::atoms::r#do::InvocationKey,
+    key: &crate::atoms::r#do::InvocationKey,
 ) -> Result<serde_json::Value, String> {
     let authority = root.join("authority");
     let capsule = root.join("capsule");
@@ -202,7 +202,7 @@ pub(crate) fn demo(
             engine_version_received: "0.0.1".into(),
             modules: vec![],
         },
-        key,
+        &key,
     )?;
     let mut seeded: Value =
         serde_json::from_slice(&fs::read(&subscription).map_err(|e| e.to_string())?)
@@ -214,18 +214,18 @@ pub(crate) fn demo(
             "machine_local_divergence".into(),
             serde_json::json!("lawful"),
         );
-    crate::write_json_value_atomic_with_invocation(&subscription, &seeded, key)?;
+    crate::write_json_value_atomic_with_invocation(&subscription, &seeded, &key)?;
     let previous = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
     std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
     let result = (|| {
-        capsule_pack_with_invocation("demo", &capsule, &authority, key)?;
+        capsule_pack_with_invocation("demo", &capsule, &authority, &key)?;
         capsule_verify(&capsule)?;
         capsule_install_with_invocation(&capsule, &config, false, None)?;
         let plan: Value = serde_json::from_slice(
             &fs::read(capsule.join("install-plan-receipt.json")).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        capsule_install_with_invocation(&capsule, &config, true, Some(key))?;
+        capsule_install_with_invocation(&capsule, &config, true, Some(&key))?;
         let read = |p: PathBuf| -> Result<Value, String> {
             serde_json::from_slice(&fs::read(p).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())
@@ -294,7 +294,7 @@ pub(crate) fn capsule_pack_with_invocation(
     profile_id: &str,
     output_dir: &Path,
     harmonia_root: &Path,
-    key: InvocationKey,
+    key: &InvocationKey,
 ) -> Result<(), String> {
     validate_harmonia_root(harmonia_root)?;
     // Build in a fresh sibling. The prior destination is untouched until the
@@ -317,7 +317,7 @@ pub(crate) fn capsule_pack_with_invocation(
         "capsule-stage-create",
         || Ok(false),
         |_| DiffDecision::Different,
-        |authorization, _| crate::tools::files::make_dir(authorization, key, &stage_dir),
+        |authorization, _| crate::tools::files::make_dir(&authorization, key, &stage_dir),
     )?;
     let mut stage_guard = CapsuleStageGuard {
         path: stage_dir.clone(),
@@ -433,7 +433,7 @@ pub(crate) fn capsule_pack_with_invocation(
         || Ok(fs::symlink_metadata(&destination_dir).is_ok()),
         |_| DiffDecision::Different,
         |authorization, _| {
-            crate::tools::files::remove_dir_replace(authorization, key, &destination_dir, &staged)
+            crate::tools::files::remove_dir_replace(&authorization, key, &destination_dir, &staged)
         },
     )?;
     comparison::execute(
@@ -447,7 +447,7 @@ pub(crate) fn capsule_pack_with_invocation(
             }
         },
         |authorization, _| {
-            crate::tools::files::remove_dir_authorized(authorization, key, &stage_dir)
+            crate::tools::files::remove_dir_authorized(&authorization, key, &stage_dir)
         },
     )?;
     stage_guard.active = false;
@@ -605,7 +605,7 @@ pub(crate) fn capsule_install_with_invocation(
     capsule_dir: &Path,
     config_dir: &Path,
     apply: bool,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<(), String> {
     if apply && invocation.is_none() {
         return Err("capsule-install-invocation-missing".to_string());
@@ -703,7 +703,7 @@ pub(crate) fn capsule_install_with_invocation(
                             },
                             |authorization, _| {
                                 crate::tools::files::remove_dir_authorized(
-                                    authorization,
+                                    &authorization,
                                     key,
                                     &path,
                                 )
@@ -757,7 +757,7 @@ pub(crate) fn capsule_install_with_invocation(
                     }
                 },
                 |authorization, _| {
-                    crate::tools::files::remove_dir_authorized(authorization, key, &locks_dst)
+                    crate::tools::files::remove_dir_authorized(&authorization, key, &locks_dst)
                         .map(|_| ())
                 },
             )?;
@@ -1155,7 +1155,7 @@ fn file_sha256(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), String> {
+fn copy_node_artifact(src: &Path, dst: &Path, key: &InvocationKey) -> Result<(), String> {
     let image = crate::tools::files::remove_dir_capture(src)?;
     if let Some(parent) = dst.parent() {
         comparison::execute(
@@ -1168,19 +1168,19 @@ fn copy_node_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), 
                     DiffDecision::Different
                 }
             },
-            |authorization, _| crate::tools::files::make_dir(authorization, key, parent),
+            |authorization, _| crate::tools::files::make_dir(&authorization, key, parent),
         )?;
     }
     comparison::execute_once(
         "capsule-artifact-replace",
         || Ok(fs::symlink_metadata(dst).is_ok()),
         |_| DiffDecision::Different,
-        |authorization, _| crate::tools::files::remove_dir_replace(authorization, key, dst, &image),
+        |authorization, _| crate::tools::files::remove_dir_replace(&authorization, key, dst, &image),
     )?;
     Ok(())
 }
 
-fn copy_tree_artifact(src: &Path, dst: &Path, key: InvocationKey) -> Result<(), String> {
+fn copy_tree_artifact(src: &Path, dst: &Path, key: &InvocationKey) -> Result<(), String> {
     let metadata = fs::symlink_metadata(src)
         .map_err(|e| format!("capsule-artifact-source-stat-failed {}: {e}", src.display()))?;
     let source = if metadata.file_type().is_symlink() {
@@ -1202,7 +1202,7 @@ fn copy_tree_exact(
     apply: bool,
     changes: &mut Vec<InstallChange>,
     module_id: Option<&str>,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<(), String> {
     if !src.is_dir() {
         return Err(format!("copy-tree-source-missing {}", src.display()));
@@ -1277,9 +1277,9 @@ fn copy_tree_exact(
             },
             |authorization, _| {
                 if target_image.is_none() {
-                    crate::tools::files::make_dir(authorization, key, dst)?;
+                    crate::tools::files::make_dir(&authorization, key, dst)?;
                 }
-                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image)
+                crate::tools::files::remove_dir_replace(&authorization, key, dst, &source_image)
                     .map(|_| ())
             },
         )?;
@@ -1315,7 +1315,7 @@ fn converge_exact_node(
     apply: bool,
     changes: &mut Vec<InstallChange>,
     module_id: Option<&str>,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<(), String> {
     let source_image = crate::tools::files::remove_dir_capture(src)?;
     let target_image = fs::symlink_metadata(dst)
@@ -1360,11 +1360,11 @@ fn converge_exact_node(
             |authorization, _| {
                 if fs::symlink_metadata(dst).is_err() {
                     if let Some(parent) = dst.parent() {
-                        crate::tools::files::make_dir(authorization, key, parent)?;
+                        crate::tools::files::make_dir(&authorization, key, parent)?;
                     }
-                    crate::tools::files::make_dir(authorization, key, dst)?;
+                    crate::tools::files::make_dir(&authorization, key, dst)?;
                 }
-                crate::tools::files::remove_dir_replace(authorization, key, dst, &source_image)
+                crate::tools::files::remove_dir_replace(&authorization, key, dst, &source_image)
                     .map(|_| ())
             },
         )?;
@@ -1375,7 +1375,7 @@ fn converge_exact_node(
 fn write_json_atomic<T: Serialize>(
     path: &Path,
     value: &T,
-    key: InvocationKey,
+    key: &InvocationKey,
 ) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())? + "\n";
     write_bytes_atomic(path, text.as_bytes(), key)
@@ -1383,7 +1383,7 @@ fn write_json_atomic<T: Serialize>(
 fn write_manifest_json_atomic<T: Serialize>(
     path: &Path,
     value: &T,
-    key: InvocationKey,
+    key: &InvocationKey,
 ) -> Result<(), String> {
     write_json_atomic(path, value, key)
 }
@@ -1392,7 +1392,7 @@ fn write_receipt_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(),
     attest::write_json_atomic(path, &value)
 }
 
-fn write_bytes_atomic(path: &Path, bytes: &[u8], key: InvocationKey) -> Result<(), String> {
+fn write_bytes_atomic(path: &Path, bytes: &[u8], key: &InvocationKey) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         comparison::execute(
             "capsule-payload-parent",
@@ -1404,7 +1404,7 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8], key: InvocationKey) -> Result<(
                     DiffDecision::Different
                 }
             },
-            |authorization, _| crate::tools::files::make_dir(authorization, key, parent),
+            |authorization, _| crate::tools::files::make_dir(&authorization, key, parent),
         )?;
     }
     comparison::execute(
@@ -1419,7 +1419,7 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8], key: InvocationKey) -> Result<(
         },
         |authorization, _| {
             crate::tools::files::file_write(
-                authorization,
+                &authorization,
                 key,
                 path,
                 bytes,

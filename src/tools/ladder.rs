@@ -13,7 +13,7 @@ pub(crate) const SCHEMA: &str = "harmonia.module.ladder.v1";
 
 pub(crate) fn demo(
     root: &Path,
-    _key: Option<crate::atoms::r#do::InvocationKey>,
+    _key: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let profile_root = root.join("profiles/synthetic-ladder");
     let module_dir = profile_root.join("modules/synthetic-ladder");

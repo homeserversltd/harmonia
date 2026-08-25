@@ -14,13 +14,13 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-fn receipt(a: ActionAuthorization, i: InvocationKey, _message: String) -> Result<(), String> {
+fn receipt(a: &ActionAuthorization, i: &InvocationKey, _message: String) -> Result<(), String> {
     let _ = (a, i);
     Ok(())
 }
 pub(crate) fn stage(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     source: &Path,
     target: &Path,
     uid: Option<u32>,
@@ -70,8 +70,8 @@ pub(crate) fn stage(
     Err("symlink-converge-stage-name-exhausted".into())
 }
 fn renameat2(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     left: &Path,
     right: &Path,
     flags: libc::c_uint,
@@ -103,8 +103,8 @@ fn renameat2(
     )
 }
 pub(crate) fn exchange(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     left: &Path,
     right: &Path,
 ) -> Result<(), String> {
@@ -116,8 +116,8 @@ pub(crate) fn exchange(
     })
 }
 pub(crate) fn rename_noreplace(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     left: &Path,
     right: &Path,
 ) -> Result<(), String> {
@@ -125,24 +125,24 @@ pub(crate) fn rename_noreplace(
         .map_err(|error| format!("symlink-converge-create-raced {}: {error}", right.display()))
 }
 pub(crate) fn remove_file(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     fs::remove_file(path).map_err(|e| e.to_string())?;
     receipt(a, i, format!("removed file {}", path.display()))
 }
 pub(crate) fn remove_dir(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     fs::remove_dir(path).map_err(|e| e.to_string())?;
     receipt(a, i, format!("removed directory {}", path.display()))
 }
 pub(crate) fn sync_parent(
-    a: ActionAuthorization,
-    i: InvocationKey,
+    a: &ActionAuthorization,
+    i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -151,8 +151,8 @@ pub(crate) fn sync_parent(
 }
 
 fn promote_staged_symlink(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     candidate: &Path,
     target: &Path,
     before: &SymlinkPathIdentity,
@@ -212,7 +212,7 @@ pub(crate) fn symlink_converge(
     request: &SymlinkConvergeRequest,
     receipt_dir: &Path,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
     let desired_uid = request
@@ -242,6 +242,7 @@ pub(crate) fn symlink_converge(
         },
         |observation| symlink_diff_decision(observation, request),
         |authorization, _| {
+            let authorization = &authorization;
             symlink_converge_action(authorization, invocation, request, receipt_dir, apply)
         },
     )?;
@@ -306,8 +307,8 @@ pub(crate) fn symlink_converge(
 }
 
 fn symlink_converge_action(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     request: &SymlinkConvergeRequest,
     receipt_dir: &Path,
     apply: bool,

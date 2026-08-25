@@ -121,7 +121,7 @@ pub(crate) fn aur_build_pinned_action(
 }
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::comparison::ActionAuthorization;
-pub(crate) fn aur_build_pinned(_authorization: ActionAuthorization, _invocation: InvocationKey, callback: impl FnOnce() -> Result<crate::OperationOutcome, String>) -> Result<crate::OperationOutcome, String> { callback() }
+pub(crate) fn aur_build_pinned(_authorization: &ActionAuthorization, _invocation: &InvocationKey, callback: impl FnOnce() -> Result<crate::OperationOutcome, String>) -> Result<crate::OperationOutcome, String> { callback() }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pinned(
@@ -135,7 +135,7 @@ pub(crate) fn build_pinned(
     timeout_secs: u64,
     install: bool,
     apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     pins: &BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
     let lock = read_lock(lock_path, package)?;
@@ -492,7 +492,7 @@ pub(crate) fn chown_recursive(
 
 pub(crate) fn demo(
     root: &Path,
-    _invocation: Option<crate::atoms::r#do::InvocationKey>,
+    _invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let source = root.join("upstream");
     let receipts = root.join("receipts");

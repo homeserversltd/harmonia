@@ -71,8 +71,8 @@ pub(crate) fn preserved_non_git_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn apply(
-    _authorization: crate::atoms::comparison::ActionAuthorization,
-    _invocation: crate::atoms::r#do::InvocationKey,
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    _invocation: &crate::atoms::r#do::InvocationKey,
     request: &Request,
 ) -> Outcome {
     let sync = sync_repo(request);
@@ -543,8 +543,8 @@ fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<Option<Strin
 }
 
 pub(crate) fn acquire_source(
-    _authorization: crate::atoms::comparison::ActionAuthorization,
-    _invocation: crate::atoms::r#do::InvocationKey,
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    _invocation: &crate::atoms::r#do::InvocationKey,
     plan: &SourcePlan,
 ) -> SourceOutcome {
     let mut attempts = Vec::new();
@@ -1162,22 +1162,22 @@ fn source_hard_red(attempts: Vec<SourceAttemptReceipt>, changed: bool) -> Source
 }
 
 pub(crate) fn git_pull(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     callback: impl FnOnce(
-        crate::atoms::comparison::ActionAuthorization,
-        crate::atoms::r#do::InvocationKey,
+        &crate::atoms::comparison::ActionAuthorization,
+        &crate::atoms::r#do::InvocationKey,
     ) -> Outcome,
 ) -> Outcome {
     callback(authorization, invocation)
 }
 
 pub(crate) fn git_acquire(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     callback: impl FnOnce(
-        crate::atoms::comparison::ActionAuthorization,
-        crate::atoms::r#do::InvocationKey,
+        &crate::atoms::comparison::ActionAuthorization,
+        &crate::atoms::r#do::InvocationKey,
     ) -> SourceOutcome,
 ) -> SourceOutcome {
     callback(authorization, invocation)
@@ -1185,7 +1185,7 @@ pub(crate) fn git_acquire(
 
 pub(crate) fn demo(
     root: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let source = root.join("source");
     let destination = root.join("destination");

@@ -1,5 +1,4 @@
 //! Profile/update adapters for the durable ritual owner in ritual.rs.
-use crate::atoms::r#do::InvocationKey;
 use crate::Profile;
 use crate::*;
 use std::{
@@ -125,12 +124,11 @@ pub(crate) struct RunCarrier {
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct RunContext {
     pub run_id: String,
     pub profile: String,
     pub face: String,
-    pub(crate) key: InvocationKey,
     pub(crate) carrier: RunCarrierRef,
 }
 // Compatibility/profile entrypoints remain here; the durable transaction owner lives in ritual.rs.
@@ -146,7 +144,7 @@ pub(crate) fn rolling_update_run(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: UpdateMode<'_>,
     context: Option<&crate::RunContext>,
     suite_debt: Option<String>,
     lock_path: PathBuf,
@@ -178,7 +176,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 &effective_receipt_dir,
-                mode,
+                &mode,
                 true,
                 Some(preflight),
                 suite_debt.as_deref(),
@@ -192,7 +190,7 @@ pub(crate) fn rolling_update_run(
             profile,
             module_root,
             &effective_receipt_dir,
-            mode,
+            &mode,
             true,
             Some(preflight),
             suite_debt.as_deref(),
@@ -441,15 +439,15 @@ pub(crate) fn rolling_update_from_certificate_with_context(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-    mode: UpdateMode,
-    context: Option<crate::RunContext>,
+    mode: UpdateMode<'_>,
+    context: Option<&crate::RunContext>,
 ) -> Result<(), String> {
     rolling_update_run(
         profile,
         module_root,
         receipt_dir,
         mode,
-        context.as_ref(),
+        context,
         enforce_update_suite(profile, module_root)?,
         engine_run_lock_path(),
         materialize_tv_receipt_dir,

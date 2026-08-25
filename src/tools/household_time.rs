@@ -56,7 +56,7 @@ pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
 }
 pub(crate) fn demo(
     root: &Path,
-    _key: Option<crate::atoms::r#do::InvocationKey>,
+    _key: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let args = BTreeMap::from([
         ("backend".into(), Value::String("staff".into())),

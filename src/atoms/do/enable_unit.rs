@@ -11,8 +11,8 @@ pub(crate) fn observe(
     probe::unit(unit, user, target_user, timeout_secs)
 }
 pub(crate) fn act(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
     unit: &str,
     user: bool,
     target_user: Option<&str>,
@@ -79,8 +79,8 @@ mod mutation {
     use crate::atoms;
     use crate::CmdResult;
     pub(super) fn enable(
-        authorization: crate::atoms::comparison::ActionAuthorization,
-        invocation: atoms::r#do::InvocationKey,
+        authorization: &crate::atoms::comparison::ActionAuthorization,
+        invocation: &atoms::r#do::InvocationKey,
         unit: &str,
         user: bool,
         target: Option<&str>,

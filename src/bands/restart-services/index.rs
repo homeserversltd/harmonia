@@ -237,7 +237,7 @@ pub(crate) fn execute_manifest_band(
     module_dir: &Path,
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
-    key: Option<crate::tools::files::InvocationKey>,
+    key: Option<&crate::tools::files::InvocationKey>,
     mode_apply: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
@@ -357,7 +357,7 @@ use crate::receipts::event;
 pub(crate) fn execute_manifest_modules(
     profile: &Profile,
     receipt_dir: &Path,
-    mode: UpdateMode,
+    mode: &UpdateMode,
     mode_apply: bool,
     disabled_modules: &BTreeSet<String>,
     projection: &ProfileProjection,
@@ -474,7 +474,7 @@ pub(crate) fn execute_routine_child(
     manifest: &crate::tools::ladder::LadderManifest,
     receipt_dir: &std::path::Path,
     apply: bool,
-    invocation: Option<crate::tools::files::InvocationKey>,
+    invocation: Option<&crate::tools::files::InvocationKey>,
 ) -> Result<
     (
         crate::OperationOutcome,

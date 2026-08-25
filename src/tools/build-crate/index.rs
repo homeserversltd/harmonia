@@ -6,8 +6,8 @@ use crate::tools::comparison::ActionAuthorization;
 use std::path::Path;
 
 pub(crate) fn build(
-    auth: ActionAuthorization,
-    key: atoms::r#do::InvocationKey,
+    auth: &ActionAuthorization,
+    key: &atoms::r#do::InvocationKey,
     cwd: &Path,
     environment: &[(String, String)],
     timeout_secs: u64,
@@ -24,8 +24,8 @@ pub(crate) fn build(
 }
 
 pub(crate) fn cargo_build(
-    auth: ActionAuthorization,
-    key: atoms::r#do::InvocationKey,
+    auth: &ActionAuthorization,
+    key: &atoms::r#do::InvocationKey,
     cwd: &Path,
     environment: &[(String, String)],
     bearer: &str,
@@ -45,7 +45,7 @@ pub(crate) fn run_build(
     timeout_secs: u64,
     log: &Path,
     bearer: &str,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
     run_build_with_mode(
         cwd,
@@ -74,7 +74,7 @@ pub(crate) fn run_build_with_mode(
     timeout_secs: u64,
     log: &Path,
     bearer: &str,
-    invocation: Option<atoms::r#do::InvocationKey>,
+    invocation: Option<&atoms::r#do::InvocationKey>,
     identity_mode: IdentityMode,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
     let run = crate::tools::declaration::execute_with_failure_receipt(
@@ -100,7 +100,7 @@ pub(crate) fn run_build_with_mode(
             let key = invocation.ok_or("build-crate-invocation-key-missing")?;
             if identity_mode == IdentityMode::RegularExecutable {
                 crate::atoms::r#do::build_crate::cargo_build_and_stamp(
-                    auth,
+                    &auth,
                     key,
                     cwd,
                     environment,
@@ -112,7 +112,7 @@ pub(crate) fn run_build_with_mode(
                 )
             } else {
                 crate::atoms::r#do::build_crate::cargo_build(
-                    auth,
+                    &auth,
                     key,
                     cwd,
                     environment,

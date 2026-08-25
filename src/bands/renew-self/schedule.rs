@@ -27,7 +27,7 @@ fn installer() -> Result<(PathBuf, PathBuf), String> {
     Err(format!("harmonia-installer-not-found env={INSTALLER_ENV}"))
 }
 
-fn invoke(action: &str, args: &[String], invocation: InvocationKey) -> Result<(), String> {
+fn invoke(action: &str, args: &[String], invocation: &InvocationKey) -> Result<(), String> {
     let (script, cwd) = installer()?;
     let mut child_args = vec![script.to_string_lossy().into_owned(), action.to_string()];
     child_args.extend(args.iter().cloned());
@@ -60,7 +60,7 @@ fn invoke(action: &str, args: &[String], invocation: InvocationKey) -> Result<()
     let owned = if dry_run {
         comparison::execute_once("harmonia-schedule", observe, compare, |authorization, _| {
             run_command::command_with_timeout_in_dir(
-                authorization,
+                &authorization,
                 invocation,
                 "python3",
                 &child_args,
@@ -71,7 +71,7 @@ fn invoke(action: &str, args: &[String], invocation: InvocationKey) -> Result<()
     } else {
         comparison::execute("harmonia-schedule", observe, compare, |authorization, _| {
             run_command::command_with_timeout_in_dir(
-                authorization,
+                &authorization,
                 invocation,
                 "python3",
                 &child_args,
@@ -111,10 +111,10 @@ fn invoke(action: &str, args: &[String], invocation: InvocationKey) -> Result<()
     }
 }
 
-pub(crate) fn install_timer(args: &[String], invocation: InvocationKey) -> Result<(), String> {
+pub(crate) fn install_timer(args: &[String], invocation: &InvocationKey) -> Result<(), String> {
     invoke("install-timer", args, invocation)
 }
 
-pub(crate) fn uninstall_timer(args: &[String], invocation: InvocationKey) -> Result<(), String> {
+pub(crate) fn uninstall_timer(args: &[String], invocation: &InvocationKey) -> Result<(), String> {
     invoke("uninstall-timer", args, invocation)
 }

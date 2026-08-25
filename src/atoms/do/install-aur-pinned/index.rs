@@ -162,8 +162,8 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
 }
 
 pub(crate) fn aur_install_pinned(
-    _authorization: ActionAuthorization,
-    _invocation: InvocationKey,
+    _authorization: &ActionAuthorization,
+    _invocation: &InvocationKey,
     callback: impl FnOnce() -> Result<crate::OperationOutcome, String>,
 ) -> Result<crate::OperationOutcome, String> {
     callback()

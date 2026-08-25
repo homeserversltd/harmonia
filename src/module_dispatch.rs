@@ -55,7 +55,7 @@ pub(crate) fn execute_profile_module(
     receipt_dir: &Path,
     software_authorization: Option<&SoftwareApplyAuthorization>,
     _harmonia_root: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
     active_lane: Option<&str>,
 ) -> Result<ModuleExecution, String> {
     let module_dir = receipt_dir.join("modules").join(&module.id);

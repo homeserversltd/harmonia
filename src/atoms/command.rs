@@ -99,8 +99,8 @@ pub fn capture_request(program: impl Into<String>, args: Vec<String>) -> Request
 }
 
 pub(crate) fn authorized_capture(
-    authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: crate::atoms::r#do::InvocationKey,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &crate::atoms::r#do::InvocationKey,
     program: &str,
     args: &[String],
     timeout: Duration,
@@ -122,7 +122,7 @@ pub(crate) fn capture(program: &str, args: &[&str]) -> CmdResult {
 
 pub(crate) fn demo(
     _root: &Path,
-    _invocation: Option<crate::atoms::r#do::InvocationKey>,
+    _invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let success = capture("sh", &["-c", "printf %s \"$PATH\""]);
     let timeout = capture_with_timeout("/usr/bin/sh", &["-c", "sleep 2"], 1);

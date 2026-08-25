@@ -17,8 +17,8 @@ pub(crate) struct Plan {
 }
 
 pub(crate) fn converge(
-    authorization: ActionAuthorization,
-    invocation: InvocationKey,
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
     request: &crate::build_venv::Request<'_>,
     observation: &crate::atoms::ask::build_venv::Observation,
 ) -> Result<&'static str, String> {

@@ -112,16 +112,16 @@ pub(crate) fn compatibility_exec(
     _args: &[String],
     _guard_name: &str,
     _guard_value: &str,
-    invocation: Option<InvocationKey>,
+    invocation: Option<&InvocationKey>,
 ) -> Result<(), String> {
     let _ = invocation.ok_or("replace-process-explicit-invocation-required")?;
     Err("replace-process-durable-receipt-path-required".into())
 }
 
-pub(crate) fn proof(p: &Plan, _i: InvocationKey) -> Result<Receipt, String> {
+pub(crate) fn proof(p: &Plan, _i: &InvocationKey) -> Result<Receipt, String> {
     write_receipt(p, true)
 }
-pub(crate) fn replace(p: &Plan, _i: InvocationKey) -> Result<(), String> {
+pub(crate) fn replace(p: &Plan, _i: &InvocationKey) -> Result<(), String> {
     let _ = write_receipt(p, false)?;
     std::env::set_var(&p.guard_name, &p.guard_value);
     let mut c = Command::new(&p.successor);

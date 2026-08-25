@@ -87,7 +87,7 @@ pub(crate) fn pacman_stdout_indicates_change(stdout: &str) -> bool {
 
 pub(crate) fn demo(
     root: &Path,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<serde_json::Value, String> {
     let fake = root.join("fake-pacman");
     let log = root.join("pacman.log");
