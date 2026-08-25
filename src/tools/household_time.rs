@@ -1,4 +1,5 @@
-use crate::{CmdResult, OperationOutcome};
+pub(crate) use crate::atoms::r#do::set_clock::execute_validated_step;
+use crate::CmdResult;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -28,18 +29,6 @@ pub(crate) fn validate_ladder_args(
         "watch-and-set" => validate_state_url(string(args, "state_url")),
         value => Err(format!("household-time-permutation-unsupported-{value}")),
     }
-}
-
-pub(crate) fn execute(
-    receipt_dir: &Path,
-    step_id: &str,
-    permutation: &str,
-    args: &BTreeMap<String, Value>,
-    apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
-    validate_ladder_args(permutation, args)?;
-    crate::set_clock::execute(receipt_dir, step_id, permutation, args, apply, invocation)
 }
 
 pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
@@ -73,7 +62,8 @@ pub(crate) fn demo(
         ("backend".into(), Value::String("staff".into())),
         ("timezone".into(), Value::String("Etc/UTC".into())),
     ]);
-    let outcome = execute(root, "set", "set-timezone", &args, false, None)?;
+    let outcome =
+        crate::atoms::r#do::set_clock::execute(root, "set", "set-timezone", &args, false, None)?;
     let receipt: Value =
         serde_json::from_slice(&std::fs::read(root.join("set.json")).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
@@ -158,20 +148,4 @@ fn parse_utc(value: &str) -> Option<i64> {
     let doy = (153 * mp + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     Some((era * 146097 + doe - 719468) * 86400 + h * 3600 + min * 60 + s)
-}
-
-pub(crate) fn execute_validated_step(
-    step: &crate::tools::ladder::ValidatedStep,
-    module_dir: &std::path::Path,
-    apply: bool,
-    invocation: Option<crate::atoms::r#do::InvocationKey>,
-) -> Result<crate::OperationOutcome, String> {
-    execute(
-        module_dir,
-        &step.step_id,
-        &step.permutation,
-        &step.args,
-        apply,
-        invocation,
-    )
 }
