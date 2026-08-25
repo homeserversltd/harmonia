@@ -17,15 +17,34 @@ impl ActRung {
     }
 }
 
+const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
+    ("backfill-file", include_str!("backfill-file/index.json")),
+    ("build-crate", include_str!("build-crate/index.json")),
+    ("build-venv", include_str!("build-venv/index.json")),
+    ("check-health", include_str!("check-health/index.json")),
+    ("enable-unit", include_str!("enable-unit/index.json")),
+    ("install-package", include_str!("install-package/index.json")),
+    ("make-symlink", include_str!("make-symlink/index.json")),
+    ("place-file", include_str!("place-file/index.json")),
+    ("pull-repo", include_str!("pull-repo/index.json")),
+    (
+        "ratchet-aur-package",
+        include_str!("ratchet-aur-package/index.json"),
+    ),
+    ("remove-file", include_str!("remove-file/index.json")),
+    ("remove-unit", include_str!("remove-unit/index.json")),
+    ("service-runtime", include_str!("service-runtime/index.json")),
+    ("set-clock", include_str!("set-clock/index.json")),
+];
+
 pub fn act_rung(name: &str) -> ActRung {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/tools")
-        .join(name)
-        .join("index.json");
-    let Ok(contents) = std::fs::read_to_string(path) else {
+    let Some((_, contents)) = ACT_RUNG_INDEXES
+        .iter()
+        .find(|(index_name, _)| *index_name == name)
+    else {
         return ActRung::Unknown;
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(contents) else {
         return ActRung::Unknown;
     };
     let Some(object) = value.as_object() else {
