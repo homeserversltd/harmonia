@@ -250,7 +250,7 @@
     },
     {
       "name": "check-health",
-      "description": "Tool observation and composition seat for health checks.",
+      "description": "Canonical observation owner for health checks.",
       "routine_summonable": true,
       "permutations": [
         {
@@ -980,7 +980,7 @@
     },
     {
       "name": "health",
-      "description": "Re-export seat for the HTTP health atom with retry and timeout controls.",
+      "description": "Compatibility alias resolving to check-health observation.",
       "routine_summonable": false,
       "permutations": [
         {

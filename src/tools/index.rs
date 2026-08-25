@@ -151,7 +151,8 @@ pub(crate) use crate::atoms::comparison;
 pub use crate::atoms::declaration;
 pub mod files;
 pub use crate::atoms::git_artifact;
-pub use crate::atoms::health;
+#[path = "health/index.rs"]
+pub(crate) mod health;
 pub mod household_time;
 #[path = "make-symlink.rs"]
 pub(crate) mod make_symlink;

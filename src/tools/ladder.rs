@@ -321,16 +321,16 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
 
 const MANAGED_FILE_CATEGORIES: [&str; 2] = ["known-good", "interactable"];
 
-fn legacy_managed_file_category(category: Option<&str>) -> Option<&'static str> {
+fn managed_file_category(category: Option<&str>) -> Result<Option<&'static str>, String> {
     let canonical = match category {
-        None | Some("known-good" | "Owned" | "Seed" | "Untouchable") => "known-good",
-        Some("interactable" | "Presented") => "interactable",
-        Some(_) => return None,
+        None | Some("known-good") => "known-good",
+        Some("interactable") => "interactable",
+        Some(value) => return Err(format!("managed-file-category-unsupported-{value}")),
     };
-    MANAGED_FILE_CATEGORIES
+    Ok(MANAGED_FILE_CATEGORIES
         .iter()
         .copied()
-        .find(|candidate| *candidate == canonical)
+        .find(|candidate| *candidate == canonical))
 }
 
 fn normalize_managed_file_categories(
@@ -356,24 +356,12 @@ fn normalize_managed_file_categories(
                                 .and_then(Value::as_str)
                                 .map(str::to_owned)
                                 .or_else(|| module_category.map(str::to_owned));
-                            if let Some(category) = legacy_managed_file_category(source.as_deref())
-                            {
-                                file.insert("category".into(), Value::String(category.into()));
-                                if category == "known-good"
-                                    && source.as_deref().is_some_and(|value| value != "known-good")
-                                {
-                                    if let Some(source) = source.as_deref() {
-                                        file.insert(
-                                            "legacy_transition_note".into(),
-                                            Value::String(format!(
-                                                "transition=legacy-category-{source}-normalized-to-known-good"
-                                            )),
-                                        );
-                                    }
-                                }
+                            let category = managed_file_category(source.as_deref())?
+                                .ok_or_else(|| "managed-file-category-missing".to_string())?;
+                            file.insert("category".into(), Value::String(category.into()));
+                            if file.contains_key("on_drift") {
+                                return Err("managed-file-on-drift-retired".into());
                             }
-                            // Read and discard the retired per-file drift policy.
-                            file.remove("on_drift");
                         }
                     }
                 }

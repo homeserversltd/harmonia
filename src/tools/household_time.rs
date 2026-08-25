@@ -52,7 +52,18 @@ pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
 }
 
 pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
-    CmdResult { ok: true, code: 0, stdout: format!("{{\"schema\":\"harmonia.household-time.receipt.v1\",\"changed\":false,\"preserved\":true,\"first_missing_signal\":\"{reason}\"}}"), stderr: source.stderr }
+    CmdResult {
+        ok: false,
+        code: source.code,
+        stdout: format!(
+            "{{\"schema\":\"harmonia.household-time.receipt.v1\",\"changed\":false,\"preserved\":true,\"probe\":\"remote-state\",\"first_missing_signal\":\"{reason}\"}}"
+        ),
+        stderr: if source.stderr.is_empty() {
+            reason.to_string()
+        } else {
+            format!("{reason}: {}", source.stderr)
+        },
+    }
 }
 pub(crate) fn demo(
     root: &Path,
