@@ -213,6 +213,27 @@ fn validate_receipt_name(receipt_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn remove_declared_files(
+    target_root: &Path,
+    paths: &[String],
+    receipt_dir: &Path,
+    receipt_name: &str,
+    apply: bool,
+    invocation: Option<atoms::r#do::InvocationKey>,
+) -> Result<FileRemovalOutcome, String> {
+    execute(
+        target_root,
+        paths,
+        receipt_dir,
+        receipt_name,
+        apply,
+        invocation,
+        true,
+        "refuse",
+        "exact",
+    )
+}
+
 pub fn declaration() -> Result<Option<&'static crate::atoms::declaration::Declaration>, String> {
     crate::atoms::declaration::get("remove-file")
 }

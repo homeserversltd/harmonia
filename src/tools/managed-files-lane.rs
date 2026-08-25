@@ -679,7 +679,7 @@ pub(crate) fn files_source_shelf_sweep_step(
         .or_else(|| target_shelf.parent().map(Path::to_path_buf))
         .ok_or_else(|| "source-shelf-sweep-target-shelf-parent-missing".to_string())?;
     let shelf_file_mode = integer_arg(&step.args, "shelf_file_mode", 0) as u32;
-    let request = crate::atoms::files::SourceShelfSweepRequest {
+    let request = crate::atoms::r#do::source_shelf::SourceShelfSweepRequest {
         source_root,
         shelf_source: PathBuf::from(string_arg(&step.args, "shelf_source")),
         target_shelf,
@@ -707,7 +707,9 @@ pub(crate) fn files_source_shelf_sweep_step(
             .unwrap_or(false),
         receipt_name: step.step_id.clone(),
     };
-    let outcome = crate::atoms::files::source_shelf_sweep(&request, module_dir, apply, invocation)?;
+    let outcome = crate::atoms::r#do::source_shelf::source_shelf_sweep(
+        &request, module_dir, apply, invocation,
+    )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
