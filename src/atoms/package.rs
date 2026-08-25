@@ -9,6 +9,7 @@ pub(crate) const PACKAGE_PIN_SCOPE_LIMITATION: &str =
     "Harmonia's pin excludes names only from Harmonia-owned package transactions; it cannot stop the operator's own hand or a bare pacman/apt command run outside Harmonia (for example, `pacman -Syu`).";
 
 const HARMONIA_PACMAN_PATH_ENV: &str = "HARMONIA_PACMAN_PATH";
+const HARMONIA_PACMAN_CONF_PATH_ENV: &str = "HARMONIA_PACMAN_CONF_PATH";
 const HARMONIA_PACMAN_KEY_PATH_ENV: &str = "HARMONIA_PACMAN_KEY_PATH";
 const DEFAULT_PACKAGE_TIMEOUT_SECS: u64 = 1800;
 
@@ -17,6 +18,13 @@ pub(crate) fn pacman_program() -> String {
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "/usr/bin/pacman".to_string())
+}
+
+pub(crate) fn pacman_conf_program() -> String {
+    env::var(HARMONIA_PACMAN_CONF_PATH_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "/usr/bin/pacman-conf".to_string())
 }
 
 pub(crate) fn pacman_key_program() -> String {
@@ -89,7 +97,9 @@ pub(crate) fn demo(
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| e.to_string())?;
     let old = std::env::var_os("HARMONIA_PACMAN_PATH");
+    let old_conf = std::env::var_os("HARMONIA_PACMAN_CONF_PATH");
     std::env::set_var("HARMONIA_PACMAN_PATH", &fake);
+    std::env::set_var("HARMONIA_PACMAN_CONF_PATH", &fake);
     let result = crate::atoms::r#do::install_package::package_tool_with_policy_for_backend(
         &receipts,
         "demo",
@@ -414,9 +424,40 @@ pub(crate) fn demo(
             .as_array()
             .is_some_and(|items| items.iter().any(|item| item["state"] == "divergent"))
         && !acted.exists();
+    let ignored_root = root.join("ignored-upgrade-proof");
+    std::fs::create_dir_all(&ignored_root).map_err(|e| e.to_string())?;
+    let ignored_state = ignored_root.join("state");
+    let ignored_pacman = ignored_root.join("pacman");
+    let ignored_conf = ignored_root.join("pacman-conf");
+    std::fs::write(&ignored_pacman, format!("#!/bin/sh\ncase \"$1\" in -Q) exit 0;; -Qu) test -f \"{}\" || printf \"ignoredpkg 1 -> 2\\n\";; -Sgq) printf \"ignoredpkg\\n\";; -Syu) touch \"{}\";; esac\n", ignored_state.display(), ignored_state.display())).map_err(|e| e.to_string())?;
+    std::fs::write(&ignored_conf, "#!/bin/sh\nprintf \"IgnoreGroup = local-ai-held\\n\"\n").map_err(|e| e.to_string())?;
+    for path in [&ignored_pacman, &ignored_conf] { std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?; }
+    std::env::set_var("HARMONIA_PACMAN_PATH", &ignored_pacman);
+    std::env::set_var("HARMONIA_PACMAN_CONF_PATH", &ignored_conf);
+    let ignored_result = crate::atoms::r#do::install_package::package_tool_with_policy_for_backend(&ignored_root, "ignored-only", "upgrade", &[], true, None, &[], 2, PackageBackend::Pacman, invocation)?;
+    let ignored_receipt: serde_json::Value = serde_json::from_slice(&std::fs::read(ignored_root.join("ignored-only.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let ignored_only_converged = ignored_result.ok && ignored_receipt["converged"] == true && ignored_receipt["pending_count"] == 0 && ignored_receipt["ignored_upgrades"].as_array().is_some_and(|items| items.iter().any(|item| item["name"] == "ignoredpkg"));
+
+    let mixed_root = root.join("mixed-upgrade-proof");
+    std::fs::create_dir_all(&mixed_root).map_err(|e| e.to_string())?;
+    let mixed_pacman = mixed_root.join("pacman");
+    let mixed_conf = mixed_root.join("pacman-conf");
+    std::fs::write(&mixed_pacman, "#!/bin/sh\ncase \"$1\" in -Q) exit 0;; -Qu) printf \"ignoredpkg 1 -> 2\\nrealpkg 1 -> 2\\n\";; -Syu) exit 0;; esac\n").map_err(|e| e.to_string())?;
+    std::fs::write(&mixed_conf, "#!/bin/sh\nprintf \"IgnorePkg = ignoredpkg\\n\"\n").map_err(|e| e.to_string())?;
+    for path in [&mixed_pacman, &mixed_conf] { std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?; }
+    std::env::set_var("HARMONIA_PACMAN_PATH", &mixed_pacman);
+    std::env::set_var("HARMONIA_PACMAN_CONF_PATH", &mixed_conf);
+    let mixed_result = crate::atoms::r#do::install_package::package_tool_with_policy_for_backend(&mixed_root, "mixed", "upgrade", &[], true, None, &[], 2, PackageBackend::Pacman, invocation);
+    let mixed_receipt: serde_json::Value = serde_json::from_slice(&std::fs::read(mixed_root.join("mixed.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mixed_remainder_nonconverged = mixed_result.is_err() && mixed_receipt["converged"] == false && mixed_receipt["pending_count"] == 1 && mixed_receipt["ignored_upgrades"].as_array().is_some_and(|items| items.iter().any(|item| item["name"] == "ignoredpkg"));
+
     match old {
         Some(ref v) => std::env::set_var("HARMONIA_PACMAN_PATH", v),
         None => std::env::remove_var("HARMONIA_PACMAN_PATH"),
+    };
+    match old_conf {
+        Some(ref v) => std::env::set_var("HARMONIA_PACMAN_CONF_PATH", v),
+        None => std::env::remove_var("HARMONIA_PACMAN_CONF_PATH"),
     };
     Ok(serde_json::json!({
         "production_ok": out.ok,
@@ -440,6 +481,8 @@ pub(crate) fn demo(
         "apt_failed_execution_cleans_guard": apt_failed_execution_cleans_guard,
         "apt_cleanup_failure_non_green": apt_cleanup_failure_non_green,
         "divergent_pin_no_remediation": divergent_pin_no_remediation,
+        "ignored_only_converged": ignored_only_converged,
+        "mixed_remainder_nonconverged": mixed_remainder_nonconverged,
         "ok": out.ok && exact && !out.skipped && typed_receipt
             && validation_cases.iter().all(|case| case["ok"] == case["expected_ok"])
             && projection_propagation
@@ -451,7 +494,9 @@ pub(crate) fn demo(
         && apt_guard_write_failure_fail_closed
         && apt_failed_execution_cleans_guard
         && apt_cleanup_failure_non_green
-        && divergent_pin_no_remediation,
+        && divergent_pin_no_remediation
+        && ignored_only_converged
+        && mixed_remainder_nonconverged,
     }))
 }
 

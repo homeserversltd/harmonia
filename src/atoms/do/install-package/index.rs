@@ -652,6 +652,7 @@ struct UpdateObservation {
     probe_ok: bool,
     pending_count: usize,
     pending: Vec<PendingPackage>,
+    ignored_upgrades: Vec<PendingPackage>,
     db_synced_at: Option<String>,
     refresh_command: CmdResult,
     query: CmdResult,
@@ -682,6 +683,34 @@ fn update_sandbox(r: &Path) -> PathBuf {
     let n = UPDATE_SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
     r.join(format!("package-update-sandbox-{}-{n}", std::process::id()))
 }
+fn pacman_configured_ignored(db: &str, t: u64) -> std::collections::BTreeSet<String> {
+    let config = command::capture_with_timeout(&crate::atoms::package::pacman_conf_program(), &[], t);
+    if !config.ok {
+        return std::collections::BTreeSet::new();
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let mut groups = Vec::new();
+    for line in config.stdout.lines() {
+        let Some((key, values)) = line.split_once('=') else { continue };
+        match key.trim() {
+            "IgnorePkg" => names.extend(values.split_whitespace().map(str::to_string)),
+            "IgnoreGroup" => groups.extend(values.split_whitespace().map(str::to_string)),
+            _ => {}
+        }
+    }
+    for group in groups {
+        let result = command::capture_with_timeout(
+            &pacman_program(),
+            &["-Sgq", "--dbpath", db, &group],
+            t,
+        );
+        if result.ok {
+            names.extend(result.stdout.lines().map(str::trim).filter(|name| !name.is_empty()).map(str::to_string));
+        }
+    }
+    names
+}
+
 fn parse_pacman_pending(s: &str) -> Vec<PendingPackage> {
     s.lines()
         .filter_map(|l| {
@@ -874,12 +903,13 @@ fn observe_update(
                 }
                 std::os::unix::fs::symlink("/var/lib/pacman/local", d.join("local"))
             });
-            let (refresh, q, mut p, ok) = if let Err(e) = setup {
+            let (refresh, q, mut p, ok, ignored_upgrades) = if let Err(e) = setup {
                 (
                     synthetic(&format!("pacman sandbox setup failed: {e}")),
                     synthetic("pacman query skipped after sandbox setup failure"),
                     Vec::new(),
                     false,
+                    Vec::new(),
                 )
             } else {
                 let db = d.to_string_lossy().into_owned();
@@ -895,16 +925,20 @@ fn observe_update(
                         synthetic("pacman query skipped after refresh failure"),
                         Vec::new(),
                         false,
+                        Vec::new(),
                     )
                 } else {
                     let q = command::capture_with_timeout(&x, &["-Qu", "--dbpath", &db], t);
                     let ok = q.ok || (q.code == 1 && q.stdout.is_empty() && q.stderr.is_empty());
-                    let p = if ok {
+                    let mut p = if ok {
                         parse_pacman_pending(&q.stdout)
                     } else {
                         Vec::new()
                     };
-                    (refresh, q, p, ok)
+                    let ignored_upgrades = pacman_configured_ignored(&db, t);
+                    let ignored = p.iter().filter(|item| ignored_upgrades.contains(&item.name)).cloned().collect::<Vec<_>>();
+                    p.retain(|item| !ignored_upgrades.contains(&item.name));
+                    (refresh, q, p, ok, ignored)
                 }
             };
             let cleanup = fs::remove_dir_all(&d).err().map(|e| e.to_string());
@@ -927,6 +961,7 @@ fn observe_update(
                 probe_ok,
                 pending_count: p.len(),
                 pending: p,
+                ignored_upgrades,
                 db_synced_at: probe_ok.then(|| now_rfc3339()),
                 refresh_command: refresh,
                 query: q,
@@ -968,6 +1003,7 @@ fn observe_update(
                 probe_ok: ok,
                 pending_count: p.len(),
                 pending: p,
+                ignored_upgrades: Vec::new(),
                 db_synced_at: ok.then(|| now_rfc3339()),
                 refresh_command: refresh,
                 query: q,
@@ -1124,7 +1160,7 @@ fn package_update_tool(
         PackageBackend::Apt => apt_release_info_change_accepted(&pre.refresh_command),
         PackageBackend::Pacman => false,
     };
-    let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":pre.observed_state.clone(),"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":pre.probe_ok && pre.pending_count == 0,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
+    let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":pre.observed_state.clone(),"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"ignored_upgrades":pre.ignored_upgrades,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":pre.probe_ok && pre.pending_count == 0,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
     out["first_missing_signal"] = serde_json::json!(if !pre.probe_ok {
         "package-probe-unavailable"
     } else if pre.pending_count > 0 {
@@ -1260,9 +1296,10 @@ fn package_update_tool(
                 .as_ref()
                 .is_some_and(apt_release_info_change_accepted));
         }
-        out["act"] = serde_json::json!({"ok":act.ok,"changed":changed,"skipped":false,"message":format!("package {a}"),"command":act,"act_refresh_command":refresh});
+        out["act"] = serde_json::json!({"ok":act.ok,"changed":changed,"skipped":false,"message":format!("package {a}"),"command":act,"act_refresh_command":refresh,"ignored_upgrades":post.ignored_upgrades.clone()});
         out["movement"] = out["act"].clone();
         out["observed_after"] = serde_json::to_value(&post).map_err(|e| e.to_string())?;
+        out["ignored_upgrades"] = serde_json::to_value(&post.ignored_upgrades).map_err(|e| e.to_string())?;
         out["upgraded_count"] = upgraded.len().into();
         out["upgraded"] = serde_json::to_value(upgraded).map_err(|e| e.to_string())?;
         out["backend_log_tail"] = log_tail(&texts).into();
