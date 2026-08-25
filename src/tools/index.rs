@@ -1,6 +1,65 @@
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActRung {
+    Present,
+    Absent,
+    Unknown,
+}
+
+impl ActRung {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "true",
+            Self::Absent => "false",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+pub fn act_rung(name: &str) -> ActRung {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/tools")
+        .join(name)
+        .join("index.json");
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return ActRung::Unknown;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return ActRung::Unknown;
+    };
+    let Some(object) = value.as_object() else {
+        return ActRung::Unknown;
+    };
+    if object.get("name").and_then(serde_json::Value::as_str) != Some(name) {
+        return ActRung::Unknown;
+    }
+    if let Some(children) = object.get("children") {
+        let Some(children) = children.as_array() else {
+            return ActRung::Unknown;
+        };
+        if !children.iter().all(serde_json::Value::is_string) {
+            return ActRung::Unknown;
+        }
+        return if children.iter().any(|child| child.as_str() == Some("act")) {
+            ActRung::Present
+        } else {
+            ActRung::Absent
+        };
+    }
+    if object.get("state").and_then(serde_json::Value::as_str) == Some("declaration-only")
+        && object
+            .get("live_permutations")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        ActRung::Absent
+    } else {
+        ActRung::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
     RenewSelf,
     PullSource,
@@ -49,7 +108,6 @@ impl Placement {
 pub struct ToolContract {
     pub name: &'static str,
     pub description: &'static str,
-    pub has_act_rung: bool,
     pub permutations: &'static [ToolPermutation],
 }
 
@@ -62,7 +120,6 @@ impl ToolContract {
         Self {
             name,
             description,
-            has_act_rung: false,
             permutations,
         }
     }
@@ -197,7 +254,6 @@ struct RawContract {
     name: String,
     description: String,
     routine_summonable: bool,
-    has_act_rung: bool,
     permutations: Vec<RawPermutation>,
 }
 #[derive(serde::Deserialize)]
@@ -291,7 +347,6 @@ fn load() -> &'static Registry {
                 ToolContract {
                     name,
                     description: leak(entry.description),
-                    has_act_rung: entry.has_act_rung,
                     permutations: Box::leak(permutations.into_boxed_slice()),
                 }
             })

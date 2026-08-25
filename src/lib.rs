@@ -887,7 +887,7 @@ pub(crate) fn toolbelt() -> Result<(), String> {
             } else {
                 placements.into_iter().collect::<Vec<_>>().join(",")
             },
-            tool.has_act_rung,
+            tools::act_rung(tool.name).as_str(),
             tool.description,
         );
         for permutation in tool.permutations {
