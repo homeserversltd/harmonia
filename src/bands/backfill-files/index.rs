@@ -187,11 +187,14 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             let object = declaration
                 .as_object()
                 .ok_or_else(|| format!("managed-file-declaration-{ordinal}-not-object"))?;
-            let legacy_category = object.get("category").and_then(Value::as_str);
-            let category = match legacy_category {
-                None | Some("known-good" | "Owned" | "Seed" | "Untouchable") => Some("known-good"),
-                Some("interactable" | "Presented") => Some("interactable"),
-                Some(_) => None,
+            let category = match object.get("category").and_then(Value::as_str) {
+                None | Some("known-good") => Some("known-good"),
+                Some("interactable") => Some("interactable"),
+                Some(category) => {
+                    return Err(format!(
+                        "managed-file-declaration-{ordinal}-category-unsupported-{category}"
+                    ));
+                }
             };
             let operation = object
                 .get("operation")
@@ -207,7 +210,6 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 let mut declaration = declaration;
                 if let Some(object) = declaration.as_object_mut() {
                     object.insert("category".into(), Value::String(category.into()));
-                    object.remove("on_drift");
                 }
                 configuration.push(declaration);
                 continue;

@@ -37,18 +37,69 @@ pub(crate) enum Band {
 }
 
 pub(crate) fn walk(mut enter: impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
-    renew_self::enter(&mut enter)?;
-    migrations::enter(&mut enter)?;
-    pull_source::enter(&mut enter)?;
-    stage_profile::enter(&mut enter)?;
-    compare::enter(&mut enter)?;
-    install_packages::enter(&mut enter)?;
-    ratchet_binaries::enter(&mut enter)?;
-    restart_services::enter(&mut enter)?;
-    backfill_files::enter(&mut enter)?;
-    propose_edits::enter(&mut enter)?;
-    report_home::enter(&mut enter)?;
-    Ok(())
+    let mut first_error = None;
+    macro_rules! invoke {
+        ($module:ident, $band:expr) => {
+            if let Err(error) = $module::enter(&mut enter) {
+                first_error.get_or_insert_with(|| format!("band={:?} failure={error}", $band));
+            }
+        };
+    }
+    invoke!(renew_self, Band::RenewSelf);
+    invoke!(migrations, Band::Migrations);
+    invoke!(pull_source, Band::PullSource);
+    invoke!(stage_profile, Band::StageProfile);
+    invoke!(compare, Band::Compare);
+    invoke!(install_packages, Band::InstallPackages);
+    invoke!(ratchet_binaries, Band::RatchetBinaries);
+    invoke!(restart_services, Band::RestartServices);
+    invoke!(backfill_files, Band::BackfillFiles);
+    invoke!(propose_edits, Band::ProposeEdits);
+    invoke!(report_home, Band::ReportHome);
+    first_error.map_or(Ok(()), Err)
+}
+
+fn record_downstream_blocked(
+    state: &mut crate::bands::report_home::RunState,
+    halted_modules: &BTreeSet<String>,
+    halt_origins: &BTreeMap<String, String>,
+    band: Band,
+) {
+    for module_id in halted_modules {
+        let Some(blocked_by) = halt_origins.get(module_id) else {
+            continue;
+        };
+        state
+            .module_states
+            .entry(module_id.clone())
+            .or_insert_with(|| crate::module_dispatch::ModuleExecution {
+                ok: false,
+                changed: false,
+                operation_count: 0,
+                first_missing_signal: Some(blocked_by.clone()),
+                placements: Vec::new(),
+            })
+            .placements
+            .push(serde_json::json!({
+                "module": module_id,
+                "band": format!("{band:?}"),
+                "status": "blocked",
+                "ok": false,
+                "changed": false,
+                "blocked_by": blocked_by,
+            }));
+    }
+}
+
+fn remember_halt_origins(
+    halted_modules: &BTreeSet<String>,
+    halt_origins: &mut BTreeMap<String, String>,
+    band: Band,
+) {
+    let origin = format!("{band:?}");
+    for module_id in halted_modules {
+        halt_origins.entry(module_id.clone()).or_insert_with(|| origin.clone());
+    }
 }
 
 use crate::bands::stage_profile::groups::{
@@ -132,21 +183,23 @@ pub(crate) fn run_profile_engine_with_projection(
         operation_count: 0,
         module_states: BTreeMap::new(),
         visited_bands: Vec::new(),
+        band_failures: Vec::new(),
         run_started,
         transaction_state: serde_json::Value::Null,
         settlement: None,
         defer_terminal: materialize_on_stage,
     };
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
+    let mut halt_origins: BTreeMap<String, String> = BTreeMap::new();
     let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> =
         BTreeMap::new();
     let mut group_losers: BTreeMap<String, String> = BTreeMap::new();
     let mut final_result: Option<Result<(), String>> = None;
     let device_module_policy = read_device_module_policy()?;
-
-    crate::bands::walk(|band| {
+    let _walk_result = crate::bands::walk(|band| {
         state.visited_bands.push(format!("{:?}", band));
-        match band {
+        let band_result = (|| -> Result<(), String> {
+            match band {
             crate::bands::Band::RenewSelf => {
                 if let Some(suite_debt) = suite_debt {
                     state.ok = false;
@@ -329,6 +382,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 }
             }
             crate::bands::Band::Compare => {
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
                 if let Some(target_carrier) =
                     carrier.or_else(|| context.map(|value| &value.carrier))
                 {
@@ -366,6 +420,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::InstallPackages => {
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
                 crate::bands::install_packages::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -385,6 +440,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::RestartServices => {
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
                 crate::bands::restart_services::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -404,6 +460,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::RatchetBinaries => {
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
                 crate::bands::ratchet_binaries::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -423,6 +480,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::BackfillFiles => {
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
                 crate::bands::backfill_files::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -442,6 +500,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::ProposeEdits => {
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
                 crate::bands::propose_edits::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -487,6 +546,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         operation_count: 0,
                         module_states: BTreeMap::new(),
                         visited_bands: Vec::new(),
+                        band_failures: Vec::new(),
                         run_started: Instant::now(),
                         transaction_state: serde_json::Value::Null,
                         settlement: None,
@@ -502,8 +562,38 @@ pub(crate) fn run_profile_engine_with_projection(
                     target_carrier,
                 ));
             }
+            }
+            Ok(())
+        })();
+        if matches!(
+            band,
+            crate::bands::Band::PullSource
+                | crate::bands::Band::Compare
+                | crate::bands::Band::InstallPackages
+                | crate::bands::Band::RestartServices
+                | crate::bands::Band::RatchetBinaries
+                | crate::bands::Band::BackfillFiles
+                | crate::bands::Band::ProposeEdits
+        ) {
+            remember_halt_origins(&halted_modules, &mut halt_origins, band);
+        }
+        if let Err(error) = band_result {
+            let named = format!("band={band:?} failure={error}");
+            state.ok = false;
+            if state.first_missing_signal == "none" {
+                state.first_missing_signal = named.clone();
+            }
+            state.band_failures.push(serde_json::json!({
+                "band": format!("{band:?}"),
+                "status": "failed",
+                "failure": error,
+            }));
+            event(&mut events, "band-failed", false, &named)?;
         }
         Ok(())
-    })?;
-    final_result.unwrap_or_else(|| Err("band-walk-report-home-missing".to_string()))
+    });
+    match final_result {
+        Some(result) => result,
+        None => Err("band-walk-report-home-missing".to_string()),
+    }
 }

@@ -87,6 +87,7 @@ pub(crate) struct RunState {
     pub operation_count: usize,
     pub module_states: BTreeMap<String, ModuleExecution>,
     pub visited_bands: Vec<String>,
+    pub band_failures: Vec<serde_json::Value>,
     pub run_started: Instant,
     pub transaction_state: serde_json::Value,
     pub settlement: Option<SettlementOutcome>,
@@ -239,7 +240,7 @@ pub(crate) fn settle(
         collect_package_pin_witnesses(receipt_dir);
     write_json(
         &receipt_dir.join("band-walk.receipt.json"),
-        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>(),"package_pin_exclusion_set":package_pin_exclusion_set,"package_pin_witnesses":package_pin_witnesses,"pin_scope_limitation":crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION}),
+        &json!({"schema":"harmonia.band-walk.receipt.v1","bands":state.visited_bands,"band_failures":state.band_failures,"module_steps":state.module_states.iter().map(|(id,s)| json!({"module_id":id,"operation_count":s.operation_count,"ok":s.ok,"changed":s.changed,"first_missing_signal":s.first_missing_signal,"steps":s.placements})).collect::<Vec<_>>(),"package_pin_exclusion_set":package_pin_exclusion_set,"package_pin_witnesses":package_pin_witnesses,"pin_scope_limitation":crate::atoms::package::PACKAGE_PIN_SCOPE_LIMITATION}),
     )?;
     let settlement = state
         .settlement
