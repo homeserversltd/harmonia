@@ -458,14 +458,14 @@ pub(crate) fn demo(
         bearer: DEFAULT_BEARER.into(),
         credentials: BTreeMap::new(),
     };
-    let first = crate::atoms::r#do::pull_repo::acquire_source(&plan);
+    let first = crate::pull_repo::acquire_source(&plan, invocation);
     let first_changed = first.ok && first.changed;
     let destination_payload = destination.join("payload");
     let exact = destination_payload.is_file()
         && std::fs::read(&destination_payload)
             .map(|bytes| bytes == b"source-bytes\n")
             .unwrap_or(false);
-    let second = crate::atoms::r#do::pull_repo::acquire_source(&plan);
+    let second = crate::pull_repo::acquire_source(&plan, invocation);
     let quiet = second.ok && !second.changed;
     let head_after =
         command::capture_with_cwd("/usr/bin/git", &["rev-parse", "HEAD"], source.to_str());

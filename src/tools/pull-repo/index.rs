@@ -23,8 +23,9 @@ pub(crate) fn apply(request: &Request, invocation: crate::atoms::r#do::Invocatio
             Ok(crate::atoms::r#do::pull_repo::git_pull(
                 authorization,
                 invocation,
-                request,
-                || crate::atoms::r#do::pull_repo::apply(request),
+                |authorization, invocation| {
+                    crate::atoms::r#do::pull_repo::apply(authorization, invocation, request)
+                },
             ))
         },
     );
@@ -90,10 +91,13 @@ pub(crate) fn acquire_source(
             }
         },
         |authorization, _| {
-            let outcome =
-                crate::atoms::r#do::pull_repo::git_acquire(authorization, invocation, plan, || {
-                    crate::atoms::r#do::pull_repo::acquire_source(plan)
-                });
+            let outcome = crate::atoms::r#do::pull_repo::git_acquire(
+                authorization,
+                invocation,
+                |authorization, invocation| {
+                    crate::atoms::r#do::pull_repo::acquire_source(authorization, invocation, plan)
+                },
+            );
             acted = Some(outcome.clone());
             Ok(outcome)
         },

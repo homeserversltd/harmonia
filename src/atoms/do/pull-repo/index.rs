@@ -28,7 +28,11 @@ pub(crate) fn preserved_non_git_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.non-git-preserved-{stamp}"))
 }
 
-pub(crate) fn apply(request: &Request) -> Outcome {
+pub(crate) fn apply(
+    _authorization: crate::atoms::comparison::ActionAuthorization,
+    _invocation: crate::atoms::r#do::InvocationKey,
+    request: &Request,
+) -> Outcome {
     let sync = sync_repo(request);
     Outcome {
         ok: sync.command.ok,
@@ -441,7 +445,11 @@ fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<Option<Strin
     )))
 }
 
-pub(crate) fn acquire_source(plan: &SourcePlan) -> SourceOutcome {
+pub(crate) fn acquire_source(
+    _authorization: crate::atoms::comparison::ActionAuthorization,
+    _invocation: crate::atoms::r#do::InvocationKey,
+    plan: &SourcePlan,
+) -> SourceOutcome {
     let mut attempts = Vec::new();
     let mut precondition = Vec::new();
     let mut precondition_changed = false;
@@ -1057,19 +1065,23 @@ fn source_hard_red(attempts: Vec<SourceAttemptReceipt>, changed: bool) -> Source
 }
 
 pub(crate) fn git_pull(
-    _authorization: crate::atoms::comparison::ActionAuthorization,
-    _invocation: crate::atoms::r#do::InvocationKey,
-    request: &Request,
-    _callback: impl FnOnce() -> Outcome,
+    authorization: crate::atoms::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+    callback: impl FnOnce(
+        crate::atoms::comparison::ActionAuthorization,
+        crate::atoms::r#do::InvocationKey,
+    ) -> Outcome,
 ) -> Outcome {
-    apply(request)
+    callback(authorization, invocation)
 }
 
 pub(crate) fn git_acquire(
-    _authorization: crate::atoms::comparison::ActionAuthorization,
-    _invocation: crate::atoms::r#do::InvocationKey,
-    plan: &SourcePlan,
-    _callback: impl FnOnce() -> SourceOutcome,
+    authorization: crate::atoms::comparison::ActionAuthorization,
+    invocation: crate::atoms::r#do::InvocationKey,
+    callback: impl FnOnce(
+        crate::atoms::comparison::ActionAuthorization,
+        crate::atoms::r#do::InvocationKey,
+    ) -> SourceOutcome,
 ) -> SourceOutcome {
-    acquire_source(plan)
+    callback(authorization, invocation)
 }
