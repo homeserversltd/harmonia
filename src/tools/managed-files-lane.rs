@@ -570,7 +570,7 @@ pub(crate) fn symlink_converge_step(
             ))
         }
     };
-    crate::atoms::files::symlink_converge(
+    crate::atoms::r#do::symlink_converge::symlink_converge(
         &crate::atoms::files::SymlinkConvergeRequest {
             source: PathBuf::from(string_arg(&step.args, "source")),
             target: PathBuf::from(string_arg(&step.args, "target")),
