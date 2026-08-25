@@ -40,7 +40,7 @@ pub(crate) fn run_with_ignores(
     ignored: &[String],
 ) -> Result<OperationOutcome, String> {
     if !crate::tools::package::pacman_available(program) {
-        return crate::tools::package::non_arch_install(receipt_dir, name, packages);
+        return crate::atoms::r#do::install_package::non_arch_install(receipt_dir, name, packages);
     }
     let observe_package = || {
         let current = crate::atoms::ask::install_package::pacman(program, timeout_secs);
@@ -107,7 +107,6 @@ pub(crate) fn run_with_ignores(
                     command: Some(cmd),
                 })
             } else {
-                crate::tools::package::reclaim_pacman_database_lock(receipt_dir, program, false)?;
                 Ok(OperationOutcome {
                     ok: true,
                     changed: false,

@@ -386,54 +386,7 @@ pub(crate) fn snapshot_service_state(
     })
 }
 
-pub(crate) fn restore_service_state(state_before: &ServiceStateSnapshot) -> Result<(), String> {
-    let target_user = state_before.target_user.as_deref();
-    for (verb, desired) in [
-        (
-            if state_before.enabled {
-                "enable"
-            } else {
-                "disable"
-            },
-            state_before.enabled,
-        ),
-        (
-            if state_before.active { "start" } else { "stop" },
-            state_before.active,
-        ),
-    ] {
-        let mut args = systemctl_scope_args(state_before.user, target_user);
-        args.extend([verb.to_string(), state_before.name.clone()]);
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let result = crate::atoms::command::capture_with_timeout("/usr/bin/systemctl", &refs, 30);
-        if !result.ok {
-            return Err(format!(
-                "systemd-state-restore-{verb}-failed-{}: {}",
-                state_before.name, result.stderr
-            ));
-        }
-        let readback = snapshot_service_state(&state_before.name, state_before.user, target_user)?;
-        let stood = if verb == "enable" || verb == "disable" {
-            readback.enabled == desired
-        } else {
-            readback.active == desired
-        };
-        if !stood {
-            return Err(format!(
-                "systemd-state-restore-readback-mismatch-{}-{verb}",
-                state_before.name
-            ));
-        }
-    }
-    let final_state = snapshot_service_state(&state_before.name, state_before.user, target_user)?;
-    if final_state.enabled != state_before.enabled || final_state.active != state_before.active {
-        return Err(format!(
-            "systemd-state-restore-final-mismatch-{}",
-            state_before.name
-        ));
-    }
-    Ok(())
-}
+pub(crate) use crate::atoms::r#do::change_unit::restore_service_state;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SystemdObservation {

@@ -125,6 +125,7 @@ fn package_step(
                 apply,
                 timeout,
                 &m.package_pins,
+                key,
             )
         }
         "keyring-repair" => Err("package-keyring-repair-backend-unsupported".into()),

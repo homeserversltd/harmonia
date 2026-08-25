@@ -819,7 +819,7 @@ pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSna
         })
         .collect()
 }
-pub(crate) fn restore_services(states: &[ServiceStateSnapshot]) -> Result<(), String> {
+pub(crate) fn restore_services(states: &[ServiceStateSnapshot], key: InvocationKey) -> Result<(), String> {
     for sealed in states {
         let observed = crate::atoms::systemd::snapshot_service_state(
             &sealed.name,
@@ -827,7 +827,7 @@ pub(crate) fn restore_services(states: &[ServiceStateSnapshot]) -> Result<(), St
             sealed.target_user.as_deref(),
         )?;
         if observed.enabled != sealed.enabled || observed.active != sealed.active {
-            crate::atoms::systemd::restore_service_state(sealed)?;
+            crate::atoms::systemd::restore_service_state(key, sealed)?;
         }
     }
     Ok(())
@@ -1021,7 +1021,7 @@ pub(crate) fn rollback_projection(
         return Err("committed-transaction-not-rollbackable".into());
     }
     let a = restore(&t.sealed.snapshot, key);
-    let b = restore_services(&t.sealed.services);
+    let b = restore_services(&t.sealed.services, key);
     if a.is_ok() && b.is_ok() {
         t.state = TransactionState::RolledBack;
         Ok(receipt_for(t))
