@@ -6,6 +6,7 @@
       "name": "routine",
       "description": "Ordered tool routine composition and execution.",
       "routine_summonable": false,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "execute",
@@ -25,6 +26,7 @@
       "name": "pull-repo",
       "description": "Tool composition seat for repository acquisition.",
       "routine_summonable": true,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "acquire",
@@ -54,6 +56,7 @@
       "name": "build-crate",
       "description": "Tool composition seat for crate builds.",
       "routine_summonable": true,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "build",
@@ -103,6 +106,7 @@
       "name": "place-file",
       "description": "Tool composition seat for file placement.",
       "routine_summonable": true,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "place",
@@ -179,6 +183,7 @@
       "name": "enable-unit",
       "description": "Tool composition seat for systemd enable work.",
       "routine_summonable": true,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "enable",
@@ -213,6 +218,7 @@
       "name": "backfill-file",
       "description": "Tool composition seat for declared-file backfill.",
       "routine_summonable": true,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "backfill",
@@ -252,6 +258,7 @@
       "name": "check-health",
       "description": "Canonical observation owner for health checks.",
       "routine_summonable": true,
+      "has_act_rung": false,
       "permutations": [
         {
           "name": "probe",
@@ -286,6 +293,7 @@
       "name": "artifact-lock",
       "description": "Re-export seat for artifact integrity observation owned by ratchet-aur-package.",
       "routine_summonable": false,
+      "has_act_rung": false,
       "permutations": [
         {
           "name": "verify",
@@ -310,6 +318,7 @@
       "name": "aur",
       "description": "Tool composition seat for regular and pinned AUR package work.",
       "routine_summonable": false,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "install",
@@ -398,6 +407,7 @@
       "name": "command",
       "description": "Re-export seat for the command atom; every subprocess produces a command receipt.",
       "routine_summonable": false,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "capture",
@@ -442,6 +452,7 @@
       "name": "files",
       "description": "Managed-files dispatcher and composition seat for staged file, directory, and symlink work.",
       "routine_summonable": true,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "managed-files",
@@ -953,6 +964,7 @@
       "name": "git-artifact",
       "description": "Re-export seat for Git artifact acquisition and fast-forward update.",
       "routine_summonable": false,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "sync",
@@ -982,6 +994,7 @@
       "name": "health",
       "description": "Compatibility alias resolving to check-health observation.",
       "routine_summonable": false,
+      "has_act_rung": false,
       "permutations": [
         {
           "name": "probe",
@@ -1016,6 +1029,7 @@
       "name": "household-time",
       "description": "Tool composition seat for household timezone resolution and application.",
       "routine_summonable": false,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "resolve",
@@ -1099,6 +1113,7 @@
       "name": "package",
       "description": "Re-export seat for package atom operations.",
       "routine_summonable": false,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "check",
@@ -1174,6 +1189,7 @@
       "name": "service-runtime",
       "description": "Declaration-only tool entry lowered to owning tools before execution.",
       "routine_summonable": false,
+      "has_act_rung": false,
       "permutations": [
         {
           "name": "converge",
@@ -1263,6 +1279,7 @@
       "name": "systemd",
       "description": "Re-export seat for systemd unit lifecycle operations.",
       "routine_summonable": true,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "daemon-reload",
@@ -1550,6 +1567,7 @@
       "name": "venv",
       "description": "Tool composition seat for change-gated Python virtual-environment convergence.",
       "routine_summonable": false,
+      "has_act_rung": true,
       "permutations": [
         {
           "name": "converge",

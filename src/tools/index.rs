@@ -28,12 +28,28 @@ impl Placement {
             Self::ReportHome => crate::bands::Band::ReportHome,
         }
     }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::RenewSelf => "renew-self",
+            Self::PullSource => "pull-source",
+            Self::StageProfile => "stage-profile",
+            Self::Compare => "compare",
+            Self::InstallPackages => "install-packages",
+            Self::RatchetBinaries => "ratchet-binaries",
+            Self::RestartServices => "restart-services",
+            Self::BackfillFiles => "backfill-files",
+            Self::ProposeEdits => "propose-edits",
+            Self::ReportHome => "report-home",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolContract {
     pub name: &'static str,
     pub description: &'static str,
+    pub has_act_rung: bool,
     pub permutations: &'static [ToolPermutation],
 }
 
@@ -46,6 +62,7 @@ impl ToolContract {
         Self {
             name,
             description,
+            has_act_rung: false,
             permutations,
         }
     }
@@ -180,6 +197,7 @@ struct RawContract {
     name: String,
     description: String,
     routine_summonable: bool,
+    has_act_rung: bool,
     permutations: Vec<RawPermutation>,
 }
 #[derive(serde::Deserialize)]
@@ -273,6 +291,7 @@ fn load() -> &'static Registry {
                 ToolContract {
                     name,
                     description: leak(entry.description),
+                    has_act_rung: entry.has_act_rung,
                     permutations: Box::leak(permutations.into_boxed_slice()),
                 }
             })

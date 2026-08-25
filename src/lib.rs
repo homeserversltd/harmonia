@@ -873,11 +873,22 @@ pub(crate) fn toolbelt() -> Result<(), String> {
     }
     for tool in tools::all() {
         let permutations: Vec<&str> = tool.permutations.iter().map(|p| p.name).collect();
+        let placements: std::collections::BTreeSet<&str> = tool
+            .permutations
+            .iter()
+            .filter_map(|permutation| permutation.placement.map(|placement| placement.name()))
+            .collect();
         println!(
-            "tool={} description={} permutations={}",
+            "tool={} permutations={} placements={} act_rung={} primitive_family={}",
             tool.name,
+            permutations.join(","),
+            if placements.is_empty() {
+                "none".to_string()
+            } else {
+                placements.into_iter().collect::<Vec<_>>().join(",")
+            },
+            tool.has_act_rung,
             tool.description,
-            permutations.join(",")
         );
         for permutation in tool.permutations {
             let args: Vec<String> = permutation
@@ -893,9 +904,13 @@ pub(crate) fn toolbelt() -> Result<(), String> {
                 })
                 .collect();
             println!(
-                "tool={} permutation={} args={}",
+                "tool={} permutation={} band={} args={}",
                 tool.name,
                 permutation.name,
+                permutation
+                    .placement
+                    .map(|placement| placement.name())
+                    .unwrap_or("none"),
                 args.join(",")
             );
         }
