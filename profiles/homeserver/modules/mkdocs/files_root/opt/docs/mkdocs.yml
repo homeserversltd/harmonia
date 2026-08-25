@@ -35,7 +35,6 @@ nav:
           - Piwigo: services/piwigo.md
       - Productivity:
           - Vaultwarden: services/vaultwarden.md
-          - Gogs: services/gogs.md
           - File Browser: services/filebrowser.md
           - Calibre Web: services/calibreweb.md
       - Network Services:

@@ -10,7 +10,7 @@ Material quarry comparison:
 
 - `.zshrc`, `.aliases`, `.functions`, `.inputrc`, and `.nanorc` already byte-match the living files.
 - The living `.profile` adds the Atuin environment hook that the quarry copy lacks; the living file is retained.
-- The living `.tmux.conf` retains the static status IP placeholder and a commented dynamic-IP alternative. Quarry `tmux.conf` enables the dynamic form. Quarry `hermes.tmux.conf` is a separate damaged console capture with pasted prompt text, extra Hermes-specific pane settings, and a trailing `%`; neither quarry variant overrides the living homeserver file.
+- The living `.tmux.conf` retains the static status IP placeholder and a commented dynamic-IP alternative. Quarry `tmux.conf` enables the dynamic form. Quarry `legacy-console-capture.conf` is a separate damaged console capture with pasted prompt text, extra tool-specific pane settings, and a trailing `%`; neither quarry variant overrides the living homeserver file.
 - `.bashrc`, `.bash-preexec.sh`, `.lesskey`, `.enhanced_less_config`, and `.gitconfig` exist on the living body but not as canonical files in the quarry initialization tree. The quarry installer only generated the less configuration procedurally.
 - The living `.zshrc` currently contains no `.zshrc.secrets` source hook, and no hook is invented here because this pool is byte-identical to the living set. Secret bytes remain forbidden; if a hook is introduced, it may point only to the untracked `~/.zshrc.secrets` file.
 

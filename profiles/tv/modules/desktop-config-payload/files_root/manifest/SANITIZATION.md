@@ -1,6 +1,6 @@
 # Arch TV payload sanitization
 
-The source desktop payload came from `/var/opt/hermes/workspace/deployable-tv-desktop-config-20260615-164414`.
+The source desktop payload came from `/var/opt/workspace/deployable-tv-desktop-config-20260615-164414`.
 
 TV baseline changes applied before module packaging:
 

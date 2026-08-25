@@ -102,7 +102,5 @@ Count=1
 [Recent Files]
 File1[$e]=$HOME/Documents/hyprland-chromium-plasma-file-picker.md
 File2[$e]=$HOME/.pi/agent/APPEND_SYSTEM.md
-File3[$e]=smb://owner@hermes.local/hermes/backups/pi-identities/machines/laptop/pi.md
 Name1[$e]=hyprland-chromium-plasma-file-picker.md
 Name2[$e]=APPEND_SYSTEM.md
-Name3[$e]=pi.md

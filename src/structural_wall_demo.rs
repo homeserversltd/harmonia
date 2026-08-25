@@ -17,7 +17,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     let authorization = mode
         .software_authorization()
         .ok_or_else(|| "software-authority-missing".to_string())?;
-    let root = PathBuf::from("/var/opt/hermes/workspace")
+    let root = PathBuf::from("/var/tmp/harmonia-demo")
         .join(format!("structural-wall-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -91,7 +91,7 @@ pub(crate) fn run(invocation: Option<crate::atoms::r#do::InvocationKey>) -> Resu
     let registry = registry_proof(&root, invocation)?;
     let ok = ok && registry["ok"].as_bool().unwrap_or(false);
     let receipt = json!({"schema":"harmonia.demo-structural-wall.v5","ok":ok,"registry":registry,"registry_count":names.len(),"row_count":rows.len(),"counts":{"config":rows.iter().filter(|r| r["target_class"]=="Config").count(),"not_mutation_capable":rows.iter().filter(|r| r["target_class"]=="NotMutationCapable").count(),"refused":rows.iter().filter(|r| r["disposition"]=="Refused").count(),"proposed":proposal_count},"proposal_id":rows.iter().find_map(|r| r["proposal_id"].as_str()),"rows":rows});
-    let matrix_path = PathBuf::from("/var/opt/hermes/workspace/structural-wall-demo-matrix.json");
+    let matrix_path = PathBuf::from("/var/tmp/harmonia-demo/structural-wall-demo-matrix.json");
     fs::write(
         &matrix_path,
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
@@ -188,7 +188,7 @@ fn strict_declaration(op: &str, path: &Path) -> Value {
         "symlink" => {
             d.insert(
                 "source".into(),
-                json!("/var/opt/hermes/workspace/registry-source"),
+                json!("/var/tmp/harmonia-demo/registry-source"),
             );
             d.insert("target".into(), json!(path.display().to_string()));
             d.insert("required_source_kind".into(), json!("regular-executable"));
@@ -754,14 +754,14 @@ fn row(
         root.join("interactable-dir")
     } else if name == "desktop-config" {
         PathBuf::from(format!(
-            "/home/owner/.config/hermes-structural-wall-{}/nested/desktop-config",
+            "/home/owner/.config/harmonia-structural-wall-{}/nested/desktop-config",
             std::process::id()
         ))
     } else if name == "protected-path" {
         root.join("absent-protected-parent").join("id_protected.key")
     } else {
         PathBuf::from(format!(
-            "/etc/hermes-structural-wall-{}/{}",
+            "/etc/harmonia-structural-wall-{}/{}",
             std::process::id(),
             name
         ))
@@ -865,7 +865,7 @@ fn routine_row(
     inv: crate::atoms::r#do::InvocationKey,
 ) -> Result<Value, String> {
     let target = PathBuf::from(format!(
-        "/etc/hermes-structural-wall-{}/routine-child",
+        "/etc/harmonia-structural-wall-{}/routine-child",
         std::process::id()
     ));
     let parent = target.parent().unwrap();
