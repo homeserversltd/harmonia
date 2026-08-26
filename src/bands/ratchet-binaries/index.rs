@@ -321,16 +321,35 @@ pub(crate) fn execute_routine_child(
             // A current installed image is the truthful artifact for a quiet pass.
             // Reusing it prevents a stale/non-reproducible target image from
             // manufacturing promotion and restart after source convergence.
-            let installed_current =
-                crate::atoms::ask::build_crate::build_identity_with_environment(
+            let (identity_matches, observed_sha_present, artifact_present, error) =
+                match crate::atoms::ask::build_crate::build_identity_with_environment(
                     source_sha,
                     installed_sha,
                     binary,
                     crate::build_crate::IdentityMode::EmbeddedSourceSha,
                     &env,
-                )
-                .map(|observation| observation.identity_matches())
-                .unwrap_or(false);
+                ) {
+                    Ok(observation) => (
+                        observation.identity_matches(),
+                        observation.artifact_build_sha.is_some(),
+                        observation.artifact_present,
+                        None,
+                    ),
+                    Err(error) => (false, false, binary.is_file(), Some(error)),
+                };
+            let probe_receipt = serde_json::json!({
+                "schema": "harmonia.build-crate.probe.v1",
+                "source_build_sha": source_sha,
+                "installed_binary": binary,
+                "identity_matches": identity_matches,
+                "observed_sha_present": observed_sha_present,
+                "artifact_present": artifact_present,
+                "error": error,
+            });
+            // Persist the exact probe before any non-matching image can enter
+            // the fallback build path (including a fallback error).
+            crate::write_json(&receipt_dir.join("build-probe.json"), &probe_receipt)?;
+            let installed_current = identity_matches;
             let moved = if installed_current {
                 artifact_path = binary.to_path_buf();
                 None
@@ -365,6 +384,7 @@ pub(crate) fn execute_routine_child(
                     ("artifact".into(), serde_json::json!(artifact_path)),
                     ("installed_path".into(), serde_json::json!(binary)),
                     ("source_build_sha".into(), serde_json::json!(source_sha)),
+                    ("probe".into(), probe_receipt),
                     ("changed".into(), serde_json::json!(result_changed)),
                 ]
                 .into_iter()
@@ -372,5 +392,223 @@ pub(crate) fn execute_routine_child(
             ))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn lowered_real_manifest_build_child_resolves_pull_context_and_quiets_install() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-ratchet-lowered-child-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let installed = root.join("installed");
+        fs::create_dir_all(source.join("target/release")).unwrap();
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let built = root.join("built");
+        let image = format!("fixture:{source_sha}:image");
+        fs::write(&installed, &image).unwrap();
+        fs::write(&built, &image).unwrap();
+
+        // Keep the real module's lowering and child declarations, changing only
+        // its filesystem endpoints so the production routine can run in a
+        // hermetic fixture.
+        let mut manifest: LadderManifest = serde_json::from_str(include_str!(
+            "../../../profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json"
+        ))
+        .expect("real manifest parses");
+        let service = manifest
+            .ladder
+            .iter_mut()
+            .find(|step| step.tool == "service-runtime")
+            .expect("real service-runtime declaration");
+        service.args.insert(
+            "source_dir".into(),
+            Value::String(source.to_string_lossy().into_owned()),
+        );
+        service.args.insert(
+            "install_bin".into(),
+            Value::String(installed.to_string_lossy().into_owned()),
+        );
+        crate::bands::restart_services::lower_service_runtime_steps(&mut manifest);
+        crate::bands::backfill_files::lower_service_runtime_steps(&mut manifest)
+            .expect("real manifest lowers");
+
+        let validated = crate::tools::ladder::validate_ladder(&manifest).expect("valid lowered manifest");
+        let routine_step = validated
+            .iter()
+            .find(|step| step.tool == "routine" && step.permutation == "execute")
+            .expect("lowered routine");
+        let projected = crate::tools::routine::project_manifest_routines(&manifest, &validated)
+            .expect("production routine projection");
+        let children = projected.get(&routine_step.step_id).expect("projected children");
+        let build = children
+            .iter()
+            .find(|child| child.name == "build" && child.tool == "build-crate")
+            .expect("lowered build child");
+        assert_eq!(
+            build.args.get("source_build_sha"),
+            Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
+        );
+        assert_eq!(
+            build.args.get("installed_binary").and_then(Value::as_str),
+            Some(installed.to_string_lossy().as_ref())
+        );
+        let environment = build.args.get("environment").and_then(Value::as_object).unwrap();
+        assert_eq!(
+            environment.get("ARCADIA_BUILD_SHA"),
+            Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
+        );
+
+        let routine_dir = root.join("receipts").join(&routine_step.step_id);
+        let mut states = std::collections::BTreeMap::new();
+        let state = crate::ModuleWalkState {
+            context: [
+                ("pull-repo.path".into(), Value::String(source.to_string_lossy().into_owned())),
+                ("pull-repo.resolved_commit".into(), Value::String(source_sha.into())),
+            ]
+            .into_iter()
+            .collect(),
+            children: vec![serde_json::json!({
+                "name":"pull-repo", "tool":"pull-repo", "state":"completed",
+                "ok":true, "changed":false, "outputs":{
+                    "path":source, "resolved_commit":source_sha
+                }
+            })],
+            blocked_by: None,
+            ok: true,
+            changed: false,
+            first_missing_signal: None,
+        };
+        states.insert(routine_step.step_id.clone(), state);
+        let outcome = crate::tools::routine::execute_routine(
+            routine_step,
+            &manifest,
+            &root.join("receipts"),
+            None,
+            None,
+            true,
+            None,
+            Some(&mut states),
+            crate::bands::Band::RatchetBinaries,
+            children,
+        )
+        .expect("production routine execution");
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
+
+        let routine = states.get(&routine_step.step_id).unwrap();
+        let build_receipt = routine.children.iter().find(|receipt| {
+            receipt.get("name").and_then(Value::as_str) == Some("build")
+        }).unwrap();
+        assert_eq!(build_receipt.get("changed"), Some(&Value::Bool(false)));
+        assert!(crate::bands::restart_services::binary_content_matches(&built, &installed).unwrap());
+        let probe = build_receipt.get("outputs").and_then(|v| v.get("probe")).unwrap();
+        assert_eq!(probe.get("source_build_sha").and_then(Value::as_str), Some(source_sha));
+        assert_eq!(probe.get("installed_binary").and_then(Value::as_str), Some(installed.to_string_lossy().as_ref()));
+        assert_eq!(probe.get("identity_matches"), Some(&Value::Bool(true)));
+        assert_eq!(probe.get("observed_sha_present"), Some(&Value::Bool(true)));
+        assert_eq!(probe.get("artifact_present"), Some(&Value::Bool(true)));
+        assert_eq!(probe.get("error"), Some(&Value::Null));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(routine_dir.join("build/build-probe.json")).unwrap()).unwrap(),
+            *probe
+        );
+
+        let install = children.iter().find(|child| child.name == "binary-install").unwrap();
+        assert_eq!(install.args.get("source_path"), Some(&serde_json::json!({"from":"build.artifact"})));
+        let restart = children.iter().find(|child| child.name == "service-restart").unwrap();
+        assert_eq!(restart.args.get("service").and_then(Value::as_str), Some("arcadia.service"));
+        assert_eq!(
+            crate::bands::restart_services::service_runtime_material_gates("restart", false, false),
+            (false, false)
+        );
+        assert!(!crate::bands::restart_services::service_runtime_material_gates("restart", false, false).0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_source_sha_writes_probe_before_fallback_error_without_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-ratchet-invalid-probe-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let cwd = root.join("source");
+        fs::create_dir_all(&cwd).unwrap();
+        let installed = root.join("installed");
+        let artifact = root.join("artifact");
+        let receipt_dir = root.join("receipts");
+        let source_build_sha = "unresolved-source-sha";
+        let args = [
+            (
+                "cwd".into(),
+                Value::String(cwd.to_string_lossy().into_owned()),
+            ),
+            (
+                "source_build_sha".into(),
+                Value::String(source_build_sha.into()),
+            ),
+            (
+                "installed_binary".into(),
+                Value::String(installed.to_string_lossy().into_owned()),
+            ),
+            (
+                "artifact".into(),
+                Value::String(artifact.to_string_lossy().into_owned()),
+            ),
+            ("environment".into(), Value::Object(serde_json::Map::new())),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+        let manifest: LadderManifest = serde_json::from_str(include_str!(
+            "../../../profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json"
+        ))
+        .expect("real manifest parses");
+
+        let result = execute_routine_child(
+            "build-crate",
+            None,
+            &args,
+            &manifest,
+            &receipt_dir,
+            true,
+            None,
+        );
+        assert!(!installed.exists());
+        assert!(!artifact.exists());
+
+        let probe: Value =
+            serde_json::from_slice(&fs::read(receipt_dir.join("build-probe.json")).unwrap())
+                .unwrap();
+        assert_eq!(probe.get("identity_matches"), Some(&Value::Bool(false)));
+        assert_eq!(probe.get("observed_sha_present"), Some(&Value::Bool(false)));
+        assert_eq!(probe.get("artifact_present"), Some(&Value::Bool(false)));
+        assert_eq!(
+            probe.get("error"),
+            Some(&Value::String(
+                "build-crate-source-build-sha-invalid".into()
+            ))
+        );
+        assert_eq!(
+            result.expect_err("invalid source SHA must stop fallback before mutation"),
+            "build-crate-source-build-sha-invalid"
+        );
+        assert_eq!(
+            probe.get("source_build_sha").and_then(Value::as_str),
+            Some(source_build_sha)
+        );
+        assert_eq!(
+            probe.get("installed_binary").and_then(Value::as_str),
+            Some(installed.to_string_lossy().as_ref())
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }
