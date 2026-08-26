@@ -467,6 +467,21 @@ pub(crate) fn execute_manifest_modules(
     Ok(())
 }
 
+fn health_probe_request<'a>(
+    url: &'a str,
+    args: &'a std::collections::BTreeMap<String, serde_json::Value>,
+) -> crate::tools::health::ProbeRequest<'a> {
+    crate::tools::health::ProbeRequest {
+        url,
+        retries: args.get("retries").and_then(Value::as_u64).unwrap_or(5) as usize,
+        timeout_secs: args
+            .get("timeout_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or(3),
+        expected_contains: args.get("expected_contains").and_then(Value::as_str),
+    }
+}
+
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -496,15 +511,7 @@ pub(crate) fn execute_routine_child(
                 .get("url")
                 .and_then(Value::as_str)
                 .ok_or("check-health-url-missing")?;
-            let request = crate::tools::health::ProbeRequest {
-                url,
-                retries: args.get("retries").and_then(Value::as_u64).unwrap_or(0) as usize,
-                timeout_secs: args
-                    .get("timeout_secs")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(3),
-                expected_contains: args.get("expected_contains").and_then(Value::as_str),
-            };
+            let request = health_probe_request(url, args);
             let result = crate::tools::health::curl_probe(&request);
 
             crate::write_json(
@@ -634,5 +641,29 @@ pub(crate) fn execute_routine_child(
             ))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_probe_request;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn health_probe_request_defaults_absent_retries_to_five() {
+        let args = BTreeMap::new();
+        let request = health_probe_request("https://example.test/health", &args);
+
+        assert_eq!(request.retries, 5);
+        assert_eq!(request.timeout_secs, 3);
+    }
+
+    #[test]
+    fn health_probe_request_honors_declared_retries() {
+        let args = BTreeMap::from([(String::from("retries"), json!(0))]);
+        let request = health_probe_request("https://example.test/health", &args);
+
+        assert_eq!(request.retries, 0);
     }
 }
