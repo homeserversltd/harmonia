@@ -1408,7 +1408,7 @@ pub(crate) fn run_engine_preflight(
             &staged,
             apply,
             &environment,
-            tools::command::DEFAULT_TIMEOUT_SECS,
+            crate::atoms::r#do::build_crate::DEFAULT_TIMEOUT_SECS,
             &preflight_dir.join("harmonia-atoms.log"),
             "owner",
             invocation,
