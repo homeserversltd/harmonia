@@ -32,7 +32,8 @@ log_config: /etc/matrix-synapse/log.yaml
 federation_domain_whitelist: []
 allow_public_rooms_over_federation: false
 allow_public_rooms_without_auth: false
-enable_registration: false
+enable_registration: true
+enable_registration_without_verification: true
 report_stats: false
 trusted_key_servers: []
 suppress_key_server_warning: true
