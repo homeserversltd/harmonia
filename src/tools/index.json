@@ -172,6 +172,38 @@
             }
           ],
           "placement": "RatchetBinaries"
+        },
+        {
+          "name": "source-sha-record",
+          "description": "record the proven deployed source commit",
+          "args": [
+            {
+              "name": "path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "declared_bytes",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "uid",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "gid",
+              "kind": "integer",
+              "required": false
+            }
+          ],
+          "placement": "RestartServices"
         }
       ]
     },

@@ -666,6 +666,45 @@ pub(crate) fn execute_routine_child(
             } else {
                 declared.unwrap().as_bytes().to_vec()
             };
+            // Binary promotion is content-addressed: an identical installed
+            // image is already converged, even if metadata differs.
+            let binary_current = if permutation.name == "binary-promotion" {
+                source
+                    .map(|source| {
+                        crate::bands::restart_services::binary_content_matches(
+                            Path::new(source),
+                            path,
+                        )
+                    })
+                    .transpose()?
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if binary_current {
+                let sha256 = crate::atoms::file_sha256(&bytes);
+                crate::write_json(
+                    &receipt_dir.join(format!("{name}.json")),
+                    &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":true,"changed":false,"skipped":!apply,"message":"binary-promotion-current","movement":{"bytes":false,"mode":false,"owner":false,"created":false,"backed_up":null}}),
+                )?;
+                return Ok((
+                    OperationOutcome {
+                        ok: true,
+                        changed: false,
+                        skipped: !apply,
+                        message: "binary-promotion-current".into(),
+                        command: None,
+                    },
+                    [
+                        ("path".into(), serde_json::json!(path)),
+                        ("installed_path".into(), serde_json::json!(path)),
+                        ("changed".into(), serde_json::json!(false)),
+                        ("sha256".into(), serde_json::json!(sha256)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ));
+            }
             let default_backup = receipt_dir.join("backups/prior-binary");
             let request = crate::place_file::PlaceFileRequest {
                 path,

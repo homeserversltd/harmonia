@@ -15,6 +15,7 @@
         "component": "arcadia",
         "bearer": "owner",
         "source_dir": "/opt/arcadia/source",
+        "source_sha_file": "/var/lib/harmonia/state/arcadia.sha",
         "install_bin": "/usr/local/bin/arcadia",
         "service": "arcadia.service",
         "url": "http://127.0.0.1:8080/health",

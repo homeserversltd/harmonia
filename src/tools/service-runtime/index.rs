@@ -44,10 +44,57 @@ pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(),
     ] {
         string_arg(args, name)?;
     }
+    if let Some(value) = args.get("source_sha_file") {
+        if value.as_str().is_none_or(|path| path.trim().is_empty()) {
+            return Err("service-runtime-source-sha-file-invalid".into());
+        }
+    }
     if let Some(files) = args.get("managed_files") {
         if !files.is_array() {
             return Err("service-runtime-managed-files-invalid".into());
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_ladder_args;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn base_args() -> BTreeMap<String, serde_json::Value> {
+        [
+            ("component", json!("fixture")),
+            ("source_dir", json!("/src")),
+            ("install_bin", json!("/bin/fixture")),
+            ("service", json!("fixture.service")),
+            ("url", json!("http://127.0.0.1/health")),
+            ("binary_name", json!("fixture")),
+            ("op_prefix", json!("fixture")),
+            ("run_schema", json!("demo.v1")),
+            ("managed_files_schema", json!("demo.v1")),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect()
+    }
+
+    #[test]
+    fn source_sha_file_is_optional_but_nonempty_when_present() {
+        let mut args = base_args();
+        assert!(validate_ladder_args(&args).is_ok());
+        args.insert("source_sha_file".into(), json!("/state/source.sha"));
+        assert!(validate_ladder_args(&args).is_ok());
+        args.insert("source_sha_file".into(), json!("  "));
+        assert_eq!(
+            validate_ladder_args(&args),
+            Err("service-runtime-source-sha-file-invalid".into())
+        );
+        args.insert("source_sha_file".into(), json!(42));
+        assert_eq!(
+            validate_ladder_args(&args),
+            Err("service-runtime-source-sha-file-invalid".into())
+        );
+    }
 }

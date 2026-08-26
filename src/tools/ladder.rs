@@ -452,6 +452,7 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
         ("service-active", "systemd", "is-active-probe"),
         ("unit-authority-proof", "systemd", "show-assert"),
         ("health-proof", "check-health", "probe"),
+        ("source-sha-record", "place-file", "source-sha-record"),
     ];
     // The managed-files proposal is optional: the bounded shape is either
     // pull/build/install + suffix, or the same with one proposal child.
@@ -494,8 +495,15 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             && child.tool == "systemd"
             && child.permutation.as_deref() == Some("show-assert")
     });
+    let source_sha_present = suffix.last().is_some_and(|child| {
+        child.name == "source-sha-record"
+            && child.tool == "place-file"
+            && child.permutation.as_deref() == Some("source-sha-record")
+    });
     let expected_suffix = if authority_present {
-        &stages[4..]
+        if source_sha_present { &stages[4..] } else { &stages[4..10] }
+    } else if source_sha_present {
+        &[stages[4], stages[5], stages[6], stages[7], stages[9], stages[10]][..]
     } else {
         &[stages[4], stages[5], stages[6], stages[7], stages[9]][..]
     };

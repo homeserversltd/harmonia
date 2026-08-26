@@ -12,6 +12,40 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::Path;
 
+/// Compare a built binary with its installed counterpart by content digest.
+/// Missing or unreadable files are different so promotion remains authoritative.
+pub(crate) fn service_runtime_material_gates(
+    permutation: &str,
+    binary_changed: bool,
+    managed_files_changed: bool,
+) -> (bool, bool) {
+    match permutation {
+        "daemon-reload" => (false, managed_files_changed),
+        "restart" => (binary_changed || managed_files_changed, false),
+        _ => (false, false),
+    }
+}
+
+pub(crate) fn binary_content_matches(built: &Path, installed: &Path) -> Result<bool, String> {
+    let built_bytes = std::fs::read(built).map_err(|error| {
+        format!(
+            "binary-promotion-built-read-failed {}: {error}",
+            built.display()
+        )
+    })?;
+    let installed_bytes = match std::fs::read(installed) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "binary-promotion-installed-read-failed {}: {error}",
+                installed.display()
+            ))
+        }
+    };
+    Ok(crate::atoms::file_sha256(&built_bytes) == crate::atoms::file_sha256(&installed_bytes))
+}
+
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RestartServices)
 }
@@ -49,6 +83,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             ("service-active", "systemd", "is-active-probe"),
             ("unit-authority-proof", "systemd", "show-assert"),
             ("health-proof", "check-health", "probe"),
+            ("source-sha-record", "place-file", "source-sha-record"),
         ];
         let has_managed_files = args
             .get("managed_files")
@@ -61,6 +96,11 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             .into_iter()
             .filter(|(name, _, _)| {
                 (*name != "managed-files" || has_managed_files)
+                    && (*name != "source-sha-record"
+                        || args
+                            .get("source_sha_file")
+                            .and_then(Value::as_str)
+                            .is_some_and(|path| !path.is_empty()))
                     && (*name != "unit-authority-proof"
                         || args
                             .get("expected_unit_properties")
@@ -188,6 +228,25 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                         if let Some(policy) = args.get("restart_policy") {
                             c.insert("restart_policy".into(), policy.clone());
                         }
+                        c
+                    }
+                    "source-sha-record" => {
+                        let mut c = BTreeMap::new();
+                        c.insert(
+                            "path".into(),
+                            args.get("source_sha_file")
+                                .cloned()
+                                .unwrap_or(Value::String(String::new())),
+                        );
+                        c.insert(
+                            "declared_bytes".into(),
+                            serde_json::json!({"from":"pull-repo.resolved_commit"}),
+                        );
+                        c.insert("mode".into(), Value::from(420_u64));
+                        c.insert("no_follow".into(), Value::Bool(true));
+                        c.insert("collision_policy".into(), Value::String("refuse".into()));
+                        c.insert("rollback_policy".into(), Value::String("exact".into()));
+                        c.insert("xattrs".into(), Value::Object(serde_json::Map::new()));
                         c
                     }
                     _ => {
@@ -565,18 +624,19 @@ pub(crate) fn execute_routine_child(
                 .get("binary_changed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let build_changed = args
-                .get("build_changed")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
             let managed_files_changed = args
                 .get("managed_files_changed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let material_changed = match permutation.name {
-                "daemon-reload" => managed_files_changed,
-                "restart" => build_changed || binary_changed || managed_files_changed,
-                _ => false,
+            let (restart_changed, reload_changed) = service_runtime_material_gates(
+                permutation.name,
+                binary_changed,
+                managed_files_changed,
+            );
+            let material_changed = if permutation.name == "daemon-reload" {
+                reload_changed
+            } else {
+                restart_changed
             };
             let restart_policy = args.get("restart_policy").and_then(Value::as_str);
             let effective = if user {
@@ -648,9 +708,50 @@ pub(crate) fn execute_routine_child(
 mod tests {
     use super::health_probe_request;
     use crate::tools::ladder::load_ladder_manifest;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use std::path::Path;
+
+    #[test]
+    fn service_runtime_material_gates_ignore_build_only_changes_and_cover_quiet_binary_and_managed() {
+        assert_eq!(
+            super::service_runtime_material_gates("restart", false, false),
+            (false, false)
+        );
+        assert_eq!(
+            super::service_runtime_material_gates("restart", true, false),
+            (true, false)
+        );
+        assert_eq!(
+            super::service_runtime_material_gates("restart", false, true),
+            (true, false)
+        );
+        assert_eq!(
+            super::service_runtime_material_gates("daemon-reload", false, true),
+            (false, true)
+        );
+        assert_eq!(
+            super::service_runtime_material_gates("restart", false, false),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn binary_content_matches_distinguishes_quiet_changed_and_missing_images() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-binary-content-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let built = root.join("built");
+        let installed = root.join("installed");
+        std::fs::write(&built, b"same image").unwrap();
+        std::fs::write(&installed, b"same image").unwrap();
+        assert!(super::binary_content_matches(&built, &installed).unwrap());
+        std::fs::write(&installed, b"changed image").unwrap();
+        assert!(!super::binary_content_matches(&built, &installed).unwrap());
+        std::fs::remove_file(&installed).unwrap();
+        assert!(!super::binary_content_matches(&built, &installed).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn health_probe_request_defaults_absent_retries_to_five() {
@@ -683,6 +784,34 @@ mod tests {
             .iter()
             .find(|child| child.name == "health-proof")
             .expect("lowered health-proof child");
+        let source_record = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "source-sha-record")
+            .expect("lowered source-sha-record child");
+        assert_eq!(source_record.tool, "place-file");
+        assert_eq!(
+            source_record.permutation.as_deref(),
+            Some("source-sha-record")
+        );
+        assert_eq!(
+            source_record.args.get("path").and_then(Value::as_str),
+            Some("/var/lib/harmonia/state/arcadia.sha")
+        );
+        assert_eq!(
+            source_record.args.get("declared_bytes"),
+            Some(&json!({"from":"pull-repo.resolved_commit"}))
+        );
+        assert!(
+            routine
+                .steps
+                .iter()
+                .position(|child| child.name == "health-proof")
+                < routine
+                    .steps
+                    .iter()
+                    .position(|child| child.name == "source-sha-record")
+        );
 
         assert_eq!(health.tool, "check-health");
         assert_eq!(

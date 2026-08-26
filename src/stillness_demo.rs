@@ -893,11 +893,17 @@ fn service_runtime_build_sha_demo(
     let source_dir = dir.join("fixture");
     let cargo_home = dir.join("cargo-home");
     let install_bin = dir.join("installed/fixture");
+    let source_sha_file = dir.join("state/fixture.sha");
     let source_sha = "0123456789abcdef0123456789abcdef01234567";
     fs::create_dir_all(source_dir.join("src")).map_err(|e| e.to_string())?;
     if let Some(parent) = install_bin.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    if let Some(parent) = source_sha_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let _ = fs::remove_file(&source_sha_file);
+    let _ = fs::remove_file(&install_bin);
     fs::create_dir_all(dir.join("managed")).map_err(|e| e.to_string())?;
     fs::write(
         source_dir.join("Cargo.toml"),
@@ -915,7 +921,7 @@ fn service_runtime_build_sha_demo(
         "version":"1.0.0", "constants": {}, "ladder":[{
             "step_id":"runtime", "tool":"service-runtime", "permutation":"converge",
             "args": {
-                "component":"fixture", "source_dir":source_dir, "install_bin":install_bin,
+                "component":"fixture", "source_dir":source_dir, "source_sha_file":source_sha_file, "install_bin":install_bin,
                 "service":"fixture.service", "url":"http://127.0.0.1:1/health",
                 "binary_name":"fixture", "op_prefix":"fixture", "run_schema":"demo.v1",
                 "managed_files_schema":"demo.v1", "managed_files":[{
@@ -923,6 +929,7 @@ fn service_runtime_build_sha_demo(
                     "operation":"place", "xattrs":{}, "no_follow":true, "uid":1000, "gid":1000,
                     "collision_policy":"refuse", "rollback_policy":"exact"
                 }],
+                "expected_unit_properties":{"User":"root","Group":"root","NoNewPrivileges":"no"},
                 "build_environment":{"CARGO_HOME":cargo_home}
             }
         }]
@@ -940,7 +947,7 @@ fn service_runtime_build_sha_demo(
     let health_listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let health_address = health_listener.local_addr().map_err(|e| e.to_string())?;
     let health_server = thread::spawn(move || -> Result<(), String> {
-        for _ in 0..10 {
+        for _ in 0..18 {
             let (mut stream, _) = health_listener.accept().map_err(|e| e.to_string())?;
             let mut request = [0_u8; 2048];
             let _ = stream.read(&mut request).map_err(|e| e.to_string())?;
@@ -958,6 +965,7 @@ fn service_runtime_build_sha_demo(
         "service-enable",
         "service-restart",
         "service-active",
+        "unit-authority-proof",
         "health-proof",
     ];
     let source = manifest
@@ -1261,15 +1269,79 @@ fn service_runtime_build_sha_demo(
         second_selection_matches,
         second_child_receipts,
     ) = run_once("second")?;
+    fs::write(&source_sha_file, "fedcba9876543210fedcba9876543210fedcba98\n")
+        .map_err(|e| e.to_string())?;
+    let (
+        third,
+        third_receipt,
+        artifact_embeds_third,
+        third_artifact,
+        third_selection_matches,
+        third_child_receipts,
+    ) = run_once("third")?;
     health_server
         .join()
         .map_err(|_| "health-demo-server-panicked".to_string())??;
-    let first_changed = first.ok
-        && first.changed
-        && first_receipt.get("changed").and_then(Value::as_bool) == Some(true);
-    let second_quiet = second.ok
-        && !second.changed
-        && second_receipt.get("changed").and_then(Value::as_bool) == Some(false);
+    let binary_changed = |receipts: &[serde_json::Value], changed: bool| {
+        changed && receipts.iter().any(|receipt| receipt["name"] == "binary-install" && receipt["changed"] == true)
+    };
+    let managed_changed = |receipts: &[serde_json::Value], changed: bool| {
+        changed && receipts.iter().any(|receipt| receipt["name"].as_str() == Some("managed-place-0") && receipt["changed"] == true)
+    };
+    let child_changed = |receipts: &[serde_json::Value], name: &str| receipts.iter().any(|receipt| receipt["name"].as_str() == Some(name) && receipt["changed"] == true);
+    let first_binary_changed = binary_changed(&first_child_receipts, first.changed);
+    let first_managed_changed = managed_changed(&first_child_receipts, first.changed);
+    let (first_restart_gate, _) =
+        crate::bands::restart_services::service_runtime_material_gates(
+            "restart",
+            first_binary_changed,
+            first_managed_changed,
+        );
+    let first_source_record_changed = child_changed(&first_child_receipts, "source-sha-record");
+    let second_binary_changed = binary_changed(&second_child_receipts, second.changed);
+    let second_managed_changed = managed_changed(&second_child_receipts, second.changed);
+    let second_binary_quiet = !second_binary_changed;
+    let second_managed_quiet = !second_managed_changed;
+    let (second_restart_gate, _) =
+        crate::bands::restart_services::service_runtime_material_gates(
+            "restart",
+            second_binary_changed,
+            second_managed_changed,
+        );
+    let second_restart_gate_quiet = !second_restart_gate;
+    let second_source_record_quiet = !child_changed(&second_child_receipts, "source-sha-record");
+    let third_binary_changed = binary_changed(&third_child_receipts, third.changed);
+    let third_managed_changed = managed_changed(&third_child_receipts, third.changed);
+    let third_binary_quiet = !third_binary_changed;
+    let third_managed_quiet = !third_managed_changed;
+    let (third_restart_gate, _) =
+        crate::bands::restart_services::service_runtime_material_gates(
+            "restart",
+            third_binary_changed,
+            third_managed_changed,
+        );
+    let third_restart_gate_quiet = !third_restart_gate;
+    let third_source_record_changed = child_changed(&third_child_receipts, "source-sha-record");
+    let first_changed = first.ok && first.changed && first_receipt["changed"] == true;
+    let second_quiet = second.ok && !second.changed && second_receipt["changed"] == false;
+    let third_changed_names: Vec<&str> = third_child_receipts
+        .iter()
+        .filter(|receipt| receipt["changed"] == true)
+        .filter_map(|receipt| receipt["name"].as_str())
+        .collect();
+    let third_record_only_changed = third.ok
+        && third.changed
+        && third_receipt["changed"] == true
+        && third_changed_names == ["source-sha-record"];
+    let runtime_probe_names = ["service-active", "unit-authority-proof", "health-proof"];
+    let probes_ok = |receipts: &[serde_json::Value]| {
+        runtime_probe_names.iter().all(|name| {
+            receipts.iter().any(|receipt| receipt["name"].as_str() == Some(name) && receipt["ok"] == true)
+        })
+    };
+    let first_probes_ok = probes_ok(&first_child_receipts);
+    let second_probes_ok = probes_ok(&second_child_receipts);
+    let third_probes_ok = probes_ok(&third_child_receipts);
     let actual_stage_order = |receipts: &[serde_json::Value]| {
         receipts
             .iter()
@@ -1288,17 +1360,23 @@ fn service_runtime_build_sha_demo(
         "service-enable",
         "service-restart",
         "service-active",
+        "unit-authority-proof",
         "health-proof",
+        "source-sha-record",
     ];
+    let third_actual_stage_order = actual_stage_order(&third_child_receipts);
     let service_stages_exercised = first_actual_stage_order == expected_stage_order
-        && second_actual_stage_order == expected_stage_order;
+        && second_actual_stage_order == expected_stage_order
+        && third_actual_stage_order == expected_stage_order;
     let all_actual_receipts_ok = first_child_receipts
         .iter()
         .chain(second_child_receipts.iter())
+        .chain(third_child_receipts.iter())
         .all(|receipt| receipt.get("ok").and_then(Value::as_bool) == Some(true));
     let no_missing_stamp_failures = first_child_receipts
         .iter()
         .chain(second_child_receipts.iter())
+        .chain(third_child_receipts.iter())
         .all(|receipt| {
             receipt.get("first_missing_signal").is_none()
                 && !receipt
@@ -1307,31 +1385,81 @@ fn service_runtime_build_sha_demo(
                     .is_some_and(|state| state == "missing")
         });
     let service_fixture_isolated = true;
-    let artifact_embeds = artifact_embeds_first && artifact_embeds_second;
+    let artifact_embeds = artifact_embeds_first && artifact_embeds_second && artifact_embeds_third;
     let artifact_selection_matches = first_selection_matches
         && second_selection_matches
+        && third_selection_matches
         && first_artifact == expected_artifact
-        && second_artifact == expected_artifact;
+        && second_artifact == expected_artifact
+        && third_artifact == expected_artifact;
     let executed_output = Command::new(&first_artifact)
         .output()
         .map_err(|e| e.to_string())?;
     let artifact_executes = executed_output.status.success()
         && String::from_utf8_lossy(&executed_output.stdout).trim() == source_sha;
-    let all_predicates = environment_preserved
-        && generic_environment_ref
-        && artifact_embeds
-        && artifact_executes
-        && first_changed
-        && second_quiet
-        && artifact_selection_matches
-        && service_stages_exercised
-        && all_actual_receipts_ok
-        && no_missing_stamp_failures
-        && service_stamp_wiring
-        && managed_stamp_precedes_consumers
-        && service_fixture_isolated;
-    if !all_predicates || !unresolved_nested_reference_rejected {
-        return Err("service-runtime-build-sha-demo-failed".into());
+    let source_sha_record_matches = fs::read_to_string(&source_sha_file)
+        .map(|value| value.trim() == source_sha)
+        .unwrap_or(false);
+    let mut predicate_values = BTreeMap::new();
+    predicate_values.insert("environment_preserved", environment_preserved);
+    predicate_values.insert("generic_environment_ref", generic_environment_ref);
+    predicate_values.insert("artifact_embeds", artifact_embeds);
+    predicate_values.insert("artifact_executes", artifact_executes);
+    predicate_values.insert("first_changed", first_changed);
+    predicate_values.insert("second_quiet", second_quiet);
+    predicate_values.insert("third_record_only_changed", third_record_only_changed);
+    predicate_values.insert("first_probes_ok", first_probes_ok);
+    predicate_values.insert("second_probes_ok", second_probes_ok);
+    predicate_values.insert("third_probes_ok", third_probes_ok);
+    predicate_values.insert("first_binary_changed", first_binary_changed);
+    predicate_values.insert("first_managed_changed", first_managed_changed);
+    predicate_values.insert("first_restart_gate", first_restart_gate);
+    predicate_values.insert("first_source_record_changed", first_source_record_changed);
+    predicate_values.insert("second_binary_quiet", second_binary_quiet);
+    predicate_values.insert("second_managed_quiet", second_managed_quiet);
+    predicate_values.insert("second_restart_gate_quiet", second_restart_gate_quiet);
+    predicate_values.insert("second_source_record_quiet", second_source_record_quiet);
+    predicate_values.insert("third_binary_quiet", third_binary_quiet);
+    predicate_values.insert("third_managed_quiet", third_managed_quiet);
+    predicate_values.insert("third_restart_gate_quiet", third_restart_gate_quiet);
+    predicate_values.insert("third_source_record_changed", third_source_record_changed);
+    predicate_values.insert("source_sha_record_matches", source_sha_record_matches);
+    predicate_values.insert("artifact_selection_matches", artifact_selection_matches);
+    predicate_values.insert("service_stages_exercised", service_stages_exercised);
+    predicate_values.insert("all_actual_receipts_ok", all_actual_receipts_ok);
+    predicate_values.insert("no_missing_stamp_failures", no_missing_stamp_failures);
+    predicate_values.insert("service_stamp_wiring", service_stamp_wiring);
+    predicate_values.insert("managed_stamp_precedes_consumers", managed_stamp_precedes_consumers);
+    predicate_values.insert("service_fixture_isolated", service_fixture_isolated);
+    predicate_values.insert(
+        "unresolved_nested_reference_rejected",
+        unresolved_nested_reference_rejected,
+    );
+    predicate_values.insert(
+        "binary_install_routine_gate_accepts",
+        binary_install_routine_gate_accepts,
+    );
+    // First-run material change is required from binary promotion; managed-file change is optional.
+    let is_optional_observation = |name: &str| name == "first_managed_changed";
+    let all_predicates = predicate_values
+        .iter()
+        .filter(|(name, _)| {
+            **name != "unresolved_nested_reference_rejected"
+                && **name != "binary_install_routine_gate_accepts"
+                && !is_optional_observation(*name)
+        })
+        .all(|(_, value)| *value);
+    if !all_predicates || !unresolved_nested_reference_rejected || !binary_install_routine_gate_accepts {
+        let false_predicates: Vec<&str> = predicate_values
+            .iter()
+            .filter_map(|(name, value)| {
+                (!is_optional_observation(*name) && !*value).then_some(*name)
+            })
+            .collect();
+        let diagnostic = serde_json::to_string(&false_predicates).unwrap_or_else(|_| "[]".into());
+        return Err(format!(
+            "service-runtime-build-sha-demo-failed:false_predicates={diagnostic}"
+        ));
     }
     Ok(json!({
         "generic_environment_key":"FIXTURE_BUILD_SHA", "generic_environment_ref":build_sha_ref,
@@ -1344,6 +1472,24 @@ fn service_runtime_build_sha_demo(
         "service_fixture_isolated":service_fixture_isolated,
         "first_actual_child_receipt_order":first_actual_stage_order,
         "second_actual_child_receipt_order":second_actual_stage_order,
+        "third_actual_child_receipt_order":third_actual_stage_order,
+        "first_binary_changed":first_binary_changed,
+        "first_managed_changed":first_managed_changed,
+        "first_restart_gate":first_restart_gate,
+        "first_source_record_changed":first_source_record_changed,
+        "second_binary_quiet":second_binary_quiet,
+        "second_managed_quiet":second_managed_quiet,
+        "second_restart_gate_quiet":second_restart_gate_quiet,
+        "second_source_record_quiet":second_source_record_quiet,
+        "third_binary_quiet":third_binary_quiet,
+        "third_managed_quiet":third_managed_quiet,
+        "third_restart_gate_quiet":third_restart_gate_quiet,
+        "third_source_record_changed":third_source_record_changed,
+        "third_record_only_changed":third_record_only_changed,
+        "first_probes_ok":first_probes_ok,
+        "second_probes_ok":second_probes_ok,
+        "third_probes_ok":third_probes_ok,
+        "third_source_sha_corrected":fs::read_to_string(&source_sha_file).map(|value| value.trim() == source_sha).unwrap_or(false),
         "no_missing_stamp_failures":no_missing_stamp_failures,
         "service_stamp_wiring":service_stamp_wiring,
         "managed_stamp_precedes_consumers":managed_stamp_precedes_consumers,
