@@ -495,7 +495,8 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .modules
                 .iter()
                 .map(|module_id| {
-                    let module_dir = crate::bands::stage_profile::resolve_module_dir(&module_root, module_id)?;
+                    let module_dir =
+                        crate::bands::stage_profile::resolve_module_dir(&module_root, module_id)?;
                     if !lawful_module_manifest_exists(&module_dir) {
                         return Err(format!(
                             "module-missing id={} local_root={} shared_root={}",
@@ -506,7 +507,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                                 .unwrap_or_else(|| "none".to_string())
                         ));
                     }
-                    let seat = if crate::bands::stage_profile::module_uses_shared_seat(&module_root, &module_dir) {
+                    let seat = if crate::bands::stage_profile::module_uses_shared_seat(
+                        &module_root,
+                        &module_dir,
+                    ) {
                         "shared"
                     } else {
                         "profile"
@@ -551,6 +555,13 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 &profile,
                 &module_root,
                 profile_requires_categories || args.iter().any(|arg| arg == "--require-categories"),
+            )?;
+            let observe = UpdateMode::Observe;
+            crate::bands::stage_profile::reconcile_legacy_module_seats(
+                &profile,
+                &module_root,
+                &receipt_dir,
+                &observe,
             )?;
             write_plan_receipts(&profile, &module_root, &receipt_dir).map_err(|e| e.to_string())?;
             println!("schema=harmonia.plan_run.v1");
@@ -1064,4 +1075,52 @@ pub(crate) fn value_arg_string(args: &[String], name: &str) -> Option<String> {
 pub(crate) fn default_module_root(profile_path: &Path) -> PathBuf {
     let profile_dir = profile_path.parent().unwrap_or_else(|| Path::new("."));
     profile_dir.join("modules")
+}
+
+#[cfg(test)]
+mod plan_run_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn plan_run_front_door_reports_pending_legacy_shed_without_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-plan-run-front-door-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let profile_dir = root.join("profiles/demo");
+        let profile_modules = profile_dir.join("modules/alpha");
+        let legacy_module = root.join("modules/alpha");
+        let receipts = root.join("receipts");
+        fs::create_dir_all(&profile_modules).unwrap();
+        fs::create_dir_all(&legacy_module).unwrap();
+        fs::write(
+            profile_dir.join("index.json"),
+            r#"{"id":"demo","identity":"test","modules":["alpha"]}"#,
+        )
+        .unwrap();
+        fs::write(profile_modules.join("manifest.json"), b"{} ").unwrap();
+        fs::write(profile_modules.join("sidecar.json"), r#"{"id":"alpha"}"#).unwrap();
+        fs::write(legacy_module.join("manifest.json"), b"{} ").unwrap();
+
+        let result = invoke(vec![
+            "plan-run".into(),
+            profile_dir.join("index.json").display().to_string(),
+            "--receipt-dir".into(),
+            receipts.display().to_string(),
+        ]);
+        assert!(result.is_ok(), "plan-run failed: {result:?}");
+        assert!(legacy_module.join("manifest.json").exists());
+        assert!(receipts.join("run.json").exists());
+        let shed: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(receipts.join("module-seat-shed.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(shed["first_missing_signal"], "module-seat-shed-pending");
+        assert_eq!(shed["attempt"]["mutation"], false);
+        assert_eq!(shed["final"]["ok"], false);
+        assert_eq!(shed["ok"], false);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

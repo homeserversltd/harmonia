@@ -46,37 +46,193 @@ pub(crate) fn resolve_module_dir(
     module_id: &str,
 ) -> Result<std::path::PathBuf, String> {
     let local = module_root.join(module_id);
-    let mut seats = Vec::new();
-    if lawful_module_manifest_exists(&local) {
-        seats.push(local.clone());
+    let profile_shared = profiles_shared_module_root(module_root).map(|root| root.join(module_id));
+    let legacy = shared_module_root(module_root).map(|root| root.join(module_id));
+    let selected = if lawful_module_manifest_exists(&local) {
+        Some(local.clone())
+    } else {
+        profile_shared
+            .clone()
+            .filter(|path| lawful_module_manifest_exists(path))
+    };
+    match selected {
+        Some(path) => Ok(path),
+        None if legacy
+            .as_ref()
+            .is_some_and(|path| lawful_module_manifest_exists(path)) =>
+        {
+            Err(format!(
+                "legacy-module-seat-unowned id={module_id} seat={}",
+                legacy.unwrap().display()
+            ))
+        }
+        None => Ok(profile_shared.unwrap_or(local)),
     }
-    if let Some(root) = profiles_shared_module_root(module_root) {
-        let path = root.join(module_id);
-        if lawful_module_manifest_exists(&path) {
-            seats.push(path);
+}
+
+/// Reconcile the complete legacy module root before projection resolution.
+///
+/// The inventory is deliberately whole-root and deterministic: a single
+/// unshadowed lawful entry refuses the run before any filesystem mutation.
+/// Apply uses the comparison/Do rename membrane to retire the root atomically;
+/// report-only records pending evidence and leaves the root untouched.
+pub(crate) fn reconcile_legacy_module_seats(
+    profile: &Profile,
+    module_root: &Path,
+    receipt_dir: &Path,
+    mode: &crate::UpdateMode<'_>,
+) -> Result<(), String> {
+    let Some(legacy_root) = shared_module_root(module_root) else {
+        return Ok(());
+    };
+    let mut ids = Vec::new();
+    if legacy_root.is_dir() {
+        for entry in std::fs::read_dir(&legacy_root)
+            .map_err(|e| format!("legacy-module-root-inventory-failed: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("legacy-module-root-inventory-failed: {e}"))?;
+            let path = entry.path();
+            if path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|_| lawful_module_manifest_exists(&path))
+            {
+                ids.push(path);
+            }
         }
     }
-    if let Some(root) = shared_module_root(module_root) {
-        let path = root.join(module_id);
-        if lawful_module_manifest_exists(&path) {
-            seats.push(path);
+    ids.sort();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let module_ids: Vec<String> = ids
+        .iter()
+        .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
+        .collect();
+    let mut unshadowed = Vec::new();
+    for id in &module_ids {
+        let local = module_root.join(id);
+        let profile_shared = profiles_shared_module_root(module_root).map(|root| root.join(id));
+        let shadowed = lawful_module_manifest_exists(&local)
+            || profile_shared
+                .as_ref()
+                .is_some_and(|path| lawful_module_manifest_exists(path));
+        if !profile.modules.iter().any(|declared| declared == id) || !shadowed {
+            unshadowed.push(id.clone());
         }
     }
-    if seats.len() > 1 {
-        let rendered = seats
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        return Err(format!(
-            "module-seat-ambiguous id={module_id} seats={rendered}"
+    let legacy_paths: Vec<String> = ids.iter().map(|path| path.display().to_string()).collect();
+    let selected_paths: Vec<String> = module_ids
+        .iter()
+        .map(|id| {
+            let local = module_root.join(id);
+            if lawful_module_manifest_exists(&local) {
+                local
+            } else {
+                profiles_shared_module_root(module_root)
+                    .map(|root| root.join(id))
+                    .unwrap_or_else(|| module_root.join(id))
+            }
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    let mut receipt = serde_json::json!({
+        "schema": "harmonia.module-seat-shed.v1",
+        "legacy_root": legacy_root,
+        "module_ids": module_ids,
+        "legacy_paths": legacy_paths,
+        "selected_paths": selected_paths,
+        "observed": true,
+        "could_change": true,
+        "attempt": {"mutation": false, "action": "retire-legacy-module-root"},
+        "final": {"retired_root": serde_json::Value::Null, "ok": false},
+        "ok": false,
+        "first_missing_signal": "none"
+    });
+    if !unshadowed.is_empty() {
+        receipt["first_missing_signal"] = serde_json::json!(format!(
+            "legacy-module-seat-unowned ids={}",
+            unshadowed.join(",")
         ));
+        crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+        crate::atoms::attest::write_json_atomic(
+            &receipt_dir.join("module-seat-shed.json"),
+            &receipt,
+        )?;
+        return Err(receipt["first_missing_signal"].as_str().unwrap().to_owned());
     }
-    Ok(seats.into_iter().next().unwrap_or_else(|| {
-        profiles_shared_module_root(module_root)
-            .map(|root| root.join(module_id))
-            .unwrap_or(local)
-    }))
+    if !mode.is_software_apply() {
+        receipt["first_missing_signal"] = serde_json::json!("module-seat-shed-pending");
+        crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+        crate::atoms::attest::write_json_atomic(
+            &receipt_dir.join("module-seat-shed.json"),
+            &receipt,
+        )?;
+        return Ok(());
+    }
+    let key = mode
+        .invocation()
+        .ok_or_else(|| "legacy-module-seat-retire-invocation-missing".to_string())?;
+    let date = utc_date_stamp();
+    let mut retired_root = legacy_root.with_file_name(format!("modules.retired-{date}"));
+    let mut ordinal = 2;
+    while retired_root.exists() {
+        retired_root = legacy_root.with_file_name(format!("modules.retired-{date}-{ordinal}"));
+        ordinal += 1;
+    }
+    receipt["attempt"] =
+        serde_json::json!({"mutation": true, "action": "retire-legacy-module-root"});
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+    crate::atoms::attest::write_json_atomic(&receipt_dir.join("module-seat-shed.json"), &receipt)?;
+    let result = crate::atoms::comparison::execute_once(
+        "retire-legacy-module-root",
+        || Ok(legacy_root.exists()),
+        |exists| {
+            if *exists {
+                crate::atoms::comparison::DiffDecision::Different
+            } else {
+                crate::atoms::comparison::DiffDecision::Empty
+            }
+        },
+        |authorization, _| {
+            crate::atoms::r#do::rename::rename(&authorization, key, &legacy_root, &retired_root)
+        },
+    );
+    if let Err(error) = result {
+        receipt["first_missing_signal"] = serde_json::json!("legacy-module-seat-retire-failed");
+        receipt["error"] = serde_json::json!(error);
+        receipt["final"] =
+            serde_json::json!({"retired_root": serde_json::Value::Null, "ok": false});
+        receipt["ok"] = serde_json::Value::Bool(false);
+        crate::atoms::attest::write_json_atomic(
+            &receipt_dir.join("module-seat-shed.json"),
+            &receipt,
+        )?;
+        return Err(error);
+    }
+    receipt["final"] = serde_json::json!({"retired_root": retired_root, "ok": true});
+    receipt["ok"] = serde_json::Value::Bool(true);
+    crate::atoms::attest::write_json_atomic(&receipt_dir.join("module-seat-shed.json"), &receipt)?;
+    Ok(())
+}
+
+fn utc_date_stamp() -> String {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() / 86_400)
+        .unwrap_or(0) as i64;
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month_part = (5 * doy + 2) / 153;
+    let day = doy - (153 * month_part + 2) / 5 + 1;
+    let month = month_part + if month_part < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 pub(crate) fn module_uses_shared_seat(module_root: &Path, module_dir: &Path) -> bool {
@@ -283,6 +439,140 @@ mod shared_dot_files_tests {
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
+
+    fn duplicate_fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-module-seat-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let profile = root.join("profiles/demo/modules/alpha");
+        let legacy = root.join("modules/alpha");
+        fs::create_dir_all(&profile).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(profile.join("manifest.json"), b"{} ").unwrap();
+        fs::write(legacy.join("manifest.json"), b"{} ").unwrap();
+        (root.clone(), root.join("profiles/demo/modules"))
+    }
+
+    fn fixture_profile(modules: &[&str]) -> crate::Profile {
+        crate::Profile {
+            id: "demo".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: modules.iter().map(|id| (*id).into()).collect(),
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        }
+    }
+
+    #[test]
+    fn plan_duplicate_profile_seat_reports_pending_without_mutation() {
+        let (root, module_root) = duplicate_fixture("plan");
+        let receipts = root.join("receipts");
+        let mode = crate::UpdateMode::Observe;
+        super::reconcile_legacy_module_seats(
+            &fixture_profile(&["alpha"]),
+            &module_root,
+            &receipts,
+            &mode,
+        )
+        .unwrap();
+        assert!(root.join("modules/alpha/manifest.json").exists());
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(receipts.join("module-seat-shed.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["observed"], true);
+        assert_eq!(receipt["could_change"], true);
+        assert_eq!(receipt["attempt"]["mutation"], false);
+        assert_eq!(receipt["final"]["ok"], false);
+        assert_eq!(receipt["ok"], false);
+        assert_eq!(
+            super::resolve_module_dir(&module_root, "alpha").unwrap(),
+            module_root.join("alpha")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn apply_duplicate_profile_seat_retires_whole_legacy_root() {
+        let (root, module_root) = duplicate_fixture("apply");
+        fs::create_dir_all(root.join("modules/beta")).unwrap();
+        fs::write(root.join("modules/beta/manifest.json"), b"{} ").unwrap();
+        fs::create_dir_all(module_root.join("beta")).unwrap();
+        fs::write(module_root.join("beta/manifest.json"), b"{} ").unwrap();
+        let receipts = root.join("receipts");
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+        super::reconcile_legacy_module_seats(
+            &fixture_profile(&["alpha", "beta"]),
+            &module_root,
+            &receipts,
+            &mode,
+        )
+        .unwrap();
+        assert!(!root.join("modules").exists());
+        let retired = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("modules.retired-"))
+            })
+            .unwrap();
+        assert!(retired.join("alpha/manifest.json").exists());
+        assert!(retired.join("beta/manifest.json").exists());
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(receipts.join("module-seat-shed.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["observed"], true);
+        assert_eq!(receipt["could_change"], true);
+        assert_eq!(receipt["attempt"]["mutation"], true);
+        assert_eq!(receipt["final"]["ok"], true);
+        assert_eq!(receipt["ok"], true);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mixed_shadowed_and_unshadowed_legacy_refuses_before_mutation() {
+        let (root, module_root) = duplicate_fixture("mixed");
+        fs::create_dir_all(root.join("modules/beta")).unwrap();
+        fs::write(root.join("modules/beta/manifest.json"), b"{} ").unwrap();
+        let before = fs::read_dir(root.join("modules")).unwrap().count();
+        let receipts = root.join("receipts");
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+        let error = super::reconcile_legacy_module_seats(
+            &fixture_profile(&["alpha"]),
+            &module_root,
+            &receipts,
+            &mode,
+        )
+        .unwrap_err();
+        assert!(error.contains("beta"));
+        assert_eq!(fs::read_dir(root.join("modules")).unwrap().count(), before);
+        assert!(!root.join("modules.retired").exists());
+        let receipt: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(receipts.join("module-seat-shed.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["attempt"]["mutation"], false);
+        assert_eq!(receipt["ok"], false);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_only_requested_module_is_an_error() {
+        let (root, module_root) = duplicate_fixture("legacy");
+        fs::remove_dir_all(module_root.join("alpha")).unwrap();
+        let error = super::resolve_module_dir(&module_root, "alpha").unwrap_err();
+        assert!(error.contains("legacy-module-seat-unowned"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn materializes_shared_module_then_backfills_compiled_output() {

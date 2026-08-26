@@ -128,6 +128,7 @@ pub(crate) fn run_profile_engine_with_preflight(
     completed_preflight: Option<ModuleExecution>,
     suite_debt: Option<&str>,
 ) -> Result<(), String> {
+    crate::bands::stage_profile::reconcile_legacy_module_seats(profile, module_root, receipt_dir, &mode)?;
     let policy = read_device_module_policy()?;
     let projection = load_profile_projection(profile, module_root, &policy.disabled_modules)?;
     run_profile_engine_with_projection(

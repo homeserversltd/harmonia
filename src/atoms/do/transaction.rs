@@ -133,7 +133,7 @@ pub(crate) struct RunContext {
 }
 // Compatibility/profile entrypoints remain here; the durable transaction owner lives in ritual.rs.
 pub(crate) use super::ritual::{
-    apply_projection, demo, commit_projection, project_update_set_v1, rollback_projection,
+    apply_projection, commit_projection, demo, project_update_set_v1, rollback_projection,
     seal_projection, snapshot, snapshot_services, strict_rejects_forward_only, strict_rejects_weak,
     update_set_demo, validate_exact_root, validate_member_scoped_target, Atom, AtomKind,
     ProjectionChild, ProjectionTransaction, RestorationImage, Reversibility, SealedProjection,
@@ -163,6 +163,12 @@ pub(crate) fn rolling_update_run(
                     crate::atoms::r#do::transaction::RunCarrier::default(),
                 ))
             });
+        crate::bands::stage_profile::reconcile_legacy_module_seats(
+            profile,
+            module_root,
+            &effective_receipt_dir,
+            &mode,
+        )?;
         let projection = load_profile_projection(profile, module_root, &BTreeSet::new())?;
         let execution_projection = projection.clone();
         let preflight = crate::bands::renew_self::run(
