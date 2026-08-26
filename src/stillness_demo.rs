@@ -669,11 +669,22 @@ fn git_artifact_demo(
     let second_pass_snapshot = snapshot_predicates(&second_pass_before, &second_pass_after);
     let second_pass_zero_writes = second_pass_before == second_pass_after;
     fs::write(dst.join("state"), "dirty-local-change\n").map_err(|e| e.to_string())?;
+    fs::write(dst.join("discarded-untracked"), "untracked-local-change\n")
+        .map_err(|e| e.to_string())?;
     let dirty_before = destination_snapshot(&dst)?;
     let dirty = crate::tools::git_artifact::acquire_source(&plan, Some(invocation));
     let dirty_after = destination_snapshot(&dst)?;
     let dirty_snapshot = snapshot_predicates(&dirty_before, &dirty_after);
-    let dirty_refused_without_write = !dirty.ok && !dirty.changed && dirty_before == dirty_after;
+    let dirty_attempt = dirty.receipt.attempts.first();
+    let dirty_clobbered = dirty.ok
+        && dirty.changed
+        && dirty_attempt.is_some_and(|attempt| {
+            attempt.disposition == "clobbered-dirty-destination"
+                && attempt.detail.contains("clobbered-dirty-destination")
+                && attempt.detail.contains("state")
+                && attempt.detail.contains("discarded-untracked")
+        })
+        && !dst.join("discarded-untracked").exists();
     let config = fs::read_to_string(dst.join(".git/config")).map_err(|e| e.to_string())?;
     let dummy_ssh_key = PathBuf::from("/tmp/demo-scope-dummy-id_ed25519");
     let dummy_https_host = "scope.example.invalid".to_string();
@@ -777,15 +788,33 @@ fn git_artifact_demo(
         || r2.changed
         || ru.ok
         || ru.receipt.attempts.is_empty()
-        || !dirty_refused_without_write
+        || !dirty_clobbered
         || !second_pass_zero_writes
         || !credential_scope_preserved
         || !failed_source_refusal
     {
-        return Err("git-artifact-three-case-demo-failed".into());
+        return Err(format!(
+            "git-artifact-three-case-demo-failed: r1.ok={} r1.changed={} head==remote={} r2.ok={} r2.changed={} ru.ok={} ru.attempts_empty={} dirty.ok={} dirty.changed={} dirty_clobbered={} dirty.first_disposition={:?} dirty.first_detail={:?} second_pass_zero_writes={} credential_scope_preserved={} failed_source_refusal={} discarded-untracked_exists={}",
+            r1.ok,
+            r1.changed,
+            head == remote,
+            r2.ok,
+            r2.changed,
+            ru.ok,
+            ru.receipt.attempts.is_empty(),
+            dirty.ok,
+            dirty.changed,
+            dirty_clobbered,
+            dirty_attempt.map(|attempt| attempt.disposition.as_str()),
+            dirty_attempt.map(|attempt| attempt.detail.as_str()),
+            second_pass_zero_writes,
+            credential_scope_preserved,
+            failed_source_refusal,
+            dst.join("discarded-untracked").exists(),
+        ));
     }
     Ok(
-        json!({"setup":{"commit_1":c1,"destination_before":before,"commit_2_remote_head":remote,"setup_checked":true,"changed_then_quiet":r1.changed && !r2.changed},"run1":{"ok":r1.ok,"changed":r1.changed,"destination_head":head,"declared_remote_head":remote,"attempts":r1.receipt.attempts.len(),"promotion":r1.receipt.promotion},"run2":{"ok":r2.ok,"changed":r2.changed,"attempts":r2.receipt.attempts.len(),"promotion":r2.receipt.promotion,"requested_ref_equals_head":head == remote,"second_pass_zero_movement":!r2.changed,"second_pass_zero_writes":second_pass_zero_writes,"snapshot":second_pass_snapshot},"dirty_refusal":{"ok":dirty.ok,"changed":dirty.changed,"refused_without_destination_write":dirty_refused_without_write,"structural_zero_writes":dirty_before == dirty_after,"snapshot":dirty_snapshot},"credential_scope":{"preserved":credential_scope_preserved,"exact_scope_projection":exact_scope_projection,"selector_preserved":credential_selector_preserved,"only_declared_scope_used":only_declared_scope_used,"no_credential_material_persisted":no_credential_material_persisted,"declared":{"ssh_key_path":dummy_ssh_key,"https_host":dummy_https_host,"https_token_path":dummy_token_path,"bearer":scope_plan.bearer,"safe_directories":[]},"projected":{"ssh_key_path":scoped.ssh_key_path,"https_host":scoped.git_https_credential_host,"https_token_path":scoped.git_https_credential_token_path,"bearer":scoped.bearer,"safe_directories":scoped.safe_directories},"local_safe_directory_projection":local_scoped.safe_directories},"wrong_selector":{"predicate":failed_source_refusal,"ok":ru.ok,"changed":ru.changed,"disposition":wrong_selector_attempt.map(|a| a.disposition.clone()),"detail":wrong_selector_attempt.map(|a| a.detail.clone()),"hard_red_credential":wrong_selector_attempt.is_some_and(|a| a.disposition == "hard-red-credential"),"destination_and_staging_unchanged":failed_before == failed_after && failed_parent_before == failed_parent_after,"destination_snapshot_unchanged":failed_before == failed_after,"parent_snapshot_unchanged":failed_parent_before == failed_parent_after,"promotion":ru.receipt.promotion},"unreachable":{"ok":ru.ok,"changed":ru.changed,"attempts_count":ru.receipt.attempts.len(),"failed_source_refusal":failed_source_refusal,"destination_snapshot_unchanged":failed_before == failed_after,"dispositions":ru.receipt.attempts.iter().map(|a|a.disposition.clone()).collect::<Vec<_>>(),"promotion":ru.receipt.promotion}}),
+        json!({"setup":{"commit_1":c1,"destination_before":before,"commit_2_remote_head":remote,"setup_checked":true,"changed_then_quiet":r1.changed && !r2.changed},"run1":{"ok":r1.ok,"changed":r1.changed,"destination_head":head,"declared_remote_head":remote,"attempts":r1.receipt.attempts.len(),"promotion":r1.receipt.promotion},"run2":{"ok":r2.ok,"changed":r2.changed,"attempts":r2.receipt.attempts.len(),"promotion":r2.receipt.promotion,"requested_ref_equals_head":head == remote,"second_pass_zero_movement":!r2.changed,"second_pass_zero_writes":second_pass_zero_writes,"snapshot":second_pass_snapshot},"dirty_clobber":{"ok":dirty.ok,"changed":dirty.changed,"clobbered":dirty_clobbered,"discarded_paths":dirty_attempt.map(|a| a.detail.clone()),"tracked_and_untracked_discarded":!dst.join("discarded-untracked").exists(),"snapshot":dirty_snapshot},"credential_scope":{"preserved":credential_scope_preserved,"exact_scope_projection":exact_scope_projection,"selector_preserved":credential_selector_preserved,"only_declared_scope_used":only_declared_scope_used,"no_credential_material_persisted":no_credential_material_persisted,"declared":{"ssh_key_path":dummy_ssh_key,"https_host":dummy_https_host,"https_token_path":dummy_token_path,"bearer":scope_plan.bearer,"safe_directories":[]},"projected":{"ssh_key_path":scoped.ssh_key_path,"https_host":scoped.git_https_credential_host,"https_token_path":scoped.git_https_credential_token_path,"bearer":scoped.bearer,"safe_directories":scoped.safe_directories},"local_safe_directory_projection":local_scoped.safe_directories},"wrong_selector":{"predicate":failed_source_refusal,"ok":ru.ok,"changed":ru.changed,"disposition":wrong_selector_attempt.map(|a| a.disposition.clone()),"detail":wrong_selector_attempt.map(|a| a.detail.clone()),"hard_red_credential":wrong_selector_attempt.is_some_and(|a| a.disposition == "hard-red-credential"),"destination_and_staging_unchanged":failed_before == failed_after && failed_parent_before == failed_parent_after,"destination_snapshot_unchanged":failed_before == failed_after,"parent_snapshot_unchanged":failed_parent_before == failed_parent_after,"promotion":ru.receipt.promotion},"unreachable":{"ok":ru.ok,"changed":ru.changed,"attempts_count":ru.receipt.attempts.len(),"failed_source_refusal":failed_source_refusal,"destination_snapshot_unchanged":failed_before == failed_after,"dispositions":ru.receipt.attempts.iter().map(|a|a.disposition.clone()).collect::<Vec<_>>(),"promotion":ru.receipt.promotion}}),
     )
 }
 
