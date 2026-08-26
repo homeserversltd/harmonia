@@ -52,8 +52,8 @@ pub(crate) fn walk(mut enter: impl FnMut(Band) -> Result<(), String>) -> Result<
     invoke!(compare, Band::Compare);
     invoke!(install_packages, Band::InstallPackages);
     invoke!(ratchet_binaries, Band::RatchetBinaries);
-    invoke!(restart_services, Band::RestartServices);
     invoke!(backfill_files, Band::BackfillFiles);
+    invoke!(restart_services, Band::RestartServices);
     invoke!(propose_edits, Band::ProposeEdits);
     invoke!(report_home, Band::ReportHome);
     first_error.map_or(Ok(()), Err)
@@ -597,5 +597,80 @@ pub(crate) fn run_profile_engine_with_projection(
     match final_result {
         Some(result) => result,
         None => Err("band-walk-report-home-missing".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ladder::load_ladder_manifest;
+    use crate::tools::routine::{placement_for_step, ValidatedStep};
+    use serde_json::Value;
+    use std::path::Path;
+
+    #[test]
+    fn caduceus_storage_categories_places_files_before_services() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/homeconsole/modules/caduceus-storage-categories/manifest.json");
+        let manifest = load_ladder_manifest(&manifest_path).unwrap();
+        let placement = |step_id: &str| {
+            let step = manifest
+                .ladder
+                .iter()
+                .find(|step| step.step_id == step_id)
+                .unwrap();
+            placement_for_step(&ValidatedStep {
+                step_id: step.step_id.clone(),
+                tool: step.tool.clone(),
+                permutation: step.permutation.clone(),
+                args: step.args.clone(),
+                on_failure: step.on_failure,
+            })
+            .unwrap()
+        };
+
+        assert_eq!(
+            placement("caduceus-storage-categories-config"),
+            Band::BackfillFiles
+        );
+        assert_eq!(
+            placement("caduceus-storage-categories-daemon-reload"),
+            Band::RestartServices
+        );
+        assert_eq!(
+            placement("caduceus-storage-categories-timer-enable"),
+            Band::RestartServices
+        );
+
+        let config = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "caduceus-storage-categories-config")
+            .unwrap();
+        let files = config.args.get("files").and_then(Value::as_array).unwrap();
+        assert_eq!(files.len(), 2);
+        let files_root = manifest
+            .base_dir
+            .join(manifest.files_root.as_deref().unwrap());
+        for file in files {
+            let relative = file.as_str().unwrap();
+            assert!(files_root.join(relative).is_file(), "missing {relative}");
+        }
+
+        let mut order = Vec::new();
+        walk(|band| {
+            order.push(band);
+            Ok(())
+        })
+        .unwrap();
+        let backfill = order
+            .iter()
+            .position(|band| *band == Band::BackfillFiles)
+            .unwrap();
+        let restart = order
+            .iter()
+            .position(|band| *band == Band::RestartServices)
+            .unwrap();
+        assert!(backfill < restart);
     }
 }
