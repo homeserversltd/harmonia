@@ -640,6 +640,14 @@ pub(crate) fn execute_source(
     }
 }
 
+fn normalize_engine_source_locator(locator: &str) -> String {
+    const ENGINE_HTTPS_PREFIX: &str = "https://git.home.arpa/";
+    locator
+        .strip_prefix(ENGINE_HTTPS_PREFIX)
+        .map(|path| format!("git@git.home.arpa:{path}"))
+        .unwrap_or_else(|| locator.to_string())
+}
+
 fn engine_source_resolution(
     component: &str,
     config: &crate::bands::renew_self::EnginePlaneConfig,
@@ -685,7 +693,7 @@ fn engine_source_resolution(
     };
     let candidate = SourceCandidate {
         kind: "git".to_string(),
-        url: Some(source_repo_url.trim().to_string()),
+        url: Some(normalize_engine_source_locator(source_repo_url.trim())),
         path: None,
         credential_selector,
     };
@@ -1002,5 +1010,63 @@ pub(crate) fn execute_routine_child(
             Ok((result, out))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bands::renew_self::{EnginePlaneConfig, EngineSourceComponent};
+    use crate::tools::git_artifact::CredentialScope;
+
+    #[test]
+    fn engine_source_resolution_normalizes_sbin_https_locator_to_ssh() {
+        let config = EnginePlaneConfig {
+            source_repo_url: "https://git.home.arpa/HOMESERVERSLTD/harmonia.git".into(),
+            branch: "main".into(),
+            source_dir: PathBuf::from("/var/lib/harmonia/source"),
+            local_source_checkout: None,
+            install_bin: PathBuf::from("/usr/local/bin/harmonia"),
+            enabled: true,
+            git_bearer: "owner".into(),
+            remote: "origin".into(),
+            build_program: None,
+            build_args: None,
+            staged_bin: None,
+            profile_index: None,
+            ratchet_lock: None,
+            artifact_transport: None,
+            artifact_transports: Vec::new(),
+            source_components: [(
+                "sbin".into(),
+                EngineSourceComponent {
+                    repo_url: "https://git.home.arpa/HOMESERVERSLTD/sbin.git".into(),
+                    branch: "main".into(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            credential_scopes: [(
+                "owner-forge-ssh".into(),
+                CredentialScope {
+                    ssh_key_path: None,
+                    https_host: None,
+                    https_token_path: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+
+        let resolution = engine_source_resolution("sbin", &config).unwrap();
+        let candidate = &resolution.candidates[0];
+        assert_eq!(
+            candidate.locator,
+            "git@git.home.arpa:HOMESERVERSLTD/sbin.git"
+        );
+        assert_eq!(
+            candidate.credential_selector.as_deref(),
+            Some("owner-forge-ssh")
+        );
     }
 }
