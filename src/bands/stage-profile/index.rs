@@ -48,6 +48,7 @@ pub(crate) fn resolve_module_dir(
     let local = module_root.join(module_id);
     let profile_shared = profiles_shared_module_root(module_root).map(|root| root.join(module_id));
     let legacy = shared_module_root(module_root).map(|root| root.join(module_id));
+    let registered = groups::is_registered_shared_module(module_id);
     let selected = if lawful_module_manifest_exists(&local) {
         Some(local.clone())
     } else {
@@ -57,6 +58,13 @@ pub(crate) fn resolve_module_dir(
     };
     match selected {
         Some(path) => Ok(path),
+        None if registered
+            && legacy
+                .as_ref()
+                .is_some_and(|path| lawful_module_manifest_exists(path)) =>
+        {
+            Ok(legacy.unwrap())
+        }
         None if legacy
             .as_ref()
             .is_some_and(|path| lawful_module_manifest_exists(path)) =>
@@ -73,11 +81,13 @@ pub(crate) fn resolve_module_dir(
 /// Reconcile the complete legacy module root before projection resolution.
 ///
 /// The inventory is deliberately whole-root and deterministic: a single
-/// unshadowed lawful entry refuses the run before any filesystem mutation.
-/// Apply uses the comparison/Do rename membrane to retire the root atomically;
+/// unshadowed unregistered lawful entry refuses the run before any filesystem
+/// mutation. Registered shared directories are excluded from retirement; when
+/// they coexist with retireable entries, apply retires those entries
+/// individually. Apply uses the comparison/Do rename membrane, while
 /// report-only records pending evidence and leaves the root untouched.
 pub(crate) fn reconcile_legacy_module_seats(
-    profile: &Profile,
+    _profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
     mode: &crate::UpdateMode<'_>,
@@ -86,19 +96,22 @@ pub(crate) fn reconcile_legacy_module_seats(
         return Ok(());
     };
     let mut ids = Vec::new();
+    let mut has_registered_shared_dir = false;
     if legacy_root.is_dir() {
         for entry in std::fs::read_dir(&legacy_root)
             .map_err(|e| format!("legacy-module-root-inventory-failed: {e}"))?
         {
             let entry = entry.map_err(|e| format!("legacy-module-root-inventory-failed: {e}"))?;
             let path = entry.path();
-            if path.is_dir()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|_| lawful_module_manifest_exists(&path))
-            {
-                ids.push(path);
+            if path.is_dir() {
+                let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if groups::is_registered_shared_module(id) {
+                    has_registered_shared_dir = true;
+                } else if lawful_module_manifest_exists(&path) {
+                    ids.push(path);
+                }
             }
         }
     }
@@ -110,15 +123,23 @@ pub(crate) fn reconcile_legacy_module_seats(
         .iter()
         .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
         .collect();
+    let mut retireable = Vec::new();
     let mut unshadowed = Vec::new();
     for id in &module_ids {
+        // A promoted top-level module is a live shared seat, not legacy shed
+        // inventory. Registration is intentionally independent of this root.
+        if groups::is_registered_shared_module(id) {
+            continue;
+        }
         let local = module_root.join(id);
         let profile_shared = profiles_shared_module_root(module_root).map(|root| root.join(id));
         let shadowed = lawful_module_manifest_exists(&local)
             || profile_shared
                 .as_ref()
                 .is_some_and(|path| lawful_module_manifest_exists(path));
-        if !profile.modules.iter().any(|declared| declared == id) || !shadowed {
+        if shadowed {
+            retireable.push(id.clone());
+        } else {
             unshadowed.push(id.clone());
         }
     }
@@ -175,18 +196,27 @@ pub(crate) fn reconcile_legacy_module_seats(
         .invocation()
         .ok_or_else(|| "legacy-module-seat-retire-invocation-missing".to_string())?;
     let date = utc_date_stamp();
+    // A registered directory may share this physical root with retireable
+    // legacy entries. In that mixed-root case, only the unregistered entries
+    // are retired; whole-root retirement is reserved for a root with no
+    // registered shared module directories.
+    let whole_root = !has_registered_shared_dir && retireable.len() == module_ids.len();
     let mut retired_root = legacy_root.with_file_name(format!("modules.retired-{date}"));
-    let mut ordinal = 2;
-    while retired_root.exists() {
-        retired_root = legacy_root.with_file_name(format!("modules.retired-{date}-{ordinal}"));
-        ordinal += 1;
+    if whole_root {
+        let mut ordinal = 2;
+        while retired_root.exists() {
+            retired_root = legacy_root.with_file_name(format!("modules.retired-{date}-{ordinal}"));
+            ordinal += 1;
+        }
     }
-    receipt["attempt"] =
-        serde_json::json!({"mutation": true, "action": "retire-legacy-module-root"});
+    receipt["attempt"] = serde_json::json!({
+        "mutation": true,
+        "action": if whole_root { "retire-legacy-module-root" } else { "retire-legacy-module-seats" }
+    });
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     crate::atoms::attest::write_json_atomic(&receipt_dir.join("module-seat-shed.json"), &receipt)?;
     let result = crate::atoms::comparison::execute_once(
-        "retire-legacy-module-root",
+        "retire-legacy-module-seats",
         || Ok(legacy_root.exists()),
         |exists| {
             if *exists {
@@ -196,7 +226,23 @@ pub(crate) fn reconcile_legacy_module_seats(
             }
         },
         |authorization, _| {
-            crate::atoms::r#do::rename::rename(&authorization, key, &legacy_root, &retired_root)
+            if whole_root {
+                crate::atoms::r#do::rename::rename(&authorization, key, &legacy_root, &retired_root)
+            } else {
+                for id in &retireable {
+                    let source = legacy_root.join(id);
+                    let mut target =
+                        legacy_root.with_file_name(format!("modules.{id}.retired-{date}"));
+                    let mut ordinal = 2;
+                    while target.exists() {
+                        target = legacy_root
+                            .with_file_name(format!("modules.{id}.retired-{date}-{ordinal}"));
+                        ordinal += 1;
+                    }
+                    crate::atoms::r#do::rename::rename(&authorization, key, &source, &target)?;
+                }
+                Ok(())
+            }
         },
     );
     if let Err(error) = result {
@@ -211,7 +257,11 @@ pub(crate) fn reconcile_legacy_module_seats(
         )?;
         return Err(error);
     }
-    receipt["final"] = serde_json::json!({"retired_root": retired_root, "ok": true});
+    receipt["final"] = if whole_root {
+        serde_json::json!({"retired_root": retired_root, "ok": true})
+    } else {
+        serde_json::json!({"retired_root": serde_json::Value::Null, "retired_ids": retireable, "ok": true})
+    };
     receipt["ok"] = serde_json::Value::Bool(true);
     crate::atoms::attest::write_json_atomic(&receipt_dir.join("module-seat-shed.json"), &receipt)?;
     Ok(())
@@ -571,6 +621,81 @@ mod shared_dot_files_tests {
         fs::remove_dir_all(module_root.join("alpha")).unwrap();
         let error = super::resolve_module_dir(&module_root, "alpha").unwrap_err();
         assert!(error.contains("legacy-module-seat-unowned"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registered_top_level_shared_module_resolves_and_survives_apply_reconcile() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-registered-shared-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let module_root = root.join("profiles/demo/modules");
+        fs::create_dir_all(root.join("modules/chromium")).unwrap();
+        fs::create_dir_all(&module_root).unwrap();
+        fs::write(root.join("modules/chromium/manifest.json"), b"{} ").unwrap();
+        fs::write(
+            root.join("profiles/demo/index.json"),
+            r#"{"modules":["chromium"]}"#,
+        )
+        .unwrap();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+        super::reconcile_legacy_module_seats(
+            &fixture_profile(&["chromium"]),
+            &module_root,
+            &root.join("receipts"),
+            &mode,
+        )
+        .unwrap();
+        assert_eq!(
+            super::resolve_module_dir(&module_root, "chromium").unwrap(),
+            root.join("modules/chromium")
+        );
+        assert!(root.join("modules/chromium/manifest.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mixed_root_retires_only_shadowed_unregistered_legacy_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-mixed-registered-shared-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let module_root = root.join("profiles/demo/modules");
+        fs::create_dir_all(root.join("modules/chromium")).unwrap();
+        fs::create_dir_all(root.join("modules/alpha")).unwrap();
+        fs::create_dir_all(module_root.join("alpha")).unwrap();
+        fs::write(root.join("modules/chromium/manifest.json"), b"{} ").unwrap();
+        fs::write(root.join("modules/alpha/manifest.json"), b"{} ").unwrap();
+        fs::write(module_root.join("alpha/manifest.json"), b"{} ").unwrap();
+        fs::write(
+            root.join("profiles/demo/index.json"),
+            r#"{"modules":["chromium"]}"#,
+        )
+        .unwrap();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+        super::reconcile_legacy_module_seats(
+            &fixture_profile(&["chromium", "alpha"]),
+            &module_root,
+            &root.join("receipts"),
+            &mode,
+        )
+        .unwrap();
+        assert!(root.join("modules/chromium/manifest.json").exists());
+        assert!(!root.join("modules/alpha").exists());
+        let retired = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("modules.alpha.retired-"))
+            })
+            .unwrap();
+        assert!(retired.join("manifest.json").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

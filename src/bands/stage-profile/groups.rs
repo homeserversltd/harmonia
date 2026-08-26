@@ -38,6 +38,14 @@ pub(crate) struct GroupSelection {
 
 const APPLIANCE_CONFIG_PATH: &str = "/etc/appliance/config.json";
 
+/// Top-level module seats explicitly promoted into the stage-profile shared
+/// module family. Profile declarations describe consumption, not registration.
+pub(crate) const SHARED_MODULE_REGISTRY: &[&str] = &["chromium"];
+
+pub(crate) fn is_registered_shared_module(module_id: &str) -> bool {
+    SHARED_MODULE_REGISTRY.contains(&module_id)
+}
+
 #[derive(Default)]
 pub(crate) struct DeviceModulePolicy {
     pub(crate) disabled_modules: BTreeSet<String>,
