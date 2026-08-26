@@ -830,3 +830,92 @@ pub(crate) fn validate_group(
         on_failure: OnFailure::Stop,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+    fn manifest_path() -> PathBuf {
+        root().join("profiles/homeconsole/modules/rust-build-toolchain/manifest.json")
+    }
+
+    #[test]
+    fn homeconsole_rust_build_toolchain_manifest_loads_and_validates() {
+        let root = root();
+        let index: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("profiles/homeconsole/index.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(index["categories_required"], true);
+        assert_eq!(
+            index["package_authority"],
+            json!({"os_family":"arch", "package_manager":"pacman"})
+        );
+        let path = manifest_path();
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["category"], "known-good");
+        assert_eq!(raw["version"], "1.1.0");
+        assert_eq!(raw["optional"], false);
+        assert_eq!(raw["constants"]["packages"], json!(["rust"]));
+        let manifest = load_ladder_manifest_with_category_requirement(&path, true).unwrap();
+        let validated = validate_ladder(&manifest).unwrap();
+        assert_eq!(validated.len(), 2);
+        assert_eq!(
+            validated
+                .iter()
+                .map(|s| s.step_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["rust-toolchain-directories", "rust-wrapper-shims"]
+        );
+    }
+
+    #[test]
+    fn homeconsole_rust_build_toolchain_surface_is_exact() {
+        let manifest =
+            load_ladder_manifest_with_category_requirement(&manifest_path(), true).unwrap();
+        let dirs = json!([{"path":"/opt/rustup","mode":493,"owner":"owner","group":"owner"},{"path":"/opt/cargo","mode":493,"owner":"owner","group":"owner"}]);
+        assert_eq!(manifest.ladder[0].args.get("directories"), Some(&dirs));
+        assert_eq!(manifest.ladder[0].on_failure, OnFailure::Stop);
+        assert_eq!(manifest.ladder[1].args, BTreeMap::new());
+        assert_eq!(manifest.ladder[1].on_failure, OnFailure::Stop);
+        assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
+        let wrappers = root()
+            .join("profiles/homeconsole/modules/rust-build-toolchain/files_root/usr/local/bin");
+        for (name, target) in [
+            ("rustc", "/opt/cargo/bin/rustc"),
+            ("cargo", "/opt/cargo/bin/cargo"),
+            ("rustup", "/opt/cargo/bin/rustup"),
+        ] {
+            let path = wrappers.join(name);
+            let expected = format!("#!/bin/sh\nexport RUSTUP_HOME=/opt/rustup\nexport CARGO_HOME=/opt/cargo\nexec {} \"$@\"\n", target);
+            assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+    }
+
+    #[test]
+    fn homeconsole_rust_build_toolchain_precedes_arcadia() {
+        let index: Value = serde_json::from_str(
+            &fs::read_to_string(root().join("profiles/homeconsole/index.json")).unwrap(),
+        )
+        .unwrap();
+        let modules = index["modules"].as_array().unwrap();
+        let rust = modules
+            .iter()
+            .position(|m| m == "rust-build-toolchain")
+            .unwrap();
+        let arcadia = modules
+            .iter()
+            .position(|m| m == "arcadia-gui-runtime")
+            .unwrap();
+        assert!(rust < arcadia);
+    }
+}

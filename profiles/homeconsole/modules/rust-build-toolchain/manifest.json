@@ -1,0 +1,33 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "rust-build-toolchain",
+  "category": "known-good",
+  "version": "1.1.0",
+  "description": "HomeConsole Rust build toolchain ladder using package install and maintained wrappers.",
+  "optional": false,
+  "constants": {
+    "packages": ["rust"]
+  },
+  "ladder": [
+    {
+      "step_id": "rust-toolchain-directories",
+      "tool": "files",
+      "permutation": "managed-directories",
+      "args": {
+        "directories": [
+          {"path": "/opt/rustup", "mode": 493, "owner": "owner", "group": "owner"},
+          {"path": "/opt/cargo", "mode": 493, "owner": "owner", "group": "owner"}
+        ]
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "rust-wrapper-shims",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ],
+  "files_root": "files_root"
+}
