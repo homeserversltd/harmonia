@@ -684,21 +684,34 @@ fn update_sandbox(r: &Path) -> PathBuf {
     let n = UPDATE_SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
     r.join(format!("package-update-sandbox-{}-{n}", std::process::id()))
 }
+const PACMAN_CONF_TIMEOUT_SECS: u64 = 30;
+
 fn pacman_configured_ignored(db: &str, t: u64) -> std::collections::BTreeSet<String> {
-    let config = command::capture_with_timeout(&crate::atoms::package::pacman_conf_program(), &[], t);
-    if !config.ok {
-        return std::collections::BTreeSet::new();
-    }
+    let program = crate::atoms::package::pacman_conf_program();
+    let packages = command::capture_with_timeout(&program, &["IgnorePkg"], PACMAN_CONF_TIMEOUT_SECS);
+    let groups = command::capture_with_timeout(&program, &["IgnoreGroup"], PACMAN_CONF_TIMEOUT_SECS);
     let mut names = std::collections::BTreeSet::new();
-    let mut groups = Vec::new();
-    for line in config.stdout.lines() {
-        let Some((key, values)) = line.split_once('=') else { continue };
-        match key.trim() {
-            "IgnorePkg" => names.extend(values.split_whitespace().map(str::to_string)),
-            "IgnoreGroup" => groups.extend(values.split_whitespace().map(str::to_string)),
-            _ => {}
-        }
+    if packages.ok {
+        names.extend(
+            packages
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string),
+        );
     }
+    let groups = if groups.ok {
+        groups
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|group| !group.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     for group in groups {
         let result = command::capture_with_timeout(
             &pacman_program(),

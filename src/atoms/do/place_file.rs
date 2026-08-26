@@ -568,6 +568,7 @@ mod authority_tests {
         std::fs::write(&source, b"desired").unwrap();
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, b"current").unwrap();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
         let result = execute(PlaceFileRequest {
             path: &target,
             declared_bytes: b"desired",
@@ -577,7 +578,7 @@ mod authority_tests {
                 gid: None,
             },
             backup: BackupPolicy::None,
-            invocation: Some(crate::atoms::r#do::InvocationKey::for_apply()),
+            invocation: Some(&invocation),
         });
         assert_eq!(
             result.unwrap_err(),

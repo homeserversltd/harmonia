@@ -367,11 +367,35 @@ pub(crate) fn capture_with_options(
     } else {
         options.timeout_secs
     };
+    let stdout = child.stdout.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut captured = String::new();
+            let _ = pipe.read_to_string(&mut captured);
+            captured
+        })
+    });
+    let stderr = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut captured = String::new();
+            let _ = pipe.read_to_string(&mut captured);
+            captured
+        })
+    });
+    let read_pipes = || {
+        (
+            stdout
+                .and_then(|reader| reader.join().ok())
+                .unwrap_or_default(),
+            stderr
+                .and_then(|reader| reader.join().ok())
+                .unwrap_or_default(),
+        )
+    };
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let (stdout, stderr) = read_child_pipes(&mut child);
+                let (stdout, stderr) = read_pipes();
                 return CmdResult {
                     ok: status.success(),
                     code: status.code().unwrap_or(-1),
@@ -381,7 +405,7 @@ pub(crate) fn capture_with_options(
             }
             Ok(None) if start.elapsed() >= Duration::from_secs(timeout_secs) => {
                 let termination = terminate_child(&mut child);
-                let (stdout, stderr) = read_child_pipes(&mut child);
+                let (stdout, stderr) = read_pipes();
                 let signal = format!(
                     "command-timeout-after-{timeout_secs}s: {command_label}: {termination}"
                 );
@@ -400,6 +424,7 @@ pub(crate) fn capture_with_options(
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(err) => {
                 let termination = terminate_child(&mut child);
+                let _ = read_pipes();
                 return CmdResult {
                     ok: false,
                     code: -1,
@@ -435,18 +460,6 @@ fn terminate_child(child: &mut std::process::Child) -> &'static str {
             }
         }
     }
-}
-
-fn read_child_pipes(child: &mut std::process::Child) -> (String, String) {
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut stdout);
-    }
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_string(&mut stderr);
-    }
-    (stdout, stderr)
 }
 
 fn redact(text: &str, redactions: &BTreeSet<String>) -> String {
@@ -561,4 +574,31 @@ pub(crate) fn harmonia_root_from_module_root(module_root: &Path) -> PathBuf {
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capture_with_options;
+
+    #[test]
+    fn captures_stdout_larger_than_pipe_buffer() {
+        let result = capture_with_options(
+            "/usr/bin/sh",
+            &["-c", "head -c 131072 /dev/zero | tr \"\\0\" x"],
+            super::CaptureOptions::new(),
+        );
+        assert!(result.ok);
+        assert_eq!(result.stdout.len(), 131072);
+    }
+
+    #[test]
+    fn sleeping_child_times_out() {
+        let result = capture_with_options(
+            "/usr/bin/sh",
+            &["-c", "sleep 2"],
+            super::CaptureOptions::new().timeout_secs(1),
+        );
+        assert!(!result.ok);
+        assert!(result.stderr.contains("command-timeout-after-1s"));
+    }
 }

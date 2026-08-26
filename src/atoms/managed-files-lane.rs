@@ -645,9 +645,9 @@ pub(crate) fn ownership_equal(
     Ok((true, true))
 }
 
-pub(crate) use crate::atoms::r#do::backfill_file::{
-    ensure_files_present, ensure_files_present_with_invocation,
-};
+#[cfg(not(test))]
+pub(crate) use crate::atoms::r#do::backfill_file::ensure_files_present;
+pub(crate) use crate::atoms::r#do::backfill_file::ensure_files_present_with_invocation;
 pub(crate) use crate::atoms::r#do::place_file::{
     converge_files, converge_files_authorized, converge_files_authorized_with_config_policy,
     converge_files_with_invocation,
@@ -1224,7 +1224,16 @@ pub(crate) fn demo(
 #[cfg(test)]
 mod source_shelf_sweep_tests {
     use super::*;
+    use crate::atoms::r#do::source_shelf::{SourceShelfSweepRequest, source_shelf_sweep};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn test_sweep_nonce() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        format!("{}-{nanos}", std::process::id())
+    }
 
     fn request(
         source_root: &Path,
@@ -1262,7 +1271,7 @@ mod source_shelf_sweep_tests {
     #[test]
     fn owned_recursive_apply_converges_root_and_reads_receipts() {
         let root =
-            std::env::temp_dir().join(format!("harmonia-shelf-root-apply-{}", sweep_nonce()));
+            std::env::temp_dir().join(format!("harmonia-shelf-root-apply-{}", test_sweep_nonce()));
         let source_root = root.join("source");
         let source = source_root.join("agathodaimon");
         let target = root.join("target/agathodaimon");
@@ -1334,7 +1343,7 @@ mod source_shelf_sweep_tests {
     #[test]
     fn owned_recursive_apply_empty_diff_does_not_mutate_target_or_provenance() {
         let root =
-            std::env::temp_dir().join(format!("harmonia-shelf-root-empty-{}", sweep_nonce()));
+            std::env::temp_dir().join(format!("harmonia-shelf-root-empty-{}", test_sweep_nonce()));
         let source_root = root.join("source");
         let source = source_root.join("agathodaimon");
         let target = root.join("target/agathodaimon");
