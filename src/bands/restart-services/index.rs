@@ -647,8 +647,10 @@ pub(crate) fn execute_routine_child(
 #[cfg(test)]
 mod tests {
     use super::health_probe_request;
+    use crate::tools::ladder::load_ladder_manifest;
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::path::Path;
 
     #[test]
     fn health_probe_request_defaults_absent_retries_to_five() {
@@ -665,5 +667,37 @@ mod tests {
         let request = health_probe_request("https://example.test/health", &args);
 
         assert_eq!(request.retries, 0);
+    }
+    #[test]
+    fn arcadia_health_window_lowers_into_health_probe_request() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json");
+        let manifest = load_ladder_manifest(&manifest_path).unwrap();
+        let routine = manifest
+            .ladder
+            .iter()
+            .find(|step| step.tool == "routine")
+            .expect("lowered routine step");
+        let health = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "health-proof")
+            .expect("lowered health-proof child");
+
+        assert_eq!(health.tool, "check-health");
+        assert_eq!(
+            health.args.get("retries").and_then(|value| value.as_u64()),
+            Some(30)
+        );
+        assert!(!health.args.contains_key("timeout_secs"));
+
+        let url = health
+            .args
+            .get("url")
+            .and_then(|value| value.as_str())
+            .expect("health-proof URL");
+        let request = health_probe_request(url, &health.args);
+        assert_eq!(request.retries, 30);
+        assert_eq!(request.timeout_secs, 3);
     }
 }

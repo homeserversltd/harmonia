@@ -18,6 +18,7 @@
         "install_bin": "/usr/local/bin/arcadia",
         "service": "arcadia.service",
         "url": "http://127.0.0.1:8080/health",
+        "retries": 30,
         "binary_name": "arcadia",
         "op_prefix": "arcadia-gui",
         "run_schema": "harmonia.arcadia_gui_runtime.v1",
