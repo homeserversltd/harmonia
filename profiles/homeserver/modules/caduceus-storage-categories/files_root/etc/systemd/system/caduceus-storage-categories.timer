@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Caduceus storage categories scan timer
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=caduceus-storage-categories.service
+
+[Install]
+WantedBy=timers.target

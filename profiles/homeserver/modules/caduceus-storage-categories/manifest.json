@@ -1,0 +1,62 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "caduceus-storage-categories",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Daily Caduceus storage categories scan timer.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "caduceus-storage-categories-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/systemd/system/caduceus-storage-categories.service",
+          "etc/systemd/system/caduceus-storage-categories.timer"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "caduceus-storage-categories-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "caduceus-storage-categories-units-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": [
+          "verify",
+          "/etc/systemd/system/caduceus-storage-categories.service",
+          "/etc/systemd/system/caduceus-storage-categories.timer"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "caduceus-storage-categories-daemon-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "caduceus-storage-categories-timer-enable",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "caduceus-storage-categories.timer",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
