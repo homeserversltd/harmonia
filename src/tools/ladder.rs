@@ -887,9 +887,8 @@ mod tests {
         let wrappers = root()
             .join("profiles/homeconsole/modules/rust-build-toolchain/files_root/usr/local/bin");
         for (name, target) in [
-            ("rustc", "/opt/cargo/bin/rustc"),
-            ("cargo", "/opt/cargo/bin/cargo"),
-            ("rustup", "/opt/cargo/bin/rustup"),
+            ("rustc", "/usr/bin/rustc"),
+            ("cargo", "/usr/bin/cargo"),
         ] {
             let path = wrappers.join(name);
             let expected = format!("#!/bin/sh\nexport RUSTUP_HOME=/opt/rustup\nexport CARGO_HOME=/opt/cargo\nexec {} \"$@\"\n", target);
@@ -899,6 +898,7 @@ mod tests {
                 0o755
             );
         }
+        assert!(!wrappers.join("rustup").exists());
     }
 
     #[test]

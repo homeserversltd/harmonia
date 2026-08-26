@@ -12,9 +12,8 @@ HomeConsole includes Rust-built services and appliance components. The appliance
 
 - `/opt/rustup` (mode `0755`, owner:group `owner:owner`)
 - `/opt/cargo` (mode `0755`, owner:group `owner:owner`)
-- `/usr/local/bin/rustc`
-- `/usr/local/bin/cargo`
-- `/usr/local/bin/rustup`
+- `/usr/local/bin/rustc` (wrapper resolving to the pacman binary at `/usr/bin/rustc`)
+- `/usr/local/bin/cargo` (wrapper resolving to the pacman binary at `/usr/bin/cargo`)
 - wrapper environment: `RUSTUP_HOME=/opt/rustup`, `CARGO_HOME=/opt/cargo`
 
 ## Harmonia maintenance contract
@@ -27,4 +26,4 @@ This public module describes reusable HomeConsole product behavior. It does not 
 
 ## Proof shape
 
-A mature run proves that root resolves the `/usr/local/bin` wrappers, the wrapper environment points at `/opt/rustup` and `/opt/cargo`, and target-native Cargo builds pass before binary promotion. An empty diff is a successful quiet convergence: no movement is required.
+A mature run proves that root resolves the `/usr/local/bin` wrappers to the pacman binaries in `/usr/bin`, the wrapper environment points at `/opt/rustup` and `/opt/cargo`, and target-native Cargo builds pass before binary promotion. An empty diff is a successful quiet convergence: no movement is required.
