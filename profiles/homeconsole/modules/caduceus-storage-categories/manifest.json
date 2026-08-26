@@ -2,26 +2,34 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus-storage-categories",
   "category": "known-good",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Daily Caduceus storage categories scan timer.",
-  "files_root": "files_root",
   "ladder": [
     {
       "step_id": "caduceus-storage-categories-config",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "etc/systemd/system/caduceus-storage-categories.service",
-          "etc/systemd/system/caduceus-storage-categories.timer"
-        ],
-        "backup_existing": true,
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "caduceus-storage-categories-config"
-      },
+      "tool": "routine",
+      "permutation": "execute",
+      "steps": [
+        {
+          "name": "managed-files",
+          "tool": "files",
+          "permutation": "managed-files",
+          "args": {
+            "managed_files": [
+              {
+                "path": "/etc/systemd/system/caduceus-storage-categories.service",
+                "mode": 420,
+                "content": "[Unit]\nDescription=Daily Caduceus storage categories scan\n\n[Service]\nType=oneshot\nUser=caduceus\nGroup=caduceus\nExecStart=/usr/local/bin/caduceus storage categories scan\nNice=10\nIOSchedulingClass=idle\n"
+              },
+              {
+                "path": "/etc/systemd/system/caduceus-storage-categories.timer",
+                "mode": 420,
+                "content": "[Unit]\nDescription=Daily Caduceus storage categories scan timer\n\n[Timer]\nOnCalendar=daily\nPersistent=true\nUnit=caduceus-storage-categories.service\n\n[Install]\nWantedBy=timers.target\n"
+              }
+            ]
+          }
+        }
+      ],
       "on_failure": "stop"
     },
     {

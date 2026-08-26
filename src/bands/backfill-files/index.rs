@@ -188,14 +188,15 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 .as_object()
                 .ok_or_else(|| format!("managed-file-declaration-{ordinal}-not-object"))?;
             let category = match object.get("category").and_then(Value::as_str) {
-                None | Some("known-good") => Some("known-good"),
-                Some("interactable") => Some("interactable"),
+                None | Some("known-good") => "known-good",
+                Some("interactable") => "interactable",
                 Some(category) => {
                     return Err(format!(
                         "managed-file-declaration-{ordinal}-category-unsupported-{category}"
                     ));
                 }
             };
+            let known_good = category == "known-good";
             let operation = object
                 .get("operation")
                 .and_then(Value::as_str)
@@ -206,7 +207,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             if path.is_empty() {
                 return Err(format!("managed-file-declaration-{ordinal}-path-invalid"));
             }
-            if let Some(category) = category {
+            if category == "interactable" {
                 let mut declaration = declaration;
                 if let Some(object) = declaration.as_object_mut() {
                     object.insert("category".into(), Value::String(category.into()));
@@ -216,6 +217,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             }
             if matches!(operation, "present" | "hotfix" | "untouchable")
                 || (operation == "place"
+                    && !known_good
                     && matches!(
                         crate::tools::files::classify_target(Path::new(path)),
                         crate::tools::files::TargetClass::Config
@@ -226,10 +228,12 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 continue;
             }
             if operation == "place" {
-                if matches!(
-                    crate::tools::files::classify_target(Path::new(path)),
-                    crate::tools::files::TargetClass::Config
-                ) {
+                if !known_good
+                    && matches!(
+                        crate::tools::files::classify_target(Path::new(path)),
+                        crate::tools::files::TargetClass::Config
+                    )
+                {
                     configuration.push(declaration);
                     continue;
                 }

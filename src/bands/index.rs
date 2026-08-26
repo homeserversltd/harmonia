@@ -612,6 +612,66 @@ mod tests {
     fn caduceus_storage_categories_places_files_before_services() {
         let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("profiles/homeconsole/modules/caduceus-storage-categories/manifest.json");
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            raw.get("category").and_then(Value::as_str),
+            Some("known-good")
+        );
+        assert!(raw.get("files_root").is_none());
+
+        let expected_files = serde_json::json!([
+            {
+                "path": "/etc/systemd/system/caduceus-storage-categories.service",
+                "mode": 420,
+                "content": "[Unit]\nDescription=Daily Caduceus storage categories scan\n\n[Service]\nType=oneshot\nUser=caduceus\nGroup=caduceus\nExecStart=/usr/local/bin/caduceus storage categories scan\nNice=10\nIOSchedulingClass=idle\n"
+            },
+            {
+                "path": "/etc/systemd/system/caduceus-storage-categories.timer",
+                "mode": 420,
+                "content": "[Unit]\nDescription=Daily Caduceus storage categories scan timer\n\n[Timer]\nOnCalendar=daily\nPersistent=true\nUnit=caduceus-storage-categories.service\n\n[Install]\nWantedBy=timers.target\n"
+            }
+        ]);
+        let raw_config = raw
+            .get("ladder")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .find(|step| {
+                step.get("step_id").and_then(Value::as_str)
+                    == Some("caduceus-storage-categories-config")
+            })
+            .unwrap();
+        assert_eq!(
+            raw_config.get("tool").and_then(Value::as_str),
+            Some("routine")
+        );
+        assert_eq!(
+            raw_config.get("permutation").and_then(Value::as_str),
+            Some("execute")
+        );
+        let raw_children = raw_config.get("steps").and_then(Value::as_array).unwrap();
+        assert_eq!(raw_children.len(), 1);
+        let raw_child = &raw_children[0];
+        assert_eq!(
+            raw_child.get("name").and_then(Value::as_str),
+            Some("managed-files")
+        );
+        assert_eq!(
+            raw_child.get("tool").and_then(Value::as_str),
+            Some("files")
+        );
+        assert_eq!(
+            raw_child.get("permutation").and_then(Value::as_str),
+            Some("managed-files")
+        );
+        let managed_files = raw_child
+            .get("args")
+            .and_then(|args| args.get("managed_files"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(managed_files, expected_files.as_array().unwrap());
+
         let manifest = load_ladder_manifest(&manifest_path).unwrap();
         let placement = |step_id: &str| {
             let step = manifest
@@ -630,10 +690,6 @@ mod tests {
         };
 
         assert_eq!(
-            placement("caduceus-storage-categories-config"),
-            Band::BackfillFiles
-        );
-        assert_eq!(
             placement("caduceus-storage-categories-daemon-reload"),
             Band::RestartServices
         );
@@ -647,14 +703,19 @@ mod tests {
             .iter()
             .find(|step| step.step_id == "caduceus-storage-categories-config")
             .unwrap();
-        let files = config.args.get("files").and_then(Value::as_array).unwrap();
-        assert_eq!(files.len(), 2);
-        let files_root = manifest
-            .base_dir
-            .join(manifest.files_root.as_deref().unwrap());
-        for file in files {
-            let relative = file.as_str().unwrap();
-            assert!(files_root.join(relative).is_file(), "missing {relative}");
+        assert_eq!(config.steps.len(), 2);
+        for (ordinal, (child, expected)) in config
+            .steps
+            .iter()
+            .zip(expected_files.as_array().unwrap())
+            .enumerate()
+        {
+            assert_eq!(child.name, format!("managed-place-{ordinal}"));
+            assert_eq!(child.tool, "place-file");
+            assert_eq!(child.permutation.as_deref(), Some("place"));
+            assert_eq!(child.args.get("path"), expected.get("path"));
+            assert_eq!(child.args.get("mode"), expected.get("mode"));
+            assert_eq!(child.args.get("declared_bytes"), expected.get("content"));
         }
 
         let mut order = Vec::new();
