@@ -708,6 +708,7 @@ pub(crate) fn execute_routine_child(
 mod tests {
     use super::health_probe_request;
     use crate::tools::ladder::load_ladder_manifest;
+    use crate::tools::routine::project_routine_children;
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -769,6 +770,38 @@ mod tests {
 
         assert_eq!(request.retries, 0);
     }
+    #[test]
+    fn arcadia_real_manifest_lowers_binary_promotion_source_artifact_reference() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json");
+        let manifest = load_ladder_manifest(&manifest_path).unwrap();
+        let routine = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "arcadia-gui-service-runtime")
+            .expect("real Arcadia lowered routine");
+        let lowered = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "binary-install")
+            .expect("lowered binary-promotion child");
+        assert_eq!(lowered.tool, "place-file");
+        assert_eq!(lowered.permutation.as_deref(), Some("binary-promotion"));
+        assert_eq!(
+            lowered.args.get("source_path"),
+            Some(&json!({"from":"build.artifact"}))
+        );
+        let projected = project_routine_children(routine, &manifest.constants).unwrap();
+        let projected_install = projected
+            .iter()
+            .find(|child| child.name == "binary-install")
+            .expect("projected binary-promotion child");
+        assert_eq!(
+            projected_install.args.get("source_path"),
+            Some(&json!({"from":"build.artifact"}))
+        );
+    }
+
     #[test]
     fn arcadia_health_window_lowers_into_health_probe_request() {
         let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))

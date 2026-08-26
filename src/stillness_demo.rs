@@ -1239,7 +1239,12 @@ fn service_runtime_build_sha_demo(
             .and_then(Value::as_str)
             .ok_or_else(|| "service-runtime-artifact-output-missing".to_string())?;
         let artifact_path = PathBuf::from(artifact);
-        let artifact_selection_matches = artifact_path == expected_artifact;
+        let expected_pass_artifact = if label == "first" {
+            expected_artifact.clone()
+        } else {
+            install_bin.clone()
+        };
+        let artifact_selection_matches = artifact_path == expected_pass_artifact;
         let artifact_bytes = fs::read(&artifact_path).map_err(|e| e.to_string())?;
         let artifact_embeds = artifact_bytes
             .windows(source_sha.len())
@@ -1390,8 +1395,8 @@ fn service_runtime_build_sha_demo(
         && second_selection_matches
         && third_selection_matches
         && first_artifact == expected_artifact
-        && second_artifact == expected_artifact
-        && third_artifact == expected_artifact;
+        && second_artifact == install_bin
+        && third_artifact == install_bin;
     let executed_output = Command::new(&first_artifact)
         .output()
         .map_err(|e| e.to_string())?;

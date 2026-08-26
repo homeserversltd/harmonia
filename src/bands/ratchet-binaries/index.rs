@@ -286,7 +286,7 @@ pub(crate) fn execute_routine_child(
                 .and_then(|v| v.as_str())
                 .ok_or("build-crate-installed-binary-missing")?;
             let binary = Path::new(binary_path);
-            let artifact_path = args
+            let mut artifact_path = args
                 .get("artifact")
                 .and_then(Value::as_str)
                 .map(PathBuf::from)
@@ -318,20 +318,38 @@ pub(crate) fn execute_routine_child(
                 .get("bearer")
                 .and_then(Value::as_str)
                 .unwrap_or("owner");
-            let moved = crate::build_crate::run_build_with_mode(
-                cwd,
-                source_sha,
-                installed_sha,
-                binary,
-                &artifact_path,
-                apply,
-                &env,
-                timeout,
-                &receipt_dir.join("harmonia-atoms.log"),
-                bearer,
-                invocation,
-                crate::build_crate::IdentityMode::RegularExecutable,
-            )?;
+            // A current installed image is the truthful artifact for a quiet pass.
+            // Reusing it prevents a stale/non-reproducible target image from
+            // manufacturing promotion and restart after source convergence.
+            let installed_current =
+                crate::atoms::ask::build_crate::build_identity_with_environment(
+                    source_sha,
+                    installed_sha,
+                    binary,
+                    crate::build_crate::IdentityMode::EmbeddedSourceSha,
+                    &env,
+                )
+                .map(|observation| observation.identity_matches())
+                .unwrap_or(false);
+            let moved = if installed_current {
+                artifact_path = binary.to_path_buf();
+                None
+            } else {
+                crate::build_crate::run_build_with_mode(
+                    cwd,
+                    source_sha,
+                    installed_sha,
+                    binary,
+                    &artifact_path,
+                    apply,
+                    &env,
+                    timeout,
+                    &receipt_dir.join("harmonia-atoms.log"),
+                    bearer,
+                    invocation,
+                    crate::build_crate::IdentityMode::RegularExecutable,
+                )?
+            };
 
             let result = OperationOutcome {
                 ok: moved.as_ref().map_or(true, |x| x.ok),
@@ -345,6 +363,7 @@ pub(crate) fn execute_routine_child(
                 result,
                 [
                     ("artifact".into(), serde_json::json!(artifact_path)),
+                    ("installed_path".into(), serde_json::json!(binary)),
                     ("source_build_sha".into(), serde_json::json!(source_sha)),
                     ("changed".into(), serde_json::json!(result_changed)),
                 ]
