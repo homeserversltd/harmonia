@@ -9,6 +9,10 @@ pub(crate) use crate::atoms::systemd::{
 
 /// Observe systemd unit properties and assert exact key/value equality.
 /// This permutation never mutates systemd, even during apply runs.
+fn show_value_matches(key: &str, wanted: &str, actual: &str) -> bool {
+    actual == wanted || ((key == "User" || key == "Group") && wanted == "root" && actual.is_empty())
+}
+
 pub(crate) fn show_assert(
     receipt_dir: &Path,
     name: &str,
@@ -35,7 +39,7 @@ pub(crate) fn show_assert(
             .map(str::to_owned)
             .unwrap_or_else(|| wanted.to_string());
         match observed.get(key) {
-            Some(actual) if actual == &wanted => None,
+            Some(actual) if show_value_matches(key, &wanted, actual) => None,
             Some(actual) => Some(format!("{key}: expected={wanted} observed={actual}")),
             None => Some(format!("{key}: expected={wanted} observed=<missing>")),
         }
@@ -72,4 +76,25 @@ pub(crate) fn show_assert(
         message,
         command: Some(CmdResult { ok, ..command }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::show_value_matches;
+
+    #[test]
+    fn empty_user_and_group_values_match_root() {
+        assert!(show_value_matches("User", "root", ""));
+        assert!(show_value_matches("Group", "root", ""));
+    }
+
+    #[test]
+    fn non_root_user_value_does_not_match_root() {
+        assert!(!show_value_matches("User", "root", "daemon"));
+    }
+
+    #[test]
+    fn empty_unset_non_root_property_does_not_match() {
+        assert!(!show_value_matches("Description", "expected", ""));
+    }
 }
