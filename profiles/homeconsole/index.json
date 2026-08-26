@@ -12,6 +12,7 @@
   "modules": [
     "system-packages",
     "keyman-runtime",
+    "rust-build-toolchain",
     "arcadia-gui-runtime",
     "local-ai-runtime",
     "homeconsole-update-runtime",
