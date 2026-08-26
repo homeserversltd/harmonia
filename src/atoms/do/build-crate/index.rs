@@ -4,24 +4,27 @@ use crate::atoms::{CommandObservation, Drift, Receipt};
 use std::path::Path;
 use std::time::Duration;
 
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 3600;
+
 pub(crate) fn cargo_build(
     authorization: &ActionAuthorization,
     invocation: &InvocationKey,
     cwd: &Path,
     environment: &[(String, String)],
     bearer: &str,
-    _timeout: Duration,
+    timeout: Duration,
 ) -> Result<CommandObservation, String> {
     let env = environment
         .iter()
         .cloned()
         .collect::<std::collections::BTreeMap<_, _>>();
-    let result = crate::atoms::command::capture_with_cwd_as_bearer_and_env(
+    let result = crate::atoms::command::capture_with_cwd_as_bearer_and_env_and_timeout(
         "cargo",
         &["build", "--release"],
         cwd.to_str(),
         bearer,
         env,
+        timeout.as_secs(),
     );
     let _ = (authorization, invocation);
     Ok(CommandObservation {

@@ -201,14 +201,43 @@ pub(crate) fn capture_with_cwd_as_bearer_and_env(
     bearer: &str,
     env: BTreeMap<String, String>,
 ) -> CmdResult {
+    capture_with_cwd_as_bearer_and_env_and_timeout(
+        program,
+        args,
+        cwd,
+        bearer,
+        env,
+        DEFAULT_TIMEOUT_SECS,
+    )
+}
+
+pub(crate) fn capture_with_cwd_as_bearer_and_env_and_timeout(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    bearer: &str,
+    env: BTreeMap<String, String>,
+    timeout_secs: u64,
+) -> CmdResult {
     if unsafe { libc::geteuid() } != 0 {
-        return capture_with_options(program, args, CaptureOptions::new().cwd(cwd).env(env));
+        return capture_with_options(
+            program,
+            args,
+            CaptureOptions::new()
+                .cwd(cwd)
+                .env(env)
+                .timeout_secs(timeout_secs),
+        );
     }
     match resolve_non_root_bearer(bearer) {
         Ok(bearer) => capture_with_options(
             program,
             args,
-            CaptureOptions::new().cwd(cwd).env(env).bearer(bearer),
+            CaptureOptions::new()
+                .cwd(cwd)
+                .env(env)
+                .timeout_secs(timeout_secs)
+                .bearer(bearer),
         ),
         Err(err) => CmdResult {
             ok: false,

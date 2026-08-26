@@ -313,7 +313,7 @@ pub(crate) fn execute_routine_child(
             let timeout = args
                 .get("timeout_secs")
                 .and_then(Value::as_u64)
-                .unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS);
+                .unwrap_or(crate::atoms::r#do::build_crate::DEFAULT_TIMEOUT_SECS);
             let bearer = args
                 .get("bearer")
                 .and_then(Value::as_str)
