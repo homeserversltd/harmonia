@@ -68,9 +68,9 @@ pub(crate) fn unit_change(
 }
 pub(crate) fn restore_service_state(
     invocation: &InvocationKey,
-    state_before: &crate::atoms::systemd::ServiceStateSnapshot,
+    state_before: &crate::atoms::ask::change_unit::ServiceStateSnapshot,
 ) -> Result<(), String> {
-    let before = crate::atoms::systemd::snapshot_service_state(
+    let before = crate::atoms::ask::change_unit::snapshot_service_state(
         &state_before.name,
         state_before.user,
         state_before.target_user.as_deref(),
@@ -83,7 +83,7 @@ pub(crate) fn restore_service_state(
     let result = crate::atoms::comparison::execute_once(
         "systemd-state-restore",
         || {
-            Ok::<_, String>(crate::atoms::systemd::snapshot_service_state(
+            Ok::<_, String>(crate::atoms::ask::change_unit::snapshot_service_state(
                 &state_before.name,
                 state_before.user,
                 state_before.target_user.as_deref(),
@@ -120,7 +120,7 @@ pub(crate) fn restore_service_state(
                         state_before.name
                     ));
                 }
-                let readback = crate::atoms::systemd::snapshot_service_state(
+                let readback = crate::atoms::ask::change_unit::snapshot_service_state(
                     &state_before.name,
                     state_before.user,
                     target_user,
@@ -153,7 +153,7 @@ pub(crate) fn restore_service_state(
                         state_before.name
                     ));
                 }
-                let readback = crate::atoms::systemd::snapshot_service_state(
+                let readback = crate::atoms::ask::change_unit::snapshot_service_state(
                     &state_before.name,
                     state_before.user,
                     target_user,
@@ -169,7 +169,7 @@ pub(crate) fn restore_service_state(
         },
     )?;
     let _ = result;
-    let final_state = crate::atoms::systemd::snapshot_service_state(
+    let final_state = crate::atoms::ask::change_unit::snapshot_service_state(
         &state_before.name,
         state_before.user,
         state_before.target_user.as_deref(),

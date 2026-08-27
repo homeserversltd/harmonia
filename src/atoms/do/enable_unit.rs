@@ -7,7 +7,7 @@ pub(crate) fn observe(
     user: bool,
     target_user: Option<&str>,
     timeout_secs: u64,
-) -> crate::atoms::systemd::SystemdObservation {
+) -> crate::atoms::ask::change_unit::Observation {
     probe::unit(unit, user, target_user, timeout_secs)
 }
 pub(crate) fn act(
@@ -36,13 +36,13 @@ pub(crate) fn report_home(
 }
 
 mod probe {
-    use crate::atoms::systemd::SystemdObservation;
+    use crate::atoms::ask::change_unit::Observation;
     pub(super) fn unit(
         unit: &str,
         user: bool,
         target: Option<&str>,
         timeout: u64,
-    ) -> SystemdObservation {
+    ) -> Observation {
         let enabled =
             crate::atoms::ask::systemd_state_query("is-enabled", unit, user, target, timeout);
         let active =
@@ -53,7 +53,7 @@ mod probe {
             crate::atoms::ask::systemd_state_query("unit-file-state", unit, user, target, timeout);
         let reload =
             crate::atoms::ask::systemd_state_query("needs-reload", unit, user, target, timeout);
-        SystemdObservation {
+        Observation {
             enabled: enabled
                 .code
                 .is_some()

@@ -1,10 +1,66 @@
 use super::comparison::{self, DiffDecision};
-use crate::{write_json, CmdResult, OperationOutcome};
-use serde::Serialize;
-use serde_json::{json, Value};
+use crate::atoms::ask::change_unit;
+use crate::atoms::attest::change_unit as attest_change_unit;
+use crate::{CmdResult, OperationOutcome};
 use std::cell::Cell;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RestartDecision {
+    pub(crate) execute: bool,
+    pub(crate) reason: &'static str,
+}
+
+pub(crate) fn decide_restart(service_material_changed: bool) -> RestartDecision {
+    if service_material_changed {
+        RestartDecision { execute: true, reason: "service-material-changed" }
+    } else {
+        RestartDecision { execute: false, reason: "service-material-unchanged" }
+    }
+}
+
+pub(crate) fn decide_restart_for_observation(
+    observation: &change_unit::Observation,
+    material: bool,
+    policy: Option<&str>,
+) -> RestartDecision {
+    match observation.active.as_deref() {
+        Some("active") if policy == Some("always") => RestartDecision { execute: true, reason: "restart-policy-always" },
+        Some("active") if material => RestartDecision { execute: true, reason: "service-material-changed" },
+        Some("active") => RestartDecision { execute: false, reason: "service-material-unchanged" },
+        Some("inactive") | Some("failed") | Some("not-found") => RestartDecision { execute: true, reason: "unit-not-active" },
+        _ => RestartDecision { execute: false, reason: "service-state-unknown" },
+    }
+}
+
+#[derive(Clone)]
+struct SystemdMovement {
+    outcome: OperationOutcome,
+    before: change_unit::Observation,
+    after: change_unit::Observation,
+}
+
+fn decide_action(
+    action: &str,
+    observation: &change_unit::Observation,
+    service_material_changed: bool,
+    restart_policy: Option<&str>,
+) -> DiffDecision {
+    let unit_absent = observation.load_state.as_deref() == Some("not-found")
+        || observation.unit_file_state.as_deref() == Some("not-found");
+    let different = match action {
+        "unit-present" | "is-active-probe" => false,
+        "daemon-reload" => service_material_changed,
+        "restart" => decide_restart_for_observation(observation, service_material_changed, restart_policy).execute,
+        "stop" => service_material_changed && !unit_absent,
+        "enable" => observation.enabled.as_deref() != Some("enabled"),
+        "enable-now" => observation.enabled.as_deref() != Some("enabled") || observation.active.as_deref() != Some("active"),
+        "disable-stop" => !unit_absent && (observation.enabled.as_deref() != Some("disabled") || observation.active.as_deref() == Some("active")),
+        "disable-stop-remove" => observation.unit_file_exists && !unit_absent,
+        _ => true,
+    };
+    if different { DiffDecision::Different } else { DiffDecision::Empty }
+}
 
 pub(crate) fn validate_candidate_units(
     args: &std::collections::BTreeMap<String, serde_json::Value>,
@@ -138,7 +194,7 @@ fn run_mask(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    let before = state("is-enabled", service, false, None, timeout_secs);
+    let before = change_unit::state("is-enabled", service, false, None, timeout_secs);
     let Some(before) = before else {
         let command = CmdResult {
             ok: false,
@@ -146,14 +202,14 @@ fn run_mask(
             stdout: String::new(),
             stderr: "systemd-mask-state-read-failed".into(),
         };
-        write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
+        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
             None, None, None, None, false, None, None, false)?;
         return Ok(OperationOutcome { ok: false, changed: false, skipped: true,
             message: "systemd-mask-state-read-failed".into(), command: Some(command) });
     };
     if before == "masked" {
         let command = CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() };
-        write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
+        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
             Some(&before), None, Some(&before), None, false, None, None, false)?;
         return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
             message: "converged-quiet".into(), command: Some(command) });
@@ -161,14 +217,14 @@ fn run_mask(
     if !apply {
         let command = CmdResult { ok: true, code: 0,
             stdout: format!("planned systemd mask {service}"), stderr: String::new() };
-        write_systemd_receipt(receipt_dir, name, "mask", service, false, false, &command,
+        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, false, &command,
             Some(&before), None, Some(&before), None, false, None, None, false)?;
         return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
             message: format!("planned systemd mask {service}"), command: Some(command) });
     }
     let run = comparison::execute_with_failure_receipt(
         "systemd-mask",
-        || state("is-enabled", service, false, None, timeout_secs)
+        || change_unit::state("is-enabled", service, false, None, timeout_secs)
             .ok_or_else(|| "systemd-mask-state-read-failed".to_string()),
         |observed| if observed == "masked" { DiffDecision::Empty } else { DiffDecision::Different },
         |authorization, _observed| {
@@ -190,7 +246,7 @@ fn run_mask(
         comparison::ComparisonRun::Current { .. } => CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() },
         comparison::ComparisonRun::Moved { movement, .. } => movement,
     };
-    write_systemd_receipt(receipt_dir, name, "mask", service, false, true, &command,
+    attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, true, &command,
         Some(&before), None, Some("masked"), None, command.ok && before != "masked", None, None, false)?;
     Ok(OperationOutcome { ok: command.ok, changed: command.ok && before != "masked", skipped: false,
         message: if command.ok { format!("systemd mask {service}") } else { "systemd-mask-command-failed".into() },
@@ -218,7 +274,7 @@ fn run_enable_first_present_now(
         false,
         invocation,
     )?;
-    annotate_candidate_selection(receipt_dir, name, candidate_units, &service)?;
+    attest_change_unit::annotate_candidate_selection(receipt_dir, name, candidate_units, &service)?;
     Ok(OperationOutcome {
         message: format!("systemd enable-first-present-now {service}"),
         ..outcome
@@ -230,7 +286,7 @@ fn select_first_present_unit(
     timeout_secs: u64,
 ) -> Result<String, String> {
     first_present_candidate(candidate_units, |unit| {
-        let result = systemctl("unit-present", unit, false, None, timeout_secs);
+        let result = change_unit::systemctl("unit-present", unit, false, None, timeout_secs);
         if result.ok && result.stdout.trim() != "not-found" {
             return Ok(true);
         }
@@ -257,24 +313,6 @@ where
         }
     }
     Err("systemd-candidate-units-none-present".to_string())
-}
-
-fn annotate_candidate_selection(
-    receipt_dir: &Path,
-    name: &str,
-    candidate_units: &[String],
-    selected_service: &str,
-) -> Result<(), String> {
-    let path = receipt_dir.join(format!("{name}.json"));
-    let mut receipt: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    let object = receipt
-        .as_object_mut()
-        .ok_or_else(|| "systemd-receipt-object-invalid".to_string())?;
-    object.insert("candidate_units".to_string(), json!(candidate_units));
-    object.insert("selected_service".to_string(), json!(selected_service));
-    write_json(&path, &receipt)
 }
 
 fn is_removable_unit_basename(unit: &str) -> bool {
@@ -307,220 +345,6 @@ fn is_syntactic_unit_basename(unit: &str) -> bool {
         && !unit.chars().any(char::is_whitespace)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RestartDecision {
-    execute: bool,
-    reason: &'static str,
-}
-
-fn decide_restart(service_material_changed: bool) -> RestartDecision {
-    if service_material_changed {
-        RestartDecision {
-            execute: true,
-            reason: "service-material-changed",
-        }
-    } else {
-        RestartDecision {
-            execute: false,
-            reason: "service-material-unchanged",
-        }
-    }
-}
-
-fn decide_restart_for_observation(
-    observation: &SystemdObservation,
-    material: bool,
-    policy: Option<&str>,
-) -> RestartDecision {
-    match observation.active.as_deref() {
-        Some("active") if policy == Some("always") => RestartDecision {
-            execute: true,
-            reason: "restart-policy-always",
-        },
-        Some("active") if material => RestartDecision {
-            execute: true,
-            reason: "service-material-changed",
-        },
-        Some("active") => RestartDecision {
-            execute: false,
-            reason: "service-material-unchanged",
-        },
-        Some("inactive") | Some("failed") | Some("not-found") => RestartDecision {
-            execute: true,
-            reason: "unit-not-active",
-        },
-        _ => RestartDecision {
-            execute: false,
-            reason: "service-state-unknown",
-        },
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ServiceStateSnapshot {
-    pub name: String,
-    pub user: bool,
-    pub target_user: Option<String>,
-    pub enabled: bool,
-    pub active: bool,
-}
-
-pub(crate) fn snapshot_service_state(
-    name: &str,
-    user: bool,
-    target_user: Option<&str>,
-) -> Result<ServiceStateSnapshot, String> {
-    if !is_removable_unit_basename(name) {
-        return Err(format!("systemd-unit-name-invalid-{name}"));
-    }
-    let observation = observe_systemd_state("is-active-probe", name, user, target_user, 30);
-    if observation.enabled.is_none() || observation.active.is_none() {
-        return Err(format!("systemd-state-readback-failed-{name}"));
-    }
-    Ok(ServiceStateSnapshot {
-        name: name.to_string(),
-        user,
-        target_user: target_user.map(str::to_string),
-        enabled: observation.enabled.as_deref() == Some("enabled"),
-        active: observation.active.as_deref() == Some("active"),
-    })
-}
-
-pub(crate) use crate::atoms::r#do::change_unit::restore_service_state;
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct SystemdObservation {
-    pub(crate) enabled: Option<String>,
-    pub(crate) active: Option<String>,
-    pub(crate) load_state: Option<String>,
-    pub(crate) unit_file_state: Option<String>,
-    pub(crate) needs_reload: Option<String>,
-    pub(crate) unit_present: Option<bool>,
-    pub(crate) unit_file_exists: bool,
-    pub(crate) probe: Option<CmdResult>,
-}
-
-#[derive(Clone)]
-struct SystemdMovement {
-    outcome: OperationOutcome,
-    before: SystemdObservation,
-    after: SystemdObservation,
-}
-
-fn observe_systemd_state(
-    action: &str,
-    service: &str,
-    user: bool,
-    target_user: Option<&str>,
-    timeout_secs: u64,
-) -> SystemdObservation {
-    // Special legacy permutations use the same settled read-only systemd
-    // atoms as the ordinary service lane. The conductor never reaches into
-    // a private tool rung.
-    let probe = matches!(action, "unit-present" | "is-active-probe")
-        .then(|| systemctl(action, service, user, target_user, timeout_secs));
-    let unit_present = if action == "unit-present" {
-        probe
-            .as_ref()
-            .map(|result| result.ok && result.stdout.trim() != "not-found")
-    } else {
-        None
-    };
-    SystemdObservation {
-        enabled: state("is-enabled", service, user, target_user, timeout_secs),
-        active: state("is-active", service, user, target_user, timeout_secs),
-        load_state: state("load-state", service, user, target_user, timeout_secs),
-        unit_file_state: state("unit-file-state", service, user, target_user, timeout_secs),
-        needs_reload: state("needs-reload", service, user, target_user, timeout_secs),
-        unit_present,
-        unit_file_exists: action == "disable-stop-remove"
-            && unit_file_path(service).is_some_and(|path| path.exists()),
-        probe,
-    }
-}
-
-fn comparison_fields(
-    observation: &SystemdObservation,
-    desired_state: Value,
-    decision: DiffDecision,
-    movement: Option<&OperationOutcome>,
-    changed: bool,
-) -> Value {
-    json!({
-        "observed_state": observation,
-        "desired_state": desired_state,
-        "diff_decision": match decision { DiffDecision::Empty => "empty", DiffDecision::Different => "different" },
-        "movement": movement.map(|movement| json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command})),
-        "changed": changed,
-    })
-}
-
-fn augment_comparison_receipt(receipt_dir: &Path, name: &str, fields: Value) -> Result<(), String> {
-    let path = receipt_dir.join(format!("{name}.json"));
-    let mut receipt: Value =
-        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    let receipt = receipt
-        .as_object_mut()
-        .ok_or_else(|| "systemd-receipt-object-invalid".to_string())?;
-    let fields = fields
-        .as_object()
-        .ok_or_else(|| "systemd-comparison-fields-invalid".to_string())?;
-    receipt.extend(fields.clone());
-    write_json(&path, &Value::Object(receipt.clone()))
-}
-
-fn desired_state(action: &str, service_material_changed: bool) -> Value {
-    match action {
-        "daemon-reload" => json!({"manager_reload_required": service_material_changed}),
-        "enable-now" => json!({"enabled": "enabled", "active": "active"}),
-        "disable-stop" => json!({"enabled": "disabled", "active": "inactive"}),
-        "disable-stop-remove" => json!({"unit_file": "absent"}),
-        "restart" => json!({"service_material_changed": service_material_changed}),
-        "stop" => {
-            json!({"active": "inactive", "service_material_changed": service_material_changed})
-        }
-        "unit-present" => json!({"observation_only": "unit-present"}),
-        "is-active-probe" => json!({"observation_only": "is-active"}),
-        other => json!({"action": other}),
-    }
-}
-
-fn decide_action(
-    action: &str,
-    observation: &SystemdObservation,
-    service_material_changed: bool,
-    restart_policy: Option<&str>,
-) -> DiffDecision {
-    let unit_absent = observation.load_state.as_deref() == Some("not-found")
-        || observation.unit_file_state.as_deref() == Some("not-found");
-    let different = match action {
-        "unit-present" | "is-active-probe" => false,
-        "daemon-reload" => service_material_changed,
-        "restart" => {
-            decide_restart_for_observation(observation, service_material_changed, restart_policy)
-                .execute
-        }
-        "stop" => service_material_changed && !unit_absent,
-        "enable" => observation.enabled.as_deref() != Some("enabled"),
-        "enable-now" => {
-            observation.enabled.as_deref() != Some("enabled")
-                || observation.active.as_deref() != Some("active")
-        }
-        "disable-stop" => {
-            !unit_absent
-                && (observation.enabled.as_deref() != Some("disabled")
-                    || observation.active.as_deref() == Some("active"))
-        }
-        "disable-stop-remove" => observation.unit_file_exists && !unit_absent,
-        _ => true,
-    };
-    if different {
-        DiffDecision::Different
-    } else {
-        DiffDecision::Empty
-    }
-}
 
 #[allow(clippy::too_many_arguments)]
 fn run_restart(
@@ -599,7 +423,7 @@ fn run_action_with_policy(
     let run = comparison::execute(
         "systemd",
         || {
-            Ok::<_, String>(observe_systemd_state(
+            Ok::<_, String>(change_unit::observe_systemd_state(
                 action,
                 service,
                 user,
@@ -697,7 +521,7 @@ fn run_action_with_policy(
                 })
             };
             let result = result?;
-            let after = observe_systemd_state(action, service, user, target_user, timeout_secs);
+            let after = change_unit::observe_systemd_state(action, service, user, target_user, timeout_secs);
             let restart_decision =
                 decide_restart_for_observation(before, service_material_changed, restart_policy);
             let changed = apply
@@ -738,7 +562,7 @@ fn run_action_with_policy(
         comparison::ComparisonRun::Current { .. } => {
             let probe = observation.probe.clone().map(|result| {
                 if action == "unit-present" {
-                    unit_present_result(result, service)
+                    change_unit::unit_present_result(result, service)
                 } else {
                     result
                 }
@@ -782,7 +606,7 @@ fn run_action_with_policy(
         stdout: outcome.message.clone(),
         stderr: String::new(),
     });
-    write_systemd_receipt(
+    attest_change_unit::write_systemd_receipt(
         receipt_dir,
         name,
         action,
@@ -799,199 +623,21 @@ fn run_action_with_policy(
         restart_decision,
         service_material_changed,
     )?;
-    augment_comparison_receipt(
+    attest_change_unit::augment_comparison_receipt(
         receipt_dir,
         name,
-        comparison_fields(
+        attest_change_unit::comparison_fields(
             &before,
-            desired_state(action, service_material_changed),
+            attest_change_unit::desired_state(action, service_material_changed),
             decision,
             movement.as_ref(),
             outcome.changed,
         ),
     )?;
-    if matches!(
-        action,
-        "enable-now" | "disable-stop" | "disable-stop-remove"
-    ) {
-        crate::atoms::attest::attest(
-            &receipt_dir.join("harmonia-atoms.log"),
-            &crate::atoms::Receipt {
-                atom: "systemd".into(),
-                ok: command.ok,
-                drift: crate::atoms::Drift::Current,
-                message: format!("service={service}; action={action}; code={}", command.code),
-            },
-            &[],
-        )?;
-    }
+    crate::atoms::attest::change_unit::attest_change_unit(receipt_dir, action, service, &command)?;
     Ok(outcome)
 }
 
-fn systemctl(
-    action: &str,
-    service: &str,
-    user: bool,
-    target_user: Option<&str>,
-    timeout_secs: u64,
-) -> CmdResult {
-    let mut args: Vec<String> = systemctl_scope_args(user, target_user);
-    match action {
-        "unit-present" => {
-            args.extend([
-                "show".to_string(),
-                "--property=LoadState".to_string(),
-                "--value".to_string(),
-                service.to_string(),
-            ]);
-        }
-        "load-state" => {
-            args.extend([
-                "show".to_string(),
-                "--property=LoadState".to_string(),
-                "--value".to_string(),
-                service.to_string(),
-            ]);
-        }
-        "unit-file-state" => {
-            args.extend([
-                "show".to_string(),
-                "--property=UnitFileState".to_string(),
-                "--value".to_string(),
-                service.to_string(),
-            ]);
-        }
-        "needs-reload" => {
-            args.extend([
-                "show".to_string(),
-                "--property=NeedDaemonReload".to_string(),
-                "--value".to_string(),
-                service.to_string(),
-            ]);
-        }
-        "is-active-probe" => {
-            args.extend(["is-active".to_string(), service.to_string()]);
-        }
-        other => {
-            return CmdResult {
-                ok: false,
-                code: -1,
-                stdout: String::new(),
-                stderr: format!("systemd-action-unsupported-{other}"),
-            }
-        }
-    }
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    crate::atoms::command::capture_with_timeout("/usr/bin/systemctl", &arg_refs, timeout_secs)
-}
-
-fn unit_present_result(mut result: CmdResult, service: &str) -> CmdResult {
-    if result.ok && result.stdout.trim() == "not-found" {
-        result.ok = false;
-        result.code = 1;
-        result.stderr = format!("systemd-unit-missing-{service}");
-    }
-    result
-}
-
-fn unit_file_path(service: &str) -> Option<PathBuf> {
-    let path = Path::new(service);
-    if service.is_empty()
-        || path.is_absolute()
-        || path.components().count() != 1
-        || path.file_name().is_none()
-    {
-        return None;
-    }
-    Some(PathBuf::from("/etc/systemd/system").join(path))
-}
-
-fn systemctl_scope_args(user: bool, target_user: Option<&str>) -> Vec<String> {
-    if !user {
-        return Vec::new();
-    }
-    let mut args = vec!["--user".to_string()];
-    if let Some(target_user) = target_user.filter(|value| !value.trim().is_empty()) {
-        args.push(format!("--machine={target_user}@.host"));
-    }
-    args
-}
-
-fn state(
-    kind: &str,
-    service: &str,
-    user: bool,
-    target_user: Option<&str>,
-    timeout_secs: u64,
-) -> Option<String> {
-    if service.is_empty() {
-        return None;
-    }
-    let mut args: Vec<String> = systemctl_scope_args(user, target_user);
-    args.extend([kind.to_string(), service.to_string()]);
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let result = match kind {
-        "load-state" | "unit-file-state" | "needs-reload" => {
-            systemctl(kind, service, user, target_user, timeout_secs)
-        }
-        _ => crate::atoms::command::capture_with_timeout(
-            "/usr/bin/systemctl",
-            &arg_refs,
-            timeout_secs,
-        ),
-    };
-    if result.code == -1 {
-        None
-    } else {
-        let value = result.stdout.trim();
-        (!value.is_empty()).then(|| value.to_string())
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn write_systemd_receipt(
-    receipt_dir: &Path,
-    name: &str,
-    action: &str,
-    service: &str,
-    user: bool,
-    apply: bool,
-    result: &CmdResult,
-    enabled_before: Option<&str>,
-    active_before: Option<&str>,
-    enabled_after: Option<&str>,
-    active_after: Option<&str>,
-    changed: bool,
-    target_user: Option<&str>,
-    restart_decision: Option<RestartDecision>,
-    service_material_changed: bool,
-) -> Result<(), String> {
-    write_json(
-        &receipt_dir.join(format!("{}.json", name)),
-        &json!({
-            "schema": "harmonia.systemd.receipt.v1",
-            "name": name,
-            "action": action,
-            "service": service,
-            "scope": if user { "user" } else { "system" },
-            "target_user": target_user,
-            "systemctl_transport": if user && target_user.is_some() { "machine-user" } else if user { "ambient-user" } else { "system" },
-            "apply": apply,
-            "ok": result.ok,
-            "exit_code": result.code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "enabled_before": enabled_before,
-            "active_before": active_before,
-            "enabled_after": enabled_after,
-            "active_after": active_after,
-            "changed": changed,
-            "service_material_changed": service_material_changed,
-            "restart_decision": restart_decision.map(|decision| if decision.execute { "restarted" } else { "skipped" }),
-            "restart_reason": restart_decision.map(|decision| decision.reason),
-        }),
-    )
-}
 
 pub(crate) fn demo(
     root: &Path,

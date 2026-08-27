@@ -1,5 +1,7 @@
 //! Typed, bounded, non-blocking observation atoms.
 #![allow(dead_code)]
+#[path = "change_unit.rs"]
+pub(crate) mod change_unit;
 #[path = "backfill_file.rs"]
 pub(crate) mod backfill_file;
 #[path = "build_crate.rs"]

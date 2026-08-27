@@ -1,7 +1,7 @@
 //! One-owner durable transactional ritual: observe, compare, act, attest, seal, recover.
 use super::transaction::{derive_plan, RunContext, Target, UpdatePlan};
 use crate::atoms::r#do::InvocationKey;
-use crate::atoms::systemd::ServiceStateSnapshot;
+use crate::atoms::ask::change_unit::ServiceStateSnapshot;
 use crate::Profile;
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -809,19 +809,19 @@ pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSna
     plan.services
         .iter()
         .map(|s| {
-            crate::atoms::systemd::snapshot_service_state(&s.name, s.user, s.target_user.as_deref())
+            crate::atoms::ask::change_unit::snapshot_service_state(&s.name, s.user, s.target_user.as_deref())
         })
         .collect()
 }
 pub(crate) fn restore_services(states: &[ServiceStateSnapshot], key: &InvocationKey) -> Result<(), String> {
     for sealed in states {
-        let observed = crate::atoms::systemd::snapshot_service_state(
+        let observed = crate::atoms::ask::change_unit::snapshot_service_state(
             &sealed.name,
             sealed.user,
             sealed.target_user.as_deref(),
         )?;
         if observed.enabled != sealed.enabled || observed.active != sealed.active {
-            crate::atoms::systemd::restore_service_state(key, sealed)?;
+            crate::atoms::r#do::change_unit::restore_service_state(key, sealed)?;
         }
     }
     Ok(())

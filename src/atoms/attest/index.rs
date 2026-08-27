@@ -1,5 +1,7 @@
 //! One-call receipt custody: redact, serialize locally, then forward the same redacted value.
 #![allow(dead_code)]
+#[path = "change_unit.rs"]
+pub(crate) mod change_unit;
 #[path = "build_crate.rs"]
 pub(crate) mod build_crate;
 #[path = "build_venv.rs"]

@@ -117,7 +117,7 @@ pub(crate) struct RunCarrier {
     pub transaction_census: Option<TransactionCensus>,
     pub refreshed_profile_value: Option<crate::Profile>,
     pub sealed_snapshot: Option<Snapshot>,
-    pub sealed_services: Option<Vec<crate::atoms::systemd::ServiceStateSnapshot>>,
+    pub sealed_services: Option<Vec<crate::atoms::ask::change_unit::ServiceStateSnapshot>>,
     pub sealed_projection: Option<ProjectionTransaction>,
     pub deferred_terminal_summary: Option<crate::bands::report_home::DeferredRunSummary>,
 }

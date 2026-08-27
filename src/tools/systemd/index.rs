@@ -1,5 +1,7 @@
-use crate::{command_capture, write_json, CmdResult, OperationOutcome};
-use serde_json::{json, Value};
+use crate::{CmdResult, OperationOutcome};
+use crate::atoms::ask::change_unit::show_properties;
+use crate::atoms::attest::change_unit::write_show_assert_receipt;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -19,25 +21,9 @@ pub(crate) fn show_assert(
     service: &str,
     expected: &BTreeMap<String, Value>,
 ) -> Result<OperationOutcome, String> {
-    let mut argv = vec!["show".to_string(), service.to_string()];
-    for key in expected.keys() {
-        argv.push("-p".to_string());
-        argv.push(key.clone());
-    }
-    argv.push("--no-pager".to_string());
-    let refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
-    let command = command_capture("/usr/bin/systemctl", &refs);
-    let mut observed = BTreeMap::new();
-    for line in command.stdout.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            observed.insert(key.to_string(), value.to_string());
-        }
-    }
+    let (command, observed) = show_properties(service, expected);
     let first_divergent = expected.iter().find_map(|(key, wanted)| {
-        let wanted = wanted
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| wanted.to_string());
+        let wanted = wanted.as_str().map(str::to_owned).unwrap_or_else(|| wanted.to_string());
         match observed.get(key) {
             Some(actual) if show_value_matches(key, &wanted, actual) => None,
             Some(actual) => Some(format!("{key}: expected={wanted} observed={actual}")),
@@ -46,29 +32,12 @@ pub(crate) fn show_assert(
     });
     let ok = command.ok && first_divergent.is_none();
     let message = if !command.ok {
-        format!(
-            "systemctl show failed for {service} (code={:?}): {}",
-            command.code,
-            if command.stderr.is_empty() {
-                &command.stdout
-            } else {
-                &command.stderr
-            }
-        )
+        format!("systemctl show failed for {service} (code={:?}): {}", command.code,
+            if command.stderr.is_empty() { &command.stdout } else { &command.stderr })
     } else {
-        first_divergent
-            .clone()
-            .unwrap_or_else(|| format!("systemd show-assert {service}"))
+        first_divergent.clone().unwrap_or_else(|| format!("systemd show-assert {service}"))
     };
-    write_json(
-        &receipt_dir.join(format!("{name}.json")),
-        &json!({
-            "schema": "harmonia.routine_tool.receipt.v1", "ok": ok, "changed": false,
-            "skipped": false, "observation_only": true, "service": service, "expected": expected, "observed": observed,
-            "first_divergent": first_divergent, "stdout": command.stdout,
-            "stderr": command.stderr, "code": command.code,
-        }),
-    )?;
+    write_show_assert_receipt(receipt_dir, name, service, expected, &observed, &command, first_divergent)?;
     Ok(OperationOutcome {
         ok,
         changed: false,
