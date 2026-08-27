@@ -1,7 +1,7 @@
 //! One single-act tool that brings one file to its declared bytes and metadata.
 #![allow(dead_code)]
 
-use crate::atoms::{self, Receipt};
+use crate::atoms::Receipt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy)]
@@ -14,15 +14,6 @@ pub(crate) struct DeclaredOwnership {
 pub(crate) enum BackupPolicy<'a> {
     None,
     Observed(&'a Path),
-}
-
-pub(crate) struct BackfillFileRequest<'a> {
-    pub path: &'a Path,
-    pub declared_bytes: &'a [u8],
-    pub mode: Option<u32>,
-    pub ownership: DeclaredOwnership,
-    pub backup: BackupPolicy<'a>,
-    pub invocation: Option<&'a atoms::r#do::InvocationKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,8 +128,6 @@ pub(crate) fn validate_target(path: &Path) -> Result<(), String> {
 pub(crate) mod probe {
     use super::*;
     use serde_json::{json, Map, Value};
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt;
 
     pub(crate) fn file(
         path: &Path,
@@ -147,37 +136,26 @@ pub(crate) mod probe {
         ownership: DeclaredOwnership,
         backup_path: Option<&Path>,
     ) -> Result<BackfillFileObservation, String> {
-        let metadata = match std::fs::symlink_metadata(path) {
-            Ok(metadata) => Some(metadata),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(format!(
-                    "backfill-file-metadata-failed {}: {error}",
-                    path.display()
-                ))
-            }
-        };
-        let kind = crate::atoms::ask::path_kind(path)?;
-        let existed = kind.is_some();
+        let typed = crate::atoms::ask::write_file::probe(
+            path,
+            declared_bytes,
+            declared_mode,
+            ownership.uid,
+            ownership.gid,
+            Vec::new(),
+        )?;
+        let preimage = typed.preimage;
+        let existed = preimage.present;
         let backup_exists = backup_path
             .map(crate::atoms::ask::path_kind)
             .transpose()?
             .flatten()
             .is_some();
-        let regular = matches!(kind, Some(crate::atoms::ask::PathKind::RegularFile));
-        let bytes_equal = regular && crate::atoms::ask::file(path)?.bytes == declared_bytes;
-        let mode = if regular {
-            crate::atoms::ask::file_mode(path).ok()
-        } else {
-            None
-        };
-        #[cfg(unix)]
-        let (uid, gid) = metadata
-            .as_ref()
-            .map(|metadata| (Some(metadata.uid()), Some(metadata.gid())))
-            .unwrap_or((None, None));
-        #[cfg(not(unix))]
-        let (uid, gid) = (None, None);
+        let regular = matches!(preimage.kind, Some(crate::atoms::ask::FsKind::File));
+        let bytes_equal = regular && preimage.bytes.as_deref() == Some(declared_bytes);
+        let mode = if regular { preimage.mode } else { None };
+        let uid = if regular { preimage.uid } else { None };
+        let gid = if regular { preimage.gid } else { None };
         Ok(BackfillFileObservation {
             existed,
             backup_exists,

@@ -2,8 +2,17 @@
 #![allow(dead_code)]
 pub(crate) use crate::atoms::ask::backfill_file::{
     resolve_ownership, BackfillFileMovement, BackfillFileObservation, BackfillFileOutcome,
-    BackfillFileRequest, BackupPolicy, DeclaredOwnership, HotfixFileBackfillOutcome,
+    BackupPolicy, DeclaredOwnership, HotfixFileBackfillOutcome,
 };
+
+pub(crate) struct BackfillFileRequest<'a> {
+    pub path: &'a Path,
+    pub declared_bytes: &'a [u8],
+    pub mode: Option<u32>,
+    pub ownership: DeclaredOwnership,
+    pub backup: BackupPolicy<'a>,
+    pub invocation: Option<&'a atoms::r#do::InvocationKey>,
+}
 use crate::atoms::files::{
     reject_ssh_path, resolve_gid, resolve_uid, source_mode, validate_receipt_name, validate_specs,
     FileConvergenceEntry, FileConvergenceOutcome, FileConvergenceRequest,
@@ -105,11 +114,12 @@ pub(crate) fn execute(request: BackfillFileRequest<'_>) -> Result<BackfillFileOu
     } else {
         Drift::File {
             expected_sha256: atoms::file_sha256(request.declared_bytes),
-            actual_sha256: observation
-                .regular
-                .then(|| std::fs::read(request.path).ok())
-                .flatten()
-                .map(|bytes| atoms::file_sha256(&bytes)),
+            actual_sha256: if observation.regular {
+                crate::atoms::ask::file_if_present(request.path)?
+                    .map(|observation| atoms::file_sha256(&observation.bytes))
+            } else {
+                None
+            },
         }
     };
     let receipt = receipt::receipt(request.path, drift, &movement);
@@ -250,7 +260,7 @@ pub(crate) fn converge_managed_directories(
     }
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut changed = false;
-    let mut entries = Vec::new();
+    let mut entries: Vec<serde_json::Value> = Vec::new();
     for directory in directories {
         let path = PathBuf::from(&directory.path);
         if !path.is_absolute()
@@ -300,7 +310,7 @@ pub(crate) fn converge_managed_directories(
                 }
             },
             |authorization, _| {
-            let authorization = &authorization;
+                let authorization = &authorization;
                 if !apply {
                     return Ok(false);
                 }
@@ -381,7 +391,8 @@ pub(crate) fn converge_managed_directories(
             "truthful_changed": truthful_changed,
         }));
     }
-    crate::atoms::attest::write_json_atomic(
+    crate::atoms::attest::write_legacy_json(
+        receipt_dir,
         &receipt_dir.join(format!("{receipt_name}.json")),
         &json!({
             "schema": "harmonia.files.managed_directories.v1",
@@ -401,34 +412,7 @@ pub(crate) fn converge_managed_directories(
     })
 }
 
-#[derive(Debug, Clone)]
-struct ManagedFileObservation {
-    path: PathBuf,
-    target_exists_before: bool,
-    missing_target_debt: bool,
-    mode: u32,
-    content_equal: bool,
-    mode_equal: bool,
-    owner_equal: bool,
-    group_equal: bool,
-}
-
-impl ManagedFileObservation {
-    fn file_changed(&self) -> bool {
-        !self.content_equal || !self.mode_equal || !self.owner_equal || !self.group_equal
-    }
-
-    fn observed_state(&self) -> serde_json::Value {
-        json!({
-            "target_exists": self.target_exists_before,
-            "state": if self.missing_target_debt { "missing-target-birth-debt" } else { "observed" },
-            "content_equal": self.content_equal,
-            "mode_equal": self.mode_equal,
-            "owner_equal": self.owner_equal,
-            "group_equal": self.group_equal,
-        })
-    }
-}
+use crate::atoms::ask::write_file::ManagedFileObservation;
 
 #[derive(Debug, Clone, Copy)]
 enum ManagedFileMovement {
@@ -477,7 +461,7 @@ pub(crate) fn converge_managed_files(
     let mut missing_target_birth_debts = Vec::new();
     let mut written = Vec::new();
     let mut changed = false;
-    let mut entries = Vec::new();
+    let mut entries: Vec<crate::atoms::attest::write_file::ManagedFileEntry> = Vec::new();
     let desired_uid = request.owner.map(resolve_uid).transpose()?;
     let desired_gid = request.group.map(resolve_gid).transpose()?;
     for file in request.files {
@@ -486,25 +470,14 @@ pub(crate) fn converge_managed_files(
             "files",
             || {
                 let path = PathBuf::from(&file.path);
-                let target_exists_before = fs::symlink_metadata(&path).is_ok();
-                let target_regular = fs::symlink_metadata(&path)
-                    .map(|metadata| metadata.file_type().is_file())
-                    .unwrap_or(false);
-                let existing = fs::read(&path).ok();
                 let mode = file.mode.unwrap_or(0o644);
-                let content_equal = target_regular && existing.as_deref() == Some(desired);
-                let mode_equal = target_regular && target_mode(&path)? == Some(mode);
-                let (owner_equal, group_equal) = ownership_equal(&path, desired_uid, desired_gid)?;
-                Ok::<_, String>(ManagedFileObservation {
-                    path,
-                    target_exists_before,
-                    missing_target_debt: !target_exists_before,
+                crate::atoms::ask::write_file::managed(
+                    &path,
+                    desired,
                     mode,
-                    content_equal,
-                    mode_equal,
-                    owner_equal,
-                    group_equal,
-                })
+                    desired_uid,
+                    desired_gid,
+                )
             },
             |observation| {
                 if observation.file_changed() {
@@ -514,15 +487,17 @@ pub(crate) fn converge_managed_files(
                 }
             },
             |authorization, observation| {
-            let authorization = &authorization;
+                let authorization = &authorization;
                 if !apply {
                     return Ok(ManagedFileMovement::ReportOnly);
                 }
                 let key = invocation.ok_or("managed-file-invocation-missing")?;
-                if let Some(parent) = observation.path.parent() {
-                    if !parent.is_dir() {
-                        make_dir(authorization, key, parent)?;
-                    }
+                if !observation.parent_is_dir {
+                    let parent = observation
+                        .path
+                        .parent()
+                        .ok_or("managed-file-parent-missing")?;
+                    make_dir(authorization, key, parent)?;
                 }
                 if !observation.content_equal || !observation.mode_equal {
                     crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(
@@ -546,9 +521,14 @@ pub(crate) fn converge_managed_files(
                         },
                     )?;
                 }
-                let (owner_equal_after, group_equal_after) =
-                    ownership_equal(&observation.path, desired_uid, desired_gid)?;
-                if !owner_equal_after || !group_equal_after {
+                let readback = crate::atoms::ask::write_file::managed(
+                    &observation.path,
+                    desired,
+                    observation.mode,
+                    desired_uid,
+                    desired_gid,
+                )?;
+                if !readback.owner_equal || !readback.group_equal {
                     return Err(format!(
                         "managed-file-owner-readback-failed {}",
                         observation.path.display()
@@ -574,18 +554,15 @@ pub(crate) fn converge_managed_files(
                     request.receipt_name.trim_end_matches(".json"),
                     safe_name
                 ));
-                crate::atoms::attest::write_json_atomic(
+                crate::atoms::attest::write_file::write_managed_error(
+                    receipt_dir,
                     &per_file,
-                    &json!({
-                        "schema": "harmonia.files.managed_file.v1",
-                        "ok": false,
-                        "module": request.module_id,
-                        "path": file.path,
-                        "apply": apply,
-                        "state": "act-error",
-                        "error": error,
-                        "first_missing_signal": "managed-file-act-error",
-                    }),
+                    crate::atoms::attest::write_file::ManagedError {
+                        module: request.module_id.to_string(),
+                        path: file.path.clone(),
+                        apply,
+                        error: error.clone(),
+                    },
                 )?;
                 return Err(error);
             }
@@ -624,26 +601,26 @@ pub(crate) fn converge_managed_files(
         } else if file_changed {
             drift.push(file.path.clone());
         }
-        entries.push(json!({
-            "path": file.path,
-            "target_exists_before": target_exists_before,
-            "state": if missing_target_debt { "missing-target-birth-debt" } else { "observed" },
-            "mode": mode,
-            "content_equal_before": content_equal,
-            "mode_equal_before": mode_equal,
-            "owner": request.owner,
-            "group": request.group,
-            "owner_equal_before": owner_equal,
-            "group_equal_before": group_equal,
-            "changed": truthful_changed,
-            "drift_detected": file_changed && !missing_target_debt,
-            "written": truthful_changed,
-            "observed_state": observation.observed_state(),
-            "desired_state": {"content_sha256": format!("{:x}", Sha256::digest(desired)), "mode": mode, "uid": desired_uid, "gid": desired_gid},
-            "diff_decision": diff_decision,
-            "movement": movement,
-            "truthful_changed": truthful_changed,
-        }));
+        entries.push(crate::atoms::attest::write_file::ManagedFileEntry {
+            path: file.path.clone(),
+            target_exists_before,
+            state: if missing_target_debt { "missing-target-birth-debt" } else { "observed" }.into(),
+            mode,
+            content_equal_before: content_equal,
+            mode_equal_before: mode_equal,
+            owner: request.owner.map(str::to_string),
+            group: request.group.map(str::to_string),
+            owner_equal_before: owner_equal,
+            group_equal_before: group_equal,
+            changed: truthful_changed,
+            drift_detected: file_changed && !missing_target_debt,
+            written: truthful_changed,
+            observed_state: crate::atoms::attest::write_file::observed_state(target_exists_before, missing_target_debt, content_equal, mode_equal, owner_equal, group_equal),
+            desired_state: json!({"content_sha256": format!("{:x}", Sha256::digest(desired)), "mode": mode, "uid": desired_uid, "gid": desired_gid}),
+            diff_decision: diff_decision.into(),
+            movement: movement.into(),
+            truthful_changed,
+        });
         // A successful empty observation is already represented by the final
         // run receipt. Keep per-file receipts for drift, movement, and
         // observation/actuation failures only; do not spray no-op files.
@@ -664,31 +641,53 @@ pub(crate) fn converge_managed_files(
                 request.receipt_name.trim_end_matches(".json"),
                 safe_name
             ));
-            crate::atoms::attest::write_json_atomic(
+            crate::atoms::attest::write_file::write_managed_file(
+                receipt_dir,
                 &per_file,
-                &json!({
-                    "schema": "harmonia.files.managed_file.v1",
-                    "ok": !missing_target_debt,
-                    "module": request.module_id,
-                    "path": file.path,
-                    "mode": mode,
-                    "owner": request.owner,
-                    "group": request.group,
-                    "owner_equal_before": owner_equal,
-                    "group_equal_before": group_equal,
-                    "apply": apply,
-                    "target_exists_before": target_exists_before,
-                    "state": if missing_target_debt { "missing-target-birth-debt" } else if report_only_drift { "drift-reported" } else { "observed" },
-                    "changed": truthful_changed,
-                    "drift_detected": file_changed && !missing_target_debt,
-                    "written": truthful_changed,
-                    "observed_state": observation.observed_state(),
-                    "desired_state": {"content_sha256": format!("{:x}", Sha256::digest(desired)), "mode": mode, "uid": desired_uid, "gid": desired_gid},
-                    "diff_decision": diff_decision,
-                    "movement": movement,
-                    "truthful_changed": truthful_changed,
-                    "first_missing_signal": if missing_target_debt { "missing-target-birth-debt" } else if report_only_drift { request.first_missing_signal } else { "none" },
-                }),
+                crate::atoms::attest::write_file::ManagedFile {
+                    module: request.module_id.to_string(),
+                    path: file.path.clone(),
+                    mode,
+                    owner: request.owner.map(str::to_string),
+                    group: request.group.map(str::to_string),
+                    owner_equal_before: owner_equal,
+                    group_equal_before: group_equal,
+                    apply,
+                    target_exists_before,
+                    state: if missing_target_debt {
+                        "missing-target-birth-debt"
+                    } else if report_only_drift {
+                        "drift-reported"
+                    } else {
+                        "observed"
+                    }
+                    .into(),
+                    changed: truthful_changed,
+                    drift_detected: file_changed && !missing_target_debt,
+                    written: truthful_changed,
+                    desired_content_sha256: format!("{:x}", Sha256::digest(desired)),
+                    desired_uid,
+                    desired_gid,
+                    diff_decision: diff_decision.into(),
+                    movement: movement.into(),
+                    truthful_changed,
+                    first_missing_signal: if missing_target_debt {
+                        "missing-target-birth-debt"
+                    } else if report_only_drift {
+                        request.first_missing_signal
+                    } else {
+                        "none"
+                    }
+                    .into(),
+                },
+                crate::atoms::attest::write_file::observed_state(
+                    target_exists_before,
+                    missing_target_debt,
+                    content_equal,
+                    mode_equal,
+                    owner_equal,
+                    group_equal,
+                ),
             )?;
         }
     }
@@ -698,22 +697,29 @@ pub(crate) fn converge_managed_files(
     } else {
         format!("{}.json", request.receipt_name)
     });
-    crate::atoms::attest::write_json_atomic(
+    let aggregate_signal = if !missing_target_birth_debts.is_empty() {
+        "missing-target-birth-debt"
+    } else if !drift.is_empty() {
+        request.first_missing_signal
+    } else {
+        "none"
+    };
+    crate::atoms::attest::write_file::write_managed_files(
+        receipt_dir,
         &receipt,
-        &json!({
-            "schema": request.schema,
-            "ok": ok,
-            "module": request.module_id,
-            "drift": drift,
-            "missing_target_birth_debts": missing_target_birth_debts,
-            "written": written,
-            "owner": request.owner,
-            "group": request.group,
-            "apply": apply,
-            "changed": changed,
-            "entries": entries,
-            "first_missing_signal": if !missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if !drift.is_empty() { request.first_missing_signal } else { "none" },
-        }),
+        crate::atoms::attest::write_file::ManagedFiles {
+            schema: request.schema.to_string(),
+            module: request.module_id.to_string(),
+            drift,
+            missing_target_birth_debts,
+            written,
+            owner: request.owner.map(str::to_string),
+            group: request.group.map(str::to_string),
+            apply,
+            changed,
+            entries,
+            first_missing_signal: aggregate_signal.into(),
+        },
     )?;
     Ok(crate::OperationOutcome {
         ok,
@@ -785,7 +791,7 @@ pub(crate) fn ensure_files_present_with_invocation(
                 }
             },
             |authorization, _| {
-            let authorization = &authorization;
+                let authorization = &authorization;
                 if !apply {
                     return Ok(false);
                 }
@@ -871,7 +877,8 @@ pub(crate) fn ensure_files_present_with_invocation(
     } else {
         format!("{}.json", request.receipt_name)
     };
-    crate::atoms::attest::write_json_atomic(
+    crate::atoms::attest::write_legacy_json(
+        receipt_dir,
         &receipt_dir.join(receipt_name),
         &json!({
             "schema": "harmonia.files.ensure_present.v1", "ok": true, "apply": apply,

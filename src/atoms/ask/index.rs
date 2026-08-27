@@ -10,10 +10,26 @@ pub(crate) mod backfill_file;
 pub(crate) mod build_crate;
 #[path = "build_venv.rs"]
 pub(crate) mod build_venv;
+#[path = "change_mode.rs"]
+pub(crate) mod change_mode;
+#[path = "change_owner.rs"]
+pub(crate) mod change_owner;
 #[path = "check_health.rs"]
 pub(crate) mod check_health;
+#[path = "copy_file.rs"]
+pub(crate) mod copy_file;
 #[path = "install_package.rs"]
 pub(crate) mod install_package;
+#[path = "make_dir.rs"]
+pub(crate) mod make_dir;
+#[path = "make_link.rs"]
+pub(crate) mod make_link;
+#[path = "remove_dir.rs"]
+pub(crate) mod remove_dir;
+#[path = "remove_file.rs"]
+pub(crate) mod remove_file;
+#[path = "rename.rs"]
+pub(crate) mod rename;
 #[path = "build_aur_pinned.rs"]
 pub(crate) mod build_aur_pinned;
 #[path = "install_aur.rs"]
@@ -26,6 +42,8 @@ pub(crate) mod run_command;
 pub(crate) mod replace_process;
 #[path = "set_clock.rs"]
 pub(crate) mod set_clock;
+#[path = "write_file.rs"]
+pub(crate) mod write_file;
 use super::{ask_file, CommandObservation, FileObservation, HttpObservation, UnitObservation};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -285,4 +303,157 @@ pub(crate) fn systemd_state_query(
         Duration::from_secs(timeout_secs),
     );
     result
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FsKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FsIdentity {
+    pub device: u64,
+    pub inode: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XattrObservation {
+    pub name: Vec<u8>,
+    pub value: Vec<u8>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FsPreimage {
+    pub path: std::path::PathBuf,
+    pub present: bool,
+    pub kind: Option<FsKind>,
+    pub bytes: Option<Vec<u8>>,
+    pub link_target: Option<std::path::PathBuf>,
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub identity: Option<FsIdentity>,
+    pub xattrs: Vec<XattrObservation>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParentIdentity {
+    pub path: std::path::PathBuf,
+    pub identity: Option<FsIdentity>,
+}
+
+#[cfg(unix)]
+fn observed_xattrs(path: &Path) -> Result<Vec<XattrObservation>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| "ask-path-nul")?;
+    let n = unsafe { libc::llistxattr(c.as_ptr(), std::ptr::null_mut(), 0) };
+    if n <= 0 {
+        return Ok(vec![]);
+    };
+    let mut b = vec![0u8; n as usize];
+    let n = unsafe { libc::llistxattr(c.as_ptr(), b.as_mut_ptr() as *mut _, b.len()) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    };
+    let mut out = Vec::new();
+    for name in b[..n as usize].split(|x| *x == 0).filter(|x| !x.is_empty()) {
+        let nc = std::ffi::CString::new(name).map_err(|_| "ask-xattr-nul")?;
+        let z = unsafe { libc::lgetxattr(c.as_ptr(), nc.as_ptr(), std::ptr::null_mut(), 0) };
+        if z < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        };
+        let mut v = vec![0u8; z as usize];
+        if z > 0
+            && unsafe {
+                libc::lgetxattr(c.as_ptr(), nc.as_ptr(), v.as_mut_ptr() as *mut _, v.len())
+            } < 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        };
+        out.push(XattrObservation {
+            name: name.to_vec(),
+            value: v,
+        })
+    }
+    Ok(out)
+}
+#[cfg(not(unix))]
+fn observed_xattrs(_: &Path) -> Result<Vec<XattrObservation>, String> {
+    Ok(vec![])
+}
+
+pub(crate) fn fs_preimage(path: &Path) -> Result<FsPreimage, String> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    let m = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FsPreimage {
+                path: path.to_path_buf(),
+                present: false,
+                kind: None,
+                bytes: None,
+                link_target: None,
+                mode: None,
+                uid: None,
+                gid: None,
+                identity: None,
+                xattrs: vec![],
+            })
+        }
+        Err(e) => return Err(format!("ask-stat {}: {e}", path.display())),
+    };
+    let ft = m.file_type();
+    #[cfg(unix)]
+    let (mode, uid, gid, identity) = (
+        Some(m.mode() & 0o7777),
+        Some(m.uid()),
+        Some(m.gid()),
+        Some(FsIdentity {
+            device: m.dev(),
+            inode: m.ino(),
+        }),
+    );
+    #[cfg(not(unix))]
+    let (mode, uid, gid, identity) = (None, None, None, None);
+    let kind = if ft.is_file() {
+        FsKind::File
+    } else if ft.is_dir() {
+        FsKind::Directory
+    } else if ft.is_symlink() {
+        FsKind::Symlink
+    } else {
+        FsKind::Other
+    };
+    let bytes = matches!(kind, FsKind::File)
+        .then(|| std::fs::read(path))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let link_target = matches!(kind, FsKind::Symlink)
+        .then(|| std::fs::read_link(path))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    Ok(FsPreimage {
+        path: path.to_path_buf(),
+        present: true,
+        kind: Some(kind),
+        bytes,
+        link_target,
+        mode,
+        uid,
+        gid,
+        identity,
+        xattrs: observed_xattrs(path)?,
+    })
+}
+pub(crate) fn parent_identity(path: &Path) -> Result<ParentIdentity, String> {
+    let p = path.parent().ok_or("ask-parent-missing")?;
+    Ok(ParentIdentity {
+        path: p.to_path_buf(),
+        identity: fs_preimage(p)?.identity,
+    })
+}
+pub(crate) fn same_filesystem(a: &FsPreimage, b: &FsPreimage) -> bool {
+    a.identity
+        .zip(b.identity)
+        .is_some_and(|(x, y)| x.device == y.device)
 }

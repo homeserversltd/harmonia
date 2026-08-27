@@ -8,6 +8,8 @@ pub(crate) mod build_crate;
 pub(crate) mod build_venv;
 #[path = "check_health.rs"]
 pub(crate) mod check_health;
+#[path = "copy_file.rs"]
+pub(crate) mod copy_file;
 #[path = "convergence-receipts.rs"]
 pub(crate) mod convergence_receipts;
 #[path = "pull_repo.rs"]
@@ -16,6 +18,16 @@ pub(crate) mod pull_repo;
 pub(crate) mod hyalos;
 #[path = "install_package.rs"]
 pub(crate) mod install_package;
+#[path = "make_dir.rs"]
+pub(crate) mod make_dir;
+#[path = "make_link.rs"]
+pub(crate) mod make_link;
+#[path = "remove_dir.rs"]
+pub(crate) mod remove_dir;
+#[path = "remove_file.rs"]
+pub(crate) mod remove_file;
+#[path = "rename.rs"]
+pub(crate) mod rename;
 #[path = "build_aur_pinned.rs"]
 pub(crate) mod build_aur_pinned;
 #[path = "install_aur.rs"]
@@ -28,6 +40,8 @@ pub(crate) mod run_command;
 pub(crate) mod replace_process;
 #[path = "set_clock.rs"]
 pub(crate) mod set_clock;
+#[path = "write_file.rs"]
+pub(crate) mod write_file;
 use super::Receipt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
