@@ -1307,7 +1307,7 @@ pub(crate) fn run_engine_preflight(
             // generic remote observer intentionally handles Git transports only;
             // use the same declared-candidate probe for the local lane instead
             // of manufacturing an unavailable result.
-            let probe = tools::git_artifact::probe_declared_remote_head(&source_plan);
+            let probe = crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
             tools::git_artifact::SourceOutcome {
                 ok: probe.remote_sha.is_some(),
                 changed: false,
