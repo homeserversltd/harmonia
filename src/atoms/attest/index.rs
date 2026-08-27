@@ -8,6 +8,8 @@ pub(crate) mod build_venv;
 pub(crate) mod check_health;
 #[path = "convergence-receipts.rs"]
 pub(crate) mod convergence_receipts;
+#[path = "pull_repo.rs"]
+pub(crate) mod pull_repo;
 #[path = "hyalos.rs"]
 pub(crate) mod hyalos;
 #[path = "install_package.rs"]

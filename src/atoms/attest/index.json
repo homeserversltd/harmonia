@@ -1,1 +1,1 @@
-{"schema":"harmonia.atom.attest.v1","redaction":"recursive-clone-before-serialization","receipt":"same-redacted-receipt-to-log-and-forward","declared_secret_substrings":"caller-injectable-before-serialization","keys":["redacted-receipt"]}
+{"schema":"harmonia.atom.attest.v1","redaction":"recursive-clone-before-serialization","receipt":"same-redacted-receipt-to-log-and-forward","declared_secret_substrings":"caller-injectable-before-serialization","typed_writers":["SourceReceipt","SourceAttemptReceipt","CommandReceipt"],"keys":["redacted-receipt","pull-repo"]}

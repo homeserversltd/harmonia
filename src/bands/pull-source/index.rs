@@ -1,9 +1,9 @@
-use crate::OperationOutcome;
 use super::Band;
-use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::tools;
-use crate::ModuleExecution;
+use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::CmdResult;
+use crate::ModuleExecution;
+use crate::OperationOutcome;
 use crate::{
     LoadedModule, PackageAuthority, Profile, ProfileProjection, SoftwareApplyAuthorization,
     UpdateMode,
@@ -501,39 +501,12 @@ pub(crate) fn execute_git_artifact_step(
             command: Some(command.clone()),
         },
     )?;
-    let receipt_path = module_dir.join(format!("{}.json", step.step_id));
-    let mut receipt: Value = serde_json::from_slice(
-        &fs::read(&receipt_path)
-            .map_err(|error| format!("git-artifact-receipt-read-failed: {error}"))?,
-    )
-    .map_err(|error| format!("git-artifact-receipt-parse-failed: {error}"))?;
-    let object = receipt
-        .as_object_mut()
-        .ok_or_else(|| "git-artifact-receipt-not-object".to_string())?;
-    object.insert(
-        "attempts".into(),
-        json!(outcome
-            .receipt
-            .attempts
-            .iter()
-            .map(|attempt| json!({
-                "index": attempt.index,
-                "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
-                "locator": attempt.locator,
-                "credential_selector": attempt.credential_selector,
-                "disposition": attempt.disposition,
-                "resolved_commit": attempt.resolved_commit,
-                "external_freshness": attempt.external_freshness,
-                "detail": attempt.detail,
-            }))
-            .collect::<Vec<_>>()),
-    );
-    object.insert("served_index".into(), json!(outcome.receipt.served_index));
-    if let Some(commit) = &outcome.receipt.resolved_commit {
-        object.insert("resolved_commit".into(), json!(commit));
-    }
-    object.insert("promotion".into(), json!(outcome.receipt.promotion));
-    crate::write_json(&receipt_path, &receipt)?;
+    crate::atoms::attest::pull_repo::write_receipts(
+        module_dir,
+        &step.step_id,
+        &outcome.receipt,
+        &command,
+    )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
@@ -563,10 +536,16 @@ pub(crate) fn routine_source_plan(
                 manifest.id, step.step_id
             )
         })?;
-    let config = crate::bands::renew_self::load_engine_plane_config(&crate::bands::renew_self::engine_config_path())?;
+    let config = crate::bands::renew_self::load_engine_plane_config(
+        &crate::bands::renew_self::engine_config_path(),
+    )?;
     let certificate = crate::device_profile_certificate_path();
-    let certificate_resolution =
-        crate::bands::pull_source::resolve_source(&certificate, component, &manifest.id, &step.step_id);
+    let certificate_resolution = crate::bands::pull_source::resolve_source(
+        &certificate,
+        component,
+        &manifest.id,
+        &step.step_id,
+    );
     let resolution = match certificate_resolution.resolution {
         Some(resolution) => resolution,
         None if certificate_resolution
@@ -623,7 +602,7 @@ pub(crate) fn execute_source(
     if let Some(outcome) = crate::pull_repo::observe_source(plan) {
         return outcome;
     }
-    let local = tools::git_artifact::source_head(&plan.destination, &plan.bearer);
+    let local = crate::atoms::ask::pull_repo::source_head(&plan.destination, &plan.bearer);
     let resolved_commit = local
         .ok
         .then(|| local.stdout.trim().to_string())
@@ -959,7 +938,6 @@ fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdRe
     }
 }
 
-
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -968,9 +946,19 @@ pub(crate) fn execute_routine_child(
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
-    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+) -> Result<
+    (
+        crate::OperationOutcome,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let contract =
+        crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = requested_permutation
+        .and_then(|name| contract.permutation(name))
+        .or_else(|| contract.permutations.first())
+        .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {

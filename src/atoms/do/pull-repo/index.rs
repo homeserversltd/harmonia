@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::atoms::git_artifact::{
-    credential_scope, git_command_context, is_lower_hex_sha, parse_declared_remote_head,
+    credential_scope, git_command_context,
 };
 
 fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandReceipt {
@@ -36,28 +36,6 @@ fn capture_git(request: &Request, args: &[&str], cwd: Option<&str>) -> CommandRe
     )
 }
 
-fn destination_type(path: &Path) -> &'static str {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return "absent",
-        Err(_) => return "other",
-    };
-    if metadata.file_type().is_symlink() {
-        return "symlink";
-    }
-    if metadata.file_type().is_file() {
-        return "regular-file";
-    }
-    if metadata.is_dir() {
-        return if path.join(".git").exists() {
-            "git-checkout"
-        } else {
-            "non-git-directory"
-        };
-    }
-    "other"
-}
-
 pub(crate) fn preserved_non_git_path(path: &Path) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -74,8 +52,9 @@ pub(crate) fn apply(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
     _invocation: &crate::atoms::r#do::InvocationKey,
     request: &Request,
+    observation: &crate::atoms::ask::pull_repo::PullRepoObservation,
 ) -> Outcome {
-    let sync = sync_repo(request);
+    let sync = sync_repo(request, observation);
     Outcome {
         ok: sync.command.ok,
         changed: sync.changed,
@@ -112,30 +91,6 @@ fn ownership_prepared_result(
     SyncResult { command, changed }
 }
 
-fn dirty_paths(status: &str) -> Vec<String> {
-    status
-        .lines()
-        .filter_map(|line| {
-            let start = if line.as_bytes().get(2) == Some(&b' ') {
-                3
-            } else if line.as_bytes().get(1) == Some(&b' ') {
-                2
-            } else {
-                return None;
-            };
-            let path = line.get(start..)?.trim();
-            if path.is_empty() {
-                return None;
-            }
-            if let Some((old, new)) = path.split_once(" -> ") {
-                Some(format!("{old}; {new}"))
-            } else {
-                Some(path.to_string())
-            }
-        })
-        .collect()
-}
-
 fn clobber_dirty_destination(
     request: &Request,
     destination: &Path,
@@ -159,9 +114,9 @@ fn clobber_dirty_destination(
     ))
 }
 
-fn sync_repo(request: &Request) -> SyncResult {
+fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::PullRepoObservation) -> SyncResult {
     let mut initial_transcript = vec![
-        format!("destination_type={}", destination_type(&request.path)),
+        format!("destination_type={}", observation.destination_kind),
         format!("requested_ref={}", request.branch),
         format!("credential_scope={}", credential_scope(request)),
     ];
@@ -180,10 +135,9 @@ fn sync_repo(request: &Request) -> SyncResult {
         }
     };
     let ownership_changed = preparation.changed;
-    let mut repository_config_changed = false;
     initial_transcript.extend(preparation.transcript);
     let mut transcript = initial_transcript;
-    if !request.path.join(".git").exists() {
+    if !observation.destination_exists {
         let Some(repo) = request.repo.as_deref() else {
             return ownership_prepared_result(
                 CommandReceipt {
@@ -280,14 +234,7 @@ fn sync_repo(request: &Request) -> SyncResult {
                 changed: ownership_changed,
             };
         }
-        let resulting_head = capture_git(
-            request,
-            &["rev-parse", "HEAD^{commit}"],
-            request.path.to_str(),
-        );
-        if resulting_head.ok {
-            transcript.push(format!("resulting_head={}", resulting_head.stdout.trim()));
-        }
+        transcript.push("resulting_head=post-act-ask-attested".into());
         return SyncResult {
             command: CommandReceipt {
                 ok: true,
@@ -300,65 +247,22 @@ fn sync_repo(request: &Request) -> SyncResult {
     }
 
     let cwd = request.path.to_str();
-    let before = crate::atoms::ask::git_observe(request, &["rev-parse", "HEAD"], cwd);
-    if !before.ok {
-        return ownership_prepared_result(before, ownership_changed, &transcript);
-    }
-    let dirty = crate::atoms::ask::git_observe(
-        request,
-        &["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).worktrees"],
-        cwd,
-    );
-    if !dirty.ok {
-        return ownership_prepared_result(dirty, ownership_changed, &transcript);
-    }
-    let prior_branch =
-        crate::atoms::ask::git_observe(request, &["symbolic-ref", "--short", "HEAD"], cwd);
+    let before = observation.local_head.as_deref().map(|head| CommandReceipt { ok: true, code: 0, stdout: head.into(), stderr: String::new() }).unwrap_or_else(|| observation.destination_status.clone());
+    if !before.ok { return ownership_prepared_result(before, ownership_changed, &transcript); }
+    let destination_was_dirty = observation.dirty;
+    let dirty_paths = observation.dirty_paths.clone();
     transcript.push(format!("prior_head={}", before.stdout.trim()));
-    transcript.push(format!(
-        "prior_branch={}",
-        if prior_branch.ok {
-            prior_branch.stdout.trim()
-        } else {
-            "detached-or-unavailable"
-        }
-    ));
-    transcript.push(format!(
-        "dirty_state={}",
-        if dirty.stdout.trim().is_empty() { "clean" } else { "dirty" }
-    ));
-    let dirty_paths = dirty_paths(&dirty.stdout);
-    let destination_was_dirty = !dirty_paths.is_empty();
-    let configured = request.repo.as_deref().map(|repo| {
-        let probe = crate::atoms::ask::git_observe(
-            request,
-            &["remote", "get-url", &request.remote],
-            cwd,
-        );
-        transcript.push(format!("prior_remote_configured={}", probe.ok));
-        transcript.push(format!(
-            "prior_remote_matches_declared={}",
-            probe.ok && probe.stdout.trim() == repo
-        ));
-        probe
-    });
-    let local_helpers_probe = crate::atoms::ask::git_observe(
-        request,
-        &["config", "--local", "--get-all", "credential.helper"],
-        cwd,
-    );
-    let local_credential_helpers_present =
-        local_helpers_probe.ok && !local_helpers_probe.stdout.trim().is_empty();
-    transcript.push(format!(
-        "local_credential_helpers_present={local_credential_helpers_present}"
-    ));
+    transcript.push(format!("prior_branch={}", observation.prior_branch.as_deref().unwrap_or("detached-or-unavailable")));
+    transcript.push(format!("dirty_state={}", if destination_was_dirty { "dirty" } else { "clean" }));
+    transcript.push(format!("prior_remote_configured={}", observation.remote_configured));
+    transcript.push(format!("prior_remote_matches_declared={}", observation.remote_url_matches));
+    transcript.push(format!("local_credential_helpers_present={}", observation.local_credential_helpers_present));
 
     if let Some(repo) = request.repo.as_deref() {
-        let configured = configured.expect("remote probe exists when repo is declared");
-        if !configured.ok {
-            return ownership_prepared_result(configured, ownership_changed, &transcript);
+        if !observation.remote_configured {
+            return ownership_prepared_result(observation.destination_status.clone(), ownership_changed, &transcript);
         }
-        if configured.stdout.trim() != repo {
+        if !observation.remote_url_matches {
             let reconcile =
                 capture_git(request, &["remote", "set-url", &request.remote, repo], cwd);
             transcript.push(format!(
@@ -379,7 +283,7 @@ fn sync_repo(request: &Request) -> SyncResult {
         }
     }
 
-    if local_credential_helpers_present {
+    if observation.local_credential_helpers_present {
         let clear = capture_git(
             request,
             &["config", "--local", "--unset-all", "credential.helper"],
@@ -392,9 +296,8 @@ fn sync_repo(request: &Request) -> SyncResult {
         if !clear.ok {
             return ownership_prepared_result(clear, ownership_changed, &transcript);
         }
-        repository_config_changed = true;
-    } else if !local_helpers_probe.ok && local_helpers_probe.code != 1 {
-        return ownership_prepared_result(local_helpers_probe, ownership_changed, &transcript);
+    } else if !observation.credential_helpers_status_ok {
+        return ownership_prepared_result(observation.destination_status.clone(), ownership_changed, &transcript);
     }
 
     let remote_tracking_refspec = format!(
@@ -418,23 +321,12 @@ fn sync_repo(request: &Request) -> SyncResult {
             changed: ownership_changed,
         };
     }
-    let intended = crate::atoms::ask::git_observe(
-        request,
-        &["rev-parse", &format!("{}/{}", request.remote, request.branch)],
-        cwd,
-    );
-    if intended.ok {
-        transcript.push(format!("intended_resulting_head={}", intended.stdout.trim()));
-    }
-    if destination_was_dirty && !intended.ok {
-        return ownership_prepared_result(
-            intended,
-            ownership_changed || destination_was_dirty,
-            &transcript,
-        );
+    let intended_commit = observation.remote_head.as_deref().unwrap_or("");
+    transcript.push(format!("intended_resulting_head={intended_commit}"));
+    if destination_was_dirty && intended_commit.is_empty() {
+        return ownership_prepared_result(observation.destination_status.clone(), ownership_changed, &transcript);
     }
     if destination_was_dirty {
-        let intended_commit = intended.stdout.trim();
         match clobber_dirty_destination(request, &request.path, intended_commit, &dirty_paths) {
             Ok(detail) => transcript.push(detail),
             Err(stderr) => {
@@ -483,17 +375,8 @@ fn sync_repo(request: &Request) -> SyncResult {
             changed: ownership_changed,
         };
     }
-    let after = crate::atoms::ask::git_observe(request, &["rev-parse", "HEAD"], cwd);
-    if !after.ok {
-        return ownership_prepared_result(after, ownership_changed, &transcript);
-    }
-    let changed = ownership_changed
-        || destination_was_dirty
-        || repository_config_changed
-        || before.stdout.trim() != after.stdout.trim();
     transcript.push(format!("before={}", before.stdout.trim()));
-    transcript.push(format!("after={}", after.stdout.trim()));
-    transcript.push(format!("resulting_head={}", after.stdout.trim()));
+    transcript.push("resulting_head=post-act-ask-attested".into());
     SyncResult {
         command: CommandReceipt {
             ok: true,
@@ -501,7 +384,7 @@ fn sync_repo(request: &Request) -> SyncResult {
             stdout: transcript.join("\n"),
             stderr: String::new(),
         },
-        changed,
+        changed: true,
     }
 }
 
@@ -608,6 +491,7 @@ pub(crate) fn acquire_source(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
     _invocation: &crate::atoms::r#do::InvocationKey,
     plan: &SourcePlan,
+    observations: &[crate::atoms::ask::pull_repo::SourceObservation],
 ) -> SourceOutcome {
     let mut attempts = Vec::new();
     let mut precondition = Vec::new();
@@ -644,7 +528,8 @@ pub(crate) fn acquire_source(
                 }
             }
         }
-        let candidate_was_dirty;
+        let candidate_was_dirty = candidate.kind == SourceCandidateKind::Git
+            && observations.get(index - 1).is_some_and(|observation| observation.dirty);
         match candidate.kind {
             SourceCandidateKind::LocalCheckout => {
                 let source = PathBuf::from(&candidate.locator);
@@ -660,11 +545,8 @@ pub(crate) fn acquire_source(
                     continue;
                 }
                 let request = scoped_request(plan, candidate, source.clone());
-                let head = crate::atoms::ask::git_observe(
-                    &request,
-                    &["rev-parse", "HEAD^{commit}"],
-                    Some(&candidate.locator),
-                );
+                let observation = observations.get(index - 1).cloned().unwrap_or_default();
+                let head = observation.local_head.clone().map(|stdout| CommandReceipt { ok: true, code: 0, stdout, stderr: String::new() }).unwrap_or_else(|| CommandReceipt { ok: false, code: -1, stdout: String::new(), stderr: "local-checkout-head-unavailable".into() });
                 if !head.ok {
                     attempts.push(source_attempt(
                         index,
@@ -708,8 +590,8 @@ pub(crate) fn acquire_source(
                     precondition_changed |= preparation.changed;
                     precondition.extend(preparation.transcript);
                 }
-                match project_local_checkout(&request, &source, &plan.destination, &commit) {
-                    Ok((changed, clobber_detail)) => {
+                match project_local_checkout(&request, &source, &plan.destination, &commit, &observation) {
+                    Ok((changed, clobber_detail, stage)) => {
                         attempts.push(source_attempt(
                             index,
                             candidate,
@@ -720,10 +602,13 @@ pub(crate) fn acquire_source(
                             },
                             Some(commit.clone()),
                             true,
-                            match (changed, clobber_detail.as_deref()) {
-                                (_, Some(detail)) => detail.to_string(),
-                                (true, None) => source_acquisition_detail(&precondition, "head-observed; freshness-is-external; destination-projected"),
-                                (false, None) => source_acquisition_detail(&precondition, "head-observed; freshness-is-external; destination-already-projects-observed-head"),
+                            {
+                                let detail = match (changed, clobber_detail.as_deref()) {
+                                    (_, Some(detail)) => detail.to_string(),
+                                    (true, None) => "head-observed; freshness-is-external; destination-projected".into(),
+                                    (false, None) => "head-observed; freshness-is-external; destination-already-projects-observed-head".into(),
+                                };
+                                format!("{}\nstaged-source-index={index}\nstaged-source-path={}", source_acquisition_detail(&precondition, &detail), stage.display())
                             },
                         ));
                         return SourceOutcome {
@@ -733,10 +618,13 @@ pub(crate) fn acquire_source(
                                 attempts,
                                 served_index: Some(index),
                                 resolved_commit: Some(commit),
-                                promotion: if changed {
-                                    clobber_detail.clone().unwrap_or_else(|| "local-checkout-observed; external freshness authority; destination-projected".into())
-                                } else {
-                                    clobber_detail.clone().unwrap_or_else(|| "local-checkout-observed; external freshness authority; destination-already-projects-observed-head".into())
+                                promotion: {
+                                    let detail = if changed {
+                                        clobber_detail.clone().unwrap_or_else(|| "local-checkout-observed; external freshness authority; destination-projected".into())
+                                    } else {
+                                        clobber_detail.clone().unwrap_or_else(|| "local-checkout-observed; external freshness authority; destination-already-projects-observed-head".into())
+                                    };
+                                    format!("{detail}\nstaged-source-index={index}\nstaged-source-path={}", stage.display())
                                 },
                             },
                         };
@@ -755,131 +643,27 @@ pub(crate) fn acquire_source(
                 }
             }
             SourceCandidateKind::Git => {
-                // Observe both authoritative identities before creating a parent,
-                // staging tree, or Git checkout. A failed/ambiguous observation is
-                // deliberately a nonempty comparison so the established acquisition
-                // path retains its identity and transport checks.
-                let destination_head =
-                    crate::atoms::ask::source_head(&plan.destination, &plan.bearer);
-                let destination_commit = destination_head
-                    .ok
-                    .then(|| destination_head.stdout.trim().to_string())
-                    .filter(|sha| is_lower_hex_sha(sha));
-                let probe_request = scoped_request(plan, candidate, plan.destination.clone());
-                let reference = format!("refs/heads/{}", plan.reference);
-                let remote_probe = crate::atoms::ask::git_observe(
-                    &probe_request,
-                    &["ls-remote", "--refs", &candidate.locator, &reference],
-                    None,
-                );
-                let remote_commit = remote_probe
-                    .ok
-                    .then(|| parse_declared_remote_head(&remote_probe.stdout, &reference))
-                    .flatten();
-                let expected_matches = plan
-                    .expected_commit
-                    .as_deref()
-                    .map_or(true, |expected| remote_commit.as_deref() == Some(expected));
-                let destination_status = crate::atoms::ask::git_observe(
-                    &probe_request,
-                    &["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).worktrees"],
-                    plan.destination.to_str(),
-                );
-                let destination_is_git_checkout = plan.destination.join(".git").exists();
-                if destination_is_git_checkout && !destination_status.ok {
-                    attempts.push(source_attempt(
-                        index,
-                        candidate,
-                        "hard-red-status",
-                        remote_commit.clone(),
-                        false,
-                        format!("destination-status-failed: {}", destination_status.stderr),
-                    ));
+                // All Git-state reads are supplied by the typed Ask observation.
+                let observation = observations.get(index - 1).cloned().unwrap_or_default();
+                if candidate_was_dirty && !observation.expected_matches {
+                    attempts.push(source_attempt(index, candidate, "hard-red-identity", observation.remote_head.clone(), false, "expected-commit-mismatch".into()));
                     return source_hard_red(attempts, precondition_changed);
                 }
-                let dirty_paths = if destination_status.ok {
-                    dirty_paths(&destination_status.stdout)
-                } else {
-                    Vec::new()
-                };
-                candidate_was_dirty = destination_is_git_checkout && !dirty_paths.is_empty();
-                if candidate_was_dirty && !expected_matches {
-                    attempts.push(source_attempt(
-                        index,
-                        candidate,
-                        "hard-red-identity",
-                        remote_commit.clone(),
-                        false,
-                        "expected-commit-mismatch".into(),
-                    ));
-                    return source_hard_red(attempts, precondition_changed);
-                }
-                let already_current = !candidate_was_dirty
-                    && destination_commit.is_some()
-                    && destination_commit == remote_commit
-                    && expected_matches;
                 if candidate_was_dirty {
-                    let Some(commit) = remote_commit.as_deref() else {
-                        // Do not destroy a dirty destination until the candidate
-                        // identity has been resolved authoritatively.
-                        continue;
-                    };
-                    let fetch = capture_git(
-                        &probe_request,
-                        &["fetch", "--no-tags", &candidate.locator, &reference],
-                        plan.destination.to_str(),
-                    );
+                    let Some(commit) = observation.remote_head.as_deref() else { continue };
+                    let request = scoped_request(plan, candidate, plan.destination.clone());
+                    let fetch = capture_git(&request, &["fetch", "--no-tags", &candidate.locator, &format!("refs/heads/{}", plan.reference)], plan.destination.to_str());
                     if !fetch.ok {
-                        attempts.push(source_attempt(
-                            index,
-                            candidate,
-                            "unavailable",
-                            Some(commit.to_string()),
-                            false,
-                            format!("destination-fetch-before-clobber-failed: {}", fetch.stderr),
-                        ));
+                        attempts.push(source_attempt(index, candidate, "unavailable", Some(commit.to_string()), false, format!("destination-fetch-before-clobber-failed: {}", fetch.stderr)));
                         continue;
                     }
-                    match clobber_dirty_destination(
-                        &probe_request,
-                        &plan.destination,
-                        commit,
-                        &dirty_paths,
-                    ) {
+                    match clobber_dirty_destination(&request, &plan.destination, commit, &observation.dirty_paths) {
                         Ok(detail) => precondition.push(detail),
-                        Err(detail) => {
-                            attempts.push(source_attempt(
-                                index,
-                                candidate,
-                                "hard-red-precondition",
-                                Some(commit.to_string()),
-                                false,
-                                detail,
-                            ));
-                            return source_hard_red(attempts, precondition_changed);
-                        }
+                        Err(detail) => { attempts.push(source_attempt(index, candidate, "hard-red-precondition", Some(commit.to_string()), false, detail)); return source_hard_red(attempts, precondition_changed); }
                     }
                 }
-                if already_current {
-                    let commit = remote_commit.expect("empty comparison requires remote commit");
-                    attempts.push(source_attempt(
-                        index,
-                        candidate,
-                        "already-current",
-                        Some(commit.clone()),
-                        false,
-                        "destination-already-projects-observed-head".into(),
-                    ));
-                    return SourceOutcome {
-                        ok: true,
-                        changed: false,
-                        receipt: SourceReceipt {
-                            attempts,
-                            served_index: Some(index),
-                            resolved_commit: Some(commit),
-                            promotion: "already-current; destination projects observed remote head; no clone, stage, or promotion".into(),
-                        },
-                    };
+                if observation.remote_head.is_none() {
+                    continue;
                 }
             }
         }
@@ -952,15 +736,7 @@ pub(crate) fn acquire_source(
             &["checkout", "-B", &plan.reference, "FETCH_HEAD"],
             stage.to_str(),
         );
-        let head = if checkout.ok {
-            crate::atoms::ask::git_observe(
-                &request,
-                &["rev-parse", "HEAD^{commit}"],
-                stage.to_str(),
-            )
-        } else {
-            checkout
-        };
+        let head = checkout;
         if !head.ok {
             attempts.push(source_attempt(
                 index,
@@ -972,48 +748,16 @@ pub(crate) fn acquire_source(
             ));
             return source_hard_red(attempts, precondition_changed);
         }
-        let commit = head.stdout.trim().to_string();
-        if let Some(expected) = plan.expected_commit.as_deref() {
-            if commit != expected {
-                attempts.push(source_attempt(
-                    index,
-                    candidate,
-                    "hard-red-identity",
-                    Some(commit),
-                    false,
-                    source_acquisition_detail(&precondition, "expected-commit-mismatch"),
-                ));
-                return source_hard_red(attempts, precondition_changed);
-            }
-        }
-        match promote_staged_source(&stage, &plan.destination) {
-            Ok(()) => {
-                attempts.push(source_attempt(
-                    index,
-                    candidate,
-                    if candidate_was_dirty {
-                        "clobbered-dirty-destination"
-                    } else {
-                        "served"
-                    },
-                    Some(commit.clone()),
-                    false,
-                    source_acquisition_detail(&precondition, "verified and promoted"),
-                ));
-                return SourceOutcome { ok: true, changed: true, receipt: SourceReceipt { attempts, served_index: Some(index), resolved_commit: Some(commit), promotion: "same-filesystem rename; no blended tree; power-loss may require selecting sibling backup".into() } };
-            }
-            Err(detail) => {
-                attempts.push(source_attempt(
-                    index,
-                    candidate,
-                    "hard-red-promotion",
-                    Some(commit),
-                    false,
-                    source_acquisition_detail(&precondition, &detail),
-                ));
-                return source_hard_red(attempts, precondition_changed);
-            }
-        }
+        attempts.push(source_attempt(
+            index,
+            candidate,
+            "staged",
+            None,
+            false,
+            source_acquisition_detail(&precondition, format!("staged-source-index={index}; staged-source-path={}", stage.display()).as_str()),
+        ));
+        std::mem::forget(_guard);
+        return SourceOutcome { ok: true, changed: true, receipt: SourceReceipt { attempts, served_index: Some(index), resolved_commit: None, promotion: format!("staged-source-index={index}\nstaged-source-path={}", stage.display()) } };
     }
     // Every failed candidate is staged under a guarded sibling and removed before
     // reaching this terminal outcome. The source destination is therefore
@@ -1052,7 +796,8 @@ fn project_local_checkout(
     source: &Path,
     destination: &Path,
     observed_commit: &str,
-) -> Result<(bool, Option<String>), String> {
+    observation: &crate::atoms::ask::pull_repo::SourceObservation,
+) -> Result<(bool, Option<String>, PathBuf), String> {
     let mut clobber_detail: Option<String> = None;
     let destination_state = match fs::symlink_metadata(destination) {
         Ok(metadata) => Some(metadata),
@@ -1077,51 +822,14 @@ fn project_local_checkout(
                 destination.display()
             ));
         }
-        let destination_head = crate::atoms::ask::git_observe(
-            request,
-            &["rev-parse", "HEAD^{commit}"],
-            destination.to_str(),
-        );
-        if !destination_head.ok {
-            return Err(format!(
-                "local-checkout-destination-not-git-refused {}: {}",
-                destination.display(),
-                destination_head.stderr
-            ));
+        if !observation.destination_is_git_checkout {
+            return Err(format!("local-checkout-destination-not-git-refused {}", destination.display()));
         }
-        let dirty = crate::atoms::ask::git_observe(
-            request,
-            &["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).worktrees"],
-            destination.to_str(),
-        );
-        if !dirty.ok {
-            return Err(format!(
-                "local-checkout-destination-status-failed {}: {}",
-                destination.display(),
-                dirty.stderr
-            ));
-        }
-        let dirty_paths = dirty_paths(&dirty.stdout);
+        let dirty_paths = observation.dirty_paths.clone();
         if dirty_paths.is_empty() {
-            let destination_commit = destination_head.stdout.trim();
-            if destination_commit == observed_commit {
-                return Ok((false, None));
-            }
-            let destination_is_ancestor = crate::atoms::ask::git_observe(
-                request,
-                &[
-                    "merge-base",
-                    "--is-ancestor",
-                    destination_commit,
-                    observed_commit,
-                ],
-                source.to_str(),
-            );
-            if !destination_is_ancestor.ok {
-                return Err(format!(
-                    "local-checkout-destination-divergent-refused {}",
-                    destination.display()
-                ));
+            if observation.local_head.as_deref() == Some(observed_commit) { /* still project through a fresh stage */ }
+            if !observation.destination_is_ancestor {
+                return Err(format!("local-checkout-destination-divergent-refused {}", destination.display()));
             }
         } else {
             let fetch = capture_git(
@@ -1177,20 +885,8 @@ fn project_local_checkout(
             clone.stderr
         ));
     }
-    let projected_head =
-        crate::atoms::ask::git_observe(request, &["rev-parse", "HEAD^{commit}"], stage.to_str());
-    if !projected_head.ok {
-        return Err(format!(
-            "local-checkout-projection-head-failed: {}",
-            projected_head.stderr
-        ));
-    }
-    if projected_head.stdout.trim() != observed_commit {
-        return Err("local-checkout-projection-identity-mismatch".into());
-    }
-    promote_staged_source(&stage, destination)
-        .map_err(|detail| format!("local-checkout-projection-promote-failed: {detail}"))?;
-    Ok((true, clobber_detail))
+    std::mem::forget(_guard);
+    Ok((true, clobber_detail, stage))
 }
 
 fn prepare_source_acquisition_parent(plan: &SourcePlan) -> Result<BearerPathPreparation, String> {
@@ -1241,7 +937,7 @@ impl Drop for SourceStagingGuard {
     }
 }
 
-fn promote_staged_source(stage: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn promote_staged_source(stage: &Path, destination: &Path) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or_else(|| "destination-has-no-parent".to_string())?;
@@ -1273,6 +969,10 @@ fn promote_staged_source(stage: &Path, destination: &Path) -> Result<(), String>
             ))
         }
     }
+}
+
+pub(crate) fn discard_staged_source(stage: &Path) {
+    let _ = fs::remove_dir_all(stage);
 }
 
 fn source_failure(
@@ -1352,11 +1052,7 @@ pub(crate) fn demo(
             return Err("git-demo-commit-failed".into());
         }
     }
-    let head_before = crate::atoms::command::capture_with_cwd(
-        "/usr/bin/git",
-        &["rev-parse", "HEAD"],
-        source.to_str(),
-    );
+    let head_before = fs::read(source.join("payload")).map_err(|e| e.to_string())?;
     let plan = SourcePlan {
         candidates: vec![SourceCandidate {
             kind: SourceCandidateKind::LocalCheckout,
@@ -1378,17 +1074,12 @@ pub(crate) fn demo(
             .unwrap_or(false);
     let second = crate::pull_repo::acquire_source(&plan, invocation);
     let quiet = second.ok && !second.changed;
-    let head_after = crate::atoms::command::capture_with_cwd(
-        "/usr/bin/git",
-        &["rev-parse", "HEAD"],
-        source.to_str(),
-    );
-    let source_unchanged =
-        head_before.ok && head_after.ok && head_before.stdout == head_after.stdout;
+    let head_after = fs::read(source.join("payload")).map_err(|e| e.to_string())?;
+    let source_unchanged = head_before == head_after;
     Ok(serde_json::json!({
         "source_head_unchanged": source_unchanged, "destination_exact": exact, "first_movement": first_changed, "second_quiet": quiet, "production_ok": first.ok && second.ok,
         "first_ok": first.ok, "first_changed": first.changed, "first_message": format!("{:?}", first.receipt), "first_attempts": format!("{:?}", first.receipt.attempts),
         "second_ok": second.ok, "second_changed": second.changed, "second_message": format!("{:?}", second.receipt), "second_attempts": format!("{:?}", second.receipt.attempts),
-        "source_head_before": head_before.stdout, "source_head_after": head_after.stdout, "ok": first_changed && exact && quiet && source_unchanged,
+        "source_head_before": format!("{:?}", head_before), "source_head_after": format!("{:?}", head_after), "ok": first_changed && exact && quiet && source_unchanged,
     }))
 }

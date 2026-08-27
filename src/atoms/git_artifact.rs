@@ -241,11 +241,6 @@ pub fn plan(request: &Request) -> Outcome {
     crate::pull_repo::plan(request)
 }
 
-pub(crate) fn observe_request_current(request: &Request) -> Option<Outcome> {
-    crate::atoms::ask::observe_request_current(request)
-}
-
-
 pub fn stdout_changed(stdout: &str) -> bool {
     stdout.lines().any(|line| line.trim() == "changed=true")
 }
@@ -270,7 +265,7 @@ pub struct SourceCandidate {
     pub credential_selector: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceCandidateKind {
     Git,
     LocalCheckout,
@@ -283,7 +278,7 @@ pub struct CredentialScope {
     pub https_token_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceAttemptReceipt {
     pub index: usize,
     pub kind: SourceCandidateKind,
@@ -295,7 +290,7 @@ pub struct SourceAttemptReceipt {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceReceipt {
     pub attempts: Vec<SourceAttemptReceipt>,
     pub served_index: Option<usize>,
@@ -380,15 +375,7 @@ pub(crate) fn source_attempt(
 }
 
 pub fn source_head(path: &Path, bearer: &str) -> CommandReceipt {
-    crate::atoms::ask::source_head(path, bearer)
-}
-
-pub fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
-    crate::atoms::ask::probe_declared_remote_head(plan)
-}
-
-pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome> {
-    crate::atoms::ask::observe_source_current(plan)
+    crate::atoms::ask::pull_repo::source_head(path, bearer)
 }
 
 pub(crate) use crate::atoms::r#do::pull_repo::demo;
