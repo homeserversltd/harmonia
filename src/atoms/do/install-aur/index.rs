@@ -147,7 +147,7 @@ pub(crate) fn install(
     } else {
         "current-user"
     };
-    let run = crate::atoms::r#do::build_aur_pinned::transaction::install(
+    let run = crate::atoms::r#do::build_aur_pinned::aur_ops::install(
         receipt_dir,
         receipt_name,
         package,

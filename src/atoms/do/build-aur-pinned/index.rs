@@ -11,7 +11,7 @@ use std::fs;
 use crate::CmdResult;
 use crate::atoms::attest::build_aur_pinned::write_pinned_artifacts_receipt as write_build_receipt_json;
 use std::path::{Path, PathBuf};
-pub(crate) mod transaction;
+pub(crate) mod aur_ops;
 pub(crate) fn check(
     receipt_dir: &Path, receipt_name: &str, package: &str, lock_path: &Path, upstream_state: Option<&str>,
 ) -> Result<OperationOutcome, String> {
@@ -157,7 +157,7 @@ pub(crate) fn build_pinned(
     } else {
         "current-user".to_string()
     };
-    let run = transaction::build_pinned(
+    let run = aur_ops::build_pinned(
         receipt_dir,
         receipt_name,
         package,
