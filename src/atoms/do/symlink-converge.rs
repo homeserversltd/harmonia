@@ -302,7 +302,7 @@ pub(crate) fn symlink_converge(
             .unwrap_or_else(|| json!("none")),
     );
     object.insert("truthful_changed".into(), json!(outcome.changed));
-    crate::atoms::attest::write_json_atomic(&path, &receipt)?;
+    crate::atoms::attest::make_link::write_existing(&path, &receipt)?;
     Ok(outcome)
 }
 
@@ -363,7 +363,7 @@ fn symlink_converge_action(
                 receipt_dir.display()
             )
         })?;
-        crate::atoms::attest::write_json_atomic(
+        crate::atoms::attest::make_link::write_existing(
             &receipt_dir.join(format!("{}.json", request.receipt_name)),
             &json!({
                 "schema": "harmonia.files.symlink_converge.v1",

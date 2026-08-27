@@ -17,6 +17,10 @@ pub(crate) struct Outcome {
     pub(crate) projection: Value,
 }
 
+pub(crate) fn write_existing(receipt_path: &Path, value: &Value) -> Result<(), String> {
+    crate::atoms::attest::write_json_atomic(receipt_path, value)
+}
+
 pub(crate) fn attest(
     receipt_dir: &Path,
     file_name: &str,

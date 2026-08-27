@@ -21,7 +21,10 @@ pub(crate) fn copy(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Resu
     if !p.no_follow {
         return Err("copy-file-no-follow-required".into());
     };
-    let bytes = fs::read(&p.source).map_err(|e| format!("copy-file-source-read-failed: {e}"))?;
+    let observation = crate::atoms::ask::copy_file::probe(&p.source, &p.target)?;
+    let bytes = observation.source.bytes.ok_or_else(|| {
+        "copy-file-source-read-failed: source is not a regular file".to_string()
+    })?;
     if let Some(parent) = p.target.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("copy-file-parent-create-failed: {e}"))?
     };

@@ -280,21 +280,37 @@ pub(crate) fn converge_managed_directories(
         let run = crate::atoms::comparison::execute(
             "files",
             || {
-                let metadata = fs::symlink_metadata(&path).ok();
-                if metadata
-                    .as_ref()
-                    .is_some_and(|value| !value.file_type().is_dir())
+                let directory_observation = crate::atoms::ask::make_dir::probe(
+                    &path,
+                    Some(directory.mode),
+                    Some(desired_uid),
+                    Some(desired_gid),
+                )?;
+                let final_observation = directory_observation
+                    .components
+                    .last()
+                    .ok_or_else(|| format!("managed-directory-observe-empty {}", path.display()))?;
+                if final_observation.present
+                    && final_observation.kind != Some(crate::atoms::ask::FsKind::Directory)
                 {
                     return Err(format!(
                         "managed-directory-not-directory {}",
                         path.display()
                     ));
                 }
-                let existed_before = metadata.is_some();
-                let mode_equal_before =
-                    existed_before && target_mode(&path)? == Some(directory.mode);
-                let (owner_equal_before, group_equal_before) =
-                    ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
+                let existed_before = final_observation.present;
+                let mode_equal_before = existed_before
+                    && crate::atoms::ask::change_mode::probe(&path, directory.mode)?
+                        .prior_mode == Some(directory.mode);
+                let owner_observation = crate::atoms::ask::change_owner::probe(
+                    &path,
+                    Some(desired_uid),
+                    Some(desired_gid),
+                )?;
+                let owner_equal_before =
+                    existed_before && owner_observation.prior_uid == Some(desired_uid);
+                let group_equal_before =
+                    existed_before && owner_observation.prior_gid == Some(desired_gid);
                 Ok::<_, String>((
                     existed_before,
                     mode_equal_before,
@@ -391,8 +407,7 @@ pub(crate) fn converge_managed_directories(
             "truthful_changed": truthful_changed,
         }));
     }
-    crate::atoms::attest::write_legacy_json(
-        receipt_dir,
+    crate::atoms::attest::write_json_atomic(
         &receipt_dir.join(format!("{receipt_name}.json")),
         &json!({
             "schema": "harmonia.files.managed_directories.v1",
@@ -877,8 +892,7 @@ pub(crate) fn ensure_files_present_with_invocation(
     } else {
         format!("{}.json", request.receipt_name)
     };
-    crate::atoms::attest::write_legacy_json(
-        receipt_dir,
+    crate::atoms::attest::write_json_atomic(
         &receipt_dir.join(receipt_name),
         &json!({
             "schema": "harmonia.files.ensure_present.v1", "ok": true, "apply": apply,

@@ -36,16 +36,6 @@ pub(crate) mod set_clock;
 pub(crate) mod write_file;
 use super::Receipt;
 
-/// Compatibility writer used by legacy convergence owners; serialization remains Attest-owned.
-pub(crate) fn write_legacy_json(
-    receipt_dir: &Path,
-    path: &Path,
-    value: &serde_json::Value,
-) -> Result<(), String> {
-    let _ = receipt_dir;
-    write_json_atomic(path, value)
-}
-
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]

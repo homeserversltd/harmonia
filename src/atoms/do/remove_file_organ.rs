@@ -243,13 +243,15 @@ mod probe {
     use super::*;
 
     pub(super) fn file(path: &Path) -> Result<RemovalObservation, String> {
-        match atoms::ask::path_kind(path) {
-            Ok(Some(atoms::ask::PathKind::RegularFile)) => Ok(RemovalObservation::RegularFile),
-            Ok(Some(_)) => Err(format!(
+        match atoms::ask::remove_file::probe(path) {
+            Ok(observation) if observation.preimage.kind == Some(atoms::ask::FsKind::File) => {
+                Ok(RemovalObservation::RegularFile)
+            }
+            Ok(observation) if !observation.preimage.present => Ok(RemovalObservation::Absent),
+            Ok(_) => Err(format!(
                 "files-remove-target-not-regular-file {}",
                 path.display()
             )),
-            Ok(None) => Ok(RemovalObservation::Absent),
             Err(error) => Err(format!(
                 "files-remove-metadata-failed {}: {error}",
                 path.display()
@@ -295,24 +297,22 @@ mod receipt {
         } else {
             format!("{receipt_name}.json")
         });
-        crate::write_json(
+        let value = json!({
+            "schema": "harmonia.files.remove.v1", "ok": outcome.ok, "apply": apply,
+            "target_root": target_root, "checked": outcome.checked, "removed": outcome.removed,
+            "changed": outcome.changed, "entries": outcome.entries,
+            "first_missing_signal": if outcome.ok { "none" } else { outcome.message.as_str() },
+        });
+        atoms::attest::remove_file::write_existing(
             &receipt,
-            &json!({
-                "schema": "harmonia.files.remove.v1", "ok": outcome.ok, "apply": apply,
-                "target_root": target_root, "checked": outcome.checked, "removed": outcome.removed,
-                "changed": outcome.changed, "entries": outcome.entries,
-                "first_missing_signal": if outcome.ok { "none" } else { outcome.message.as_str() },
-            }),
-        )?;
-        atoms::attest::attest(
+            &value,
             &receipt_dir.join("harmonia-atoms.log"),
-            &Receipt {
+            Receipt {
                 atom: "remove-file".into(),
                 ok: outcome.ok,
                 drift: Drift::Current,
                 message: outcome.message.clone(),
             },
-            &[],
         )
     }
 }

@@ -344,6 +344,10 @@ pub(crate) fn operate(
     root: &Path,
     restore_image: Option<&Image>,
 ) -> Result<Image, String> {
+    let observation = crate::atoms::ask::remove_dir::probe(root, "recursive-exact")?;
+    if !observation.root.present {
+        return Err("remove-dir-path-absent".into());
+    }
     let image = capture(root)?;
     remove(root)?;
     if let Some(x) = restore_image {

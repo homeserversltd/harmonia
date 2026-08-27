@@ -20,8 +20,8 @@ pub(crate) fn remove_file_with_policy(
     if !policy.no_follow || !policy.collision_refuse || !policy.rollback_exact {
         return Err("remove-file-policy-unsupported".into());
     }
-    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    if !metadata.file_type().is_file() {
+    let observation = crate::atoms::ask::remove_file::probe(path)?;
+    if observation.preimage.kind != Some(crate::atoms::ask::FsKind::File) {
         return Err("remove-file-collision-refused".into());
     }
     fs::remove_file(path).map_err(|error| error.to_string())?;

@@ -46,18 +46,6 @@ fn exchange(left: &Path, right: &Path) -> Result<(), String> {
     }
 }
 #[cfg(unix)]
-fn path_kind(p: &Path) -> Result<&'static str, String> {
-    match fs::symlink_metadata(p) {
-        Ok(m) if m.file_type().is_symlink() => Ok("symlink"),
-        Ok(m) if m.file_type().is_file() => Ok("regular-file"),
-        Ok(m) if m.file_type().is_dir() => Ok("directory"),
-        Ok(_) => Ok("other"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("absent"),
-        Err(e) => Err(format!("make-link-observe-failed: {e}")),
-    }
-}
-
-#[cfg(unix)]
 pub(crate) fn converge(
     source: &Path,
     link: &Path,
@@ -71,8 +59,15 @@ pub(crate) fn converge(
     if !parent.is_dir() {
         return Err("make-link-parent-missing".into());
     };
-    let before = path_kind(link)?;
-    if before == "symlink" && fs::read_link(link).map_err(|e| e.to_string())? == source {
+    let observation = crate::atoms::ask::make_link::probe(source, link)?;
+    let before = match observation.preimage.kind {
+        None => "absent",
+        Some(crate::atoms::ask::FsKind::File) => "regular-file",
+        Some(crate::atoms::ask::FsKind::Directory) => "directory",
+        Some(crate::atoms::ask::FsKind::Symlink) => "symlink",
+        Some(crate::atoms::ask::FsKind::Other) => "other",
+    };
+    if before == "symlink" && observation.preimage.link_target.as_deref() == Some(source) {
         return Ok(Outcome {
             changed: false,
             message: "make-link unchanged".into(),
