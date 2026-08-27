@@ -12,7 +12,7 @@ pub(crate) fn check(
 
 pub(crate) mod probe {
     use crate::atoms::aur::{self, AurRatchetLock, AurUpstreamState};
-    use crate::{hyalos, PinnedArtifactStatus, PinnedArtifactsLock, Profile};
+    use crate::{PinnedArtifactStatus, PinnedArtifactsLock, Profile};
     use serde::Deserialize;
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -83,9 +83,10 @@ pub(crate) mod probe {
         if !Path::new(&program).exists() {
             return None;
         }
-        let result = crate::atoms::ask::read_only_command(
+        let result = crate::atoms::ask::read_only_command_with_timeout(
             &program,
             &["-Q".to_string(), package.to_string()],
+            std::time::Duration::from_secs(30),
         );
         if !result.ok {
             return None;
@@ -100,6 +101,8 @@ pub(crate) mod probe {
         pub ok: bool,
         pub artifact_count: usize,
         pub first_missing_signal: String,
+        pub artifacts: Vec<serde_json::Value>,
+        pub receipt: serde_json::Value,
     }
 
     #[derive(Deserialize)]
@@ -120,7 +123,7 @@ pub(crate) mod probe {
     pub(crate) fn artifact_lock(
         lock_path: &Path,
         profile: Option<&str>,
-        receipt_dir: &Path,
+        _receipt_dir: &Path,
         apply: bool,
     ) -> Result<ArtifactLockObservation, String> {
         let lock_file = crate::atoms::ask::file(lock_path).map_err(|error| {
@@ -149,29 +152,25 @@ pub(crate) mod probe {
                 first_missing_signal = format!("pinned-artifact-{name}-drift");
             }
             ok &= entry_ok;
-            crate::atoms::attest::ratchet_aur::write_pinned_artifacts_receipt(
-                &receipt_dir.join(format!("artifact-lock-{}.json", sanitize(name))),
-                &json!({
-                    "schema":"harmonia.artifact_lock.artifact.v1", "ok":entry_ok, "apply":apply,
-                    "name":name, "version":artifact.version, "path":artifact.path, "expected_sha256":artifact.sha256,
-                    "actual_sha256":actual, "exists":actual.is_some(), "policy":artifact.policy,
-                    "first_missing_signal": if entry_ok {"none"} else {first_missing_signal.as_str()}
-                }),
-            )?;
-            entries.push(json!({"name":name,"version":artifact.version,"path":artifact.path,"ok":entry_ok,"exists":actual.is_some(),"policy":artifact.policy}));
+            let artifact_receipt = json!({
+                "schema":"harmonia.artifact_lock.artifact.v1", "ok":entry_ok, "apply":apply,
+                "name":name, "version":artifact.version, "path":artifact.path, "expected_sha256":artifact.sha256,
+                "actual_sha256":actual, "exists":actual.is_some(), "policy":artifact.policy,
+                "first_missing_signal": if entry_ok {"none"} else {first_missing_signal.as_str()}
+            });
+            entries.push(artifact_receipt);
         }
-        crate::atoms::attest::ratchet_aur::write_pinned_artifacts_receipt(
-            &receipt_dir.join("run.json"),
-            &json!({
-                "schema":"harmonia.artifact_lock.verify.v1", "ok":ok, "apply":apply, "mutation":false,
-                "profile_id":lock.profile, "lock_path":lock_path, "artifact_count":entries.len(),
-                "artifacts":entries, "first_missing_signal":first_missing_signal
-            }),
-        )?;
+        let receipt = json!({
+            "schema":"harmonia.artifact_lock.verify.v1", "ok":ok, "apply":apply, "mutation":false,
+            "profile_id":lock.profile, "lock_path":lock_path, "artifact_count":entries.len(),
+            "artifacts":entries, "first_missing_signal":first_missing_signal
+        });
         Ok(ArtifactLockObservation {
             ok,
             artifact_count: entries.len(),
             first_missing_signal,
+            artifacts: receipt["artifacts"].as_array().cloned().unwrap_or_default(),
+            receipt,
         })
     }
 
@@ -235,11 +234,21 @@ pub(crate) mod probe {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
+    #[derive(Debug, Clone)]
+    pub(crate) struct PinnedArtifactsCheckObservation {
+        pub ok: bool,
+        pub profile_id: String,
+        pub lock_path: std::path::PathBuf,
+        pub artifact_count: usize,
+        pub first_missing_signal: String,
+        pub artifacts: Vec<PinnedArtifactStatus>,
+        pub receipt: serde_json::Value,
+    }
+
     pub(crate) fn pinned_artifacts_check(
         profile: &Profile,
         lock_path: &Path,
-        receipt_dir: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<PinnedArtifactsCheckObservation, String> {
         let lock = load_pinned_lock(lock_path)?;
         let statuses = pinned_artifacts_status(&lock);
         let ok = lock.profile == profile.id && statuses.iter().all(|status| status.ok);
@@ -252,35 +261,22 @@ pub(crate) mod probe {
                 .map(|status| format!("pinned-artifact-{}-drift", status.name))
                 .unwrap_or_else(|| "none".to_string())
         };
-        crate::atoms::attest::ratchet_aur::write_pinned_artifacts_receipt(
-            &receipt_dir.join("run.json"),
-            &json!({
-                "schema": "harmonia.pinned_artifacts.check.v1",
-                "ok": ok,
-                "mutation": false,
-                "profile_id": profile.id,
-                "lock_path": lock_path,
-                "artifact_count": statuses.len(),
-                "first_missing_signal": first_missing_signal,
-                "artifacts": statuses,
-            }),
-        )?;
-        println!("schema=harmonia.pinned_artifacts.check.v1");
-        hyalos::forward_receipt(
-            "schema=harmonia.pinned_artifacts.check.v1",
-            &format!("schema=harmonia.pinned_artifacts.check.v1 ok={}", ok),
-            Some(serde_json::json!({"schema": "harmonia.pinned_artifacts.check.v1", "ok": ok})),
-            Some(ok),
-        );
-        println!("ok={}", ok);
-        println!("profile_id={}", profile.id);
-        println!("artifact_count={}", lock.artifacts.len());
-        println!("first_missing_signal={}", first_missing_signal);
-        println!("receipt_dir={}", receipt_dir.display());
-        if ok {
-            Ok(())
-        } else {
-            Err(first_missing_signal)
-        }
+        let receipt = serde_json::json!({
+            "schema": "harmonia.pinned_artifacts.check.v1", "ok": ok, "mutation": false,
+            "profile_id": profile.id, "lock_path": lock_path, "artifact_count": statuses.len(),
+            "first_missing_signal": first_missing_signal, "artifacts": statuses,
+        });
+        Ok(PinnedArtifactsCheckObservation {
+            ok,
+            profile_id: profile.id.clone(),
+            lock_path: lock_path.to_path_buf(),
+            artifact_count: lock.artifacts.len(),
+            first_missing_signal,
+            artifacts: receipt["artifacts"]
+                .as_array()
+                .map(|_| pinned_artifacts_status(&lock))
+                .unwrap_or_default(),
+            receipt,
+        })
     }
 }

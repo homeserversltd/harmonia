@@ -29,16 +29,19 @@ pub(crate) fn command_with_timeout_in_dir_env(
     environment: &[(String, String)],
     timeout: Duration,
 ) -> Result<CommandObservation, String> {
+    let preimage = crate::atoms::ask::run_command::observe(program, args, cwd);
     let result = run_with_timeout_in_dir_env(program, args, cwd, environment, timeout);
     let _ = (authorization, invocation);
-    Ok(CommandObservation {
+    let outcome = CommandObservation {
         program: program.into(),
         args: args.to_vec(),
         ok: result.ok,
         code: result.code,
         stdout: result.stdout,
         stderr: result.stderr,
-    })
+    };
+    let _attestation = crate::atoms::attest::run_command::value(&preimage, &outcome)?;
+    Ok(outcome)
 }
 
 pub(crate) fn command_with_timeout(
@@ -48,16 +51,19 @@ pub(crate) fn command_with_timeout(
     args: &[String],
     timeout: Duration,
 ) -> Result<CommandObservation, String> {
+    let preimage = crate::atoms::ask::run_command::observe(program, args, None);
     let result = run_with_timeout(program, args, timeout);
     let _ = (authorization, invocation);
-    Ok(CommandObservation {
+    let outcome = CommandObservation {
         program: program.into(),
         args: args.to_vec(),
         ok: result.ok,
         code: result.code,
         stdout: result.stdout,
         stderr: result.stderr,
-    })
+    };
+    let _attestation = crate::atoms::attest::run_command::value(&preimage, &outcome)?;
+    Ok(outcome)
 }
 pub(crate) fn mutating_command(
     authorization: &ActionAuthorization,
@@ -65,8 +71,9 @@ pub(crate) fn mutating_command(
     program: &str,
     args: &[String],
 ) -> Result<Receipt, String> {
+    let preimage = crate::atoms::ask::run_command::observe(program, args, None);
     let result = run(program, args);
-    Ok(Receipt {
+    let outcome = Receipt {
             atom: "do".into(),
             ok: result.ok,
             drift: Drift::Current,
@@ -74,8 +81,9 @@ pub(crate) fn mutating_command(
                 "program={program}; args={args:?}; code={:?}; stdout={:?}; stderr={:?}",
                 result.code, result.stdout, result.stderr
             ),
-        }
-    )
+        };
+    let _attestation = crate::atoms::attest::run_command::value(&preimage, &outcome)?;
+    Ok(outcome)
 }
 
 pub(crate) struct ResultData {

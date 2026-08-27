@@ -3,7 +3,6 @@ use crate::atoms::r#do::InvocationKey;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
 #[derive(Debug, Clone)]
@@ -48,13 +47,8 @@ fn validate(p: &Plan) -> Result<(), String> {
 }
 fn write_receipt(p: &Plan, proof: bool) -> Result<Receipt, String> {
     validate(p)?;
-    let canonical = fs::canonicalize(&p.successor)
-        .map_err(|e| format!("replace-process-successor-canonical: {e}"))?;
-    let metadata = fs::symlink_metadata(&canonical)
-        .map_err(|e| format!("replace-process-successor-stat: {e}"))?;
-    if !metadata.is_file() {
-        return Err("replace-process-successor-not-regular-file".into());
-    }
+    let successor_preimage = crate::atoms::ask::replace_process::observe(&p.successor)?;
+    let canonical = successor_preimage.canonical.clone();
     let parent = p
         .receipt_path
         .parent()
@@ -64,8 +58,8 @@ fn write_receipt(p: &Plan, proof: bool) -> Result<Receipt, String> {
         schema: "harmonia.replace-process.v1".into(),
         successor: p.successor.display().to_string(),
         successor_canonical: canonical.display().to_string(),
-        successor_dev: metadata.dev(),
-        successor_ino: metadata.ino(),
+        successor_dev: successor_preimage.dev,
+        successor_ino: successor_preimage.ino,
         argv: p.argv.clone(),
         guard_name: p.guard_name.clone(),
         guard_value: p.guard_value.clone(),
@@ -73,7 +67,7 @@ fn write_receipt(p: &Plan, proof: bool) -> Result<Receipt, String> {
         synced: true,
         proof,
     };
-    let bytes = serde_json::to_vec(&receipt).map_err(|e| e.to_string())?;
+    let bytes = crate::atoms::attest::replace_process::serialize_receipt(&receipt)?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("replace-process-temp-time: {e}"))?
