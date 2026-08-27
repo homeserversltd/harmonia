@@ -8,8 +8,7 @@ The ladder:
 - requires the installed `/etc/samba/smb.conf` and `/etc/hosts` to be non-empty but never overwrites them;
 - validates the installed Samba configuration with `testparm`;
 - converges the quarry Avahi host map and Samba discovery service with backups of replaced files;
-- restarts Avahi only when this module changed those managed Avahi files;
-- enables the four declared services when needed and proves each is active.
+- proves each declared service is active.
 
 The public `smb.conf` and `hosts` copies are user-editable birth seeds, not maintenance overwrites. The Samba seed resolves the quarry `${ADMIN_USER}` placeholder to root `config.json`'s product administrator `owner`. The literal `192.168.123.1`, `home`, `home.local`, and `home.arpa` values are the quarry product values. All four carried files otherwise preserve quarry text; the public copies only remove trailing spaces and add final newlines for repository-safe module form. This is the conservative candidate policy pending operator verdict on the per-file table in publication.
 

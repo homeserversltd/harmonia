@@ -7,8 +7,8 @@ The ladder:
 - fails closed unless the birth-provided `/usr/local/bin/filebrowser` executable exists;
 - converges the quarry-derived `filebrowser.service` unit with a backup of any replaced file;
 - leaves `/etc/filebrowser/filebrowser.db` untouched as mutable instance state;
-- reloads systemd and restarts File Browser only when this module changed managed material;
-- enables the service when needed and proves it is active.
+- reloads systemd after file convergence;
+- proves the service is active.
 
 The quarry installer writes product settings and the factory-admin credential into the same mutable database. Root `config.json` supplies port `8081`, but neither the database nor its filled credential is public desired-state payload.
 

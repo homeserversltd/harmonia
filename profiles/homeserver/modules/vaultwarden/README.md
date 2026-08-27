@@ -7,8 +7,8 @@ The ladder:
 - fails closed unless the birth-provided Vaultwarden executable exists;
 - requires the installed secret-bearing `/etc/vaultwarden.env` to be non-empty but never overwrites it;
 - converges the quarry `vaultwarden.service` unit with a backup of any replaced file;
-- reloads systemd and restarts Vaultwarden only when this module changed managed material;
-- enables the service when needed and proves it is active.
+- reloads systemd after file convergence;
+- proves the service is active.
 
 The public environment file is a user-editable birth template, not a maintenance overwrite. Its quarry `${ROCKET_PORT}` placeholder is resolved to the product port `8200`; `${ADMIN_TOKEN}` and `${DB_PASSWORD}` remain unfilled birth-owned placeholders. The installer hashes and fills the administrator token and database password during birth. Both carried files otherwise preserve quarry text; the public copies only remove trailing spaces and add final newlines for repository-safe module form.
 

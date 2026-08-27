@@ -7,8 +7,8 @@ The ladder:
 - fails closed unless the birth-provided `/opt/forgejo/forgejo` executable exists;
 - requires the installed birth-owned `/opt/forgejo/custom/conf/app.ini` to be non-empty but never overwrites it;
 - converges the quarry `forgejo.service` unit with a backup of any replaced file;
-- reloads systemd and restarts Forgejo only when this module changed managed material;
-- enables the service when needed, proves it is active, and probes its loopback HTTP endpoint.
+- reloads systemd after file convergence;
+- proves the service is active and probes its loopback HTTP endpoint.
 
 The public `app.ini` is a user-editable birth seed, not a maintenance overwrite. `${PG_PASS}` and `${SECRET_KEY}` remain unfilled birth-owned placeholders; first birth replaces them and Forgejo may add instance-generated secret keys. The carried template and unit otherwise preserve quarry bytes, with only a final newline retained for repository-safe module form. The alternate `manual_deploy.py` adds a `[webhook]` private-host allowance that the primary quarry installer does not add; this lift does not silently choose that divergent manual-deploy adaptation.
 

@@ -2,8 +2,8 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "filebrowser",
   "category": "interactable",
-  "version": "1.0.1",
-  "description": "Quarry-lifted HOMESERVER File Browser service configuration: assert the birth-provided binary, converge the product-owned unit with backup, preserve the instance database, and restart only after this module changed managed material.",
+  "version": "1.0.2",
+  "description": "Quarry-lifted HOMESERVER File Browser service configuration: assert the birth-provided binary, converge the product-owned unit with backup, preserve the instance database.",
   "files_root": "files_root",
   "ladder": [
     {
@@ -28,16 +28,6 @@
       "tool": "systemd",
       "permutation": "daemon-reload",
       "args": {
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "filebrowser-restart-on-change",
-      "tool": "systemd",
-      "permutation": "restart",
-      "args": {
-        "service": "filebrowser.service",
         "timeout_secs": 30
       },
       "on_failure": "stop"

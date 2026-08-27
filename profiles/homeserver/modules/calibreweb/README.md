@@ -6,8 +6,8 @@ The ladder:
 
 - fails closed unless the birth-provided Calibre-Web Python environment, watcher script, `inotifywait`, and `calibredb` executables exist;
 - converges the quarry `calibre-web.service` and `calibre-simple-watch.service` units with backups of replaced files;
-- reloads systemd and restarts both concern services only when this module changed managed material;
-- enables both services when needed and proves both are active.
+- reloads systemd after file convergence;
+- proves both services are active.
 
 No filled secret exists in the quarry Calibre-Web configuration and none is carried. The quarry installer and `calibreSimpleWatcher.sh` are birth-owned software, not Harmonia configuration; their program text is not embedded in this manifest.
 

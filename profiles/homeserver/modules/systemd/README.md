@@ -6,8 +6,8 @@ The ladder:
 
 - fails closed unless the birth-provided `systemd-analyze`, `/dev/mapper/vault`, and executable `/vault/scripts/init.sh` exist;
 - converges `vault.mount` with backups of replaced files;
-- reloads systemd and restarts `vault.mount` only when this module changed managed material;
-- enables `vault.mount` when needed and proves it is active.
+- reloads systemd after file convergence;
+- proves `vault.mount` is active.
 
 `mountNas.service` is birth-owned, runs once at boot, and is never converged or restarted by Harmonia.
 

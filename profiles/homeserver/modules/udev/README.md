@@ -6,7 +6,6 @@ The ladder:
 
 - fails closed unless the birth-provided `udevadm` executable exists;
 - converges the product-owned RAPL permissions rule with a backup of any replaced file;
-- reloads the udev daemon and triggers existing devices only when this module changed the managed rule;
 - proves the udev daemon is active.
 
 `99-rapl-permissions.rules.tmpl` is the single desired-state file consumed at appliance birth. `files_root/etc/udev/rules.d/99-rapl-permissions.rules` is a same-module symlink projection used by the convergence ladder so birth and later convergence read the same source bytes.

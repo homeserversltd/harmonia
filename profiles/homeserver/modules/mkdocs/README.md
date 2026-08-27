@@ -7,8 +7,8 @@ The ladder:
 - fails closed unless the birth-provided `/opt/docs/venv/bin/mkdocs` executable exists;
 - fails closed unless birth supplied the documentation tree at `/opt/docs/docs`;
 - converges the quarry `mkdocs.yml` and systemd unit with backups of replaced files;
-- reloads systemd and restarts MkDocs only when this module changed managed material;
-- enables the service and proves it is active.
+- reloads systemd after file convergence;
+- proves the service is active.
 
 The documentation source is a separately owned gitlink in the quarry (`HOMESERVERSLTD/documentation`, pinned there at `5fad1e1068aedb159be06442e873f8fb3a88b2f2`). Its Markdown content is not absorbed into this configuration module. Birth must place that content under `/opt/docs/docs`; absence stops convergence.
 

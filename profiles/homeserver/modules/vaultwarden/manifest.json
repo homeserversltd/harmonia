@@ -2,8 +2,8 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "vaultwarden",
   "category": "interactable",
-  "version": "1.0.2",
-  "description": "Quarry-lifted HOMESERVER Vaultwarden configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing environment file, converge the product-owned unit with backup, validate it, and restart only after this module changed managed material.",
+  "version": "1.0.3",
+  "description": "Quarry-lifted HOMESERVER Vaultwarden configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing environment file, converge the product-owned unit with backup, validate it.",
   "files_root": "files_root",
   "ladder": [
     {
@@ -65,26 +65,7 @@
       },
       "on_failure": "stop"
     },
-    {
-      "step_id": "vaultwarden-restart-on-change",
-      "tool": "systemd",
-      "permutation": "restart",
-      "args": {
-        "service": "vaultwarden.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "vaultwarden-service-enable",
-      "tool": "systemd",
-      "permutation": "enable-now",
-      "args": {
-        "service": "vaultwarden.service",
-        "timeout_secs": 120
-      },
-      "on_failure": "stop"
-    },
+
     {
       "step_id": "vaultwarden-service-ready",
       "tool": "systemd",
