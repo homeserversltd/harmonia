@@ -1,4 +1,6 @@
-pub(crate) use crate::atoms::ask::ratchet_aur::{ArtifactLockObservation, Observation, Verdict};
+pub(crate) use crate::atoms::ask::build_aur_pinned::{
+    ArtifactLockObservation, Observation, Verdict,
+};
 use crate::atoms::comparison::{self, DiffDecision};
 use crate::{OperationOutcome, Profile};
 use std::collections::BTreeMap;
@@ -15,11 +17,7 @@ pub(crate) fn install(
     crate::atoms::declaration::execute(
         "ratchet-aur-package",
         "ratchet-aur-package",
-        || {
-            Ok(crate::atoms::ask::ratchet_aur::probe::installed_version(
-                package,
-            ))
-        },
+        || Ok(crate::atoms::ask::install_aur::installed_version(package)),
         |installed| {
             if apply && installed.is_none() {
                 DiffDecision::Different
@@ -62,7 +60,7 @@ pub(crate) fn build_pinned(
     crate::atoms::declaration::execute(
         "ratchet-aur-package",
         "ratchet-aur-package",
-        || crate::atoms::ask::ratchet_aur::probe::ratchet(package, lock_path, None, install),
+        || crate::atoms::ask::build_aur_pinned::probe::ratchet(package, lock_path, None, install),
         |observation| {
             if apply && observation.verdict == Verdict::BehindPin {
                 DiffDecision::Different
@@ -98,7 +96,12 @@ pub(crate) fn report(
     verdict: Verdict,
     outcome: &OperationOutcome,
 ) -> Result<(), String> {
-    receipt::attest(log, verdict, outcome)
+    crate::atoms::attest::build_aur_pinned::report(
+        log,
+        verdict.as_str(),
+        outcome.ok,
+        outcome.message.clone(),
+    )
 }
 
 pub(crate) fn verify_artifact_lock(
@@ -106,11 +109,15 @@ pub(crate) fn verify_artifact_lock(
     profile: Option<&str>,
     receipt_dir: &Path,
 ) -> Result<OperationOutcome, String> {
-    let observation = crate::atoms::ask::ratchet_aur::probe::artifact_lock(
+    let observation = crate::atoms::ask::install_aur_pinned::artifact_lock(
         lock_path,
         profile,
         receipt_dir,
         false,
+    )?;
+    crate::atoms::attest::build_aur_pinned::write_pinned_artifacts_receipt(
+        &receipt_dir.join("run.json"),
+        &observation.receipt,
     )?;
     let outcome = OperationOutcome {
         ok: observation.ok,
@@ -119,9 +126,18 @@ pub(crate) fn verify_artifact_lock(
         message: format!("{} artifacts verified", observation.artifact_count),
         command: None,
     };
-    receipt::attest_artifact_lock(
+    crate::atoms::attest::attest(
         &receipt_dir.join("artifact-lock.attest.jsonl"),
-        &observation,
+        &crate::atoms::Receipt {
+            atom: "ratchet-aur-package-observe".into(),
+            ok: observation.ok,
+            drift: crate::atoms::Drift::Current,
+            message: format!(
+                "artifact-lock count={}; first_missing_signal={}",
+                observation.artifact_count, observation.first_missing_signal
+            ),
+        },
+        &[],
     )?;
     Ok(outcome)
 }
@@ -135,11 +151,36 @@ pub(crate) fn pinned_artifacts_command(
 ) -> Result<(), String> {
     std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     match action {
-        "check" => crate::atoms::ask::ratchet_aur::probe::pinned_artifacts_check(
-            profile,
-            lock_path,
-            receipt_dir,
-        ),
+        "check" => {
+            let observation =
+                crate::atoms::ask::install_aur_pinned::pinned_artifacts_check(profile, lock_path)?;
+            crate::atoms::attest::build_aur_pinned::write_pinned_artifacts_receipt(
+                &receipt_dir.join("run.json"),
+                &observation.receipt,
+            )?;
+            println!("schema=harmonia.pinned_artifacts.check.v1");
+            crate::hyalos::forward_receipt(
+                "schema=harmonia.pinned_artifacts.check.v1",
+                &format!(
+                    "schema=harmonia.pinned_artifacts.check.v1 ok={}",
+                    observation.ok
+                ),
+                Some(
+                    serde_json::json!({"schema": "harmonia.pinned_artifacts.check.v1", "ok": observation.ok}),
+                ),
+                Some(observation.ok),
+            );
+            println!("ok={}", observation.ok);
+            println!("profile_id={}", profile.id);
+            println!("artifact_count={}", observation.artifact_count);
+            println!("first_missing_signal={}", observation.first_missing_signal);
+            println!("receipt_dir={}", receipt_dir.display());
+            if observation.ok {
+                Ok(())
+            } else {
+                Err(observation.first_missing_signal)
+            }
+        }
         "nudge" => mutation::pinned_artifacts_nudge(profile, lock_path, receipt_dir, args),
         "bless" => mutation::pinned_artifacts_bless(profile, lock_path, receipt_dir, args),
         other => Err(format!("unsupported pinned-artifacts action {other}")),
@@ -149,7 +190,7 @@ pub(crate) fn pinned_artifacts_command(
 mod mutation {
     use super::{Observation, Verdict};
     use crate::atoms;
-    use crate::atoms::ask::ratchet_aur::probe::load_pinned_lock;
+    use crate::atoms::ask::build_aur_pinned::probe::load_pinned_lock;
     use crate::atoms::comparison::ActionAuthorization;
     use crate::OperationOutcome;
     use crate::{
@@ -182,20 +223,21 @@ mod mutation {
         if observation.verdict != Verdict::BehindPin {
             return Err("ratchet-aur-package-act-without-behind-pin".into());
         }
-        let built = atoms::r#do::build_aur_pinned::aur_build_pinned(authorization, invocation, || {
-            atoms::r#do::build_aur_pinned::aur_build_pinned_action(
-                receipt_dir,
-                receipt_name,
-                package,
-                lock_path,
-                build_root,
-                source_dir,
-                builder_user,
-                timeout_secs,
-                false,
-                apply,
-            )
-        })?;
+        let built =
+            atoms::r#do::build_aur_pinned::aur_build_pinned(authorization, invocation, || {
+                atoms::r#do::build_aur_pinned::aur_build_pinned_action(
+                    receipt_dir,
+                    receipt_name,
+                    package,
+                    lock_path,
+                    build_root,
+                    source_dir,
+                    builder_user,
+                    timeout_secs,
+                    false,
+                    apply,
+                )
+            })?;
         if !install || !built.ok {
             return Ok(built);
         }
@@ -266,7 +308,7 @@ mod mutation {
         let candidate = required_value(args, "--candidate")?;
         let version = required_value_string(args, "--version")?;
         let expected_sha = required_value_string(args, "--sha256")?;
-        let actual_sha = crate::atoms::ask::ratchet_aur::probe::sha256_file(&candidate)?;
+        let actual_sha = crate::atoms::ask::install_aur_pinned::sha256_file(&candidate)?;
         let ok = actual_sha.eq_ignore_ascii_case(&expected_sha);
         let staged_path = receipt_dir
             .join("candidates")
@@ -290,7 +332,7 @@ mod mutation {
         } else {
             "candidate-sha256-mismatch"
         };
-        super::receipt::write_pinned_artifacts_receipt(
+        crate::atoms::attest::build_aur_pinned::write_pinned_artifacts_receipt(
             &receipt_dir.join("run.json"),
             &json!({
                 "schema": "harmonia.pinned_artifacts.nudge.v1",
@@ -342,7 +384,7 @@ mod mutation {
         let candidate = required_value(args, "--candidate")?;
         let version = required_value_string(args, "--version")?;
         let expected_sha = required_value_string(args, "--sha256")?;
-        let actual_sha = crate::atoms::ask::ratchet_aur::probe::sha256_file(&candidate)?;
+        let actual_sha = crate::atoms::ask::install_aur_pinned::sha256_file(&candidate)?;
         if !actual_sha.eq_ignore_ascii_case(&expected_sha) {
             return Err("candidate-sha256-mismatch".to_string());
         }
@@ -376,7 +418,7 @@ mod mutation {
             );
             write_pinned_lock(lock_path, &lock)?;
         }
-        super::receipt::write_pinned_artifacts_receipt(
+        crate::atoms::attest::build_aur_pinned::write_pinned_artifacts_receipt(
             &receipt_dir.join("run.json"),
             &json!({
                 "schema": "harmonia.pinned_artifacts.bless.v1",
@@ -417,61 +459,5 @@ mod mutation {
 
     pub(super) fn required_value_string(args: &[String], name: &str) -> Result<String, String> {
         value_arg_string(args, name).ok_or_else(|| format!("missing required {name} <value>"))
-    }
-}
-
-mod receipt {
-    use super::{ArtifactLockObservation, Verdict};
-    use crate::atoms;
-    use crate::OperationOutcome;
-    use std::collections::BTreeMap;
-    use std::path::Path;
-
-    pub(super) fn write_pinned_artifacts_receipt(
-        path: &Path,
-        value: &serde_json::Value,
-    ) -> Result<(), String> {
-        crate::write_json(path, value)
-    }
-
-    pub(super) fn attest(
-        log: &Path,
-        verdict: Verdict,
-        outcome: &OperationOutcome,
-    ) -> Result<(), String> {
-        let message = if verdict == Verdict::UpstreamMovedPastPin {
-            format!("verdict={}; nudge=bless-new-pin", verdict.as_str())
-        } else {
-            format!("verdict={}; outcome={}", verdict.as_str(), outcome.message)
-        };
-        atoms::attest::attest(
-            log,
-            &atoms::Receipt {
-                atom: "ratchet-aur-package".into(),
-                ok: outcome.ok,
-                drift: atoms::Drift::Current,
-                message,
-            },
-            &[],
-        )
-    }
-
-    pub(super) fn attest_artifact_lock(
-        log: &Path,
-        observation: &ArtifactLockObservation,
-    ) -> Result<(), String> {
-        atoms::attest::attest(
-            log,
-            &atoms::Receipt {
-                atom: "ratchet-aur-package-observe".into(),
-                ok: observation.ok,
-                drift: atoms::Drift::Current,
-                message: format!(
-                    "artifact-lock count={}; first_missing_signal={}",
-                    observation.artifact_count, observation.first_missing_signal
-                ),
-            },
-            &[],
-        )
     }
 }

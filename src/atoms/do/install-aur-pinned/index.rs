@@ -3,7 +3,7 @@ use crate::atoms::aur::first_blocker;
 use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::install_aur::{installed_version_command, installed_version_from_result};
 use crate::atoms::r#do::InvocationKey;
-use crate::write_json;
+use crate::atoms::attest::install_aur_pinned::write as write_install_pinned_receipt;
 use crate::OperationOutcome;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -32,7 +32,7 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
             Err(error) => {
                 receipt["first_blocker"] =
                     Value::String(format!("pinned-build-proof-invalid: {error}"));
-                write_json(
+                write_install_pinned_receipt(
                     &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
                     &receipt,
                 )?;
@@ -48,7 +48,7 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
         Err(error) => {
             receipt["first_blocker"] =
                 Value::String(format!("pinned-build-proof-missing: {error}"));
-            write_json(
+            write_install_pinned_receipt(
                 &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
                 &receipt,
             )?;
@@ -73,7 +73,7 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
             .is_some();
     if !proof_ok {
         receipt["first_blocker"] = Value::String("pinned-build-proof-not-successful".into());
-        write_json(
+        write_install_pinned_receipt(
             &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
             &receipt,
         )?;
@@ -91,7 +91,7 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
     let artifact_sha256 = crate::atoms::file_sha256(&artifact_bytes);
     if proof["artifact_sha256"].as_str() != Some(artifact_sha256.as_str()) {
         receipt["first_blocker"] = Value::String("pinned-build-artifact-hash-mismatch".into());
-        write_json(
+        write_install_pinned_receipt(
             &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
             &receipt,
         )?;
@@ -107,7 +107,7 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
     if p.target_pinned {
         receipt["ok"] = Value::Bool(true);
         receipt["first_blocker"] = Value::String("profile-pinned-target-witness-only".into());
-        write_json(
+        write_install_pinned_receipt(
             &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
             &receipt,
         )?;
@@ -122,7 +122,7 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
     if !apply {
         receipt["ok"] = Value::Bool(true);
         receipt["first_blocker"] = Value::String("planned-only".into());
-        write_json(
+        write_install_pinned_receipt(
             &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
             &receipt,
         )?;
@@ -148,7 +148,7 @@ pub(crate) fn run(p: &Plan, apply: bool) -> Result<OperationOutcome, String> {
         receipt["first_blocker"] =
             Value::String(first_blocker(if !install.ok { &install } else { &verify }));
     }
-    write_json(
+    write_install_pinned_receipt(
         &p.receipt_dir.join(format!("{}.json", p.receipt_name)),
         &receipt,
     )?;

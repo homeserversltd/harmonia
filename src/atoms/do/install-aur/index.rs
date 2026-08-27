@@ -1,7 +1,7 @@
 use crate::atoms::aur::{augment_comparison_receipt, first_blocker, meaningful_stderr_tail, DEFAULT_AUR_BASE_URL, DEFAULT_BUILD_ROOT};
 use crate::atoms::r#do::build_aur_pinned::{current_pkg_tar, makepkg_command, prepare_build_dir_for_builder};
 use crate::atoms::comparison;
-use crate::write_json;
+use crate::atoms::attest::install_aur::write as write_install_receipt;
 use crate::CmdResult;
 use crate::OperationOutcome;
 
@@ -52,7 +52,7 @@ pub(crate) fn aur_install_action(
     if target_pinned {
         receipt["first_blocker"] = Value::String("profile-pinned-target-witness-only".into());
         receipt["ok"] = Value::Bool(true);
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        write_install_receipt(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
         return Ok(OperationOutcome {
             ok: true,
             changed: false,
@@ -64,7 +64,7 @@ pub(crate) fn aur_install_action(
     if !apply {
         receipt["ok"] = Value::Bool(true);
         receipt["first_blocker"] = Value::String("planned-only".into());
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        write_install_receipt(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
         return Ok(OperationOutcome {
             ok: true,
             changed: false,
@@ -76,7 +76,7 @@ pub(crate) fn aur_install_action(
     if installed_version(package).is_some() {
         receipt["ok"] = Value::Bool(true);
         receipt["installed_converged"] = Value::Bool(true);
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        write_install_receipt(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
         return Ok(OperationOutcome {
             ok: true,
             changed: false,
@@ -91,7 +91,7 @@ pub(crate) fn aur_install_action(
     }
     let Some(package_path) = outcome.1 else {
         receipt["first_blocker"] = Value::String("aur-produced-package-missing".into());
-        write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+        write_install_receipt(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
         return Ok(OperationOutcome {
             ok: false,
             changed: false,
@@ -122,7 +122,7 @@ pub(crate) fn aur_install_action(
             &verified
         }));
     }
-    write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+    write_install_receipt(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
     Ok(OperationOutcome {
         ok,
         changed: install.ok,
@@ -147,7 +147,7 @@ pub(crate) fn install(
     } else {
         "current-user"
     };
-    let run = crate::atoms::r#do::ratchet_aur::install(
+    let run = crate::atoms::r#do::build_aur_pinned::transaction::install(
         receipt_dir,
         receipt_name,
         package,
@@ -172,7 +172,7 @@ pub(crate) fn install(
                 "unprivileged_builder": builder, "ok": true, "changed": false,
                 "installed_converged": true, "first_blocker": null,
             });
-            write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+            write_install_receipt(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
             OperationOutcome {
                 ok: true,
                 changed: false,
@@ -212,7 +212,7 @@ pub(crate) fn write_install_failure(
     command: CmdResult,
 ) -> Result<OperationOutcome, String> {
     receipt["first_blocker"] = Value::String(meaningful_stderr_tail(&command));
-    write_json(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
+    write_install_receipt(&receipt_dir.join(format!("{receipt_name}.json")), &receipt)?;
     Ok(OperationOutcome {
         ok: false,
         changed: false,
@@ -277,7 +277,7 @@ pub(crate) fn package_pin_witness(
     mutation: bool,
 ) -> Result<(), String> {
     let exclusion_set: Vec<&String> = pins.keys().filter(|name| name.as_str() != target).collect();
-    write_json(
+    write_install_receipt(
         &receipt_dir.join(format!("{receipt_name}.pin-witness.json")),
         &serde_json::json!({
             "schema": "harmonia.package_pin_witness.v1", "target": target,

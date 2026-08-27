@@ -4,8 +4,6 @@
 pub(crate) mod enable_unit;
 #[path = "remove_unit.rs"]
 pub(crate) mod remove_unit;
-#[path = "ratchet_aur.rs"]
-pub(crate) mod ratchet_aur;
 
 #[path = "backfill_file.rs"]
 pub(crate) mod backfill_file;
