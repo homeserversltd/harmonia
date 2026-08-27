@@ -16,8 +16,11 @@ pub(crate) fn change(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Re
     if !p.no_follow {
         return Err("change-mode-no-follow-required".into());
     };
-    let m = fs::symlink_metadata(&p.path).map_err(|e| format!("change-mode-stat-failed: {e}"))?;
-    if m.file_type().is_symlink() {
+    let observation = crate::atoms::ask::change_mode::probe(&p.path, mode)?;
+    if !observation.preimage.present {
+        return Err("change-mode-path-absent".into());
+    }
+    if observation.preimage.kind == Some(crate::atoms::ask::FsKind::Symlink) {
         return Err("change-mode-symlink-refused".into());
     };
     fs::set_permissions(&p.path, fs::Permissions::from_mode(mode))
