@@ -171,6 +171,12 @@ pub(crate) fn validate_tool_semantics(
                 step_id: step_id.into(),
                 defect,
             }),
+        ("ask", "path-exists") => {
+            tools::ask::validate_ladder_args(args).map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            })
+        }
         ("files", "symlink-converge") => tools::files::validate_symlink_converge_args(args)
             .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -438,6 +444,7 @@ pub(crate) fn execute_validated_step(
         );
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("routine", "execute") => Err("routine-dispatch-internal".into()),
+        ("ask", "path-exists") => tools::ask::execute_validated_step(step, module_dir),
         ("command", "capture") => {
             tools::command::execute_validated_step(step, module_dir, software_apply, active_lane)
         }

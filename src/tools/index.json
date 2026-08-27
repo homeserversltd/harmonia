@@ -22,6 +22,22 @@
       ]
     },
     {
+      "name": "ask",
+      "description": "Evidence-only path existence observation.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "path-exists",
+          "description": "observe whether one path exists",
+          "args": [
+            {"name": "path", "kind": "string", "required": true},
+            {"name": "resolve_running_kernel", "kind": "bool", "required": false}
+          ],
+          "placement": "Compare"
+        }
+      ]
+    },
+    {
       "name": "pull-repo",
       "description": "Tool composition seat for repository acquisition.",
       "routine_summonable": true,

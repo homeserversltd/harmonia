@@ -238,6 +238,7 @@ impl ToolArgKind {
 }
 
 pub mod artifact_lock;
+pub(crate) mod ask;
 pub use crate::atoms::aur;
 pub use crate::atoms::command;
 pub(crate) use crate::atoms::comparison;
