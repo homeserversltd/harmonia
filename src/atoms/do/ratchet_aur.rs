@@ -3,7 +3,7 @@ use crate::atoms::comparison::{self, DiffDecision};
 use crate::{OperationOutcome, Profile};
 use std::collections::BTreeMap;
 use std::path::Path;
-pub(crate) fn install(
+pub(crate) fn compare_install(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -45,7 +45,7 @@ pub(crate) fn install(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_pinned(
+pub(crate) fn compare_build_pinned(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -93,57 +93,19 @@ pub(crate) fn build_pinned(
     )
 }
 
-pub(crate) fn report(
-    log: &Path,
-    verdict: Verdict,
-    outcome: &OperationOutcome,
-) -> Result<(), String> {
-    receipt::attest(log, verdict, outcome)
-}
-
 pub(crate) fn verify_artifact_lock(
     lock_path: &Path,
     profile: Option<&str>,
     receipt_dir: &Path,
 ) -> Result<OperationOutcome, String> {
-    let observation = crate::atoms::ask::ratchet_aur::probe::artifact_lock(
-        lock_path,
-        profile,
-        receipt_dir,
-        false,
-    )?;
+    let observation = crate::atoms::ask::ratchet_aur::probe::artifact_lock(lock_path, profile)?;
     let outcome = OperationOutcome {
-        ok: observation.ok,
-        changed: false,
-        skipped: false,
-        message: format!("{} artifacts verified", observation.artifact_count),
-        command: None,
+        ok: observation.ok, changed: false, skipped: false,
+        message: format!("{} artifacts verified", observation.artifact_count), command: None,
     };
-    receipt::attest_artifact_lock(
-        &receipt_dir.join("artifact-lock.attest.jsonl"),
-        &observation,
-    )?;
+    crate::atoms::attest::ratchet_aur::attest_artifact_lock(
+        &receipt_dir.join("artifact-lock.attest.jsonl"), &observation)?;
     Ok(outcome)
-}
-
-pub(crate) fn pinned_artifacts_command(
-    action: &str,
-    profile: &Profile,
-    lock_path: &Path,
-    receipt_dir: &Path,
-    args: &[String],
-) -> Result<(), String> {
-    std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
-    match action {
-        "check" => crate::atoms::ask::ratchet_aur::probe::pinned_artifacts_check(
-            profile,
-            lock_path,
-            receipt_dir,
-        ),
-        "nudge" => mutation::pinned_artifacts_nudge(profile, lock_path, receipt_dir, args),
-        "bless" => mutation::pinned_artifacts_bless(profile, lock_path, receipt_dir, args),
-        other => Err(format!("unsupported pinned-artifacts action {other}")),
-    }
 }
 
 mod mutation {

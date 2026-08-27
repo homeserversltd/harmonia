@@ -147,7 +147,7 @@ pub(crate) fn install(
     } else {
         "current-user"
     };
-    let run = crate::atoms::r#do::ratchet_aur::install(
+    let run = crate::atoms::r#do::ratchet_aur::compare_install(
         receipt_dir,
         receipt_name,
         package,

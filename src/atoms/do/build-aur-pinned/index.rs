@@ -21,7 +21,7 @@ pub(crate) fn check(
     write_json(&receipt_path, &serde_json::to_value(&receipt).map_err(|e| e.to_string())?)?;
     augment_comparison_receipt(&receipt_path, serde_json::json!({"pinned_version": observation.lock.pinned_version, "pinned_pkgbuild_sha": observation.lock.pkgbuild_sha, "available_version": observation.upstream.available_version, "available_pkgbuild_sha": observation.upstream.pkgbuild_sha, "upstream_source": observation.upstream.observed_source}), serde_json::json!({"ratchet_lock_matches_upstream": !newer_available}), DiffDecision::Empty, None, false)?;
     let outcome=OperationOutcome { ok:true, changed:false, skipped:false, message:format!("aur check {package}"), command:None };
-    crate::atoms::r#do::ratchet_aur::report(&receipt_dir.join(format!("{receipt_name}.attest.jsonl")), observation.verdict, &outcome)?;
+    crate::atoms::attest::ratchet_aur::report(&receipt_dir.join(format!("{receipt_name}.attest.jsonl")), observation.verdict, &outcome)?;
     Ok(outcome)
 }
 
@@ -156,7 +156,7 @@ pub(crate) fn build_pinned(
     } else {
         "current-user".to_string()
     };
-    let run = crate::atoms::r#do::ratchet_aur::build_pinned(
+    let run = crate::atoms::r#do::ratchet_aur::compare_build_pinned(
         receipt_dir,
         receipt_name,
         package,
@@ -217,7 +217,7 @@ pub(crate) fn build_pinned(
         movement,
         outcome.changed,
     )?;
-    crate::atoms::r#do::ratchet_aur::report(
+    crate::atoms::attest::ratchet_aur::report(
         &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
         run.observation().verdict,
         &outcome,
