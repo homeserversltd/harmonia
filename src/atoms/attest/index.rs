@@ -4,25 +4,54 @@
 pub(crate) mod build_crate;
 #[path = "build_venv.rs"]
 pub(crate) mod build_venv;
+#[path = "change_mode.rs"]
+pub(crate) mod change_mode;
+#[path = "change_owner.rs"]
+pub(crate) mod change_owner;
 #[path = "check_health.rs"]
 pub(crate) mod check_health;
 #[path = "convergence-receipts.rs"]
 pub(crate) mod convergence_receipts;
+#[path = "copy_file.rs"]
+pub(crate) mod copy_file;
 #[path = "hyalos.rs"]
 pub(crate) mod hyalos;
 #[path = "install_package.rs"]
 pub(crate) mod install_package;
+#[path = "make_dir.rs"]
+pub(crate) mod make_dir;
+#[path = "make_link.rs"]
+pub(crate) mod make_link;
 #[path = "ratchet_aur.rs"]
 pub(crate) mod ratchet_aur;
+#[path = "remove_dir.rs"]
+pub(crate) mod remove_dir;
+#[path = "remove_file.rs"]
+pub(crate) mod remove_file;
+#[path = "rename.rs"]
+pub(crate) mod rename;
 #[path = "set_clock.rs"]
 pub(crate) mod set_clock;
+#[path = "write_file.rs"]
+pub(crate) mod write_file;
 use super::Receipt;
+
+/// Compatibility writer used by legacy convergence owners; serialization remains Attest-owned.
+pub(crate) fn write_legacy_json(
+    receipt_dir: &Path,
+    path: &Path,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    let _ = receipt_dir;
+    write_json_atomic(path, value)
+}
+
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -37,7 +66,6 @@ struct StalePreimage {
     uid: u32,
     gid: u32,
 }
-
 
 /// Attestation-owned no-follow read handle for source observation.
 #[cfg(unix)]
@@ -54,10 +82,14 @@ pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| error.to_string());
+        return fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .map_err(|error| error.to_string());
     }
     #[cfg(not(unix))]
-    { let _ = (path, mode); Ok(()) }
+    {
+        let _ = (path, mode);
+        Ok(())
+    }
 }
 
 pub(crate) fn update_set_receipt(
@@ -537,22 +569,36 @@ pub(crate) fn remove_artifact(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("attest-artifact-remove-failed {}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "attest-artifact-remove-failed {}: {error}",
+            path.display()
+        )),
     }
 }
 
 pub(crate) fn copy_artifact(source: &Path, target: &Path) -> Result<(), String> {
-    let parent = target.parent().ok_or_else(|| format!("artifact-copy-parent-missing {}", target.display()))?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("artifact-copy-parent-missing {}", target.display()))?;
     prepare_receipt_parent(parent)?;
-    fs::copy(source, target).map_err(|error| format!("artifact-copy-failed {} -> {}: {error}", source.display(), target.display()))?;
+    fs::copy(source, target).map_err(|error| {
+        format!(
+            "artifact-copy-failed {} -> {}: {error}",
+            source.display(),
+            target.display()
+        )
+    })?;
     Ok(())
 }
 
 /// Open a named fresh event stream through the Attest owner (create/truncate semantics).
 pub(crate) fn open_event_stream(path: &Path) -> Result<File, String> {
-    let parent = path.parent().ok_or_else(|| format!("event-stream-parent-missing {}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("event-stream-parent-missing {}", path.display()))?;
     prepare_receipt_parent(parent)?;
-    File::create(path).map_err(|error| format!("event-stream-open-failed {}: {error}", path.display()))
+    File::create(path)
+        .map_err(|error| format!("event-stream-open-failed {}: {error}", path.display()))
 }
 
 pub(crate) fn append_appliance_log(path: &Path, receipt: &Receipt) -> Result<(), String> {

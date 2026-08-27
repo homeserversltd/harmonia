@@ -848,7 +848,8 @@ fn executable_present_in_paths(
     } else {
         format!("{}.json", request.receipt_name)
     };
-    crate::atoms::attest::write_json_atomic(
+    crate::atoms::attest::write_legacy_json(
+        receipt_dir,
         &receipt_dir.join(receipt_name),
         &json!({
             "schema": "harmonia.files.executable_present.v1",
@@ -1142,7 +1143,7 @@ pub(crate) fn write_convergence_receipt(
         receipt_name.push_str(".json");
     }
     let path = receipt_dir.join(receipt_name);
-    crate::atoms::attest::write_json_atomic(&path, &receipt)
+    crate::atoms::attest::write_legacy_json(receipt_dir, &path, &receipt)
         .map_err(|e| format!("files-receipt-write-failed {}: {e}", path.display()))
 }
 
