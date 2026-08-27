@@ -700,6 +700,91 @@ mod shared_dot_files_tests {
     }
 
     #[test]
+    fn materialize_forced_divergent_module_removes_stale_entry() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-stage-forced-divergent-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source_module = root.join("profiles/demo/modules/alpha");
+        fs::create_dir_all(source_module.clone()).unwrap();
+        fs::create_dir_all(root.join("src/tools")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("profiles/demo/index.json"),
+            r#"{"id":"demo","identity":"test","modules":["alpha"]}"#,
+        )
+        .unwrap();
+        fs::write(source_module.join("index.rs"), b"// fixture\n").unwrap();
+        fs::write(source_module.join("sidecar.json"), r#"{"id":"alpha"}"#).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+
+        let installed_module = root.join("installed/modules/alpha");
+        fs::create_dir_all(&installed_module).unwrap();
+        fs::write(installed_module.join("sidecar.json"), r#"{"id":"alpha"}"#).unwrap();
+        let stale = installed_module.join("stale-entry");
+        fs::write(&stale, b"stale").unwrap();
+        let subscription = root.join("subscription.json");
+        let prior_subscription = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
+        std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let result = super::materialize(
+            &root,
+            "demo",
+            &root.join("installed/modules"),
+            &root.join("receipts"),
+            "owner",
+            &invocation,
+            None,
+            None,
+            None,
+        );
+        match prior_subscription {
+            Some(value) => std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", value),
+            None => std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH"),
+        }
+        let _profile = result.unwrap();
+        let source_hash = crate::atoms::tree_hash::content_tree_sha256(&source_module).unwrap();
+        let installed_hash =
+            crate::atoms::tree_hash::content_tree_sha256(&installed_module).unwrap();
+        println!(
+            "after stale_exists={} source_hash={} installed_hash={}",
+            stale.exists(),
+            source_hash,
+            installed_hash
+        );
+        assert!(!stale.exists());
+        assert_eq!(source_hash, installed_hash);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn materializes_shared_module_then_backfills_compiled_output() {
         let root =
             std::env::temp_dir().join(format!("harmonia-stage-shared-{}", std::process::id()));

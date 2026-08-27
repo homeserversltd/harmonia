@@ -196,6 +196,38 @@ pub(crate) fn molt_at_subscription_path_for_modules(
             continue;
         }
         refreshed_modules.push(module.clone());
+        if mode == MoltMode::Copy && forced_modules.contains(module) {
+            // A forced module replacement is a complete module-root export.
+            crate::tools::comparison::execute(
+                "molt-forced-module-root-replace",
+                || Ok(fs::symlink_metadata(&module_output_dir).is_ok()),
+                |present| {
+                    if *present {
+                        crate::tools::comparison::DiffDecision::Different
+                    } else {
+                        crate::tools::comparison::DiffDecision::Empty
+                    }
+                },
+                |authorization, _| {
+                    crate::tools::files::remove_dir_authorized(
+                        &authorization,
+                        &key,
+                        &module_output_dir,
+                    )
+                    .and_then(|_| verify_absent(&module_output_dir))
+                },
+            )?;
+            export_tree(
+                &key,
+                &module_dir,
+                &module_output_dir,
+                "module-forced-root",
+                mode,
+                &mut artifacts,
+                &mut pruned_paths,
+            )?;
+            continue;
+        }
         if ensure_dir(&key, &module_dir, &module_output_dir)? {
             artifacts.push(MoltArtifact {
                 kind: "export-directory",
