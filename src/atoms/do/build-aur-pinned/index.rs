@@ -14,14 +14,14 @@ use std::path::{Path, PathBuf};
 pub(crate) fn check(
     receipt_dir: &Path, receipt_name: &str, package: &str, lock_path: &Path, upstream_state: Option<&str>,
 ) -> Result<OperationOutcome, String> {
-    let observation = crate::atoms::ask::ratchet_aur::check(package, lock_path, upstream_state)?;
-    let newer_available = observation.verdict == crate::atoms::ask::ratchet_aur::Verdict::UpstreamMovedPastPin;
+    let observation = crate::atoms::ask::aur_package::check(package, lock_path, upstream_state)?;
+    let newer_available = observation.verdict == crate::atoms::ask::aur_package::Verdict::UpstreamMovedPastPin;
     let receipt = AurCheckReceipt { schema: "harmonia.aur.check.v1", package: package.to_string(), pinned_version: observation.lock.pinned_version.clone(), pinned_pkgbuild_sha: observation.lock.pkgbuild_sha.clone(), available_version: Some(observation.upstream.available_version.clone()), available_pkgbuild_sha: Some(observation.upstream.pkgbuild_sha.clone()), upstream_source_observed: Some(observation.upstream.observed_source.clone()), newer_available, ok: true, changed: false, first_missing_signal: "none".into() };
     let receipt_path = receipt_dir.join(format!("{receipt_name}.json"));
     write_json(&receipt_path, &serde_json::to_value(&receipt).map_err(|e| e.to_string())?)?;
     augment_comparison_receipt(&receipt_path, serde_json::json!({"pinned_version": observation.lock.pinned_version, "pinned_pkgbuild_sha": observation.lock.pkgbuild_sha, "available_version": observation.upstream.available_version, "available_pkgbuild_sha": observation.upstream.pkgbuild_sha, "upstream_source": observation.upstream.observed_source}), serde_json::json!({"ratchet_lock_matches_upstream": !newer_available}), DiffDecision::Empty, None, false)?;
     let outcome=OperationOutcome { ok:true, changed:false, skipped:false, message:format!("aur check {package}"), command:None };
-    crate::atoms::r#do::ratchet_aur::report(&receipt_dir.join(format!("{receipt_name}.attest.jsonl")), observation.verdict, &outcome)?;
+    crate::atoms::attest::aur_package::report(&receipt_dir.join(format!("{receipt_name}.attest.jsonl")), observation.verdict, &outcome)?;
     Ok(outcome)
 }
 
@@ -156,7 +156,7 @@ pub(crate) fn build_pinned(
     } else {
         "current-user".to_string()
     };
-    let run = crate::atoms::r#do::ratchet_aur::build_pinned(
+    let run = crate::atoms::r#do::aur_package::compare_build_pinned(
         receipt_dir,
         receipt_name,
         package,
@@ -217,7 +217,7 @@ pub(crate) fn build_pinned(
         movement,
         outcome.changed,
     )?;
-    crate::atoms::r#do::ratchet_aur::report(
+    crate::atoms::attest::aur_package::report(
         &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
         run.observation().verdict,
         &outcome,

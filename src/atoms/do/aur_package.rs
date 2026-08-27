@@ -1,9 +1,9 @@
-pub(crate) use crate::atoms::ask::ratchet_aur::{ArtifactLockObservation, Observation, Verdict};
+pub(crate) use crate::atoms::ask::aur_package::{ArtifactLockObservation, Observation, Verdict};
 use crate::atoms::comparison::{self, DiffDecision};
 use crate::{OperationOutcome, Profile};
 use std::collections::BTreeMap;
 use std::path::Path;
-pub(crate) fn install(
+pub(crate) fn compare_install(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -16,7 +16,7 @@ pub(crate) fn install(
         "ratchet-aur-package",
         "ratchet-aur-package",
         || {
-            Ok(crate::atoms::ask::ratchet_aur::probe::installed_version(
+            Ok(crate::atoms::ask::aur_package::probe::installed_version(
                 package,
             ))
         },
@@ -45,7 +45,7 @@ pub(crate) fn install(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_pinned(
+pub(crate) fn compare_build_pinned(
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -62,7 +62,7 @@ pub(crate) fn build_pinned(
     crate::atoms::declaration::execute(
         "ratchet-aur-package",
         "ratchet-aur-package",
-        || crate::atoms::ask::ratchet_aur::probe::ratchet(package, lock_path, None, install),
+        || crate::atoms::ask::aur_package::probe::ratchet(package, lock_path, None, install),
         |observation| {
             if apply && observation.verdict == Verdict::BehindPin {
                 DiffDecision::Different
@@ -106,11 +106,8 @@ pub(crate) fn verify_artifact_lock(
     profile: Option<&str>,
     receipt_dir: &Path,
 ) -> Result<OperationOutcome, String> {
-    let observation = crate::atoms::ask::ratchet_aur::probe::artifact_lock(
-        lock_path,
-        profile,
-        receipt_dir,
-        false,
+    let observation = crate::atoms::ask::aur_package::probe::artifact_lock(
+        lock_path, profile,
     )?;
     let outcome = OperationOutcome {
         ok: observation.ok,
@@ -135,10 +132,8 @@ pub(crate) fn pinned_artifacts_command(
 ) -> Result<(), String> {
     std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
     match action {
-        "check" => crate::atoms::ask::ratchet_aur::probe::pinned_artifacts_check(
-            profile,
-            lock_path,
-            receipt_dir,
+        "check" => crate::atoms::ask::aur_package::probe::pinned_artifacts_check(
+            profile, lock_path, receipt_dir,
         ),
         "nudge" => mutation::pinned_artifacts_nudge(profile, lock_path, receipt_dir, args),
         "bless" => mutation::pinned_artifacts_bless(profile, lock_path, receipt_dir, args),
@@ -149,7 +144,7 @@ pub(crate) fn pinned_artifacts_command(
 mod mutation {
     use super::{Observation, Verdict};
     use crate::atoms;
-    use crate::atoms::ask::ratchet_aur::probe::load_pinned_lock;
+    use crate::atoms::ask::aur_package::probe::load_pinned_lock;
     use crate::atoms::comparison::ActionAuthorization;
     use crate::OperationOutcome;
     use crate::{
@@ -266,7 +261,7 @@ mod mutation {
         let candidate = required_value(args, "--candidate")?;
         let version = required_value_string(args, "--version")?;
         let expected_sha = required_value_string(args, "--sha256")?;
-        let actual_sha = crate::atoms::ask::ratchet_aur::probe::sha256_file(&candidate)?;
+        let actual_sha = crate::atoms::ask::aur_package::probe::sha256_file(&candidate)?;
         let ok = actual_sha.eq_ignore_ascii_case(&expected_sha);
         let staged_path = receipt_dir
             .join("candidates")
@@ -342,7 +337,7 @@ mod mutation {
         let candidate = required_value(args, "--candidate")?;
         let version = required_value_string(args, "--version")?;
         let expected_sha = required_value_string(args, "--sha256")?;
-        let actual_sha = crate::atoms::ask::ratchet_aur::probe::sha256_file(&candidate)?;
+        let actual_sha = crate::atoms::ask::aur_package::probe::sha256_file(&candidate)?;
         if !actual_sha.eq_ignore_ascii_case(&expected_sha) {
             return Err("candidate-sha256-mismatch".to_string());
         }

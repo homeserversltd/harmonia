@@ -10,8 +10,12 @@ pub(crate) mod build_venv;
 pub(crate) mod check_health;
 #[path = "install_package.rs"]
 pub(crate) mod install_package;
-#[path = "ratchet_aur.rs"]
-pub(crate) mod ratchet_aur;
+#[path = "aur_package.rs"]
+pub(crate) mod aur_package;
+#[path = "run_command.rs"]
+pub(crate) mod run_command;
+#[path = "replace_process.rs"]
+pub(crate) mod replace_process;
 #[path = "set_clock.rs"]
 pub(crate) mod set_clock;
 use super::{ask_file, CommandObservation, FileObservation, HttpObservation, UnitObservation};

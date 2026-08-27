@@ -12,8 +12,8 @@ pub(crate) mod convergence_receipts;
 pub(crate) mod hyalos;
 #[path = "install_package.rs"]
 pub(crate) mod install_package;
-#[path = "ratchet_aur.rs"]
-pub(crate) mod ratchet_aur;
+#[path = "aur_package.rs"]
+pub(crate) mod aur_package;
 #[path = "set_clock.rs"]
 pub(crate) mod set_clock;
 use super::Receipt;

@@ -29,6 +29,7 @@ pub(crate) fn command_with_timeout_in_dir_env(
     environment: &[(String, String)],
     timeout: Duration,
 ) -> Result<CommandObservation, String> {
+    let _pre_image = crate::atoms::ask::run_command::observe(program, args, cwd)?;
     let result = run_with_timeout_in_dir_env(program, args, cwd, environment, timeout);
     let _ = (authorization, invocation);
     Ok(CommandObservation {
@@ -48,6 +49,7 @@ pub(crate) fn command_with_timeout(
     args: &[String],
     timeout: Duration,
 ) -> Result<CommandObservation, String> {
+    let _pre_image = crate::atoms::ask::run_command::observe(program, args, None)?;
     let result = run_with_timeout(program, args, timeout);
     let _ = (authorization, invocation);
     Ok(CommandObservation {

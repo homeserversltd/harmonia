@@ -120,8 +120,6 @@ pub(crate) mod probe {
     pub(crate) fn artifact_lock(
         lock_path: &Path,
         profile: Option<&str>,
-        receipt_dir: &Path,
-        apply: bool,
     ) -> Result<ArtifactLockObservation, String> {
         let lock_file = crate::atoms::ask::file(lock_path).map_err(|error| {
             format!("artifact-lock-read-failed {}: {error}", lock_path.display())
@@ -149,25 +147,8 @@ pub(crate) mod probe {
                 first_missing_signal = format!("pinned-artifact-{name}-drift");
             }
             ok &= entry_ok;
-            crate::atoms::attest::ratchet_aur::write_pinned_artifacts_receipt(
-                &receipt_dir.join(format!("artifact-lock-{}.json", sanitize(name))),
-                &json!({
-                    "schema":"harmonia.artifact_lock.artifact.v1", "ok":entry_ok, "apply":apply,
-                    "name":name, "version":artifact.version, "path":artifact.path, "expected_sha256":artifact.sha256,
-                    "actual_sha256":actual, "exists":actual.is_some(), "policy":artifact.policy,
-                    "first_missing_signal": if entry_ok {"none"} else {first_missing_signal.as_str()}
-                }),
-            )?;
             entries.push(json!({"name":name,"version":artifact.version,"path":artifact.path,"ok":entry_ok,"exists":actual.is_some(),"policy":artifact.policy}));
         }
-        crate::atoms::attest::ratchet_aur::write_pinned_artifacts_receipt(
-            &receipt_dir.join("run.json"),
-            &json!({
-                "schema":"harmonia.artifact_lock.verify.v1", "ok":ok, "apply":apply, "mutation":false,
-                "profile_id":lock.profile, "lock_path":lock_path, "artifact_count":entries.len(),
-                "artifacts":entries, "first_missing_signal":first_missing_signal
-            }),
-        )?;
         Ok(ArtifactLockObservation {
             ok,
             artifact_count: entries.len(),
@@ -252,19 +233,6 @@ pub(crate) mod probe {
                 .map(|status| format!("pinned-artifact-{}-drift", status.name))
                 .unwrap_or_else(|| "none".to_string())
         };
-        crate::atoms::attest::ratchet_aur::write_pinned_artifacts_receipt(
-            &receipt_dir.join("run.json"),
-            &json!({
-                "schema": "harmonia.pinned_artifacts.check.v1",
-                "ok": ok,
-                "mutation": false,
-                "profile_id": profile.id,
-                "lock_path": lock_path,
-                "artifact_count": statuses.len(),
-                "first_missing_signal": first_missing_signal,
-                "artifacts": statuses,
-            }),
-        )?;
         println!("schema=harmonia.pinned_artifacts.check.v1");
         hyalos::forward_receipt(
             "schema=harmonia.pinned_artifacts.check.v1",

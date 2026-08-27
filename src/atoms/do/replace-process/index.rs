@@ -48,11 +48,8 @@ fn validate(p: &Plan) -> Result<(), String> {
 }
 fn write_receipt(p: &Plan, proof: bool) -> Result<Receipt, String> {
     validate(p)?;
-    let canonical = fs::canonicalize(&p.successor)
-        .map_err(|e| format!("replace-process-successor-canonical: {e}"))?;
-    let metadata = fs::symlink_metadata(&canonical)
-        .map_err(|e| format!("replace-process-successor-stat: {e}"))?;
-    if !metadata.is_file() {
+    let observed = crate::atoms::ask::replace_process::observe(&p.successor)?;
+    if observed.kind != crate::atoms::ask::PathKind::RegularFile {
         return Err("replace-process-successor-not-regular-file".into());
     }
     let parent = p
@@ -63,9 +60,9 @@ fn write_receipt(p: &Plan, proof: bool) -> Result<Receipt, String> {
     let receipt = Receipt {
         schema: "harmonia.replace-process.v1".into(),
         successor: p.successor.display().to_string(),
-        successor_canonical: canonical.display().to_string(),
-        successor_dev: metadata.dev(),
-        successor_ino: metadata.ino(),
+        successor_canonical: observed.canonical.display().to_string(),
+        successor_dev: observed.dev,
+        successor_ino: observed.ino,
         argv: p.argv.clone(),
         guard_name: p.guard_name.clone(),
         guard_value: p.guard_value.clone(),
