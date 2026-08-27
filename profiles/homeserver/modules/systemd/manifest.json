@@ -2,8 +2,8 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "systemd",
   "category": "known-good",
-  "version": "1.0.2",
-  "description": "Quarry-lifted residual HOMESERVER systemd wiring: converge the product-owned vault.mount unit with backups, validate it, and restart it only after this module changed managed material.",
+  "version": "1.0.3",
+  "description": "Quarry-lifted residual HOMESERVER systemd wiring: converge the product-owned vault.mount unit with backups, validate it.",
   "files_root": "files_root",
   "ladder": [
     {
@@ -29,16 +29,6 @@
       "permutation": "daemon-reload",
       "args": {
         "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "systemd-vault-mount-restart-on-change",
-      "tool": "systemd",
-      "permutation": "restart",
-      "args": {
-        "service": "vault.mount",
-        "timeout_secs": 120
       },
       "on_failure": "stop"
     }

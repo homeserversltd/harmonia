@@ -8,7 +8,7 @@ The ladder:
 - converges the quarry nginx configuration and unit with backups of replaced files;
 - enables the quarry site set through validated links;
 - validates the complete nginx configuration;
-- reloads systemd and restarts nginx only when this module changed managed material;
+- reloads systemd after file convergence;
 - proves nginx is active.
 
 The public payload contains certificate paths only. Certificate and key bytes under `/etc/ssl/home.arpa/`, logs under `/var/log/nginx/`, runtime PID state under `/run/`, and runtime service data are not carried.

@@ -7,8 +7,8 @@ The ladder:
 - fails closed unless the birth-provided Go runtime and Yarr source tree exist;
 - converges the quarry `yarr.service` unit with a backup of any replaced file;
 - validates the installed unit;
-- reloads systemd and restarts Yarr only when this module changed managed material;
-- enables the service when needed and proves it is active.
+- reloads systemd after file convergence;
+- proves the service is active.
 
 The unit is carried byte-for-byte. Root `config.json` confirms Yarr's product port is `7070`; the unit relies on Yarr's matching default and requires no substituted value.
 

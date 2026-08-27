@@ -7,8 +7,8 @@ The ladder:
 - fails closed unless the birth-provided `jellyfin` executable exists;
 - converges the quarry `jellyfin.service` unit with a backup of any replaced file;
 - preserves `system.xml` as a user-editable birth seed and never overwrites the appliance copy;
-- reloads systemd and restarts Jellyfin only when this module changed managed material;
-- enables the service when needed and proves it is active.
+- reloads systemd after file convergence;
+- proves the service is active.
 
 The public payload contains no credentials or filled secrets. The quarry `${PORT}` installer placeholder in the user-editable `system.xml` seed is resolved to the product port `8096` from root `config.json`.
 

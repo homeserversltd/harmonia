@@ -2,8 +2,8 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "transmission",
   "category": "interactable",
-  "version": "1.0.1",
-  "description": "Quarry-lifted HOMESERVER Transmission configuration: assert the birth-provided daemon and VPN launcher, preserve the secret-bearing settings seed, converge product-owned sysctl and namespace unit bytes with backups, validate the unit, and restart only after this module changed managed material.",
+  "version": "1.0.2",
+  "description": "Quarry-lifted HOMESERVER Transmission configuration: assert the birth-provided daemon and VPN launcher, preserve the secret-bearing settings seed, converge product-owned sysctl and namespace unit bytes with backups, validate the unit.",
   "files_root": "files_root",
   "ladder": [
     {
@@ -30,16 +30,6 @@
       "permutation": "daemon-reload",
       "args": {
         "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "transmission-restart-on-change",
-      "tool": "systemd",
-      "permutation": "restart",
-      "args": {
-        "service": "transmissionPIA.service",
-        "timeout_secs": 120
       },
       "on_failure": "stop"
     }

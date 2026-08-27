@@ -2,8 +2,8 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "nginx",
   "category": "interactable",
-  "version": "1.1.0",
-  "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration, and restart only after this module changed managed material.",
+  "version": "1.1.1",
+  "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration.",
   "constants": {
     "sites": [
       "homeserver-calibre-web",
@@ -210,16 +210,6 @@
       "tool": "systemd",
       "permutation": "daemon-reload",
       "args": {
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "nginx-restart-on-change",
-      "tool": "systemd",
-      "permutation": "restart",
-      "args": {
-        "service": "nginx.service",
         "timeout_secs": 30
       },
       "on_failure": "stop"

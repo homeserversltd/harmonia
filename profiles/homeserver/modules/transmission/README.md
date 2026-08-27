@@ -7,8 +7,8 @@ The ladder:
 - fails closed unless the birth-provided `transmission-daemon` and `/vault/scripts/transmission.py` launcher exist;
 - requires the installed `settings.json` to be non-empty and valid JSON but never overwrites it;
 - converges the quarry network buffer policy and Transmission VPN namespace unit with backups of replaced files;
-- reloads systemd and restarts `transmissionPIA.service` only when this module changed managed material;
-- enables the service when needed and proves it is active.
+- reloads systemd after file convergence;
+- proves the service is active.
 
 The public `settings.json` is a user-editable birth seed, not a maintenance overwrite. The quarry installer substitutions are applied exactly: `${PORT}` becomes the root `config.json` product port `9091`, `${ADMIN_USER}` becomes `admin`, and `${ADMIN_PASSWORD}` remains an unfilled birth-owned placeholder. The carried unit and sysctl policy otherwise preserve quarry text, apart from adding final newlines for repository-safe module form.
 

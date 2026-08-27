@@ -7,8 +7,7 @@ The ladder:
 - fails closed unless the birth-provided `tailscaled` executable exists;
 - converges `/etc/default/tailscaled` with a backup of any replaced file;
 - preserves the quarry ownership (`owner:owner`) and file mode (`0644` through the files convergence primitive);
-- restarts `tailscaled.service` only when this module changed the managed defaults;
-- enables the service and proves it is active.
+- proves the service is active.
 
 The quarry has no dedicated validator for `/etc/default/tailscaled`, so the ladder does not invent one. Harmonia's `validate-ladder` checks the module schema and tool/permutation contract; it does not prove that a live daemon accepts these defaults.
 

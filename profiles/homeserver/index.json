@@ -165,7 +165,6 @@
       ],
       "initial_units": [
         "transmissionPIA.service.tmpl",
-        "mountNas.service.tmpl",
         "vault.mount.tmpl"
       ]
     }

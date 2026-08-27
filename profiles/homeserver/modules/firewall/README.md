@@ -8,7 +8,7 @@ The ladder:
 - requires the four user-editable host/site files to exist but never overwrites them;
 - converges six product-owned policy files with backups of replaced files;
 - validates nftables, Unbound, Kea, and the nftables unit;
-- reloads systemd and restarts nftables, Unbound, and Kea only when this module changed managed material;
+- reloads systemd after file convergence;
 - proves those services and systemd-networkd are active.
 
 ## User-editable boundary

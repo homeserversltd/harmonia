@@ -8,8 +8,8 @@ The ladder:
 - converges the product configuration and unit with backups of replaced files;
 - masks the Debian instance template so only the HOMESERVER unit owns the cluster;
 - asks PostgreSQL to parse the installed main configuration;
-- reloads systemd and restarts PostgreSQL only when this module changed managed material;
-- enables the HOMESERVER unit and proves it is active.
+- reloads systemd after file convergence;
+- proves the HOMESERVER unit is active.
 
 The payload preserves the product configuration bytes. The versioned package directories are reached through the birth-owned `/opt/homeserver/postgresql/current` and `/opt/homeserver/postgresql/bin` links. The module does not create those links or the `postgres` account.
 
