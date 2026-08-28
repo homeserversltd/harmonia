@@ -19,38 +19,31 @@ pub(crate) fn remove_dir(
     crate::atoms::r#do::remove_dir::operate(authorization, invocation, path, None)
 }
 pub(crate) use crate::atoms::r#do::backfill_file::{
-    converge_managed_directories, converge_managed_files,
+    converge_managed_directories,
 };
 pub(crate) use crate::atoms::r#do::remove_dir::remove_authorized as remove_dir_authorized;
 pub(crate) use crate::atoms::r#do::remove_dir::replace_authorized as remove_dir_replace;
 pub(crate) use crate::atoms::r#do::remove_file::remove_file;
-pub(crate) use crate::atoms::r#do::rename::rename;
 pub(crate) use crate::atoms::r#do::write_file::file_write;
 
 pub(crate) type RemoveDirImage = crate::atoms::r#do::remove_dir::Image;
-pub(crate) type RemoveDirNode = crate::atoms::r#do::remove_dir::Node;
 pub(crate) type RemoveDirKind = crate::atoms::r#do::remove_dir::Kind;
 
 pub(crate) fn remove_dir_exact(left: &RemoveDirImage, right: &RemoveDirImage) -> bool {
     crate::atoms::r#do::remove_dir::exact(left, right)
 }
-pub(crate) fn remove_dir_is_directory(image: &RemoveDirImage) -> bool {
-    matches!(image.root.kind, RemoveDirKind::Directory)
-}
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use similar::TextDiff;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::ffi::CString;
-use std::fs::{self, File};
+use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(unix)]
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const NAME: &str = "files";
 
@@ -340,8 +333,6 @@ pub(crate) fn write_unified_diff_receipt(
         )
     })
 }
-
-pub(crate) use crate::atoms::r#do::remove_file_organ::{FileRemovalEntry, FileRemovalOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -645,12 +636,9 @@ pub(crate) fn ownership_equal(
     Ok((true, true))
 }
 
-#[cfg(not(test))]
-pub(crate) use crate::atoms::r#do::backfill_file::ensure_files_present;
 pub(crate) use crate::atoms::r#do::backfill_file::ensure_files_present_with_invocation;
 pub(crate) use crate::atoms::r#do::place_file::{
-    converge_files, converge_files_authorized, converge_files_authorized_with_config_policy,
-    converge_files_with_invocation,
+    converge_files_authorized, converge_files_authorized_with_config_policy,
 };
 
 fn validate_executable_name(executable: &str) -> Result<(), String> {
@@ -1144,81 +1132,6 @@ pub(crate) fn write_convergence_receipt(
     let path = receipt_dir.join(receipt_name);
     crate::atoms::attest::write_json_atomic(&path, &receipt)
         .map_err(|e| format!("files-receipt-write-failed {}: {e}", path.display()))
-}
-
-#[cfg(unix)]
-pub(crate) fn demo(
-    root: &Path,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<serde_json::Value, String> {
-    let source = root.join("source");
-    let target = root.join("target");
-    let receipts = root.join("receipts");
-    fs::create_dir_all(&source).map_err(|e| e.to_string())?;
-    fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-    fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
-    fs::write(source.join("a"), b"new\n").map_err(|e| e.to_string())?;
-    fs::write(target.join("a"), b"old\n").map_err(|e| e.to_string())?;
-    let request = crate::atoms::files::FileConvergenceRequest {
-        source_root: source.clone(),
-        target_root: target.clone(),
-        files: vec![crate::atoms::files::FileSpec {
-            relative_path: "a".into(),
-            mode: Some(0o644),
-        }],
-        backup_existing: true,
-        receipt_name: "demo".into(),
-        owner: None,
-        group: None,
-    };
-    let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, invocation);
-    let first = crate::atoms::files::converge_files_authorized(
-        &request,
-        &receipts,
-        mode.software_authorization(),
-        mode.invocation(),
-    )?;
-    let bytes_changed = fs::read(target.join("a")).map_err(|e| e.to_string())? == b"new\n";
-    use std::os::unix::fs::PermissionsExt;
-    let mode_ok = fs::metadata(target.join("a"))
-        .map_err(|e| e.to_string())?
-        .permissions()
-        .mode()
-        & 0o777
-        == 0o644;
-    let backup_ok = fs::read_dir(&receipts)
-        .map_err(|e| e.to_string())?
-        .any(|e| {
-            e.ok()
-                .map(|e| e.file_name().to_string_lossy().contains("backup"))
-                .unwrap_or(false)
-        });
-    let second = crate::atoms::files::converge_files_authorized(
-        &request,
-        &receipts,
-        mode.software_authorization(),
-        mode.invocation(),
-    )?;
-    let quiet = !second.changed;
-    let bad_target = target.join("bad");
-    fs::create_dir(&bad_target).map_err(|e| e.to_string())?;
-    let bad = crate::atoms::files::converge_files_authorized(
-        &crate::atoms::files::FileConvergenceRequest {
-            files: vec![crate::atoms::files::FileSpec {
-                relative_path: "bad".into(),
-                mode: Some(0o644),
-            }],
-            receipt_name: "bad".into(),
-            ..request.clone()
-        },
-        &receipts,
-        None,
-        None,
-    );
-    let controlled_error = bad.map(|outcome| !outcome.ok).unwrap_or(true);
-    Ok(
-        serde_json::json!({"first_ok":first.ok,"bytes_changed":bytes_changed,"declared_mode":mode_ok,"backup_old_bytes":backup_ok,"second_quiet":quiet,"controlled_target_not_file":controlled_error,"ok":first.ok && first.changed && bytes_changed && mode_ok && backup_ok && quiet && controlled_error}),
-    )
 }
 
 #[cfg(test)]

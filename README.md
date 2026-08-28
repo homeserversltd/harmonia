@@ -21,36 +21,8 @@ src/tools/       composition tools and re-export seats
 profiles/        selected profile and module declarations
 installer/       installation support
 docs/            architecture and engine notes
-src/*_demo.rs    production demo routes and receipt guidance
 ```
 
-## One demo door
-
-Every production tool has a live demo with a receipt through the single `demo` command. `demo` and `demo list` print the complete registry; a name is an argument, never part of the route name.
-
-```text
-demo files-transaction
-demo make-symlink
-demo aur
-demo git-artifact
-demo systemd-unit
-demo package
-demo command
-demo subscription-interactables
-demo ladder-profile
-demo renew-self
-demo capsule
-demo household-time
-demo stillness
-demo proposal-refresh
-demo structural-wall
-demo foundation
-demo update-set
-demo clock
-demo renew-schedule
-```
-
-Each demo creates or uses its bounded scratch surface, runs the production implementation, emits a receipt, and observes cleanup where applicable.
 
 ## Safe development commands
 

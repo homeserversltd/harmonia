@@ -133,11 +133,10 @@ pub(crate) struct RunContext {
 }
 // Compatibility/profile entrypoints remain here; the durable transaction owner lives in ritual.rs.
 pub(crate) use super::ritual::{
-    apply_projection, commit_projection, demo, project_update_set_v1, rollback_projection,
-    seal_projection, snapshot, snapshot_services, strict_rejects_forward_only, strict_rejects_weak,
-    update_set_demo, validate_exact_root, validate_member_scoped_target, Atom, AtomKind,
-    ProjectionChild, ProjectionTransaction, RestorationImage, Reversibility, SealedProjection,
-    ServiceImage, ServiceState, Snapshot, TransactionReceipt, TransactionState,
+    apply_projection, commit_projection, project_update_set_v1, rollback_projection, seal_projection,
+    snapshot, snapshot_services, validate_exact_root, validate_member_scoped_target,
+    ProjectionChild, ProjectionTransaction, SealedProjection, Snapshot,
+    TransactionReceipt, TransactionState,
 };
 
 pub(crate) fn rolling_update_run(

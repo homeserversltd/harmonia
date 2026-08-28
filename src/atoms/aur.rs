@@ -16,7 +16,6 @@ const HARMONIA_AUR_UPSTREAM_STATE_ENV: &str = "HARMONIA_AUR_UPSTREAM_STATE";
 pub(crate) use crate::atoms::r#do::build_aur_pinned::build_pinned;
 pub(crate) use crate::atoms::r#do::install_aur::install;
 pub(crate) use crate::atoms::r#do::build_aur_pinned::check;
-pub(crate) use crate::atoms::r#do::build_aur_pinned::demo;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct AurRatchetLock {

@@ -63,7 +63,6 @@ pub(crate) fn execute(
     if !no_follow || collision_policy != "refuse" || rollback_policy != "exact" {
         return Err("remove-file-policy-unsupported".into());
     }
-    let invocation = invocation;
     let mut entries = Vec::new();
     let mut removed = 0usize;
     let mut changed = false;

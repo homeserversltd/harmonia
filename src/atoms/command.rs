@@ -120,19 +120,6 @@ pub(crate) fn capture(program: &str, args: &[&str]) -> CmdResult {
     capture_with_options(program, args, CaptureOptions::new())
 }
 
-pub(crate) fn demo(
-    _root: &Path,
-    _invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<serde_json::Value, String> {
-    let success = capture("sh", &["-c", "printf %s \"$PATH\""]);
-    let timeout = capture_with_timeout("/usr/bin/sh", &["-c", "sleep 2"], 1);
-    let root_refusal = resolve_non_root_bearer("root").err().as_deref() == Some("git-bearer-root-refused root");
-    let unknown_refusal = resolve_non_root_bearer("harmonia-no-such-bearer").is_err();
-    let path_ok = success.ok && success.stdout == DEFAULT_SYSTEM_PATH;
-    let timeout_ok = !timeout.ok && timeout.stderr.contains("command-timeout-after-1s") && timeout.stderr.contains("/usr/bin/sh -c sleep 2");
-    Ok(serde_json::json!({"path_capture_succeeded":path_ok,"portable_path":success.stdout,"timeout_failure_observed":timeout_ok,"timeout_stderr":timeout.stderr,"root_bearer_refused":root_refusal,"unknown_bearer_refused":unknown_refusal,"ok":path_ok && timeout_ok && root_refusal && unknown_refusal}))
-}
-
 pub(crate) fn capture_with_timeout(program: &str, args: &[&str], timeout_secs: u64) -> CmdResult {
     capture_with_options(
         program,

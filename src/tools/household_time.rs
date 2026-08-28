@@ -2,7 +2,6 @@ pub(crate) use crate::atoms::r#do::set_clock::execute_validated_step;
 use crate::CmdResult;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const NAME: &str = "household-time";
@@ -54,30 +53,6 @@ pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
         },
     }
 }
-pub(crate) fn demo(
-    root: &Path,
-    _key: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<serde_json::Value, String> {
-    let args = BTreeMap::from([
-        ("backend".into(), Value::String("staff".into())),
-        ("timezone".into(), Value::String("Etc/UTC".into())),
-    ]);
-    let outcome =
-        crate::atoms::r#do::set_clock::execute(root, "set", "set-timezone", &args, false, None)?;
-    let receipt: Value =
-        serde_json::from_slice(&std::fs::read(root.join("set.json")).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    let typed = outcome.ok && receipt["tool"] == "set-clock" && receipt["action"] == "set-timezone";
-    let rejected = validate_ladder_args(
-        "resolve",
-        &BTreeMap::from([("backend".into(), Value::String("unsafe".into()))]),
-    )
-    .is_err();
-    Ok(
-        serde_json::json!({"typed_receipt_written":typed,"unsafe_input_rejected":rejected,"receipt_path":root.join("set.json"),"ok":typed&&rejected}),
-    )
-}
-
 pub(crate) fn planned(operation: &str) -> CmdResult {
     CmdResult {
         ok: true,

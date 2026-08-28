@@ -639,30 +639,6 @@ fn run_action_with_policy(
 }
 
 
-pub(crate) fn demo(
-    root: &Path,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<serde_json::Value, String> {
-    let receipts = root.join("receipts");
-    std::fs::create_dir_all(&receipts).map_err(|e| e.to_string())?;
-    let out = run_permutation(
-        &receipts,
-        "demo",
-        "disable-stop-remove",
-        Some("harmonia-demo-never.service"),
-        &[],
-        None,
-        1,
-        false,
-        false,
-        invocation,
-    )?;
-    let receipt = receipts.join("demo.json").exists();
-    Ok(
-        serde_json::json!({"planned":out.ok,"apply":false,"typed_receipt":receipt,"argv_candidate":"harmonia-demo-never.service","removal_planned":false,"restart_restrained":true,"no_live_mutation":true,"ok":out.ok && receipt && !out.changed}),
-    )
-}
-
 pub(crate) fn execute_validated_step(
     step: &crate::tools::ladder::ValidatedStep,
     module_dir: &std::path::Path,

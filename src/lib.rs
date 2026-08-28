@@ -10,7 +10,6 @@ pub(crate) mod check_health;
 #[path = "tools/enable-unit/index.rs"]
 pub(crate) mod enable_unit;
 pub(crate) use atoms::attest::hyalos;
-mod demo_registry;
 #[path = "tools/install-package/index.rs"]
 pub(crate) mod install_package;
 #[path = "tools/place-file/index.rs"]
@@ -25,8 +24,6 @@ mod remove_file;
 pub(crate) mod remove_unit;
 #[path = "tools/set-clock/index.rs"]
 pub(crate) mod set_clock;
-mod stillness_demo;
-mod structural_wall_demo;
 #[path = "tools/index.rs"]
 pub mod tools;
 
@@ -296,7 +293,7 @@ mod invocation_face {
             || args.first().is_some_and(|arg| {
                 matches!(
                     arg.as_str(),
-                    "capsule" | "acquire-source" | "demo" | "install-timer" | "uninstall-timer"
+                    "capsule" | "acquire-source" | "install-timer" | "uninstall-timer"
                 )
             })
             || matches!(args, [command, action, ..] if matches!(command.as_str(), "interactable" | "config-proposal") && matches!(action.as_str(), "run" | "accept"));
@@ -320,7 +317,6 @@ pub fn invoke(args: Vec<String>) -> Result<(), String> {
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("demo") => demo_command(&args[1..], &invocation),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], invocation.key())
         }
@@ -983,30 +979,12 @@ pub(crate) fn explain() -> Result<(), String> {
     Ok(())
 }
 
-fn demo_command(args: &[String], invocation: &Invocation) -> Result<(), String> {
-    let name = args.first().map(String::as_str);
-    if name.is_none() || name == Some("list") {
-        println!("schema=harmonia.demo.list.v1");
-        println!("ok=true");
-        for name in demo_registry::NAMES {
-            println!("name={name}");
-        }
-        return Ok(());
-    }
-    let name = name.unwrap();
-    if !demo_registry::NAMES.contains(&name) {
-        return Err(format!("unknown-demo-name={name}"));
-    }
-    demo_registry::run(name, invocation.key(), invocation.context())
-}
-
 pub(crate) fn usage() -> Result<(), String> {
     println!("harmonia {}", VERSION);
     println!("usage:");
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
-    println!("  harmonia demo [<name>|list]");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id>");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");

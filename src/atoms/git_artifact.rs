@@ -377,5 +377,3 @@ pub(crate) fn source_attempt(
 pub fn source_head(path: &Path, bearer: &str) -> CommandReceipt {
     crate::atoms::ask::pull_repo::source_head(path, bearer)
 }
-
-pub(crate) use crate::atoms::r#do::pull_repo::demo;

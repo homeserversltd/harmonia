@@ -457,7 +457,6 @@ pub(crate) fn materialize(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let key = key;
     update_subscription_record_with_invocation(
         &subscription_path(),
         SubscriptionUpdate {
