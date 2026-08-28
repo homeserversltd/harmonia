@@ -155,7 +155,7 @@ fn estate_forgejo_credential_helper() -> Result<String, String> {
     ))
 }
 
-fn read_forgejo_token(path: &Path) -> Result<(), String> {
+pub(crate) fn read_token(path: &Path) -> Result<String, String> {
     let contents = fs::read_to_string(path)
         .map_err(|err| format!("forgejo-token-unavailable {}: {err}", path.display()))?;
     let token = contents.lines().find_map(|line| {
@@ -170,8 +170,12 @@ fn read_forgejo_token(path: &Path) -> Result<(), String> {
             .filter(|token| !token.is_empty())
     });
     token
-        .map(|_| ())
+        .map(str::to_owned)
         .ok_or_else(|| format!("forgejo-token-empty {}", path.display()))
+}
+
+fn read_forgejo_token(path: &Path) -> Result<(), String> {
+    read_token(path).map(|_| ())
 }
 
 fn owner_https_credential_helper(request: &Request) -> Option<String> {

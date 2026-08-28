@@ -270,6 +270,16 @@ pub(crate) fn execute_routine_child(
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {
+        "fetch-artifact" => {
+            let outcome = crate::tools::fetch_artifact::execute(args, receipt_dir, apply, invocation)?;
+            let changed = outcome.changed;
+            let artifact = if outcome.skipped {
+                args.get("installed_binary").cloned().unwrap_or(Value::Null)
+            } else {
+                args.get("destination").cloned().unwrap_or(Value::Null)
+            };
+            Ok((outcome, [("artifact".into(), artifact), ("changed".into(), serde_json::json!(changed))].into_iter().collect()))
+        }
         "build-crate" => {
             let cwd = Path::new(
                 args.get("cwd")

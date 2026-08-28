@@ -1,4 +1,4 @@
-//! The authored declaration grammar for the thirteen recursive tool seats.
+//! The authored declaration grammar for the fourteen recursive tool seats.
 use crate::atoms::comparison::{self, ActionAuthorization, ComparisonRun, DiffDecision};
 use serde::Deserialize;
 use serde_json::Value;
@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 pub enum Deed {
     BuildAurPinned,
     BuildCrate,
+    FetchArtifact,
     BuildVenv,
     ChangeMode,
     ChangeOwner,
@@ -33,6 +34,7 @@ impl Deed {
         match self {
             Self::BuildAurPinned => "build-aur-pinned",
             Self::BuildCrate => "build-crate",
+            Self::FetchArtifact => "fetch-artifact",
             Self::BuildVenv => "build-venv",
             Self::ChangeMode => "change-mode",
             Self::ChangeOwner => "change-owner",
@@ -57,9 +59,10 @@ impl Deed {
         &DEEDS
     }
 }
-const DEEDS: [Deed; 20] = [
+const DEEDS: [Deed; 21] = [
     Deed::BuildAurPinned,
     Deed::BuildCrate,
+    Deed::FetchArtifact,
     Deed::BuildVenv,
     Deed::ChangeMode,
     Deed::ChangeOwner,
@@ -156,7 +159,7 @@ pub struct Declaration {
     pub restoration: Restoration,
     pub permutations: &'static [DeclarationPermutation],
 }
-const SEATS: [&str; 13] = [
+const SEATS: [&str; 14] = [
     "place-file",
     "remove-file",
     "make-symlink",
@@ -165,6 +168,7 @@ const SEATS: [&str; 13] = [
     "backfill-file",
     "build-venv",
     "build-crate",
+    "fetch-artifact",
     "set-clock",
     "pull-repo",
     "install-package",
@@ -216,6 +220,7 @@ fn deed(v: &Value) -> Result<Option<Deed>, String> {
     let d = match n {
         "build-aur-pinned" => Deed::BuildAurPinned,
         "build-crate" => Deed::BuildCrate,
+        "fetch-artifact" => Deed::FetchArtifact,
         "build-venv" => Deed::BuildVenv,
         "change-mode" => Deed::ChangeMode,
         "change-owner" => Deed::ChangeOwner,
@@ -294,7 +299,7 @@ fn build(root: RawDeclarations) -> Result<Vec<Declaration>, String> {
     {
         return Err("invalid-declaration-schema".into());
     }
-    if root.records.len() != 13 {
+    if root.records.len() != 14 {
         return Err("wrong-declaration-seat-count".into());
     }
     let mut seen = BTreeSet::new();
@@ -383,7 +388,7 @@ fn build(root: RawDeclarations) -> Result<Vec<Declaration>, String> {
             permutations: ps,
         });
     }
-    if seen.len() != 13 || SEATS.iter().any(|s| !seen.contains(*s)) {
+    if seen.len() != 14 || SEATS.iter().any(|s| !seen.contains(*s)) {
         return Err("declaration-seat-set-mismatch".into());
     }
     Ok(out)

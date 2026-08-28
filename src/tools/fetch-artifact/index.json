@@ -1,0 +1,1 @@
+{"schema": "harmonia.recursive-rust-band.v1", "name": "fetch-artifact", "children": ["observe", "act", "report-home"]}

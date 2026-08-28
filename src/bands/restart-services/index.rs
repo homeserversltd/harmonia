@@ -72,9 +72,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                 .cloned()
                 .unwrap_or_else(|| Value::String(String::new())),
         );
+        let caduceus = args.get("component").and_then(Value::as_str) == Some("caduceus");
         let stages = [
             ("pull-repo", "pull-repo", "acquire"),
-            ("build", "build-crate", "build"),
+            ("build", if caduceus { "fetch-artifact" } else { "build-crate" }, if caduceus { "fetch" } else { "build" }),
             ("binary-install", "place-file", "binary-promotion"),
             ("managed-files", "files", "managed-files"),
             ("service-daemon-reload", "systemd", "daemon-reload"),
@@ -110,6 +111,27 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             .map(|(name, tool, permutation)| {
                 let child_args = match name {
                     "pull-repo" => pull.clone(),
+                    "build" if tool == "fetch-artifact" => {
+                        let component = args.get("component").cloned().unwrap_or(Value::String(String::new()));
+                        let registry_base = args.get("registry_base").cloned().unwrap_or(Value::String(String::new()));
+                        let artifact_name = Value::String("caduceus".into());
+                        let source_dir = args.get("source_dir").and_then(Value::as_str).unwrap_or("");
+                        let destination = Value::String(
+                            Path::new(source_dir)
+                                .join("target/harmonia-registry/caduceus")
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                        let installed_binary = args.get("install_bin").cloned().unwrap_or(Value::String(String::new()));
+                        [
+                            ("component", component),
+                            ("registry_base", registry_base),
+                            ("source_build_sha", serde_json::json!({"from":"pull-repo.resolved_commit"})),
+                            ("destination", destination),
+                            ("installed_binary", installed_binary),
+                            ("artifact_name", artifact_name),
+                        ].into_iter().map(|(key, value)| (key.into(), value)).collect()
+                    }
                     "build" => {
                         let mut c = args.clone();
                         c.insert("cwd".into(), serde_json::json!({"from":"pull-repo.path"}));
@@ -771,6 +793,50 @@ mod tests {
         assert_eq!(request.retries, 0);
     }
     #[test]
+    fn caduceus_real_manifest_lowers_fetch_artifact_build_child() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/tv/modules/install-caduceus/manifest.json");
+        let manifest = load_ladder_manifest(&manifest_path).unwrap();
+        let routine = manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "caduceus-service-runtime")
+            .expect("real Caduceus lowered routine");
+        assert!(crate::tools::ladder::is_lowered_service_runtime_converge(routine));
+        assert!(crate::tools::ladder::service_runtime_converge_args(routine).is_some());
+
+        let build = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "build")
+            .expect("lowered fetch-artifact build child");
+        assert_eq!(build.tool, "fetch-artifact");
+        assert_eq!(build.permutation.as_deref(), Some("fetch"));
+        assert_eq!(build.args.get("component").and_then(Value::as_str), Some("caduceus"));
+        assert_eq!(
+            build.args.get("source_build_sha"),
+            Some(&json!({"from":"pull-repo.resolved_commit"}))
+        );
+        assert_eq!(
+            build.args.get("registry_base").and_then(Value::as_str),
+            Some("https://git.home.arpa/api/packages/HOMESERVERSLTD/generic")
+        );
+        assert_eq!(
+            build.args.get("destination").and_then(Value::as_str),
+            Some("/opt/caduceus/source/target/harmonia-registry/caduceus")
+        );
+        assert_eq!(
+            build.args.get("installed_binary").and_then(Value::as_str),
+            Some("/usr/local/bin/caduceus")
+        );
+        assert_eq!(build.args.get("artifact_name").and_then(Value::as_str), Some("caduceus"));
+        assert!(routine
+            .steps
+            .iter()
+            .all(|child| child.tool != "build-crate"));
+    }
+
+    #[test]
     fn arcadia_real_manifest_lowers_binary_promotion_source_artifact_reference() {
         let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json");
@@ -780,6 +846,14 @@ mod tests {
             .iter()
             .find(|step| step.step_id == "arcadia-gui-service-runtime")
             .expect("real Arcadia lowered routine");
+        let build = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "build")
+            .expect("lowered build child");
+        assert_eq!(build.tool, "build-crate");
+        assert_eq!(build.permutation.as_deref(), Some("build"));
+
         let lowered = routine
             .steps
             .iter()

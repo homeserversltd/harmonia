@@ -565,6 +565,59 @@
             "attest": "do-and-attest"
           }
         ]
+      },
+      {
+        "tool": "fetch-artifact",
+        "permutations": [
+          {
+            "name": "fetch",
+            "deed": "fetch-artifact",
+            "inputs": [
+              {
+                "name": "component",
+                "kind": "string",
+                "required": true
+              },
+              {
+                "name": "registry_base",
+                "kind": "string",
+                "required": true
+              },
+              {
+                "name": "source_build_sha",
+                "kind": "string",
+                "required": true
+              },
+              {
+                "name": "destination",
+                "kind": "string",
+                "required": true
+              },
+              {
+                "name": "installed_binary",
+                "kind": "string",
+                "required": true
+              },
+              {
+                "name": "artifact_name",
+                "kind": "string",
+                "required": true
+              }
+            ],
+            "comparison": "file-state",
+            "phases": [
+              "observe",
+              "compare",
+              "act",
+              "attest"
+            ],
+            "permission": "mutate",
+            "ownership": "shared-ritual",
+            "no_follow": true,
+            "restoration": "restore-on-failure",
+            "attest": "do-and-attest"
+          }
+        ]
       }
     ]
   }

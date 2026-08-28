@@ -1627,6 +1627,50 @@
           "placement": "InstallPackages"
         }
       ]
+    },
+    {
+      "name": "fetch-artifact",
+      "description": "Verified Forgejo artifact fetch and atomic installation.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "fetch",
+          "description": "fetch and install caduceus artifact",
+          "args": [
+            {
+              "name": "component",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "registry_base",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_build_sha",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "destination",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "installed_binary",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "artifact_name",
+              "kind": "string",
+              "required": true
+            }
+          ],
+          "placement": "RatchetBinaries"
+        }
+      ]
     }
   ]
 }

@@ -4,6 +4,8 @@
 pub(crate) mod change_unit;
 #[path = "build_crate.rs"]
 pub(crate) mod build_crate;
+#[path = "fetch_artifact.rs"]
+pub(crate) mod fetch_artifact;
 #[path = "build_venv.rs"]
 pub(crate) mod build_venv;
 #[path = "check_health.rs"]

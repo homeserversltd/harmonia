@@ -23,6 +23,7 @@
       "args": {
         "module_id": "install-caduceus",
         "component": "caduceus",
+        "registry_base": "https://git.home.arpa/api/packages/HOMESERVERSLTD/generic",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
         "service": "caduceus.service",

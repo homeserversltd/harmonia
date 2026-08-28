@@ -313,12 +313,38 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
     {
         return false;
     }
-    if !step
+    let Some((pull, build, install)) = step
         .steps
-        .iter()
-        .take(3)
-        .zip(stages.iter().take(3))
-        .all(|(c, (n, t, p))| c.name == *n && c.tool == *t && c.permutation.as_deref() == Some(*p))
+        .first()
+        .zip(step.steps.get(1))
+        .zip(step.steps.get(2))
+        .map(|((pull, build), install)| (pull, build, install))
+    else {
+        return false;
+    };
+    let legacy_build =
+        build.tool == "build-crate" && build.permutation.as_deref() == Some("build");
+    let caduceus_build = build.tool == "fetch-artifact"
+        && build.permutation.as_deref() == Some("fetch")
+        && build.args.get("component").and_then(Value::as_str) == Some("caduceus")
+        && build
+            .args
+            .get("registry_base")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && build
+            .args
+            .get("destination")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && build.args.get("installed_binary").is_some();
+    if pull.name != stages[0].0
+        || pull.tool != stages[0].1
+        || pull.permutation.as_deref() != Some(stages[0].2)
+        || install.name != stages[2].0
+        || install.tool != stages[2].1
+        || install.permutation.as_deref() != Some(stages[2].2)
+        || (!legacy_build && !caduceus_build)
     {
         return false;
     }
@@ -439,7 +465,8 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             .get("path")
             .and_then(Value::as_str)
             .is_some_and(|value| !value.trim().is_empty())
-        && build.args.get("cwd") == Some(&serde_json::json!({"from":"pull-repo.path"}))
+        && (caduceus_build
+            || build.args.get("cwd") == Some(&serde_json::json!({"from":"pull-repo.path"})))
         && build.args.get("source_build_sha")
             == Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
         && install.args.get("source_path") == Some(&serde_json::json!({"from":"build.artifact"}))
@@ -450,7 +477,12 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             == Some(&serde_json::json!({"from":"pull-repo.changed"}))
         && epilogue.args.get("binary_changed")
             == Some(&serde_json::json!({"from":"binary-install.changed"}))
-        && build.args.get("op_prefix") == epilogue.args.get("op_prefix")
+        && (if caduceus_build {
+            build.args.get("artifact_name") == Some(&Value::String("caduceus".into()))
+                && build.args.get("installed_binary") == epilogue.args.get("install_bin")
+        } else {
+            build.args.get("op_prefix") == epilogue.args.get("op_prefix")
+        })
         && install.args.get("install_bin") == epilogue.args.get("install_bin")
 }
 

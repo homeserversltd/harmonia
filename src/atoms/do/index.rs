@@ -17,6 +17,8 @@ pub(crate) mod remove_file_organ;
 pub(crate) mod build_aur_pinned;
 #[path = "build-crate/index.rs"]
 pub(crate) mod build_crate;
+#[path = "fetch-artifact/index.rs"]
+pub(crate) mod fetch_artifact;
 #[path = "build-venv/index.rs"]
 pub(crate) mod build_venv;
 #[path = "change-mode/index.rs"]

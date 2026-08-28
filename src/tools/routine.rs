@@ -376,6 +376,9 @@ fn execute_routine_tool(
             apply,
             invocation,
         ),
+        "fetch-artifact" => crate::bands::ratchet_binaries::execute_routine_child(
+            "fetch-artifact", requested_permutation, args, manifest, receipt_dir, apply, invocation,
+        ),
         "build-crate" => crate::bands::ratchet_binaries::execute_routine_child(
             "build-crate",
             requested_permutation,

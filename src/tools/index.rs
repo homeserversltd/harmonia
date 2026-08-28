@@ -20,6 +20,7 @@ impl ActRung {
 const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("backfill-file", include_str!("backfill-file/index.json")),
     ("build-crate", include_str!("build-crate/index.json")),
+    ("fetch-artifact", include_str!("fetch-artifact/index.json")),
     ("build-venv", include_str!("build-venv/index.json")),
     ("check-health", include_str!("check-health/index.json")),
     ("enable-unit", include_str!("enable-unit/index.json")),
@@ -261,6 +262,8 @@ pub(crate) mod ladder;
 pub(crate) mod routine;
 #[path = "service-runtime/index.rs"]
 pub(crate) mod service_runtime;
+#[path = "fetch-artifact/index.rs"]
+pub(crate) mod fetch_artifact;
 #[path = "systemd/index.rs"]
 pub(crate) mod systemd;
 pub mod venv;

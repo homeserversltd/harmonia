@@ -31,6 +31,11 @@ fn validate_build_environment(args: &BTreeMap<String, Value>) -> Result<(), Stri
 /// No execution state or service-runtime actuator is constructed here.
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
     validate_build_environment(args)?;
+    if args.get("component").and_then(Value::as_str) == Some("caduceus")
+        && args.get("registry_base").and_then(Value::as_str).is_none_or(|v| v.trim().is_empty())
+    {
+        return Err("service-runtime-registry-base-missing".into());
+    }
     for name in [
         "component",
         "source_dir",
