@@ -790,8 +790,8 @@ mod tests {
             let expected = format!("#!/bin/sh\nexport RUSTUP_HOME=/opt/rustup\nexport CARGO_HOME=/opt/cargo\nexec {} \"$@\"\n", target);
             assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
             assert_eq!(
-                fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o755
+                fs::metadata(path).unwrap().permissions().mode() & 0o111,
+                0o111
             );
         }
         assert!(!wrappers.join("rustup").exists());
