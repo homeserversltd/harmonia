@@ -1861,6 +1861,7 @@ fn source_shelf_owned_recursive_sweep(
         .join(format!(".harmonia-source-shelf-sweep-{}", sweep_nonce()));
     let mut promoted_count = 0usize;
     let mut removed_count = 0usize;
+    let mut cleanup_error = None;
     let movement = crate::atoms::comparison::execute_once(
         "source-shelf-owned-recursive",
         || Ok::<_, String>(true),
@@ -2039,7 +2040,36 @@ fn source_shelf_owned_recursive_sweep(
                             target.display()
                         ));
                     }
+                    let target_metadata = fs::symlink_metadata(&target)
+                        .map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-owned-stale-metadata-failed {}: {error}",
+                                target.display()
+                            )
+                        })?;
                     let backup = quarantine.join(relative);
+                    if target_metadata.file_type().is_dir()
+                        && fs::read_dir(&target)
+                            .map_err(|error| {
+                                format!(
+                                    "source-shelf-sweep-owned-directory-read-failed {}: {error}",
+                                    target.display()
+                                )
+                            })?
+                            .next()
+                            .is_none()
+                        && fs::symlink_metadata(&backup).is_ok()
+                    {
+                        fs::remove_dir(&target).map_err(|error| {
+                            format!(
+                                "source-shelf-sweep-owned-empty-directory-remove-failed {}: {error}",
+                                target.display()
+                            )
+                        })?;
+                        provenance.paths.remove(&target.display().to_string());
+                        removed_count += 1;
+                        continue;
+                    }
                     if let Some(parent) = backup.parent() {
                         crate::atoms::r#do::source_shelf::mkdir_all(
                             authorization,
@@ -2062,7 +2092,18 @@ fn source_shelf_owned_recursive_sweep(
                     provenance.paths.remove(&target.display().to_string());
                     removed_count += 1;
                 }
-                write_sweep_provenance(provenance_path, &provenance)
+                write_sweep_provenance(provenance_path, &provenance)?;
+                if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(
+                    authorization,
+                    invocation,
+                    &quarantine,
+                ) {
+                    cleanup_error = Some(format!(
+                        "source-shelf-sweep-quarantine-remove-failed {}: {error}",
+                        quarantine.display()
+                    ));
+                }
+                Ok(())
             })()
         },
     )
@@ -2085,6 +2126,29 @@ fn source_shelf_owned_recursive_sweep(
         };
         write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
         return Err(blocker);
+    }
+    if let Some(blocker) = cleanup_error {
+        let outcome = SourceShelfSweepOutcome {
+            ok: false,
+            changed: promoted_count > 0 || removed_count > 0,
+            current: false,
+            source_inventory_count: desired.len(),
+            target_inventory_count_before: target_inventory.len(),
+            target_inventory_count_after: inventory_sweep_tree_if_present(
+                &request.target_shelf,
+                &sweep_exclude,
+            )?
+            .len(),
+            promoted_count,
+            removed_count,
+            transaction_state: "committed-cleanup-debt".into(),
+            rollback_state: "quarantine-preserved".into(),
+            first_blocker: blocker.clone(),
+            entries,
+            message: format!("owned recursive source shelf converged; cleanup debt: {blocker}"),
+        };
+        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        return Err(outcome.message);
     }
     for entry in &mut entries {
         entry.readback_ok = if entry.action == "quarantined" {
@@ -2116,7 +2180,7 @@ fn source_shelf_owned_recursive_sweep(
         changed: promoted_count > 0 || removed_count > 0,
         current: true,
         source_inventory_count: desired.len(),
-        target_inventory_count_before: 0,
+        target_inventory_count_before: target_inventory.len(),
         target_inventory_count_after: inventory_sweep_tree_if_present(
             &request.target_shelf,
             &sweep_exclude,
@@ -2125,7 +2189,7 @@ fn source_shelf_owned_recursive_sweep(
         promoted_count,
         removed_count,
         transaction_state: "committed".into(),
-        rollback_state: "quarantine-preserved".into(),
+        rollback_state: "not-needed".into(),
         first_blocker: "none".into(),
         entries,
         message: "owned recursive source shelf converged".into(),
@@ -3030,5 +3094,116 @@ fn source_shelf_sweep_with_fault(
             write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
             Ok(outcome)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    fn fixture(label: &str) -> (PathBuf, SourceShelfSweepRequest) {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-source-shelf-{label}-{}", sweep_nonce()));
+        let source_root = root.join("source");
+        let shelf_source = source_root.join("nested/shelf");
+        let target_shelf = root.join("target/nested/shelf");
+        let provenance_path = root.join("state/provenance.json");
+        fs::create_dir_all(&shelf_source).unwrap();
+        fs::create_dir_all(&target_shelf).unwrap();
+
+        let stale_file_py = target_shelf.join("obsolete/deeper/index.py");
+        let stale_file_json = target_shelf.join("obsolete/deeper/index.json");
+        fs::create_dir_all(stale_file_py.parent().unwrap()).unwrap();
+        fs::write(&stale_file_py, b"stale python").unwrap();
+        fs::write(&stale_file_json, b"stale json").unwrap();
+        let target_metadata = fs::symlink_metadata(&target_shelf).unwrap();
+        let mut provenance = SourceShelfSweepProvenance::default();
+        for path in [
+            target_shelf.join("obsolete"),
+            target_shelf.join("obsolete/deeper"),
+            stale_file_py,
+            stale_file_json,
+        ] {
+            provenance.paths.insert(path.display().to_string());
+        }
+        write_sweep_provenance(&provenance_path, &provenance).unwrap();
+
+        let request = SourceShelfSweepRequest {
+            source_root,
+            shelf_source: PathBuf::from("nested/shelf"),
+            target_shelf: target_shelf.clone(),
+            launcher_source_root: root.join("source"),
+            launcher_target_root: root.join("target"),
+            launcher_pattern: ".harmonia-no-flat-launchers".into(),
+            shelf_owner: target_metadata.uid().to_string(),
+            shelf_group: target_metadata.gid().to_string(),
+            shelf_directory_mode: 0o755,
+            shelf_file_mode: 0o644,
+            launcher_mode: 0o755,
+            prune: false,
+            launcher_exclude: Vec::new(),
+            provenance_state: Some(provenance_path),
+            owned_recursive: true,
+            receipt_name: format!("{label}.json"),
+        };
+        (root, request)
+    }
+
+    fn sweep_nonce() -> String {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string()
+    }
+
+    fn assert_clean(
+        root: &Path,
+        request: &SourceShelfSweepRequest,
+        outcome: &SourceShelfSweepOutcome,
+    ) {
+        assert!(outcome.ok);
+        assert_eq!(outcome.transaction_state, "committed");
+        assert_eq!(outcome.rollback_state, "not-needed");
+        assert!(!request.target_shelf.join("obsolete").exists());
+        let debris = fs::read_dir(&request.target_shelf)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".harmonia-source-shelf-sweep-")
+            })
+            .count();
+        assert_eq!(debris, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn owned_recursive_sweep_removes_nested_stale_parent_and_children() {
+        let (root, request) = fixture("direct");
+        let receipts = root.join("receipts");
+        let invocation = InvocationKey::for_apply();
+        let outcome =
+            source_shelf_owned_recursive_sweep(&request, &receipts, true, Some(&invocation))
+                .unwrap();
+        assert!(outcome.removed_count >= 4);
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("direct.json")).unwrap()).unwrap();
+        assert_eq!(receipt["ok"], serde_json::Value::Bool(true));
+        assert_eq!(receipt["transaction_state"], "committed");
+        assert_eq!(receipt["rollback_state"], "not-needed");
+        assert_clean(&root, &request, &outcome);
+    }
+
+    #[test]
+    fn source_shelf_sweep_wrapper_cleans_successful_quarantine() {
+        let (root, request) = fixture("wrapper");
+        let receipts = root.join("receipts");
+        let invocation = InvocationKey::for_apply();
+        let outcome = source_shelf_sweep(&request, &receipts, true, Some(&invocation)).unwrap();
+        assert_clean(&root, &request, &outcome);
     }
 }
