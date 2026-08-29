@@ -55,14 +55,6 @@
         "managed_files_schema": "harmonia.homeserver.caduceus_managed_files.v1",
         "managed_files": [
           {
-            "path": "/etc/systemd/system/caduceus.service",
-            "operation": "place",
-            "mode": 420,
-            "uid": 0,
-            "gid": 0,
-            "content": "[Unit]\nDescription=Caduceus HOMESERVER appliance API\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:3014\nEnvironment=PYTHONPATH=/usr/local/sbin\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
-          },
-          {
             "path": "/var/lib/caduceus/state.json",
             "operation": "place",
             "xattrs": {},
