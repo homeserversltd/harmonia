@@ -476,8 +476,40 @@ pub(crate) fn materialize(
 mod shared_dot_files_tests {
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::ffi::{CStr, CString};
     use std::fs;
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    fn chown_fixture_tree(path: &Path, uid: libc::uid_t, gid: libc::gid_t) {
+        if path.is_dir() {
+            for entry in fs::read_dir(path).unwrap() {
+                chown_fixture_tree(&entry.unwrap().path(), uid, gid);
+            }
+        }
+        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chown(c_path.as_ptr(), uid, gid) }, 0);
+    }
+
+    fn fixture_git_bearer(root: &Path) -> String {
+        let euid = unsafe { libc::geteuid() };
+        let passwd = if euid == 0 {
+            let nobody = CString::new("nobody").unwrap();
+            unsafe { libc::getpwnam(nobody.as_ptr()) }
+        } else {
+            unsafe { libc::getpwuid(euid) }
+        };
+        assert!(!passwd.is_null());
+        let passwd = unsafe { &*passwd };
+        if euid == 0 {
+            chown_fixture_tree(root, passwd.pw_uid, passwd.pw_gid);
+        }
+        unsafe { CStr::from_ptr(passwd.pw_name) }
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
 
     fn duplicate_fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
@@ -766,12 +798,13 @@ mod shared_dot_files_tests {
         let prior_subscription = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
         std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let git_bearer = fixture_git_bearer(&root);
         let result = super::materialize(
             &root,
             "demo",
             &root.join("installed/modules"),
             &root.join("receipts"),
-            "owner",
+            &git_bearer,
             &invocation,
             None,
             None,
@@ -783,7 +816,11 @@ mod shared_dot_files_tests {
         }
         let _profile = result.unwrap();
         assert_eq!(
-            fs::metadata(&installed_module).unwrap().permissions().mode() & 0o777,
+            fs::metadata(&installed_module)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o755
         );
         let source_hash = crate::atoms::tree_hash::content_tree_sha256(&source_module).unwrap();
