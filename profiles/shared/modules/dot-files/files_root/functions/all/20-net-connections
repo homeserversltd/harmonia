@@ -1,4 +1,0 @@
-net.connections() {
-    echo "=== Active Connections ==="
-    ss -s
-    }

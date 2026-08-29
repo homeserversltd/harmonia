@@ -16,11 +16,6 @@
     "target_dir": "/home/owner",
     "expected_files": [
       ".aliases",
-      ".functions",
-      ".inputrc",
-      ".nanorc",
-      ".profile",
-      ".zshrc",
       "omp.json",
       ".config/omp.json",
       "bin/waybar-meter.sh",
@@ -39,12 +34,7 @@
         "source_root": "files_root/shell-rc",
         "target_root": "$constants.target_dir",
         "files": [
-          ".aliases",
-          ".functions",
-          ".inputrc",
-          ".nanorc",
-          ".profile",
-          ".zshrc"
+          ".aliases"
         ],
         "backup_existing": true,
         "owner": "owner",

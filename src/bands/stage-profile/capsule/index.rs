@@ -128,7 +128,11 @@ impl<'a> Drop for CapsuleStageGuard<'a> {
                     }
                 },
                 |authorization, _| {
-                    crate::tools::files::remove_dir_authorized(&authorization, &self.key, &self.path)
+                    crate::tools::files::remove_dir_authorized(
+                        &authorization,
+                        &self.key,
+                        &self.path,
+                    )
                 },
             );
         }
@@ -188,11 +192,11 @@ pub(crate) fn capsule_pack_with_invocation(
     copy_node_artifact(&profile_src, &profile_dst, key)?;
     let mut modules = Vec::new();
     for module_id in &profile.modules {
-        let src = harmonia_root
+        let source_modules_root = harmonia_root
             .join("profiles")
             .join(profile_id)
-            .join("modules")
-            .join(module_id);
+            .join("modules");
+        let src = crate::bands::stage_profile::resolve_module_dir(&source_modules_root, module_id)?;
         let dst = output_dir
             .join("profiles")
             .join(profile_id)
@@ -1020,7 +1024,9 @@ fn copy_node_artifact(src: &Path, dst: &Path, key: &InvocationKey) -> Result<(),
         "capsule-artifact-replace",
         || Ok(fs::symlink_metadata(dst).is_ok()),
         |_| DiffDecision::Different,
-        |authorization, _| crate::tools::files::remove_dir_replace(&authorization, key, dst, &image),
+        |authorization, _| {
+            crate::tools::files::remove_dir_replace(&authorization, key, dst, &image)
+        },
     )?;
     Ok(())
 }

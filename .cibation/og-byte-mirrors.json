@@ -1,7 +1,1 @@
-{
-  "og_byte_mirrors": [
-    "profiles/shared/modules/dot-files/og-byte-mirrors/homeserver-30-alias-services-and-update",
-    "profiles/shared/modules/dot-files/og-byte-mirrors/homeserver-20-profile",
-    "profiles/shared/modules/dot-files/og-byte-mirrors/homeserver-20-zshrc"
-  ]
-}
+{"og_byte_mirrors": []}

@@ -136,6 +136,9 @@ pub(crate) fn compile_fragments(
     source_root: &Path,
     selected_appliance: &str,
 ) -> Result<Vec<u8>, String> {
+    if selected_appliance == "all" {
+        return Err("compile-fragments-selected-appliance-all-rejected".into());
+    }
     if selected_appliance.is_empty()
         || selected_appliance.contains('/')
         || matches!(selected_appliance, "." | "..")

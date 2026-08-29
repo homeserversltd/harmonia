@@ -13,14 +13,9 @@
       ".bash-preexec.sh",
       ".bashrc",
       ".enhanced_less_config",
-      ".functions",
       ".gitconfig",
-      ".inputrc",
       ".lesskey",
-      ".nanorc",
-      ".profile",
-      ".tmux.conf",
-      ".zshrc"
+      ".tmux.conf"
     ],
     "file_locality": "module-owned shell-rc intent folder",
     "intent_folders": [
@@ -43,14 +38,9 @@
           ".bash-preexec.sh",
           ".bashrc",
           ".enhanced_less_config",
-          ".functions",
           ".gitconfig",
-          ".inputrc",
           ".lesskey",
-          ".nanorc",
-          ".profile",
-          ".tmux.conf",
-          ".zshrc"
+          ".tmux.conf"
         ],
         "backup_existing": true,
         "owner": "owner",

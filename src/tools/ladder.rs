@@ -240,7 +240,8 @@ pub(crate) fn validate_profile_managed_file_categories(
     required: bool,
 ) -> Result<(), String> {
     for module in &profile.modules {
-        let path = module_root.join(module).join("manifest.json");
+        let path = crate::bands::stage_profile::resolve_module_dir(module_root, module)?
+            .join("manifest.json");
         if path.exists() && is_ladder_manifest(&path) {
             load_ladder_manifest_with_category_requirement(&path, required)?;
         }
@@ -351,9 +352,15 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             && child.permutation.as_deref() == Some("source-sha-record")
     });
     let expected_suffix = if authority_present {
-        if source_sha_present { &stages[4..] } else { &stages[4..10] }
+        if source_sha_present {
+            &stages[4..]
+        } else {
+            &stages[4..10]
+        }
     } else if source_sha_present {
-        &[stages[4], stages[5], stages[6], stages[7], stages[9], stages[10]][..]
+        &[
+            stages[4], stages[5], stages[6], stages[7], stages[9], stages[10],
+        ][..]
     } else {
         &[stages[4], stages[5], stages[6], stages[7], stages[9]][..]
     };
@@ -381,9 +388,11 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
     if config_count > 1 {
         return false;
     }
-    if !suffix.iter().zip(expected_suffix.iter()).all(|(c, (n, t, p))| {
-        c.name == *n && c.tool == *t && c.permutation.as_deref() == Some(*p)
-    }) {
+    if !suffix
+        .iter()
+        .zip(expected_suffix.iter())
+        .all(|(c, (n, t, p))| c.name == *n && c.tool == *t && c.permutation.as_deref() == Some(*p))
+    {
         return false;
     }
     let (Some(pull), Some(build), Some(install), Some(epilogue)) = (
@@ -744,10 +753,7 @@ mod tests {
         assert_eq!(manifest.files_root.as_deref(), Some("files_root"));
         let wrappers = root()
             .join("profiles/homeconsole/modules/rust-build-toolchain/files_root/usr/local/bin");
-        for (name, target) in [
-            ("rustc", "/usr/bin/rustc"),
-            ("cargo", "/usr/bin/cargo"),
-        ] {
+        for (name, target) in [("rustc", "/usr/bin/rustc"), ("cargo", "/usr/bin/cargo")] {
             let path = wrappers.join(name);
             let expected = format!("#!/bin/sh\nexport RUSTUP_HOME=/opt/rustup\nexport CARGO_HOME=/opt/cargo\nexec {} \"$@\"\n", target);
             assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());

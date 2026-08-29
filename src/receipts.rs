@@ -117,9 +117,18 @@ pub(crate) fn write_engine_run_receipt_with_duration(
     run_duration_ms: u128,
 ) -> Result<(), String> {
     write_engine_run_receipt_with_duration_and_steps(
-        receipt_dir, profile, apply, ok, changed, module_count,
-        operation_count, first_missing_signal, module_root, suite_ok,
-        run_duration_ms, None,
+        receipt_dir,
+        profile,
+        apply,
+        ok,
+        changed,
+        module_count,
+        operation_count,
+        first_missing_signal,
+        module_root,
+        suite_ok,
+        run_duration_ms,
+        None,
     )
 }
 
@@ -342,7 +351,8 @@ pub(crate) fn write_plan_receipts(
         ).map_err(io::Error::other)?;
     }
     for module in &profile.modules {
-        let module_dir = module_root.join(module);
+        let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, module)
+            .map_err(io::Error::other)?;
         let manifest_path = module_dir.join("manifest.json");
         let planned = if crate::atoms::ask::exists(&manifest_path)
             && is_ladder_manifest(&manifest_path)

@@ -201,7 +201,7 @@ impl<'a> UpdateMode<'a> {
 fn parse_update_mode<'a>(
     args: &[String],
     invocation: Option<&'a crate::atoms::r#do::InvocationKey>,
-  ) -> Result<UpdateMode<'a>, String> {
+) -> Result<UpdateMode<'a>, String> {
     let mut apply = false;
     let mut index = 0;
     while index < args.len() {
@@ -373,14 +373,16 @@ pub(crate) fn enforce_update_suite(
     profile: &Profile,
     module_root: &Path,
 ) -> Result<Option<String>, String> {
-    Ok(profile.modules.iter().find_map(|module_id| {
-        (!lawful_module_manifest_exists(&module_root.join(module_id))).then(|| {
-            format!(
+    for module_id in &profile.modules {
+        let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, module_id)?;
+        if !lawful_module_manifest_exists(&module_dir) {
+            return Ok(Some(format!(
                 "profile-module-manifest-missing module_root={} module_id={module_id}",
                 module_root.display(),
-            )
-        })
-    }))
+            )));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn homeserver_update(

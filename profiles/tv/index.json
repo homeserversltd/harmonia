@@ -12,6 +12,7 @@
   "description": "TV appliance profile: Harmonia-owned TV configuration and maintenance spine.",
   "modules": [
     "system-packages",
+    "dot-files",
     "operator-rc-profile",
     "desktop-config-payload",
     "xdg-user-settings",

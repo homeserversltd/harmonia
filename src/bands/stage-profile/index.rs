@@ -29,10 +29,21 @@ pub(crate) fn shared_module_root(module_root: &Path) -> Option<std::path::PathBu
     if profiles_dir.file_name().and_then(|name| name.to_str()) != Some("profiles") {
         return None;
     }
+    profiles_dir
+        .parent()
+        .map(|root| root.join("shared").join("modules"))
+}
+
+fn legacy_module_root(module_root: &Path) -> Option<std::path::PathBuf> {
+    let profile_dir = module_root.parent()?;
+    let profiles_dir = profile_dir.parent()?;
+    if profiles_dir.file_name().and_then(|name| name.to_str()) != Some("profiles") {
+        return None;
+    }
     profiles_dir.parent().map(|root| root.join("modules"))
 }
 
-fn profiles_shared_module_root(module_root: &Path) -> Option<std::path::PathBuf> {
+fn legacy_profile_shared_module_root(module_root: &Path) -> Option<std::path::PathBuf> {
     let profile_dir = module_root.parent()?;
     let profiles_dir = profile_dir.parent()?;
     if profiles_dir.file_name().and_then(|name| name.to_str()) != Some("profiles") {
@@ -46,43 +57,36 @@ pub(crate) fn resolve_module_dir(
     module_id: &str,
 ) -> Result<std::path::PathBuf, String> {
     let local = module_root.join(module_id);
-    let profile_shared = profiles_shared_module_root(module_root).map(|root| root.join(module_id));
-    let legacy = shared_module_root(module_root).map(|root| root.join(module_id));
-    let registered = groups::is_registered_shared_module(module_id);
-    let selected = if lawful_module_manifest_exists(&local) {
-        Some(local.clone())
-    } else {
-        profile_shared
-            .clone()
-            .filter(|path| lawful_module_manifest_exists(path))
-    };
-    match selected {
-        Some(path) => Ok(path),
-        None if registered
-            && legacy
-                .as_ref()
-                .is_some_and(|path| lawful_module_manifest_exists(path)) =>
-        {
-            Ok(legacy.unwrap())
-        }
-        None if legacy
-            .as_ref()
-            .is_some_and(|path| lawful_module_manifest_exists(path)) =>
-        {
-            Err(format!(
-                "legacy-module-seat-unowned id={module_id} seat={}",
-                legacy.unwrap().display()
-            ))
-        }
-        None => Ok(profile_shared.unwrap_or(local)),
+    if lawful_module_manifest_exists(&local) {
+        return Ok(local);
     }
+    let shared = shared_module_root(module_root).map(|root| root.join(module_id));
+    if let Some(path) = shared.filter(|path| lawful_module_manifest_exists(path)) {
+        return Ok(path);
+    }
+    let legacy = legacy_module_root(module_root).map(|root| root.join(module_id));
+    let old_shared =
+        legacy_profile_shared_module_root(module_root).map(|root| root.join(module_id));
+    if let Some(path) = [legacy, old_shared]
+        .into_iter()
+        .flatten()
+        .find(|path| lawful_module_manifest_exists(path))
+    {
+        return Err(format!(
+            "legacy-module-seat-unowned id={module_id} seat={}",
+            path.display()
+        ));
+    }
+    Ok(shared_module_root(module_root)
+        .map(|root| root.join(module_id))
+        .unwrap_or(local))
 }
 
 /// Reconcile the complete legacy module root before projection resolution.
 ///
 /// The inventory is deliberately whole-root and deterministic: a single
 /// unshadowed unregistered lawful entry refuses the run before any filesystem
-/// mutation. Registered shared directories are excluded from retirement; when
+/// mutation. Root shared directories are excluded from retirement; when
 /// they coexist with retireable entries, apply retires those entries
 /// individually. Apply uses the comparison/Do rename membrane, while
 /// report-only records pending evidence and leaves the root untouched.
@@ -92,11 +96,10 @@ pub(crate) fn reconcile_legacy_module_seats(
     receipt_dir: &Path,
     mode: &crate::UpdateMode<'_>,
 ) -> Result<(), String> {
-    let Some(legacy_root) = shared_module_root(module_root) else {
+    let Some(legacy_root) = legacy_module_root(module_root) else {
         return Ok(());
     };
     let mut ids = Vec::new();
-    let mut has_registered_shared_dir = false;
     if legacy_root.is_dir() {
         for entry in std::fs::read_dir(&legacy_root)
             .map_err(|e| format!("legacy-module-root-inventory-failed: {e}"))?
@@ -104,12 +107,10 @@ pub(crate) fn reconcile_legacy_module_seats(
             let entry = entry.map_err(|e| format!("legacy-module-root-inventory-failed: {e}"))?;
             let path = entry.path();
             if path.is_dir() {
-                let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
+                let Some(_) = path.file_name().and_then(|name| name.to_str()) else {
                     continue;
                 };
-                if groups::is_registered_shared_module(id) {
-                    has_registered_shared_dir = true;
-                } else if lawful_module_manifest_exists(&path) {
+                if lawful_module_manifest_exists(&path) {
                     ids.push(path);
                 }
             }
@@ -126,13 +127,8 @@ pub(crate) fn reconcile_legacy_module_seats(
     let mut retireable = Vec::new();
     let mut unshadowed = Vec::new();
     for id in &module_ids {
-        // A promoted top-level module is a live shared seat, not legacy shed
-        // inventory. Registration is intentionally independent of this root.
-        if groups::is_registered_shared_module(id) {
-            continue;
-        }
         let local = module_root.join(id);
-        let profile_shared = profiles_shared_module_root(module_root).map(|root| root.join(id));
+        let profile_shared = shared_module_root(module_root).map(|root| root.join(id));
         let shadowed = lawful_module_manifest_exists(&local)
             || profile_shared
                 .as_ref()
@@ -151,7 +147,7 @@ pub(crate) fn reconcile_legacy_module_seats(
             if lawful_module_manifest_exists(&local) {
                 local
             } else {
-                profiles_shared_module_root(module_root)
+                shared_module_root(module_root)
                     .map(|root| root.join(id))
                     .unwrap_or_else(|| module_root.join(id))
             }
@@ -196,11 +192,7 @@ pub(crate) fn reconcile_legacy_module_seats(
         .invocation()
         .ok_or_else(|| "legacy-module-seat-retire-invocation-missing".to_string())?;
     let date = utc_date_stamp();
-    // A registered directory may share this physical root with retireable
-    // legacy entries. In that mixed-root case, only the unregistered entries
-    // are retired; whole-root retirement is reserved for a root with no
-    // registered shared module directories.
-    let whole_root = !has_registered_shared_dir && retireable.len() == module_ids.len();
+    let whole_root = retireable.len() == module_ids.len();
     let mut retired_root = legacy_root.with_file_name(format!("modules.retired-{date}"));
     if whole_root {
         let mut ordinal = 2;
@@ -286,12 +278,9 @@ fn utc_date_stamp() -> String {
 }
 
 pub(crate) fn module_uses_shared_seat(module_root: &Path, module_dir: &Path) -> bool {
-    profiles_shared_module_root(module_root)
+    shared_module_root(module_root)
         .as_ref()
         .is_some_and(|root| module_dir.parent() == Some(root.as_path()))
-        || shared_module_root(module_root)
-            .as_ref()
-            .is_some_and(|root| module_dir.parent() == Some(root.as_path()))
 }
 
 pub(crate) fn source_module_path(
@@ -624,14 +613,14 @@ mod shared_dot_files_tests {
     }
 
     #[test]
-    fn registered_top_level_shared_module_resolves_and_survives_apply_reconcile() {
+    fn registered_root_shared_module_resolves_and_survives_apply_reconcile() {
         let root =
             std::env::temp_dir().join(format!("harmonia-registered-shared-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let module_root = root.join("profiles/demo/modules");
-        fs::create_dir_all(root.join("modules/chromium")).unwrap();
+        fs::create_dir_all(root.join("shared/modules/chromium")).unwrap();
         fs::create_dir_all(&module_root).unwrap();
-        fs::write(root.join("modules/chromium/manifest.json"), b"{} ").unwrap();
+        fs::write(root.join("shared/modules/chromium/manifest.json"), b"{} ").unwrap();
         fs::write(
             root.join("profiles/demo/index.json"),
             r#"{"modules":["chromium"]}"#,
@@ -648,24 +637,46 @@ mod shared_dot_files_tests {
         .unwrap();
         assert_eq!(
             super::resolve_module_dir(&module_root, "chromium").unwrap(),
-            root.join("modules/chromium")
+            root.join("shared/modules/chromium")
         );
-        assert!(root.join("modules/chromium/manifest.json").exists());
+        assert!(root.join("shared/modules/chromium/manifest.json").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn mixed_root_retires_only_shadowed_unregistered_legacy_entries() {
+    fn local_module_shadows_root_shared_module() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-local-shadows-root-shared-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let module_root = root.join("profiles/demo/modules");
+        let local = module_root.join("chromium");
+        let shared = root.join("shared/modules/chromium");
+        fs::create_dir_all(&local).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(local.join("manifest.json"), b"{} ").unwrap();
+        fs::write(shared.join("manifest.json"), b"{} ").unwrap();
+
+        assert_eq!(
+            super::resolve_module_dir(&module_root, "chromium").unwrap(),
+            local
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canonical_shared_survives_while_whole_legacy_root_is_retired() {
         let root = std::env::temp_dir().join(format!(
             "harmonia-mixed-registered-shared-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         let module_root = root.join("profiles/demo/modules");
-        fs::create_dir_all(root.join("modules/chromium")).unwrap();
+        fs::create_dir_all(root.join("shared/modules/chromium")).unwrap();
         fs::create_dir_all(root.join("modules/alpha")).unwrap();
         fs::create_dir_all(module_root.join("alpha")).unwrap();
-        fs::write(root.join("modules/chromium/manifest.json"), b"{} ").unwrap();
+        fs::write(root.join("shared/modules/chromium/manifest.json"), b"{} ").unwrap();
         fs::write(root.join("modules/alpha/manifest.json"), b"{} ").unwrap();
         fs::write(module_root.join("alpha/manifest.json"), b"{} ").unwrap();
         fs::write(
@@ -682,7 +693,7 @@ mod shared_dot_files_tests {
             &mode,
         )
         .unwrap();
-        assert!(root.join("modules/chromium/manifest.json").exists());
+        assert!(root.join("shared/modules/chromium/manifest.json").exists());
         assert!(!root.join("modules/alpha").exists());
         let retired = fs::read_dir(&root)
             .unwrap()
@@ -691,10 +702,10 @@ mod shared_dot_files_tests {
             .find(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("modules.alpha.retired-"))
+                    .is_some_and(|name| name.starts_with("modules.retired-"))
             })
             .unwrap();
-        assert!(retired.join("manifest.json").exists());
+        assert!(retired.join("alpha/manifest.json").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -788,7 +799,7 @@ mod shared_dot_files_tests {
         let root =
             std::env::temp_dir().join(format!("harmonia-stage-shared-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let shared = root.join("profiles/shared/modules/dot-files");
+        let shared = root.join("shared/modules/dot-files");
         let source = shared.join("files_root/functions");
         fs::create_dir_all(source.join("all")).unwrap();
         fs::create_dir_all(source.join("tv")).unwrap();
