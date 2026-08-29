@@ -9,6 +9,7 @@ pub(crate) mod build_venv;
 pub(crate) mod check_health;
 #[path = "tools/enable-unit/index.rs"]
 pub(crate) mod enable_unit;
+#[cfg(feature = "test-facade")]
 pub mod filesystem;
 pub(crate) use atoms::attest::hyalos;
 #[path = "tools/install-package/index.rs"]
@@ -319,6 +320,7 @@ pub fn invoke(args: Vec<String>) -> Result<(), String> {
 /// Validate a member-scoped update target without touching the filesystem.
 /// The appliance-facing default remains rooted at `/`; callers that operate
 /// in an isolated filesystem may provide an explicit absolute root.
+#[cfg(feature = "test-facade")]
 pub fn validate_update_target(
     path: &Path,
     member: &str,

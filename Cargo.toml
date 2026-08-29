@@ -10,6 +10,9 @@ repository = "https://github.com/homeserversltd/harmonia"
 members = ["."]
 resolver = "2"
 
+[features]
+test-facade = []
+
 [dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
