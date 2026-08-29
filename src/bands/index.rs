@@ -25,8 +25,8 @@ pub(crate) mod stage_profile;
 pub(crate) enum Band {
     RenewSelf,
     Migrations,
-    PullSource,
     StageProfile,
+    PullSource,
     Compare,
     InstallPackages,
     RatchetBinaries,
@@ -47,8 +47,9 @@ pub(crate) fn walk(mut enter: impl FnMut(Band) -> Result<(), String>) -> Result<
     }
     invoke!(renew_self, Band::RenewSelf);
     invoke!(migrations, Band::Migrations);
-    invoke!(pull_source, Band::PullSource);
+    // Refresh the projection before routine source children stamp their context.
     invoke!(stage_profile, Band::StageProfile);
+    invoke!(pull_source, Band::PullSource);
     invoke!(compare, Band::Compare);
     invoke!(install_packages, Band::InstallPackages);
     invoke!(ratchet_binaries, Band::RatchetBinaries);
