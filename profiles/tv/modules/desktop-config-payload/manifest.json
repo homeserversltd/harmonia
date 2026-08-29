@@ -59,8 +59,8 @@
       ".local/share/kate/anonymous.katesession",
       "MANIFEST.captured.txt",
       "SANITIZATION.md",
-      "bin/harmonia-interactables-badge",
-      "bin/harmonia-interactables-popup",
+      "bin/harmonia-settings-badge",
+      "bin/harmonia-settings-popup",
       "bin/alt-tab.sh",
       "bin/dynamic-waybar.sh",
       "bin/fetch.sh",
@@ -113,8 +113,8 @@
         "source_root": "files_root",
         "target_root": "$constants.target_dir",
         "files": [
-          "bin/harmonia-interactables-badge",
-          "bin/harmonia-interactables-popup"
+          "bin/harmonia-settings-badge",
+          "bin/harmonia-settings-popup"
         ],
         "backup_existing": true,
         "owner": "owner",

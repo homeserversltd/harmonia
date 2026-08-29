@@ -1,2 +1,2 @@
-owner ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py gui update-modal
+owner ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py gui settings
 Defaults!/usr/local/sbin/agathodaimon/cli.py env_keep += "WAYLAND_DISPLAY XDG_RUNTIME_DIR DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS"
