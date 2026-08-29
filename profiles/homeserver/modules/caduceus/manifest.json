@@ -2,6 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "caduceus",
   "category": "known-good",
+  "config_deploy": "interactable",
   "version": "1.3.4",
   "description": "HOMESERVER module installs and maintains Caduceus. It provisions the agathodaimon Python environment and maintains the sudoers refresh consumer.",
   "constants": {

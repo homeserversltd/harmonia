@@ -582,6 +582,7 @@ pub(crate) fn execute_manifest_modules(
 }
 
 pub(crate) fn execute_routine_child(
+    step_id: &str,
     tool: &str,
     requested_permutation: Option<&str>,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
@@ -670,6 +671,83 @@ pub(crate) fn execute_routine_child(
             } else {
                 declared.unwrap().as_bytes().to_vec()
             };
+            let target_class = crate::atoms::files::classify_target(path);
+            if let crate::atoms::files::TargetClass::Refused(reason) = &target_class {
+                return Err(reason.clone());
+            }
+            if step_id.starts_with("managed-place-")
+                && permutation.name == "place"
+                && matches!(target_class, crate::atoms::files::TargetClass::Config)
+            {
+                if manifest.config_deploy.as_deref() != Some("interactable") {
+                    return Err(format!(
+                        "configuration-actuator-authority-refused {}",
+                        path.display()
+                    ));
+                }
+                let relative = path
+                    .strip_prefix("/")
+                    .map_err(|_| "managed-place-config-proposal-target-invalid")?;
+                let source_root = receipt_dir.join("proposals").join("sources");
+                let proposal_source = source_root.join(relative);
+                if let Some(parent) = proposal_source.parent() {
+                    crate::atoms::attest::prepare_receipt_parent(parent)?;
+                }
+                crate::atoms::attest::write_bytes_atomic(&proposal_source, &bytes)?;
+                let request = crate::atoms::files::FileConvergenceRequest {
+                    source_root,
+                    target_root: Path::new("/").to_path_buf(),
+                    files: vec![crate::atoms::files::FileSpec {
+                        mode: args.get("mode").and_then(Value::as_u64).map(|v| v as u32),
+                        relative_path: relative.to_path_buf(),
+                    }],
+                    backup_existing: false,
+                    receipt_name: step_id.to_string(),
+                    owner: None,
+                    group: None,
+                };
+                let mut proposal =
+                    crate::atoms::files::converge_files_authorized_with_config_policy(
+                        &request,
+                        receipt_dir,
+                        None,
+                        invocation,
+                        true,
+                    )?;
+                crate::bands::propose_edits::refresh_interactables_for_convergence(
+                    manifest, &request, &proposal,
+                )?;
+                proposal.changed = false;
+                proposal.ownership_changed = false;
+                crate::write_json(
+                    &receipt_dir.join(format!("{name}.json")),
+                    &serde_json::json!({
+                        "schema":"harmonia.routine_tool.receipt.v1",
+                        "state":"proposal",
+                        "ok":proposal.ok,
+                        "changed":false,
+                        "ownership_changed":false,
+                        "skipped":false,
+                        "message":"managed-place-config-proposal",
+                        "effect":proposal
+                    }),
+                )?;
+                return Ok((
+                    OperationOutcome {
+                        ok: proposal.ok,
+                        changed: false,
+                        skipped: false,
+                        message: "managed-place-config-proposal".into(),
+                        command: None,
+                    },
+                    [
+                        ("path".into(), serde_json::json!(path)),
+                        ("changed".into(), serde_json::json!(false)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ));
+            }
             // Binary promotion is content-addressed: an identical installed
             // image is already converged, even if metadata differs.
             let binary_current = if permutation.name == "binary-promotion" {
