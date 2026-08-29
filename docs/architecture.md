@@ -19,3 +19,7 @@ The ten bands run in charter order: `renew-self`, `pull-source`, `stage-profile`
 - `src/atoms/do/index.json` names the keyed transactional operation family.
 - `src/bands/index.json` names the ten bands and their charter order.
 - `src/tools/index.json` names the tool registry and composition entries.
+
+## Demo door
+
+The single demo door is `harmonia demo [<name>|list]`; its only live entry is `quiescence`.

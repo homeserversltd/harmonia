@@ -1,9 +1,12 @@
 //! Comparison is the kernel gate between cheap observation and costly action.
 //!
-//! The only constructor for `ActionAuthorization` is private to this module.
+//! The only constructors for `ActionAuthorization` and
+//! `QuiescenceAuthorization` are private to this module.
 //! Consequently an executor that uses `execute` has no action capability on an
 //! empty comparison: the action closure is not invoked and cannot receive the
 //! authorization value.
+//! A Churning comparison cannot receive `QuiescenceAuthorization`; only the
+//! real Settled branch mints it.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DiffDecision {
@@ -13,6 +16,34 @@ pub(crate) enum DiffDecision {
 
 #[derive(Debug)]
 pub(crate) struct ActionAuthorization(());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuiescenceDecision {
+    Settled,
+    Churning,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct QuiescenceAuthorization(());
+
+/// Compare commit-touch time against a lag window without observing anything.
+pub(crate) fn quiescence(
+    now: u64,
+    last_commit_touch_ts: u64,
+    lag_days: u64,
+) -> (QuiescenceDecision, Option<QuiescenceAuthorization>) {
+    let Some(lag_seconds) = lag_days.checked_mul(86_400) else {
+        return (QuiescenceDecision::Churning, None);
+    };
+    if now < last_commit_touch_ts || now - last_commit_touch_ts < lag_seconds {
+        (QuiescenceDecision::Churning, None)
+    } else {
+        (
+            QuiescenceDecision::Settled,
+            Some(QuiescenceAuthorization(())),
+        )
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum ComparisonRun<Observed, Movement> {
