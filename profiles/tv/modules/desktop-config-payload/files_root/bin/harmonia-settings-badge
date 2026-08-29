@@ -29,15 +29,15 @@ def item_name(value, fallback):
 
 
 def converge_badge_css(path):
-    declared = """#custom-harmonia-interactables.good {
+    declared = """#custom-settings.good {
     color: #a3be8c;
 }
 
-#custom-harmonia-interactables.medium {
+#custom-settings.medium {
     color: #ebcb8b;
 }
 
-#custom-harmonia-interactables.bad {
+#custom-settings.bad {
     color: #bf616a;
 }
 """
