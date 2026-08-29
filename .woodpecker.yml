@@ -2,9 +2,12 @@ when:
   event:
     - push
 
-skip_clone: true
-
 steps:
+  - name: cargo-test
+    image: rust:1.85-bookworm
+    commands:
+      - cargo test --all-targets --locked
+
   - name: registry-pen-harmonia
     image: python:3.12-alpine
     backend_options:

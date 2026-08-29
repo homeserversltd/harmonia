@@ -65,7 +65,7 @@ impl From<&TransactionCensus> for TransactionCensusSnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Target {
+pub struct Target {
     pub path: PathBuf,
     pub member: String,
 }
@@ -76,7 +76,7 @@ pub(crate) struct ServiceBinding {
     pub target_user: Option<String>,
 }
 #[derive(Clone, Debug)]
-pub(crate) struct UpdatePlan {
+pub struct UpdatePlan {
     pub targets: Vec<Target>,
     pub services: Vec<ServiceBinding>,
     pub gui_face: Option<String>,
@@ -134,8 +134,8 @@ pub(crate) struct RunContext {
 // Compatibility/profile entrypoints remain here; the durable transaction owner lives in ritual.rs.
 pub(crate) use super::ritual::{
     apply_projection, commit_projection, project_update_set_v1, rollback_projection, seal_projection,
-    snapshot, snapshot_services, validate_exact_root, validate_member_scoped_target,
-    ProjectionChild, ProjectionTransaction, SealedProjection, Snapshot,
+    snapshot, snapshot_services, validate_exact_root, validate_exact_root_at,
+    validate_member_scoped_target, ProjectionChild, ProjectionTransaction, SealedProjection, Snapshot,
     TransactionReceipt, TransactionState,
 };
 

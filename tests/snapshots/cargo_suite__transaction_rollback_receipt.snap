@@ -1,0 +1,46 @@
+---
+source: tests/cargo_suite.rs
+assertion_line: 192
+expression: snapshot
+---
+{
+  "error": "file-write-promote-failed <ROOT>/.two.harmonia-<DYNAMIC> -> <ROOT>/two: Is a directory",
+  "rolled_back": true,
+  "schema": "harmonia.transaction.v1",
+  "state": "failed",
+  "transaction": {
+    "caduceus_count": 0,
+    "children": [
+      {
+        "member": "one",
+        "ordinal": 0,
+        "service_indices": [],
+        "target_indices": [
+          0
+        ]
+      },
+      {
+        "member": "two",
+        "ordinal": 1,
+        "service_indices": [],
+        "target_indices": [
+          1
+        ]
+      },
+      {
+        "member": "agathodaimon",
+        "ordinal": 2,
+        "service_indices": [],
+        "target_indices": []
+      }
+    ],
+    "gui": null,
+    "profile_id": "filesystem-convergence",
+    "profile_identity": "filesystem",
+    "schema": "harmonia.transaction.v1",
+    "service_count": 0,
+    "source_head": "members",
+    "state": "RolledBack",
+    "target_count": 2
+  }
+}

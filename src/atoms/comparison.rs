@@ -158,3 +158,39 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_comparison_never_invokes_action() {
+        let observed = execute(
+            "unit",
+            || Ok::<_, String>("synthetic-observed-state"),
+            |_| DiffDecision::Empty,
+            |_, _| -> Result<(), String> { panic!("empty comparison must not authorize action") },
+        )
+        .expect("empty comparison");
+        assert_eq!(observed.decision(), DiffDecision::Empty);
+        assert_eq!(observed.observation(), &"synthetic-observed-state");
+    }
+
+    #[test]
+    fn different_comparison_authorizes_exactly_one_action() {
+        let actions = std::cell::Cell::new(0);
+        let result = execute_once(
+            "unit",
+            || Ok::<_, String>(7_u8),
+            |_| DiffDecision::Different,
+            |_, value| {
+                actions.set(actions.get() + 1);
+                assert_eq!(*value, 7);
+                Ok::<_, String>("planned")
+            },
+        )
+        .expect("different comparison");
+        assert_eq!(actions.get(), 1);
+        assert_eq!(result.decision(), DiffDecision::Different);
+    }
+}

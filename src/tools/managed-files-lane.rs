@@ -318,6 +318,30 @@ pub(crate) fn preflight_file_targets(
     }
     Ok(())
 }
+struct ManagedFileDisposition {
+    known_good: Vec<crate::ManagedFileManifest>,
+    proposals: Vec<crate::ManagedFileManifest>,
+    ignored: Vec<crate::ManagedFileManifest>,
+}
+
+fn partition_managed_files(
+    files: Vec<crate::ManagedFileManifest>,
+) -> ManagedFileDisposition {
+    let mut disposition = ManagedFileDisposition {
+        known_good: Vec::new(),
+        proposals: Vec::new(),
+        ignored: Vec::new(),
+    };
+    for file in files {
+        match file.category.as_deref() {
+            Some("interactable") => disposition.proposals.push(file),
+            None | Some("known-good") => disposition.known_good.push(file),
+            Some(_) => disposition.ignored.push(file),
+        }
+    }
+    disposition
+}
+
 pub(crate) fn managed_files_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -344,15 +368,9 @@ pub(crate) fn managed_files_step_with_authorization(
     } else {
         Vec::new()
     };
-    let mut hold = Vec::new();
-    let mut proposals = Vec::new();
-    for file in files {
-        match file.category.as_deref() {
-            Some("interactable") => proposals.push(file),
-            None | Some("known-good") => hold.push(file),
-            Some(_) => continue,
-        }
-    }
+    let disposition = partition_managed_files(files);
+    let hold = disposition.known_good;
+    let proposals = disposition.proposals;
     let mut result = crate::OperationOutcome {
         ok: true,
         changed: false,
@@ -1084,6 +1102,56 @@ fn string_array_arg(
 }
 fn integer_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &str, d: u64) -> u64 {
     a.get(n).and_then(serde_json::Value::as_u64).unwrap_or(d)
+}
+
+#[cfg(test)]
+mod managed_file_disposition_tests {
+    use super::partition_managed_files;
+
+    #[test]
+    fn interactable_divergence_is_proposal_only() {
+        let files = vec![
+            crate::ManagedFileManifest {
+                path: "/etc/good".into(),
+                content: "g".into(),
+                mode: None,
+                category: Some("known-good".into()),
+                legacy_transition_note: None,
+            },
+            crate::ManagedFileManifest {
+                path: "/etc/proposal".into(),
+                content: "p".into(),
+                mode: None,
+                category: Some("interactable".into()),
+                legacy_transition_note: None,
+            },
+            crate::ManagedFileManifest {
+                path: "/etc/ignored".into(),
+                content: "i".into(),
+                mode: None,
+                category: Some("unsupported".into()),
+                legacy_transition_note: None,
+            },
+        ];
+        let disposition = partition_managed_files(files);
+        assert_eq!(
+            disposition
+                .known_good
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/etc/good"]
+        );
+        assert_eq!(
+            disposition
+                .proposals
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/etc/proposal"]
+        );
+        assert!(disposition.ignored.iter().all(|f| f.path != "/etc/proposal"));
+    }
 }
 
 #[cfg(test)]

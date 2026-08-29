@@ -1,0 +1,33 @@
+---
+source: tests/cargo_suite.rs
+assertion_line: 156
+expression: snapshot
+---
+{
+  "first": {
+    "changed": true,
+    "error": null,
+    "facts": {
+      "branch": "main",
+      "path": "<ROOT>/checkout",
+      "repo": "<ROOT>/origin.git"
+    },
+    "ok": true,
+    "operation": "pull-repo",
+    "schema": "harmonia.filesystem-receipt.v1",
+    "write_operations": 1
+  },
+  "second": {
+    "changed": false,
+    "error": null,
+    "facts": {
+      "branch": "main",
+      "path": "<ROOT>/checkout",
+      "repo": "<ROOT>/origin.git"
+    },
+    "ok": true,
+    "operation": "pull-repo",
+    "schema": "harmonia.filesystem-receipt.v1",
+    "write_operations": 0
+  }
+}

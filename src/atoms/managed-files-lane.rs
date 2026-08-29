@@ -1139,6 +1139,7 @@ mod source_shelf_sweep_tests {
     use super::*;
     use crate::atoms::r#do::source_shelf::{SourceShelfSweepRequest, source_shelf_sweep};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_sweep_nonce() -> String {
         let nanos = SystemTime::now()

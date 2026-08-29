@@ -9,6 +9,7 @@ pub(crate) mod build_venv;
 pub(crate) mod check_health;
 #[path = "tools/enable-unit/index.rs"]
 pub(crate) mod enable_unit;
+pub mod filesystem;
 pub(crate) use atoms::attest::hyalos;
 #[path = "tools/install-package/index.rs"]
 pub(crate) mod install_package;
@@ -313,6 +314,20 @@ mod invocation_face {
 pub fn invoke(args: Vec<String>) -> Result<(), String> {
     let invocation = invocation_face::mint(&args);
     run(args, invocation)
+}
+
+/// Validate a member-scoped update target without touching the filesystem.
+/// The appliance-facing default remains rooted at `/`; callers that operate
+/// in an isolated filesystem may provide an explicit absolute root.
+pub fn validate_update_target(
+    path: &Path,
+    member: &str,
+    root: Option<&Path>,
+) -> Result<(), String> {
+    match root {
+        Some(root) => atoms::r#do::transaction::validate_exact_root_at(path, member, root),
+        None => atoms::r#do::transaction::validate_exact_root(path, member),
+    }
 }
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {

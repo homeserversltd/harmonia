@@ -344,12 +344,19 @@ pub(crate) struct TransactionReceipt {
     pub caduceus_count: usize,
 }
 pub(crate) fn validate_exact_root(path: &Path, member: &str) -> Result<(), String> {
+    validate_exact_root_at(path, member, Path::new("/"))
+}
+pub(crate) fn validate_exact_root_at(path: &Path, member: &str, root: &Path) -> Result<(), String> {
     validate_member_scoped_target(path, member)?;
-    let mut cur = PathBuf::from("/");
-    for c in path.components().skip(1) {
-        cur.push(c.as_os_str());
-        if let Ok(m) = fs::symlink_metadata(&cur) {
-            if m.file_type().is_symlink() {
+    if !root.is_absolute() || !path.starts_with(root) {
+        return Err(format!("update-set-root-outside {}", path.display()));
+    }
+    let mut cur = root.to_path_buf();
+    let relative = path.strip_prefix(root).map_err(|_| "update-set-root-outside")?;
+    for component in relative.components() {
+        cur.push(component.as_os_str());
+        if let Ok(metadata) = fs::symlink_metadata(&cur) {
+            if metadata.file_type().is_symlink() {
                 return Err(format!("update-set-root-symlink {}", cur.display()));
             }
         }

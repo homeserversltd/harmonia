@@ -1,0 +1,163 @@
+---
+source: tests/cargo_suite.rs
+assertion_line: 98
+expression: snapshot
+---
+[
+  {
+    "first": {
+      "changed": true,
+      "error": null,
+      "facts": {
+        "path": "<ROOT>/etc/app"
+      },
+      "ok": true,
+      "operation": "make-dir",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 1
+    },
+    "second": {
+      "changed": false,
+      "error": null,
+      "facts": {
+        "path": "<ROOT>/etc/app"
+      },
+      "ok": true,
+      "operation": "make-dir",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 0
+    }
+  },
+  {
+    "first": {
+      "changed": true,
+      "error": null,
+      "facts": {
+        "bytes": 5,
+        "mode": 416,
+        "path": "<ROOT>/etc/app/config"
+      },
+      "ok": true,
+      "operation": "write-file",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 1
+    },
+    "second": {
+      "changed": false,
+      "error": null,
+      "facts": {
+        "bytes": 5,
+        "mode": 416,
+        "path": "<ROOT>/etc/app/config"
+      },
+      "ok": true,
+      "operation": "write-file",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 0
+    }
+  },
+  {
+    "first": {
+      "changed": true,
+      "error": null,
+      "facts": {
+        "link": "<ROOT>/etc/app/current",
+        "target": "<ROOT>/etc/app/config"
+      },
+      "ok": true,
+      "operation": "make-link",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 1
+    },
+    "second": {
+      "changed": false,
+      "error": null,
+      "facts": {
+        "link": "<ROOT>/etc/app/current",
+        "target": "<ROOT>/etc/app/config"
+      },
+      "ok": true,
+      "operation": "make-link",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 0
+    }
+  },
+  {
+    "first": {
+      "changed": true,
+      "error": null,
+      "facts": {
+        "source": "<ROOT>/etc/app/config",
+        "target": "<ROOT>/etc/app/copy"
+      },
+      "ok": true,
+      "operation": "copy-file",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 1
+    },
+    "second": {
+      "changed": false,
+      "error": null,
+      "facts": {
+        "source": "<ROOT>/etc/app/config",
+        "target": "<ROOT>/etc/app/copy"
+      },
+      "ok": true,
+      "operation": "copy-file",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 0
+    }
+  },
+  {
+    "first": {
+      "changed": true,
+      "error": null,
+      "facts": {
+        "mode": 384,
+        "path": "<ROOT>/etc/app/copy"
+      },
+      "ok": true,
+      "operation": "change-mode",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 1
+    },
+    "second": {
+      "changed": false,
+      "error": null,
+      "facts": {
+        "mode": 384,
+        "path": "<ROOT>/etc/app/copy"
+      },
+      "ok": true,
+      "operation": "change-mode",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 0
+    }
+  },
+  {
+    "first": {
+      "changed": true,
+      "error": null,
+      "facts": {
+        "absent": true,
+        "path": "<ROOT>/etc/app/copy"
+      },
+      "ok": true,
+      "operation": "remove-file",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 1
+    },
+    "second": {
+      "changed": false,
+      "error": null,
+      "facts": {
+        "absent": true,
+        "path": "<ROOT>/etc/app/copy"
+      },
+      "ok": true,
+      "operation": "remove-file",
+      "schema": "harmonia.filesystem-receipt.v1",
+      "write_operations": 0
+    }
+  }
+]
