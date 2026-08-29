@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +16,8 @@ pub(crate) struct InteractablesFeed {
     schema: String,
     #[serde(default)]
     pub(crate) interactables: Vec<Interactable>,
+    #[serde(default)]
+    pub(crate) receipts: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +57,70 @@ pub(crate) struct Interactable {
     /// source lane did not establish a comparable Git pair.
     #[serde(default)]
     pub(crate) commits_behind: Option<u64>,
+    /// Recognition-wall evidence. These fields are additive so old feeds remain readable.
+    #[serde(default)]
+    pub(crate) live_sha: Option<String>,
+    #[serde(default)]
+    pub(crate) reference_sha: Option<String>,
+    #[serde(default)]
+    pub(crate) recognition_score: Option<f64>,
+    #[serde(default)]
+    pub(crate) script: String,
+    #[serde(default)]
+    pub(crate) show_only_if: String,
+    #[serde(default)]
+    pub(crate) completion_check: String,
+}
+
+/// Compare configuration by meaningful lines, not formatting noise. The score is
+/// the shared normalized-line set divided by the known-good/reference set.
+pub(crate) fn normalized_line_score(live: &str, reference: &str) -> f64 {
+    use std::collections::BTreeSet;
+    let lines = |text: &str| -> BTreeSet<String> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    };
+    let live = lines(live);
+    let reference = lines(reference);
+    let denominator = reference.len();
+    if denominator == 0 {
+        0.0
+    } else {
+        live.intersection(&reference).count() as f64 / denominator as f64
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RecognitionCandidate<'a> {
+    pub(crate) reference_id: &'a str,
+    pub(crate) bytes: &'a [u8],
+}
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RecognitionResult {
+    pub(crate) score: f64,
+    pub(crate) reference_id: String,
+}
+pub(crate) fn recognize_against_known_goods(
+    live: &[u8],
+    candidates: &[RecognitionCandidate<'_>],
+) -> Option<RecognitionResult> {
+    candidates
+        .iter()
+        .map(|c| RecognitionResult {
+            score: normalized_line_score(
+                &String::from_utf8_lossy(live),
+                &String::from_utf8_lossy(c.bytes),
+            ),
+            reference_id: c.reference_id.to_string(),
+        })
+        .max_by(|a, b| {
+            a.score
+                .total_cmp(&b.score)
+                .then_with(|| b.reference_id.cmp(&a.reference_id))
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,15 +136,11 @@ fn feed_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FEED_PATH))
 }
 
-fn stable_id(module_id: &str, target: &Path) -> String {
-    let digest = Sha256::digest(format!("{module_id}:{}", target.display()).as_bytes());
-    format!("config-proposal-{}", &format!("{digest:x}")[..16])
-}
-
 pub(crate) fn make_feed(interactables: Vec<Interactable>) -> InteractablesFeed {
     InteractablesFeed {
         schema: FEED_SCHEMA.to_string(),
         interactables,
+        receipts: Vec::new(),
     }
 }
 
@@ -107,6 +168,7 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
         None => Ok(InteractablesFeed {
             schema: FEED_SCHEMA.to_string(),
             interactables: Vec::new(),
+            receipts: Vec::new(),
         }),
     }
 }
@@ -123,8 +185,8 @@ pub(crate) fn interactable_command(
 ) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
-        Some("run") | Some("accept") => interactable_run(&args[1..], invocation),
-        _ => Err("config-proposal requires list [--json] or accept <id>".to_string()),
+        Some("run") | Some("accept") | Some("swap") => interactable_run(&args[1..], invocation),
+        _ => Err("config-proposal requires list [--json] or accept <id> owner".to_string()),
     }
 }
 
@@ -158,8 +220,8 @@ fn interactable_run(
     args: &[String],
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err("config-proposal accept requires exactly one <id>".to_string());
+    if args.len() != 2 || args[1] != "owner" {
+        return Err("config-proposal accept requires exactly <interactable-id> owner".to_string());
     }
     let path = feed_path();
     let mut feed = load_feed(&path)?;
@@ -176,6 +238,17 @@ fn interactable_run(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("interactables-backups");
+    // The public owner tap has already crossed its exact owner-word gate.
+    // Mint the sealed mutation key only for that ambient-free CLI path; callers
+    // that already carry an invocation retain it unchanged.
+    let internal_invocation;
+    let mutation_invocation = match invocation {
+        Some(invocation) => Some(invocation),
+        None => {
+            internal_invocation = crate::atoms::r#do::InvocationKey::for_apply();
+            Some(&internal_invocation)
+        }
+    };
     let mut receipt = crate::tools::files::hard_stamp_interactable(
         &item.id,
         &item.reference_source_path,
@@ -184,11 +257,21 @@ fn interactable_run(
         item.owner.as_deref(),
         item.group.as_deref(),
         &backup_root,
-        invocation,
+        mutation_invocation,
         operator_hand(),
     )?;
     receipt["has_run"] = serde_json::Value::Bool(true);
+    receipt["config_state"] = serde_json::Value::String("interactable".into());
     feed.interactables[position].has_run = true;
+    feed.receipts.push(serde_json::json!({
+        "schema": "harmonia.config_state.receipt.v1",
+        "config_state": "interactable",
+        "id": item.id,
+        "target": item.target_path,
+        "reference_id": item.reference_source_path,
+        "score": item.recognition_score,
+        "actuator": receipt.clone(),
+    }));
     feed.interactables.remove(position);
     crate::bands::propose_edits::persist_feed(&path, &feed)?;
     println!(
@@ -206,6 +289,43 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     static INTERACTABLES_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    #[test]
+    fn recognition_wall_uses_known_good_line_denominator() {
+        assert_eq!(normalized_line_score(" a \n\n b\n", "a\nb\nc\n"), 2.0 / 3.0);
+        assert_eq!(normalized_line_score("one", "two"), 0.0);
+        assert_eq!(normalized_line_score("\n \n", ""), 0.0);
+    }
+
+    #[test]
+    fn recognition_uses_maximum_known_good_and_reference_id_tie_break() {
+        let candidates = [
+            RecognitionCandidate {
+                reference_id: "zeta",
+                bytes: b"a\nb\n",
+            },
+            RecognitionCandidate {
+                reference_id: "alpha",
+                bytes: b"a\nb\n",
+            },
+            RecognitionCandidate {
+                reference_id: "middle",
+                bytes: b"unrelated\n",
+            },
+        ];
+        let result = recognize_against_known_goods(b"a\nb\n", &candidates).unwrap();
+        assert_eq!(result.score, 1.0);
+        assert_eq!(result.reference_id, "alpha");
+    }
+
+    #[test]
+    fn fixture_recognition_cases_straddle_wall() {
+        let reference = include_str!("../tests/fixtures/harmonia/known-good.conf");
+        let above = include_str!("../tests/fixtures/harmonia/live-above-wall.conf");
+        let below = include_str!("../tests/fixtures/harmonia/live-below-wall.conf");
+        assert!(normalized_line_score(above, reference) >= 0.33);
+        assert!(normalized_line_score(below, reference) < 0.33);
+    }
 
     fn fixture(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -241,6 +361,12 @@ mod tests {
             source_sha: None,
             target_sha: None,
             commits_behind: None,
+            live_sha: None,
+            reference_sha: None,
+            recognition_score: None,
+            script: String::new(),
+            show_only_if: String::new(),
+            completion_check: String::new(),
         }
     }
 
@@ -266,17 +392,48 @@ mod tests {
             .unwrap();
         let prior_feed = std::env::var_os("HARMONIA_INTERACTABLES_PATH");
         std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
-        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
-        let result = interactable_run(&[proposal.id], Some(&invocation));
+        let backup_root = feed_path
+            .parent()
+            .unwrap()
+            .join("interactables-backups/config-proposal-accept-regression");
+        assert!(interactable_run(&[proposal.id.clone()], None).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"current\n");
+        assert_eq!(load_feed(&feed_path).unwrap().interactables.len(), 1);
+        assert!(!backup_root.exists());
+        assert!(interactable_run(
+            &[proposal.id.clone(), "not-owner".into()],
+            None
+        )
+        .is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"current\n");
+        assert_eq!(load_feed(&feed_path).unwrap().interactables.len(), 1);
+        assert!(!backup_root.exists());
+        let result = interactable_run(&[proposal.id.clone(), "owner".into()], None);
         match prior_feed {
             Some(value) => std::env::set_var("HARMONIA_INTERACTABLES_PATH", value),
             None => std::env::remove_var("HARMONIA_INTERACTABLES_PATH"),
         }
         result.unwrap();
-        let backup_root = feed_path
-            .parent()
-            .unwrap()
-            .join("interactables-backups/config-proposal-accept-regression");
+        let final_feed = load_feed(&feed_path).unwrap();
+        let receipt = final_feed.receipts.last().unwrap();
+        assert_eq!(
+            receipt
+                .get("config_state")
+                .and_then(serde_json::Value::as_str),
+            Some("interactable")
+        );
+        assert_eq!(
+            receipt.get("id").and_then(serde_json::Value::as_str),
+            Some(proposal.id.as_str())
+        );
+        assert_eq!(
+            receipt
+                .get("actuator")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|v| v.get("has_run"))
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
         let backup_dir = fs::read_dir(&backup_root).unwrap();
         let backups: Vec<_> = backup_dir.map(|entry| entry.unwrap().path()).collect();
         assert_eq!(backups.len(), 1);

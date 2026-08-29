@@ -1,6 +1,6 @@
 use crate::*;
 use serde_json::json;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -103,6 +103,45 @@ pub(crate) fn write_tool_receipt(
     )
 }
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ConfigSurfaceReceipt { config_state: String, score: f64, reference_id: String, id: String, target: String }
+
+pub(crate) fn clear_config_state_receipts(receipt_dir: &Path) -> Result<(), String> {
+    let entries = match fs::read_dir(receipt_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("config-state-") || !name.ends_with(".json") {
+            continue;
+        }
+        // `file_type` does not follow symlinks, so only direct regular files
+        // matching the exact receipt name are eligible for removal.
+        if entry.file_type().map_err(|error| error.to_string())?.is_file() {
+            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
+    let mut records = fs::read_dir(receipt_dir).ok().into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok)).filter_map(|entry| {
+            let name = entry.file_name(); let name = name.to_str()?;
+            if !name.starts_with("config-state-") || !name.ends_with(".json") || !entry.file_type().ok()?.is_file() { return None; }
+            let value = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(entry.path()).ok()?).ok()?;
+            if value.get("schema").and_then(serde_json::Value::as_str) != Some("harmonia.config_state.v1") { return None; }
+            serde_json::from_value::<ConfigSurfaceReceipt>(value).ok()
+        }).collect::<Vec<_>>();
+    records.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.target.cmp(&b.target)));
+    records.into_iter().map(|record| serde_json::to_value(record).expect("serializable")).collect()
+}
+
 pub(crate) fn write_engine_run_receipt_with_duration(
     receipt_dir: &Path,
     profile: &Profile,
@@ -146,9 +185,7 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps(
     run_duration_ms: u128,
     module_steps: Option<&[serde_json::Value]>,
 ) -> Result<(), String> {
-    write_json(
-        &receipt_dir.join("run.json"),
-        &json!({
+    let mut receipt = json!({
             "schema": "harmonia.run_profile.v1",
             "ok": ok,
             "changed": changed,
@@ -167,8 +204,9 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps(
             "suite_ok": suite_ok,
             // Additive closing surface: older readers may ignore this field.
             "steps": module_steps.map_or_else(|| serde_json::Value::Null, |steps| json!(steps)),
-        }),
-    )
+        });
+    receipt["config_surfaces"] = json!(collect_config_surfaces(receipt_dir));
+    write_json(&receipt_dir.join("run.json"), &receipt)
 }
 
 pub(crate) fn write_artifact_receipt(
@@ -420,4 +458,70 @@ pub(crate) fn write_plan_receipts(
     )
     .map_err(io::Error::other)?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{clear_config_state_receipts, collect_config_surfaces};
+    use std::fs;
+    use tempfile::tempdir;
+    fn record(schema: &str, state: &str, id: &str, target: &str, score: f64, reference_id: &str) -> String {
+        serde_json::json!({"schema":schema,"config_state":state,"id":id,"target":target,"score":score,"reference_id":reference_id}).to_string()
+    }
+    #[test]
+    fn config_surfaces_include_recognized_and_refused_in_id_target_order() {
+        let d=tempdir().unwrap();
+        fs::write(d.path().join("config-state-z.json"),record("harmonia.config_state.v1","refused-unrecognized","z","/z",0.12,"ref-z")).unwrap();
+        fs::write(d.path().join("config-state-a-z.json"),record("harmonia.config_state.v1","interactable","a","/z",1.0,"ref-a-z")).unwrap();
+        fs::write(d.path().join("config-state-a-a.json"),record("harmonia.config_state.v1","interactable","a","/a",0.9,"ref-a-a")).unwrap();
+        let got=collect_config_surfaces(d.path());
+        assert_eq!(got.iter().map(|v|v["id"].as_str().unwrap()).collect::<Vec<_>>(),["a","a","z"]);
+        assert_eq!(got.iter().map(|v|v["target"].as_str().unwrap()).collect::<Vec<_>>(),["/a","/z","/z"]);
+        assert_eq!(got[2]["config_state"],"refused-unrecognized"); assert_eq!(got[2]["score"],0.12); assert_eq!(got[2]["reference_id"],"ref-z");
+    }
+    #[test]
+    fn config_surfaces_ignore_malformed_unrelated_nested_and_nonregular_files() {
+        let d=tempdir().unwrap();
+        fs::write(d.path().join("config-state-bad.json"),"not-json").unwrap();
+        fs::write(d.path().join("config-state-wrong.json"),record("other.v1","interactable","wrong","/wrong",1.0,"wrong")).unwrap();
+        fs::write(d.path().join("notes.json"),record("harmonia.config_state.v1","interactable","unrelated","/unrelated",1.0,"unrelated")).unwrap();
+        let nested=d.path().join("nested"); fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("config-state-nested.json"),record("harmonia.config_state.v1","interactable","nested","/nested",1.0,"nested")).unwrap();
+        fs::create_dir(d.path().join("config-state-directory.json")).unwrap();
+        assert!(collect_config_surfaces(d.path()).is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn clear_config_state_receipts_removes_only_direct_regular_matches() {
+        use std::os::unix::fs::symlink;
+
+        let d = tempdir().unwrap();
+        let stale = d.path().join("config-state-stale.json");
+        let unrelated = d.path().join("config-state-stale.txt");
+        let nested = d.path().join("nested");
+        let directory = d.path().join("config-state-directory.json");
+        let symlink_path = d.path().join("config-state-link.json");
+        fs::write(&stale, "stale").unwrap();
+        fs::write(&unrelated, "keep").unwrap();
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("config-state-nested.json"), "keep").unwrap();
+        fs::create_dir(&directory).unwrap();
+        symlink(&unrelated, &symlink_path).unwrap();
+
+        clear_config_state_receipts(d.path()).unwrap();
+
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
+        assert!(nested.join("config-state-nested.json").exists());
+        assert!(directory.exists());
+        assert!(symlink_path.symlink_metadata().is_ok());
+    }
+
+    #[test]
+    fn clear_config_state_receipts_succeeds_when_directory_is_absent() {
+        let d = tempdir().unwrap();
+        assert!(clear_config_state_receipts(&d.path().join("missing")).is_ok());
+    }
 }

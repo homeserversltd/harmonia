@@ -1003,7 +1003,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
     println!("  harmonia config-proposal list [--json]");
-    println!("  harmonia config-proposal accept <id>");
+    println!("  harmonia config-proposal accept <id> owner");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");
     println!("  harmonia uninstall-timer [--systemd-root <path>] [--dry-run]");
     println!("  harmonia validate-ladder <manifest.json>");

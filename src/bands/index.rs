@@ -160,6 +160,7 @@ pub(crate) fn run_profile_engine_with_projection(
     carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
     materialize_on_stage: bool,
 ) -> Result<(), String> {
+    crate::receipts::clear_config_state_receipts(receipt_dir)?;
     let mut active_profile = profile.clone();
     let mut active_projection = projection.clone();
     let mut rerun_preflight_after_stage = false;

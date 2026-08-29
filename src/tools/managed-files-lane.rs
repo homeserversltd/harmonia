@@ -994,30 +994,104 @@ pub(crate) fn files_converge_step(
     }) {
         return Err(reason);
     }
-    let config_write = classes
+    let (software_files, config_files): (Vec<_>, Vec<_>) = request
+        .files
         .iter()
-        .any(|class| matches!(class, crate::atoms::files::TargetClass::Config));
-    let tier_two = manifest.config_deploy.as_deref() == Some("interactable");
-    let effective_apply = apply && !config_write && !tier_two;
-    let lawful_config_proposal = config_write && tier_two;
-    let mut outcome = crate::atoms::files::converge_files_authorized_with_config_policy(
-        &request,
-        module_dir,
-        if config_write || tier_two {
-            None
-        } else {
-            software_authorization
-        },
-        invocation,
-        lawful_config_proposal,
-    )?;
-    if lawful_config_proposal {
-        crate::bands::propose_edits::refresh_interactables_for_convergence(
-            manifest, &request, &outcome,
+        .cloned()
+        .zip(classes.iter())
+        .partition(|(_, class)| matches!(class, crate::atoms::files::TargetClass::Software));
+    let software_files = software_files
+        .into_iter()
+        .map(|(file, _)| file)
+        .collect::<Vec<_>>();
+    let config_files = config_files
+        .into_iter()
+        .map(|(file, _)| file)
+        .collect::<Vec<_>>();
+    let receipt_name = request.receipt_name.clone();
+    let software_request = (!software_files.is_empty()).then(|| {
+        let mut request = request.clone();
+        request.files = software_files;
+        request.receipt_name = receipt_name.clone();
+        request
+    });
+    let config_request = (!config_files.is_empty()).then(|| {
+        let mut request = request.clone();
+        request.files = config_files;
+        request.receipt_name = format!("{receipt_name}-config");
+        request
+    });
+    let software_outcome = software_request
+        .as_ref()
+        .map(|request| {
+            crate::atoms::files::converge_files_authorized_with_config_policy(
+                request,
+                module_dir,
+                software_authorization,
+                invocation,
+                false,
+            )
+        })
+        .transpose()?
+        .unwrap_or_else(|| crate::atoms::files::FileConvergenceOutcome {
+            ok: true,
+            changed: false,
+            ownership_changed: false,
+            checked: 0,
+            written: 0,
+            backed_up: 0,
+            missing: Vec::new(),
+            missing_target_birth_debts: Vec::new(),
+            entries: Vec::new(),
+            message: "software files absent".to_string(),
+        });
+    let mut config_recognitions = Vec::new();
+    let config_outcome = config_request
+        .as_ref()
+        .map(|request| {
+            // Configuration is observed through the recognition wall. A
+            // recognized divergence is parked as an interactable; it never
+            // enters the software transaction or its rollback path.
+            crate::atoms::files::converge_files_authorized_with_config_policy(
+                request, module_dir, None, None, true,
+            )
+        })
+        .transpose()?;
+    if let (Some(request), Some(outcome)) = (config_request.as_ref(), config_outcome.as_ref()) {
+        config_recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence(
+            manifest, request, outcome,
         )?;
-        outcome.changed = false;
-        outcome.ownership_changed = false;
     }
+    let config_outcome =
+        config_outcome.unwrap_or_else(|| crate::atoms::files::FileConvergenceOutcome {
+            ok: true,
+            changed: false,
+            ownership_changed: false,
+            checked: 0,
+            written: 0,
+            backed_up: 0,
+            missing: Vec::new(),
+            missing_target_birth_debts: Vec::new(),
+            entries: Vec::new(),
+            message: "config files absent".to_string(),
+        });
+    let effective_apply = apply && software_request.is_some();
+    let lawful_config_proposal = config_request.is_some();
+    let outcome_ok = software_outcome.ok && config_outcome.ok;
+    let outcome_changed = software_outcome.changed;
+    let outcome_checked = software_outcome.checked + config_outcome.checked;
+    let outcome_written = software_outcome.written + config_outcome.written;
+    let outcome_backed_up = software_outcome.backed_up + config_outcome.backed_up;
+    let outcome_missing = software_outcome
+        .missing
+        .iter()
+        .chain(config_outcome.missing.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let outcome_message = format!(
+        "software: {}; config: {}",
+        software_outcome.message, config_outcome.message
+    );
     if let Some(summary) = step.args.get("summary_receipt").and_then(Value::as_object) {
         let name = summary
             .get("name")
@@ -1027,32 +1101,52 @@ pub(crate) fn files_converge_step(
             .get("schema")
             .and_then(Value::as_str)
             .unwrap_or("harmonia.files.summary.v1");
+        let aggregate_state = if config_recognitions
+            .iter()
+            .any(|r| r.config_state == "refused-unrecognized")
+        {
+            "refused-unrecognized"
+        } else if !config_recognitions.is_empty() {
+            "interactable"
+        } else {
+            "converged"
+        };
+        let mut summary_value = serde_json::json!({
+            "schema": schema, "ok": outcome_ok, "apply": effective_apply,
+            "config_state": aggregate_state,
+            "config_surfaces": config_recognitions.clone(),
+            "module": manifest.id,
+            "source_dir": request.source_root,
+            "target_dir": request.target_root,
+            "checked_file_count": outcome_checked,
+            "written_file_count": outcome_written,
+            "backed_up_file_count": outcome_backed_up,
+            "changed": outcome_changed,
+            "missing": outcome_missing,
+            "authority": summary.get("authority").and_then(Value::as_str).unwrap_or(""),
+            "waybar_contract": summary.get("waybar_contract").cloned().unwrap_or(Value::Null),
+            "first_missing_signal": if lawful_config_proposal { "none" } else if config_request.is_some() { "authority-refused" } else if outcome_ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
+        });
+        if config_recognitions.len() == 1 {
+            if let Some(record) = config_recognitions.first() {
+                let object = summary_value.as_object_mut().expect("summary object");
+                object.insert("score".into(), serde_json::json!(record.score));
+                object.insert(
+                    "reference_id".into(),
+                    serde_json::json!(record.reference_id),
+                );
+            }
+        }
         crate::atoms::attest::write_json_atomic(
             &module_dir.join(format!("{name}.json")),
-            &serde_json::json!({
-                "schema": schema,
-                "ok": outcome.ok,
-                "apply": effective_apply,
-                "state": if lawful_config_proposal { "proposal" } else if config_write || tier_two { "held/authority-refused" } else { "converged" },
-                "module": manifest.id,
-                "source_dir": request.source_root,
-                "target_dir": request.target_root,
-                "checked_file_count": outcome.checked,
-                "written_file_count": outcome.written,
-                "backed_up_file_count": outcome.backed_up,
-                "changed": outcome.changed,
-                "missing": outcome.missing,
-                "authority": summary.get("authority").and_then(Value::as_str).unwrap_or(""),
-                "waybar_contract": summary.get("waybar_contract").cloned().unwrap_or(Value::Null),
-                "first_missing_signal": if lawful_config_proposal { "none" } else if config_write || tier_two { "authority-refused" } else if outcome.ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
-            }),
+            &summary_value,
         )?;
     }
     Ok(OperationOutcome {
-        ok: outcome.ok,
-        changed: outcome.changed,
-        skipped: !effective_apply && !lawful_config_proposal,
-        message: outcome.message,
+        ok: outcome_ok,
+        changed: outcome_changed,
+        skipped: !effective_apply,
+        message: outcome_message,
         command: None,
     })
 }
