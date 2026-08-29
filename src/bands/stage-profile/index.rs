@@ -477,6 +477,7 @@ mod shared_dot_files_tests {
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     fn duplicate_fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
@@ -718,6 +719,7 @@ mod shared_dot_files_tests {
         let _ = fs::remove_dir_all(&root);
         let source_module = root.join("profiles/demo/modules/alpha");
         fs::create_dir_all(source_module.clone()).unwrap();
+        fs::set_permissions(&source_module, fs::Permissions::from_mode(0o755)).unwrap();
         fs::create_dir_all(root.join("src/tools")).unwrap();
         fs::write(
             root.join("Cargo.toml"),
@@ -780,6 +782,10 @@ mod shared_dot_files_tests {
             None => std::env::remove_var("HARMONIA_SUBSCRIPTION_PATH"),
         }
         let _profile = result.unwrap();
+        assert_eq!(
+            fs::metadata(&installed_module).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
         let source_hash = crate::atoms::tree_hash::content_tree_sha256(&source_module).unwrap();
         let installed_hash =
             crate::atoms::tree_hash::content_tree_sha256(&installed_module).unwrap();

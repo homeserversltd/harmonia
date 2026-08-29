@@ -795,6 +795,33 @@ mod tests {
             );
         }
         assert!(!wrappers.join("rustup").exists());
+
+        let caduceus_manifest = load_ladder_manifest_with_category_requirement(
+            &root().join("profiles/homeconsole/modules/install-caduceus/manifest.json"),
+            true,
+        )
+        .unwrap();
+        let runtime = caduceus_manifest
+            .ladder
+            .iter()
+            .find(|step| step.step_id == "caduceus-service-runtime")
+            .expect("caduceus service runtime step");
+        let build = runtime
+            .steps
+            .iter()
+            .find(|child| child.name == "build")
+            .expect("caduceus build child");
+        assert_eq!(build.tool, "fetch-artifact");
+        assert_eq!(build.permutation.as_deref(), Some("fetch"));
+        assert_eq!(
+            build.args.get("source_build_sha"),
+            Some(&json!({"from":"pull-repo.resolved_commit"}))
+        );
+        assert_eq!(build.args.get("artifact_name"), Some(&json!("caduceus")));
+        assert!(runtime
+            .steps
+            .iter()
+            .all(|child| child.tool != "build-crate"));
     }
 
     #[test]
