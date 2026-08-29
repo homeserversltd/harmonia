@@ -501,6 +501,16 @@
               "required": false
             },
             {
+              "name": "profile_sources",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "source_dir",
+              "kind": "string",
+              "required": false
+            },
+            {
               "name": "owner",
               "kind": "string",
               "required": false
