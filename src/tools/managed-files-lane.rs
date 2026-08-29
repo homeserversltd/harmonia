@@ -239,9 +239,63 @@ pub(crate) fn compile_fragments_step(
             command: None,
         });
     }
+    let target_class = crate::atoms::files::classify_target(&target);
+    if let crate::atoms::files::TargetClass::Refused(reason) = &target_class {
+        return Err(reason.clone());
+    }
     let changed = fs::read(&target)
         .map(|current| current != bytes)
         .unwrap_or(true);
+    if matches!(target_class, crate::atoms::files::TargetClass::Config) {
+        if manifest.config_deploy.as_deref() != Some("interactable") {
+            return Err("configuration-actuator-authority-refused".into());
+        }
+        let artifact_root = module_dir.join("compiled-fragments");
+        crate::atoms::attest::prepare_receipt_parent(&artifact_root)?;
+        let artifact_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("compile-fragments-target-name-missing")?
+            .to_string();
+        let artifact = artifact_root.join(&artifact_name);
+        crate::atoms::attest::write_bytes_atomic(&artifact, &bytes)?;
+        let request = crate::atoms::files::FileConvergenceRequest {
+            source_root: artifact_root,
+            target_root: target
+                .parent()
+                .ok_or("compile-fragments-target-parent-missing")?
+                .to_path_buf(),
+            files: vec![crate::atoms::files::FileSpec {
+                mode: step
+                    .args
+                    .get("mode")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u32),
+                relative_path: PathBuf::from(artifact_name),
+            }],
+            backup_existing: true,
+            receipt_name: step.step_id.clone(),
+            owner: None,
+            group: None,
+        };
+        let outcome = crate::atoms::files::converge_files_authorized_with_config_policy(
+            &request, module_dir, None, invocation, true,
+        )?;
+        crate::bands::propose_edits::refresh_interactables_for_convergence(
+            manifest, &request, &outcome,
+        )?;
+        crate::write_json(
+            &module_dir.join("compile-fragments.json"),
+            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":outcome.ok,"changed":false,"skipped":false,"state":"proposal","target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
+        )?;
+        return Ok(OperationOutcome {
+            ok: outcome.ok,
+            changed: false,
+            skipped: false,
+            message: "compile-fragments-config-proposal".into(),
+            command: None,
+        });
+    }
     if apply && changed {
         let backup_path = module_dir.join("backups/compile-fragments");
         let request = crate::place_file::PlaceFileRequest {

@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "description": "Shared Harmonia dot-files compiled from ordered appliance fragments.",
   "optional": false,
+  "config_deploy": "interactable",
   "files_root": "files_root",
   "ladder": [
     {
