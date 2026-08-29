@@ -23,7 +23,10 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("build-venv", include_str!("build-venv/index.json")),
     ("check-health", include_str!("check-health/index.json")),
     ("enable-unit", include_str!("enable-unit/index.json")),
-    ("install-package", include_str!("install-package/index.json")),
+    (
+        "install-package",
+        include_str!("install-package/index.json"),
+    ),
     ("make-symlink", include_str!("make-symlink/index.json")),
     ("place-file", include_str!("place-file/index.json")),
     ("pull-repo", include_str!("pull-repo/index.json")),
@@ -33,7 +36,10 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ),
     ("remove-file", include_str!("remove-file/index.json")),
     ("remove-unit", include_str!("remove-unit/index.json")),
-    ("service-runtime", include_str!("service-runtime/index.json")),
+    (
+        "service-runtime",
+        include_str!("service-runtime/index.json"),
+    ),
     ("set-clock", include_str!("set-clock/index.json")),
 ];
 
@@ -244,11 +250,7 @@ pub use crate::atoms::command;
 pub(crate) use crate::atoms::comparison;
 pub use crate::atoms::declaration;
 pub mod files;
-pub mod git_artifact {
-    pub use crate::atoms::git_artifact::*;
-    pub(crate) use crate::atoms::git_artifact::scoped_request;
-    pub(crate) use crate::pull_repo::acquire_source;
-}
+pub mod git_artifact;
 #[path = "health/index.rs"]
 pub(crate) mod health;
 pub mod household_time;

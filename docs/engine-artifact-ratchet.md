@@ -1,6 +1,7 @@
 # Engine Artifact Ratchet
 
-Harmonia engine self-possession uses a version+sha lock as the trust anchor. Transport is untrusted.
+The local ratchet lock is Harmonia’s trust authority for engine artifacts.
+Transport and hosting are untrusted retrieval and publication surfaces.
 
 ## Lock
 
@@ -13,29 +14,69 @@ The kernel-owned lock lives beside `engine.json` by default:
   "source_head_sha": "<admitted harmonia source head>",
   "artifacts": {
     "x86_64": {
-      "name": "engine/0.1.1/x86_64/harmonia-0.1.1-x86_64",
+      "name": "harmonia-0.1.1-x86_64",
       "sha256": "<artifact sha256>"
     }
   }
 }
 ```
 
-A body converges only to the local blessed lock. Newer observed releases are receipt evidence, not local authority. A body does not self-advance this lock.
+A body converges only to the local blessed lock. Newer observed releases are
+receipt evidence, not local authority. A body does not self-advance this lock.
 
-## Federated transport chain
+## Version releases and assets
 
-Artifact transport is an ordered retrieval chain, not trust authority. The lock stays sovereign: every fetched binary must match the locally blessed lock sha before proof and promotion.
+Every source repository owns a version release on its Forgejo or GitHub project.
+The tag is the version. Each architecture publishes the binary asset
+`harmonia-<version>-<arch>` and the sidecar
+`harmonia-<version>-<arch>.sha256`. The release’s hosting location is transport
+only; it never replaces the local lock or the proof battery.
 
-The default chain is:
+## Retrieval and mirrors
 
-1. estate forge: `git@git.home.arpa:HOMESERVERSLTD/blessed-artifacts.git` over existing root SSH deploy keys;
-2. global canonical: `https://github.com/homeserversltd/blessed-artifacts.git` over anonymous HTTPS read.
+The default retrieval chain is explicitly ordered:
 
-This is the fork-and-precession model. Each estate runs its own forge and may bless locally as an explicit sovereign act. An estate that has not blessed locally autonomically falls up to the homeserversltd GitHub canonical state. Global state is maintained automatically; local precession remains explicit.
+1. Forgejo release for the same source repository at `git.home.arpa`;
+2. GitHub release for that same source repository.
 
-A transport MISS is an unreachable repo, fetch failure, or artifact name absent in the fetched tree. Misses are receipted and the next transport is tried. If the chain is exhausted, the existing source-fallback lane runs unchanged. A SHA mismatch after successful fetch and stage is tamper evidence: the walk stops hard-red before promotion and does not continue to later transports.
+The release tag is the version, and each release carries the binary asset
+`harmonia-<version>-<arch>` plus its checksum asset
+`harmonia-<version>-<arch>.sha256`. Chrysalis’ `release-publish` tool in
+deployables publishes these releases and mirrors the assets.
 
-Existing singular `artifact_transport` configs remain valid and behave as a one-element chain. New configs use `artifact_transports`.
+This is the local-fork/precession model: an estate may run a local Forgejo fork
+and explicitly precess/bless it, while the same source repository’s GitHub
+release remains the ordered fallback. A MISS (missing repository, release,
+asset, or fetch) is receipted and continues to the next transport. A SHA-256
+mismatch after a successful fetch is tamper evidence: the walk stops hard-red
+and never tries a later transport.
+
+The lock remains sovereign: every fetched binary must match the locally blessed
+lock SHA-256 before proof and promotion. Harmonia consumes assets; it does not
+publish, mirror, install, or uninstall machine surfaces.
+
+## Transport configuration
+
+A release chain uses this exact shape (legacy Git entries may omit `kind` and
+continue to parse as `git`):
+
+```json
+{
+  "credential_scopes": {
+    "forgejo-release": {"https_host": "git.home.arpa", "https_token_path": "/home/owner/.ssh/forgejo-token"}
+  },
+  "artifact_transports": [
+    {"kind": "forgejo-release", "base_url": "https://git.home.arpa", "owner": "HOMESERVERSLTD", "repo": "harmonia", "credential_scope": "forgejo-release", "cache_dir": "/var/cache/harmonia/artifacts/forgejo"},
+    {"kind": "github-release", "owner": "homeserversltd", "repo": "harmonia", "cache_dir": "/var/cache/harmonia/artifacts/github"}
+  ]
+}
+```
+
+Existing singular `artifact_transport` configs remain valid as a one-element
+chain, and existing `artifact_transports` configs remain valid. Both singular
+and plural Git configurations parse without `kind`, which defaults to `git`. A
+missing Git repository remains a receipted MISS and continues to the next
+transport.
 
 ## Local source checkout possession
 
@@ -46,11 +87,6 @@ from that checkout, and promotes only after the usual proof battery. It does
 not clone, fetch, configure a credential helper, or open an SSH key for source
 possession. The owner-plane refresh lane owns source freshness; the engine
 receipt names that split as `declared-local-checkout-owner-plane-freshness`.
-
-The installer seeds this declaration from its checkout by default; a deployment
-that stages the source elsewhere passes `--local-source-checkout /opt/harmonia/source`.
-This is the lawful shape for a private Forgejo body whose root plane has no
-credential material.
 
 ## Owner-bearer Forgejo SSH transport
 
@@ -80,14 +116,9 @@ path is never opened by the parent and no credential is written to Git config,
 environment, or receipts. A missing setting, a non-HTTPS repository, or a host
 mismatch leaves the helper disengaged.
 
-## Product surfaces
+## Product and operator boundary
 
-The estate forge is the local blessing surface. The homeserversltd GitHub repo is the canonical global transport of last resort and product mirror. Forgejo releases remain a product release surface and may be minted with the same artifact and sha. None of these hosting surfaces replaces the lock or proof battery as the engine trust path.
-
-## Publication rig
-
-`installer/bin/publish-engine-artifact.sh` builds `target/release/harmonia`, computes sha256, copies the binary into the blessed-artifacts repo, writes `locks/harmonia-engine-<version>.json`, commits, pushes, and emits `harmonia.engine.artifact_publication.v1`.
-
-The rig may optionally mirror the same blessed commit to the homeserversltd GitHub repo using an existing configured git remote/auth lane. Mirror failure is a warning in the publication receipt, never a trust event.
-
-The publication rig is outside the engine trust path. Installed bodies trust only the blessed lock sha256 and the proof battery.
+Deployables owns installation and uninstallation. Harmonia owns runtime
+convergence and control of `harmonia.service` and `harmonia.timer`. Chrysalis’
+release-publish tool owns publication and mirroring. These boundaries do not
+change the lock’s role as the sole artifact trust authority.

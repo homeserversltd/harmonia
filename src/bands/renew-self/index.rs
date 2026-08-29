@@ -109,22 +109,43 @@ impl EnginePlaneConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct EngineArtifactTransport {
+    #[serde(default = "default_artifact_kind")]
+    pub kind: String,
     #[serde(default)]
     pub name: Option<String>,
-    pub repo_url: String,
+    #[serde(default)]
+    pub repo_url: Option<String>,
     #[serde(default = "default_artifact_branch")]
     pub branch: String,
     pub cache_dir: PathBuf,
     #[serde(default = "default_remote")]
     pub remote: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub credential_scope: Option<String>,
 }
 
 impl EngineArtifactTransport {
     fn label(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| format!("{}:{}", self.remote, self.repo_url))
+        self.name.clone().unwrap_or_else(|| {
+            format!(
+                "{}:{}",
+                self.remote,
+                self.repo_url.as_deref().unwrap_or("release")
+            )
+        })
     }
+}
+
+fn default_artifact_kind() -> String {
+    "git".to_string()
 }
 
 fn default_artifact_branch() -> String {
@@ -380,6 +401,28 @@ pub(crate) fn credential_scopes(
     config: &EnginePlaneConfig,
 ) -> BTreeMap<String, tools::git_artifact::CredentialScope> {
     config.credential_scopes.clone()
+}
+
+fn selected_release_scope(
+    transport: &EngineArtifactTransport,
+    scopes: &BTreeMap<String, tools::git_artifact::CredentialScope>,
+) -> (bool, Option<PathBuf>) {
+    let endpoint = transport.base_url.as_deref().or(transport.host.as_deref());
+    let endpoint_host = transport.base_url.as_deref().and_then(|url| {
+        url.strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .and_then(|rest| rest.split('/').next())
+    });
+    let selected = transport
+        .credential_scope
+        .as_deref()
+        .and_then(|name| scopes.get(name))
+        .or_else(|| endpoint.and_then(|name| scopes.get(name)))
+        .or_else(|| endpoint_host.and_then(|name| scopes.get(name)));
+    (
+        transport.credential_scope.is_none() || selected.is_some(),
+        selected.and_then(|scope| scope.https_token_path.clone()),
+    )
 }
 
 fn validate_credential_scopes(
@@ -986,27 +1029,82 @@ pub(crate) fn run_engine_preflight(
                     for (index, transport) in transport_chain.iter().enumerate() {
                         let attempt_index = index + 1;
                         let transport_label = transport.label();
-                        let repo_url = canonicalize_git_candidate(&transport.repo_url)?;
-                        let request = tools::git_artifact::Request::new(
-                            Some(repo_url.clone()),
-                            transport.cache_dir.clone(),
-                            transport.branch.clone(),
-                            transport.remote.clone(),
-                        );
-                        let git_outcome = if apply {
-                            crate::pull_repo::apply(
+                        let git_outcome = if matches!(
+                            transport.kind.as_str(),
+                            "forgejo-release" | "github-release"
+                        ) {
+                            let base_url = transport
+                                .base_url
+                                .clone()
+                                .or_else(|| {
+                                    transport
+                                        .host
+                                        .as_ref()
+                                        .map(|host| format!("https://{host}"))
+                                })
+                                .unwrap_or_else(|| "https://api.github.com".into());
+                            let (scope_found, token_path) =
+                                selected_release_scope(transport, &config.credential_scopes);
+                            let request = tools::git_artifact::ReleaseRequest {
+                                kind: transport.kind.clone(),
+                                base_url,
+                                owner: transport.owner.clone().unwrap_or_default(),
+                                repo: transport.repo.clone().unwrap_or_default(),
+                                credential_token_path: token_path,
+                                credential_scope_found: scope_found,
+                                cache_dir: transport.cache_dir.clone(),
+                            };
+                            tools::git_artifact::fetch_release_asset(
                                 &request,
-                                invocation.ok_or("invocation-key-missing")?,
+                                &lock.engine_version,
+                                &artifact.name,
+                                apply,
                             )
+                            .unwrap_or_else(|error| CmdResult {
+                                ok: false,
+                                code: -1,
+                                stdout: String::new(),
+                                stderr: error,
+                            })
+                        } else if transport.kind == "git" {
+                            let repo_url = canonicalize_git_candidate(
+                                transport
+                                    .repo_url
+                                    .as_deref()
+                                    .ok_or("git-repo-url-missing")?,
+                            )?;
+                            let request = tools::git_artifact::Request::new(
+                                Some(repo_url),
+                                transport.cache_dir.clone(),
+                                transport.branch.clone(),
+                                transport.remote.clone(),
+                            );
+                            let outcome = if apply {
+                                crate::pull_repo::apply(
+                                    &request,
+                                    invocation.ok_or("invocation-key-missing")?,
+                                )
+                            } else {
+                                tools::git_artifact::plan(&request)
+                            };
+                            crate::CmdResult {
+                                ok: outcome.ok,
+                                code: outcome.command.code,
+                                stdout: outcome.command.stdout,
+                                stderr: outcome.command.stderr,
+                            }
                         } else {
-                            tools::git_artifact::plan(&request)
+                            CmdResult {
+                                ok: false,
+                                code: 22,
+                                stdout: String::new(),
+                                stderr: format!(
+                                    "artifact-transport-kind-unsupported kind={}",
+                                    transport.kind
+                                ),
+                            }
                         };
-                        let git_cmd = CmdResult {
-                            ok: git_outcome.command.ok,
-                            code: git_outcome.command.code,
-                            stdout: git_outcome.command.stdout.clone(),
-                            stderr: git_outcome.command.stderr.clone(),
-                        };
+                        let git_cmd = git_outcome.clone();
                         write_command_receipt(
                             &preflight_dir,
                             &format!("artifact-transport-{attempt_index}"),
@@ -1020,6 +1118,7 @@ pub(crate) fn run_engine_preflight(
                             artifact_transport_attempts.push(json!({
                                 "index": attempt_index,
                                 "transport": transport_label,
+                                "kind": transport.kind,
                                 "repo_url": transport.repo_url,
                                 "branch": transport.branch,
                                 "cache_dir": transport.cache_dir,
@@ -1033,6 +1132,34 @@ pub(crate) fn run_engine_preflight(
                         }
 
                         let artifact_path = transport.cache_dir.join(&artifact.name);
+                        if !apply
+                            && matches!(
+                                transport.kind.as_str(),
+                                "forgejo-release" | "github-release"
+                            )
+                        {
+                            lane = "artifact".to_string();
+                            transport_used = Some(transport_label.clone());
+                            artifact_outcome = OperationOutcome {
+                                ok: true,
+                                changed: false,
+                                skipped: false,
+                                message: format!(
+                                    "planned release asset tag={} asset={} transport={}",
+                                    lock.engine_version, artifact.name, transport_label
+                                ),
+                                command: Some(git_cmd.clone()),
+                            };
+                            artifact_transport_attempts.push(json!({
+                                "index": attempt_index,
+                                "transport": transport_label,
+                                "kind": transport.kind,
+                                "outcome": "planned",
+                                "artifact_name": artifact.name,
+                                "ok": true,
+                            }));
+                            break;
+                        }
                         if !artifact_path.exists() {
                             let missing_cmd = CmdResult {
                                 ok: false,
@@ -1054,6 +1181,7 @@ pub(crate) fn run_engine_preflight(
                             artifact_transport_attempts.push(json!({
                                 "index": attempt_index,
                                 "transport": transport_label,
+                                "kind": transport.kind,
                                 "repo_url": transport.repo_url,
                                 "branch": transport.branch,
                                 "cache_dir": transport.cache_dir,
@@ -1100,6 +1228,7 @@ pub(crate) fn run_engine_preflight(
                             artifact_transport_attempts.push(json!({
                                 "index": attempt_index,
                                 "transport": transport_label,
+                                "kind": transport.kind,
                                 "repo_url": transport.repo_url,
                                 "branch": transport.branch,
                                 "cache_dir": transport.cache_dir,
@@ -1115,6 +1244,7 @@ pub(crate) fn run_engine_preflight(
                         artifact_transport_attempts.push(json!({
                             "index": attempt_index,
                             "transport": transport_label,
+                            "kind": transport.kind,
                             "repo_url": transport.repo_url,
                             "branch": transport.branch,
                             "cache_dir": transport.cache_dir,
@@ -1183,9 +1313,10 @@ pub(crate) fn run_engine_preflight(
 
     let artifact_current_noop = lane == "artifact"
         && artifact_outcome.ok
-        && !artifact_outcome.changed
-        && install_before.is_some()
-        && staged_sha == install_before;
+        && (!apply
+            || (!artifact_outcome.changed
+                && install_before.is_some()
+                && staged_sha == install_before));
 
     let mut source_build_sha = String::new();
     if first_missing_signal == "none" && lane != "artifact" {
@@ -1513,4 +1644,25 @@ pub(crate) fn run_engine_preflight(
             .map_err(|err| format!("harmonia-self-update-reexec-failed: {err}"));
     }
     Ok(execution)
+}
+
+#[cfg(test)]
+mod release_transport_tests {
+    use super::EngineArtifactTransport;
+    use std::path::PathBuf;
+
+    #[test]
+    fn release_kinds_and_legacy_git_deserialize() {
+        let forgejo: EngineArtifactTransport = serde_json::from_str(r#"{"kind":"forgejo-release","base_url":"https://git.home.arpa","owner":"HOMESERVERSLTD","repo":"harmonia","cache_dir":"/var/cache/harmonia"}"#).unwrap();
+        assert_eq!(forgejo.kind, "forgejo-release");
+        let github: EngineArtifactTransport = serde_json::from_str(r#"{"kind":"github-release","owner":"homeserversltd","repo":"harmonia","cache_dir":"/var/cache/harmonia"}"#).unwrap();
+        assert_eq!(github.kind, "github-release");
+        let legacy: EngineArtifactTransport = serde_json::from_str(r#"{"repo_url":"https://github.com/example/harmonia.git","cache_dir":"/var/cache/harmonia"}"#).unwrap();
+        assert_eq!(legacy.kind, "git");
+        assert_eq!(
+            legacy.repo_url.as_deref(),
+            Some("https://github.com/example/harmonia.git")
+        );
+        assert_eq!(legacy.cache_dir, PathBuf::from("/var/cache/harmonia"));
+    }
 }

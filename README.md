@@ -19,7 +19,7 @@ src/atoms/       primitive operations and the ask/do/attest surfaces
 src/bands/       ten charter-ordered execution faces
 src/tools/       composition tools and re-export seats
 profiles/        selected profile and module declarations
-installer/       installation support
+installer/       Harmonia build, status, and systemd unit control
 docs/            architecture and engine notes
 ```
 

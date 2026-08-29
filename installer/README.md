@@ -1,30 +1,23 @@
-# Harmonia installer
+# Harmonia control surface
 
-Harmonia is self-contained: this repository carries the commands that build, install, inspect, and uninstall the runnable binary it ships.
+Harmonia does not install or uninstall itself. The deployables organ owns the
+Harmonia installation and uninstallation lifecycle.
 
-Root doorway:
+Harmonia retains the narrow systemd control surface for its own units:
 
 ```text
 ./cli.py
 ./cli.py build
-./cli.py install
-sudo ./cli.py install --apply
 ./cli.py status
-sudo ./cli.py uninstall --apply
+./cli.py install-timer
+sudo ./cli.py install-timer --apply
+sudo ./cli.py uninstall-timer --apply
 ```
 
-The installer tranche installs:
+The timer commands install, enable, disable, and remove only `harmonia.service`
+and `harmonia.timer`. They do not install the binary, configuration, profiles,
+state, logs, or receipts.
 
-- `/usr/local/bin/harmonia`
-- `/etc/harmonia/profiles/`
-- `/etc/harmonia/modules/`
-- `/etc/harmonia/locks/`
-- `/var/lib/harmonia/state/`
-- `/var/log/harmonia/`
-- `/var/lib/harmonia/receipts/`
-- optional `harmonia.service`
-- optional `harmonia.timer`
-
-Default `install` and `uninstall` are dry-run plans. Add `--apply` to mutate the machine.
-
-Python is the installer doorway only. Harmonia's update logic remains in the Rust binary and profile/tool graph.
+Deployables is responsible for placing and removing those installation
+surfaces. Harmonia owns runtime convergence and its own systemd unit control;
+these responsibilities are intentionally separate.
