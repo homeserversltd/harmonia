@@ -574,6 +574,7 @@ mod refresh_interactables_tests {
             role: None,
             optional: false,
             optional_warning: None,
+            category: None,
             group: None,
             constants: BTreeMap::new(),
             package_pins: BTreeMap::new(),

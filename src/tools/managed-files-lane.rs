@@ -394,9 +394,7 @@ struct ManagedFileDisposition {
     ignored: Vec<crate::ManagedFileManifest>,
 }
 
-fn partition_managed_files(
-    files: Vec<crate::ManagedFileManifest>,
-) -> ManagedFileDisposition {
+fn partition_managed_files(files: Vec<crate::ManagedFileManifest>) -> ManagedFileDisposition {
     let mut disposition = ManagedFileDisposition {
         known_good: Vec::new(),
         proposals: Vec::new(),
@@ -435,11 +433,7 @@ struct ProfileSourceManifest {
 fn materialize_profile_sources(
     step: &ValidatedStep,
 ) -> Result<Vec<crate::ManagedFileManifest>, String> {
-    let Some(sources) = step
-        .args
-        .get("profile_sources")
-        .and_then(Value::as_object)
-    else {
+    let Some(sources) = step.args.get("profile_sources").and_then(Value::as_object) else {
         return Ok(Vec::new());
     };
     let source_dir = step
@@ -451,13 +445,9 @@ fn materialize_profile_sources(
     let mut files = Vec::new();
     for (key, value) in sources {
         let descriptor: ProfileSourceManifest = serde_json::from_value(value.clone())
-            .map_err(|error| {
-                format!("managed-files-profile-source-{key}-invalid: {error}")
-            })?;
+            .map_err(|error| format!("managed-files-profile-source-{key}-invalid: {error}"))?;
         if descriptor.source.is_empty() || descriptor.path.is_empty() {
-            return Err(format!(
-                "managed-files-profile-source-{key}-path-invalid"
-            ));
+            return Err(format!("managed-files-profile-source-{key}-path-invalid"));
         }
         let source = Path::new(source_dir).join(&descriptor.source);
         let text = fs::read_to_string(&source).map_err(|error| {
@@ -468,9 +458,7 @@ fn materialize_profile_sources(
         })?;
         let mut rendered = text
             .lines()
-            .filter(|line| {
-                !line.starts_with("profile:") && !line.starts_with("mode:")
-            })
+            .filter(|line| !line.starts_with("profile:") && !line.starts_with("mode:"))
             .map(|line| format!("{line}\n"))
             .collect::<String>();
         if !descriptor.append.trim().is_empty() {
@@ -502,7 +490,10 @@ pub(crate) fn managed_files_step_with_authorization(
         serde_json::from_value(files_value.clone())
             .map_err(|e| format!("managed-files-args-invalid: {e}"))?
     } else if let Some(files_root) = &manifest.files_root {
-        managed_files_from_files_root(&manifest.base_dir.join(files_root))?
+        managed_files_from_files_root(
+            &manifest.base_dir.join(files_root),
+            manifest.category.as_deref(),
+        )?
     } else {
         Vec::new()
     };
@@ -640,7 +631,10 @@ pub(crate) fn managed_directories_step(
         invocation,
     )
 }
-fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileManifest>, String> {
+fn managed_files_from_files_root(
+    root: &Path,
+    module_category: Option<&str>,
+) -> Result<Vec<crate::ManagedFileManifest>, String> {
     let mut files = Vec::new();
     if !root.exists() {
         return Err(format!("managed-files-root-missing {}", root.display()));
@@ -649,12 +643,13 @@ fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileMa
         root: &Path,
         path: &Path,
         out: &mut Vec<crate::ManagedFileManifest>,
+        module_category: Option<&str>,
     ) -> Result<(), String> {
         for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let p = entry.path();
             if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-                walk(root, &p, out)?;
+                walk(root, &p, out, module_category)?;
             } else {
                 let rel = p.strip_prefix(root).map_err(|e| e.to_string())?;
                 let content = fs::read_to_string(&p)
@@ -676,14 +671,18 @@ fn managed_files_from_files_root(root: &Path) -> Result<Vec<crate::ManagedFileMa
                     path: format!("/{}", rel.to_string_lossy()),
                     content,
                     mode,
-                    category: Some("known-good".into()),
+                    category: Some(
+                        crate::tools::ladder::managed_file_category(module_category)?
+                            .ok_or_else(|| "managed-file-category-missing".to_string())?
+                            .into(),
+                    ),
                     legacy_transition_note: None,
                 });
             }
         }
         Ok(())
     }
-    walk(root, root, &mut files)?;
+    walk(root, root, &mut files, module_category)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
 }
@@ -1340,7 +1339,72 @@ fn integer_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &st
 
 #[cfg(test)]
 mod managed_file_disposition_tests {
-    use super::partition_managed_files;
+    use super::{managed_files_from_files_root, partition_managed_files};
+    use std::fs;
+
+    #[test]
+    fn files_root_inherits_interactable_module_category_as_proposal() {
+        let module_dir = std::env::temp_dir().join(format!(
+            "harmonia-managed-files-root-category-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&module_dir);
+        let files_root = module_dir.join("files");
+        fs::create_dir_all(&files_root).unwrap();
+        fs::write(files_root.join("settings.conf"), "setting=true\n").unwrap();
+        let manifest_path = module_dir.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            r#"{
+                "schema": "harmonia.module.ladder.v1",
+                "id": "category-regression",
+                "version": "1",
+                "category": "interactable",
+                "files_root": "files",
+                "ladder": [
+                    {
+                        "step_id": "routine",
+                        "tool": "routine",
+                        "permutation": "execute",
+                        "steps": [
+                            {
+                                "name": "files",
+                                "tool": "files",
+                                "permutation": "managed-files",
+                                "args": {}
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let manifest = crate::tools::ladder::load_ladder_manifest(&manifest_path).unwrap();
+        assert_eq!(manifest.category.as_deref(), Some("interactable"));
+        assert_eq!(manifest.files_root.as_deref(), Some("files"));
+        assert_eq!(manifest.ladder[0].steps[0].tool, "files");
+        assert_eq!(
+            manifest.ladder[0].steps[0].permutation.as_deref(),
+            Some("managed-files")
+        );
+        let files = managed_files_from_files_root(
+            &manifest
+                .base_dir
+                .join(manifest.files_root.as_deref().unwrap()),
+            manifest.category.as_deref(),
+        )
+        .unwrap();
+        let disposition = partition_managed_files(files);
+        assert!(disposition.known_good.is_empty());
+        assert_eq!(disposition.proposals.len(), 1);
+        assert_eq!(disposition.proposals[0].path, "/settings.conf");
+        assert_eq!(
+            disposition.proposals[0].category.as_deref(),
+            Some("interactable")
+        );
+        fs::remove_dir_all(module_dir).unwrap();
+    }
 
     #[test]
     fn interactable_divergence_is_proposal_only() {
@@ -1384,7 +1448,10 @@ mod managed_file_disposition_tests {
                 .collect::<Vec<_>>(),
             ["/etc/proposal"]
         );
-        assert!(disposition.ignored.iter().all(|f| f.path != "/etc/proposal"));
+        assert!(disposition
+            .ignored
+            .iter()
+            .all(|f| f.path != "/etc/proposal"));
     }
 }
 
@@ -1477,6 +1544,7 @@ mod compile_fragments_tests {
             role: None,
             optional: false,
             optional_warning: None,
+            category: None,
             group: None,
             constants: BTreeMap::new(),
             package_pins: BTreeMap::new(),
@@ -1574,6 +1642,7 @@ mod compile_fragments_tests {
             role: None,
             optional: false,
             optional_warning: None,
+            category: None,
             group: None,
             constants: BTreeMap::new(),
             package_pins: BTreeMap::new(),

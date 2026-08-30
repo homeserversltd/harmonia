@@ -24,6 +24,8 @@ pub(crate) struct LadderManifest {
     pub optional: bool,
     #[serde(default)]
     pub optional_warning: Option<String>,
+    #[serde(skip)]
+    pub(crate) category: Option<String>,
     #[serde(default)]
     pub group: Option<LadderGroup>,
     #[serde(default)]
@@ -149,6 +151,7 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
     serde_json::from_value::<LadderManifest>(raw)
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
         .and_then(|mut manifest| {
+            manifest.category = module_category;
             if manifest.schema == SCHEMA {
                 validate_package_pins(&manifest.package_pins)
                     .map_err(|e| format!("ladder-manifest-pin-validation-failed {e}"))?;
@@ -177,7 +180,9 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
 
 const MANAGED_FILE_CATEGORIES: [&str; 2] = ["known-good", "interactable"];
 
-fn managed_file_category(category: Option<&str>) -> Result<Option<&'static str>, String> {
+pub(crate) fn managed_file_category(
+    category: Option<&str>,
+) -> Result<Option<&'static str>, String> {
     let canonical = match category {
         None | Some("known-good") => "known-good",
         Some("interactable") => "interactable",
@@ -347,8 +352,7 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
     else {
         return false;
     };
-    let legacy_build =
-        build.tool == "build-crate" && build.permutation.as_deref() == Some("build");
+    let legacy_build = build.tool == "build-crate" && build.permutation.as_deref() == Some("build");
     let caduceus_build = build.tool == "fetch-artifact"
         && build.permutation.as_deref() == Some("fetch")
         && build.args.get("component").and_then(Value::as_str) == Some("caduceus")
