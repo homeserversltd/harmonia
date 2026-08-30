@@ -22,6 +22,8 @@ pub(crate) mod check_health;
 pub(crate) mod copy_file;
 #[path = "install_package.rs"]
 pub(crate) mod install_package;
+#[path = "package_ceiling.rs"]
+pub(crate) mod package_ceiling;
 #[path = "make_dir.rs"]
 pub(crate) mod make_dir;
 #[path = "make_link.rs"]

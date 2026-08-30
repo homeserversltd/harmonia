@@ -128,6 +128,17 @@ pub(crate) fn load_profile_projection(
             }
         }
     }
+    let profile_ceilings = modules.get("pins").and_then(|projected| match &projected.loaded {
+        LoadedModule::Ladder(manifest) => Some(manifest.package_ceilings.clone()),
+        LoadedModule::Sidecar(_) => None,
+    });
+    if let Some(profile_ceilings) = profile_ceilings {
+        for projected in modules.values_mut() {
+            if let LoadedModule::Ladder(manifest) = &mut projected.loaded {
+                manifest.package_ceilings = profile_ceilings.clone();
+            }
+        }
+    }
     Ok(ProfileProjection { modules, errors })
 }
 

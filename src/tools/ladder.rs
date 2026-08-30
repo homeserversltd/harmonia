@@ -31,6 +31,9 @@ pub(crate) struct LadderManifest {
     /// Package names mapped to the exact installed version Harmonia must hold.
     #[serde(default)]
     pub package_pins: BTreeMap<String, String>,
+    /// Package names mapped to an upper bound for the declared candidate.
+    #[serde(default)]
+    pub package_ceilings: BTreeMap<String, String>,
     #[serde(default)]
     pub caduceus_commands: Vec<String>,
     #[serde(default)]
@@ -149,12 +152,15 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
             if manifest.schema == SCHEMA {
                 validate_package_pins(&manifest.package_pins)
                     .map_err(|e| format!("ladder-manifest-pin-validation-failed {e}"))?;
+                validate_package_ceilings(&manifest.package_ceilings)
+                    .map_err(|e| format!("ladder-manifest-ceiling-validation-failed {e}"))?;
                 let module_name = path
                     .parent()
                     .and_then(Path::file_name)
                     .and_then(|name| name.to_str())
                     .unwrap_or_default();
                 validate_package_pin_module(module_name, &manifest.id, &manifest.package_pins)?;
+                validate_package_ceiling_module(module_name, &manifest.id, &manifest.package_ceilings)?;
                 lower_service_runtime_steps(&mut manifest)
                     .map_err(|e| format!("ladder-manifest-lowering-failed {e}"))?;
                 manifest.base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
@@ -281,6 +287,25 @@ pub(crate) fn validate_package_pin_module(
 ) -> Result<(), String> {
     if !pins.is_empty() && (module_name != "pins" || manifest_id != "pins") {
         return Err("pin-declared-outside-pins-module".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_package_ceilings(ceilings: &BTreeMap<String, String>) -> Result<(), String> {
+    for (name, version) in ceilings {
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._+:-".contains(&b)) {
+            return Err(format!("package-ceiling-name-unsafe-{name}"));
+        }
+        if version.is_empty() || version.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, ';'|'&'|'|'|'$'|'`'|'>'|'<'|'\\'|'\''|'"')) {
+            return Err(format!("package-ceiling-version-unsafe-{name}"));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_package_ceiling_module(module_name: &str, manifest_id: &str, ceilings: &BTreeMap<String, String>) -> Result<(), String> {
+    if !ceilings.is_empty() && (module_name != "pins" || manifest_id != "pins") {
+        return Err("ceiling-declared-outside-pins-module".into());
     }
     Ok(())
 }
@@ -841,4 +866,75 @@ mod tests {
             .unwrap();
         assert!(rust < arcadia);
     }
+
+    #[test]
+    fn package_ceiling_defaults_empty_and_preserves_pins() {
+        let m: LadderManifest = serde_json::from_str(r#"{"schema":"harmonia.module.ladder.v1","id":"pins","version":"1","package_pins":{"pkg":"1"},"ladder":[]}"#).unwrap();
+        assert!(m.package_ceilings.is_empty());
+        assert_eq!(m.package_pins.get("pkg").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn package_ceiling_validation_rejects_unsafe_names_and_versions() {
+        let unsafe_names = vec![
+            String::new(),
+            "bad name".to_string(),
+            format!("bad{}name", '\n'),
+            "bad;name".to_string(),
+            "bad$name".to_string(),
+            "bad|name".to_string(),
+            r"bad\name".to_string(),
+            "bad'name".to_string(),
+            "bad\"name".to_string(),
+        ];
+        for name in unsafe_names {
+            let mut ceilings = BTreeMap::new();
+            ceilings.insert(name.clone(), "1".to_string());
+            let error = validate_package_ceilings(&ceilings).unwrap_err();
+            assert!(error.contains("package-ceiling-name-unsafe"), "name={name:?} error={error}");
+        }
+
+        let unsafe_versions = vec![
+            String::new(),
+            "bad version".to_string(),
+            format!("bad{}version", '\n'),
+            "1;2".to_string(),
+            "1&2".to_string(),
+            "1|2".to_string(),
+            "1$2".to_string(),
+            "1`2".to_string(),
+            "1>2".to_string(),
+            "1<2".to_string(),
+            r"1\2".to_string(),
+            "1'2".to_string(),
+            "1\"2".to_string(),
+        ];
+        for version in unsafe_versions {
+            let mut ceilings = BTreeMap::new();
+            ceilings.insert("pkg".to_string(), version.clone());
+            let error = validate_package_ceilings(&ceilings).unwrap_err();
+            assert!(error.contains("package-ceiling-version-unsafe"), "version={version:?} error={error}");
+        }
+
+        let mut valid = BTreeMap::new();
+        valid.insert("pkg".to_string(), "1:2.3-4+deb12u1~local".to_string());
+        validate_package_ceilings(&valid).unwrap();
+    }
+
+    #[test]
+    fn package_ceiling_validation_restricts_pins_module_identity() {
+        let mut ceilings = BTreeMap::new();
+        ceilings.insert("pkg".to_string(), "1".to_string());
+        assert_eq!(
+            validate_package_ceiling_module("other", "pins", &ceilings).unwrap_err(),
+            "ceiling-declared-outside-pins-module"
+        );
+        assert_eq!(
+            validate_package_ceiling_module("pins", "other", &ceilings).unwrap_err(),
+            "ceiling-declared-outside-pins-module"
+        );
+        assert!(validate_package_ceiling_module("pins", "pins", &ceilings).is_ok());
+        assert!(validate_package_ceiling_module("other", "other", &BTreeMap::new()).is_ok());
+    }
+
 }

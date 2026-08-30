@@ -138,6 +138,11 @@ pub(crate) fn load_profile_module(
                 &manifest.id,
                 &manifest.package_pins,
             )?;
+            crate::tools::ladder::validate_package_ceiling_module(
+                module_id,
+                &manifest.id,
+                &manifest.package_ceilings,
+            )?;
             Ok(LoadedModule::Ladder(manifest))
         });
     }

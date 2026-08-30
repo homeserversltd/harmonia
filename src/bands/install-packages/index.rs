@@ -91,7 +91,7 @@ fn package_step(
         "check" => crate::tools::package::package_tool_for_backend(
             d, &s.step_id, "check", &packages, apply, backend, key,
         ),
-        "install" => crate::tools::package::package_tool_with_policy_for_backend_and_pins(
+        "install" if !m.package_ceilings.is_empty() => crate::tools::package::package_tool_with_policy_for_backend_and_ceilings(
             d,
             &s.step_id,
             "install",
@@ -103,6 +103,11 @@ fn package_step(
             backend,
             key,
             &m.package_pins,
+            &m.package_ceilings,
+        ),
+        "upgrade" if !m.package_ceilings.is_empty() => crate::tools::package::package_tool_with_policy_for_backend_and_ceilings(
+            d, &s.step_id, "upgrade", &[], apply, None, &[], timeout, backend, key,
+            &m.package_pins, &m.package_ceilings,
         ),
         "upgrade" => crate::tools::package::package_tool_with_policy_for_backend_and_pins(
             d,

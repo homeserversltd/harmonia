@@ -1,7 +1,7 @@
 use crate::atoms::command;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::CommandObservation;
-use crate::atoms::package::{pacman_available, pacman_key_program, pacman_program, pacman_stdout_indicates_change, PACKAGE_PIN_SCOPE_LIMITATION};
+use crate::atoms::package::{pacman_available, pacman_key_program, pacman_program, pacman_stdout_indicates_change, CeilingCommandEvidence, CeilingEntry, CurrentnessWitness, DeclaredCeiling, IdentityChange, PACKAGE_PIN_SCOPE_LIMITATION};
 use crate::atoms::ask::install_package::{package_differs, pacman_observed_state, pacman_update_query_is_empty, PackageObservation};
 use crate::atoms::attest::install_package::{package_receipt_fields, write_install_package_guard_receipt, write_keyring_receipt, write_package_receipt, write_package_receipt_with_backend};
 use crate::write_json;
@@ -322,7 +322,7 @@ pub(crate) fn package_install_with_ignores(
     })
 }
 
-use crate::atoms::comparison::{self, DiffDecision};
+use crate::atoms::comparison::{self, CeilingAuthorization, DiffDecision};
 use crate::{OperationOutcome, PackageBackend};
 use serde::Serialize;
 use std::env;
@@ -386,6 +386,136 @@ pub(crate) fn package_tool_with_policy_for_backend(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn package_tool_with_policy_for_backend_and_ceilings(
+    receipt_dir: &Path, name: &str, action: &str, packages: &[String], apply: bool,
+    conflict_policy: Option<&str>, conflict_paths: &[String], timeout_secs: u64,
+    backend: PackageBackend, invocation: Option<&InvocationKey>,
+    pins: &std::collections::BTreeMap<String, String>,
+    ceilings: &std::collections::BTreeMap<String, String>,
+) -> Result<OperationOutcome, String> {
+    if ceilings.is_empty() {
+        return package_tool_with_policy_for_backend_and_pins(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
+    }
+    let timeout = std::time::Duration::from_secs(timeout_secs.min(12));
+    let relevant: Vec<String> = if action == "install" {
+        packages.iter().filter_map(|spec| spec.split_once('=').map(|(p, _)| p.to_string()).or_else(|| ceilings.contains_key(spec).then(|| spec.clone()))).filter(|p| ceilings.contains_key(p)).collect()
+    } else {
+        ceilings.keys().cloned().collect()
+    };
+    if relevant.is_empty() {
+        return package_tool_with_policy_for_backend_and_pins(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
+    }
+    if backend != PackageBackend::Apt {
+        let receipt = serde_json::json!({"schema":"harmonia.package_ceiling.v1","module_seat":"pins/pins","entries":[],"first_blocker":"ceiling-backend-unsupported","posture":"preserved"});
+        write_json(&receipt_dir.join(format!("{name}.ceiling.json")), &receipt)?;
+        return Err("package-ceiling-backend-unsupported".into());
+    }
+    if !matches!(action, "install" | "upgrade" | "update") {
+        let receipt = serde_json::json!({"schema":"harmonia.package_ceiling.v1","module_seat":"pins/pins","entries":[],"first_blocker":"ceiling-action-unsupported","posture":"preserved"});
+        write_json(&receipt_dir.join(format!("{name}.ceiling.json")), &receipt)?;
+        return Err("package-ceiling-action-unsupported".into());
+    }
+    let mut runner = |program: &str, args: &[String], duration: std::time::Duration| -> Result<CommandObservation, String> {
+        Ok(crate::atoms::ask::read_only_command_with_timeout(program, args, duration))
+    };
+    let (entries, first_blocker) = evaluate_package_ceiling(action, packages, ceilings, timeout, &mut runner);
+    if entries.is_empty() {
+        return package_tool_with_policy_for_backend_and_pins(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
+    }
+    let comparison = aggregate_ceiling_comparison(&entries);
+    let posture = if first_blocker.is_some() { "preserved" } else { "authorized" };
+    let receipt = serde_json::json!({"schema":"harmonia.package_ceiling.v1","module_seat":"pins/pins","entries":entries,"first_blocker":first_blocker,"posture":posture});
+    write_json(&receipt_dir.join(format!("{name}.ceiling.json")), &receipt)?;
+    let run = crate::atoms::comparison::execute_with_ceiling(
+        "package",
+        || Ok::<_, String>(()),
+        |_| comparison,
+        |_action_authorization, ceiling_authorization, _| {
+            if matches!(action, "upgrade" | "update") {
+                package_update_tool(receipt_dir, name, action, packages, apply, timeout_secs, PackageBackend::Apt, pins, invocation, Some(&ceiling_authorization))
+            } else {
+                apt_package_tool(receipt_dir, name, action, packages, apply, timeout_secs, pins, invocation, Some(&ceiling_authorization))
+            }
+        },
+    )?;
+    match run {
+        crate::atoms::comparison::CeilingComparisonRun::Moved { movement, .. } => Ok(movement),
+        crate::atoms::comparison::CeilingComparisonRun::Current { comparison, .. } => match comparison {
+            crate::atoms::comparison::CeilingComparison::Empty => Ok(OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: format!("apt package {action} already current within declared ceiling"),
+                command: None,
+            }),
+            crate::atoms::comparison::CeilingComparison::CeilingExceeded => Err(format!(
+                "package-ceiling-{}",
+                first_blocker.as_deref().unwrap_or("ceiling-exceeded")
+            )),
+            crate::atoms::comparison::CeilingComparison::Incomparable => Err(format!(
+                "package-ceiling-{}",
+                first_blocker.as_deref().unwrap_or("version-incomparable")
+            )),
+            crate::atoms::comparison::CeilingComparison::DifferentAndWithinCeiling => {
+                Err("package-ceiling-internal-current-within-ceiling".into())
+            }
+        },
+    }
+}
+
+fn aggregate_ceiling_comparison(entries: &[CeilingEntry]) -> crate::atoms::comparison::CeilingComparison {
+    if entries.iter().any(|entry| entry.comparison == "incomparable") {
+        crate::atoms::comparison::CeilingComparison::Incomparable
+    } else if entries.iter().any(|entry| entry.comparison == "exceeded") {
+        crate::atoms::comparison::CeilingComparison::CeilingExceeded
+    } else if entries.iter().all(|entry| entry.comparison == "empty") {
+        crate::atoms::comparison::CeilingComparison::Empty
+    } else {
+        crate::atoms::comparison::CeilingComparison::DifferentAndWithinCeiling
+    }
+}
+
+fn command_evidence(o: &CommandObservation, timeout: std::time::Duration) -> CeilingCommandEvidence {
+    let timed_out = o.stderr.to_ascii_lowercase().contains("timed out");
+    CeilingCommandEvidence { program: o.program.clone(), args: o.args.clone(), ok: o.ok, code: o.code, stdout: o.stdout.clone(), stderr: o.stderr.clone(), timeout_secs: timeout.as_secs(), timeout: timed_out, timeout_effect: if timed_out { "incomparable".into() } else { "none".into() } }
+}
+
+fn evaluate_package_ceiling<F>(action: &str, packages: &[String], ceilings: &std::collections::BTreeMap<String, String>, timeout: std::time::Duration, runner: &mut F) -> (Vec<CeilingEntry>, Option<String>)
+where F: FnMut(&str, &[String], std::time::Duration) -> Result<CommandObservation, String> {
+    let mut entries = Vec::new();
+    for package in if action == "install" { packages.iter().filter_map(|spec| spec.split_once('=').map(|(p, _)| p.to_string()).or_else(|| ceilings.contains_key(spec).then(|| spec.clone()))).filter(|p| ceilings.contains_key(p)).collect::<Vec<_>>() } else { ceilings.keys().cloned().collect() } {
+        let mut declared = DeclaredCeiling { package: package.clone(), desired: String::new(), ceiling: ceilings[&package].clone() };
+        let ceiling = declared.ceiling.clone();
+        let spec = packages.iter().find(|s| s.split_once('=').map(|(p, _)| p == package).unwrap_or(s.as_str() == package)).cloned();
+        let mut evidence = Vec::new();
+        let desired = if let Some(spec) = spec.and_then(|s| s.split_once('=').map(|(_, v)| v.to_string())) { spec } else {
+            let args = vec!["policy".into(), package.clone()];
+            match runner("/usr/bin/apt-cache", &args, timeout) {
+                Ok(obs) => { evidence.push(command_evidence(&obs, timeout)); let candidates: Vec<_> = obs.stdout.lines().filter_map(|l| l.trim().strip_prefix("Candidate:").map(str::trim)).filter(|v| !v.is_empty() && *v != "(none)").collect(); if !obs.ok || candidates.len() != 1 { entries.push(CeilingEntry { package, desired_version: "".into(), ceiling, live_version: None, comparison: "incomparable".into(), witness_state: "incomparable".into(), identity_change: IdentityChange::Incomparable { before: "".into(), after: "".into(), first_blocker: "candidate-incomparable".into() }, currentness_witness: CurrentnessWitness { before: None, after: None, state: "incomparable".into() }, posture: "preserved".into(), command_evidence: evidence, first_blocker: Some("candidate-incomparable".into()) }); continue; } candidates[0].to_string() }
+                Err(error) => { entries.push(CeilingEntry { package, desired_version: "".into(), ceiling, live_version: None, comparison: "incomparable".into(), witness_state: "incomparable".into(), identity_change: IdentityChange::Incomparable { before: "".into(), after: "".into(), first_blocker: error.clone() }, currentness_witness: CurrentnessWitness { before: None, after: None, state: "incomparable".into() }, posture: "preserved".into(), command_evidence: evidence, first_blocker: Some(error) }); continue; }
+            }
+        };
+        declared.desired = desired.clone();
+        let live_args = vec!["-W".into(), "-f=${Version}".into(), package.clone()];
+        let live = match runner("/usr/bin/dpkg-query", &live_args, timeout) { Ok(o) => { evidence.push(command_evidence(&o, timeout)); o }, Err(e) => { entries.push(CeilingEntry { package, desired_version: desired.clone(), ceiling, live_version: None, comparison: "incomparable".into(), witness_state: "incomparable".into(), identity_change: IdentityChange::Incomparable { before: "".into(), after: desired, first_blocker: e.clone() }, currentness_witness: CurrentnessWitness { before: None, after: None, state: "incomparable".into() }, posture: "preserved".into(), command_evidence: evidence, first_blocker: Some(e) }); continue; } };
+        let live_version = live.ok.then(|| live.stdout.trim().to_string()).filter(|v| !v.is_empty());
+        let mut compare_runner = |p: &str, a: &[String], t: std::time::Duration| runner(p, a, t);
+        let live_version_for_change = live_version.clone().unwrap_or_default();
+        let (comparison, blocker, identity, state) = if live_version.is_none() { ("incomparable", Some("live-version-missing"), IdentityChange::Incomparable { before: "".into(), after: desired.clone(), first_blocker: "live-version-missing".into() }, "incomparable") } else {
+            let live_v = live_version.as_ref().unwrap();
+            let same = crate::atoms::ask::package_ceiling::compare_debian_versions_with_runner(&desired, live_v, timeout, &mut compare_runner);
+            for item in match &same { Ok(comparison) => &comparison.evidence, Err(failure) => &failure.evidence } { evidence.push(CeilingCommandEvidence { program: item.program.clone(), args: item.args.clone(), ok: item.exit_code == Some(0), code: item.exit_code, stdout: item.stdout.clone(), stderr: item.stderr.clone(), timeout_secs: item.timeout_secs, timeout: item.refused.as_deref() == Some("timeout"), timeout_effect: item.refused.clone().unwrap_or_else(|| "none".into()) }); }
+            let within = crate::atoms::ask::package_ceiling::compare_debian_versions_with_runner(&desired, &ceiling, timeout, &mut compare_runner);
+            for item in match &within { Ok(comparison) => &comparison.evidence, Err(failure) => &failure.evidence } { evidence.push(CeilingCommandEvidence { program: item.program.clone(), args: item.args.clone(), ok: item.exit_code == Some(0), code: item.exit_code, stdout: item.stdout.clone(), stderr: item.stderr.clone(), timeout_secs: item.timeout_secs, timeout: item.refused.as_deref() == Some("timeout"), timeout_effect: item.refused.clone().unwrap_or_else(|| "none".into()) }); }
+            let identity = match &same { Ok(c) if matches!(c.order, crate::atoms::ask::package_ceiling::DebianVersionOrder::Equal) => IdentityChange::Unchanged, Ok(_) => IdentityChange::Ordered { before: live_v.clone(), after: desired.clone() }, _ => IdentityChange::Incomparable { before: live_v.clone(), after: desired.clone(), first_blocker: "identity-version-order-unavailable".into() } };
+            let result = match (same, within) { (Ok(s), Ok(_w)) if matches!(s.order, crate::atoms::ask::package_ceiling::DebianVersionOrder::Equal) => ("empty", None, identity, "current"), (Ok(_), Ok(w)) if !matches!(w.order, crate::atoms::ask::package_ceiling::DebianVersionOrder::Greater) => ("different-and-within-ceiling", None, identity, "different"), (Ok(_), Ok(_)) => ("exceeded", Some("ceiling-exceeded"), identity, "exceeded"), _ => ("incomparable", Some("version-incomparable"), identity, "incomparable") }; result
+        };
+        entries.push(CeilingEntry { package, desired_version: declared.desired.clone(), ceiling, live_version, comparison: comparison.into(), witness_state: state.into(), identity_change: identity, currentness_witness: CurrentnessWitness { before: Some(live_version_for_change), after: Some(desired.clone()), state: state.into() }, posture: if blocker.is_none() { "authorized".into() } else { "preserved".into() }, command_evidence: evidence, first_blocker: blocker.map(str::to_string) });
+    }
+    let blocker = entries.iter().find_map(|e| e.first_blocker.clone());
+    (entries, blocker)
+}
+
 pub(crate) fn package_tool_with_policy_for_backend_and_pins(
     receipt_dir: &Path,
     name: &str,
@@ -434,6 +564,7 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
                 PackageBackend::Pacman,
                 pins,
                 invocation,
+                None,
             )
         }
         PackageBackend::Pacman => package_tool_with_policy(
@@ -458,6 +589,7 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
                 PackageBackend::Apt,
                 pins,
                 invocation,
+                None,
             )
         }
         PackageBackend::Apt => apt_package_tool(
@@ -469,6 +601,7 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
             timeout_secs,
             pins,
             invocation,
+            None,
         ),
     }
 }
@@ -489,6 +622,7 @@ fn apt_package_tool(
     timeout_secs: u64,
     pins: &std::collections::BTreeMap<String, String>,
     invocation: Option<&InvocationKey>,
+    ceiling_authorization: Option<&CeilingAuthorization>,
 ) -> Result<OperationOutcome, String> {
     let program = apt_program();
     let mut observe_args = match action {
@@ -556,9 +690,15 @@ fn apt_package_tool(
             let result = if apply {
                 let invocation = invocation
                     .ok_or_else(|| "package-mutation-invocation-missing".to_string())?;
-                run_apt_command_authorized(
-                    authorization, invocation, receipt_dir, name, &program, args, timeout_secs, pins,
-                )
+                if let Some(ceiling) = ceiling_authorization {
+                    run_apt_command_authorized_with_ceiling(
+                        authorization, ceiling, invocation, receipt_dir, name, &program, args, timeout_secs, pins,
+                    )
+                } else {
+                    run_apt_command_authorized(
+                        authorization, invocation, receipt_dir, name, &program, args, timeout_secs, pins,
+                    )
+                }
             } else {
                 run_apt_command(receipt_dir, name, &program, args, timeout_secs, pins)
             };
@@ -623,6 +763,21 @@ fn apt_package_tool(
     )?;
     write_package_receipt_with_backend(receipt_dir, name, action, &outcome, PackageBackend::Apt)?;
     Ok(outcome)
+}
+
+fn run_apt_command_authorized_with_ceiling(
+    action: &ActionAuthorization,
+    ceiling: &CeilingAuthorization,
+    invocation: &InvocationKey,
+    receipt_dir: &Path,
+    name: &str,
+    program: &str,
+    args: Vec<String>,
+    timeout_secs: u64,
+    pins: &std::collections::BTreeMap<String, String>,
+) -> CmdResult {
+    let _both_capabilities = (action, ceiling);
+    run_apt_command_authorized(action, invocation, receipt_dir, name, program, args, timeout_secs, pins)
 }
 
 fn run_apt_command_authorized(
@@ -1166,6 +1321,7 @@ fn package_update_tool(
     b: PackageBackend,
     pins: &std::collections::BTreeMap<String, String>,
     invocation: Option<&InvocationKey>,
+    ceiling_authorization: Option<&CeilingAuthorization>,
 ) -> Result<OperationOutcome, String> {
     let pre = observe_update(r, a, t, b, pins);
     write_pin_witness(r, n, pins, b)?;
@@ -1248,7 +1404,7 @@ fn package_update_tool(
                         ),
                     ),
                     PackageBackend::Apt => {
-                        let u = run_apt_command_authorized(
+                        let u = if let Some(ceiling) = ceiling_authorization { run_apt_command_authorized_with_ceiling(authorization, ceiling, invocation, r, n, &apt_program(), vec!["update".into(), "--allow-releaseinfo-change".into()], t, pins) } else { run_apt_command_authorized(
                             authorization,
                             invocation,
                             r,
@@ -1257,20 +1413,11 @@ fn package_update_tool(
                             vec!["update".into(), "--allow-releaseinfo-change".into()],
                             t,
                             pins,
-                        );
+                        ) };
                         if u.ok {
                             (
                                 Some(u),
-                                run_apt_command_authorized(
-                                    authorization,
-                                    invocation,
-                                    r,
-                                    n,
-                                    &apt_program(),
-                                    vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()],
-                                    t,
-                                    pins,
-                                ),
+                                if let Some(ceiling) = ceiling_authorization { run_apt_command_authorized_with_ceiling(authorization, ceiling, invocation, r, n, &apt_program(), vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()], t, pins) } else { run_apt_command_authorized(authorization, invocation, r, n, &apt_program(), vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()], t, pins) },
                             )
                         } else {
                             (Some(u.clone()), u)
@@ -1820,4 +1967,144 @@ fn keyring_repair_action(
         &outcome,
     )?;
     Ok(outcome)
+}
+
+
+#[cfg(test)]
+mod package_ceiling_production_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    fn obs(program: &str, args: &[String], code: i32, stdout: &str) -> CommandObservation {
+        CommandObservation { program: program.into(), args: args.to_vec(), ok: code == 0, code: Some(code), stdout: stdout.into(), stderr: String::new() }
+    }
+    fn map(items: &[(&str, &str)]) -> BTreeMap<String, String> { items.iter().map(|(p, v)| ((*p).into(), (*v).into())).collect() }
+    fn ceiling_entry(comparison: &str) -> CeilingEntry {
+        CeilingEntry {
+            package: "pkg".into(),
+            desired_version: "2.0".into(),
+            ceiling: "3.0".into(),
+            live_version: Some("1.0".into()),
+            comparison: comparison.into(),
+            witness_state: comparison.into(),
+            identity_change: IdentityChange::Unchanged,
+            currentness_witness: CurrentnessWitness { before: Some("1.0".into()), after: Some("2.0".into()), state: comparison.into() },
+            posture: "preserved".into(),
+            command_evidence: Vec::new(),
+            first_blocker: None,
+        }
+    }
+    fn fake<'a>(mode: &'static str, seen: &'a mut Vec<(String, Vec<String>, Duration)>) -> impl FnMut(&str, &[String], Duration) -> Result<CommandObservation, String> + 'a {
+        move |program, args, timeout| {
+            seen.push((program.into(), args.to_vec(), timeout));
+            if program == "/usr/bin/apt-cache" {
+                return Ok(obs(program, args, 0, "Candidate: 2.0\n"));
+            }
+            if program == "/usr/bin/dpkg-query" {
+                return Ok(obs(program, args, 0, "1.0\n"));
+            }
+            let code = if mode == "equal" { 0 } else {
+                let left: f64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                let right: f64 = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                if left <= right { 0 } else { 1 }
+            };
+            Ok(obs(program, args, code, ""))
+        }
+    }
+
+    #[test]
+    fn package_ceiling_aggregate_empty_is_no_action() {
+        assert_eq!(aggregate_ceiling_comparison(&[ceiling_entry("empty")]), crate::atoms::comparison::CeilingComparison::Empty);
+        assert_eq!(aggregate_ceiling_comparison(&[ceiling_entry("different-and-within-ceiling")]), crate::atoms::comparison::CeilingComparison::DifferentAndWithinCeiling);
+    }
+
+    #[test]
+    fn package_ceiling_aggregate_exceeded_and_incomparable_block() {
+        assert_eq!(aggregate_ceiling_comparison(&[ceiling_entry("exceeded")]), crate::atoms::comparison::CeilingComparison::CeilingExceeded);
+        assert_eq!(aggregate_ceiling_comparison(&[ceiling_entry("exceeded"), ceiling_entry("incomparable")]), crate::atoms::comparison::CeilingComparison::Incomparable);
+    }
+
+    #[test]
+    fn package_ceiling_relevant_target_filtering_excludes_unlisted_install_targets() {
+        let mut seen = Vec::new(); let mut runner = fake("equal", &mut seen);
+        let (entries, blocker) = evaluate_package_ceiling("install", &["other=2.0".into(), "kept=2.0".into()], &map(&[("kept", "3.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(blocker, None); assert_eq!(entries.len(), 1); assert_eq!(entries[0].package, "kept");
+    }
+    #[test]
+    fn package_ceiling_explicit_install_equal_is_empty() {
+        let mut seen = Vec::new(); let mut runner = fake("equal", &mut seen);
+        let (entries, _) = evaluate_package_ceiling("install", &["pkg=1.0".into()], &map(&[("pkg", "2.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(entries[0].comparison, "empty"); assert_eq!(entries[0].witness_state, "current");
+    }
+    #[test]
+    fn package_ceiling_below_is_within_ceiling() {
+        let mut seen = Vec::new(); let mut runner = fake("ordered", &mut seen);
+        let (entries, _) = evaluate_package_ceiling("install", &["pkg=2.0".into()], &map(&[("pkg", "3.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(entries[0].comparison, "different-and-within-ceiling");
+    }
+    #[test]
+    fn package_ceiling_above_is_exceeded() {
+        let mut seen = Vec::new(); let mut runner = fake("above", &mut seen);
+        let (entries, blocker) = evaluate_package_ceiling("install", &["pkg=3.0".into()], &map(&[("pkg", "2.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(entries[0].comparison, "exceeded"); assert_eq!(blocker, Some("ceiling-exceeded".into()));
+    }
+    #[test]
+    fn package_ceiling_upgrade_selects_candidates_for_all_ceiling_keys() {
+        let mut seen = Vec::new(); let mut runner = fake("equal", &mut seen);
+        let (entries, _) = evaluate_package_ceiling("upgrade", &[], &map(&[("pkg", "3.0")]), Duration::from_secs(7), &mut runner);
+        drop(runner);
+        assert_eq!(entries.len(), 1); assert_eq!(entries[0].desired_version, "2.0"); assert_eq!(seen[0].0, "/usr/bin/apt-cache");
+    }
+    #[test]
+    fn package_ceiling_multiple_entries_retained_and_first_blocker_is_first_entry() {
+        let mut seen = Vec::new();
+        let mut runner = |program: &str, args: &[String], timeout: Duration| { seen.push((program.to_string(), args.to_vec(), timeout)); if program == "/usr/bin/apt-cache" { Ok(obs(program,args,0,if args[1]=="a" { "Candidate: (none)\n" } else { "Candidate: 1.0\n" })) } else { Ok(obs(program,args,0,"1.0\n")) } };
+        let (entries, blocker) = evaluate_package_ceiling("upgrade", &[], &map(&[("a", "2.0"), ("b", "2.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(entries.len(), 2); assert_eq!(entries[0].first_blocker, Some("candidate-incomparable".into())); assert_eq!(blocker, Some("candidate-incomparable".into()));
+    }
+    #[test]
+    fn package_ceiling_receipt_evidence_has_exact_commands_and_timeout() {
+        let mut seen = Vec::new(); let mut runner = fake("equal", &mut seen);
+        let (entries, _) = evaluate_package_ceiling("install", &["pkg=1.0".into()], &map(&[("pkg", "2.0")]), Duration::from_secs(7), &mut runner);
+        drop(runner);
+        assert_eq!(seen[0].0, "/usr/bin/dpkg-query"); assert_eq!(seen[0].1, vec!["-W", "-f=${Version}", "pkg"]); assert_eq!(seen[0].2, Duration::from_secs(7));
+        assert!(entries[0].command_evidence.iter().any(|e| e.program == "/usr/bin/dpkg")); assert!(entries[0].command_evidence.iter().all(|e| !e.timeout));
+    }
+    #[test]
+    fn package_ceiling_malformed_candidate_is_incomparable() {
+        let mut runner = |program: &str, args: &[String], _timeout: Duration| {
+            if program == "/usr/bin/apt-cache" { Ok(obs(program, args, 0, "Candidate: (none)\n")) } else { Ok(obs(program, args, 0, "1.0\n")) }
+        };
+        let (entries, blocker) = evaluate_package_ceiling("upgrade", &[], &map(&[("pkg", "2.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(entries[0].comparison, "incomparable"); assert_eq!(blocker, Some("candidate-incomparable".into()));
+    }
+    #[test]
+    fn package_ceiling_failed_dpkg_probe_receipt_retains_command_evidence() {
+        let mut dpkg_calls = 0;
+        let mut runner = |program: &str, args: &[String], _timeout: Duration| {
+            if program == "/usr/bin/dpkg-query" { return Ok(obs(program, args, 0, "1.0\n")); }
+            if program == "/usr/bin/dpkg" {
+                dpkg_calls += 1;
+                return Ok(CommandObservation { program: program.into(), args: args.to_vec(), ok: false, code: Some(if dpkg_calls == 1 { 2 } else { 0 }), stdout: String::new(), stderr: if dpkg_calls == 1 { "dpkg probe failed".into() } else { String::new() } });
+            }
+            Ok(obs(program, args, 0, ""))
+        };
+        let (entries, blocker) = evaluate_package_ceiling("install", &["pkg=2.0".into()], &map(&[("pkg", "3.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(entries[0].comparison, "incomparable");
+        assert_eq!(entries[0].posture, "preserved");
+        assert_eq!(blocker, Some("version-incomparable".into()));
+        let evidence = entries[0].command_evidence.iter().find(|item| item.program == "/usr/bin/dpkg" && item.code == Some(2)).unwrap();
+        assert_eq!(evidence.args.first().map(String::as_str), Some("--compare-versions"));
+        assert_eq!(evidence.stderr, "dpkg probe failed");
+        assert_eq!(evidence.timeout_secs, 7);
+        assert_eq!(evidence.timeout_effect, "nonempty-stderr");
+    }
+
+    #[test]
+    fn package_ceiling_live_missing_is_incomparable() {
+        let mut runner = |program: &str, args: &[String], _timeout: Duration| { Ok(obs(program,args,1,"")) };
+        let (entries, blocker) = evaluate_package_ceiling("install", &["pkg=1.0".into()], &map(&[("pkg", "2.0")]), Duration::from_secs(7), &mut runner);
+        assert_eq!(entries[0].comparison, "incomparable"); assert_eq!(blocker, Some("live-version-missing".into()));
+    }
 }

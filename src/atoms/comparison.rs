@@ -18,6 +18,86 @@ pub(crate) enum DiffDecision {
 pub(crate) struct ActionAuthorization(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CeilingAuthorization(());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CeilingComparison {
+    Empty,
+    DifferentAndWithinCeiling,
+    CeilingExceeded,
+    Incomparable,
+}
+
+#[derive(Debug)]
+pub(crate) enum CeilingComparisonRun<Observed, Movement> {
+    Current { observation: Observed, comparison: CeilingComparison },
+    Moved { observation: Observed, comparison: CeilingComparison, movement: Movement },
+}
+
+impl<Observed, Movement> CeilingComparisonRun<Observed, Movement> {
+    pub(crate) fn observation(&self) -> &Observed {
+        match self {
+            Self::Current { observation, .. } | Self::Moved { observation, .. } => observation,
+        }
+    }
+    pub(crate) fn comparison(&self) -> CeilingComparison {
+        match self {
+            Self::Current { comparison, .. } | Self::Moved { comparison, .. } => *comparison,
+        }
+    }
+}
+
+pub(crate) fn execute_with_ceiling<Observed, Movement, Error>(
+    _operation: &str,
+    mut observe: impl FnMut() -> Result<Observed, Error>,
+    mut compare: impl FnMut(&Observed) -> CeilingComparison,
+    act: impl FnOnce(ActionAuthorization, CeilingAuthorization, &Observed) -> Result<Movement, Error>,
+) -> Result<CeilingComparisonRun<Observed, Movement>, Error>
+where
+    Error: From<String>,
+{
+    let observation = observe()?;
+    let comparison = compare(&observation);
+    match comparison {
+        CeilingComparison::Empty
+        | CeilingComparison::CeilingExceeded
+        | CeilingComparison::Incomparable => Ok(CeilingComparisonRun::Current { observation, comparison }),
+        CeilingComparison::DifferentAndWithinCeiling => Ok(CeilingComparisonRun::Moved {
+            movement: act(ActionAuthorization(()), CeilingAuthorization(()), &observation)?,
+            observation,
+            comparison,
+        }),
+    }
+}
+
+/// Ceiling variant with an optional post-action observation and ordered failure receipt.
+pub(crate) fn execute_with_ceiling_failure_receipt<Observed, Movement, Error>(
+    operation: &str,
+    mut observe: impl FnMut() -> Result<Observed, Error>,
+    mut compare: impl FnMut(&Observed) -> CeilingComparison,
+    act: impl FnOnce(ActionAuthorization, CeilingAuthorization, &Observed) -> Result<Movement, Error>,
+    require_convergence: bool,
+    write_failure_receipt: impl FnOnce(&Observed, &Movement, &Observed) -> Result<(), Error>,
+) -> Result<CeilingComparisonRun<Observed, Movement>, Error>
+where Error: From<String> {
+    let before = observe()?;
+    let comparison = compare(&before);
+    if !matches!(comparison, CeilingComparison::DifferentAndWithinCeiling) {
+        return Ok(CeilingComparisonRun::Current { observation: before, comparison });
+    }
+    let movement = act(ActionAuthorization(()), CeilingAuthorization(()), &before)?;
+    if !require_convergence {
+        return Ok(CeilingComparisonRun::Moved { observation: before, comparison, movement });
+    }
+    let after = observe()?;
+    if !matches!(compare(&after), CeilingComparison::Empty) {
+        write_failure_receipt(&before, &movement, &after)?;
+        return Err(format!("{operation}-ceiling-act-did-not-converge").into());
+    }
+    Ok(CeilingComparisonRun::Moved { observation: after, comparison: CeilingComparison::Empty, movement })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuiescenceDecision {
     Settled,
     Churning,
@@ -224,4 +304,29 @@ mod tests {
         assert_eq!(actions.get(), 1);
         assert_eq!(result.decision(), DiffDecision::Different);
     }
+
+    #[test]
+    fn package_ceiling_empty_never_invokes_action() {
+        let result = execute_with_ceiling("package", || Ok::<_, String>(1_u8), |_| CeilingComparison::Empty, |_, _, _| -> Result<(), String> { panic!("ceiling empty action") });
+        assert_eq!(result.unwrap().comparison(), CeilingComparison::Empty);
+    }
+
+    #[test]
+    fn package_ceiling_within_requires_both_authorizations() {
+        let result = execute_with_ceiling("package", || Ok::<_, String>(2_u8), |_| CeilingComparison::DifferentAndWithinCeiling, |_, _, value| Ok::<_, String>(*value + 1)).unwrap();
+        assert!(matches!(result, CeilingComparisonRun::Moved { movement: 3, .. }));
+    }
+
+    #[test]
+    fn package_ceiling_exceeded_preserves_state_and_blocks_action() {
+        let result = execute_with_ceiling::<_, (), String>("package", || Ok(9_u8), |_| CeilingComparison::CeilingExceeded, |_, _, _| panic!("exceeded action"));
+        assert_eq!(result.unwrap().comparison(), CeilingComparison::CeilingExceeded);
+    }
+
+    #[test]
+    fn package_ceiling_incomparable_is_named_blocker() {
+        let result = execute_with_ceiling::<_, (), String>("package", || Ok(9_u8), |_| CeilingComparison::Incomparable, |_, _, _| panic!("incomparable action"));
+        assert_eq!(result.unwrap().comparison(), CeilingComparison::Incomparable);
+    }
+
 }

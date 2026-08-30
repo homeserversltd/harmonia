@@ -96,6 +96,9 @@ fn plan_ladder_module(
         &manifest.id,
         &manifest.package_pins,
     )?;
+    crate::tools::ladder::validate_package_ceiling_module(
+        module_id, &manifest.id, &manifest.package_ceilings,
+    )?;
     if manifest.id != module_id {
         return Err(format!(
             "module-invalid step_id=manifest defect=id-mismatch-{}",
