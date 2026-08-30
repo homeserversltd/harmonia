@@ -1,4 +1,6 @@
 use crate::CmdResult;
+#[cfg(any(test, feature = "test-facade"))]
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -51,6 +53,38 @@ struct Bearer {
     gid: u32,
     name: String,
     home: String,
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+thread_local! {
+    static TEST_BEARER: RefCell<Option<Bearer>> = const { RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+pub(crate) struct TestBearerGuard {
+    previous: Option<Bearer>,
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+impl Drop for TestBearerGuard {
+    fn drop(&mut self) {
+        TEST_BEARER.with(|slot| {
+            *slot.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+pub(crate) fn install_test_bearer(name: &str, uid: u32, gid: u32, home: &Path) -> TestBearerGuard {
+    let previous = TEST_BEARER.with(|slot| {
+        slot.borrow_mut().replace(Bearer {
+            uid,
+            gid,
+            name: name.to_string(),
+            home: home.display().to_string(),
+        })
+    });
+    TestBearerGuard { previous }
 }
 
 impl<'a> CaptureOptions<'a> {
@@ -237,6 +271,16 @@ pub(crate) fn capture_with_cwd_as_bearer_and_env_and_timeout(
 
 fn resolve_non_root_bearer(bearer: &str) -> Result<Bearer, String> {
     let name = std::ffi::CString::new(bearer).map_err(|_| "git-bearer-invalid-name".to_string())?;
+    #[cfg(any(test, feature = "test-facade"))]
+    if let Some(injected) = TEST_BEARER.with(|slot| slot.borrow().as_ref().cloned()) {
+        if injected.name != bearer {
+            return Err(format!("git-bearer-unknown {bearer}"));
+        }
+        if injected.uid == 0 {
+            return Err(format!("git-bearer-root-refused {bearer}"));
+        }
+        return Ok(injected);
+    }
     let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
     if passwd.is_null() {
         return Err(format!("git-bearer-unknown {bearer}"));

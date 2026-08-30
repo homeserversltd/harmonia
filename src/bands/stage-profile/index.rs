@@ -476,8 +476,25 @@ pub(crate) fn materialize(
 mod shared_dot_files_tests {
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::ffi::CString;
     use std::fs;
+    use std::io;
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
+
+    fn lchown_tree(path: &std::path::Path, uid: libc::uid_t, gid: libc::gid_t) -> io::Result<()> {
+        if fs::symlink_metadata(path)?.file_type().is_dir() {
+            for entry in fs::read_dir(path)? {
+                lchown_tree(&entry?.path(), uid, gid)?;
+            }
+        }
+        let path = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in fixture path"))?;
+        if unsafe { libc::lchown(path.as_ptr(), uid, gid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 
     fn duplicate_fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
@@ -762,6 +779,15 @@ mod shared_dot_files_tests {
         fs::write(installed_module.join("sidecar.json"), r#"{"id":"alpha"}"#).unwrap();
         let stale = installed_module.join("stale-entry");
         fs::write(&stale, b"stale").unwrap();
+        let _bearer_guard = if unsafe { libc::geteuid() } == 0 {
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            lchown_tree(&root, 65534, 65534).unwrap();
+            Some(crate::atoms::command::install_test_bearer(
+                "owner", 65534, 65534, &root,
+            ))
+        } else {
+            None
+        };
         let subscription = root.join("subscription.json");
         let prior_subscription = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
         std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
