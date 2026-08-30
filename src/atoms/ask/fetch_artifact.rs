@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: &str = "67108864";
+const CADUCEUS_LIVENESS_MARKER: &[u8] = b"caduceus.liveness.v1";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -233,14 +234,31 @@ pub(crate) fn download(
     result
 }
 pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
-    crate::atoms::ask::build_crate::build_identity_with_mode(
-        source_sha,
-        None,
-        destination,
-        crate::atoms::ask::build_crate::IdentityMode::EmbeddedSourceSha,
-    )
-    .map(|observation| observation.identity_matches())
-    .unwrap_or(false)
+    let Ok(bytes) = fs::read(destination) else {
+        return false;
+    };
+    let mut extracted = None;
+    for (offset, window) in bytes.windows(CADUCEUS_LIVENESS_MARKER.len()).enumerate() {
+        if window != CADUCEUS_LIVENESS_MARKER {
+            continue;
+        }
+        let start = offset + CADUCEUS_LIVENESS_MARKER.len();
+        let Some(candidate) = bytes.get(start..start + 40) else {
+            return false;
+        };
+        if !candidate.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+            || bytes
+                .get(start + 40)
+                .is_some_and(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        {
+            return false;
+        }
+        if extracted.is_some_and(|previous: &[u8]| previous != candidate) {
+            return false;
+        }
+        extracted = Some(candidate);
+    }
+    extracted == Some(source_sha.as_bytes())
 }
 
 #[cfg(test)]
