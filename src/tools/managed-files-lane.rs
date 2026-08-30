@@ -403,7 +403,18 @@ fn partition_managed_files(files: Vec<crate::ManagedFileManifest>) -> ManagedFil
     for file in files {
         match file.category.as_deref() {
             Some("interactable") => disposition.proposals.push(file),
-            None | Some("known-good") => disposition.known_good.push(file),
+            None | Some("known-good") => {
+                let path = Path::new(&file.path);
+                if matches!(
+                    crate::atoms::files::classify_target(path),
+                    crate::atoms::files::TargetClass::Config
+                ) && !path.starts_with("/home/owner")
+                {
+                    disposition.proposals.push(file);
+                } else {
+                    disposition.known_good.push(file);
+                }
+            }
             Some(_) => disposition.ignored.push(file),
         }
     }
@@ -1410,7 +1421,7 @@ mod managed_file_disposition_tests {
     fn interactable_divergence_is_proposal_only() {
         let files = vec![
             crate::ManagedFileManifest {
-                path: "/etc/good".into(),
+                path: "/usr/local/bin/good".into(),
                 content: "g".into(),
                 mode: None,
                 category: Some("known-good".into()),
@@ -1438,7 +1449,7 @@ mod managed_file_disposition_tests {
                 .iter()
                 .map(|f| f.path.as_str())
                 .collect::<Vec<_>>(),
-            ["/etc/good"]
+            ["/usr/local/bin/good"]
         );
         assert_eq!(
             disposition
@@ -1452,6 +1463,129 @@ mod managed_file_disposition_tests {
             .ignored
             .iter()
             .all(|f| f.path != "/etc/proposal"));
+    }
+}
+
+#[cfg(test)]
+mod managed_files_proposal_tests {
+    use super::managed_files_step_with_authorization;
+    use crate::atoms::files::{classify_target, TargetClass};
+    use crate::tools::ladder::{LadderManifest, OnFailure};
+    use crate::tools::routine::ValidatedStep;
+    use std::collections::BTreeMap;
+    use std::fs;
+    #[test]
+    fn known_good_non_home_config_is_a_pending_proposal_without_target_write() {
+        const CHILD_SENTINEL: &str = "HARMONIA_MANAGED_FILES_PROPOSAL_TEST_CHILD";
+        if std::env::var_os(CHILD_SENTINEL).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("tools::files::managed_files_lane::managed_files_proposal_tests::known_good_non_home_config_is_a_pending_proposal_without_target_write")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env(CHILD_SENTINEL, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let module_dir = root.path().join("module");
+        let target = root
+            .path()
+            .join("config_deploy:interactable")
+            .join("etc/systemd/system/woodpecker-agent.service");
+        let feed_path = root.path().join("interactables.json");
+        const CURRENT_UNIT: &str = r#"[Unit]
+Description=Woodpecker CI agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=woodpecker
+ExecStart=/usr/bin/woodpecker-agent --server grpc://woodpecker-server:8000 --token fixture-token
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"#;
+        const DESIRED_UNIT: &str = r#"[Unit]
+Description=Woodpecker CI agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=woodpecker
+ExecStart=/usr/bin/woodpecker-agent --server grpc://woodpecker-server:9000 --token fixture-token
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"#;
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, CURRENT_UNIT.as_bytes()).unwrap();
+        let original = fs::read(&target).unwrap();
+        assert!(matches!(classify_target(&target), TargetClass::Config));
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
+
+        let step = ValidatedStep {
+            step_id: "managed-files".into(),
+            tool: "files".into(),
+            permutation: "managed-files".into(),
+            args: BTreeMap::from([(
+                "files".into(),
+                serde_json::json!([{
+                    "path": target.display().to_string(),
+                    "content": DESIRED_UNIT,
+                    "category": "known-good"
+                }]),
+            )]),
+            on_failure: OnFailure::Stop,
+        };
+        let manifest = LadderManifest {
+            schema: "test".into(),
+            id: "test".into(),
+            version: "1".into(),
+            description: String::new(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            category: Some("known-good".into()),
+            group: None,
+            constants: BTreeMap::new(),
+            package_pins: BTreeMap::new(),
+            package_ceilings: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: None,
+            ladder: Vec::new(),
+            base_dir: module_dir.clone(),
+        };
+
+        managed_files_step_with_authorization(&step, &manifest, &module_dir, None, None).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), original);
+        let feed: crate::interactables::InteractablesFeed =
+            crate::interactables::load_feed(&feed_path).unwrap();
+        assert_eq!(feed.interactables.len(), 1);
+        assert_eq!(
+            feed.interactables
+                .iter()
+                .filter(|item| !item.has_run && item.target_path == target.as_path())
+                .count(),
+            1
+        );
+        std::env::remove_var("HARMONIA_INTERACTABLES_PATH");
     }
 }
 
