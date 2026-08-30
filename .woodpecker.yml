@@ -2,6 +2,12 @@ when:
   event:
     - push
 
+clone:
+  git:
+    image: docker.io/woodpeckerci/plugin-git:2.8.0
+    volumes:
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+
 steps:
   - name: cargo-test
     image: rust:1.85-bookworm
