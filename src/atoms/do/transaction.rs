@@ -204,6 +204,12 @@ pub(crate) fn rolling_update_run(
             Some(&carrier),
             true,
         );
+        let (changed, operation_count) = carrier
+            .borrow()
+            .deferred_terminal_summary
+            .as_ref()
+            .map(|summary| (summary.changed, summary.operation_count))
+            .unwrap_or((false, 0));
         let transaction_guard = carrier.borrow_mut().sealed_projection.take();
         if let Err(error) = transaction {
             let Some(mut txn) = transaction_guard else {
@@ -213,6 +219,8 @@ pub(crate) fn rolling_update_run(
                     module_root,
                     "transaction-engine-failed",
                     Some(&error),
+                    changed,
+                    operation_count,
                 )?;
                 return Err(error);
             };
@@ -222,6 +230,8 @@ pub(crate) fn rolling_update_run(
                 module_root,
                 "transaction-engine-failed",
                 Some(&error),
+                changed,
+                operation_count,
             );
             if let Some(key) = mode.invocation() {
                 if let Ok(receipt) =
@@ -244,6 +254,8 @@ pub(crate) fn rolling_update_run(
                 module_root,
                 "transaction-missing",
                 None,
+                changed,
+                operation_count,
             )?;
             return Err("stage-profile-transaction-missing".to_string());
         };
@@ -258,6 +270,8 @@ pub(crate) fn rolling_update_run(
                         module_root,
                         "transaction-apply-failed",
                         Some(&error),
+                        changed,
+                        operation_count,
                     );
                     if let Ok(receipt) =
                         crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
@@ -279,6 +293,8 @@ pub(crate) fn rolling_update_run(
                 module_root,
                 "transaction-invocation-missing",
                 None,
+                changed,
+                operation_count,
             )?;
             return Err("stage-profile-invocation-missing".to_string());
         }
@@ -291,6 +307,8 @@ pub(crate) fn rolling_update_run(
                     module_root,
                     "transaction-commit-failed",
                     Some(&error),
+                    changed,
+                    operation_count,
                 )?;
                 return Err(error);
             }
@@ -304,6 +322,8 @@ pub(crate) fn rolling_update_run(
                 module_root,
                 "transaction-receipt-failed",
                 Some(&error),
+                changed,
+                operation_count,
             )?;
             return Err(error);
         }
@@ -314,6 +334,8 @@ pub(crate) fn rolling_update_run(
                 module_root,
                 "transaction-terminal-summary-missing",
                 None,
+                changed,
+                operation_count,
             )?;
             return Err("stage-profile-terminal-summary-missing".to_string());
         };
@@ -329,6 +351,8 @@ pub(crate) fn rolling_update_run(
                 module_root,
                 "transaction-terminal-receipt-failed",
                 Some(&error),
+                changed,
+                operation_count,
             )?;
             return Err(error);
         }
@@ -361,6 +385,8 @@ fn write_transaction_failure_run_receipt(
     module_root: &Path,
     fallback_signal: &str,
     error: Option<&str>,
+    changed: bool,
+    operation_count: usize,
 ) -> Result<(), String> {
     let signal = transaction_failure_signal(error, fallback_signal);
     write_engine_run_receipt_with_duration(
@@ -368,9 +394,9 @@ fn write_transaction_failure_run_receipt(
         profile,
         true,
         false,
-        false,
+        changed,
         profile.modules.len(),
-        0,
+        operation_count,
         &signal,
         module_root,
         false,
@@ -390,6 +416,8 @@ fn write_transaction_failure_run_receipt(
             "event": "transaction-failed",
             "ok": false,
             "first_missing_signal": signal,
+            "changed": changed,
+            "operation_count": operation_count,
             "message": error.unwrap_or(fallback_signal),
             "error": error.unwrap_or(fallback_signal),
         }),
@@ -402,10 +430,10 @@ fn write_transaction_failure_run_receipt(
         Some(false),
     );
     println!("ok=false");
-    println!("changed=false");
+    println!("changed={}", changed);
     println!("profile_id={}", profile.id);
     println!("module_count={}", profile.modules.len());
-    println!("operation_count=0");
+    println!("operation_count={}", operation_count);
     println!("first_missing_signal={}", signal);
     println!("receipt_dir={}", receipt_dir.display());
     Ok(())
@@ -458,4 +486,139 @@ pub(crate) fn rolling_update_from_certificate_with_context(
         materialize_tv_receipt_dir,
         try_acquire_homeconsole_update_lock,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn band_walk_preserves_failed_module_a_aggregate_after_module_b_changes() {
+        let tree = tempfile::tempdir().expect("module tree");
+        let receipt_dir = tempfile::tempdir().expect("receipt directory");
+        let target = tree.path().join("created-by-module-b");
+        fs::create_dir_all(tree.path().join("module-b")).expect("module-b directory");
+        fs::write(
+            tree.path().join("module-b/manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "harmonia.module.ladder.v1",
+                "id": "module-b",
+                "version": "1",
+                "ladder": [{
+                    "step_id": "module-b-directories",
+                    "tool": "files",
+                    "permutation": "managed-directories",
+                    "args": {"directories": [{
+                        "path": target,
+                        "mode": 493,
+                        "owner": "1000",
+                        "group": "1000"
+                    }]},
+                    "on_failure": "stop"
+                }]
+            }))
+            .expect("module-b manifest"),
+        )
+        .expect("write module-b manifest");
+        assert!(!target.exists());
+
+        let profile = Profile {
+            id: "demo".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: vec!["module-a".into(), "module-b".into()],
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        };
+        let projection = crate::bands::stage_profile::projection::load_profile_projection(
+            &profile,
+            tree.path(),
+            &BTreeSet::new(),
+        )
+        .expect("profile projection");
+        assert!(projection.errors.contains_key("module-a"));
+        assert!(projection.modules.contains_key("module-b"));
+
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+        let preflight = ModuleExecution {
+            ok: true,
+            changed: false,
+            operation_count: 0,
+            first_missing_signal: None,
+            placements: Vec::new(),
+        };
+        let carrier = Rc::new(RefCell::new(RunCarrier::default()));
+        let engine_error = crate::bands::run_profile_engine_with_projection(
+            &profile,
+            tree.path(),
+            receipt_dir.path(),
+            &mode,
+            true,
+            Some(preflight),
+            None,
+            &projection,
+            None,
+            Some(&carrier),
+            false,
+        )
+        .expect_err("missing module-a must fail the apply run");
+        assert!(
+            target.is_dir(),
+            "module-b must still execute after module-a"
+        );
+
+        let run_path = receipt_dir.path().join("run.json");
+        let first_run: serde_json::Value =
+            serde_json::from_reader(fs::File::open(&run_path).expect("band-walk run receipt"))
+                .expect("valid band-walk run receipt");
+        let observed_changed = first_run["changed"].as_bool().expect("changed bool");
+        let observed_operation_count = first_run["operation_count"]
+            .as_u64()
+            .expect("operation count") as usize;
+        let observed_signal = first_run["first_missing_signal"]
+            .as_str()
+            .expect("first missing signal")
+            .to_string();
+        assert!(!first_run["ok"].as_bool().expect("ok bool"));
+        assert!(observed_changed);
+        assert!(observed_operation_count > 0);
+        assert!(observed_signal.contains("module-a"));
+
+        write_transaction_failure_run_receipt(
+            receipt_dir.path(),
+            &profile,
+            tree.path(),
+            &observed_signal,
+            None,
+            observed_changed,
+            observed_operation_count,
+        )
+        .expect("transaction failure receipt");
+        let rewritten: serde_json::Value =
+            serde_json::from_reader(fs::File::open(&run_path).expect("rewritten run receipt"))
+                .expect("valid rewritten run receipt");
+        assert_eq!(rewritten["ok"], false);
+        assert_eq!(rewritten["changed"].as_bool(), Some(observed_changed));
+        assert_eq!(
+            rewritten["operation_count"].as_u64(),
+            Some(observed_operation_count as u64)
+        );
+        assert_eq!(rewritten["first_missing_signal"], observed_signal);
+
+        let event = fs::read_to_string(receipt_dir.path().join("events.jsonl"))
+            .expect("event receipt")
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["event"] == "transaction-failed")
+            .expect("transaction-failed event");
+        assert_eq!(event["ok"], false);
+        assert_eq!(event["changed"].as_bool(), Some(observed_changed));
+        assert_eq!(
+            event["operation_count"].as_u64(),
+            Some(observed_operation_count as u64)
+        );
+        assert_eq!(event["first_missing_signal"], observed_signal);
+        assert!(engine_error.contains("module-a"));
+    }
 }
