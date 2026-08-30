@@ -578,6 +578,7 @@ mod refresh_interactables_tests {
             group: None,
             constants: BTreeMap::new(),
             package_pins: BTreeMap::new(),
+            package_ceilings: BTreeMap::new(),
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: Some("interactable".into()),
