@@ -1,53 +1,6 @@
 use harmonia::filesystem::{apply_transaction, converge, FilesystemOperation, RootPrefix};
-use std::{env, fs, os::unix::process::CommandExt, path::PathBuf, process::Command};
+use std::{fs, os::unix::process::CommandExt, path::PathBuf, process::Command};
 use tempfile::tempdir;
-
-const PULL_REPO_NON_ROOT_REEXEC: &str = "HARMONIA_PULL_REPO_NON_ROOT_REEXEC";
-
-fn reexecute_pull_repo_test_as_non_root() -> bool {
-    if unsafe { libc::geteuid() } != 0 || env::var_os(PULL_REPO_NON_ROOT_REEXEC).is_some() {
-        return false;
-    }
-
-    let (name, uid, gid, home) = fs::read_to_string("/etc/passwd")
-        .expect("read passwd")
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<_> = line.splitn(7, ':').collect();
-            if fields.len() != 7 {
-                return None;
-            }
-            let uid = fields[2].parse::<u32>().ok()?;
-            let gid = fields[3].parse::<u32>().ok()?;
-            (uid != 0 && !fields[0].is_empty())
-                .then(|| (fields[0].to_owned(), uid, gid, fields[5].to_owned()))
-        })
-        .next()
-        .expect("passwd must contain an existing non-root user");
-    let path = env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
-    let status = Command::new(env::current_exe().expect("current test executable"))
-        .env_clear()
-        .env(PULL_REPO_NON_ROOT_REEXEC, "1")
-        .env("PATH", path)
-        .env("HOME", home)
-        .env("USER", &name)
-        .env("LOGNAME", &name)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .args([
-            "--exact",
-            "pull_repo_uses_local_bare_fixture_and_is_idempotent",
-        ])
-        .uid(uid)
-        .gid(gid)
-        .status()
-        .expect("re-execute pull repo test");
-    assert!(
-        status.success(),
-        "non-root pull repo test exited with {status}"
-    );
-    true
-}
 
 fn twice(
     root: &RootPrefix,
@@ -163,7 +116,29 @@ fn all_filesystem_atoms_converge_under_fake_root() {
 
 #[test]
 fn pull_repo_uses_local_bare_fixture_and_is_idempotent() {
-    if reexecute_pull_repo_test_as_non_root() {
+    const RELAUNCHED_MARKER: &str = "HARMONIA_PULL_REPO_TEST_RELAUNCHED";
+    if unsafe { libc::geteuid() } == 0 && std::env::var_os(RELAUNCHED_MARKER).is_none() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .arg("--exact")
+            .arg("pull_repo_uses_local_bare_fixture_and_is_idempotent")
+            .arg("--nocapture")
+            .env(RELAUNCHED_MARKER, "1");
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setgroups(0, std::ptr::null()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::setgid(65534) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::setuid(65534) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        assert!(command.status().unwrap().success());
         return;
     }
     let directory = tempdir().unwrap();

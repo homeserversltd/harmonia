@@ -476,39 +476,24 @@ pub(crate) fn materialize(
 mod shared_dot_files_tests {
     use serde_json::json;
     use std::collections::BTreeMap;
-    use std::ffi::{CStr, CString};
+    use std::ffi::CString;
     use std::fs;
+    use std::io;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
 
-    fn chown_fixture_tree(path: &Path, uid: libc::uid_t, gid: libc::gid_t) {
-        if path.is_dir() {
-            for entry in fs::read_dir(path).unwrap() {
-                chown_fixture_tree(&entry.unwrap().path(), uid, gid);
+    fn lchown_tree(path: &std::path::Path, uid: libc::uid_t, gid: libc::gid_t) -> io::Result<()> {
+        if fs::symlink_metadata(path)?.file_type().is_dir() {
+            for entry in fs::read_dir(path)? {
+                lchown_tree(&entry?.path(), uid, gid)?;
             }
         }
-        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::chown(c_path.as_ptr(), uid, gid) }, 0);
-    }
-
-    fn fixture_git_bearer(root: &Path) -> String {
-        let euid = unsafe { libc::geteuid() };
-        let passwd = if euid == 0 {
-            let nobody = CString::new("nobody").unwrap();
-            unsafe { libc::getpwnam(nobody.as_ptr()) }
-        } else {
-            unsafe { libc::getpwuid(euid) }
-        };
-        assert!(!passwd.is_null());
-        let passwd = unsafe { &*passwd };
-        if euid == 0 {
-            chown_fixture_tree(root, passwd.pw_uid, passwd.pw_gid);
+        let path = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in fixture path"))?;
+        if unsafe { libc::lchown(path.as_ptr(), uid, gid) } != 0 {
+            return Err(io::Error::last_os_error());
         }
-        unsafe { CStr::from_ptr(passwd.pw_name) }
-            .to_str()
-            .unwrap()
-            .to_owned()
+        Ok(())
     }
 
     fn duplicate_fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -794,17 +779,25 @@ mod shared_dot_files_tests {
         fs::write(installed_module.join("sidecar.json"), r#"{"id":"alpha"}"#).unwrap();
         let stale = installed_module.join("stale-entry");
         fs::write(&stale, b"stale").unwrap();
+        let _bearer_guard = if unsafe { libc::geteuid() } == 0 {
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            lchown_tree(&root, 65534, 65534).unwrap();
+            Some(crate::atoms::command::install_test_bearer(
+                "owner", 65534, 65534, &root,
+            ))
+        } else {
+            None
+        };
         let subscription = root.join("subscription.json");
         let prior_subscription = std::env::var_os("HARMONIA_SUBSCRIPTION_PATH");
         std::env::set_var("HARMONIA_SUBSCRIPTION_PATH", &subscription);
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
-        let git_bearer = fixture_git_bearer(&root);
         let result = super::materialize(
             &root,
             "demo",
             &root.join("installed/modules"),
             &root.join("receipts"),
-            &git_bearer,
+            "owner",
             &invocation,
             None,
             None,
