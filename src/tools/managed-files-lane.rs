@@ -147,7 +147,11 @@ pub(crate) fn compile_fragments(
         return Err("compile-fragments-appliance-invalid".into());
     }
     let mut bytes = Vec::new();
-    for pool in ["all", selected_appliance] {
+    let selected_pool = match selected_appliance {
+        "homeconsole" | "bigrig" => "tv",
+        other => other,
+    };
+    for pool in ["all", selected_pool] {
         let directory = source_root.join(pool);
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -280,20 +284,31 @@ pub(crate) fn compile_fragments_step(
             group: None,
         };
         let outcome = crate::atoms::files::converge_files_authorized_with_config_policy(
-            &request, module_dir, None, invocation, true,
+            &request, module_dir, None, None, true,
         )?;
         crate::bands::propose_edits::refresh_interactables_for_convergence(
             manifest, &request, &outcome,
         )?;
+        let target_is_regular_file = fs::symlink_metadata(&target)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false);
+        let config_state = if !target_is_regular_file {
+            "refused-unrecognized"
+        } else if outcome.entries.iter().any(|entry| entry.changed) {
+            "interactable"
+        } else {
+            "converged"
+        };
+        let skipped = config_state != "interactable";
         crate::write_json(
             &module_dir.join("compile-fragments.json"),
-            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":outcome.ok,"changed":false,"skipped":false,"state":"proposal","target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
+            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":true,"changed":false,"skipped":skipped,"config_state":config_state,"recognition_ok":outcome.ok,"target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
         )?;
         return Ok(OperationOutcome {
-            ok: outcome.ok,
+            ok: true,
             changed: false,
-            skipped: false,
-            message: "compile-fragments-config-proposal".into(),
+            skipped,
+            message: format!("compile-fragments-config-{config_state}"),
             command: None,
         });
     }
@@ -1484,6 +1499,120 @@ mod compile_fragments_tests {
         assert_eq!(receipt["artifact"], "no-claim");
         assert_eq!(receipt["skipped"], true);
         assert_eq!(receipt["bytes"], 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn homeconsole_and_bigrig_zshrc_compile_from_the_tv_pool() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("shared/modules/dot-files/files_root/zshrc");
+        let tv = compile_fragments(&source, "tv").unwrap();
+        assert!(!tv.is_empty());
+        assert_eq!(compile_fragments(&source, "homeconsole").unwrap(), tv);
+        assert_eq!(compile_fragments(&source, "bigrig").unwrap(), tv);
+    }
+
+    #[test]
+    fn config_compile_is_an_interactable_without_failing_backfill_or_run() {
+        const CHILD_SENTINEL: &str = "HARMONIA_CONFIG_COMPILE_TEST_CHILD";
+        if std::env::var_os(CHILD_SENTINEL).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("tools::files::managed_files_lane::compile_fragments_tests::config_compile_is_an_interactable_without_failing_backfill_or_run")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env(CHILD_SENTINEL, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let root = fixture("config-interactable");
+        let profile_root = root.join("profile");
+        let module_dir = profile_root.join("modules/dot-files");
+        let source_root = root.join("source");
+        let target = root.join("config_deploy:interactable").join("target.conf");
+        let feed = root.join("interactables.json");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(source_root.join("all")).unwrap();
+        fs::create_dir_all(source_root.join("tv")).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(profile_root.join("index.json"), br#"{"id":"tv"}"#).unwrap();
+        fs::write(source_root.join("all/00"), b"all\n").unwrap();
+        fs::write(source_root.join("tv/20"), b"tv\n").unwrap();
+        fs::write(&target, b"divergent\n").unwrap();
+
+        let args = BTreeMap::from([
+            (
+                "source_root".into(),
+                Value::String(source_root.display().to_string()),
+            ),
+            (
+                "target_path".into(),
+                Value::String(target.display().to_string()),
+            ),
+            ("backup_existing".into(), Value::Bool(true)),
+        ]);
+        let step = ValidatedStep {
+            step_id: "compile-fragments".into(),
+            tool: "files".into(),
+            permutation: "compile-fragments".into(),
+            args,
+            on_failure: OnFailure::Stop,
+        };
+        let manifest = LadderManifest {
+            schema: "test".into(),
+            id: "test".into(),
+            version: "1".into(),
+            description: String::new(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            group: None,
+            constants: BTreeMap::new(),
+            package_pins: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: Some("interactable".into()),
+            ladder: Vec::new(),
+            base_dir: module_dir.clone(),
+        };
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed);
+        let mut routine_states = BTreeMap::new();
+        let execution = crate::bands::backfill_files::execute_files(
+            &manifest,
+            &module_dir,
+            None,
+            None,
+            None,
+            true,
+            false,
+            &mut routine_states,
+            &[step],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(execution.ok);
+        assert!(execution.first_missing_signal.is_none());
+        assert_eq!(execution.placements.len(), 1);
+        assert_eq!(execution.placements[0]["status"], "completed");
+        assert_eq!(fs::read(&target).unwrap(), b"divergent\n");
+        let feed: Value = serde_json::from_slice(&fs::read(&feed).unwrap()).unwrap();
+        assert_eq!(feed["interactables"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            feed["interactables"][0]["target_path"],
+            target.display().to_string()
+        );
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(module_dir.join("compile-fragments.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["ok"], true);
+        assert_eq!(receipt["config_state"], "interactable");
         fs::remove_dir_all(root).unwrap();
     }
 
