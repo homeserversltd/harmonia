@@ -309,6 +309,7 @@ pub(crate) fn project_manifest_routines(
 }
 
 fn execute_routine_tool(
+    step_id: &str,
     tool: &str,
     requested_permutation: Option<&str>,
     args: &std::collections::BTreeMap<String, serde_json::Value>,
@@ -389,6 +390,7 @@ fn execute_routine_tool(
             invocation,
         ),
         "place-file" | "backfill-file" => crate::bands::backfill_files::execute_routine_child(
+            step_id,
             tool,
             requested_permutation,
             args,
@@ -663,8 +665,19 @@ pub(crate) fn execute_routine(
                     .and_then(Value::as_str)
                     .ok_or_else(|| format!("{}-path-missing", child.tool))
                     .and_then(|path| {
-                        crate::tools::files::authorize_routine_target(Path::new(path), apply)
-                            .map(|_| ())
+                        let path = Path::new(path);
+                        let managed_place_config = child.name.starts_with("managed-place-")
+                            && child.tool == "place-file"
+                            && child.permutation == "place"
+                            && manifest.config_deploy.as_deref() == Some("interactable");
+                        match crate::tools::files::classify_target(path) {
+                            crate::tools::files::TargetClass::Refused(reason) => Err(reason),
+                            crate::tools::files::TargetClass::Config if managed_place_config => {
+                                Ok(())
+                            }
+                            _ => crate::tools::files::authorize_routine_target(path, apply)
+                                .map(|_| ()),
+                        }
                     }),
                 _ => Ok(()),
             };
@@ -672,6 +685,7 @@ pub(crate) fn execute_routine(
                 crate::tools::files::structural_file_blocker(&child_step, manifest).map_or_else(
                     || {
                         tools::routine::execute_routine_tool(
+                            &child.name,
                             &child.tool,
                             Some(child.permutation.as_str()),
                             &args,

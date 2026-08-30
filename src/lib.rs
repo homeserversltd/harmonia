@@ -7,6 +7,7 @@ pub(crate) mod build_crate;
 pub(crate) mod build_venv;
 #[path = "tools/check-health/index.rs"]
 pub(crate) mod check_health;
+mod demo_registry;
 #[path = "tools/enable-unit/index.rs"]
 pub(crate) mod enable_unit;
 #[cfg(feature = "test-facade")]
@@ -351,6 +352,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         ),
         Some("renew-self") => renew_self_command(&args[1..], &invocation),
         Some("update") => update_from_certificate(&args[1..], invocation),
+        Some("demo") => demo_command(&args[1..], invocation),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
         Some("validate-ladder") => {
@@ -996,9 +998,27 @@ pub(crate) fn explain() -> Result<(), String> {
     Ok(())
 }
 
+fn demo_command(args: &[String], _invocation: Invocation) -> Result<(), String> {
+    let name = args.first().map(String::as_str);
+    if name.is_none() || name == Some("list") {
+        println!("schema=harmonia.demo.list.v1");
+        println!("ok=true");
+        for name in demo_registry::NAMES {
+            println!("name={name}");
+        }
+        return Ok(());
+    }
+    let name = name.unwrap();
+    if !demo_registry::NAMES.contains(&name) {
+        return Err(format!("unknown-demo-name={name}"));
+    }
+    demo_registry::run(name)
+}
+
 pub(crate) fn usage() -> Result<(), String> {
     println!("harmonia {}", VERSION);
     println!("usage:");
+    println!("  harmonia demo [<name>|list]");
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");

@@ -2,6 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "install-caduceus",
   "category": "known-good",
+  "config_deploy": "interactable",
   "version": "1.0.1",
   "description": "HomeConsole module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "constants": {},
@@ -33,11 +34,6 @@
         "run_schema": "harmonia.homeconsole.install_caduceus.v1",
         "managed_files_schema": "harmonia.homeconsole.caduceus_managed_files.v1",
         "managed_files": [
-          {
-            "path": "/etc/systemd/system/caduceus.service",
-            "mode": 420,
-            "content": "[Unit]\nDescription=Caduceus LAN-open appliance API\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:8787\nEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin\nEnvironment=PYTHONPATH=/usr/local/sbin\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
-          },
           {
             "path": "/var/lib/caduceus/venv/lib/python3.14/site-packages/caduceus-staff.pth",
             "mode": 420,

@@ -32,7 +32,7 @@ window#waybar {
 #custom-printer,
 #custom-fetch,
 #custom-drives,
-#custom-harmonia-interactables,
+#custom-settings,
 #custom-notifications {
     background-color: rgba(20, 22, 28, 0.82);
     padding: 0 10px;
@@ -141,7 +141,7 @@ window#waybar {
     color: #6b7280;
 }
 
-#custom-harmonia-interactables {
+#custom-settings {
     font-size: 18px;
     font-weight: 700;
 }

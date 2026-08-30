@@ -2,6 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "install-caduceus",
   "category": "known-good",
+  "config_deploy": "interactable",
   "version": "1.1.1",
   "description": "TV module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "optional": false,
@@ -24,12 +25,6 @@
         "run_schema": "harmonia.tv.install_caduceus.v1",
         "managed_files_schema": "harmonia.tv.caduceus_managed_files.v1",
         "managed_files": [
-          {
-            "path": "/etc/systemd/system/caduceus.service",
-            "operation": "place",
-            "mode": 420,
-            "content": "[Unit]\nDescription=Caduceus LAN-open appliance API (TV)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/caduceus serve\nEnvironment=CADUCEUS_BIND=0.0.0.0:8787\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
-          },
           {
             "path": "/etc/caduceus/profile.yaml",
             "operation": "place",

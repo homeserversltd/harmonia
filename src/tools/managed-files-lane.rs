@@ -126,6 +126,7 @@ use crate::atoms::command;
 use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild};
 use crate::tools::routine::ValidatedStep;
 use crate::OperationOutcome;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -406,6 +407,74 @@ pub(crate) fn managed_files_step(
     managed_files_step_with_authorization(step, manifest, module_dir, None, invocation)
 }
 
+#[derive(Debug, Deserialize)]
+struct ProfileSourceManifest {
+    source: String,
+    path: String,
+    #[serde(default)]
+    mode: Option<u32>,
+    #[serde(default)]
+    append: String,
+}
+
+fn materialize_profile_sources(
+    step: &ValidatedStep,
+) -> Result<Vec<crate::ManagedFileManifest>, String> {
+    let Some(sources) = step
+        .args
+        .get("profile_sources")
+        .and_then(Value::as_object)
+    else {
+        return Ok(Vec::new());
+    };
+    let source_dir = step
+        .args
+        .get("source_dir")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "managed-files-source_dir-missing".to_string())?;
+    let mut files = Vec::new();
+    for (key, value) in sources {
+        let descriptor: ProfileSourceManifest = serde_json::from_value(value.clone())
+            .map_err(|error| {
+                format!("managed-files-profile-source-{key}-invalid: {error}")
+            })?;
+        if descriptor.source.is_empty() || descriptor.path.is_empty() {
+            return Err(format!(
+                "managed-files-profile-source-{key}-path-invalid"
+            ));
+        }
+        let source = Path::new(source_dir).join(&descriptor.source);
+        let text = fs::read_to_string(&source).map_err(|error| {
+            format!(
+                "managed-files-profile-source-{key}-read-failed {}: {error}",
+                source.display()
+            )
+        })?;
+        let mut rendered = text
+            .lines()
+            .filter(|line| {
+                !line.starts_with("profile:") && !line.starts_with("mode:")
+            })
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        if !descriptor.append.trim().is_empty() {
+            rendered.push_str(descriptor.append.trim_start());
+            if !rendered.ends_with('\n') {
+                rendered.push('\n');
+            }
+        }
+        files.push(crate::ManagedFileManifest {
+            path: descriptor.path,
+            content: rendered,
+            mode: descriptor.mode,
+            category: Some("interactable".into()),
+            legacy_transition_note: None,
+        });
+    }
+    Ok(files)
+}
+
 pub(crate) fn managed_files_step_with_authorization(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -422,6 +491,8 @@ pub(crate) fn managed_files_step_with_authorization(
     } else {
         Vec::new()
     };
+    let mut files = files;
+    files.extend(materialize_profile_sources(step)?);
     let disposition = partition_managed_files(files);
     let hold = disposition.known_good;
     let proposals = disposition.proposals;
@@ -1426,5 +1497,46 @@ mod compile_fragments_tests {
             permutation.placement,
             Some(crate::tools::Placement::BackfillFiles)
         );
+    }
+}
+
+#[cfg(test)]
+mod profile_source_render_tests {
+    use super::materialize_profile_sources;
+    use crate::tools::ladder::OnFailure;
+    use crate::tools::routine::ValidatedStep;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn rereads_source_and_renders_interactable_strip_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("profile.conf");
+        std::fs::write(&source, "keep\nprofile: old\nmode: 0644\n").unwrap();
+        let step = ValidatedStep {
+            step_id: "managed-files".into(),
+            tool: "files".into(),
+            permutation: "managed-files".into(),
+            args: BTreeMap::from([
+                ("source_dir".into(), json!(dir.path())),
+                (
+                    "profile_sources".into(),
+                    json!({
+                        "caduceus_profile_source": {
+                            "source": "profile.conf",
+                            "path": "/etc/profile.conf",
+                            "append": "  append"
+                        }
+                    }),
+                ),
+            ]),
+            on_failure: OnFailure::Stop,
+        };
+        let first = materialize_profile_sources(&step).unwrap();
+        assert_eq!(first[0].category.as_deref(), Some("interactable"));
+        assert_eq!(first[0].content, "keep\nappend\n");
+        std::fs::write(&source, "changed\nprofile: new\n").unwrap();
+        let second = materialize_profile_sources(&step).unwrap();
+        assert!(second[0].content.starts_with("changed\n"));
     }
 }
