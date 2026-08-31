@@ -189,7 +189,7 @@ pub(crate) fn interactable_command(
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
         Some("run") | Some("accept") | Some("swap") => interactable_run(&args[1..], invocation),
-        _ => Err("config-proposal requires list [--json] or accept <id> owner".to_string()),
+        _ => Err("config-proposal requires list [--json] or accept <id>".to_string()),
     }
 }
 
@@ -223,8 +223,8 @@ fn interactable_run(
     args: &[String],
     _invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
-    if args.len() != 2 || args[1] != "owner" {
-        return Err("config-proposal accept requires exactly <interactable-id> owner".to_string());
+    if args.len() != 1 {
+        return Err("config-proposal accept requires exactly one <id>".to_string());
     }
     let path = feed_path();
     let mut feed = load_feed(&path)?;
@@ -453,15 +453,7 @@ mod tests {
             .parent()
             .unwrap()
             .join("interactables-backups/config-proposal-accept-regression");
-        assert!(interactable_run(&[proposal.id.clone()], None).is_err());
-        assert_eq!(fs::read(&target).unwrap(), b"current\n");
-        assert_eq!(load_feed(&feed_path).unwrap().interactables.len(), 1);
-        assert!(!backup_root.exists());
-        assert!(interactable_run(&[proposal.id.clone(), "not-owner".into()], None).is_err());
-        assert_eq!(fs::read(&target).unwrap(), b"current\n");
-        assert_eq!(load_feed(&feed_path).unwrap().interactables.len(), 1);
-        assert!(!backup_root.exists());
-        let result = interactable_run(&[proposal.id.clone(), "owner".into()], None);
+        let result = interactable_run(&[proposal.id.clone()], None);
         match prior_feed {
             Some(value) => std::env::set_var("HARMONIA_INTERACTABLES_PATH", value),
             None => std::env::remove_var("HARMONIA_INTERACTABLES_PATH"),
