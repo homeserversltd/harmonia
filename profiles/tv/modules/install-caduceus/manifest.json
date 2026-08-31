@@ -9,6 +9,16 @@
   "constants": {},
   "ladder": [
     {
+      "step_id": "caduceus-bootstrap-source-from-declared-profile",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "component": "caduceus",
+        "path": "/opt/caduceus/source",
+        "source_dir": "/opt/caduceus/source"
+      }
+    },
+    {
       "step_id": "caduceus-service-runtime",
       "tool": "service-runtime",
       "permutation": "converge",
@@ -25,12 +35,6 @@
         "run_schema": "harmonia.tv.install_caduceus.v1",
         "managed_files_schema": "harmonia.tv.caduceus_managed_files.v1",
         "managed_files": [
-          {
-            "path": "/etc/caduceus/profile.yaml",
-            "operation": "place",
-            "mode": 420,
-            "content": "schema: caduceus.profile.v1\nprofile: tv\ncapability:\n  household_verifying_key:\n  default_ttl_seconds: 60\nmode: tv\nharmonia_profile: /etc/harmonia/profiles/tv/index.json\ncommands:\n- help\n- identity show\n- profile show\n- health\n- receipts latest\n- update status\n- update check\n- update now\n- update service status\n- update service toggle\n- staff intent\n- cert status\n- cert issue-leaf\n- cert rotate-ca\n- cert bundle create\nservices:\n  update:\n    timer: harmonia.timer\n    latest_receipt: /var/lib/harmonia/receipts/update-latest/run.json\nharmonia_routes:\n  update_now:\n    bin: /usr/local/bin/harmonia\n    args:\n    - tv-update\n    - /etc/harmonia/profiles/tv/index.json\n    - --apply\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/update-latest\n  update_check:\n    bin: /usr/local/bin/harmonia\n    args:\n    - tv-update\n    - /etc/harmonia/profiles/tv/index.json\n    - --receipt-dir\n    - /var/lib/harmonia/receipts/tv-check-latest\noperator_aliases:\n  update: caduceus update now\n  update-check: caduceus update check\n  update-status: caduceus update status\n  health: caduceus health\n"
-          },
           {
             "path": "/etc/caduceus/policies/update.json",
             "operation": "place",
@@ -49,7 +53,13 @@
             "uid": 0,
             "gid": 0
           }
-        ]
+        ],
+        "caduceus_profile_source": {
+          "source": "profiles/tv/index.yaml",
+          "path": "/etc/caduceus/profile.yaml",
+          "mode": 420,
+          "append": ""
+        }
       }
     }
   ],
