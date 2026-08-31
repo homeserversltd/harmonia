@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const BODY_EXCERPT_LIMIT: usize = 4096;
 
 const NAME: &str = "health";
+pub(crate) const DEFAULT_PROBE_RETRIES: usize = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -59,7 +60,7 @@ impl<'a> ProbeRequest<'a> {
     pub(crate) fn new(url: &'a str) -> Self {
         Self {
             url,
-            retries: 5,
+            retries: DEFAULT_PROBE_RETRIES,
             timeout_secs: 3,
             expected_contains: None,
         }
@@ -229,7 +230,7 @@ pub(crate) fn execute_validated_step(
             .args
             .get("retries")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as usize;
+            .unwrap_or(DEFAULT_PROBE_RETRIES as u64) as usize;
         curl_probe(&request)
     } else {
         crate::CmdResult {
@@ -247,4 +248,70 @@ pub(crate) fn execute_validated_step(
         message: format!("health probe {}", url),
         command: Some(result),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{curl_probe, ProbeRequest};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    fn serve(listener: TcpListener, bodies: &'static [&'static str]) {
+        for body in bodies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn curl_probe_retries_expected_content_missing_then_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || serve(listener, &["starting", "ready"]));
+        let url = format!("http://{address}");
+        let request = ProbeRequest {
+            url: &url,
+            retries: 1,
+            timeout_secs: 1,
+            expected_contains: Some("ready"),
+        };
+
+        let result = curl_probe(&request);
+        assert!(result.ok);
+        assert!(result.stdout.contains("ready"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn curl_probe_retries_connection_refused_then_succeeds() {
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reserved.local_addr().unwrap();
+        drop(reserved);
+        let server = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            let listener = TcpListener::bind(address).unwrap();
+            serve(listener, &["ready"]);
+        });
+        let url = format!("http://{address}");
+        let request = ProbeRequest {
+            url: &url,
+            retries: 1,
+            timeout_secs: 1,
+            expected_contains: Some("ready"),
+        };
+
+        let result = curl_probe(&request);
+        assert!(result.ok);
+        assert!(result.stdout.contains("ready"));
+        server.join().unwrap();
+    }
 }

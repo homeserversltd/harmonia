@@ -573,7 +573,7 @@ fn health_probe_request<'a>(
 ) -> crate::tools::health::ProbeRequest<'a> {
     crate::tools::health::ProbeRequest {
         url,
-        retries: args.get("retries").and_then(Value::as_u64).unwrap_or(5) as usize,
+        retries: args.get("retries").and_then(Value::as_u64).unwrap_or(crate::atoms::health::DEFAULT_PROBE_RETRIES as u64) as usize,
         timeout_secs: args
             .get("timeout_secs")
             .and_then(Value::as_u64)
@@ -796,11 +796,11 @@ mod tests {
     }
 
     #[test]
-    fn health_probe_request_defaults_absent_retries_to_five() {
+    fn health_probe_request_defaults_absent_retries_to_default() {
         let args = BTreeMap::new();
         let request = health_probe_request("https://example.test/health", &args);
 
-        assert_eq!(request.retries, 5);
+        assert_eq!(request.retries, crate::atoms::health::DEFAULT_PROBE_RETRIES);
         assert_eq!(request.timeout_secs, 3);
     }
 
