@@ -110,7 +110,18 @@ pub(crate) fn refresh_interactables_for_convergence(
     let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
-    refresh_interactables_at_path(&path, manifest, request, outcome)
+    refresh_interactables_at_path_with_policy(&path, manifest, request, outcome, false)
+}
+
+pub(crate) fn refresh_interactables_for_compiled_convergence(
+    manifest: &LadderManifest,
+    request: &FileConvergenceRequest,
+    outcome: &FileConvergenceOutcome,
+) -> Result<Vec<ConfigRecognition>, String> {
+    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    refresh_interactables_at_path_with_policy(&path, manifest, request, outcome, true)
 }
 
 pub(crate) fn refresh_interactables_at_path(
@@ -118,6 +129,16 @@ pub(crate) fn refresh_interactables_at_path(
     manifest: &LadderManifest,
     request: &FileConvergenceRequest,
     outcome: &FileConvergenceOutcome,
+) -> Result<Vec<ConfigRecognition>, String> {
+    refresh_interactables_at_path_with_policy(path, manifest, request, outcome, false)
+}
+
+fn refresh_interactables_at_path_with_policy(
+    path: &Path,
+    manifest: &LadderManifest,
+    request: &FileConvergenceRequest,
+    outcome: &FileConvergenceOutcome,
+    compiled_artifact_authoritative: bool,
 ) -> Result<Vec<ConfigRecognition>, String> {
     let mut feed = interactables::load_feed(path)?;
     let mut recognitions = Vec::new();
@@ -158,7 +179,12 @@ pub(crate) fn refresh_interactables_at_path(
         )
         .ok_or_else(|| "config-recognition-no-known-good".to_string())?;
         let score = recognized.score;
-        let state = if score >= 0.33 {
+        let threshold = if compiled_artifact_authoritative {
+            0.0
+        } else {
+            0.33
+        };
+        let state = if score >= threshold {
             "interactable"
         } else {
             "refused-unrecognized"
@@ -176,10 +202,10 @@ pub(crate) fn refresh_interactables_at_path(
                 "schema": "harmonia.config_state.v1", "config_state": state, "id": id.clone(),
                 "target": entry.target.clone(), "reference": entry.source.clone(), "score": score,
                 "live_sha": live_sha.clone(), "reference_sha": reference_sha.clone(),
-                "threshold": 0.33, "reference_id": entry.source.clone()
+                "threshold": threshold, "reference_id": entry.source.clone()
             }),
         )?;
-        if score < 0.33 {
+        if score < threshold {
             recognitions.push(ConfigRecognition {
                 config_state: state.to_string(),
                 score,

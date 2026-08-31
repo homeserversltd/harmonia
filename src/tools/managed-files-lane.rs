@@ -286,7 +286,7 @@ pub(crate) fn compile_fragments_step(
         let outcome = crate::atoms::files::converge_files_authorized_with_config_policy(
             &request, module_dir, None, None, true,
         )?;
-        crate::bands::propose_edits::refresh_interactables_for_convergence(
+        crate::bands::propose_edits::refresh_interactables_for_compiled_convergence(
             manifest, &request, &outcome,
         )?;
         let target_is_regular_file = fs::symlink_metadata(&target)
