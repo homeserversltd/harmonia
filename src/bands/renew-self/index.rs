@@ -563,6 +563,7 @@ fn write_source_possession_receipt(
             "exit_code": result.code,
             "stdout": result.stdout,
             "stderr": result.stderr,
+            "skipped": result.stdout.contains("skipped=true"),
             "first_missing_signal": if result.ok { "none" } else { "engine-possession-failed" },
         }),
     )?;
@@ -1470,7 +1471,7 @@ pub(crate) fn run_engine_preflight(
             .unwrap_or(CmdResult {
                 ok: true,
                 code: 0,
-                stdout: "build-crate converged-quiet".into(),
+                stdout: "build-crate converged-quiet skipped=true".into(),
                 stderr: String::new(),
             });
         write_bearer_command_receipt(&preflight_dir, "staged-build", &build, "owner")?;
@@ -1542,6 +1543,104 @@ pub(crate) fn run_engine_preflight(
 
     let promotion_skipped = !promotion_attempted;
     let install_after = install_bin_fingerprint(&config.install_bin);
+    // Only a successful installed placement emits a ledger receipt; plan and
+    // quiet runs have no ledger claim, while failed attempts render refusals.
+    let installed_sha = sha256_file(&config.install_bin).ok();
+    let mut battery: Vec<String> = std::fs::read_dir(&preflight_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let name = path.file_stem()?.to_str()?.to_string();
+            if !name.starts_with("proof-") {
+                return None;
+            }
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+            (value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)).then_some(name)
+        })
+        .collect();
+    battery.sort();
+    battery.dedup();
+    if promotion_attempted && promote.ok && apply && first_missing_signal == "none" {
+        battery.extend([
+            "promote-successor".to_string(),
+            "fresh-installed-sha256-readback".to_string(),
+        ]);
+    }
+    let version = ratchet_lock
+        .as_ref()
+        .map(|lock| lock.engine_version.as_str());
+    let known_good = if !apply {
+        None
+    } else if promotion_attempted && promote.ok && first_missing_signal == "none" {
+        let expected_sha = staged_sha.as_deref();
+        let proof = crate::known_good_ledger::prove_installed_state(
+            "engine",
+            &config.install_bin,
+            expected_sha,
+            version,
+            battery.clone(),
+            expected_sha.is_some() && installed_sha.as_deref() == expected_sha,
+            &preflight_dir,
+        );
+        Some(
+            match proof.and_then(|proof| {
+                crate::known_good_ledger::append_and_move(
+                    &crate::known_good_ledger::integration_root(receipt_dir),
+                    proof,
+                )
+            }) {
+                Ok(receipt) => serde_json::to_value(receipt).map_err(|e| e.to_string())?,
+                Err(error) => {
+                    first_missing_signal = format!("known-good-ledger-failed: {error}");
+                    serde_json::to_value(crate::known_good_ledger::refusal_receipt(
+                        &crate::known_good_ledger::integration_root(receipt_dir),
+                        "engine",
+                        installed_sha.as_deref(),
+                        version,
+                        battery,
+                        &error,
+                        false,
+                        &preflight_dir.to_string_lossy(),
+                    )?)
+                    .map_err(|e| e.to_string())?
+                }
+            },
+        )
+    } else if first_missing_signal == "none" {
+        None
+    } else {
+        Some(
+            serde_json::to_value(crate::known_good_ledger::refusal_receipt(
+                &crate::known_good_ledger::integration_root(receipt_dir),
+                "engine",
+                installed_sha.as_deref(),
+                version,
+                battery,
+                &first_missing_signal,
+                false,
+                &preflight_dir.to_string_lossy(),
+            )?)
+            .map_err(|e| e.to_string())?,
+        )
+    };
+    if known_good.is_some()
+        && known_good
+            .as_ref()
+            .and_then(|v| v.get("converged"))
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        && apply
+        && first_missing_signal == "none"
+    {
+        first_missing_signal = "known-good-ledger-unconverged".into();
+    }
+    if let Some(known_good) = known_good.as_ref() {
+        write_json(&preflight_dir.join("known-good.json"), known_good)?;
+    }
+
     if first_missing_signal == "none" {
         changed = changed || install_before != install_after;
         reexec_planned = should_self_update_reexec(
@@ -1571,6 +1670,21 @@ pub(crate) fn run_engine_preflight(
         engine_content_head.as_deref(),
         &artifact_transport_attempts,
     )?;
+    // Keep the aggregate run receipt and the dedicated ledger receipt in sync.
+    if apply {
+        if let Some(known_good) = std::fs::read(&preflight_dir.join("known-good.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        {
+            if let Some(mut aggregate) = std::fs::read(&preflight_dir.join("run.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            {
+                aggregate["known_good"] = known_good;
+                write_json(&preflight_dir.join("run.json"), &aggregate)?;
+            }
+        }
+    }
     crate::hyalos::forward_receipt(
         "harmonia.renew_self.preflight",
         &format!(

@@ -12,6 +12,7 @@ mod demo_registry;
 pub(crate) mod enable_unit;
 #[cfg(feature = "test-facade")]
 pub mod filesystem;
+pub(crate) mod known_good_ledger;
 pub(crate) use atoms::attest::hyalos;
 #[path = "tools/install-package/index.rs"]
 pub(crate) mod install_package;

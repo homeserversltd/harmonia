@@ -1,8 +1,7 @@
-use std::path::PathBuf;
-use crate::OperationOutcome;
 use super::Band;
 use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
 use crate::ModuleExecution;
+use crate::OperationOutcome;
 use crate::{
     LoadedModule, PackageAuthority, Profile, ProfileProjection, SoftwareApplyAuthorization,
     UpdateMode,
@@ -11,15 +10,111 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::Path;
+use std::path::PathBuf;
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RatchetBinaries)
 }
-
 
 /// Execute the complete RatchetBinaries band lifecycle for one projected module.
 /// Selection, preconditions, authority gating, failure policy, and accumulation
 /// intentionally live here rather than in the ladder compatibility executor.
 #[allow(clippy::too_many_arguments)]
+fn band_boundary_ledger_gate(
+    manifest_id: &str,
+    receipt_dir: &Path,
+    routine: &crate::ModuleWalkState,
+    projected_children: &[ProjectedRoutineChild],
+) -> Result<Value, String> {
+    let producer = routine.children.iter().find(|r| {
+        r.get("ok").and_then(Value::as_bool) == Some(true)
+            && matches!(
+                r.get("tool").and_then(Value::as_str),
+                Some("build-crate" | "fetch-artifact")
+            )
+    });
+    let install = routine.children.iter().find(|r| {
+        r.get("ok").and_then(Value::as_bool) == Some(true)
+            && r.get("name").and_then(Value::as_str) == Some("binary-install")
+    });
+    let producer_tool = producer.and_then(|r| r.get("tool")).and_then(Value::as_str);
+    let io = install.and_then(|r| r.get("outputs"));
+    let po = producer.and_then(|r| r.get("outputs"));
+    let projected = projected_children
+        .iter()
+        .find(|c| c.name == "binary-install");
+    let path = io
+        .and_then(|v| v.get("installed_path").or_else(|| v.get("path")))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            po.and_then(|v| v.get("installed_path").or_else(|| v.get("path")))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            projected
+                .and_then(|c| c.args.get("path"))
+                .and_then(Value::as_str)
+        });
+    let surface =
+        path.map(|p| crate::known_good_ledger::installed_surface(manifest_id, Path::new(p)));
+    let producer_sha = po
+        .and_then(|v| v.get("sha256").or_else(|| v.get("artifact_sha256")))
+        .and_then(Value::as_str);
+    let install_sha = io.and_then(|v| v.get("sha256")).and_then(Value::as_str);
+    let battery = vec![
+        producer_tool.unwrap_or("artifact-producer").to_string(),
+        "binary-install".to_string(),
+        "installed-sha256-readback".to_string(),
+    ];
+    let result = match (producer, install, path, producer_sha, install_sha) {
+        (Some(_), Some(_), Some(_), Some(producer_sha), Some(install_sha))
+            if producer_sha != install_sha =>
+        {
+            Err("producer-install-digest-mismatch".to_string())
+        }
+        (Some(_), Some(_), Some(path), Some(expected_sha), Some(_)) => {
+            crate::known_good_ledger::prove_installed_state(
+                surface.as_deref().unwrap(),
+                Path::new(path),
+                Some(expected_sha),
+                None,
+                battery.clone(),
+                true,
+                receipt_dir,
+            )
+            .and_then(|p| {
+                crate::known_good_ledger::append_and_move(
+                    &crate::known_good_ledger::integration_root(receipt_dir),
+                    p,
+                )
+            })
+        }
+        _ => Err(if producer.is_none() {
+            "artifact-producer-missing"
+        } else if install.is_none() {
+            "binary-install-missing"
+        } else if producer_sha.is_none() || install_sha.is_none() {
+            "producer-install-digest-unobservable"
+        } else {
+            "installed-path-unobservable"
+        }
+        .to_string()),
+    };
+    match result {
+        Ok(r) => serde_json::to_value(r).map_err(|e| e.to_string()),
+        Err(error) => serde_json::to_value(crate::known_good_ledger::refusal_receipt(
+            &crate::known_good_ledger::integration_root(receipt_dir),
+            surface.as_deref().unwrap_or(manifest_id),
+            None,
+            None,
+            battery,
+            &error,
+            false,
+            &receipt_dir.to_string_lossy(),
+        )?)
+        .map_err(|e| e.to_string()),
+    }
+}
+
 pub(crate) fn execute_manifest_band(
     manifest: &LadderManifest,
     module_dir: &Path,
@@ -126,6 +221,28 @@ pub(crate) fn execute_manifest_band(
             }
         } else {
             result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RatchetBinaries","status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
+        }
+        // Promote only after the successful producer and binary-install receipts.
+        if step.tool == "routine" && mode_apply {
+            let routine = routine_states
+                .get(&step.step_id)
+                .ok_or_else(|| "routine-state-missing".to_string())?;
+            let known_good = band_boundary_ledger_gate(
+                &manifest.id,
+                &module_dir.join(&step.step_id),
+                routine,
+                projected_routines
+                    .get(&step.step_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )?;
+            if known_good.get("converged").and_then(Value::as_bool) != Some(true) {
+                result.ok = false;
+                result
+                    .first_missing_signal
+                    .get_or_insert_with(|| "known-good-ledger-refused".to_string());
+            }
+            result.placements.push(serde_json::json!({"routine":step.step_id,"known_good":known_good,"module":manifest.id}));
         }
         result.changed |= outcome.changed;
         if !outcome.ok {
@@ -255,7 +372,6 @@ pub(crate) fn execute_manifest_modules(
     Ok(())
 }
 
-
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -264,9 +380,19 @@ pub(crate) fn execute_routine_child(
     receipt_dir: &std::path::Path,
     apply: bool,
     invocation: Option<&crate::tools::files::InvocationKey>,
-) -> Result<(crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>), String> {
-    let contract = crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
-    let permutation = requested_permutation.and_then(|name| contract.permutation(name)).or_else(|| contract.permutations.first()).ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
+) -> Result<
+    (
+        crate::OperationOutcome,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let contract =
+        crate::tools::get(tool).ok_or_else(|| format!("routine-tool-not-found-{tool}"))?;
+    let permutation = requested_permutation
+        .and_then(|name| contract.permutation(name))
+        .or_else(|| contract.permutations.first())
+        .ok_or_else(|| format!("routine-tool-no-permutation-{tool}"))?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {
@@ -305,7 +431,19 @@ pub(crate) fn execute_routine_child(
             } else {
                 args.get("destination").cloned().unwrap_or(Value::Null)
             };
-            Ok((outcome, [("artifact".into(), artifact), ("changed".into(), serde_json::json!(changed))].into_iter().collect()))
+            let path = artifact.as_str().map(Path::new);
+            let sha = path.and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
+            Ok((
+                outcome,
+                [
+                    ("artifact".into(), artifact.clone()),
+                    ("installed_path".into(), artifact),
+                    ("sha256".into(), serde_json::json!(sha)),
+                    ("changed".into(), serde_json::json!(changed)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
         }
         "build-crate" => {
             let cwd = Path::new(
@@ -414,6 +552,9 @@ pub(crate) fn execute_routine_child(
                 message: "build-crate".into(),
                 command: None,
             };
+            // Promotion is deliberately owned by RatchetBinaries after the
+            // same-band install child. A build child only produces a staged
+            // artifact; it is never a known-good convergence point.
             let result_changed = result.changed;
             Ok((
                 result,
@@ -421,6 +562,12 @@ pub(crate) fn execute_routine_child(
                     ("artifact".into(), serde_json::json!(artifact_path)),
                     ("installed_path".into(), serde_json::json!(binary)),
                     ("source_build_sha".into(), serde_json::json!(source_sha)),
+                    (
+                        "sha256".into(),
+                        serde_json::json!(
+                            crate::known_good_ledger::sha256_file(&artifact_path).ok()
+                        ),
+                    ),
                     ("probe".into(), probe_receipt),
                     ("changed".into(), serde_json::json!(result_changed)),
                 ]
@@ -431,7 +578,6 @@ pub(crate) fn execute_routine_child(
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -478,14 +624,17 @@ mod tests {
         crate::bands::backfill_files::lower_service_runtime_steps(&mut manifest)
             .expect("real manifest lowers");
 
-        let validated = crate::tools::ladder::validate_ladder(&manifest).expect("valid lowered manifest");
+        let validated =
+            crate::tools::ladder::validate_ladder(&manifest).expect("valid lowered manifest");
         let routine_step = validated
             .iter()
             .find(|step| step.tool == "routine" && step.permutation == "execute")
             .expect("lowered routine");
         let projected = crate::tools::routine::project_manifest_routines(&manifest, &validated)
             .expect("production routine projection");
-        let children = projected.get(&routine_step.step_id).expect("projected children");
+        let children = projected
+            .get(&routine_step.step_id)
+            .expect("projected children");
         let build = children
             .iter()
             .find(|child| child.name == "build" && child.tool == "build-crate")
@@ -498,7 +647,11 @@ mod tests {
             build.args.get("installed_binary").and_then(Value::as_str),
             Some(installed.to_string_lossy().as_ref())
         );
-        let environment = build.args.get("environment").and_then(Value::as_object).unwrap();
+        let environment = build
+            .args
+            .get("environment")
+            .and_then(Value::as_object)
+            .unwrap();
         assert_eq!(
             environment.get("ARCADIA_BUILD_SHA"),
             Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
@@ -508,8 +661,14 @@ mod tests {
         let mut states = std::collections::BTreeMap::new();
         let state = crate::ModuleWalkState {
             context: [
-                ("pull-repo.path".into(), Value::String(source.to_string_lossy().into_owned())),
-                ("pull-repo.resolved_commit".into(), Value::String(source_sha.into())),
+                (
+                    "pull-repo.path".into(),
+                    Value::String(source.to_string_lossy().into_owned()),
+                ),
+                (
+                    "pull-repo.resolved_commit".into(),
+                    Value::String(source_sha.into()),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -542,20 +701,36 @@ mod tests {
         assert!(!outcome.changed);
 
         let routine = states.get(&routine_step.step_id).unwrap();
-        let build_receipt = routine.children.iter().find(|receipt| {
-            receipt.get("name").and_then(Value::as_str) == Some("build")
-        }).unwrap();
+        let build_receipt = routine
+            .children
+            .iter()
+            .find(|receipt| receipt.get("name").and_then(Value::as_str) == Some("build"))
+            .unwrap();
         assert_eq!(build_receipt.get("changed"), Some(&Value::Bool(false)));
-        assert!(crate::bands::restart_services::binary_content_matches(&built, &installed).unwrap());
-        let probe = build_receipt.get("outputs").and_then(|v| v.get("probe")).unwrap();
-        assert_eq!(probe.get("source_build_sha").and_then(Value::as_str), Some(source_sha));
-        assert_eq!(probe.get("installed_binary").and_then(Value::as_str), Some(installed.to_string_lossy().as_ref()));
+        assert!(
+            crate::bands::restart_services::binary_content_matches(&built, &installed).unwrap()
+        );
+        let probe = build_receipt
+            .get("outputs")
+            .and_then(|v| v.get("probe"))
+            .unwrap();
+        assert_eq!(
+            probe.get("source_build_sha").and_then(Value::as_str),
+            Some(source_sha)
+        );
+        assert_eq!(
+            probe.get("installed_binary").and_then(Value::as_str),
+            Some(installed.to_string_lossy().as_ref())
+        );
         assert_eq!(probe.get("identity_matches"), Some(&Value::Bool(true)));
         assert_eq!(probe.get("observed_sha_present"), Some(&Value::Bool(true)));
         assert_eq!(probe.get("artifact_present"), Some(&Value::Bool(true)));
         assert_eq!(probe.get("error"), Some(&Value::Null));
         assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(routine_dir.join("build/build-probe.json")).unwrap()).unwrap(),
+            serde_json::from_slice::<Value>(
+                &fs::read(routine_dir.join("build/build-probe.json")).unwrap()
+            )
+            .unwrap(),
             *probe
         );
 
@@ -596,7 +771,12 @@ mod tests {
             crate::bands::restart_services::service_runtime_material_gates("restart", false, false),
             (false, false)
         );
-        assert!(!crate::bands::restart_services::service_runtime_material_gates("restart", false, false).0);
+        assert!(
+            !crate::bands::restart_services::service_runtime_material_gates(
+                "restart", false, false
+            )
+            .0
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -828,5 +1008,125 @@ mod tests {
             Some(installed.to_string_lossy().as_ref())
         );
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod ledger_gate_tests {
+    use super::*;
+    use std::fs;
+
+    fn state(producer: &str, path: &Path, sha: &str) -> crate::ModuleWalkState {
+        crate::ModuleWalkState {
+            context: BTreeMap::new(),
+            children: vec![
+                serde_json::json!({"name":"build","tool":producer,"ok":true,"changed":true,"outputs":{"sha256":sha}}),
+                serde_json::json!({"name":"binary-install","tool":"place-file","ok":true,"changed":true,"outputs":{"installed_path":path,"sha256":sha}}),
+            ],
+            blocked_by: None,
+            ok: true,
+            changed: true,
+            first_missing_signal: None,
+        }
+    }
+
+    #[test]
+    fn successful_installed_digest_match_promotes_current() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("bin");
+        fs::write(&installed, b"proved").unwrap();
+        let sha = crate::known_good_ledger::sha256_file(&installed).unwrap();
+        let routine = state("build-crate", &installed, &sha);
+        let receipt =
+            band_boundary_ledger_gate("engine", &root.path().join("receipts"), &routine, &[])
+                .unwrap();
+        assert_eq!(
+            receipt.get("pointer_state").and_then(Value::as_str),
+            Some("moved")
+        );
+        assert!(receipt.get("converged").and_then(Value::as_bool).unwrap());
+        let aggregate_ref = receipt
+            .get("aggregate_receipt_ref")
+            .and_then(Value::as_str)
+            .unwrap();
+        let aggregate: Value = serde_json::from_slice(&fs::read(aggregate_ref).unwrap()).unwrap();
+        assert_eq!(
+            aggregate.get("schema").and_then(Value::as_str),
+            Some("harmonia.known_good.aggregate_proof.v1")
+        );
+        assert_eq!(
+            aggregate.get("surface").and_then(Value::as_str),
+            Some(crate::known_good_ledger::installed_surface("engine", &installed).as_str())
+        );
+        assert_eq!(
+            aggregate.get("installed_path").and_then(Value::as_str),
+            Some(installed.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            aggregate.get("installed_sha").and_then(Value::as_str),
+            Some(sha.as_str())
+        );
+        assert_eq!(
+            aggregate.get("converged").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(crate::known_good_ledger::read_current(
+            &root.path().join("receipts/known-good"),
+            &crate::known_good_ledger::installed_surface("engine", &installed)
+        )
+        .unwrap()
+        .is_some());
+    }
+
+    #[test]
+    fn installed_digest_mismatch_refuses_and_preserves_prior_current() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("bin");
+        fs::write(&installed, b"prior").unwrap();
+        let sha = crate::known_good_ledger::sha256_file(&installed).unwrap();
+        let surface = crate::known_good_ledger::installed_surface("engine", &installed);
+        let proof = crate::known_good_ledger::prove_installed_state(
+            &surface,
+            &installed,
+            Some(&sha),
+            None,
+            vec![
+                "build-crate".into(),
+                "binary-install".into(),
+                "installed-sha256-readback".into(),
+            ],
+            true,
+            root.path(),
+        )
+        .unwrap();
+        crate::known_good_ledger::append_and_move(&root.path().join("receipts/known-good"), proof)
+            .unwrap();
+        let before = crate::known_good_ledger::read_current(
+            &root.path().join("receipts/known-good"),
+            &surface,
+        )
+        .unwrap()
+        .unwrap();
+        let routine = state("fetch-artifact", &installed, "bad-digest");
+        let receipt =
+            band_boundary_ledger_gate("engine", &root.path().join("receipts"), &routine, &[])
+                .unwrap();
+        assert_eq!(
+            receipt.get("converged").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            receipt.get("pointer_state").and_then(Value::as_str),
+            Some("still")
+        );
+        assert_eq!(
+            crate::known_good_ledger::read_current(
+                &root.path().join("receipts/known-good"),
+                &surface
+            )
+            .unwrap()
+            .unwrap(),
+            before
+        );
     }
 }
