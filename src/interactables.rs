@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
@@ -218,7 +221,7 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
 
 fn interactable_run(
     args: &[String],
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    _invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
     if args.len() != 2 || args[1] != "owner" {
         return Err("config-proposal accept requires exactly <interactable-id> owner".to_string());
@@ -238,28 +241,82 @@ fn interactable_run(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("interactables-backups");
-    // The public owner tap has already crossed its exact owner-word gate.
-    // Mint the sealed mutation key only for that ambient-free CLI path; callers
-    // that already carry an invocation retain it unchanged.
-    let internal_invocation;
-    let mutation_invocation = match invocation {
-        Some(invocation) => Some(invocation),
-        None => {
-            internal_invocation = crate::atoms::r#do::InvocationKey::for_apply();
-            Some(&internal_invocation)
-        }
-    };
-    let mut receipt = crate::tools::files::hard_stamp_interactable(
-        &item.id,
-        &item.reference_source_path,
-        &item.target_path,
-        item.mode,
-        item.owner.as_deref(),
-        item.group.as_deref(),
-        &backup_root,
-        mutation_invocation,
-        operator_hand(),
-    )?;
+    crate::atoms::files::validate_interactable_target(&item.target_path)?;
+    if !item.reference_source_path.is_file() {
+        return Err(format!(
+            "interactable-reference-source-missing {}",
+            item.reference_source_path.display()
+        ));
+    }
+    let target_metadata = fs::symlink_metadata(&item.target_path).map_err(|error| {
+        format!(
+            "interactable-target-stat-failed {}: {error}",
+            item.target_path.display()
+        )
+    })?;
+    if !target_metadata.file_type().is_file() {
+        return Err(format!(
+            "interactable-target-not-regular-file {}",
+            item.target_path.display()
+        ));
+    }
+    let desired_uid = item
+        .owner
+        .as_deref()
+        .map(crate::atoms::files::resolve_uid)
+        .transpose()?
+        .unwrap_or_else(|| target_metadata.uid());
+    let desired_gid = item
+        .group
+        .as_deref()
+        .map(crate::atoms::files::resolve_gid)
+        .transpose()?
+        .unwrap_or_else(|| target_metadata.gid());
+    let desired_mode = item
+        .mode
+        .or_else(|| crate::atoms::files::source_mode(&item.reference_source_path).ok())
+        .ok_or_else(|| "interactable-reference-source-mode-failed".to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    let backup = backup_root.join(&item.id).join(format!(
+        "{}-{}",
+        stamp,
+        item.target_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("target")
+    ));
+    let desired_bytes = fs::read(&item.reference_source_path).map_err(|error| {
+        format!(
+            "interactable-reference-source-read-failed {}: {error}",
+            item.reference_source_path.display()
+        )
+    })?;
+    let projectio_receipt = crate::atoms::projectio::strike(crate::atoms::projectio::Request {
+        target: &item.target_path,
+        desired_bytes: &desired_bytes,
+        mode: desired_mode,
+        uid: desired_uid,
+        gid: desired_gid,
+        backup_path: &backup,
+        witness: crate::atoms::projectio::owner_acceptance(operator_hand()),
+    })?;
+    let mut receipt = serde_json::json!({
+        "schema": "harmonia.interactables.hard_stamp.receipt.v1",
+        "ok": true,
+        "id": item.id.clone(),
+        "kind": "hard-stamp",
+        "backup_path": projectio_receipt.backup_path.clone(),
+        "backed_up_to": projectio_receipt.backup_path.clone(),
+        "before_sha256": projectio_receipt.before_sha256.clone(),
+        "reference_sha256": projectio_receipt.struck_sha256.clone(),
+        "target_sha256": projectio_receipt.target_sha256.clone(),
+        "target": item.target_path.clone(),
+        "reference_source": item.reference_source_path.clone(),
+        "changed": true,
+    });
     receipt["has_run"] = serde_json::Value::Bool(true);
     receipt["config_state"] = serde_json::Value::String("interactable".into());
     feed.interactables[position].has_run = true;
@@ -400,11 +457,7 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"current\n");
         assert_eq!(load_feed(&feed_path).unwrap().interactables.len(), 1);
         assert!(!backup_root.exists());
-        assert!(interactable_run(
-            &[proposal.id.clone(), "not-owner".into()],
-            None
-        )
-        .is_err());
+        assert!(interactable_run(&[proposal.id.clone(), "not-owner".into()], None).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"current\n");
         assert_eq!(load_feed(&feed_path).unwrap().interactables.len(), 1);
         assert!(!backup_root.exists());

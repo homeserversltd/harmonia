@@ -14,6 +14,7 @@ pub mod files;
 pub mod git_artifact;
 pub mod health;
 pub mod package;
+pub mod projectio;
 pub mod systemd;
 #[path = "tree-hash.rs"]
 pub(crate) mod tree_hash;
