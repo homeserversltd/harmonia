@@ -6,6 +6,8 @@ commands:
 - help
 - identity show
 - profile show
+- input-policy read
+- input-policy set
 - health
 - receipts latest
 - update status
