@@ -3,10 +3,10 @@ when:
     - push
 
 clone:
-  - name: git
+  git:
     image: docker.io/woodpeckerci/plugin-git:2.8.0
-    environment:
-      GIT_SSL_CAINFO: /etc/ssl/certs/ca-certificates.crt
+    settings:
+      custom-ssl-path: /etc/ssl/certs/ca-certificates.crt
 
 steps:
   - name: cargo-test
