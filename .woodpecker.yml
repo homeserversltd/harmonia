@@ -2,13 +2,23 @@ when:
   event:
     - push
 
-clone:
-  git:
-    image: docker.io/woodpeckerci/plugin-git:2.8.0
-    settings:
-      custom-ssl-path: /etc/ssl/certs/ca-certificates.crt
+skip_clone: true
 
 steps:
+  - name: checkout
+    image: rust:1.85-bookworm
+    environment:
+      FORGEJO_TOKEN:
+        from_secret: FORGEJO_TOKEN
+      GIT_SSL_CAINFO: /etc/ssl/certs/ca-certificates.crt
+    commands:
+      - |
+        set -eu
+        git init .
+        git remote add origin https://git.home.arpa/HOMESERVERSLTD/harmonia.git
+        git -c http.extraHeader="Authorization: token $FORGEJO_TOKEN" fetch --depth 1 origin "$CI_COMMIT_SHA"
+        git checkout --detach "$CI_COMMIT_SHA"
+
   - name: cargo-test
     image: rust:1.85-bookworm
     commands:
