@@ -9,7 +9,6 @@
     "source_dir": "files_root",
     "target_dir": "/home/owner",
     "expected_files": [
-      ".config/dunst/dunstrc",
       ".config/gtk-3.0/settings.ini",
       ".config/gtk-4.0/settings.ini",
       ".config/hypr/autostart.conf",
@@ -47,10 +46,6 @@
       ".config/kitty/kitty.conf",
       ".config/kitty/theme.conf",
       ".config/mimeapps.list",
-      ".config/systemd/user/hs-dunst.service",
-      ".config/systemd/user/hs-waybar.service",
-      ".config/waybar/style.css",
-      ".config/waybar/waybar.conf",
       ".config/wofi/config",
       ".config/wofi/style.css",
       ".config/xdg-desktop-portal/hyprland-portals.conf",
@@ -72,7 +67,10 @@
       "bin/waybar-meter.sh",
       "bin/waybar-toggle.sh",
       "firefox/distribution/policies.json",
-      "omp.json"
+      "omp.json",
+      "/usr/local/bin/arch-tv-steam-gamescope",
+      "/usr/share/applications/arch-tv-steam-gamescope.desktop",
+      "/etc/arch-tv/steam-gamescope-policy.md"
     ],
     "deployable_consumption": {
       "schema": "harmonia.tv.deployable_consumption.v1",
@@ -86,7 +84,6 @@
     "file_locality": "module-owned intent folders; no sibling profiles/tv/config tree",
     "intent_folders": [
       "browser",
-      "dunst",
       "gtk",
       "hyprland",
       "kate",
@@ -96,9 +93,8 @@
       "manifest",
       "portal",
       "prompt",
-      "systemd-user",
-      "waybar",
-      "wofi"
+      "wofi",
+      "game-launcher"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
@@ -144,28 +140,6 @@
         "receipt_name": "tv-desktop-config-browser",
         "summary_receipt": {
           "name": "tv-desktop-config-browser-summary",
-          "schema": "harmonia.tv.desktop_config_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-desktop-config-files-incomplete"
-        }
-      }
-    },
-    {
-      "step_id": "files-dunst",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/dunst",
-        "target_root": "$constants.target_dir",
-        "files": [
-          ".config/dunst/dunstrc"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "tv-desktop-config-dunst",
-        "summary_receipt": {
-          "name": "tv-desktop-config-dunst-summary",
           "schema": "harmonia.tv.desktop_config_install.v1",
           "authority": "harmonia-profile-module-owned-files",
           "first_missing_signal": "tv-desktop-config-files-incomplete"
@@ -416,52 +390,6 @@
       }
     },
     {
-      "step_id": "files-systemd-user",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/systemd-user",
-        "target_root": "$constants.target_dir",
-        "files": [
-          ".config/systemd/user/hs-dunst.service",
-          ".config/systemd/user/hs-waybar.service"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "tv-desktop-config-systemd-user",
-        "summary_receipt": {
-          "name": "tv-desktop-config-systemd-user-summary",
-          "schema": "harmonia.tv.desktop_config_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-desktop-config-files-incomplete"
-        }
-      }
-    },
-    {
-      "step_id": "files-waybar",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/waybar",
-        "target_root": "$constants.target_dir",
-        "files": [
-          ".config/waybar/style.css",
-          ".config/waybar/waybar.conf"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "tv-desktop-config-waybar",
-        "summary_receipt": {
-          "name": "tv-desktop-config-waybar-summary",
-          "schema": "harmonia.tv.desktop_config_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-desktop-config-files-incomplete"
-        }
-      }
-    },
-    {
       "step_id": "files-wofi",
       "tool": "files",
       "permutation": "converge",
@@ -478,6 +406,30 @@
         "receipt_name": "tv-desktop-config-wofi",
         "summary_receipt": {
           "name": "tv-desktop-config-wofi-summary",
+          "schema": "harmonia.tv.desktop_config_install.v1",
+          "authority": "harmonia-profile-module-owned-files",
+          "first_missing_signal": "tv-desktop-config-files-incomplete"
+        }
+      }
+    },
+    {
+      "step_id": "files-game-launcher",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/game-launcher",
+        "target_root": "/",
+        "files": [
+          "usr/local/bin/arch-tv-steam-gamescope",
+          "usr/share/applications/arch-tv-steam-gamescope.desktop",
+          "etc/arch-tv/steam-gamescope-policy.md"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "tv-desktop-config-game-launcher",
+        "summary_receipt": {
+          "name": "tv-desktop-config-game-launcher-summary",
           "schema": "harmonia.tv.desktop_config_install.v1",
           "authority": "harmonia-profile-module-owned-files",
           "first_missing_signal": "tv-desktop-config-files-incomplete"

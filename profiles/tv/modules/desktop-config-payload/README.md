@@ -1,6 +1,6 @@
 # desktop-config-payload
 
-TV desktop files live inside this module under `files_root/<intent>/...`. The folder names are the thought/intent: `hyprland`, `kitty`, `waybar`, `wofi`, `dunst`, `gtk`, `kate`, `kde-applications`, `systemd-user`, `browser`, `launcher-bin`, `shell-rc`, `prompt`, and `portal`.
+TV desktop files live inside this module under `files_root/<intent>/...`. The folder names are the thought/intent: `hyprland`, `kitty`, `wofi`, `gtk`, `kate`, `kde-applications`, `browser`, `launcher-bin`, `prompt`, `portal`, and `game-launcher`.
 
 Do not create sibling `profiles/tv/config` payload folders. Profile files belong in the module that owns the intent.
 

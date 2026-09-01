@@ -1,0 +1,17 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "bluetooth-audio",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "TV Bluetooth audio service declaration; this sidecar carries constants only.",
+  "optional": false,
+  "constants": {
+    "services": [
+      "bluetooth.service"
+    ],
+    "phase": 6,
+    "receipt_schema": "harmonia.tv.bluetooth_audio.v1",
+    "meaning": "TV Bluetooth audio service declaration"
+  },
+  "ladder": []
+}

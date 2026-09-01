@@ -1,6 +1,6 @@
 [Desktop Entry]
-Name=Steam Game Lane (Gamescope)
+Name=Steam Gamescope (Gamescope)
 Comment=Optional Arch TV Steam/Gamescope lane; not the main session
-Exec=/usr/local/bin/arch-tv-steam-game-lane
+Exec=/usr/local/bin/arch-tv-steam-gamescope
 Type=Application
 Categories=Game;

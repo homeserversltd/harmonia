@@ -128,10 +128,12 @@ pub(crate) fn load_profile_projection(
             }
         }
     }
-    let profile_ceilings = modules.get("pins").and_then(|projected| match &projected.loaded {
-        LoadedModule::Ladder(manifest) => Some(manifest.package_ceilings.clone()),
-        LoadedModule::Sidecar(_) => None,
-    });
+    let profile_ceilings = modules
+        .get("pins")
+        .and_then(|projected| match &projected.loaded {
+            LoadedModule::Ladder(manifest) => Some(manifest.package_ceilings.clone()),
+            LoadedModule::Sidecar(_) => None,
+        });
     if let Some(profile_ceilings) = profile_ceilings {
         for projected in modules.values_mut() {
             if let LoadedModule::Ladder(manifest) = &mut projected.loaded {
@@ -392,17 +394,17 @@ fn projection_derive_plan_inner(
                     projection_add_census_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
                 }
             }
-            for (key, user) in [("services", false), ("user_services", true)] {
-                if let Some(a) = constants.and_then(|c| c.get(key)).and_then(Value::as_array) {
-                    for name in a.iter().filter_map(Value::as_str) {
-                        projection_add_service(
-                            &mut services,
-                            name.into(),
-                            user,
-                            if user { Some("owner".into()) } else { None },
-                            face.as_deref().unwrap_or(""),
-                        );
-                    }
+        }
+        for (key, user) in [("services", false), ("user_services", true)] {
+            if let Some(a) = constants.and_then(|c| c.get(key)).and_then(Value::as_array) {
+                for name in a.iter().filter_map(Value::as_str) {
+                    projection_add_service(
+                        &mut services,
+                        name.into(),
+                        user,
+                        if user { Some("owner".into()) } else { None },
+                        module_id,
+                    );
                 }
             }
         }
@@ -490,5 +492,82 @@ fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool {
             }
         }
         LoadedModule::Sidecar(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn tv_service_modules_project_into_owned_services() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let profile_root = repo.join("profiles/tv");
+        let profile = crate::bands::stage_profile::load_profile(&profile_root.join("index.json"))
+            .expect("real TV profile loads");
+        let module_root = profile_root.join("modules");
+        let projection = load_profile_projection(&profile, &module_root, &BTreeSet::new())
+            .expect("TV projection loads");
+
+        assert!(
+            projection.errors.is_empty(),
+            "projection errors: {:?}",
+            projection.errors
+        );
+        for (module, expected) in [
+            ("dunst", "hs-dunst.service"),
+            ("waybar", "hs-waybar.service"),
+        ] {
+            let projected = projection
+                .modules
+                .get(module)
+                .expect("service module projected");
+            let LoadedModule::Ladder(manifest) = &projected.loaded else {
+                panic!("{module} must be a ladder manifest");
+            };
+            assert_eq!(
+                manifest
+                    .constants
+                    .get("user_services")
+                    .and_then(Value::as_array)
+                    .and_then(|values| values.first())
+                    .and_then(Value::as_str),
+                Some(expected)
+            );
+        }
+        let bluetooth = projection
+            .modules
+            .get("bluetooth-audio")
+            .expect("Bluetooth module projected");
+        let LoadedModule::Ladder(bluetooth) = &bluetooth.loaded else {
+            panic!("bluetooth-audio must be a ladder manifest");
+        };
+        assert_eq!(
+            bluetooth
+                .constants
+                .get("services")
+                .and_then(Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str),
+            Some("bluetooth.service")
+        );
+
+        let plan = projection
+            .derive_update_plan(&profile, &module_root)
+            .expect("TV update plan derives");
+        assert!(plan.services.iter().any(|service| {
+            service.name == "hs-dunst.service"
+                && service.user
+                && service.target_user.as_deref() == Some("owner")
+        }));
+        assert!(plan.services.iter().any(|service| {
+            service.name == "hs-waybar.service"
+                && service.user
+                && service.target_user.as_deref() == Some("owner")
+        }));
+        assert!(plan.services.iter().any(|service| {
+            service.name == "bluetooth.service" && !service.user && service.target_user.is_none()
+        }));
     }
 }
