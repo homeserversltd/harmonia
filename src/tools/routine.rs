@@ -501,7 +501,6 @@ fn resolve_routine_value(
             context
                 .get(reference)
                 .cloned()
-                .or_else(|| map.get("default").cloned())
                 .ok_or_else(|| reference.to_string())
         }
         Value::Object(map) => map
