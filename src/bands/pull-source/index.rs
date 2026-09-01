@@ -26,10 +26,206 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const SOURCE_PLAN_SCHEMA: &str = "harmonia.engine.source_plan.v1";
 pub(crate) const SOURCE_RECEIPT_SCHEMA: &str = "harmonia.engine.source_resolution.v1";
 pub(crate) const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ArtifactHeadDivergenceCanary {
+    pub schema: &'static str,
+    pub source_policy: String,
+    pub component: String,
+    pub head_commit: Option<String>,
+    pub blessed_commit: Option<String>,
+    pub diverged: Option<bool>,
+    pub commit_gap: Option<u64>,
+    pub first_observed: Option<u64>,
+    pub persistence: Option<u64>,
+    pub unobservable_reason: Option<String>,
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CanaryState {
+    head_commit: Option<String>,
+    blessed_commit: Option<String>,
+    first_observed: Option<u64>,
+}
+
+fn valid_commit(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|v| v.len() == 40 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_owned)
+}
+
+/// Select declared provenance before any observed build-probe fallback.
+pub(crate) fn select_blessed_ref(declared: Option<&str>, fallback: Option<&str>) -> Option<String> {
+    valid_commit(declared).or_else(|| valid_commit(fallback))
+}
+
+/// Report-only comparison of the pulled source head and the blessed artifact.
+/// This function never gates execution and mutates only its receipt/state files.
+struct CanaryLock(PathBuf);
+impl Drop for CanaryLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn component_state_key(component: &str) -> String {
+    component.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Report-only comparison of executed source and artifact identity.
+/// Computation and tracking never participate in routine success/gates.
+pub(crate) fn artifact_head_divergence_canary(
+    receipt_dir: &Path,
+    component: &str,
+    source_policy: &str,
+    pull_happened: bool,
+    source_dir: Option<&Path>,
+    resolved_head: Option<&str>,
+    blessed_ref: Option<&str>,
+    _installed_binary: Option<&Path>,
+) -> Result<ArtifactHeadDivergenceCanary, String> {
+    let head_commit = pull_happened.then(|| valid_commit(resolved_head)).flatten();
+    // This argument is supplied only from executed source/build receipts.  Do
+    // not inspect arbitrary artifact bytes: that would invent an identity.
+    let blessed_commit = valid_commit(blessed_ref);
+    let mut reason = None;
+    let commit_gap = match (
+        head_commit.as_deref(),
+        blessed_commit.as_deref(),
+        source_dir,
+    ) {
+        (Some(head), Some(blessed), Some(repo)) => {
+            let local = |commit: &str| {
+                Command::new("/usr/bin/git")
+                    .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
+                    .current_dir(repo)
+                    .status()
+                    .is_ok_and(|s| s.success())
+            };
+            if !local(head) || !local(blessed) {
+                reason = Some("commit-not-locally-present".into());
+                None
+            } else {
+                match Command::new("/usr/bin/git")
+                    .args(["rev-list", &format!("{blessed}..{head}")])
+                    .current_dir(repo)
+                    .output()
+                {
+                    Ok(output) if output.status.success() => {
+                        Some(String::from_utf8_lossy(&output.stdout).lines().count() as u64)
+                    }
+                    _ => {
+                        reason = Some("commit-gap-unobservable".into());
+                        None
+                    }
+                }
+            }
+        }
+        (Some(_), Some(_), None) => {
+            reason = Some("source-repository-unobservable".into());
+            None
+        }
+        (None, _, _) => {
+            reason = Some("pull-head-unobservable".into());
+            None
+        }
+        (_, None, _) => {
+            reason = Some("blessed-commit-unobservable".into());
+            None
+        }
+    };
+    let diverged = head_commit
+        .as_deref()
+        .zip(blessed_commit.as_deref())
+        .map(|(h, b)| h != b);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let state_dir = receipt_dir
+        .join("state")
+        .join("artifact-head-divergence-canary");
+    let state_path = state_dir.join(format!("{}.json", component_state_key(component)));
+    let lock_path = state_path.with_extension("json.lock");
+    let mut tracking_error = None;
+    let mut first_observed = None;
+    let mut persistence = None;
+    if let Err(error) = fs::create_dir_all(&state_dir) {
+        tracking_error = Some(format!("canary-state-dir: {error}"));
+    } else {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_file) => {
+                let _lock = CanaryLock(lock_path.clone());
+                let previous: CanaryState = fs::read(&state_path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                    .unwrap_or_default();
+                let pair = (head_commit.clone(), blessed_commit.clone());
+                first_observed = if diverged == Some(true)
+                    && (previous.head_commit, previous.blessed_commit) == pair
+                {
+                    previous.first_observed
+                } else if diverged == Some(true) {
+                    Some(now)
+                } else {
+                    None
+                };
+                persistence = first_observed.map(|first| now.saturating_sub(first));
+                let state = CanaryState {
+                    head_commit: head_commit.clone(),
+                    blessed_commit: blessed_commit.clone(),
+                    first_observed,
+                };
+                if let Err(error) = crate::write_json(
+                    &state_path,
+                    &serde_json::to_value(&state)
+                        .map_err(|e| format!("canary-state-serialize: {e}"))?,
+                ) {
+                    tracking_error = Some(error);
+                }
+            }
+            Err(error) => tracking_error = Some(format!("canary-state-lock: {error}")),
+        }
+    }
+    let mut receipt = ArtifactHeadDivergenceCanary {
+        schema: "harmonia.artifact_head_divergence_canary.v1",
+        source_policy: source_policy.to_owned(),
+        component: component.to_owned(),
+        head_commit,
+        blessed_commit,
+        diverged,
+        commit_gap,
+        first_observed,
+        persistence,
+        unobservable_reason: tracking_error.or(reason),
+        ok: true,
+    };
+    receipt.ok = receipt
+        .unobservable_reason
+        .as_deref()
+        .map_or(true, |value| !value.starts_with("canary-state-"));
+    let value =
+        serde_json::to_value(&receipt).map_err(|e| format!("canary-receipt-serialize: {e}"))?;
+    if let Err(error) = crate::write_json(
+        &receipt_dir.join("artifact-head-divergence-canary.json"),
+        &value,
+    ) {
+        return Err(format!("canary-receipt-write: {error}"));
+    }
+    Ok(receipt)
+}
 
 pub(crate) fn default_source_policy() -> String {
     "artifact".to_string()
@@ -80,6 +276,223 @@ pub(crate) struct SourceResolutionReceipt {
     pub credential_selectors: Vec<String>,
     pub blocker: Option<String>,
     pub resolution: Option<SourceResolution>,
+}
+
+#[cfg(test)]
+mod artifact_head_divergence_canary_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn fixture(name: &str) -> (PathBuf, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-canary-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "one",
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        (root, repo)
+    }
+
+    fn head(repo: &Path) -> String {
+        String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .into()
+    }
+
+    #[test]
+    fn divergent_pair_reports_gap_and_persistence() {
+        let (root, repo) = fixture("divergent");
+        let blessed = head(&repo);
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "two",
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        let current = head(&repo);
+        let first = artifact_head_divergence_canary(
+            &root,
+            "component",
+            "developer",
+            true,
+            Some(&repo),
+            Some(&current),
+            select_blessed_ref(Some(&blessed), Some(&current)).as_deref(),
+            None,
+        )
+        .unwrap();
+        let second = artifact_head_divergence_canary(
+            &root,
+            "component",
+            "developer",
+            true,
+            Some(&repo),
+            Some(&current),
+            select_blessed_ref(Some(&blessed), Some(&current)).as_deref(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(first.commit_gap, Some(1));
+        assert_eq!(first.diverged, Some(true));
+        assert_eq!(second.first_observed, first.first_observed);
+        assert!(second.persistence.is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn identical_pair_is_not_diverged() {
+        let (root, repo) = fixture("identical");
+        let commit = head(&repo);
+        let receipt = artifact_head_divergence_canary(
+            &root,
+            "component",
+            "artifact",
+            true,
+            Some(&repo),
+            Some(&commit),
+            Some(&commit),
+            None,
+        )
+        .unwrap();
+        assert_eq!(receipt.diverged, Some(false));
+        assert_eq!(receipt.commit_gap, Some(0));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_pull_head_is_explicitly_unobservable() {
+        let (root, repo) = fixture("unknown-head");
+        let commit = head(&repo);
+        let receipt = artifact_head_divergence_canary(
+            &root,
+            "component",
+            "developer",
+            false,
+            Some(&repo),
+            Some(&commit),
+            Some(&commit),
+            None,
+        )
+        .unwrap();
+        assert_eq!(receipt.head_commit, None);
+        assert_eq!(receipt.blessed_commit, Some(commit));
+        assert_eq!(receipt.diverged, None);
+        assert_eq!(
+            receipt.unobservable_reason.as_deref(),
+            Some("pull-head-unobservable")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn arbitrary_binary_bytes_do_not_supply_blessed_identity() {
+        let (root, repo) = fixture("binary-identity");
+        let commit = head(&repo);
+        let binary = root.join("installed");
+        std::fs::write(&binary, format!("prefix-{commit}-suffix")).unwrap();
+        let receipt = artifact_head_divergence_canary(
+            &root,
+            "component",
+            "artifact",
+            true,
+            Some(&repo),
+            Some(&commit),
+            None,
+            Some(&binary),
+        )
+        .unwrap();
+        assert_eq!(receipt.blessed_commit, None);
+        assert_eq!(receipt.diverged, None);
+        assert_eq!(
+            receipt.unobservable_reason.as_deref(),
+            Some("blessed-commit-unobservable")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persistence_is_carried_by_state_file() {
+        let (root, repo) = fixture("state-file");
+        let blessed = head(&repo);
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "two",
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        let current = head(&repo);
+        let first = artifact_head_divergence_canary(
+            &root,
+            "component",
+            "developer",
+            true,
+            Some(&repo),
+            Some(&current),
+            select_blessed_ref(Some(&blessed), Some(&current)).as_deref(),
+            None,
+        )
+        .unwrap();
+        let second = artifact_head_divergence_canary(
+            &root,
+            "component",
+            "developer",
+            true,
+            Some(&repo),
+            Some(&current),
+            select_blessed_ref(Some(&blessed), Some(&current)).as_deref(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(first.first_observed, second.first_observed);
+        assert!(root
+            .join("state/artifact-head-divergence-canary")
+            .join(format!("{}.json", component_state_key("component")))
+            .is_file());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -574,10 +987,10 @@ pub(crate) fn execute_git_artifact_step(
     })
 }
 
-pub(crate) fn routine_source_plan(
+fn routine_source_plan_with_blessed_ref(
     step: &ValidatedStep,
     manifest: &LadderManifest,
-) -> Result<tools::git_artifact::SourcePlan, String> {
+) -> Result<(tools::git_artifact::SourcePlan, Option<String>), String> {
     let component = string_arg(&step.args, "component");
     if component.trim().is_empty() {
         return Err(format!(
@@ -604,6 +1017,9 @@ pub(crate) fn routine_source_plan(
         &manifest.id,
         &step.step_id,
     );
+    // Carry the exact validated value from this receipt before resolution is
+    // reduced to the acquisition plan. Do not re-read or infer it later.
+    let blessed_ref = certificate_resolution.blessed_ref.clone();
     let resolution = select_source_resolution(
         certificate_resolution,
         config.as_ref(),
@@ -616,7 +1032,7 @@ pub(crate) fn routine_source_plan(
         .map(crate::bands::renew_self::credential_scopes)
         .unwrap_or_default();
     let expected_commit = expected_commit_for_resolution(&resolution);
-    Ok(crate::bands::pull_source::bridge_acquisition_plan(
+    let plan = crate::bands::pull_source::bridge_acquisition_plan(
         &resolution,
         PathBuf::from(destination),
         optional_string_arg(&step.args, "bearer")
@@ -624,7 +1040,15 @@ pub(crate) fn routine_source_plan(
             .to_string(),
         expected_commit,
         credentials,
-    ))
+    );
+    Ok((plan, blessed_ref))
+}
+
+pub(crate) fn routine_source_plan(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+) -> Result<tools::git_artifact::SourcePlan, String> {
+    routine_source_plan_with_blessed_ref(step, manifest).map(|(plan, _)| plan)
 }
 
 pub(crate) fn execute_source(
@@ -1017,6 +1441,7 @@ pub(crate) fn execute_manifest_modules(
 fn routine_source_outputs(
     plan: &tools::git_artifact::SourcePlan,
     outcome: &tools::git_artifact::SourceOutcome,
+    blessed_ref: Option<&str>,
 ) -> BTreeMap<String, serde_json::Value> {
     let mut out: BTreeMap<String, serde_json::Value> = [
         ("path".into(), serde_json::json!(plan.destination)),
@@ -1028,6 +1453,10 @@ fn routine_source_outputs(
     .collect();
     if plan.source_policy == "developer" {
         out.insert("source_policy".into(), serde_json::json!("developer"));
+    }
+    // Preserve receipt provenance in the executed child context.
+    if let Some(blessed_ref) = blessed_ref {
+        out.insert("blessed_ref".into(), serde_json::json!(blessed_ref));
     }
     if let Some(commit) = outcome.receipt.resolved_commit.clone() {
         out.insert("resolved_commit".into(), serde_json::json!(commit));
@@ -1080,9 +1509,10 @@ pub(crate) fn execute_routine_child(
                 args: args.clone(),
                 on_failure: crate::tools::ladder::OnFailure::Stop,
             };
-            let plan = crate::bands::pull_source::routine_source_plan(&step, manifest)?;
+            let (plan, blessed_ref) =
+                crate::bands::pull_source::routine_source_plan_with_blessed_ref(&step, manifest)?;
             let o = crate::bands::pull_source::execute_source(&plan, apply, invocation);
-            let out = routine_source_outputs(&plan, &o);
+            let out = routine_source_outputs(&plan, &o, blessed_ref.as_deref());
             let result = OperationOutcome {
                 ok: o.ok,
                 changed: o.changed,
@@ -1275,7 +1705,7 @@ mod tests {
                 promotion: "planned source acquisition".into(),
             },
         };
-        let output = routine_source_outputs(&plan, &outcome);
+        let output = routine_source_outputs(&plan, &outcome, None);
         assert!(!output.contains_key("source_policy"));
         assert_eq!(output.len(), 5);
     }

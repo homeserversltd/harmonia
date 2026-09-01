@@ -559,6 +559,35 @@ mod tests {
             *probe
         );
 
+        let aggregate: Value = serde_json::from_slice(
+            &fs::read(
+                root.join("receipts")
+                    .join(format!("{}.routine.json", routine_step.step_id)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(aggregate.get("ok"), Some(&Value::Bool(true)));
+        assert_eq!(aggregate.get("changed"), Some(&Value::Bool(false)));
+        let canary = aggregate.get("artifact_head_divergence_canary").unwrap();
+        assert_eq!(
+            canary.get("schema").and_then(Value::as_str),
+            Some("harmonia.artifact_head_divergence_canary.v1")
+        );
+        assert_eq!(
+            canary.get("head_commit").and_then(Value::as_str),
+            Some(source_sha)
+        );
+        assert_eq!(
+            canary.get("blessed_commit").and_then(Value::as_str),
+            Some(source_sha)
+        );
+        assert_eq!(canary.get("diverged"), Some(&Value::Bool(false)));
+        assert_eq!(
+            canary.get("source_policy").and_then(Value::as_str),
+            Some("artifact")
+        );
+
         let install = children.iter().find(|child| child.name == "binary-install").unwrap();
         assert_eq!(install.args.get("source_path"), Some(&serde_json::json!({"from":"build.artifact"})));
         let restart = children.iter().find(|child| child.name == "service-restart").unwrap();

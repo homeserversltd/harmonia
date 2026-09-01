@@ -770,7 +770,78 @@ pub(crate) fn execute_routine(
         crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
         state.children.push(receipt);
     }
-    let aggregate = json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":state.ok,"changed":state.changed,"skipped":!apply,"first_missing_signal":state.first_missing_signal,"context":state.context,"children":state.children});
+    let canary_receipt = if let Some(pull_child) = projected_children
+        .iter()
+        .find(|child| child.tool == "pull-repo")
+    {
+        let pull_receipt = state.children.iter().find(|receipt| {
+            receipt.get("name").and_then(Value::as_str) == Some(pull_child.name.as_str())
+        });
+        // A successful executed child is an observation even when changed=false.
+        let pull_happened = pull_receipt.is_some_and(|receipt| {
+            receipt.get("state").and_then(Value::as_str) == Some("completed")
+                && receipt.get("ok").and_then(Value::as_bool) == Some(true)
+        });
+        let source_dir = state
+            .context
+            .get("pull-repo.path")
+            .and_then(Value::as_str)
+            .map(Path::new);
+        let resolved_head = state
+            .context
+            .get("pull-repo.resolved_commit")
+            .and_then(Value::as_str);
+        let source_policy = state
+            .context
+            .get("pull-repo.source_policy")
+            .and_then(Value::as_str)
+            .unwrap_or("artifact");
+        // Build's exact identity probe is the artifact observation. Its
+        // expected SHA is usable only when the probe observed that identity.
+        let observed_fallback_blessed = state
+            .children
+            .iter()
+            .find(|receipt| receipt.get("name").and_then(Value::as_str) == Some("build"))
+            .and_then(|receipt| receipt.pointer("/outputs/probe"))
+            .filter(|probe| {
+                probe.get("identity_matches").and_then(Value::as_bool) == Some(true)
+                    && probe.get("observed_sha_present").and_then(Value::as_bool) == Some(true)
+            })
+            .and_then(|probe| probe.get("source_build_sha").and_then(Value::as_str));
+        // Declared provenance always wins. The build probe is only a fallback
+        // when it observed an embedded SHA in the pre-act installed binary.
+        let blessed_ref = state
+            .context
+            .get("pull-repo.blessed_ref")
+            .and_then(Value::as_str);
+        let selected_blessed_ref =
+            crate::bands::pull_source::select_blessed_ref(blessed_ref, observed_fallback_blessed);
+        match crate::bands::pull_source::artifact_head_divergence_canary(
+            &routine_dir,
+            pull_child
+                .args
+                .get("component")
+                .and_then(Value::as_str)
+                .unwrap_or(&manifest.id),
+            source_policy,
+            pull_happened,
+            source_dir,
+            resolved_head,
+            selected_blessed_ref.as_deref(),
+            None,
+        ) {
+            Ok(receipt) => Some(
+                serde_json::to_value(receipt)
+                    .map_err(|e| format!("canary-receipt-serialize: {e}"))?,
+            ),
+            Err(error) => Some(
+                json!({"schema":"harmonia.artifact_head_divergence_canary.v1","component":manifest.id,"ok":false,"unobservable_reason":format!("canary-receipt-emission-failed: {error}")}),
+            ),
+        }
+    } else {
+        None
+    };
+    let aggregate = json!({"schema":"harmonia.routine.receipt.v1","routine_id":source.step_id,"ok":state.ok,"changed":state.changed,"skipped":!apply,"first_missing_signal":state.first_missing_signal,"context":state.context,"children":state.children,"artifact_head_divergence_canary":canary_receipt});
     crate::write_json(
         &module_dir.join(format!("{}.routine.json", source.step_id)),
         &aggregate,
