@@ -5,3 +5,5 @@
 __pycache__/
 *.py[cod]
 profiles/.observe-cross-band-fixture/
+# Cibation/Fulcrum worktrees are local execution surfaces, not source dirt
+.worktrees/
