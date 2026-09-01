@@ -74,6 +74,8 @@ pub(crate) struct SourceResolutionReceipt {
     pub owning_module: String,
     pub step_id: String,
     pub requested_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blessed_ref: Option<String>,
     pub ordered_candidate_identities: Vec<String>,
     pub credential_selectors: Vec<String>,
     pub blocker: Option<String>,
@@ -120,6 +122,14 @@ fn receipt(
     blocker: Option<String>,
     resolution: Option<SourceResolution>,
 ) -> SourceResolutionReceipt {
+    let blessed_ref = (source_policy == "developer")
+        .then(|| {
+            requested_ref.as_deref().filter(|reference| {
+                reference.len() == 40 && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        })
+        .flatten()
+        .map(str::to_string);
     SourceResolutionReceipt {
         schema: SOURCE_RECEIPT_SCHEMA,
         source_policy,
@@ -132,6 +142,7 @@ fn receipt(
         owning_module: owning_module.to_string(),
         step_id: step_id.to_string(),
         requested_ref,
+        blessed_ref,
         ordered_candidate_identities: candidates,
         credential_selectors: selectors,
         blocker,
@@ -242,6 +253,7 @@ pub(crate) fn bridge_acquisition_plan(
             })
             .collect(),
         reference: resolution.requested_ref.clone(),
+        source_policy: resolution.source_policy.clone(),
         destination,
         expected_commit,
         bearer,
@@ -592,40 +604,18 @@ pub(crate) fn routine_source_plan(
         &manifest.id,
         &step.step_id,
     );
-    let resolution = match certificate_resolution.resolution {
-        Some(resolution) => resolution,
-        None if certificate_resolution
-            .blocker
-            .as_deref()
-            .is_some_and(|blocker| {
-                blocker == format!("source-component-undeclared component={component}")
-            }) =>
-        {
-            let config = config.as_ref().ok_or_else(|| {
-                format!("source-resolution-blocked module={} step_id={} component={} blocker=engine-config-missing", manifest.id, step.step_id, component)
-            })?;
-            engine_source_resolution(component, config)?
-        }
-        None => {
-            let blocker = certificate_resolution
-                .blocker
-                .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
-            return Err(format!(
-                "source-resolution-blocked module={} step_id={} component={} blocker={blocker}",
-                manifest.id, step.step_id, component
-            ));
-        }
-    };
+    let resolution = select_source_resolution(
+        certificate_resolution,
+        config.as_ref(),
+        component,
+        &manifest.id,
+        &step.step_id,
+    )?;
     let credentials = config
         .as_ref()
         .map(crate::bands::renew_self::credential_scopes)
         .unwrap_or_default();
-    let expected_commit = (resolution.requested_ref.len() == 40
-        && resolution
-            .requested_ref
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| resolution.requested_ref.clone());
+    let expected_commit = expected_commit_for_resolution(&resolution);
     Ok(crate::bands::pull_source::bridge_acquisition_plan(
         &resolution,
         PathBuf::from(destination),
@@ -859,6 +849,57 @@ pub(crate) fn execute_manifest_band(
     Ok(result)
 }
 
+fn select_source_resolution(
+    certificate_resolution: SourceResolutionReceipt,
+    config: Option<&crate::bands::renew_self::EnginePlaneConfig>,
+    component: &str,
+    module: &str,
+    step_id: &str,
+) -> Result<SourceResolution, String> {
+    let resolution = match certificate_resolution.resolution {
+        Some(resolution) => resolution,
+        None if certificate_resolution
+            .blocker
+            .as_deref()
+            .is_some_and(|blocker| {
+                blocker == format!("source-component-undeclared component={component}")
+            }) =>
+        {
+            let config = config.ok_or_else(|| {
+                format!(
+                    "source-resolution-blocked module={module} step_id={step_id} component={component} blocker=engine-config-missing"
+                )
+            })?;
+            engine_source_resolution(component, config)?
+        }
+        None => {
+            let blocker = certificate_resolution
+                .blocker
+                .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
+            return Err(format!(
+                "source-resolution-blocked module={module} step_id={step_id} component={component} blocker={blocker}"
+            ));
+        }
+    };
+    if resolution.source_policy == "developer" {
+        let config = config.ok_or_else(|| {
+            format!(
+                "source-resolution-blocked module={module} step_id={step_id} component={component} blocker=engine-config-missing"
+            )
+        })?;
+        engine_source_resolution(component, config)
+    } else {
+        Ok(resolution)
+    }
+}
+
+fn expected_commit_for_resolution(resolution: &SourceResolution) -> Option<String> {
+    (resolution.source_policy == "artifact"
+        && resolution.requested_ref.len() == 40
+        && resolution.requested_ref.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone())
+}
+
 use crate::receipts::event;
 pub(crate) fn execute_manifest_modules(
     profile: &Profile,
@@ -973,6 +1014,27 @@ pub(crate) fn execute_manifest_modules(
     Ok(())
 }
 
+fn routine_source_outputs(
+    plan: &tools::git_artifact::SourcePlan,
+    outcome: &tools::git_artifact::SourceOutcome,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut out: BTreeMap<String, serde_json::Value> = [
+        ("path".into(), serde_json::json!(plan.destination)),
+        ("changed".into(), serde_json::json!(outcome.changed)),
+        ("source_reference".into(), serde_json::json!(plan.reference)),
+        ("source_remote".into(), serde_json::json!(plan.reference)),
+    ]
+    .into_iter()
+    .collect();
+    if plan.source_policy == "developer" {
+        out.insert("source_policy".into(), serde_json::json!("developer"));
+    }
+    if let Some(commit) = outcome.receipt.resolved_commit.clone() {
+        out.insert("resolved_commit".into(), serde_json::json!(commit));
+    }
+    out
+}
+
 fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
     CmdResult {
         ok: outcome.ok,
@@ -1020,17 +1082,7 @@ pub(crate) fn execute_routine_child(
             };
             let plan = crate::bands::pull_source::routine_source_plan(&step, manifest)?;
             let o = crate::bands::pull_source::execute_source(&plan, apply, invocation);
-            let mut out: std::collections::BTreeMap<String, serde_json::Value> = [
-                ("path".into(), serde_json::json!(plan.destination)),
-                ("changed".into(), serde_json::json!(o.changed)),
-                ("source_reference".into(), serde_json::json!(plan.reference)),
-                ("source_remote".into(), serde_json::json!(plan.reference)),
-            ]
-            .into_iter()
-            .collect();
-            if let Some(commit) = o.receipt.resolved_commit.clone() {
-                out.insert("resolved_commit".into(), serde_json::json!(commit));
-            }
+            let out = routine_source_outputs(&plan, &o);
             let result = OperationOutcome {
                 ok: o.ok,
                 changed: o.changed,
@@ -1086,7 +1138,13 @@ mod tests {
         let path = certificate_with_policy(Some("developer"));
         let receipt = resolve_source(&path, "sbin", "test", "policy");
         assert_eq!(receipt.source_policy, "developer");
-        assert_eq!(receipt.resolution.unwrap().source_policy, "developer");
+        assert_eq!(
+            receipt.resolution.as_ref().unwrap().source_policy,
+            "developer"
+        );
+        assert_eq!(receipt.blessed_ref, None);
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert!(!serialized.as_object().unwrap().contains_key("blessed_ref"));
         let _ = std::fs::remove_file(path);
     }
 
@@ -1101,6 +1159,125 @@ mod tests {
         assert_eq!(receipt.source_policy, "garbage");
         assert!(receipt.resolution.is_none());
         let _ = std::fs::remove_file(path);
+    }
+
+    fn engine_config_for_plan(policy: &str, branch: &str) -> EnginePlaneConfig {
+        EnginePlaneConfig {
+            source_policy: policy.into(),
+            source_repo_url: "https://git.home.arpa/HOMESERVERSLTD/sbin.git".into(),
+            branch: branch.into(),
+            source_dir: PathBuf::from("/var/lib/harmonia/source"),
+            local_source_checkout: None,
+            install_bin: PathBuf::from("/usr/local/bin/harmonia"),
+            enabled: true,
+            git_bearer: "owner".into(),
+            remote: "origin".into(),
+            build_program: None,
+            build_args: None,
+            staged_bin: None,
+            profile_index: None,
+            ratchet_lock: None,
+            artifact_transport: None,
+            artifact_transports: Vec::new(),
+            source_components: [("sbin".into(), EngineSourceComponent {
+                repo_url: "https://git.home.arpa/HOMESERVERSLTD/sbin.git".into(),
+                branch: branch.into(),
+            })]
+            .into_iter()
+            .collect(),
+            credential_scopes: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn developer_plan_uses_configured_branch_and_retains_blessed_declaration() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let path = certificate_with_policy(Some("developer"));
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text = text.replace(
+            "\"ref\":\"main\"",
+            &format!("\"ref\":\"{sha}\""),
+        );
+        std::fs::write(&path, text).unwrap();
+        let receipt = resolve_source(&path, "sbin", "test", "plan");
+        assert_eq!(receipt.blessed_ref.as_deref(), Some(sha));
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(
+            serialized.get("blessed_ref").and_then(Value::as_str),
+            Some(sha)
+        );
+        let config = engine_config_for_plan("developer", "developer-head");
+        let resolution = select_source_resolution(
+            receipt,
+            Some(&config),
+            "sbin",
+            "test",
+            "plan",
+        )
+        .unwrap();
+        let plan = bridge_acquisition_plan(
+            &resolution,
+            PathBuf::from("/tmp/source"),
+            "owner".into(),
+            expected_commit_for_resolution(&resolution),
+            BTreeMap::new(),
+        );
+        assert_eq!(plan.reference, "developer-head");
+        assert_eq!(plan.expected_commit, None);
+        assert_eq!(plan.source_policy, "developer");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn artifact_plan_uses_declared_sha_as_reference_and_expected_commit() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let path = certificate_with_policy(None);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text = text.replace(
+            "\"ref\":\"main\"",
+            &format!("\"ref\":\"{sha}\""),
+        );
+        std::fs::write(&path, text).unwrap();
+        let receipt = resolve_source(&path, "sbin", "test", "plan");
+        let resolution =
+            select_source_resolution(receipt, None, "sbin", "test", "plan").unwrap();
+        let plan = bridge_acquisition_plan(
+            &resolution,
+            PathBuf::from("/tmp/source"),
+            "owner".into(),
+            expected_commit_for_resolution(&resolution),
+            BTreeMap::new(),
+        );
+        assert_eq!(plan.reference, sha);
+        assert_eq!(plan.expected_commit.as_deref(), Some(sha));
+        assert_eq!(plan.source_policy, "artifact");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn artifact_pull_output_preserves_prior_field_set() {
+        let plan = tools::git_artifact::SourcePlan {
+            candidates: Vec::new(),
+            reference: "main".into(),
+            source_policy: "artifact".into(),
+            destination: PathBuf::from("/var/lib/harmonia/source"),
+            expected_commit: None,
+            bearer: "owner".into(),
+            credentials: BTreeMap::new(),
+        };
+        let outcome = tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
+                promotion: "planned source acquisition".into(),
+            },
+        };
+        let output = routine_source_outputs(&plan, &outcome);
+        assert!(!output.contains_key("source_policy"));
+        assert_eq!(output.len(), 5);
     }
 
     #[test]

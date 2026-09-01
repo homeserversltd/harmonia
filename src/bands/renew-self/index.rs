@@ -1339,6 +1339,7 @@ pub(crate) fn run_engine_preflight(
         let source_plan = tools::git_artifact::SourcePlan {
             candidates: vec![candidate.clone()],
             reference: config.branch.clone(),
+            source_policy: config.source_policy.clone(),
             destination: config.source_dir.clone(),
             expected_commit: None,
             bearer: "owner".to_string(),

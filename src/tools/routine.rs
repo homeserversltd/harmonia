@@ -70,9 +70,7 @@ pub(crate) fn validate_args(
             });
         }
         if let Some(value) = args.get(arg.name) {
-            if value
-                .as_object()
-                .is_some_and(|map| map.len() == 1 && map.contains_key("from"))
+            if value.as_object().is_some_and(is_optional_routine_reference)
             {
                 continue;
             }
@@ -495,7 +493,7 @@ fn resolve_routine_value(
     context: &BTreeMap<String, Value>,
 ) -> Result<Value, String> {
     match value {
-        Value::Object(map) if map.len() == 1 && map.contains_key("from") => {
+        Value::Object(map) if is_optional_routine_reference(map) => {
             let reference = map
                 .get("from")
                 .and_then(Value::as_str)
@@ -503,6 +501,7 @@ fn resolve_routine_value(
             context
                 .get(reference)
                 .cloned()
+                .or_else(|| map.get("default").cloned())
                 .ok_or_else(|| reference.to_string())
         }
         Value::Object(map) => map
@@ -519,6 +518,11 @@ fn resolve_routine_value(
             .map(Value::Array),
         _ => Ok(value.clone()),
     }
+}
+
+fn is_optional_routine_reference(map: &Map<String, Value>) -> bool {
+    map.get("from").and_then(Value::as_str).is_some()
+        && map.keys().all(|key| key == "from" || key == "default")
 }
 
 fn collect_routine_receipts(child_dir: &Path) -> Result<Vec<Value>, String> {

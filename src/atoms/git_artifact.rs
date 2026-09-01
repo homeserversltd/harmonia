@@ -255,6 +255,7 @@ pub fn stdout_changed(stdout: &str) -> bool {
 pub struct SourcePlan {
     pub candidates: Vec<SourceCandidate>,
     pub reference: String,
+    pub source_policy: String,
     pub destination: PathBuf,
     pub expected_commit: Option<String>,
     pub bearer: String,

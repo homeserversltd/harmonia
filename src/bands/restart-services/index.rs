@@ -136,6 +136,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                             ("component", component),
                             ("registry_base", registry_base),
                             ("source_build_sha", serde_json::json!({"from":"pull-repo.resolved_commit"})),
+                            (
+                                "source_policy",
+                                serde_json::json!({"from":"pull-repo.source_policy","default":"artifact"}),
+                            ),
                             ("destination", destination),
                             ("installed_binary", installed_binary),
                             ("artifact_name", artifact_name),
@@ -835,6 +839,13 @@ mod tests {
         assert_eq!(
             build.args.get("source_build_sha"),
             Some(&json!({"from":"pull-repo.resolved_commit"}))
+        );
+        assert_eq!(
+            build.args.get("source_policy"),
+            Some(&json!({
+                "from": "pull-repo.source_policy",
+                "default": "artifact"
+            }))
         );
         assert_eq!(
             build.args.get("registry_base").and_then(Value::as_str),

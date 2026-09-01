@@ -271,6 +271,33 @@ pub(crate) fn execute_routine_child(
     let name = tool.to_string();
     match tool {
         "fetch-artifact" => {
+            let developer_mode = args
+                .get("source_policy")
+                .and_then(Value::as_str)
+                .is_some_and(|policy| policy == "developer");
+            if developer_mode {
+                let artifact = args
+                    .get("installed_binary")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let outcome = crate::OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: "fetch-artifact skipped source_policy=developer".into(),
+                    command: None,
+                };
+                return Ok((
+                    outcome,
+                    [
+                        ("artifact".into(), artifact),
+                        ("changed".into(), Value::Bool(false)),
+                        ("source_policy".into(), Value::String("developer".into())),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ));
+            }
             let outcome = crate::tools::fetch_artifact::execute(args, receipt_dir, apply, invocation)?;
             let changed = outcome.changed;
             let artifact = if outcome.skipped {
@@ -541,6 +568,158 @@ mod tests {
             (false, false)
         );
         assert!(!crate::bands::restart_services::service_runtime_material_gates("restart", false, false).0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lowered_developer_fetch_child_skips_artifact_and_preserves_source_wiring() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-ratchet-developer-fetch-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let installed = root.join("installed");
+        fs::create_dir_all(&source).unwrap();
+        let manifest: LadderManifest = serde_json::from_str(include_str!(
+            "../../../profiles/homeserver/modules/caduceus/manifest.json"
+        )).unwrap();
+        let mut manifest = manifest;
+        let service = manifest
+            .ladder
+            .iter_mut()
+            .find(|step| step.tool == "service-runtime")
+            .unwrap();
+        service.args.insert(
+            "source_dir".into(),
+            Value::String(source.to_string_lossy().into_owned()),
+        );
+        service.args.insert(
+            "install_bin".into(),
+            Value::String(installed.to_string_lossy().into_owned()),
+        );
+        crate::bands::restart_services::lower_service_runtime_steps(&mut manifest);
+        crate::bands::backfill_files::lower_service_runtime_steps(&mut manifest).unwrap();
+        let validated = crate::tools::ladder::validate_ladder(&manifest).unwrap();
+        let routine_step = validated
+            .iter()
+            .find(|step| step.tool == "routine" && step.permutation == "execute")
+            .unwrap();
+        let projected =
+            crate::tools::routine::project_manifest_routines(&manifest, &validated).unwrap();
+        let all_children = projected.get(&routine_step.step_id).unwrap();
+        let build = all_children
+            .iter()
+            .find(|child| child.name == "build" && child.tool == "fetch-artifact")
+            .unwrap();
+        assert_eq!(
+            build.args.get("source_policy"),
+            Some(&serde_json::json!({"from":"pull-repo.source_policy","default":"artifact"}))
+        );
+        assert_eq!(
+            build.args.get("source_build_sha"),
+            Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
+        );
+        let children: Vec<_> = all_children
+            .iter()
+            .filter(|child| child.name == "pull-repo" || child.name == "build")
+            .cloned()
+            .collect();
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let mut states = BTreeMap::new();
+        states.insert(routine_step.step_id.clone(), crate::ModuleWalkState {
+            context: [
+                ("pull-repo.path".into(), Value::String(source.to_string_lossy().into_owned())),
+                ("pull-repo.resolved_commit".into(), Value::String(sha.into())),
+                ("pull-repo.source_policy".into(), Value::String("developer".into())),
+            ]
+            .into_iter()
+            .collect(),
+            children: vec![serde_json::json!({"name":"pull-repo","tool":"pull-repo","state":"completed","ok":true,"changed":false,"outputs":{"path":source,"resolved_commit":sha,"source_policy":"developer"}})],
+            blocked_by: None,
+            ok: true,
+            changed: false,
+            first_missing_signal: None,
+        });
+        let outcome = crate::tools::routine::execute_routine(
+            routine_step,
+            &manifest,
+            &root.join("receipts"),
+            None,
+            None,
+            true,
+            None,
+            Some(&mut states),
+            crate::bands::Band::RatchetBinaries,
+            &children,
+        )
+        .unwrap();
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
+        let state = states.get(&routine_step.step_id).unwrap();
+        let receipt = state
+            .children
+            .iter()
+            .find(|r| r.get("name").and_then(Value::as_str) == Some("build"))
+            .unwrap();
+        assert_eq!(receipt.get("ok"), Some(&Value::Bool(true)));
+        assert_eq!(receipt.get("changed"), Some(&Value::Bool(false)));
+        assert_eq!(
+            receipt.get("message").and_then(Value::as_str),
+            Some("fetch-artifact skipped source_policy=developer")
+        );
+        assert_eq!(
+            receipt.pointer("/outputs/source_policy"),
+            Some(&Value::String("developer".into()))
+        );
+        assert!(!installed.exists());
+        assert!(!source.join("target/harmonia-registry/caduceus").exists());
+        assert_eq!(
+            build.args.get("source_build_sha"),
+            Some(&serde_json::json!({"from":"pull-repo.resolved_commit"}))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_fetch_child_has_no_developer_policy_output_or_message() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-ratchet-artifact-fetch-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let installed = root.join("installed");
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&installed, format!("caduceus.liveness.v1{sha}")).unwrap();
+        let manifest: LadderManifest = serde_json::from_str(include_str!(
+            "../../../profiles/homeserver/modules/caduceus/manifest.json"
+        )).unwrap();
+        let args = [
+            ("component".into(), Value::String("caduceus".into())),
+            ("registry_base".into(), Value::String("https://invalid.test".into())),
+            ("source_build_sha".into(), Value::String(sha.into())),
+            ("artifact_name".into(), Value::String("caduceus".into())),
+            ("destination".into(), Value::String(root.join("artifact").to_string_lossy().into_owned())),
+            ("installed_binary".into(), Value::String(installed.to_string_lossy().into_owned())),
+        ]
+        .into_iter()
+        .collect();
+        let (outcome, outputs) = execute_routine_child(
+            "fetch-artifact",
+            Some("fetch"),
+            &args,
+            &manifest,
+            &root.join("receipts"),
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(outcome.ok);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.message, "fetch-artifact-current");
+        assert!(!outcome.message.contains("source_policy"));
+        assert!(!outputs.contains_key("source_policy"));
         let _ = fs::remove_dir_all(root);
     }
 
