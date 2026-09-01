@@ -1,3 +1,5 @@
+#![cfg(feature = "test-facade")]
+
 use harmonia::filesystem::{apply_transaction, converge, FilesystemOperation, RootPrefix};
 use std::{fs, os::unix::process::CommandExt, path::PathBuf, process::Command};
 use tempfile::tempdir;
