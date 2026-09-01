@@ -23,6 +23,7 @@
     "caduceus-storage-categories",
     "sbin",
     "sudoers",
-    "controller-streaming-config"
+    "sunshine",
+    "retroarch-input"
   ]
 }

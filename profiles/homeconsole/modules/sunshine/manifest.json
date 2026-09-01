@@ -1,33 +1,31 @@
 {
   "schema": "harmonia.module.ladder.v1",
-  "id": "controller-streaming-config",
+  "id": "sunshine",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "HomeConsole operator-ruled controller and streaming configuration for Sunshine, uinput access, and RetroArch DualSense mappings.",
   "optional": false,
+  "description": "HomeConsole Sunshine streaming configuration and device-access rule.",
   "constants": {},
   "ladder": [
     {
-      "step_id": "controller-streaming-user-config",
+      "step_id": "sunshine-user-config",
       "tool": "files",
       "permutation": "converge",
       "args": {
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "home/steam/.config/sunshine/sunshine.conf",
-          "home/steam/.config/retroarch/autoconfig/udev/Sony Interactive Entertainment DualSense Wireless Controller.cfg",
-          "home/steam/.config/retroarch/autoconfig/udev/Sunshine PS5 (virtual) pad.cfg"
+          "home/steam/.config/sunshine/sunshine.conf"
         ],
         "backup_existing": true,
         "owner": "steam",
         "group": "steam",
-        "receipt_name": "homeconsole-controller-streaming-user-config"
+        "receipt_name": "homeconsole-sunshine-user-config"
       },
       "on_failure": "stop"
     },
     {
-      "step_id": "controller-streaming-system-config",
+      "step_id": "sunshine-device-access",
       "tool": "files",
       "permutation": "converge",
       "args": {
@@ -39,7 +37,7 @@
         "backup_existing": true,
         "owner": "root",
         "group": "root",
-        "receipt_name": "homeconsole-controller-streaming-system-config"
+        "receipt_name": "homeconsole-sunshine-device-access"
       },
       "on_failure": "stop"
     }
