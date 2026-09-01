@@ -3,54 +3,26 @@
   "id": "xdg-user-settings",
   "category": "interactable",
   "version": "1.0.0",
-  "description": "TV XDG user settings and launcher payload module. Files live inside this module under files/<intent>/...; Rust verifies and installs Harmonia-owned TV config files; this sidecar carries constants only.",
+  "description": "TV KDE/application associations and portal configuration are converged from this module into the owner home.",
   "optional": false,
   "constants": {
-    "source_dir": "files_root",
     "target_dir": "/home/owner",
     "expected_files": [
       ".config/kde-mimeapps.list",
       ".config/kdeglobals",
       ".config/mimeapps.list",
-      ".config/wofi/config",
-      ".config/wofi/style.css",
       ".config/xdg-desktop-portal/hyprland-portals.conf",
       ".local/share/applications/mimeapps.list",
-      ".local/share/applications/org.kde.kate.desktop",
-      "bin/alt-tab.sh",
-      "bin/dynamic-waybar.sh",
-      "bin/fetch.sh",
-      "bin/tooltips.sh",
-      "bin/refresh-launcher-cache.sh",
-      "bin/tv-launcher.sh",
-      "bin/volume.sh",
-      "bin/waybar-app-toggle.sh",
-      "bin/waybar-meter.sh",
-      "bin/waybar-toggle.sh"
-    ],
-    "deployable_consumption": {
-      "schema": "harmonia.tv.deployable_consumption.v1",
-      "authority": "harmonia-profile-module-owned-files",
-      "modes": [
-        "safe-repository-symlink",
-        "declared-export-vendor-with-receipt"
-      ],
-      "forbidden": "two-hand-maintained-payload-trees"
-    },
-    "file_locality": "module-owned intent folders; no sibling profiles/tv/config tree",
-    "intent_folders": [
-      "kde-applications",
-      "launcher-bin",
-      "portal",
-      "wofi"
+      ".local/share/applications/org.kde.kate.desktop"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.xdg_user_settings.v1",
-    "meaning": "TV XDG user settings and launcher payload are converged from the module files_root into the owner home"
+    "meaning": "TV KDE/application associations and portal configuration are converged from this module into the owner home."
   },
+  "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "files-kde-applications",
+      "step_id": "kde-and-associations",
       "tool": "files",
       "permutation": "converge",
       "args": {
@@ -66,48 +38,11 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-xdg-user-settings-kde-applications",
-        "summary_receipt": {
-          "name": "tv-xdg-user-settings-kde-applications-summary",
-          "schema": "harmonia.tv.xdg_user_settings_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-xdg-user-settings-files-incomplete"
-        }
+        "receipt_name": "tv-xdg-user-settings-kde"
       }
     },
     {
-      "step_id": "files-launcher-bin",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/launcher-bin",
-        "target_root": "$constants.target_dir",
-        "files": [
-          "bin/alt-tab.sh",
-          "bin/dynamic-waybar.sh",
-          "bin/fetch.sh",
-          "bin/tooltips.sh",
-          "bin/refresh-launcher-cache.sh",
-          "bin/tv-launcher.sh",
-          "bin/volume.sh",
-          "bin/waybar-app-toggle.sh",
-          "bin/waybar-meter.sh",
-          "bin/waybar-toggle.sh"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "tv-xdg-user-settings-launcher-bin",
-        "summary_receipt": {
-          "name": "tv-xdg-user-settings-launcher-bin-summary",
-          "schema": "harmonia.tv.xdg_user_settings_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-xdg-user-settings-files-incomplete"
-        }
-      }
-    },
-    {
-      "step_id": "files-portal",
+      "step_id": "portal",
       "tool": "files",
       "permutation": "converge",
       "args": {
@@ -119,52 +54,8 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-xdg-user-settings-portal",
-        "summary_receipt": {
-          "name": "tv-xdg-user-settings-portal-summary",
-          "schema": "harmonia.tv.xdg_user_settings_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-xdg-user-settings-files-incomplete"
-        }
-      }
-    },
-    {
-      "step_id": "files-wofi",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/wofi",
-        "target_root": "$constants.target_dir",
-        "files": [
-          ".config/wofi/config",
-          ".config/wofi/style.css"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "tv-xdg-user-settings-wofi",
-        "summary_receipt": {
-          "name": "tv-xdg-user-settings-wofi-summary",
-          "schema": "harmonia.tv.xdg_user_settings_install.v1",
-          "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-xdg-user-settings-files-incomplete"
-        }
-      }
-    },
-    {
-      "step_id": "launcher-cache-refresh",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "[ ! -x /usr/bin/su ] || su - owner -c \"sh /home/owner/bin/refresh-launcher-cache.sh\""
-        ],
-        "timeout_secs": 120
+        "receipt_name": "tv-xdg-user-settings-portal"
       }
     }
-  ],
-  "files_root": "files_root"
+  ]
 }

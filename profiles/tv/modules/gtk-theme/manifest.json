@@ -1,0 +1,38 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "gtk-theme",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "TV GTK theme settings are converged from this module into the owner home.",
+  "optional": false,
+  "constants": {
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".config/gtk-3.0/settings.ini",
+      ".config/gtk-4.0/settings.ini"
+    ],
+    "phase": 5,
+    "receipt_schema": "harmonia.tv.gtk_theme.v1",
+    "meaning": "TV GTK theme settings are converged from this module into the owner home."
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/gtk-3.0/settings.ini",
+          ".config/gtk-4.0/settings.ini"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tv-gtk-theme-files"
+      }
+    }
+  ]
+}
