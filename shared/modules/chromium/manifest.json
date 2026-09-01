@@ -2,8 +2,8 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "chromium",
   "category": "known-good",
-  "version": "1.1.0",
-  "description": "Shared Chromium configuration module: it solely owns Chromium launch flags, recommended settings, managed extensions, and retraction of its retired profile-named mandatory policy artifacts.",
+  "version": "1.2.0",
+  "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; it includes TV's Firefox policy; profiles without the chromium module remain non-tenants; it does not install browsers.",
   "optional": false,
   "constants": {
     "retired_mandatory_policy_paths": [
@@ -44,6 +44,22 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "chromium-policy-files"
+      }
+    },
+    {
+      "step_id": "tv-firefox-policy",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "home/owner/firefox/distribution/policies.json"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "chromium-tv-firefox-policy"
       }
     },
     {

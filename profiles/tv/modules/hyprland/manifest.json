@@ -1,0 +1,53 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hyprland",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "TV Hyprland configuration is converged from this module into the owner home.",
+  "optional": false,
+  "constants": {
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".config/hypr/autostart.conf",
+      ".config/hypr/bindings.conf",
+      ".config/hypr/envs.conf",
+      ".config/hypr/hyprland.conf",
+      ".config/hypr/input.conf",
+      ".config/hypr/looknfeel.conf",
+      ".config/hypr/monitors.conf",
+      ".config/hypr/windows.conf",
+      ".config/hypr/scripts/bitwarden-popup-float.sh"
+    ],
+    "phase": 5,
+    "receipt_schema": "harmonia.tv.hyprland.v1",
+    "meaning": "TV Hyprland configuration is converged from this module into the owner home.",
+    "unmanaged_operator_seed": ".config/hypr/input-overrides.conf"
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/hypr/autostart.conf",
+          ".config/hypr/bindings.conf",
+          ".config/hypr/envs.conf",
+          ".config/hypr/hyprland.conf",
+          ".config/hypr/input.conf",
+          ".config/hypr/looknfeel.conf",
+          ".config/hypr/monitors.conf",
+          ".config/hypr/windows.conf",
+          ".config/hypr/scripts/bitwarden-popup-float.sh"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tv-hyprland-files"
+      }
+    }
+  ]
+}

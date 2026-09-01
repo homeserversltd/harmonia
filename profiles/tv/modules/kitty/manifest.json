@@ -1,0 +1,38 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "kitty",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "TV Kitty configuration is converged from this module into the owner home.",
+  "optional": false,
+  "constants": {
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".config/kitty/kitty.conf",
+      ".config/kitty/theme.conf"
+    ],
+    "phase": 5,
+    "receipt_schema": "harmonia.tv.kitty.v1",
+    "meaning": "TV Kitty configuration is converged from this module into the owner home."
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/kitty/kitty.conf",
+          ".config/kitty/theme.conf"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tv-kitty-files"
+      }
+    }
+  ]
+}

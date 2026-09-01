@@ -1,0 +1,76 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "launcher-bin",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "TV launcher scripts and Wofi inputs are converged from this module into the owner home.",
+  "optional": false,
+  "constants": {
+    "target_dir": "/home/owner",
+    "expected_files": [
+      "bin/alt-tab.sh",
+      "bin/dynamic-waybar.sh",
+      "bin/fetch.sh",
+      "bin/harmonia-settings-badge",
+      "bin/harmonia-settings-popup",
+      "bin/refresh-launcher-cache.sh",
+      "bin/tooltips.sh",
+      "bin/tv-launcher.sh",
+      "bin/volume.sh",
+      "bin/waybar-app-toggle.sh",
+      "bin/waybar-meter.sh",
+      "bin/waybar-toggle.sh",
+      ".config/wofi/config",
+      ".config/wofi/style.css"
+    ],
+    "phase": 5,
+    "receipt_schema": "harmonia.tv.launcher_bin.v1",
+    "meaning": "TV launcher scripts and Wofi inputs are converged from this module into the owner home."
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "$constants.target_dir",
+        "files": [
+          "bin/alt-tab.sh",
+          "bin/dynamic-waybar.sh",
+          "bin/fetch.sh",
+          "bin/harmonia-settings-badge",
+          "bin/harmonia-settings-popup",
+          "bin/refresh-launcher-cache.sh",
+          "bin/tooltips.sh",
+          "bin/tv-launcher.sh",
+          "bin/volume.sh",
+          "bin/waybar-app-toggle.sh",
+          "bin/waybar-meter.sh",
+          "bin/waybar-toggle.sh",
+          ".config/wofi/config",
+          ".config/wofi/style.css"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tv-launcher-bin-files"
+      }
+    },
+    {
+      "step_id": "launcher-cache-refresh",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/env",
+        "args": [
+          "sh",
+          "-c",
+          "[ ! -x /usr/bin/su ] || su - owner -c \"sh /home/owner/bin/refresh-launcher-cache.sh\""
+        ],
+        "timeout_secs": 120
+      }
+    }
+  ]
+}
