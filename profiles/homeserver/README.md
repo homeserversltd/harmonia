@@ -14,14 +14,15 @@ A profile names one appliance identity and the modules that maintain it. Each fo
 - `coronatio` maintains the HOMESERVER crown service runtime.
 - `caduceus` maintains the local appliance control service used to request safe convergence.
 - `jellyfin` maintains the Jellyfin media service.
-- `matrix` maintains the Synapse chat service and Element Web client surface.
+- `synapse` maintains the Synapse chat service; `element` maintains the Element Web client surface after Synapse.
 
 ## Represented product concerns
 
 - `nginx` defines the secure web entry point.
 - `firewall` defines network exposure boundaries.
 - `postgres` defines the shared database service concern.
-- `matrix` defines the private Synapse chat service and its Element Web client surface.
+- `synapse` defines the private Synapse chat service.
+- `element` defines the Element Web client and portal surface; it follows Synapse because its configuration targets and validates the Synapse endpoint.
 - `tailscale` defines private network access as a product capability.
 - `samba` defines LAN file sharing.
 - `systemd` owns HOMESERVER systemd unit and mount management. Every reusable unit template lives directly in `profiles/homeserver/modules/systemd/`; Harmonia treats those files as the desired unit set for `/etc/systemd/system/`.

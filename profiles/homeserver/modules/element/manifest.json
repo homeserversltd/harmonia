@@ -1,0 +1,17 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "element",
+  "category": "interactable",
+  "version": "1.0.1",
+  "description": "HOMESERVER Element Web client and portal surface. Element follows Synapse because its configuration targets and validates the Synapse endpoint.",
+  "constants": {
+    "element_domain": "chat.home.arpa",
+    "element_alias_domain": "element.home.arpa",
+    "portal_name": "element",
+    "portal_local_url": "https://chat.home.arpa"
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {"step_id": "element-managed-files", "tool": "files", "permutation": "managed-files", "args": {}}
+  ]
+}
