@@ -52,6 +52,8 @@ const LEGACY_OWNER_FORGEJO_STORE: &str = "/home/owner/.git-credentials-forgejo";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct EnginePlaneConfig {
+    #[serde(default = "crate::bands::pull_source::default_source_policy")]
+    pub source_policy: String,
     pub source_repo_url: String,
     pub branch: String,
     pub source_dir: PathBuf,
@@ -245,6 +247,7 @@ fn validate_declared_source_path(field: &str, path: &Path) -> Result<(), String>
 }
 
 fn validate_engine_plane_config(config: EnginePlaneConfig) -> Result<EnginePlaneConfig, String> {
+    crate::bands::pull_source::validate_source_policy(Some(&config.source_policy))?;
     if config.git_bearer != "owner" {
         return Err(format!(
             "engine-config-git-bearer-forbidden expected=owner actual={}",
@@ -1650,6 +1653,36 @@ pub(crate) fn run_engine_preflight(
 mod release_transport_tests {
     use super::EngineArtifactTransport;
     use std::path::PathBuf;
+
+    #[test]
+    fn engine_config_source_policy_defaults_to_artifact() {
+        let config = super::parse_validate_engine_plane_config(
+            r#"{"source_repo_url":"https://example.invalid/repo.git","branch":"main","source_dir":"/var/lib/harmonia/source","install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
+            std::path::Path::new("engine.json"),
+        )
+        .unwrap();
+        assert_eq!(config.source_policy, "artifact");
+    }
+
+    #[test]
+    fn engine_config_source_policy_developer_is_echoed() {
+        let config = super::parse_validate_engine_plane_config(
+            r#"{"source_policy":"developer","source_repo_url":"https://example.invalid/repo.git","branch":"main","source_dir":"/var/lib/harmonia/source","install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
+            std::path::Path::new("engine.json"),
+        )
+        .unwrap();
+        assert_eq!(config.source_policy, "developer");
+    }
+
+    #[test]
+    fn engine_config_source_policy_garbage_is_exact_blocker() {
+        let error = super::parse_validate_engine_plane_config(
+            r#"{"source_policy":"garbage","source_repo_url":"https://example.invalid/repo.git","branch":"main","source_dir":"/var/lib/harmonia/source","install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
+            std::path::Path::new("engine.json"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "source-policy-invalid policy=garbage");
+    }
 
     #[test]
     fn release_kinds_and_legacy_git_deserialize() {

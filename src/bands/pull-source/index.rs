@@ -31,6 +31,19 @@ pub(crate) const SOURCE_PLAN_SCHEMA: &str = "harmonia.engine.source_plan.v1";
 pub(crate) const SOURCE_RECEIPT_SCHEMA: &str = "harmonia.engine.source_resolution.v1";
 pub(crate) const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
 
+pub(crate) fn default_source_policy() -> String {
+    "artifact".to_string()
+}
+
+pub(crate) fn validate_source_policy(policy: Option<&str>) -> Result<String, String> {
+    let policy = policy.unwrap_or("artifact");
+    if matches!(policy, "artifact" | "developer") {
+        Ok(policy.to_string())
+    } else {
+        Err(format!("source-policy-invalid policy={policy}"))
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SourceCandidatePlan {
     pub kind: String,
@@ -42,6 +55,7 @@ pub(crate) struct SourceCandidatePlan {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SourceResolution {
     pub schema: &'static str,
+    pub source_policy: String,
     pub component: String,
     pub requested_ref: String,
     pub candidates: Vec<SourceCandidatePlan>,
@@ -50,6 +64,7 @@ pub(crate) struct SourceResolution {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SourceResolutionReceipt {
     pub schema: &'static str,
+    pub source_policy: String,
     pub ok: bool,
     pub mutation: bool,
     pub network_access: bool,
@@ -68,6 +83,8 @@ pub(crate) struct SourceResolutionReceipt {
 #[derive(Debug, Deserialize)]
 struct Certificate {
     schema: String,
+    #[serde(default)]
+    source_policy: Option<String>,
     #[serde(default)]
     sources: BTreeMap<String, SourceDeclaration>,
 }
@@ -93,6 +110,7 @@ struct SourceCandidate {
 fn receipt(
     certificate_path: &Path,
     certificate_schema: Option<String>,
+    source_policy: String,
     component: &str,
     owning_module: &str,
     step_id: &str,
@@ -104,6 +122,7 @@ fn receipt(
 ) -> SourceResolutionReceipt {
     SourceResolutionReceipt {
         schema: SOURCE_RECEIPT_SCHEMA,
+        source_policy,
         ok: blocker.is_none(),
         mutation: false,
         network_access: false,
@@ -123,6 +142,7 @@ fn receipt(
 fn blocker_receipt(
     certificate_path: &Path,
     certificate_schema: Option<String>,
+    source_policy: String,
     component: &str,
     owning_module: &str,
     step_id: &str,
@@ -131,6 +151,7 @@ fn blocker_receipt(
     receipt(
         certificate_path,
         certificate_schema,
+        source_policy,
         component,
         owning_module,
         step_id,
@@ -309,6 +330,7 @@ pub(crate) fn resolve_source(
             return blocker_receipt(
                 certificate_path,
                 None,
+                default_source_policy(),
                 component,
                 owning_module,
                 step_id,
@@ -317,10 +339,28 @@ pub(crate) fn resolve_source(
         }
     };
     let schema = Some(certificate.schema.clone());
+    let source_policy = match validate_source_policy(certificate.source_policy.as_deref()) {
+        Ok(policy) => policy,
+        Err(blocker) => {
+            return blocker_receipt(
+                certificate_path,
+                schema,
+                certificate
+                    .source_policy
+                    .clone()
+                    .unwrap_or_else(default_source_policy),
+                component,
+                owning_module,
+                step_id,
+                blocker,
+            );
+        }
+    };
     let Some(declaration) = certificate.sources.get(component) else {
         return blocker_receipt(
             certificate_path,
             schema,
+            source_policy.clone(),
             component,
             owning_module,
             step_id,
@@ -332,6 +372,7 @@ pub(crate) fn resolve_source(
         return blocker_receipt(
             certificate_path,
             schema,
+            source_policy.clone(),
             component,
             owning_module,
             step_id,
@@ -342,6 +383,7 @@ pub(crate) fn resolve_source(
         return receipt(
             certificate_path,
             schema,
+            source_policy.clone(),
             component,
             owning_module,
             step_id,
@@ -370,6 +412,7 @@ pub(crate) fn resolve_source(
                 return receipt(
                     certificate_path,
                     schema,
+                    source_policy.clone(),
                     component,
                     owning_module,
                     step_id,
@@ -384,6 +427,7 @@ pub(crate) fn resolve_source(
     }
     let resolution = SourceResolution {
         schema: SOURCE_PLAN_SCHEMA,
+        source_policy: source_policy.clone(),
         component: component.to_string(),
         requested_ref: requested_ref.to_string(),
         candidates,
@@ -391,6 +435,7 @@ pub(crate) fn resolve_source(
     receipt(
         certificate_path,
         schema,
+        source_policy,
         component,
         owning_module,
         step_id,
@@ -409,6 +454,7 @@ pub(crate) fn validate_declared_sources(
     certificate_path: &Path,
 ) -> Result<Vec<SourceResolutionReceipt>, String> {
     let certificate = parse_certificate(certificate_path)?;
+    validate_source_policy(certificate.source_policy.as_deref())?;
     let components: Vec<String> = certificate.sources.keys().cloned().collect();
     let mut receipts = Vec::new();
     for component in components {
@@ -631,6 +677,7 @@ fn engine_source_resolution(
     component: &str,
     config: &crate::bands::renew_self::EnginePlaneConfig,
 ) -> Result<SourceResolution, String> {
+    let source_policy = validate_source_policy(Some(&config.source_policy))?;
     let declared = config.source_components.get(component);
     let (source_repo_url, branch) = if let Some(declared) = declared {
         (&declared.repo_url, &declared.branch)
@@ -681,6 +728,7 @@ fn engine_source_resolution(
     })?;
     Ok(SourceResolution {
         schema: SOURCE_PLAN_SCHEMA,
+        source_policy,
         component: component.to_string(),
         requested_ref: requested_ref.to_string(),
         candidates: vec![candidate],
@@ -1007,9 +1055,58 @@ mod tests {
     use crate::bands::renew_self::{EnginePlaneConfig, EngineSourceComponent};
     use crate::tools::git_artifact::CredentialScope;
 
+    fn certificate_with_policy(policy: Option<&str>) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "harmonia-source-policy-{}-{}.json",
+            std::process::id(),
+            policy.unwrap_or("absent")
+        ));
+        let policy = policy
+            .map(|value| format!(",\"source_policy\":\"{value}\""))
+            .unwrap_or_default();
+        std::fs::write(
+            &path,
+            format!(r#"{{"schema":"homeserver.device-profile.v1"{policy},"sources":{{"sbin":{{"ref":"main","candidates":[{{"kind":"git","url":"https://git.home.arpa/HOMESERVERSLTD/sbin.git"}}]}}}}}}"#),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn certificate_source_policy_defaults_to_artifact() {
+        let path = certificate_with_policy(None);
+        let receipt = resolve_source(&path, "sbin", "test", "policy");
+        assert_eq!(receipt.source_policy, "artifact");
+        assert_eq!(receipt.resolution.unwrap().source_policy, "artifact");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn certificate_source_policy_developer_is_echoed() {
+        let path = certificate_with_policy(Some("developer"));
+        let receipt = resolve_source(&path, "sbin", "test", "policy");
+        assert_eq!(receipt.source_policy, "developer");
+        assert_eq!(receipt.resolution.unwrap().source_policy, "developer");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn certificate_source_policy_garbage_is_exact_blocker() {
+        let path = certificate_with_policy(Some("garbage"));
+        let receipt = resolve_source(&path, "sbin", "test", "policy");
+        assert_eq!(
+            receipt.blocker.as_deref(),
+            Some("source-policy-invalid policy=garbage")
+        );
+        assert_eq!(receipt.source_policy, "garbage");
+        assert!(receipt.resolution.is_none());
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn engine_source_resolution_normalizes_sbin_https_locator_to_ssh() {
         let config = EnginePlaneConfig {
+            source_policy: "developer".into(),
             source_repo_url: "https://git.home.arpa/HOMESERVERSLTD/harmonia.git".into(),
             branch: "main".into(),
             source_dir: PathBuf::from("/var/lib/harmonia/source"),
@@ -1047,6 +1144,7 @@ mod tests {
         };
 
         let resolution = engine_source_resolution("sbin", &config).unwrap();
+        assert_eq!(resolution.source_policy, "developer");
         let candidate = &resolution.candidates[0];
         assert_eq!(
             candidate.locator,
