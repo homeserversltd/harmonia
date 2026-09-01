@@ -1,0 +1,9 @@
+{
+  "schema": "harmonia.element.birth_payload.v1",
+  "files_root": "files_root",
+  "files": [
+    {"source": "etc/nginx/sites-available/homeserver-element", "target": "/etc/nginx/sites-available/homeserver-element", "mode": "0644"},
+    {"source": "etc/element-web/config.json", "target": "/etc/element-web/config.json", "mode": "0644"},
+    {"source": "etc/unbound/unbound.conf.d/matrix.conf", "target": "/etc/unbound/unbound.conf.d/matrix.conf", "mode": "0644"}
+  ]
+}

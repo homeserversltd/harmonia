@@ -11,7 +11,8 @@
     "rust-build-toolchain",
     "keyman",
     "caduceus",
-    "matrix"
+    "synapse",
+    "element"
   ],
   "description": "Public HOMESERVER appliance profile. Harmonia keeps this profile current by running ordered modules and writing receipts.",
   "folder_groups": {
@@ -42,7 +43,8 @@
       "searx",
       "rust-build-toolchain",
       "sudoers",
-      "matrix"
+      "synapse",
+      "element"
     ]
   },
   "identity": "homeserver",
@@ -74,12 +76,13 @@
     "udev",
     "systemd",
     "system-packages",
-    "matrix",
+    "synapse",
+    "element",
     "homeserver-update-runtime",
     "sbin",
     "linker"
   ],
-  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Matrix/Element service modules, and the direct-owned sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
+  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Synapse and Element service modules, and the direct-owned sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
     "dot-files",
@@ -105,7 +108,8 @@
     "searx",
     "rust-build-toolchain",
     "sudoers",
-    "matrix"
+    "synapse",
+    "element"
   ],
   "public_source_boundary": "public reusable product module concerns and non-secret configuration only",
   "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source",
@@ -194,23 +198,27 @@
     ],
     "tool_boundary": "shared tools provide primitives; modules compose them into the update law for one appliance concern"
   },
-  "matrix_contract": {
-    "schema": "harmonia.homeserver.matrix_contract.v1",
-    "module": "matrix",
+  "synapse_contract": {
+    "schema": "harmonia.homeserver.synapse_contract.v1",
+    "module": "synapse",
     "server_name": "home.arpa",
     "synapse_loopback": "127.0.0.1:8008",
-    "domains": [
-      "matrix.home.arpa",
-      "chat.home.arpa"
+    "matrix_domain": "matrix.home.arpa",
+    "services": [
+      "matrix-synapse.service"
     ],
     "exposure": "lan-and-tailscale-only",
     "federation": false,
     "registration": "closed-admin-shared-secret",
     "secret_values": "generated once on the appliance when absent; repo owns only paths/modes/presence/validity and never overwrites filled values",
-    "maintenance_executor": "public Harmonia profiles/homeserver",
-    "client_portal_domain": "chat.home.arpa",
+    "maintenance_executor": "public Harmonia profiles/homeserver"
+  },
+  "element_contract": {
+    "schema": "harmonia.homeserver.element_contract.v1",
+    "module": "element",
+    "element_domain": "chat.home.arpa",
     "element_alias_domain": "element.home.arpa",
-    "portal": "Element",
+    "portal_name": "element",
     "portal_local_url": "https://chat.home.arpa"
   }
 }

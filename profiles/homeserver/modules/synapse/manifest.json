@@ -1,0 +1,19 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "synapse",
+  "category": "interactable",
+  "version": "1.0.1",
+  "description": "HOMESERVER Synapse host service, ordered before Element because Element's configuration targets and validates the Synapse endpoint: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback API, LAN/Tailscale web entry point, log rotation, service census, and health proof.",
+  "constants": {
+    "server_name": "home.arpa",
+    "synapse_loopback": "127.0.0.1:8008",
+    "matrix_domain": "matrix.home.arpa",
+    "services": ["matrix-synapse.service"]
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {"step_id": "synapse-managed-files", "tool": "files", "permutation": "managed-files", "args": {}},
+    {"step_id": "synapse-substrate-converge", "tool": "command", "permutation": "capture", "args": {"program": "/usr/bin/python3", "args": ["/usr/local/sbin/agathodaimon/cli.py", "matrix", "matrix-converge"], "timeout_secs": 1800}},
+    {"step_id": "synapse-systemd-reload", "tool": "systemd", "permutation": "daemon-reload", "args": {}}
+  ]
+}

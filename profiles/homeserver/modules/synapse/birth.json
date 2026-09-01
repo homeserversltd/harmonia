@@ -1,0 +1,12 @@
+{
+  "schema": "harmonia.synapse.birth_payload.v1",
+  "files_root": "files_root",
+  "files": [
+    {"source": "etc/matrix-synapse/homeserver.yaml", "target": "/etc/matrix-synapse/homeserver.yaml", "mode": "0640"},
+    {"source": "etc/matrix-synapse/log.yaml", "target": "/etc/matrix-synapse/log.yaml", "mode": "0640"},
+    {"source": "etc/nginx/sites-available/homeserver-matrix", "target": "/etc/nginx/sites-available/homeserver-matrix", "mode": "0644"},
+    {"source": "etc/systemd/system/matrix-synapse.service.d/10-harmonia.conf", "target": "/etc/systemd/system/matrix-synapse.service.d/10-harmonia.conf", "mode": "0644"},
+    {"source": "etc/logrotate.d/matrix-synapse", "target": "/etc/logrotate.d/matrix-synapse", "mode": "0644"},
+    {"source": "usr/share/harmonia/matrix/postgres.sql", "target": "/usr/share/harmonia/matrix/postgres.sql", "mode": "0644"}
+  ]
+}
