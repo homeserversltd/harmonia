@@ -3,7 +3,7 @@ use crate::Profile;
 use crate::*;
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -83,6 +83,7 @@ pub(crate) struct UpdatePlan {
     pub gui_member: Option<String>,
     pub caduceus_count: usize,
     pub pinned_members: Option<Vec<String>>,
+    pub member_modules: BTreeMap<String, Vec<String>>,
 }
 pub(crate) fn derive_plan(
     profile: &Profile,

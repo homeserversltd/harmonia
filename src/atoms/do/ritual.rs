@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     os::fd::AsRawFd,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -326,6 +326,7 @@ pub(crate) struct SealedProjection {
     pub gui_face: Option<String>,
     pub gui_member: Option<String>,
     pub caduceus_count: usize,
+    pub member_modules: BTreeMap<String, Vec<String>>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct ProjectionTransaction {
@@ -345,6 +346,10 @@ pub(crate) struct TransactionReceipt {
     pub(crate) gui_member: Option<String>,
     #[serde(skip)]
     pub(crate) syzygy_sha: Option<String>,
+    #[serde(skip)]
+    pub(crate) syzygy_signal: String,
+    #[serde(skip)]
+    pub(crate) member_modules: BTreeMap<String, Vec<String>>,
     pub children: Vec<ProjectionChild>,
     pub target_count: usize,
     pub service_count: usize,
@@ -438,6 +443,7 @@ pub(crate) fn seal_projection(
             gui_face: plan.gui_face.clone(),
             gui_member: plan.gui_member.clone(),
             caduceus_count: plan.caduceus_count,
+            member_modules: plan.member_modules.clone(),
         },
         state: TransactionState::Open,
         applied_children: BTreeSet::new(),
@@ -492,6 +498,8 @@ fn receipt_for(t: &ProjectionTransaction) -> TransactionReceipt {
         gui: t.sealed.gui_face.clone(),
         gui_member: t.sealed.gui_member.clone(),
         syzygy_sha: None,
+        syzygy_signal: "none".into(),
+        member_modules: t.sealed.member_modules.clone(),
         children: t.sealed.children.clone(),
         target_count: t.sealed.snapshot.roots.len(),
         service_count: t.sealed.services.len(),
@@ -566,7 +574,7 @@ pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
         TransactionState::RefusedForeignPostImage => "refused-foreign-post-image",
         _ => "failed",
     };
-    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
+    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"syzygy_signal":r.syzygy_signal,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
 }
 
 #[cfg(test)]
@@ -611,5 +619,71 @@ mod syzygy_sha_tests {
             .unwrap(),
             "f1820713847173c6f662ec7a077824eb6a5ca884f32724d58535b24479aa0ee5"
         );
+    }
+}
+
+#[cfg(test)]
+mod update_set_receipt_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn committed_unresolvable_sbin_still_writes_update_set() {
+        let dir = tempfile::tempdir().expect("receipt directory");
+        let caduceus = dir.path().join("modules/caduceus");
+        let sbin = dir.path().join("modules/sbin");
+        std::fs::create_dir_all(&caduceus).expect("caduceus module");
+        std::fs::create_dir_all(&sbin).expect("sbin module");
+        std::fs::write(
+            caduceus.join("step.routine.json"),
+            serde_json::json!({
+                "ok": true,
+                "context": {"pull-repo.resolved_commit": "0000000000000000000000000000000000000000"}
+            })
+            .to_string(),
+        )
+        .expect("caduceus routine");
+        let mut member_modules = BTreeMap::new();
+        member_modules.insert("caduceus".into(), vec!["caduceus".into()]);
+        member_modules.insert("sbin".into(), vec!["sbin".into()]);
+        let receipt = TransactionReceipt {
+            schema: "harmonia.transaction.v1",
+            state: TransactionState::Committed,
+            profile_id: "test".into(),
+            profile_identity: "test".into(),
+            source_head: "unresolved".into(),
+            gui: None,
+            gui_member: None,
+            syzygy_sha: None,
+            syzygy_signal: "none".into(),
+            member_modules,
+            children: vec![
+                ProjectionChild {
+                    ordinal: 0,
+                    member: "caduceus".into(),
+                    target_indices: vec![],
+                    service_indices: vec![],
+                    source_sha: None,
+                },
+                ProjectionChild {
+                    ordinal: 1,
+                    member: "sbin".into(),
+                    target_indices: vec![],
+                    service_indices: vec![],
+                    source_sha: None,
+                },
+            ],
+            target_count: 0,
+            service_count: 0,
+            caduceus_count: 1,
+        };
+        crate::atoms::attest::write_transaction_receipt(dir.path(), &receipt, None)
+            .expect("update-set receipt");
+        let value: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("update-set.json")).expect("update-set.json"),
+        )
+        .expect("valid update-set.json");
+        assert_eq!(value["syzygy_sha"], serde_json::Value::Null);
+        assert_eq!(value["syzygy_signal"], "syzygy-source-sha-missing sbin");
     }
 }

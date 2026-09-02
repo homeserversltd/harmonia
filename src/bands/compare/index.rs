@@ -840,6 +840,7 @@ mod beam_tests {
         let plan = crate::atoms::r#do::transaction::UpdatePlan {
             targets: Vec::new(), services: Vec::new(), gui_face: Some("Coronatio".into()), gui_member: Some("face".into()),
             caduceus_count: 1, pinned_members: Some(vec!["caduceus".into(), "sbin".into(), "face".into()]),
+            member_modules: BTreeMap::new(),
         };
         let mut transaction = crate::atoms::r#do::transaction::seal_projection(&plan, "profile", "identity", "source-head").unwrap();
         transaction.authorize_caduceus_source(&authorization).unwrap();

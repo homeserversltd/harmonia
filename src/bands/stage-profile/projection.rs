@@ -314,12 +314,19 @@ fn projection_derive_plan_inner(
     let mut targets = Vec::new();
     let mut services = Vec::new();
     let mut caduceus_count = 0;
-    for (_, projected) in &projected {
+    let mut member_modules: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut record_module = |member: &str, module_id: &str| {
+        let modules = member_modules.entry(member.to_owned()).or_default();
+        if !modules.iter().any(|id| id == module_id) {
+            modules.push(module_id.to_owned());
+        }
+    };
+    for (module_key, projected) in &projected {
         let constants = match &projected.loaded {
             LoadedModule::Ladder(m) => Some(&m.constants),
             LoadedModule::Sidecar(_) => None,
         };
-        let module_id = projected.loaded.id();
+        let module_id = module_key.as_str();
         let steps = &projected.steps;
         let is_gui = face
             .as_deref()
@@ -336,11 +343,13 @@ fn projection_derive_plan_inner(
             };
             if let Some(p) = projection_text(args, "install_bin") {
                 projection_add_census_target(&mut targets, p.into(), member)?;
+                record_module(member, module_id);
             }
             if let Some(a) = args.get("managed_files").and_then(Value::as_array) {
                 for x in a {
                     if let Some(p) = projection_value_path(x, "path") {
                         projection_add_census_target(&mut targets, p, member)?;
+                        record_module(member, module_id);
                     }
                 }
             }
@@ -349,9 +358,11 @@ fn projection_derive_plan_inner(
                 .and_then(|x| projection_value_path(x, "path"))
             {
                 projection_add_census_target(&mut targets, p, member)?;
+                record_module(member, module_id);
             }
             if let Some(name) = projection_text(args, "service") {
                 projection_add_service(&mut services, name, false, None, member);
+                record_module(member, module_id);
             }
         }
         for s in steps {
@@ -369,6 +380,7 @@ fn projection_derive_plan_inner(
                 };
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
                     projection_add_census_target(&mut targets, p.into(), staff_member)?;
+                    record_module(staff_member, module_id);
                 }
                 if projection_text(&s.args, "launcher_pattern").is_none() {
                     continue;
@@ -397,6 +409,7 @@ fn projection_derive_plan_inner(
                 }
                 for n in names {
                     projection_add_census_target(&mut targets, tr.join(n), staff_member)?;
+                    record_module(staff_member, module_id);
                 }
             }
             if is_gui && s.tool == "files" && s.permutation == "converge" {
@@ -411,6 +424,7 @@ fn projection_derive_plan_inner(
                             p,
                             face.as_deref().unwrap_or(""),
                         )?;
+                        record_module(face.as_deref().unwrap_or(""), module_id);
                     }
                 }
             }
@@ -425,6 +439,7 @@ fn projection_derive_plan_inner(
                         target_user,
                         face.as_deref().unwrap_or(""),
                     );
+                    record_module(face.as_deref().unwrap_or(""), module_id);
                 }
             }
         }
@@ -447,6 +462,7 @@ fn projection_derive_plan_inner(
                         continue;
                     };
                     projection_add_census_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
+                    record_module(face.as_deref().unwrap_or(""), module_id);
                 }
             }
         }
@@ -460,6 +476,7 @@ fn projection_derive_plan_inner(
                         if user { Some("owner".into()) } else { None },
                         module_id,
                     );
+                    record_module(module_id, module_id);
                 }
             }
         }
@@ -479,6 +496,7 @@ fn projection_derive_plan_inner(
         gui_member: face,
         caduceus_count,
         pinned_members,
+        member_modules,
     })
 }
 fn projection_glob(pattern: &str, name: &str) -> bool {

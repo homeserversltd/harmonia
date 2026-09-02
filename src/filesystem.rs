@@ -348,6 +348,7 @@ pub fn apply_transaction(members: Vec<(PathBuf, String, Vec<u8>)>) -> serde_json
         gui_member: None,
         caduceus_count: 0,
         pinned_members: None,
+        member_modules: std::collections::BTreeMap::new(),
     };
     let mut transaction = match seal_projection(
         &plan,
