@@ -42,22 +42,31 @@ impl ProfileProjection {
         authorization: &crate::atoms::ask::beam::BeamConvergenceAuthorization,
         receipt_dir: &Path,
         door_url: &str,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let mut fetch = Vec::new();
         let mut health = Vec::new();
         for module in self.modules.values_mut() {
+            for step in &mut module.steps {
+                if step.args.get("component").and_then(Value::as_str) == Some("caduceus")
+                    && step.tool == "fetch-artifact"
+                {
+                    fetch.push(step);
+                }
+            }
             for children in module.routines.values_mut() {
                 for child in children.iter_mut() {
                     if child.args.get("component").and_then(Value::as_str) != Some("caduceus") {
                         continue;
                     }
-                    if child.tool == "fetch-artifact" {
-                        fetch.push(&mut *child);
-                    } else if child.tool == "check-health" {
+                    if child.tool == "check-health" {
                         health.push(&mut *child);
                     }
                 }
             }
+        }
+        if fetch.is_empty() {
+            self.beam_finalization = None;
+            return Ok(false);
         }
         if fetch.len() != 1 || health.len() != 1 {
             return Err(format!(
@@ -75,7 +84,7 @@ impl ProfileProjection {
             receipt_dir: receipt_dir.to_owned(),
             door_url: door_url.to_owned(),
         });
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -615,5 +624,56 @@ mod tests {
         assert!(plan.services.iter().any(|service| {
             service.name == "bluetooth.service" && !service.user && service.target_user.is_none()
         }));
+    }
+
+    #[test]
+    fn homeconsole_absent_fetch_artifact_lane_does_not_mutate_projection() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let profile_root = repo.join("profiles/homeconsole");
+        let profile = crate::bands::stage_profile::load_profile(&profile_root.join("index.json"))
+            .expect("real HomeConsole profile loads");
+        let mut projection = load_profile_projection(
+            &profile,
+            &profile_root.join("modules"),
+            &BTreeSet::new(),
+        )
+        .expect("HomeConsole projection loads");
+
+        let (module_id, child_id, before_args) = projection
+            .modules
+            .iter()
+            .flat_map(|(module_id, module)| {
+                module.steps.iter().filter_map(move |step| {
+                    (step.tool == "git-artifact"
+                        && step.args.get("component").and_then(Value::as_str) == Some("caduceus"))
+                        .then(|| (module_id.clone(), step.step_id.clone(), step.args.clone()))
+                })
+            })
+            .next()
+            .expect("HomeConsole projection has a git-artifact caduceus child");
+        let authorization = crate::atoms::ask::beam::authorize_convergence(
+            "0123456789abcdef0123456789abcdef01234567",
+            true,
+            true,
+            false,
+        )
+        .expect("valid typed beam authorization");
+
+        assert_eq!(
+            projection.authorize_beam_convergence(
+                &authorization,
+                Path::new("/var/empty"),
+                crate::atoms::ask::beam::DEFAULT_DOOR_URL,
+            ),
+            Ok(false)
+        );
+        assert!(projection.beam_finalization.is_none());
+        let child = projection
+            .modules
+            .get(&module_id)
+            .and_then(|module| module.steps.iter().find(|step| step.step_id == child_id))
+            .expect("caduceus child remains projected");
+        assert_eq!(child.args, before_args);
+        assert!(!child.args.contains_key("source_build_sha"));
     }
 }

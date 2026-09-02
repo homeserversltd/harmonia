@@ -174,18 +174,22 @@ pub(crate) fn execute_manifest_modules(
     .is_some_and(|config| config.source_policy == "developer");
     let beam_authorization = authorize_beam(&mut beam, mode_apply, developer_mode);
     if let Some(authorization) = beam_authorization.as_ref() {
-        projection.authorize_beam_convergence(
+        let beam_lane_present = projection.authorize_beam_convergence(
             authorization,
             receipt_dir,
             crate::atoms::ask::beam::DEFAULT_DOOR_URL,
         )?;
-        if let Some(carrier) = carrier {
-            let mut value = carrier.borrow_mut();
-            let Some(transaction) = value.sealed_projection.as_mut() else {
-                return Err("stage-profile-transaction-missing".to_string());
-            };
-            transaction.authorize_caduceus_source(authorization)?;
-            value.projection = Some(projection.clone());
+        if beam_lane_present {
+            if let Some(carrier) = carrier {
+                let mut value = carrier.borrow_mut();
+                let Some(transaction) = value.sealed_projection.as_mut() else {
+                    return Err("stage-profile-transaction-missing".to_string());
+                };
+                transaction.authorize_caduceus_source(authorization)?;
+                value.projection = Some(projection.clone());
+            }
+        } else {
+            beam.first_missing_signal = "beam-convergence-lane-absent";
         }
     } else {
         projection.beam_finalization = None;
@@ -221,6 +225,7 @@ pub(crate) fn execute_manifest_modules(
             | "beam-lock-absent"
             | "beam-divergent-caduceus_sha"
             | "beam-divergent-env_sha"
+            | "beam-convergence-lane-absent"
     ) {
         *ok = false;
         if *first_missing_signal == "none" {
