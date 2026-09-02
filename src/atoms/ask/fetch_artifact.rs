@@ -193,7 +193,8 @@ pub(crate) fn download(
 ) -> Result<Download, String> {
     validate_segment(component, "component")?;
     validate_segment(artifact_name, "artifact-name")?;
-    if !validate_source_sha(source_sha) {
+    let source_sha = authorized_source_sha(component, source_sha);
+    if !validate_source_sha(&source_sha) {
         return Err("fetch-artifact-source-sha-invalid".into());
     }
     if registry_base.trim().is_empty() {
@@ -210,7 +211,7 @@ pub(crate) fn download(
         let manifest_path = directory.join("manifest.json");
         let artifact_path = directory.join("artifact");
         curl_with_anonymous_first(
-            &artifact_url(registry_base, component, source_sha, "manifest.json"),
+            &artifact_url(registry_base, component, &source_sha, "manifest.json"),
             &manifest_path,
         )?;
         let manifest: Manifest = serde_json::from_slice(
@@ -218,9 +219,9 @@ pub(crate) fn download(
                 .map_err(|e| format!("fetch-artifact-manifest-read-failed: {e}"))?,
         )
         .map_err(|e| format!("fetch-artifact-manifest-malformed: {e}"))?;
-        validate_manifest(&manifest, component, source_sha)?;
+        validate_manifest(&manifest, component, &source_sha)?;
         curl_with_anonymous_first(
-            &artifact_url(registry_base, component, source_sha, artifact_name),
+            &artifact_url(registry_base, component, &source_sha, artifact_name),
             &artifact_path,
         )?;
         let bytes = fs::read(&artifact_path)
@@ -233,7 +234,18 @@ pub(crate) fn download(
     let _ = fs::remove_dir_all(&directory);
     result
 }
+
+pub(crate) fn authorized_source_sha(component: &str, requested: &str) -> String {
+    if component == "caduceus" {
+        if let Some(locked) = crate::atoms::ask::beam::active_convergence_caduceus_sha() {
+            return locked;
+        }
+    }
+    requested.to_owned()
+}
+
 pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
+    let source_sha = authorized_source_sha("caduceus", source_sha);
     let Ok(bytes) = fs::read(destination) else {
         return false;
     };

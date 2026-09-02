@@ -166,7 +166,21 @@ pub(crate) fn execute_manifest_modules(
     first_missing_signal: &mut String,
     events: &mut File,
 ) -> Result<(), String> {
-    let beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
+    crate::atoms::ask::beam::clear_pending_beam_finalization();
+    crate::atoms::ask::beam::install_convergence_authorization(None);
+    let mut beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
+    let developer_mode = projection.modules.values().any(|projected| {
+        match &projected.loaded {
+            LoadedModule::Ladder(manifest) => manifest.ladder.iter().any(|step| {
+                step.args.get("source_policy").and_then(Value::as_str) == Some("developer")
+            }),
+            LoadedModule::Sidecar(_) => false,
+        }
+    });
+    let _beam_authorization = authorize_beam(&mut beam, mode_apply, developer_mode);
+    if let Some(authorization) = _beam_authorization.clone() {
+        crate::atoms::ask::beam::install_pending_beam_finalization(authorization, receipt_dir, crate::atoms::ask::beam::DEFAULT_DOOR_URL);
+    }
     let beam_value = serde_json::to_value(&beam)
         .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
     crate::write_json(&receipt_dir.join("beam.json"), &beam_value)?;
@@ -193,7 +207,11 @@ pub(crate) fn execute_manifest_modules(
     }
     if !matches!(
         beam.first_missing_signal,
-        "none" | "beam-door-unreachable" | "beam-lock-absent"
+        "none"
+            | "beam-door-unreachable"
+            | "beam-lock-absent"
+            | "beam-divergent-caduceus_sha"
+            | "beam-divergent-env_sha"
     ) {
         *ok = false;
         if *first_missing_signal == "none" {
@@ -462,6 +480,15 @@ pub(crate) struct BeamCompareReceipt {
     pub door: Option<BeamDoorProjection>,
     pub first_divergent_member: Option<&'static str>,
     pub first_missing_signal: &'static str,
+    pub authorization: BeamAuthorizationReceipt,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BeamAuthorizationReceipt {
+    None,
+    TripleLadder,
+    HeldDeveloperMode,
 }
 
 pub(crate) fn compare_beam(
@@ -477,6 +504,7 @@ pub(crate) fn compare_beam(
             door: None,
             first_divergent_member: None,
             first_missing_signal: "beam-lock-absent",
+            authorization: BeamAuthorizationReceipt::None,
         };
     };
     let lock_projection = BeamLockProjection {
@@ -498,6 +526,7 @@ pub(crate) fn compare_beam(
                 } else {
                     "beam-door-malformed"
                 },
+                authorization: BeamAuthorizationReceipt::None,
             };
         }
     };
@@ -528,7 +557,38 @@ pub(crate) fn compare_beam(
         } else {
             "none"
         },
+        authorization: BeamAuthorizationReceipt::None,
     }
+}
+
+pub(crate) fn authorize_beam(
+    receipt: &mut BeamCompareReceipt,
+    apply: bool,
+    developer_mode: bool,
+) -> Option<crate::atoms::ask::beam::BeamConvergenceAuthorization> {
+    let lock = receipt.lock.as_ref()?;
+    let divergent = !receipt.converged && receipt.first_divergent_member.is_some();
+    let authorization = crate::atoms::ask::beam::authorize_convergence(
+        &lock.caduceus_sha, divergent, apply, developer_mode,
+    );
+    receipt.authorization = if developer_mode && divergent {
+        BeamAuthorizationReceipt::HeldDeveloperMode
+    } else if divergent && !developer_mode {
+        BeamAuthorizationReceipt::TripleLadder
+    } else {
+        BeamAuthorizationReceipt::None
+    };
+    crate::atoms::ask::beam::install_convergence_authorization(authorization.clone());
+    authorization
+}
+
+pub(crate) fn finalize_beam_after_commit() -> Result<(), String> {
+    let Some(pending) = crate::atoms::ask::beam::take_pending_beam_finalization() else { return Ok(()); };
+    let mut receipt = beam_receipt(None, &pending.door_url)?;
+    receipt.authorization = BeamAuthorizationReceipt::TripleLadder;
+    let value = serde_json::to_value(&receipt).map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
+    crate::write_json(&pending.receipt_dir.join("beam-after.json"), &value)?;
+    if receipt.converged { Ok(()) } else { Err(receipt.first_missing_signal.to_string()) }
 }
 
 pub(crate) fn beam_receipt(
@@ -547,6 +607,7 @@ pub(crate) fn beam_receipt(
                     door: None,
                     first_divergent_member: None,
                     first_missing_signal: "beam-lock-malformed",
+                    authorization: BeamAuthorizationReceipt::None,
                 });
             }
         },
@@ -561,6 +622,7 @@ pub(crate) fn beam_receipt(
                     door: None,
                     first_divergent_member: None,
                     first_missing_signal: "beam-lock-malformed",
+                    authorization: BeamAuthorizationReceipt::None,
                 });
             }
         },
@@ -605,12 +667,40 @@ mod beam_tests {
     }
 
     #[test]
+    fn aligned_authorization_is_none() {
+        let mut receipt = compare_beam(Some(lock()), Ok(door()));
+        assert!(authorize_beam(&mut receipt, true, false).is_none());
+        assert_eq!(receipt.authorization, BeamAuthorizationReceipt::None);
+    }
+
+    #[test]
     fn divergent_state() {
         let mut beam_door = door();
         beam_door.env_sha = "e".repeat(64);
         let receipt = compare_beam(Some(lock()), Ok(beam_door));
         assert_eq!(receipt.first_divergent_member, Some("env_sha"));
         assert_eq!(receipt.first_missing_signal, "beam-divergent-env_sha");
+    }
+
+    #[test]
+    fn divergent_nondeveloper_is_triple_ladder_even_in_observe() {
+        let mut receipt = compare_beam(Some(lock()), Ok({ let mut d = door(); d.env_sha = "e".repeat(64); d }));
+        assert!(authorize_beam(&mut receipt, false, false).is_none());
+        assert_eq!(receipt.authorization, BeamAuthorizationReceipt::TripleLadder);
+    }
+
+    #[test]
+    fn predeclaration_is_none() {
+        let mut receipt = compare_beam(None, Err("beam-door-unreachable".into()));
+        assert!(authorize_beam(&mut receipt, false, false).is_none());
+        assert_eq!(receipt.authorization, BeamAuthorizationReceipt::None);
+    }
+
+    #[test]
+    fn divergent_developer_is_held_even_in_observe() {
+        let mut receipt = compare_beam(Some(lock()), Ok({ let mut d = door(); d.env_sha = "e".repeat(64); d }));
+        assert!(authorize_beam(&mut receipt, false, true).is_none());
+        assert_eq!(receipt.authorization, BeamAuthorizationReceipt::HeldDeveloperMode);
     }
 
     #[test]
@@ -637,6 +727,102 @@ mod beam_tests {
         assert_eq!(receipt.state, "aligned");
         assert!(receipt.converged);
         assert_eq!(receipt.first_missing_signal, "none");
+    }
+
+    #[cfg(feature = "test-facade")]
+    #[test]
+    fn facade_fetches_locked_caduceus_and_commits_aligned_beam_transaction() {
+        use serde_json::json;
+        use sha2::{Digest, Sha256};
+        use std::{
+            collections::BTreeMap,
+            fs,
+            io::{Read, Write},
+            net::TcpListener,
+            thread,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let receipt_dir = temp.path().join("receipts");
+        fs::create_dir_all(&receipt_dir).unwrap();
+        let installed = temp.path().join("installed");
+        let destination = temp.path().join("destination");
+        let lock = crate::atoms::ask::beam::read_embedded_lock().unwrap();
+        let lock_sha = lock.caduceus_sha.clone();
+        let old_sha = "0123456789abcdef0123456789abcdef01234567";
+        fs::write(&installed, format!("caduceus.liveness.v1{old_sha}")).unwrap();
+        let artifact = format!("caduceus.liveness.v1{lock_sha}").into_bytes();
+        let artifact_sha = format!("{:x}", Sha256::digest(&artifact));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let registry = format!("http://{address}");
+        let door_url = format!("{registry}/beam");
+        let server_lock_sha = lock_sha.clone();
+        let server_env_sha = lock.env_sha.clone();
+        let server_artifact = artifact.clone();
+        let server_artifact_sha = artifact_sha.clone();
+        let server = thread::spawn(move || {
+            let requests = [
+                (
+                    format!("/caduceus/{server_lock_sha}/manifest.json"),
+                    format!(r#"{{"schema":"estate.artifact.manifest.v1","component":"caduceus","source_sha":"{server_lock_sha}","target":"x86_64","sha256":"{server_artifact_sha}","built_at":"now","pipeline_url":"https://ci"}}"#).into_bytes(),
+                ),
+                (format!("/caduceus/{server_lock_sha}/artifact"), server_artifact),
+                (
+                    "/beam".to_string(),
+                    serde_json::to_vec(&crate::atoms::ask::beam::BeamDoor {
+                        schema: "caduceus.beam.v1".into(), ok: true, service: "caduceus".into(),
+                        caduceus_sha: server_lock_sha, env_sha: server_env_sha,
+                        profile: "homeserver".into(), gui_face: Some("Coronatio".into()), syzygy_sha: None,
+                    }).unwrap(),
+                ),
+            ];
+            for (path, body) in requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let n = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+
+        let divergent_door = { let mut door = door(); door.env_sha = "e".repeat(64); door };
+        let mut beam = compare_beam(Some(lock), Ok(divergent_door));
+        let authorization = authorize_beam(&mut beam, true, false).unwrap();
+        assert_eq!(beam.authorization, BeamAuthorizationReceipt::TripleLadder);
+        assert_eq!(authorization.caduceus_sha(), lock_sha);
+        crate::atoms::ask::beam::install_pending_beam_finalization(authorization, &receipt_dir, &door_url);
+
+        let args: BTreeMap<String, Value> = [
+            ("component", json!("caduceus")), ("registry_base", json!(&registry)),
+            ("source_build_sha", json!(old_sha)), ("artifact_name", json!("artifact")),
+            ("destination", json!(&destination)), ("installed_binary", json!(&installed)),
+        ].into_iter().map(|(key, value)| (key.into(), value)).collect();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation)).unwrap();
+        assert!(outcome.changed);
+        assert!(crate::atoms::ask::fetch_artifact::destination_identity(&destination, &lock_sha));
+
+        let plan = crate::atoms::r#do::transaction::UpdatePlan {
+            targets: Vec::new(), services: Vec::new(), gui_face: Some("Coronatio".into()), gui_member: Some("face".into()),
+            caduceus_count: 1, pinned_members: Some(vec!["caduceus".into(), "sbin".into(), "face".into()]),
+        };
+        let mut transaction = crate::atoms::r#do::transaction::seal_projection(&plan, "profile", "identity", "source-head").unwrap();
+        for child in 0..transaction.sealed.children.len() {
+            crate::atoms::r#do::transaction::apply_projection(&mut transaction, child, &invocation).unwrap();
+        }
+        let receipt = crate::atoms::r#do::transaction::commit_projection(&mut transaction).unwrap();
+        assert_eq!(receipt.state, crate::atoms::r#do::transaction::TransactionState::Committed);
+        assert_eq!(receipt.children[0].source_sha.as_deref(), Some(lock_sha.as_str()));
+        assert_eq!(receipt.children[1].source_sha, None);
+        assert_eq!(receipt.children[2].source_sha, None);
+
+        let after: Value = serde_json::from_slice(&fs::read(receipt_dir.join("beam-after.json")).unwrap()).unwrap();
+        assert_eq!(after["state"], "aligned");
+        assert_eq!(after["converged"], true);
+        assert_eq!(after["authorization"], "triple-ladder");
+        server.join().unwrap();
     }
 
     #[test]
