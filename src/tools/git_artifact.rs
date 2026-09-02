@@ -6,6 +6,17 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn unique_temp_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReleaseRequest {
@@ -46,7 +57,7 @@ fn lookup_release_metadata(
     fs::create_dir_all(&r.cache_dir).map_err(|e| format!("release-cache-create-failed: {e}"))?;
     let path = r
         .cache_dir
-        .join(format!(".metadata-{}", std::process::id()));
+        .join(format!(".metadata-{}", unique_temp_suffix()));
     let mut args = curl_args(&url, &path.to_string_lossy());
     args.extend(["-w".into(), "%{http_code}".into()]);
     let result = run_curl(&args, r.credential_token_path.as_deref())?;
@@ -91,7 +102,9 @@ fn release_asset_url(m: &ReleaseMetadata, tag: &str, name: &str) -> Result<Strin
         .ok_or_else(|| format!("release-asset-missing tag={tag} asset={name}"))
 }
 fn download_release_asset(r: &ReleaseRequest, url: &str, name: &str) -> Result<Vec<u8>, String> {
-    let p = r.cache_dir.join(format!(".{name}-{}", std::process::id()));
+    let p = r
+        .cache_dir
+        .join(format!(".{name}-{}", unique_temp_suffix()));
     let x = run_curl(
         &curl_args(url, &p.to_string_lossy()),
         r.credential_token_path.as_deref(),
@@ -176,7 +189,7 @@ pub(crate) fn fetch_release_asset(
     let destination = request.cache_dir.join(asset_name);
     let temp = request
         .cache_dir
-        .join(format!(".{asset_name}.download-{}", std::process::id()));
+        .join(format!(".{asset_name}.download-{}", unique_temp_suffix()));
     let bytes = match download_release_asset(request, &url, asset_name) {
         Ok(v) => v,
         Err(e) => return Ok(miss(e)),

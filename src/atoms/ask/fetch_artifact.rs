@@ -1,5 +1,5 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
-use crate::tools::git_artifact::{fetch_release_assets, ReleaseRequest};
+use crate::tools::git_artifact::{fetch_release_assets, unique_temp_suffix, ReleaseRequest};
 use serde::Deserialize;
 use std::fs;
 use std::io::Write;
@@ -358,32 +358,36 @@ pub(crate) fn download_release(
         repo: repo.into(),
         credential_token_path,
         credential_scope_found,
-        cache_dir: std::env::temp_dir().join(format!("harmonia-release-{}", std::process::id())),
+        cache_dir: std::env::temp_dir().join(format!("harmonia-release-{}", unique_temp_suffix())),
     };
-    let Some(release) = fetch_release_assets(&request, &tag, &asset, &sidecar)? else {
-        return Ok(None);
-    };
-    let digest = crate::atoms::file_sha256(&release.artifact);
-    let sidecar_text = String::from_utf8(release.sidecar)
-        .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
-    let expected = format!("{digest}  {asset}");
-    if !is_hex(&digest, 64) || sidecar_text.trim_end_matches(['\r', '\n']) != expected {
-        return Err("fetch-artifact-release-sidecar-mismatch".into());
-    }
-    let manifest = Manifest {
-        schema: MANIFEST_SCHEMA.into(),
-        component: component.into(),
-        source_sha: release.target_commitish,
-        target: std::env::consts::ARCH.into(),
-        sha256: digest,
-        built_at: tag,
-        pipeline_url: release.metadata_url,
-    };
-    Ok(Some(Download {
-        manifest,
-        bytes: release.artifact,
-        identity: "embedded-sha".into(),
-    }))
+    let result = (|| {
+        let Some(release) = fetch_release_assets(&request, &tag, &asset, &sidecar)? else {
+            return Ok(None);
+        };
+        let digest = crate::atoms::file_sha256(&release.artifact);
+        let sidecar_text = String::from_utf8(release.sidecar)
+            .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
+        let expected = format!("{digest}  {asset}");
+        if !is_hex(&digest, 64) || sidecar_text.trim_end_matches(['\r', '\n']) != expected {
+            return Err("fetch-artifact-release-sidecar-mismatch".into());
+        }
+        let manifest = Manifest {
+            schema: MANIFEST_SCHEMA.into(),
+            component: component.into(),
+            source_sha: release.target_commitish,
+            target: std::env::consts::ARCH.into(),
+            sha256: digest,
+            built_at: tag,
+            pipeline_url: release.metadata_url,
+        };
+        Ok(Some(Download {
+            manifest,
+            bytes: release.artifact,
+            identity: "embedded-sha".into(),
+        }))
+    })();
+    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    result
 }
 pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
     identity_matches(destination, source_sha, "liveness-marker", "caduceus")
