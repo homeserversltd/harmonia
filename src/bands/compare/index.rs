@@ -763,7 +763,7 @@ mod beam_tests {
             "caduceus_sha":c, "env_sha":env_c, "profile":"homeserver"
         }).to_string().into_bytes();
         let (registry, server) = fake_registry(vec![
-            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus".into(), 200, listing),
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1".into(), 200, listing),
             (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{a}/release.flag"), 200, flag(&a, &env_a, "2026-02-01T00:00:00Z")),
             (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{b}/release.flag"), 404, Vec::new()),
             (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{c}/release.flag"), 200, flag(&c, &env_c, "2026-03-01T00:00:00Z")),
@@ -783,11 +783,54 @@ mod beam_tests {
     }
 
     #[test]
+    fn slot_filters_invalid_entries_and_traverses_listing_pages() {
+        let newest = "a".repeat(40);
+        let older = "b".repeat(40);
+        let env_newest = "1".repeat(64);
+        let env_older = "2".repeat(64);
+        let mut page_one = vec![
+            serde_json::json!({"name":"caduceus-staff", "version":"f".repeat(40), "created_at":""}),
+            serde_json::json!({"name":"caduceus", "version":"not-hex", "created_at":""}),
+            serde_json::json!({"name":"caduceus", "version": &older, "created_at":""}),
+            serde_json::json!({"name":"caduceus", "version": &newest, "created_at":"2026-02-01T00:00:00Z"}),
+        ];
+        for index in 0..46 {
+            page_one.push(serde_json::json!({
+                "name": format!("irrelevant-{index}"),
+                "version": format!("not-a-version-{index}"),
+                "created_at": ""
+            }));
+        }
+        let listing = serde_json::to_vec(&page_one).unwrap();
+        let door = serde_json::json!({
+            "schema":"caduceus.beam.v1", "ok":true, "service":"caduceus",
+            "caduceus_sha":newest, "env_sha":env_newest, "profile":"homeserver"
+        }).to_string().into_bytes();
+        let (registry, server) = fake_registry(vec![
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1".into(), 200, listing),
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=2".into(), 200, b"[]".to_vec()),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{newest}/release.flag"), 200, flag(&newest, &env_newest, "2026-03-01T00:00:00Z")),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{older}/release.flag"), 200, flag(&older, &env_older, "2026-02-01T00:00:00Z")),
+            ("/beam".into(), 200, door),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("beam.json");
+        write_slot(&lock_path, &registry);
+        let receipt = beam_receipt(Some(&lock_path), &format!("{registry}/beam")).unwrap();
+        assert_eq!(server.join().unwrap().len(), 5);
+        assert_eq!(receipt.state, "aligned");
+        assert_eq!(receipt.lock_source, "slot-resolved");
+        assert_eq!(receipt.lock.as_ref().unwrap().caduceus_sha, newest);
+        assert_eq!(receipt.lock.as_ref().unwrap().env_sha, env_newest);
+        assert_eq!(receipt.resolved_from.unwrap().version, newest);
+    }
+
+    #[test]
     fn slot_with_zero_valid_flags_is_predeclaration_and_flag_absent() {
         let a = "a".repeat(40);
         let listing = serde_json::json!([{"name":"caduceus", "version": &a, "created_at":"2026-01-01T00:00:00Z"}]).to_string().into_bytes();
         let (registry, server) = fake_registry(vec![
-            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus".into(), 200, listing),
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1".into(), 200, listing),
             (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{a}/release.flag"), 404, Vec::new()),
         ]);
         let temp = tempfile::tempdir().unwrap();
@@ -805,7 +848,7 @@ mod beam_tests {
         let a = "a".repeat(40);
         let listing = serde_json::json!([{"name":"caduceus", "version": &a, "created_at":"2026-01-01T00:00:00Z"}]).to_string().into_bytes();
         let (registry, server) = fake_registry(vec![
-            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus".into(), 200, listing),
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1".into(), 200, listing),
             (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{a}/release.flag"), 200, b"not-json".to_vec()),
         ]);
         let temp = tempfile::tempdir().unwrap();

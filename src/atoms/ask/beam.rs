@@ -322,28 +322,31 @@ pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> 
     ));
     std::fs::create_dir_all(&dir).map_err(|_| "beam-flag-unresolvable")?;
     let listing_path = dir.join("listing");
-    let status = fetch_flag(&api, &listing_path)?;
-    if !(200..300).contains(&status) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err("beam-flag-unresolvable".into());
-    }
-    let value: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&listing_path).map_err(|_| "beam-flag-unresolvable")?,
-    )
-    .map_err(|_| "beam-flag-unresolvable".to_string())?;
-    let raw_items = value.as_array().ok_or("beam-flag-unresolvable")?;
-    let mut versions = Vec::with_capacity(raw_items.len());
-    for item in raw_items {
-        let parsed: RegistryVersion =
-            serde_json::from_value(item.clone()).map_err(|_| "beam-flag-unresolvable")?;
-        if parsed.name != component.as_str()
-            || !hex_len(&parsed.version, 40)
-            || parsed.created_at.trim().is_empty()
-        {
+    let mut versions = Vec::new();
+    // Forgejo listing pagination is capped at five pages.
+    for page in 1..=5 {
+        let listing_url = format!("{api}&limit=50&page={page}");
+        let status = fetch_flag(&listing_url, &listing_path)?;
+        if !(200..300).contains(&status) {
             let _ = std::fs::remove_dir_all(&dir);
             return Err("beam-flag-unresolvable".into());
         }
-        versions.push(parsed);
+        let value: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&listing_path).map_err(|_| "beam-flag-unresolvable")?,
+        )
+        .map_err(|_| "beam-flag-unresolvable".to_string())?;
+        let raw_items = value.as_array().ok_or("beam-flag-unresolvable")?;
+        for item in raw_items {
+            let parsed: RegistryVersion =
+                serde_json::from_value(item.clone()).map_err(|_| "beam-flag-unresolvable")?;
+            if parsed.name != component.as_str() || !hex_len(&parsed.version, 40) {
+                continue;
+            }
+            versions.push(parsed);
+        }
+        if raw_items.len() < 50 {
+            break;
+        }
     }
     versions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     let mut selected = None;
