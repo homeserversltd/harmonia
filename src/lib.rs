@@ -353,6 +353,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("renew-self") => renew_self_command(&args[1..], &invocation),
         Some("update") => update_from_certificate(&args[1..], invocation),
         Some("demo") => demo_command(&args[1..], invocation),
+        Some("beam") => beam_command(&args[1..]),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
         Some("validate-ladder") => {
@@ -1015,6 +1016,50 @@ fn demo_command(args: &[String], _invocation: Invocation) -> Result<(), String> 
     demo_registry::run(name)
 }
 
+fn beam_command(args: &[String]) -> Result<(), String> {
+    let mut lock_path = None;
+    let mut door_url = crate::atoms::ask::beam::DEFAULT_DOOR_URL.to_string();
+    let mut index = 0;
+    while index < args.len() {
+        let name = args[index].as_str();
+        if name != "--lock" && name != "--door-url" {
+            return Err(format!("beam-unknown-argument-{name}"));
+        }
+        if index + 1 >= args.len() {
+            return Err(format!("{name} requires value"));
+        }
+        let value = args[index + 1].clone();
+        if name == "--lock" {
+            if lock_path.is_some() {
+                return Err("beam-duplicate---lock".into());
+            }
+            lock_path = Some(PathBuf::from(value));
+        } else {
+            if door_url != crate::atoms::ask::beam::DEFAULT_DOOR_URL {
+                return Err("beam-duplicate---door-url".into());
+            }
+            door_url = value;
+        }
+        index += 2;
+    }
+    let receipt = bands::compare::beam_receipt(lock_path.as_deref(), &door_url)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?
+    );
+    match receipt.first_missing_signal {
+        "beam-door-unreachable" | "beam-lock-absent" => Ok(()),
+        "beam-lock-malformed" | "beam-door-malformed" => {
+            Err(receipt.first_missing_signal.to_string())
+        }
+        _ if receipt.first_divergent_member.is_some() => Err(receipt
+            .first_divergent_member
+            .unwrap_or("beam-divergent")
+            .to_string()),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn usage() -> Result<(), String> {
     println!("harmonia {}", VERSION);
     println!("usage:");
@@ -1022,6 +1067,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
+    println!("  harmonia beam [--lock <path>] [--door-url <url>]");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id> owner");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");

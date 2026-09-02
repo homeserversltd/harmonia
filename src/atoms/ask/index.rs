@@ -18,6 +18,8 @@ pub(crate) mod change_mode;
 pub(crate) mod change_owner;
 #[path = "check_health.rs"]
 pub(crate) mod check_health;
+#[path = "beam.rs"]
+pub(crate) mod beam;
 #[path = "copy_file.rs"]
 pub(crate) mod copy_file;
 #[path = "install_package.rs"]

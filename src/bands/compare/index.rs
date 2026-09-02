@@ -166,6 +166,34 @@ pub(crate) fn execute_manifest_modules(
     first_missing_signal: &mut String,
     events: &mut File,
 ) -> Result<(), String> {
+    let beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
+    let beam_value = serde_json::to_value(&beam)
+        .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
+    crate::write_json(&receipt_dir.join("beam.json"), &beam_value)?;
+    if !matches!(
+        beam.first_missing_signal,
+        "none" | "beam-door-unreachable" | "beam-lock-absent"
+    ) {
+        *ok = false;
+        if *first_missing_signal == "none" {
+            *first_missing_signal = beam.first_missing_signal.to_string();
+        }
+        for module_id in &profile.modules {
+            halted.insert(module_id.clone());
+            let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
+                ok: false,
+                changed: false,
+                operation_count: 0,
+                first_missing_signal: Some(beam.first_missing_signal.to_string()),
+                placements: Vec::new(),
+            });
+            state.ok = false;
+            state
+                .first_missing_signal
+                .get_or_insert_with(|| beam.first_missing_signal.to_string());
+        }
+        return Ok(());
+    }
     for module_id in &profile.modules {
         if disabled_modules.contains(module_id) || halted.contains(module_id) {
             continue;
@@ -401,4 +429,226 @@ pub(crate) fn git_ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> Cm
 
 pub(crate) fn is_hex_sha(s: &str) -> bool {
     s.len() >= 7 && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct BeamLockProjection {
+    pub caduceus_sha: String,
+    pub env_sha: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct BeamDoorProjection {
+    pub caduceus_sha: String,
+    pub env_sha: String,
+    pub profile: String,
+    pub gui_face: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct BeamCompareReceipt {
+    pub schema: &'static str,
+    pub state: &'static str,
+    pub converged: bool,
+    pub lock: Option<BeamLockProjection>,
+    pub door: Option<BeamDoorProjection>,
+    pub first_divergent_member: Option<&'static str>,
+    pub first_missing_signal: &'static str,
+}
+
+pub(crate) fn compare_beam(
+    lock: Option<crate::atoms::ask::beam::BeamLock>,
+    door: Result<crate::atoms::ask::beam::BeamDoor, String>,
+) -> BeamCompareReceipt {
+    let Some(lock) = lock else {
+        return BeamCompareReceipt {
+            schema: "harmonia.beam-compare.v1",
+            state: "pre-declaration",
+            converged: false,
+            lock: None,
+            door: None,
+            first_divergent_member: None,
+            first_missing_signal: "beam-lock-absent",
+        };
+    };
+    let lock_projection = BeamLockProjection {
+        caduceus_sha: lock.caduceus_sha.clone(),
+        env_sha: lock.env_sha.clone(),
+    };
+    let door = match door {
+        Ok(door) => door,
+        Err(signal) => {
+            return BeamCompareReceipt {
+                schema: "harmonia.beam-compare.v1",
+                state: "divergent",
+                converged: false,
+                lock: Some(lock_projection),
+                door: None,
+                first_divergent_member: None,
+                first_missing_signal: if signal == "beam-door-unreachable" {
+                    "beam-door-unreachable"
+                } else {
+                    "beam-door-malformed"
+                },
+            };
+        }
+    };
+    let member = if lock.caduceus_sha != door.caduceus_sha {
+        Some("caduceus_sha")
+    } else if lock.env_sha != door.env_sha {
+        Some("env_sha")
+    } else {
+        None
+    };
+    let door_projection = BeamDoorProjection {
+        caduceus_sha: door.caduceus_sha,
+        env_sha: door.env_sha,
+        profile: door.profile,
+        gui_face: door.gui_face,
+    };
+    BeamCompareReceipt {
+        schema: "harmonia.beam-compare.v1",
+        state: if member.is_some() { "divergent" } else { "aligned" },
+        converged: member.is_none(),
+        lock: Some(lock_projection),
+        door: Some(door_projection),
+        first_divergent_member: member,
+        first_missing_signal: if member == Some("caduceus_sha") {
+            "beam-divergent-caduceus_sha"
+        } else if member == Some("env_sha") {
+            "beam-divergent-env_sha"
+        } else {
+            "none"
+        },
+    }
+}
+
+pub(crate) fn beam_receipt(
+    lock_path: Option<&Path>,
+    door_url: &str,
+) -> Result<BeamCompareReceipt, String> {
+    let lock = match lock_path {
+        Some(path) => match crate::atoms::ask::beam::read_lock_path(path) {
+            Ok(lock) => lock,
+            Err(_) => {
+                return Ok(BeamCompareReceipt {
+                    schema: "harmonia.beam-compare.v1",
+                    state: "divergent",
+                    converged: false,
+                    lock: None,
+                    door: None,
+                    first_divergent_member: None,
+                    first_missing_signal: "beam-lock-malformed",
+                });
+            }
+        },
+        None => match crate::atoms::ask::beam::read_embedded_lock() {
+            Ok(lock) => Some(lock),
+            Err(_) => {
+                return Ok(BeamCompareReceipt {
+                    schema: "harmonia.beam-compare.v1",
+                    state: "divergent",
+                    converged: false,
+                    lock: None,
+                    door: None,
+                    first_divergent_member: None,
+                    first_missing_signal: "beam-lock-malformed",
+                });
+            }
+        },
+    };
+    Ok(compare_beam(lock, crate::atoms::ask::beam::fetch_door(door_url)))
+}
+
+#[cfg(test)]
+mod beam_tests {
+    use super::*;
+
+    fn lock() -> crate::atoms::ask::beam::BeamLock {
+        crate::atoms::ask::beam::BeamLock {
+            schema: "harmonia.beam-lock.v1".into(),
+            caduceus_sha: "a".repeat(40),
+            env_sha: "b".repeat(64),
+            minted_from: crate::atoms::ask::beam::MintedFrom {
+                harmonia_sha: "c".repeat(40),
+                caduceus_release_tag: "d".repeat(40),
+            },
+        }
+    }
+
+    fn door() -> crate::atoms::ask::beam::BeamDoor {
+        crate::atoms::ask::beam::BeamDoor {
+            schema: "caduceus.beam.v1".into(),
+            caduceus_sha: "a".repeat(40),
+            env_sha: "b".repeat(64),
+            profile: "p".into(),
+            gui_face: "g".into(),
+            syzygy_sha: None,
+        }
+    }
+
+    #[test]
+    fn aligned_state() {
+        let receipt = compare_beam(Some(lock()), Ok(door()));
+        assert_eq!(receipt.state, "aligned");
+        assert_eq!(receipt.first_missing_signal, "none");
+    }
+
+    #[test]
+    fn divergent_state() {
+        let mut beam_door = door();
+        beam_door.env_sha = "e".repeat(64);
+        let receipt = compare_beam(Some(lock()), Ok(beam_door));
+        assert_eq!(receipt.first_divergent_member, Some("env_sha"));
+        assert_eq!(receipt.first_missing_signal, "beam-divergent-env_sha");
+    }
+
+    #[test]
+    fn unreachable_door_is_divergent_without_member() {
+        let receipt = compare_beam(Some(lock()), Err("beam-door-unreachable".into()));
+        assert_eq!(receipt.state, "divergent");
+        assert_eq!(receipt.first_divergent_member, None);
+        assert_eq!(receipt.first_missing_signal, "beam-door-unreachable");
+    }
+
+    #[test]
+    fn pre_declaration_state() {
+        let receipt = compare_beam(None, Err("beam-door-unreachable".into()));
+        assert_eq!(receipt.state, "pre-declaration");
+        assert_eq!(receipt.first_missing_signal, "beam-lock-absent");
+    }
+
+    #[test]
+    fn projections_have_exact_serialized_keys() {
+        let lock_keys = serde_json::to_value(BeamLockProjection {
+            caduceus_sha: "a".into(),
+            env_sha: "b".into(),
+        })
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+        assert_eq!(lock_keys, vec!["caduceus_sha", "env_sha"]);
+
+        let door_keys = serde_json::to_value(BeamDoorProjection {
+            caduceus_sha: "a".into(),
+            env_sha: "b".into(),
+            profile: "p".into(),
+            gui_face: "g".into(),
+        })
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+        assert_eq!(
+            door_keys,
+            vec!["caduceus_sha", "env_sha", "gui_face", "profile"]
+        );
+    }
 }
