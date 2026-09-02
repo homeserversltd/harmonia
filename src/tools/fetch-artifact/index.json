@@ -1,1 +1,1 @@
-{"schema": "harmonia.recursive-rust-band.v1", "name": "fetch-artifact", "children": ["observe", "act", "report-home"]}
+{"schema":"harmonia.recursive-rust-band.v1","name":"fetch-artifact","children":["observe","act","report-home"],"args":["component","registry_base","release_repo","release_tag","api_root","asset_name","sidecar_name","identity"]}

@@ -18,86 +18,29 @@ pub(crate) struct ReleaseRequest {
     pub cache_dir: PathBuf,
 }
 
-pub(crate) fn fetch_release_asset(
-    request: &ReleaseRequest,
-    tag: &str,
-    asset_name: &str,
-    apply: bool,
-) -> Result<crate::CmdResult, String> {
-    if !matches!(request.kind.as_str(), "forgejo-release" | "github-release")
-        || !safe_release_segment(tag)
-        || !safe_release_segment(&request.owner)
-        || !safe_release_segment(&request.repo)
-        || !safe_asset_name(asset_name)
-    {
-        return Ok(miss("release-declaration-incomplete"));
-    }
-    if !apply {
-        return Ok(crate::CmdResult {
-            ok: true,
-            code: 0,
-            stdout: format!("release-asset-planned tag={tag} asset={asset_name}"),
-            stderr: String::new(),
-        });
-    }
-    if request.kind == "forgejo-release" && !request.credential_scope_found {
-        return Ok(miss("release-credential-scope-missing"));
-    }
-    let base = request.base_url.trim_end_matches('/');
-    let api = if request.kind == "forgejo-release" && !base.ends_with("/api/v1") {
-        format!("{base}/api/v1")
-    } else {
-        base.to_string()
-    };
-    let metadata_url = release_metadata_url(&api, &request.owner, &request.repo, tag);
-    fs::create_dir_all(&request.cache_dir)
-        .map_err(|e| format!("release-cache-create-failed: {e}"))?;
-    let metadata = run_curl(
-        &curl_args(&metadata_url, "/dev/stdout"),
-        request.credential_token_path.as_deref(),
-    )?;
-    if !metadata.ok {
-        return Ok(metadata);
-    }
-    let asset_url = serde_json::from_str::<serde_json::Value>(&metadata.stdout)
-        .ok()
-        .and_then(|v| {
-            v.get("assets")?
-                .as_array()?
-                .iter()
-                .find(|a| a.get("name").and_then(serde_json::Value::as_str) == Some(asset_name))
-                .and_then(|a| a.get("browser_download_url").or_else(|| a.get("url")))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        });
-    let Some(asset_url) = asset_url else {
-        return Ok(miss(format!(
-            "release-asset-missing tag={tag} asset={asset_name}"
-        )));
-    };
-    let destination = request.cache_dir.join(asset_name);
-    let temp = request
-        .cache_dir
-        .join(format!(".{asset_name}.download-{}", std::process::id()));
-    let download = match run_curl(
-        &curl_args(&asset_url, &temp.to_string_lossy()),
-        request.credential_token_path.as_deref(),
-    ) {
-        Ok(result) => result,
-        Err(error) => {
-            let _ = fs::remove_file(&temp);
-            return Ok(miss(error));
-        }
-    };
-    if !download.ok {
-        let _ = fs::remove_file(&temp);
-        return Ok(download);
-    }
-    if let Err(e) = fs::rename(&temp, &destination) {
-        let _ = fs::remove_file(&temp);
-        return Ok(miss(format!("release-asset-promote-failed: {e}")));
-    }
-    Ok(download)
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseAssets { pub artifact: Vec<u8>, pub sidecar: Vec<u8>, pub metadata_url: String, pub target_commitish: String }
+struct ReleaseMetadata { url: String, target_commitish: String, assets: serde_json::Value }
+fn release_api(r: &ReleaseRequest) -> String { let b=r.base_url.trim_end_matches('/'); if r.kind=="forgejo-release" && !b.ends_with("/api/v1") { format!("{b}/api/v1") } else { b.to_string() } }
+fn lookup_release_metadata(r:&ReleaseRequest, tag:&str)->Result<Option<ReleaseMetadata>,String>{
+ let url=release_metadata_url(&release_api(r),&r.owner,&r.repo,tag); fs::create_dir_all(&r.cache_dir).map_err(|e|format!("release-cache-create-failed: {e}"))?;
+ let path=r.cache_dir.join(format!(".metadata-{}",std::process::id())); let mut args=curl_args(&url,&path.to_string_lossy()); args.extend(["-w".into(),"%{http_code}".into()]); let result=run_curl(&args,r.credential_token_path.as_deref())?;
+ if result.stdout.trim()=="404" {let _=fs::remove_file(&path);return Ok(None)} if !result.ok {let _=fs::remove_file(&path);return Err(format!("release-metadata-fetch-failed: {}",result.stderr))}
+ let text=fs::read_to_string(&path).map_err(|e|format!("release-metadata-read-failed: {e}"))?; let _=fs::remove_file(&path); let value:serde_json::Value=serde_json::from_str(&text).map_err(|e|format!("release-metadata-malformed: {e}"))?;
+ let target_commitish=value.get("target_commitish").and_then(serde_json::Value::as_str).unwrap_or("").to_owned(); let assets=value.get("assets").cloned().ok_or_else(||"release-assets-missing".to_string())?; Ok(Some(ReleaseMetadata{url,target_commitish,assets})) }
+fn release_asset_url(m:&ReleaseMetadata,tag:&str,name:&str)->Result<String,String>{m.assets.as_array().and_then(|a|a.iter().find(|x|x.get("name").and_then(serde_json::Value::as_str)==Some(name))).and_then(|x|x.get("browser_download_url").or_else(||x.get("url"))).and_then(serde_json::Value::as_str).map(str::to_owned).ok_or_else(||format!("release-asset-missing tag={tag} asset={name}"))}
+fn download_release_asset(r:&ReleaseRequest,url:&str,name:&str)->Result<Vec<u8>,String>{let p=r.cache_dir.join(format!(".{name}-{}",std::process::id()));let x=run_curl(&curl_args(url,&p.to_string_lossy()),r.credential_token_path.as_deref())?;if !x.ok{let _=fs::remove_file(&p);return Err(format!("release-asset-fetch-failed: {}",x.stderr))}let b=fs::read(&p).map_err(|e|format!("release-asset-read-failed: {e}"))?;let _=fs::remove_file(&p);Ok(b)}
+pub(crate) fn fetch_release_assets(r:&ReleaseRequest,tag:&str,asset_name:&str,sidecar_name:&str)->Result<Option<ReleaseAssets>,String>{
+ if r.kind!="forgejo-release"||!safe_release_segment(tag)||!safe_release_segment(&r.owner)||!safe_release_segment(&r.repo)||!safe_asset_name(asset_name)||!safe_asset_name(sidecar_name){return Err("release-declaration-incomplete".into())} let Some(m)=lookup_release_metadata(r,tag)? else{return Ok(None)};let au=release_asset_url(&m,tag,asset_name)?;let su=release_asset_url(&m,tag,sidecar_name)?;Ok(Some(ReleaseAssets{artifact:download_release_asset(r,&au,asset_name)?,sidecar:download_release_asset(r,&su,sidecar_name)?,metadata_url:m.url,target_commitish:m.target_commitish})) }
+
+pub(crate) fn fetch_release_asset(request:&ReleaseRequest,tag:&str,asset_name:&str,apply:bool)->Result<crate::CmdResult,String>{
+ if !matches!(request.kind.as_str(),"forgejo-release"|"github-release")||!safe_release_segment(tag)||!safe_release_segment(&request.owner)||!safe_release_segment(&request.repo)||!safe_asset_name(asset_name){return Ok(miss("release-declaration-incomplete"))}
+ if !apply{return Ok(crate::CmdResult{ok:true,code:0,stdout:format!("release-asset-planned tag={tag} asset={asset_name}"),stderr:String::new()})}
+ if request.kind=="forgejo-release"&&!request.credential_scope_found{return Ok(miss("release-credential-scope-missing"))}
+ let Some(metadata)=(match lookup_release_metadata(request,tag){Ok(v)=>v,Err(e)=>return Ok(miss(e))}) else{return Ok(miss(format!("release-absent tag={tag}")))};
+ let url=match release_asset_url(&metadata,tag,asset_name){Ok(v)=>v,Err(e)=>return Ok(miss(e))}; let destination=request.cache_dir.join(asset_name); let temp=request.cache_dir.join(format!(".{asset_name}.download-{}",std::process::id()));
+ let bytes=match download_release_asset(request,&url,asset_name){Ok(v)=>v,Err(e)=>return Ok(miss(e))}; if let Err(e)=fs::write(&temp,bytes).and_then(|_|fs::rename(&temp,&destination)){let _=fs::remove_file(&temp);return Ok(miss(format!("release-asset-promote-failed: {e}")))}
+ Ok(crate::CmdResult{ok:true,code:0,stdout:String::new(),stderr:String::new()})
 }
 fn release_metadata_url(api: &str, owner: &str, repo: &str, tag: &str) -> String {
     format!("{api}/repos/{owner}/{repo}/releases/tags/{tag}")
