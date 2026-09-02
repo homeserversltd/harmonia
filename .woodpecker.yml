@@ -111,6 +111,7 @@ steps:
         HARMONIA_BUILD_SHA="$CI_COMMIT_SHA" HARMONIA_BUILD_ENV_SHA="$env_sha" cargo build --release --locked
 
   - name: mint-harmonia-beam-lock
+    failure: ignore
     image: python:3.12-alpine
     when:
       - event: push

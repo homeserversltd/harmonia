@@ -53,7 +53,14 @@ def main():
     if not token: fail("FORGEJO_TOKEN is required")
     sha = os.environ.get("CI_COMMIT_SHA", "")
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha): fail("CI_COMMIT_SHA must be exactly 40 lowercase hexadecimal characters")
-    env_sha = os.environ.get("HARMONIA_BUILD_ENV_SHA", "")
+    if "HARMONIA_BUILD_ENV_SHA" in os.environ:
+        env_sha = os.environ["HARMONIA_BUILD_ENV_SHA"]
+    else:
+        try:
+            with open(".release/env-sha", "r", encoding="utf-8") as env_sha_file:
+                env_sha = env_sha_file.read().strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            fail(f"cannot read .release/env-sha: {exc}")
     if len(env_sha) != 64 or any(c not in "0123456789abcdef" for c in env_sha): fail("build env_sha must be exactly 64 lowercase hexadecimal characters")
     pipeline_url = os.environ.get("CI_PIPELINE_URL", "")
     if not pipeline_url: fail("CI_PIPELINE_URL is required")

@@ -630,9 +630,9 @@ mod beam_tests {
 
     #[test]
     fn exact_caduceus_beam_json_is_aligned() {
-        let raw = r#"{"schema":"caduceus.beam.v1","ok":true,"service":"caduceus","profile":"homeserver","caduceus_sha":"1ddb41af4f123db22ce8cc6037d24a79d582f84c","env_sha":"e8dd9084adebbde87f73f2d57c9551ab31ce9e1ee6b3492a7a23f190d64cfc3c","gui_face":"Coronatio","syzygy_sha":null}"#;
+        let raw = r#"{"schema":"caduceus.beam.v1","ok":true,"service":"caduceus","profile":"homeserver","caduceus_sha":"1ddb41af4f123db22ce8cc6037d24a79d582f84c","env_sha":"237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d","gui_face":"Coronatio","syzygy_sha":null}"#;
         let door = crate::atoms::ask::beam::parse_door(raw).unwrap();
-        let lock = crate::atoms::ask::beam::BeamLock { schema: "harmonia.beam-lock.v1".into(), caduceus_sha: "1ddb41af4f123db22ce8cc6037d24a79d582f84c".into(), env_sha: "e8dd9084adebbde87f73f2d57c9551ab31ce9e1ee6b3492a7a23f190d64cfc3c".into(), minted_from: crate::atoms::ask::beam::MintedFrom { harmonia_sha: "c".repeat(40), caduceus_release_tag: "d".repeat(40) } };
+        let lock = crate::atoms::ask::beam::BeamLock { schema: "harmonia.beam-lock.v1".into(), caduceus_sha: "1ddb41af4f123db22ce8cc6037d24a79d582f84c".into(), env_sha: "237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d".into(), minted_from: crate::atoms::ask::beam::MintedFrom { harmonia_sha: "c".repeat(40), caduceus_release_tag: "d".repeat(40) } };
         let receipt = compare_beam(Some(lock), Ok(door));
         assert_eq!(receipt.state, "aligned");
         assert!(receipt.converged);

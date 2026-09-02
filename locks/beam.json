@@ -1,9 +1,9 @@
 {
   "schema": "harmonia.beam-lock.v1",
   "caduceus_sha": "1ddb41af4f123db22ce8cc6037d24a79d582f84c",
-  "env_sha": "e8dd9084adebbde87f73f2d57c9551ab31ce9e1ee6b3492a7a23f190d64cfc3c",
+  "env_sha": "237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d",
   "minted_from": {
-    "harmonia_sha": "34aa390d3f0d27bd6ec7154fd724fdfc6c8b3115",
+    "harmonia_sha": "0c005e3361bd5ba6d852d8a2ada9e9cbce9738b6",
     "caduceus_release_tag": "1ddb41af4f123db22ce8cc6037d24a79d582f84c"
   }
 }
