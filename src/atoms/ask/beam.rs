@@ -23,10 +23,12 @@ pub(crate) struct MintedFrom {
 #[serde(deny_unknown_fields)]
 pub(crate) struct BeamDoor {
     pub schema: String,
+    pub ok: bool,
+    pub service: String,
     pub caduceus_sha: String,
     pub env_sha: String,
     pub profile: String,
-    pub gui_face: String,
+    pub gui_face: Option<String>,
     pub syzygy_sha: Option<String>,
 }
 
@@ -77,10 +79,11 @@ pub(crate) fn validate_lock(lock: BeamLock) -> Result<BeamLock, String> {
 }
 pub(crate) fn validate_door(door: BeamDoor) -> Result<BeamDoor, String> {
     if door.schema != DOOR_SCHEMA
+        || !door.ok
+        || door.service != "caduceus"
         || !hex_len(&door.caduceus_sha, 40)
         || !hex_len(&door.env_sha, 64)
         || door.profile.is_empty()
-        || door.gui_face.is_empty()
         || door.syzygy_sha.as_deref().is_some_and(|s| !hex_len(s, 40))
     {
         Err("beam-door-malformed".into())
@@ -109,10 +112,12 @@ mod tests {
     fn door() -> BeamDoor {
         BeamDoor {
             schema: DOOR_SCHEMA.into(),
+            ok: true,
+            service: "caduceus".into(),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
             profile: "p".into(),
-            gui_face: "g".into(),
+            gui_face: Some("g".into()),
             syzygy_sha: None,
         }
     }
@@ -138,6 +143,12 @@ mod tests {
         d.schema = "foreign.v1".into();
         assert!(validate_door(d).is_err());
     }
+    #[test]
+    fn false_ok_door() { let mut d = door(); d.ok = false; assert!(validate_door(d).is_err()); }
+    #[test]
+    fn foreign_service_door() { let mut d = door(); d.service = "foreign".into(); assert!(validate_door(d).is_err()); }
+    #[test]
+    fn nullable_gui_face() { let mut d = door(); d.gui_face = None; assert!(validate_door(d).is_ok()); }
     #[test]
     fn malformed_door() {
         assert!(parse_door("{}").is_err());

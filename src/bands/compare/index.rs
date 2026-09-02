@@ -170,10 +170,7 @@ pub(crate) fn execute_manifest_modules(
     let beam_value = serde_json::to_value(&beam)
         .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
     crate::write_json(&receipt_dir.join("beam.json"), &beam_value)?;
-    if !matches!(
-        beam.first_missing_signal,
-        "none" | "beam-door-unreachable" | "beam-lock-absent"
-    ) {
+    if matches!(beam.first_missing_signal, "beam-lock-malformed" | "beam-door-malformed") {
         *ok = false;
         if *first_missing_signal == "none" {
             *first_missing_signal = beam.first_missing_signal.to_string();
@@ -193,6 +190,15 @@ pub(crate) fn execute_manifest_modules(
                 .get_or_insert_with(|| beam.first_missing_signal.to_string());
         }
         return Ok(());
+    }
+    if !matches!(
+        beam.first_missing_signal,
+        "none" | "beam-door-unreachable" | "beam-lock-absent"
+    ) {
+        *ok = false;
+        if *first_missing_signal == "none" {
+            *first_missing_signal = beam.first_missing_signal.to_string();
+        }
     }
     for module_id in &profile.modules {
         if disabled_modules.contains(module_id) || halted.contains(module_id) {
@@ -444,7 +450,7 @@ pub(crate) struct BeamDoorProjection {
     pub caduceus_sha: String,
     pub env_sha: String,
     pub profile: String,
-    pub gui_face: String,
+    pub gui_face: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -581,10 +587,12 @@ mod beam_tests {
     fn door() -> crate::atoms::ask::beam::BeamDoor {
         crate::atoms::ask::beam::BeamDoor {
             schema: "caduceus.beam.v1".into(),
+            ok: true,
+            service: "caduceus".into(),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
             profile: "p".into(),
-            gui_face: "g".into(),
+            gui_face: Some("g".into()),
             syzygy_sha: None,
         }
     }
@@ -621,6 +629,17 @@ mod beam_tests {
     }
 
     #[test]
+    fn exact_caduceus_beam_json_is_aligned() {
+        let raw = r#"{"schema":"caduceus.beam.v1","ok":true,"service":"caduceus","profile":"homeserver","caduceus_sha":"1ddb41af4f123db22ce8cc6037d24a79d582f84c","env_sha":"e8dd9084adebbde87f73f2d57c9551ab31ce9e1ee6b3492a7a23f190d64cfc3c","gui_face":"Coronatio","syzygy_sha":null}"#;
+        let door = crate::atoms::ask::beam::parse_door(raw).unwrap();
+        let lock = crate::atoms::ask::beam::BeamLock { schema: "harmonia.beam-lock.v1".into(), caduceus_sha: "1ddb41af4f123db22ce8cc6037d24a79d582f84c".into(), env_sha: "e8dd9084adebbde87f73f2d57c9551ab31ce9e1ee6b3492a7a23f190d64cfc3c".into(), minted_from: crate::atoms::ask::beam::MintedFrom { harmonia_sha: "c".repeat(40), caduceus_release_tag: "d".repeat(40) } };
+        let receipt = compare_beam(Some(lock), Ok(door));
+        assert_eq!(receipt.state, "aligned");
+        assert!(receipt.converged);
+        assert_eq!(receipt.first_missing_signal, "none");
+    }
+
+    #[test]
     fn projections_have_exact_serialized_keys() {
         let lock_keys = serde_json::to_value(BeamLockProjection {
             caduceus_sha: "a".into(),
@@ -638,7 +657,7 @@ mod beam_tests {
             caduceus_sha: "a".into(),
             env_sha: "b".into(),
             profile: "p".into(),
-            gui_face: "g".into(),
+            gui_face: Some("g".into()),
         })
         .unwrap()
         .as_object()
