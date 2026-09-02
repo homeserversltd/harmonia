@@ -31,10 +31,10 @@ fn validate_build_environment(args: &BTreeMap<String, Value>) -> Result<(), Stri
 /// No execution state or service-runtime actuator is constructed here.
 pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
     validate_build_environment(args)?;
-    if args.get("component").and_then(Value::as_str) == Some("caduceus")
-        && args.get("registry_base").and_then(Value::as_str).is_none_or(|v| v.trim().is_empty())
-    {
-        return Err("service-runtime-registry-base-missing".into());
+    let registry = args.get("registry_base").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty());
+    let release = args.get("release_repo").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty());
+    if !registry && !release {
+        return Err("service-runtime-source-missing".into());
     }
     for name in [
         "component",
@@ -71,6 +71,7 @@ mod tests {
     fn base_args() -> BTreeMap<String, serde_json::Value> {
         [
             ("component", json!("fixture")),
+            ("registry_base", json!("https://invalid.test")),
             ("source_dir", json!("/src")),
             ("install_bin", json!("/bin/fixture")),
             ("service", json!("fixture.service")),

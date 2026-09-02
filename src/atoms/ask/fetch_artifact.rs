@@ -1,5 +1,6 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
 use serde::Deserialize;
+use crate::tools::git_artifact::{fetch_release_assets, ReleaseRequest};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -8,7 +9,33 @@ use std::process::{Command, Stdio};
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: &str = "67108864";
-const CADUCEUS_LIVENESS_MARKER: &[u8] = b"caduceus.liveness.v1";
+
+fn hex_boundary(bytes: &[u8], start: usize, sha: &[u8]) -> bool {
+    bytes.get(start..start + sha.len()) == Some(sha)
+        && !bytes.get(start.wrapping_sub(1)).is_some_and(|b| b.is_ascii_hexdigit())
+        && !bytes.get(start + sha.len()).is_some_and(|b| b.is_ascii_hexdigit())
+}
+
+pub(crate) fn identity_matches_bytes(bytes: &[u8], source_sha: &str, identity: &str, component: &str) -> bool {
+    let marker = if identity == "embedded-sha" { None } else { Some(format!("{component}.liveness.v1").into_bytes()) };
+    if let Some(marker) = marker {
+        return bytes.windows(marker.len()).enumerate().any(|(i, w)| {
+            if w != marker {
+                return false;
+            }
+            let start = i + marker.len();
+            bytes.get(start..start + source_sha.len()) == Some(source_sha.as_bytes())
+                && !bytes
+                    .get(start + source_sha.len())
+                    .is_some_and(|b| b.is_ascii_hexdigit())
+        });
+    }
+    bytes.windows(source_sha.len()).enumerate().any(|(i, _)| hex_boundary(bytes, i, source_sha.as_bytes()))
+}
+
+pub(crate) fn identity_matches(destination: &Path, source_sha: &str, identity: &str, component: &str) -> bool {
+    fs::read(destination).is_ok_and(|bytes| identity_matches_bytes(&bytes, source_sha, identity, component))
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +52,7 @@ pub(crate) struct Manifest {
 pub(crate) struct Download {
     pub manifest: Manifest,
     pub bytes: Vec<u8>,
+    pub identity: String,
 }
 
 fn is_hex(value: &str, length: usize) -> bool {
@@ -228,42 +256,109 @@ pub(crate) fn download(
         if bytes.len() > MAX_BODY_BYTES.parse::<usize>().expect("constant is numeric") {
             return Err("fetch-artifact-download-too-large".into());
         }
-        Ok(Download { manifest, bytes })
+        Ok(Download { manifest, bytes, identity: "liveness-marker".into() })
     })();
     let _ = fs::remove_dir_all(&directory);
     result
 }
-pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
-    let Ok(bytes) = fs::read(destination) else {
-        return false;
-    };
-    let mut extracted = None;
-    for (offset, window) in bytes.windows(CADUCEUS_LIVENESS_MARKER.len()).enumerate() {
-        if window != CADUCEUS_LIVENESS_MARKER {
-            continue;
-        }
-        let start = offset + CADUCEUS_LIVENESS_MARKER.len();
-        let Some(candidate) = bytes.get(start..start + 40) else {
-            return false;
-        };
-        if !candidate.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-            || bytes
-                .get(start + 40)
-                .is_some_and(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-        {
-            return false;
-        }
-        if extracted.is_some_and(|previous: &[u8]| previous != candidate) {
-            return false;
-        }
-        extracted = Some(candidate);
-    }
-    extracted == Some(source_sha.as_bytes())
+pub(crate) fn download_release(component:&str,source_dir:&Path,release_repo:&str,tag:Option<&str>,api_root:&str,asset_name:Option<&str>,sidecar_name:Option<&str>)->Result<Option<Download>,String>{
+ let (owner,repo)=release_repo.split_once('/').ok_or_else(||"fetch-artifact-release-repo-invalid".to_string())?; if owner.is_empty()||repo.is_empty()||repo.contains('/') {return Err("fetch-artifact-release-repo-invalid".into())}
+ let tag=match tag {Some(v) if !v.trim().is_empty()=>v.to_owned(),_=>release_version(source_dir)?}; let arch=std::env::consts::ARCH;
+ let asset=asset_name.map(str::to_owned).unwrap_or_else(||format!("{component}-{tag}-x86_64")); let sidecar=sidecar_name.map(str::to_owned).unwrap_or_else(||format!("{asset}.sha256"));
+ let request=ReleaseRequest{kind:"forgejo-release".into(),base_url:api_root.into(),owner:owner.into(),repo:repo.into(),credential_token_path:None,credential_scope_found:false,cache_dir:std::env::temp_dir().join(format!("harmonia-release-{}",std::process::id()))};
+ let Some(release)=fetch_release_assets(&request,&tag,&asset,&sidecar)? else{return Ok(None)};
+ if !validate_source_sha(&release.target_commitish){return Err("fetch-artifact-release-target-commitish-invalid".into())}
+ let digest=crate::atoms::file_sha256(&release.artifact); let sidecar_text=String::from_utf8(release.sidecar).map_err(|_|"fetch-artifact-release-sidecar-malformed".to_string())?; let expected=format!("{digest}  {asset}");
+ if !is_hex(&digest,64)||sidecar_text.trim_end_matches(['\r','\n'])!=expected{return Err("fetch-artifact-release-sidecar-mismatch".into())}
+ let manifest=Manifest{schema:MANIFEST_SCHEMA.into(),component:component.into(),source_sha:release.target_commitish,target:arch.into(),sha256:digest,built_at:tag,pipeline_url:release.metadata_url};
+ Ok(Some(Download{manifest,bytes:release.artifact,identity:"embedded-sha".into()}))
 }
 
+pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
+    identity_matches(destination, source_sha, "liveness-marker", "caduceus")
+}
+
+pub(crate) fn release_version(source_dir: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(source_dir.join("Cargo.toml"))
+        .map_err(|e| format!("fetch-artifact-release-source-read-failed: {e}"))?;
+    let mut package = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') { package = trimmed == "[package]"; continue; }
+        if package {
+            let Some((key, value)) = trimmed.split_once('=') else { continue };
+            if key.trim() != "version" {
+                continue;
+            }
+            let Some(value) = value.trim().strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+                continue;
+            };
+            if !value.is_empty() {
+                return Ok(value.to_owned());
+            }
+        }
+    }
+    Err("fetch-artifact-release-version-missing".into())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_release_fixture_http_server_stages_binary_and_verifies_sidecar() {
+        let source = std::env::temp_dir().join(format!("harmonia-release-source-{}", std::process::id()));
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("Cargo.toml"), "[package]\nname=\"fixture\"\nversion=\"1.2.3\"\n").unwrap();
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        assert_eq!(release_version(&source).unwrap(), "1.2.3");
+        let artifact = b"release-artifact-0123456789abcdef0123456789abcdef01234567";
+        let digest = crate::atoms::file_sha256(artifact);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let release_body = serde_json::json!({
+            "target_commitish": "0123456789abcdef0123456789abcdef01234567",
+            "assets": [
+                {"name": "fixture-1.2.3-x86_64", "browser_download_url": format!("http://{address}/artifact")},
+                {"name": "fixture-1.2.3-x86_64.sha256", "browser_download_url": format!("http://{address}/sidecar")},
+            ],
+        }).to_string().into_bytes();
+        let server = thread::spawn(move || {
+            for (path, body) in [
+                ("/api/v1/repos/OWNER/REPO/releases/tags/1.2.3", release_body),
+                ("/artifact", artifact.to_vec()),
+                ("/sidecar", format!("{digest}  fixture-1.2.3-x86_64\n").into_bytes()),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let destination = source.join("target/harmonia-release/fixture");
+        let installed = source.join("installed");
+        let receipt_dir = source.join("receipts");
+        let args = [
+            ("component", serde_json::json!("fixture")),
+            ("release_repo", serde_json::json!("OWNER/REPO")),
+            ("api_root", serde_json::json!(format!("http://{address}/api/v1"))),
+            ("source_build_sha", serde_json::json!("0123456789abcdef0123456789abcdef01234567")),
+            ("source_dir", serde_json::json!(source)),
+            ("destination", serde_json::json!(destination)),
+            ("installed_binary", serde_json::json!(installed)),
+        ].into_iter().map(|(key, value)| (key.into(), value)).collect();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation)).unwrap();
+        server.join().unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(fs::read(destination).unwrap(), artifact);
+        let _ = fs::remove_dir_all(source);
+    }
+
     #[test]
     fn authenticated_curl_captures_status_and_uses_forgejo_token_header() {
         use std::io::{Read, Write};

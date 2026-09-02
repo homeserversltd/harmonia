@@ -79,10 +79,12 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                 .cloned()
                 .unwrap_or_else(|| Value::String(String::new())),
         );
-        let caduceus = args.get("component").and_then(Value::as_str) == Some("caduceus");
+        let native_release = args.get("release_repo").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty());
+        let registry_fetch = args.get("registry_base").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty());
+        let release_fetch = registry_fetch || native_release;
         let stages = [
             ("pull-repo", "pull-repo", "acquire"),
-            ("build", if caduceus { "fetch-artifact" } else { "build-crate" }, if caduceus { "fetch" } else { "build" }),
+            ("build", if release_fetch { "fetch-artifact" } else { "build-crate" }, if release_fetch { "fetch" } else { "build" }),
             ("binary-install", "place-file", "binary-promotion"),
             ("managed-files", "files", "managed-files"),
             ("service-daemon-reload", "systemd", "daemon-reload"),
@@ -122,28 +124,27 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                     "pull-repo" => pull.clone(),
                     "build" if tool == "fetch-artifact" => {
                         let component = args.get("component").cloned().unwrap_or(Value::String(String::new()));
-                        let registry_base = args.get("registry_base").cloned().unwrap_or(Value::String(String::new()));
-                        let artifact_name = Value::String("caduceus".into());
                         let source_dir = args.get("source_dir").and_then(Value::as_str).unwrap_or("");
-                        let destination = Value::String(
-                            Path::new(source_dir)
-                                .join("target/harmonia-registry/caduceus")
-                                .to_string_lossy()
-                                .into_owned(),
-                        );
-                        let installed_binary = args.get("install_bin").cloned().unwrap_or(Value::String(String::new()));
-                        [
-                            ("component", component),
-                            ("registry_base", registry_base),
-                            ("source_build_sha", serde_json::json!({"from":"pull-repo.resolved_commit"})),
-                            (
-                                "source_policy",
-                                serde_json::json!({"from":"pull-repo.source_policy","default":"artifact"}),
-                            ),
-                            ("destination", destination),
-                            ("installed_binary", installed_binary),
-                            ("artifact_name", artifact_name),
-                        ].into_iter().map(|(key, value)| (key.into(), value)).collect()
+                        let binary_name = args.get("binary_name").cloned().unwrap_or_else(|| Value::String("caduceus".into()));
+                        let destination_root = if native_release { "target/harmonia-release" } else { "target/harmonia-registry" };
+                        let destination = Value::String(Path::new(source_dir).join(destination_root).join(binary_name.as_str().unwrap_or("caduceus")).to_string_lossy().into_owned());
+                        let mut child = BTreeMap::from([
+                            ("component".into(), component),
+                            ("registry_base".into(), args.get("registry_base").cloned().unwrap_or(Value::String(String::new()))),
+                            ("release_repo".into(), args.get("release_repo").cloned().unwrap_or(Value::String(String::new()))),
+                            ("release_tag".into(), args.get("release_tag").cloned().unwrap_or(Value::Null)),
+                            ("api_root".into(), args.get("api_root").cloned().unwrap_or(Value::String("https://git.home.arpa/api/v1".into()))),
+                            ("asset_name".into(), args.get("asset_name").cloned().unwrap_or(Value::Null)),
+                            ("sidecar_name".into(), args.get("sidecar_name").cloned().unwrap_or(Value::Null)),
+                            ("source_build_sha".into(), serde_json::json!({"from":"pull-repo.resolved_commit"})),
+                            ("source_dir".into(), serde_json::json!({"from":"pull-repo.path"})),
+                            ("identity".into(), args.get("identity").cloned().unwrap_or_else(|| Value::String(if native_release { "embedded-sha" } else { "liveness-marker" }.into()))),
+                            ("destination".into(), destination),
+                            ("installed_binary".into(), args.get("install_bin").cloned().unwrap_or(Value::String(String::new()))),
+                            ("artifact_name".into(), binary_name),
+                        ]);
+                        child.insert("source_policy".into(), serde_json::json!({"from":"pull-repo.source_policy","default":"artifact"}));
+                        child
                     }
                     "build" => {
                         let mut c = args.clone();
@@ -815,6 +816,19 @@ mod tests {
 
         assert_eq!(request.retries, 0);
     }
+    #[test]
+    fn coronatio_lowering_derives_native_release_artifact_and_destination() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("profiles/homeserver/modules/coronatio/manifest.json");
+        let manifest = load_ladder_manifest(&path).unwrap();
+        let mut manifest = manifest;
+        super::lower_service_runtime_steps(&mut manifest);
+        let routine = manifest.ladder.iter().find(|s| s.step_id == "coronatio-service-runtime").unwrap();
+        let build = routine.steps.iter().find(|s| s.name == "build").unwrap();
+        assert_eq!(build.tool, "fetch-artifact");
+        assert_eq!(build.args.get("artifact_name").and_then(Value::as_str), Some("coronatio"));
+        assert_eq!(build.args.get("destination").and_then(Value::as_str), Some("/opt/coronatio/source/target/harmonia-release/coronatio"));
+    }
+
     #[test]
     fn caduceus_real_manifest_lowers_fetch_artifact_build_child() {
         let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))

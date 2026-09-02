@@ -72,11 +72,9 @@ fn verify_download(download: &Download) -> Result<(), String> {
     if crate::atoms::file_sha256(&download.bytes) != download.manifest.sha256 {
         return Err("fetch-artifact-sha256-mismatch".into());
     }
-    if !download
-        .bytes
-        .windows(download.manifest.source_sha.len())
-        .any(|w| w == download.manifest.source_sha.as_bytes())
-    {
+    if !crate::atoms::ask::fetch_artifact::identity_matches_bytes(
+        &download.bytes, &download.manifest.source_sha, &download.identity, &download.manifest.component
+    ) {
         return Err("fetch-artifact-source-identity-missing".into());
     }
     Ok(())
@@ -98,6 +96,7 @@ mod tests {
                 pipeline_url: "https://ci".into(),
             },
             bytes,
+            identity: "liveness-marker".into(),
         }
     }
     #[test]
@@ -132,7 +131,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let dest = root.join("caduceus");
-        let bytes = b"prefix-0123456789abcdef0123456789abcdef01234567-suffix".to_vec();
+        let bytes =
+            b"caduceus.liveness.v10123456789abcdef0123456789abcdef01234567-suffix".to_vec();
         let d = download(bytes.clone(), &crate::atoms::file_sha256(&bytes));
         let invocation = InvocationKey::for_apply();
         let result = crate::atoms::comparison::execute_once(

@@ -355,17 +355,10 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
     let legacy_build = build.tool == "build-crate" && build.permutation.as_deref() == Some("build");
     let caduceus_build = build.tool == "fetch-artifact"
         && build.permutation.as_deref() == Some("fetch")
-        && build.args.get("component").and_then(Value::as_str) == Some("caduceus")
-        && build
-            .args
-            .get("registry_base")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
-        && build
-            .args
-            .get("destination")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
+        && build.args.get("component").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
+        && (build.args.get("registry_base").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
+            || build.args.get("release_repo").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()))
+        && build.args.get("destination").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
         && build.args.get("installed_binary").is_some();
     if pull.name != stages[0].0
         || pull.tool != stages[0].1
@@ -507,8 +500,8 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
         && epilogue.args.get("binary_changed")
             == Some(&serde_json::json!({"from":"binary-install.changed"}))
         && (if caduceus_build {
-            build.args.get("artifact_name") == Some(&Value::String("caduceus".into()))
-                && build.args.get("installed_binary") == epilogue.args.get("install_bin")
+            build.args.get("installed_binary") == epilogue.args.get("install_bin")
+                && build.args.get("artifact_name").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
         } else {
             build.args.get("op_prefix") == epilogue.args.get("op_prefix")
         })
