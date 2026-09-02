@@ -1,18 +1,46 @@
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 pub(crate) const LOCK_SCHEMA: &str = "harmonia.beam-lock.v1";
+pub(crate) const SLOT_SCHEMA: &str = "harmonia.beam-slot.v1";
 pub(crate) const DOOR_SCHEMA: &str = "caduceus.beam.v1";
 pub(crate) const DEFAULT_DOOR_URL: &str = "http://127.0.0.1:3014/api/v1/beam";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged, deny_unknown_fields)]
+pub(crate) enum BeamLock {
+    Legacy {
+        schema: String,
+        caduceus_sha: String,
+        env_sha: String,
+        minted_from: MintedFrom,
+    },
+    Slot {
+        schema: String,
+        component: String,
+        resolve: String,
+        registry_base: String,
+    },
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedBeamLock {
+    pub lock: BeamLock,
+    pub version: String,
+    pub flagged_at: String,
+}
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BeamLock {
-    pub schema: String,
-    pub caduceus_sha: String,
-    pub env_sha: String,
-    pub minted_from: MintedFrom,
+struct ReleaseFlag {
+    schema: String,
+    component: String,
+    source_sha: String,
+    env_sha: String,
+    sha256: String,
+    flagged_at: String,
+    pipeline_url: String,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +74,21 @@ pub(crate) struct PendingBeamFinalization {
     pub authorization: BeamConvergenceAuthorization,
     pub receipt_dir: PathBuf,
     pub door_url: String,
+}
+impl BeamLock {
+    pub(crate) fn caduceus_sha(&self) -> Option<&str> {
+        match self {
+            Self::Legacy { caduceus_sha, .. } => Some(caduceus_sha),
+            Self::Slot { .. } => None,
+        }
+    }
+
+    pub(crate) fn env_sha(&self) -> Option<&str> {
+        match self {
+            Self::Legacy { env_sha, .. } => Some(env_sha),
+            Self::Slot { .. } => None,
+        }
+    }
 }
 
 impl BeamConvergenceAuthorization {
@@ -107,15 +150,33 @@ pub(crate) fn fetch_door(url: &str) -> Result<BeamDoor, String> {
     parse_door(&result.stdout)
 }
 pub(crate) fn validate_lock(lock: BeamLock) -> Result<BeamLock, String> {
-    if lock.schema != LOCK_SCHEMA
-        || !hex_len(&lock.caduceus_sha, 40)
-        || !hex_len(&lock.env_sha, 64)
-        || !hex_len(&lock.minted_from.harmonia_sha, 40)
-        || !hex_len(&lock.minted_from.caduceus_release_tag, 40)
-    {
-        Err("beam-lock-malformed".into())
-    } else {
-        Ok(lock)
+    match &lock {
+        BeamLock::Legacy {
+            schema,
+            caduceus_sha,
+            env_sha,
+            minted_from,
+        } if schema == LOCK_SCHEMA
+            && hex_len(caduceus_sha, 40)
+            && hex_len(env_sha, 64)
+            && hex_len(&minted_from.harmonia_sha, 40)
+            && hex_len(&minted_from.caduceus_release_tag, 40) =>
+        {
+            Ok(lock)
+        }
+        BeamLock::Slot {
+            schema,
+            component,
+            resolve,
+            registry_base,
+        } if schema == SLOT_SCHEMA
+            && component == "caduceus"
+            && resolve == "latest-flagged-release"
+            && !registry_base.trim().is_empty() =>
+        {
+            Ok(lock)
+        }
+        _ => Err("beam-lock-malformed".into()),
     }
 }
 pub(crate) fn validate_door(door: BeamDoor) -> Result<BeamDoor, String> {
@@ -136,11 +197,218 @@ fn hex_len(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn flag_request(
+    url: &str,
+    destination: &std::path::Path,
+    token: Option<&str>,
+) -> Result<u16, String> {
+    let mut command = Command::new("curl");
+    command.args([
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "3",
+        "--output",
+    ]);
+    command
+        .arg(destination)
+        .args(["--write-out", "%{http_code}"]);
+    if let Some(token) = token {
+        let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
+        command.arg("--config").arg("-").stdin(Stdio::piped());
+        let mut child = command
+            .arg(url)
+            .spawn()
+            .map_err(|_| "beam-flag-unresolvable".to_string())?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "beam-flag-unresolvable".to_string())?
+            .write_all(format!("header = \"Authorization: token {escaped}\"\n").as_bytes())
+            .map_err(|_| "beam-flag-unresolvable".to_string())?;
+        let output = child
+            .wait_with_output()
+            .map_err(|_| "beam-flag-unresolvable".to_string())?;
+        return Ok(String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0));
+    }
+    let output = command
+        .arg(url)
+        .output()
+        .map_err(|_| "beam-flag-unresolvable".to_string())?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0))
+}
+fn registry_is_estate_host(url: &str) -> bool {
+    url.split_once("://")
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+        .is_some_and(|authority| authority == "git.home.arpa")
+}
+
+fn configured_beam_token(api_root: &str) -> Result<String, String> {
+    let path = crate::bands::renew_self::engine_config_path();
+    let config = crate::bands::renew_self::load_engine_plane_config(&path)?;
+    let scopes = config
+        .as_ref()
+        .map(crate::bands::renew_self::credential_scopes)
+        .unwrap_or_default();
+    let endpoint_host = api_root
+        .strip_prefix("https://")
+        .or_else(|| api_root.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next());
+    let scope = scopes
+        .get(api_root)
+        .or_else(|| endpoint_host.and_then(|host| scopes.get(host)))
+        .or_else(|| {
+            scopes
+                .values()
+                .find(|scope| scope.https_host.as_deref() == Some("git.home.arpa"))
+        });
+    let token_path = scope
+        .and_then(|scope| scope.https_token_path.clone())
+        .ok_or_else(|| "beam-flag-unresolvable".to_string())?;
+    crate::atoms::git_artifact::read_token(&token_path)
+        .map_err(|_| "beam-flag-unresolvable".to_string())
+}
+
+fn fetch_flag(url: &str, destination: &std::path::Path) -> Result<u16, String> {
+    let status = flag_request(url, destination, None)?;
+    if status != 401 && status != 403 {
+        return Ok(status);
+    }
+    if !registry_is_estate_host(url) {
+        return Err("beam-flag-unresolvable".into());
+    }
+    flag_request(url, destination, Some(&configured_beam_token(url)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct RegistryVersion {
+    name: String,
+    version: String,
+    created_at: String,
+}
+
+pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> {
+    let BeamLock::Slot {
+        component,
+        registry_base,
+        ..
+    } = slot
+    else {
+        return Err("beam-flag-unresolvable".into());
+    };
+    let api = if let Some((authority, _)) = registry_base.split_once("/api/packages/") {
+        format!("{authority}/api/v1/packages/HOMESERVERSLTD?type=generic&q={component}")
+    } else {
+        format!(
+            "{}/api/v1/packages/HOMESERVERSLTD?type=generic&q={component}",
+            registry_base.trim_end_matches('/')
+        )
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "harmonia-beam-slot-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&dir).map_err(|_| "beam-flag-unresolvable")?;
+    let listing_path = dir.join("listing");
+    let status = fetch_flag(&api, &listing_path)?;
+    if !(200..300).contains(&status) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err("beam-flag-unresolvable".into());
+    }
+    let value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&listing_path).map_err(|_| "beam-flag-unresolvable")?,
+    )
+    .map_err(|_| "beam-flag-unresolvable".to_string())?;
+    let raw_items = value.as_array().ok_or("beam-flag-unresolvable")?;
+    let mut versions = Vec::with_capacity(raw_items.len());
+    for item in raw_items {
+        let parsed: RegistryVersion =
+            serde_json::from_value(item.clone()).map_err(|_| "beam-flag-unresolvable")?;
+        if parsed.name != component.as_str()
+            || !hex_len(&parsed.version, 40)
+            || parsed.created_at.trim().is_empty()
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("beam-flag-unresolvable".into());
+        }
+        versions.push(parsed);
+    }
+    versions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    let mut selected = None;
+    for item in versions.into_iter().take(20) {
+        let flag_path = dir.join("flag");
+        let url = format!(
+            "{}/{}/{}/release.flag",
+            registry_base.trim_end_matches('/'),
+            component,
+            item.version
+        );
+        let status = fetch_flag(&url, &flag_path)?;
+        if status == 404 {
+            continue;
+        }
+        if !(200..300).contains(&status) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("beam-flag-unresolvable".into());
+        }
+        let flag: ReleaseFlag = serde_json::from_slice(
+            &std::fs::read(&flag_path).map_err(|_| "beam-flag-unresolvable")?,
+        )
+        .map_err(|_| "beam-flag-unresolvable")?;
+        if flag.schema != "estate.release-flag.v1"
+            || flag.component != component.as_str()
+            || flag.source_sha != item.version
+            || !hex_len(&flag.env_sha, 64)
+            || !hex_len(&flag.sha256, 64)
+            || flag.flagged_at.trim().is_empty()
+            || flag.pipeline_url.trim().is_empty()
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("beam-flag-unresolvable".into());
+        }
+        if selected
+            .as_ref()
+            .is_none_or(|(_, at, _)| flag.flagged_at > *at)
+        {
+            selected = Some((item.version, flag.flagged_at, flag.env_sha));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((version, flagged_at, env_sha)) = selected else {
+        return Err("beam-flag-absent".into());
+    };
+    Ok(ResolvedBeamLock {
+        lock: BeamLock::Legacy {
+            schema: LOCK_SCHEMA.into(),
+            caduceus_sha: version.clone(),
+            env_sha,
+            minted_from: MintedFrom {
+                harmonia_sha: "0".repeat(40),
+                caduceus_release_tag: version.clone(),
+            },
+        },
+        version,
+        flagged_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn lock() -> BeamLock {
-        BeamLock {
+        BeamLock::Legacy {
             schema: LOCK_SCHEMA.into(),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
@@ -167,6 +435,19 @@ mod tests {
         assert!(validate_lock(lock()).is_ok());
     }
     #[test]
+    fn legacy_and_slot_locks_parse() {
+        let legacy = format!(
+            r#"{{"schema":"harmonia.beam-lock.v1","caduceus_sha":"{}","env_sha":"{}","minted_from":{{"harmonia_sha":"{}","caduceus_release_tag":"{}"}}}}"#,
+            "a".repeat(40),
+            "b".repeat(64),
+            "c".repeat(40),
+            "d".repeat(40)
+        );
+        assert!(parse_lock(&legacy).is_ok());
+        assert!(parse_lock(r#"{"schema":"harmonia.beam-slot.v1","component":"caduceus","resolve":"latest-flagged-release","registry_base":"https://git.home.arpa/api/packages/HOMESERVERSLTD/generic"}"#).is_ok());
+    }
+
+    #[test]
     fn malformed_lock() {
         assert!(parse_lock("{}").is_err());
     }
@@ -185,38 +466,39 @@ mod tests {
         assert!(validate_door(d).is_err());
     }
     #[test]
-    fn false_ok_door() { let mut d = door(); d.ok = false; assert!(validate_door(d).is_err()); }
+    fn false_ok_door() {
+        let mut d = door();
+        d.ok = false;
+        assert!(validate_door(d).is_err());
+    }
     #[test]
-    fn foreign_service_door() { let mut d = door(); d.service = "foreign".into(); assert!(validate_door(d).is_err()); }
+    fn foreign_service_door() {
+        let mut d = door();
+        d.service = "foreign".into();
+        assert!(validate_door(d).is_err());
+    }
     #[test]
-    fn nullable_gui_face() { let mut d = door(); d.gui_face = None; assert!(validate_door(d).is_ok()); }
+    fn nullable_gui_face() {
+        let mut d = door();
+        d.gui_face = None;
+        assert!(validate_door(d).is_ok());
+    }
     #[test]
     fn malformed_door() {
         assert!(parse_door("{}").is_err());
     }
     #[test]
     fn env_divergence_authorizes_beam_refetch() {
-        let authorization = authorize_convergence(
-            &"a".repeat(40),
-            Some("env_sha"),
-            true,
-            true,
-            false,
-        )
-        .unwrap();
+        let authorization =
+            authorize_convergence(&"a".repeat(40), Some("env_sha"), true, true, false).unwrap();
         assert!(authorization.refetch());
     }
 
     #[test]
     fn caduceus_divergence_does_not_refetch() {
-        let authorization = authorize_convergence(
-            &"a".repeat(40),
-            Some("caduceus_sha"),
-            true,
-            true,
-            false,
-        )
-        .unwrap();
+        let authorization =
+            authorize_convergence(&"a".repeat(40), Some("caduceus_sha"), true, true, false)
+                .unwrap();
         assert!(!authorization.refetch());
     }
 }

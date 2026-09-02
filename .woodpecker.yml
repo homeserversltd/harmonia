@@ -111,18 +111,6 @@ steps:
         printf "%s\n" "$env_sha" > .release/env-sha
         HARMONIA_BUILD_SHA="$CI_COMMIT_SHA" HARMONIA_BUILD_ENV_SHA="$env_sha" cargo build --release --locked
 
-  - name: mint-harmonia-beam-lock
-    failure: ignore
-    image: python:3.12-alpine
-    when:
-      - event: push
-        branch: main
-    environment:
-      FORGEJO_TOKEN:
-        from_secret: FORGEJO_TOKEN
-    commands:
-      - python3 ci/beam_lock_mint.py --ci-commit-sha "$CI_COMMIT_SHA" --ci-crown-route 'POST /v1/registry-pen/stamp'
-
   - name: publish-harmonia-release
     image: python:3.12-alpine
     when:

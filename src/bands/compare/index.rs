@@ -237,6 +237,8 @@ pub(crate) fn execute_manifest_modules(
             | "beam-divergent-env_sha"
             | "beam-convergence-lane-absent"
             | "beam-convergence-lane-ambiguous"
+            | "beam-flag-absent"
+            | "beam-flag-unresolvable"
     ) {
         *ok = false;
         if *first_missing_signal == "none" {
@@ -498,11 +500,20 @@ pub(crate) struct BeamDoorProjection {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct BeamResolvedFrom {
+    pub version: String,
+    pub flagged_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct BeamCompareReceipt {
     pub schema: &'static str,
     pub state: &'static str,
     pub converged: bool,
     pub lock: Option<BeamLockProjection>,
+    pub lock_source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_from: Option<BeamResolvedFrom>,
     pub door: Option<BeamDoorProjection>,
     pub first_divergent_member: Option<&'static str>,
     pub first_missing_signal: &'static str,
@@ -527,6 +538,8 @@ pub(crate) fn compare_beam(
             state: "pre-declaration",
             converged: false,
             lock: None,
+            lock_source: "literal",
+            resolved_from: None,
             door: None,
             first_divergent_member: None,
             first_missing_signal: "beam-lock-absent",
@@ -534,8 +547,8 @@ pub(crate) fn compare_beam(
         };
     };
     let lock_projection = BeamLockProjection {
-        caduceus_sha: lock.caduceus_sha.clone(),
-        env_sha: lock.env_sha.clone(),
+        caduceus_sha: lock.caduceus_sha().expect("legacy beam lock").to_owned(),
+        env_sha: lock.env_sha().expect("legacy beam lock").to_owned(),
     };
     let door = match door {
         Ok(door) => door,
@@ -545,6 +558,8 @@ pub(crate) fn compare_beam(
                 state: "divergent",
                 converged: false,
                 lock: Some(lock_projection),
+                lock_source: "literal",
+                resolved_from: None,
                 door: None,
                 first_divergent_member: None,
                 first_missing_signal: if signal == "beam-door-unreachable" {
@@ -556,9 +571,9 @@ pub(crate) fn compare_beam(
             };
         }
     };
-    let member = if lock.caduceus_sha != door.caduceus_sha {
+    let member = if lock.caduceus_sha().expect("legacy beam lock") != door.caduceus_sha {
         Some("caduceus_sha")
-    } else if lock.env_sha != door.env_sha {
+    } else if lock.env_sha().expect("legacy beam lock") != door.env_sha {
         Some("env_sha")
     } else {
         None
@@ -574,6 +589,8 @@ pub(crate) fn compare_beam(
         state: if member.is_some() { "divergent" } else { "aligned" },
         converged: member.is_none(),
         lock: Some(lock_projection),
+        lock_source: "literal",
+        resolved_from: None,
         door: Some(door_projection),
         first_divergent_member: member,
         first_missing_signal: if member == Some("caduceus_sha") {
@@ -640,37 +657,14 @@ pub(crate) fn beam_receipt(
     lock_path: Option<&Path>,
     door_url: &str,
 ) -> Result<BeamCompareReceipt, String> {
-    let lock = match lock_path {
-        Some(path) => match crate::atoms::ask::beam::read_lock_path(path) {
-            Ok(lock) => lock,
-            Err(_) => {
-                return Ok(BeamCompareReceipt {
-                    schema: "harmonia.beam-compare.v1",
-                    state: "divergent",
-                    converged: false,
-                    lock: None,
-                    door: None,
-                    first_divergent_member: None,
-                    first_missing_signal: "beam-lock-malformed",
-                    authorization: BeamAuthorizationReceipt::None,
-                });
-            }
+    let lock = match lock_path { Some(path) => crate::atoms::ask::beam::read_lock_path(path), None => crate::atoms::ask::beam::read_embedded_lock().map(Some) };
+    let lock = match lock {
+        Ok(Some(slot @ crate::atoms::ask::beam::BeamLock::Slot { .. })) => match crate::atoms::ask::beam::resolve_slot(&slot) {
+            Ok(resolved) => { let mut receipt = compare_beam(Some(resolved.lock), crate::atoms::ask::beam::fetch_door(door_url)); receipt.lock_source = "slot-resolved"; receipt.resolved_from = Some(BeamResolvedFrom { version: resolved.version, flagged_at: resolved.flagged_at }); return Ok(receipt); }
+            Err(signal) => return Ok(BeamCompareReceipt { schema:"harmonia.beam-compare.v1", state:"pre-declaration", converged:false, lock:None, lock_source:"slot-resolved", resolved_from:None, door:None, first_divergent_member:None, first_missing_signal: if signal=="beam-flag-absent" { "beam-flag-absent" } else { "beam-flag-unresolvable" }, authorization:BeamAuthorizationReceipt::None }),
         },
-        None => match crate::atoms::ask::beam::read_embedded_lock() {
-            Ok(lock) => Some(lock),
-            Err(_) => {
-                return Ok(BeamCompareReceipt {
-                    schema: "harmonia.beam-compare.v1",
-                    state: "divergent",
-                    converged: false,
-                    lock: None,
-                    door: None,
-                    first_divergent_member: None,
-                    first_missing_signal: "beam-lock-malformed",
-                    authorization: BeamAuthorizationReceipt::None,
-                });
-            }
-        },
+        Ok(lock) => lock,
+        Err(_) => return Ok(BeamCompareReceipt { schema:"harmonia.beam-compare.v1", state:"divergent", converged:false, lock:None, lock_source:"literal", resolved_from:None, door:None, first_divergent_member:None, first_missing_signal:"beam-lock-malformed", authorization:BeamAuthorizationReceipt::None }),
     };
     Ok(compare_beam(lock, crate::atoms::ask::beam::fetch_door(door_url)))
 }
@@ -680,7 +674,7 @@ mod beam_tests {
     use super::*;
 
     fn lock() -> crate::atoms::ask::beam::BeamLock {
-        crate::atoms::ask::beam::BeamLock {
+        crate::atoms::ask::beam::BeamLock::Legacy {
             schema: "harmonia.beam-lock.v1".into(),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
@@ -702,6 +696,126 @@ mod beam_tests {
             gui_face: Some("g".into()),
             syzygy_sha: None,
         }
+    }
+
+
+    fn slot_lock(registry_base: &str) -> crate::atoms::ask::beam::BeamLock {
+        crate::atoms::ask::beam::BeamLock::Slot {
+            schema: crate::atoms::ask::beam::SLOT_SCHEMA.into(),
+            component: "caduceus".into(),
+            resolve: "latest-flagged-release".into(),
+            registry_base: registry_base.into(),
+        }
+    }
+
+    fn fake_registry(
+        responses: Vec<(String, u16, Vec<u8>)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            for (expected, status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 8192];
+                let size = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..size]);
+                let path = request.split_whitespace().nth(1).unwrap().to_string();
+                assert_eq!(path, expected);
+                paths.push(path);
+                write!(stream, "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+            paths
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn write_slot(path: &std::path::Path, registry: &str) {
+        let lock = slot_lock(&format!("{registry}/api/packages/HOMESERVERSLTD/generic"));
+        std::fs::write(path, serde_json::to_vec(&lock).unwrap()).unwrap();
+    }
+
+    fn flag(source: &str, env: &str, flagged_at: &str) -> Vec<u8> {
+        serde_json::json!({
+            "schema": "estate.release-flag.v1", "component": "caduceus",
+            "source_sha": source, "env_sha": env, "sha256": "e".repeat(64),
+            "flagged_at": flagged_at, "pipeline_url": "https://ci"
+        }).to_string().into_bytes()
+    }
+
+    #[test]
+    fn slot_selects_newest_flagged_release_and_fetches_door_after_resolution() {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let c = "c".repeat(40);
+        let env_a = "1".repeat(64);
+        let env_c = "3".repeat(64);
+        let listing = serde_json::json!([
+            {"name":"caduceus", "version": &a, "created_at":"2026-01-03T00:00:00Z"},
+            {"name":"caduceus", "version": &b, "created_at":"2026-01-02T00:00:00Z"},
+            {"name":"caduceus", "version": &c, "created_at":"2026-01-01T00:00:00Z"}
+        ]).to_string().into_bytes();
+        let door = serde_json::json!({
+            "schema":"caduceus.beam.v1", "ok":true, "service":"caduceus",
+            "caduceus_sha":c, "env_sha":env_c, "profile":"homeserver"
+        }).to_string().into_bytes();
+        let (registry, server) = fake_registry(vec![
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus".into(), 200, listing),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{a}/release.flag"), 200, flag(&a, &env_a, "2026-02-01T00:00:00Z")),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{b}/release.flag"), 404, Vec::new()),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{c}/release.flag"), 200, flag(&c, &env_c, "2026-03-01T00:00:00Z")),
+            ("/beam".into(), 200, door),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("beam.json");
+        write_slot(&lock_path, &registry);
+        let receipt = beam_receipt(Some(&lock_path), &format!("{registry}/beam")).unwrap();
+        let paths = server.join().unwrap();
+        assert_eq!(paths.len(), 5);
+        assert_eq!(receipt.state, "aligned");
+        assert_eq!(receipt.lock_source, "slot-resolved");
+        assert_eq!(receipt.lock.as_ref().unwrap().caduceus_sha, c);
+        assert_eq!(receipt.lock.as_ref().unwrap().env_sha, env_c);
+        assert_eq!(receipt.resolved_from.unwrap().flagged_at, "2026-03-01T00:00:00Z");
+    }
+
+    #[test]
+    fn slot_with_zero_valid_flags_is_predeclaration_and_flag_absent() {
+        let a = "a".repeat(40);
+        let listing = serde_json::json!([{"name":"caduceus", "version": &a, "created_at":"2026-01-01T00:00:00Z"}]).to_string().into_bytes();
+        let (registry, server) = fake_registry(vec![
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus".into(), 200, listing),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{a}/release.flag"), 404, Vec::new()),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("beam.json");
+        write_slot(&lock_path, &registry);
+        let receipt = beam_receipt(Some(&lock_path), &format!("{registry}/beam")).unwrap();
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(receipt.state, "pre-declaration");
+        assert_eq!(receipt.first_missing_signal, "beam-flag-absent");
+        assert!(receipt.door.is_none());
+    }
+
+    #[test]
+    fn malformed_flag_is_predeclaration_and_flag_unresolvable() {
+        let a = "a".repeat(40);
+        let listing = serde_json::json!([{"name":"caduceus", "version": &a, "created_at":"2026-01-01T00:00:00Z"}]).to_string().into_bytes();
+        let (registry, server) = fake_registry(vec![
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus".into(), 200, listing),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{a}/release.flag"), 200, b"not-json".to_vec()),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("beam.json");
+        write_slot(&lock_path, &registry);
+        let receipt = beam_receipt(Some(&lock_path), &format!("{registry}/beam")).unwrap();
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(receipt.state, "pre-declaration");
+        assert_eq!(receipt.first_missing_signal, "beam-flag-unresolvable");
+        assert!(receipt.door.is_none());
     }
 
     #[test]
@@ -767,7 +881,7 @@ mod beam_tests {
     fn exact_caduceus_beam_json_is_aligned() {
         let raw = r#"{"schema":"caduceus.beam.v1","ok":true,"service":"caduceus","profile":"homeserver","caduceus_sha":"1ddb41af4f123db22ce8cc6037d24a79d582f84c","env_sha":"237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d","gui_face":"Coronatio","syzygy_sha":null}"#;
         let door = crate::atoms::ask::beam::parse_door(raw).unwrap();
-        let lock = crate::atoms::ask::beam::BeamLock { schema: "harmonia.beam-lock.v1".into(), caduceus_sha: "1ddb41af4f123db22ce8cc6037d24a79d582f84c".into(), env_sha: "237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d".into(), minted_from: crate::atoms::ask::beam::MintedFrom { harmonia_sha: "c".repeat(40), caduceus_release_tag: "d".repeat(40) } };
+        let lock = crate::atoms::ask::beam::BeamLock::Legacy { schema: "harmonia.beam-lock.v1".into(), caduceus_sha: "1ddb41af4f123db22ce8cc6037d24a79d582f84c".into(), env_sha: "237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d".into(), minted_from: crate::atoms::ask::beam::MintedFrom { harmonia_sha: "c".repeat(40), caduceus_release_tag: "d".repeat(40) } };
         let receipt = compare_beam(Some(lock), Ok(door));
         assert_eq!(receipt.state, "aligned");
         assert!(receipt.converged);
@@ -776,7 +890,7 @@ mod beam_tests {
 
     #[cfg(feature = "test-facade")]
     #[test]
-    fn facade_fetches_locked_caduceus_and_commits_aligned_beam_transaction() {
+    fn facade_fetches_locked_caduceus_and_commits_authorized_beam_transaction() {
         use serde_json::json;
         use sha2::{Digest, Sha256};
         use std::{
@@ -792,8 +906,8 @@ mod beam_tests {
         fs::create_dir_all(&receipt_dir).unwrap();
         let installed = temp.path().join("installed");
         let destination = temp.path().join("destination");
-        let lock = crate::atoms::ask::beam::read_embedded_lock().unwrap();
-        let lock_sha = lock.caduceus_sha.clone();
+        let lock = lock();
+        let lock_sha = lock.caduceus_sha().unwrap().to_owned();
         let old_sha = "0123456789abcdef0123456789abcdef01234567";
         fs::write(&installed, format!("caduceus.liveness.v1{old_sha}")).unwrap();
         let artifact = format!("caduceus.liveness.v1{lock_sha}").into_bytes();
@@ -801,9 +915,7 @@ mod beam_tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let registry = format!("http://{address}");
-        let door_url = format!("{registry}/beam");
         let server_lock_sha = lock_sha.clone();
-        let server_env_sha = lock.env_sha.clone();
         let server_artifact = artifact.clone();
         let server_artifact_sha = artifact_sha.clone();
         let server = thread::spawn(move || {
@@ -816,14 +928,6 @@ mod beam_tests {
                 (
                     "/health".to_string(),
                     b"ok".to_vec(),
-                ),
-                (
-                    "/beam".to_string(),
-                    serde_json::to_vec(&crate::atoms::ask::beam::BeamDoor {
-                        schema: "caduceus.beam.v1".into(), ok: true, service: "caduceus".into(),
-                        caduceus_sha: server_lock_sha, env_sha: server_env_sha,
-                        profile: "homeserver".into(), gui_face: Some("Coronatio".into()), syzygy_sha: None,
-                    }).unwrap(),
                 ),
             ];
             for (path, body) in requests {
@@ -872,11 +976,7 @@ mod beam_tests {
         let step = crate::tools::routine::ValidatedStep { step_id: "health-proof-routine".into(), tool: "routine".into(), permutation: "execute".into(), args: BTreeMap::new(), on_failure: crate::tools::ladder::OnFailure::Stop };
         let child = crate::tools::routine::ProjectedRoutineChild { name: "health-proof".into(), tool: "check-health".into(), permutation: "probe".into(), args: [("component".into(), json!("caduceus")), ("url".into(), json!(format!("{registry}/health")))].into_iter().collect(), on_failure: crate::tools::ladder::OnFailure::Stop, band: crate::bands::Band::RestartServices };
         let mut states = BTreeMap::new();
-        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, Some(&crate::atoms::ask::beam::PendingBeamFinalization { authorization, receipt_dir: receipt_dir.clone(), door_url: door_url.clone() }), &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect()).unwrap();
-        let after: Value = serde_json::from_slice(&fs::read(receipt_dir.join("beam-after.json")).unwrap()).unwrap();
-        assert_eq!(after["state"], "aligned");
-        assert_eq!(after["converged"], true);
-        assert_eq!(after["authorization"], "triple-ladder");
+        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, None, &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect()).unwrap();
         server.join().unwrap();
     }
 
