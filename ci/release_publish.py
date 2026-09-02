@@ -60,7 +60,7 @@ def download(asset, token, name):
     if status != 200: conflict(f"download of {name} returned HTTP {status}")
     return raw
 
-def verify(release, token, sha, release_name, digest, sidecar, env_sha, pipeline_url):
+def verify(release, token, sha, release_name, digest, sidecar, env_sha):
     if release.get("tag_name") != sha or release.get("name") != release_name or release.get("target_commitish") != sha:
         conflict("existing release identity conflicts with CI_COMMIT_SHA")
     assets = assets_of(release)
@@ -72,8 +72,8 @@ def verify(release, token, sha, release_name, digest, sidecar, env_sha, pipeline
     manifest_obj = decode(download(assets[EXPECTED_ASSETS[2]], token, EXPECTED_ASSETS[2]), "manifest.json")
     expected_keys = {"schema", "component", "source_sha", "env_sha", "target", "sha256", "built_at", "pipeline_url"}
     if not isinstance(manifest_obj, dict) or set(manifest_obj) != expected_keys: conflict("manifest.json has an invalid key set")
-    if any((manifest_obj["schema"] != "estate.artifact.manifest.v1", manifest_obj["component"] != REPO, manifest_obj["source_sha"] != sha, manifest_obj["env_sha"] != env_sha, manifest_obj["target"] != "x86_64-unknown-linux-gnu", manifest_obj["sha256"] != digest, manifest_obj["pipeline_url"] != pipeline_url)): conflict("manifest.json has conflicting contents")
-    if not isinstance(manifest_obj["built_at"], str) or not manifest_obj["built_at"]: conflict("manifest.json has invalid build metadata")
+    if any((manifest_obj["schema"] != "estate.artifact.manifest.v1", manifest_obj["component"] != REPO, manifest_obj["source_sha"] != sha, manifest_obj["env_sha"] != env_sha, manifest_obj["target"] != "x86_64-unknown-linux-gnu", manifest_obj["sha256"] != digest)): conflict("manifest.json has conflicting contents")
+    if not isinstance(manifest_obj["built_at"], str) or not manifest_obj["built_at"] or not isinstance(manifest_obj["pipeline_url"], str) or not manifest_obj["pipeline_url"]: conflict("manifest.json has invalid build metadata")
 
 def main():
     token = os.environ.get("FORGEJO_TOKEN", "")
@@ -107,13 +107,13 @@ def main():
     manifest = (json.dumps(manifest_obj, indent=2) + "\n").encode("utf-8")
     tag_url = f"{RELEASES}/tags/{urllib.parse.quote(sha, safe='')}"; status, raw = request("GET", tag_url, token)
     if status == 200:
-        verify(decode(raw, "existing release"), token, sha, FACTS["name"], digest, sidecar, env_sha, pipeline_url); FACTS["status"] = "no-op"; emit(); return
+        verify(decode(raw, "existing release"), token, sha, FACTS["name"], digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
     if status != 404: fail(f"GET release tag returned HTTP {status}")
     payload = {"tag_name": sha, "name": FACTS["name"], "target_commitish": sha, "draft": False, "prerelease": False}; status, raw = request("POST", RELEASES, token, payload)
     if status == 409:
         status, raw = request("GET", tag_url, token)
         if status != 200: fail(f"release collision reread returned HTTP {status}")
-        verify(decode(raw, "existing release"), token, sha, FACTS["name"], digest, sidecar, env_sha, pipeline_url); FACTS["status"] = "no-op"; emit(); return
+        verify(decode(raw, "existing release"), token, sha, FACTS["name"], digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
     if status not in (200, 201): fail(f"release creation returned HTTP {status}")
     release = decode(raw, "release creation"); release_id = release.get("id")
     if not isinstance(release_id, int): fail("created release has no numeric id")
@@ -124,6 +124,6 @@ def main():
         if status not in (200, 201): fail(f"upload of {name} returned HTTP {status}")
     status, raw = request("GET", tag_url, token)
     if status != 200: fail(f"reread of release returned HTTP {status}")
-    verify(decode(raw, "release reread"), token, sha, FACTS["name"], digest, sidecar, env_sha, pipeline_url); FACTS["status"] = "published"; emit()
+    verify(decode(raw, "release reread"), token, sha, FACTS["name"], digest, sidecar, env_sha); FACTS["status"] = "published"; emit()
 
 if __name__ == "__main__": main()
