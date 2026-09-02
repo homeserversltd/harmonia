@@ -34,6 +34,10 @@ pub(crate) fn execute(
             }
         });
     let source_sha = required("source_build_sha")?;
+    let beam_refetch = args
+        .get("beam_refetch")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let artifact_name = args
         .get("artifact_name")
         .and_then(Value::as_str)
@@ -116,7 +120,7 @@ pub(crate) fn execute(
         identity,
         component,
     );
-    if current {
+    if current && !beam_refetch {
         crate::atoms::attest::fetch_artifact::attest(
             &receipt_dir.join("harmonia-atoms.log"),
             true,
@@ -130,6 +134,14 @@ pub(crate) fn execute(
             message: "fetch-artifact-current".into(),
             command: None,
         });
+    }
+    if current && beam_refetch {
+        crate::atoms::attest::fetch_artifact::attest(
+            &receipt_dir.join("harmonia-atoms.log"),
+            true,
+            false,
+            "state=Drift; care=beam env SHA divergence requires artifact refetch; after=Drift; reason=fetch-artifact-refetch-beam-env-sha",
+        )?;
     }
     let download = if let Some(download) = native_download {
         download
@@ -170,15 +182,20 @@ pub(crate) fn execute(
         });
     }
     let invocation = invocation.ok_or("fetch-artifact-invocation-key-missing")?;
+    let mut beam_refetch_pre_act = beam_refetch;
     let result = crate::atoms::comparison::execute(
         "fetch-artifact",
         || {
-            Ok(crate::atoms::ask::fetch_artifact::identity_matches(
-                destination,
-                &effective_source_sha,
-                identity,
-                component,
-            ))
+            if std::mem::take(&mut beam_refetch_pre_act) {
+                Ok(false)
+            } else {
+                Ok(crate::atoms::ask::fetch_artifact::identity_matches(
+                    destination,
+                    &effective_source_sha,
+                    identity,
+                    component,
+                ))
+            }
         },
         |seen| {
             if *seen {
@@ -229,7 +246,11 @@ pub(crate) fn execute(
                 &receipt_dir.join("harmonia-atoms.log"),
                 true,
                 true,
-                "state=Drift; care=verified digest and atomic install; after=Current",
+                if beam_refetch {
+                    "state=Drift; care=verified digest and atomic install; after=Current; reason=fetch-artifact-refetch-beam-env-sha"
+                } else {
+                    "state=Drift; care=verified digest and atomic install; after=Current"
+                },
             )?;
             Ok(crate::OperationOutcome {
                 ok: true,
@@ -377,5 +398,69 @@ mod tests {
             format!("caduceus.liveness.v1{new}").as_bytes()
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn beam_refetches_current_embedded_identity() {
+        let new = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let installed = root.join("installed");
+        let destination = root.join("destination");
+        let receipts = root.join("receipts");
+        fs::write(&installed, format!("caduceus.liveness.v1{new}"))
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for path in [
+                format!("/caduceus/{new}/manifest.json"),
+                format!("/caduceus/{new}/artifact"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
+                let body = if path.ends_with("manifest.json") {
+                    format!(
+                        r#"{{"schema":"estate.artifact.manifest.v1","component":"caduceus","source_sha":"{new}","target":"x86_64","sha256":"32f70da4e10cc86076da0e00a3b783ed3c2731302adc851d9e32fad57cbb7c20","built_at":"now","pipeline_url":"https://ci"}}"#
+                    )
+                } else {
+                    format!("caduceus.liveness.v1{new}")
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let args: BTreeMap<String, serde_json::Value> = [
+            ("component", json!("caduceus")),
+            ("registry_base", json!(format!("http://{address}"))),
+            ("source_build_sha", json!(new)),
+            ("beam_refetch", json!(true)),
+            ("artifact_name", json!("artifact")),
+            ("destination", json!(PathBuf::from(&destination))),
+            ("installed_binary", json!(PathBuf::from(&installed))),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = execute(&args, &receipts, true, Some(&invocation)).unwrap();
+        server.join().unwrap();
+        assert_eq!(outcome.message, "fetch-artifact-installed");
+        let atom_log = fs::read_to_string(receipts.join("harmonia-atoms.log")).unwrap();
+        assert!(atom_log.contains("fetch-artifact-refetch-beam-env-sha"));
+        assert!(outcome.ok);
+        assert!(!outcome.skipped);
+        assert!(outcome.changed);
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            format!("caduceus.liveness.v1{new}").as_bytes()
+        );
     }
 }

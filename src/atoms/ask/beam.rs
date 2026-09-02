@@ -38,6 +38,7 @@ pub(crate) struct BeamDoor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BeamConvergenceAuthorization {
     caduceus_sha: String,
+    refetch: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +52,9 @@ impl BeamConvergenceAuthorization {
     pub(crate) fn caduceus_sha(&self) -> &str {
         &self.caduceus_sha
     }
+    pub(crate) fn refetch(&self) -> bool {
+        self.refetch
+    }
     pub(crate) fn receipt_authorization(&self) -> crate::bands::compare::BeamAuthorizationReceipt {
         crate::bands::compare::BeamAuthorizationReceipt::TripleLadder
     }
@@ -58,12 +62,14 @@ impl BeamConvergenceAuthorization {
 
 pub(crate) fn authorize_convergence(
     caduceus_sha: &str,
+    divergent_member: Option<&str>,
     divergent: bool,
     apply: bool,
     developer_mode: bool,
 ) -> Option<BeamConvergenceAuthorization> {
     (divergent && apply && !developer_mode).then(|| BeamConvergenceAuthorization {
         caduceus_sha: caduceus_sha.to_owned(),
+        refetch: divergent_member == Some("env_sha"),
     })
 }
 
@@ -187,5 +193,30 @@ mod tests {
     #[test]
     fn malformed_door() {
         assert!(parse_door("{}").is_err());
+    }
+    #[test]
+    fn env_divergence_authorizes_beam_refetch() {
+        let authorization = authorize_convergence(
+            &"a".repeat(40),
+            Some("env_sha"),
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(authorization.refetch());
+    }
+
+    #[test]
+    fn caduceus_divergence_does_not_refetch() {
+        let authorization = authorize_convergence(
+            &"a".repeat(40),
+            Some("caduceus_sha"),
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(!authorization.refetch());
     }
 }
