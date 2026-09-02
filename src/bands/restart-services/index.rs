@@ -332,6 +332,16 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
     }
 }
 
+pub(crate) fn finalize_installed_state_proof(
+    pending: &crate::atoms::ask::beam::PendingBeamFinalization,
+) -> Result<(), String> {
+    crate::bands::compare::finalize_beam_after_health(
+        Some(&pending.authorization),
+        &pending.receipt_dir,
+        &pending.door_url,
+    )
+}
+
 /// Execute the complete RestartServices band lifecycle for one projected module.
 /// Selection, preconditions, authority gating, failure policy, and accumulation
 /// intentionally live here rather than in the ladder compatibility executor.
@@ -343,6 +353,7 @@ pub(crate) fn execute_manifest_band(
     pa: Option<&PackageAuthority>,
     key: Option<&crate::tools::files::InvocationKey>,
     mode_apply: bool,
+    beam_finalization: Option<&crate::atoms::ask::beam::PendingBeamFinalization>,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
@@ -421,6 +432,23 @@ pub(crate) fn execute_manifest_band(
                 step, manifest, module_dir, auth, pa, false, key, None,
             )?
         };
+        if step.tool == "routine"
+            && outcome.ok
+            && projected_routines
+                .get(&step.step_id)
+                .is_some_and(|children| {
+                    children.iter().any(|child| {
+                        child.name == "health-proof"
+                            && child.tool == "check-health"
+                            && child.args.get("component").and_then(Value::as_str)
+                                == Some("caduceus")
+                    })
+                })
+        {
+            if let Some(pending) = beam_finalization {
+                finalize_installed_state_proof(pending)?;
+            }
+        }
         if step.tool == "routine" {
             let routine = routine_states
                 .get(&step.step_id)
@@ -511,6 +539,7 @@ pub(crate) fn execute_manifest_modules(
                 profile.package_authority.as_ref(),
                 mode.invocation(),
                 mode_apply,
+                projection.beam_finalization.as_ref(),
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,

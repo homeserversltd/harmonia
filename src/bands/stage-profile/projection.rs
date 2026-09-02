@@ -25,6 +25,7 @@ pub(crate) struct ProjectedModule {
 pub(crate) struct ProfileProjection {
     pub(crate) modules: BTreeMap<String, ProjectedModule>,
     pub(crate) errors: BTreeMap<String, String>,
+    pub(crate) beam_finalization: Option<crate::atoms::ask::beam::PendingBeamFinalization>,
 }
 
 impl ProfileProjection {
@@ -34,6 +35,47 @@ impl ProfileProjection {
         module_root: &Path,
     ) -> Result<UpdatePlan, String> {
         projection_derive_plan_inner(self, profile, module_root)
+    }
+
+    pub(crate) fn authorize_beam_convergence(
+        &mut self,
+        authorization: &crate::atoms::ask::beam::BeamConvergenceAuthorization,
+        receipt_dir: &Path,
+        door_url: &str,
+    ) -> Result<(), String> {
+        let mut fetch = Vec::new();
+        let mut health = Vec::new();
+        for module in self.modules.values_mut() {
+            for children in module.routines.values_mut() {
+                for child in children.iter_mut() {
+                    if child.args.get("component").and_then(Value::as_str) != Some("caduceus") {
+                        continue;
+                    }
+                    if child.tool == "fetch-artifact" {
+                        fetch.push(&mut *child);
+                    } else if child.tool == "check-health" {
+                        health.push(&mut *child);
+                    }
+                }
+            }
+        }
+        if fetch.len() != 1 || health.len() != 1 {
+            return Err(format!(
+                "beam-convergence-child-cardinality-fetch-{}-health-{}",
+                fetch.len(),
+                health.len()
+            ));
+        }
+        fetch[0].args.insert(
+            "source_build_sha".into(),
+            Value::String(authorization.caduceus_sha().to_owned()),
+        );
+        self.beam_finalization = Some(crate::atoms::ask::beam::PendingBeamFinalization {
+            authorization: authorization.clone(),
+            receipt_dir: receipt_dir.to_owned(),
+            door_url: door_url.to_owned(),
+        });
+        Ok(())
     }
 }
 
@@ -141,7 +183,11 @@ pub(crate) fn load_profile_projection(
             }
         }
     }
-    Ok(ProfileProjection { modules, errors })
+    Ok(ProfileProjection {
+        modules,
+        errors,
+        beam_finalization: None,
+    })
 }
 
 fn projection_text(v: &BTreeMap<String, Value>, k: &str) -> Option<String> {

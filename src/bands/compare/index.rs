@@ -155,7 +155,8 @@ pub(crate) fn execute_manifest_modules(
     mode: &UpdateMode,
     mode_apply: bool,
     disabled_modules: &BTreeSet<String>,
-    projection: &ProfileProjection,
+    projection: &mut ProfileProjection,
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
     states: &mut BTreeMap<String, ModuleExecution>,
     routines: &mut BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>>,
     halted: &mut BTreeSet<String>,
@@ -166,20 +167,28 @@ pub(crate) fn execute_manifest_modules(
     first_missing_signal: &mut String,
     events: &mut File,
 ) -> Result<(), String> {
-    crate::atoms::ask::beam::clear_pending_beam_finalization();
-    crate::atoms::ask::beam::install_convergence_authorization(None);
     let mut beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
-    let developer_mode = projection.modules.values().any(|projected| {
-        match &projected.loaded {
-            LoadedModule::Ladder(manifest) => manifest.ladder.iter().any(|step| {
-                step.args.get("source_policy").and_then(Value::as_str) == Some("developer")
-            }),
-            LoadedModule::Sidecar(_) => false,
+    let developer_mode = crate::bands::renew_self::load_engine_plane_config(
+        &crate::bands::renew_self::engine_config_path(),
+    )?
+    .is_some_and(|config| config.source_policy == "developer");
+    let beam_authorization = authorize_beam(&mut beam, mode_apply, developer_mode);
+    if let Some(authorization) = beam_authorization.as_ref() {
+        projection.authorize_beam_convergence(
+            authorization,
+            receipt_dir,
+            crate::atoms::ask::beam::DEFAULT_DOOR_URL,
+        )?;
+        if let Some(carrier) = carrier {
+            let mut value = carrier.borrow_mut();
+            let Some(transaction) = value.sealed_projection.as_mut() else {
+                return Err("stage-profile-transaction-missing".to_string());
+            };
+            transaction.authorize_caduceus_source(authorization)?;
+            value.projection = Some(projection.clone());
         }
-    });
-    let _beam_authorization = authorize_beam(&mut beam, mode_apply, developer_mode);
-    if let Some(authorization) = _beam_authorization.clone() {
-        crate::atoms::ask::beam::install_pending_beam_finalization(authorization, receipt_dir, crate::atoms::ask::beam::DEFAULT_DOOR_URL);
+    } else {
+        projection.beam_finalization = None;
     }
     let beam_value = serde_json::to_value(&beam)
         .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
@@ -330,6 +339,7 @@ pub(crate) fn execute_group_live_probe(
         .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
     execute_group_live_probe_validated(manifest, &step, receipt_dir)
 }
+
 
 
 // Arcadia fast-check ownership: preserve the legacy CLI surface while keeping
@@ -578,19 +588,34 @@ pub(crate) fn authorize_beam(
     } else {
         BeamAuthorizationReceipt::None
     };
-    crate::atoms::ask::beam::install_convergence_authorization(authorization.clone());
     authorization
 }
 
-pub(crate) fn finalize_beam_after_commit() -> Result<(), String> {
-    let Some(pending) = crate::atoms::ask::beam::take_pending_beam_finalization() else { return Ok(()); };
-    let mut receipt = beam_receipt(None, &pending.door_url)?;
-    receipt.authorization = BeamAuthorizationReceipt::TripleLadder;
-    let value = serde_json::to_value(&receipt).map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
-    crate::write_json(&pending.receipt_dir.join("beam-after.json"), &value)?;
-    if receipt.converged { Ok(()) } else { Err(receipt.first_missing_signal.to_string()) }
+pub(crate) fn finalize_beam_after_health(
+    authorization: Option<&crate::atoms::ask::beam::BeamConvergenceAuthorization>,
+    receipt_dir: &Path,
+    door_url: &str,
+) -> Result<(), String> {
+    let mut receipt = None;
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        let observed = beam_receipt(None, door_url)?;
+        let converged = observed.converged;
+        receipt = Some(observed);
+        if converged {
+            break;
+        }
+    }
+    let mut receipt = receipt.expect("beam finalization performs five-read loop");
+    receipt.authorization = authorization.map_or(BeamAuthorizationReceipt::None, |held| {
+        held.receipt_authorization()
+    });
+    let value = serde_json::to_value(&receipt)
+        .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
+    crate::write_json(&receipt_dir.join("beam-after.json"), &value)
 }
-
 pub(crate) fn beam_receipt(
     lock_path: Option<&Path>,
     door_url: &str,
@@ -769,6 +794,10 @@ mod beam_tests {
                 ),
                 (format!("/caduceus/{server_lock_sha}/artifact"), server_artifact),
                 (
+                    "/health".to_string(),
+                    b"ok".to_vec(),
+                ),
+                (
                     "/beam".to_string(),
                     serde_json::to_vec(&crate::atoms::ask::beam::BeamDoor {
                         schema: "caduceus.beam.v1".into(), ok: true, service: "caduceus".into(),
@@ -792,11 +821,10 @@ mod beam_tests {
         let authorization = authorize_beam(&mut beam, true, false).unwrap();
         assert_eq!(beam.authorization, BeamAuthorizationReceipt::TripleLadder);
         assert_eq!(authorization.caduceus_sha(), lock_sha);
-        crate::atoms::ask::beam::install_pending_beam_finalization(authorization, &receipt_dir, &door_url);
 
         let args: BTreeMap<String, Value> = [
             ("component", json!("caduceus")), ("registry_base", json!(&registry)),
-            ("source_build_sha", json!(old_sha)), ("artifact_name", json!("artifact")),
+            ("source_build_sha", json!(lock_sha)), ("artifact_name", json!("artifact")),
             ("destination", json!(&destination)), ("installed_binary", json!(&installed)),
         ].into_iter().map(|(key, value)| (key.into(), value)).collect();
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
@@ -809,6 +837,7 @@ mod beam_tests {
             caduceus_count: 1, pinned_members: Some(vec!["caduceus".into(), "sbin".into(), "face".into()]),
         };
         let mut transaction = crate::atoms::r#do::transaction::seal_projection(&plan, "profile", "identity", "source-head").unwrap();
+        transaction.authorize_caduceus_source(&authorization).unwrap();
         for child in 0..transaction.sealed.children.len() {
             crate::atoms::r#do::transaction::apply_projection(&mut transaction, child, &invocation).unwrap();
         }
@@ -818,6 +847,11 @@ mod beam_tests {
         assert_eq!(receipt.children[1].source_sha, None);
         assert_eq!(receipt.children[2].source_sha, None);
 
+        let manifest: crate::tools::ladder::LadderManifest = serde_json::from_value(json!({"schema":"harmonia.module.ladder.v1","id":"restart","version":"1","ladder":[{"step_id":"health-proof-routine","tool":"routine","permutation":"execute","steps":[{"name":"health-proof","tool":"check-health","permutation":"probe","args":{"component":"caduceus","url":format!("{registry}/health")}}]}]})).unwrap();
+        let step = crate::tools::routine::ValidatedStep { step_id: "health-proof-routine".into(), tool: "routine".into(), permutation: "execute".into(), args: BTreeMap::new(), on_failure: crate::tools::ladder::OnFailure::Stop };
+        let child = crate::tools::routine::ProjectedRoutineChild { name: "health-proof".into(), tool: "check-health".into(), permutation: "probe".into(), args: [("component".into(), json!("caduceus")), ("url".into(), json!(format!("{registry}/health")))].into_iter().collect(), on_failure: crate::tools::ladder::OnFailure::Stop, band: crate::bands::Band::RestartServices };
+        let mut states = BTreeMap::new();
+        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, Some(&crate::atoms::ask::beam::PendingBeamFinalization { authorization, receipt_dir: receipt_dir.clone(), door_url: door_url.clone() }), &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect()).unwrap();
         let after: Value = serde_json::from_slice(&fs::read(receipt_dir.join("beam-after.json")).unwrap()).unwrap();
         assert_eq!(after["state"], "aligned");
         assert_eq!(after["converged"], true);

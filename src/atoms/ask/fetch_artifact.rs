@@ -193,7 +193,6 @@ pub(crate) fn download(
 ) -> Result<Download, String> {
     validate_segment(component, "component")?;
     validate_segment(artifact_name, "artifact-name")?;
-    let source_sha = authorized_source_sha(component, source_sha);
     if !validate_source_sha(&source_sha) {
         return Err("fetch-artifact-source-sha-invalid".into());
     }
@@ -235,17 +234,7 @@ pub(crate) fn download(
     result
 }
 
-pub(crate) fn authorized_source_sha(component: &str, requested: &str) -> String {
-    if component == "caduceus" {
-        if let Some(locked) = crate::atoms::ask::beam::active_convergence_caduceus_sha() {
-            return locked;
-        }
-    }
-    requested.to_owned()
-}
-
 pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
-    let source_sha = authorized_source_sha("caduceus", source_sha);
     let Ok(bytes) = fs::read(destination) else {
         return false;
     };

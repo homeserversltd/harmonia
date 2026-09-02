@@ -418,7 +418,7 @@ pub(crate) fn seal_projection(
                 .enumerate()
                 .filter_map(|(i, s)| (s.name == member).then_some(i))
                 .collect(),
-            source_sha: (member == "caduceus").then(crate::atoms::ask::beam::active_convergence_caduceus_sha).flatten(),
+            source_sha: None,
             member,
         })
         .collect();
@@ -438,6 +438,28 @@ pub(crate) fn seal_projection(
         applied_children: BTreeSet::new(),
     })
 }
+impl ProjectionTransaction {
+    pub(crate) fn authorize_caduceus_source(
+        &mut self,
+        authorization: &crate::atoms::ask::beam::BeamConvergenceAuthorization,
+    ) -> Result<(), String> {
+        let mut children = self
+            .sealed
+            .children
+            .iter_mut()
+            .filter(|child| child.member == "caduceus")
+            .collect::<Vec<_>>();
+        if children.len() != 1 {
+            return Err(format!(
+                "sealed-caduceus-child-cardinality-{}",
+                children.len()
+            ));
+        }
+        children[0].source_sha = Some(authorization.caduceus_sha().to_owned());
+        Ok(())
+    }
+}
+
 pub(crate) fn apply_projection(
     txn: &mut ProjectionTransaction,
     child: usize,
@@ -481,14 +503,12 @@ pub(crate) fn commit_projection(
         return Err("transaction-not-applied".into());
     }
     t.state = TransactionState::Committed;
-    crate::bands::compare::finalize_beam_after_commit()?;
     Ok(receipt_for(t))
 }
 pub(crate) fn rollback_projection(
     t: &mut ProjectionTransaction,
     key: &InvocationKey,
 ) -> Result<TransactionReceipt, String> {
-    crate::atoms::ask::beam::clear_pending_beam_finalization();
     if t.state == TransactionState::RolledBack {
         return Ok(receipt_for(t));
     }
