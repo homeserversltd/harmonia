@@ -17,6 +17,8 @@ pub(crate) struct KnownGoodRung {
     pub identity: String,
     pub surface: String,
     pub installed_sha: String,
+    pub syzygy_sha: Option<String>,
+    pub syzygy_signal: String,
     pub installed_version: Option<String>,
     pub proof_time_unix_ms: u128,
     pub proof_battery: Vec<String>,
@@ -44,6 +46,8 @@ pub(crate) struct InstalledStateProof {
     surface: String,
     installed_path: String,
     installed_sha: String,
+    syzygy_sha: Option<String>,
+    syzygy_signal: String,
     installed_version: Option<String>,
     proof_time_unix_ms: u128,
     proof_battery: Vec<String>,
@@ -69,6 +73,26 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0)
+}
+
+fn committed_transaction_syzygy(receipt_boundary: &Path) -> (Option<String>, String) {
+    let mut directory = Some(receipt_boundary);
+    while let Some(dir) = directory {
+        let path = dir.join("update-set.json");
+        if let Ok(bytes) = fs::read(&path) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                let sha = value.get("syzygy_sha").and_then(|v| v.as_str()).map(str::to_owned);
+                let signal = value
+                    .get("syzygy_signal")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(if sha.is_some() { "none" } else { "syzygy-sha-unresolved" })
+                    .to_owned();
+                return (sha, signal);
+            }
+        }
+        directory = dir.parent();
+    }
+    (None, "syzygy-transaction-receipt-unresolved".into())
 }
 
 fn valid_surface(surface: &str) -> bool {
@@ -151,6 +175,7 @@ pub(crate) fn prove_installed_state(
     }
     fs::create_dir_all(receipt_boundary).map_err(|e| e.to_string())?;
     let proof_time_unix_ms = now_ms();
+    let (syzygy_sha, syzygy_signal) = committed_transaction_syzygy(receipt_boundary);
     let reference = installed_path.to_string_lossy().into_owned();
     let aggregate = AggregateProofReceipt {
         schema: "harmonia.known_good.aggregate_proof.v1".into(),
@@ -194,6 +219,8 @@ pub(crate) fn prove_installed_state(
         surface: surface.into(),
         installed_path: reference,
         installed_sha: observed_sha,
+        syzygy_sha,
+        syzygy_signal,
         installed_version: installed_version.map(str::to_owned),
         proof_time_unix_ms,
         proof_battery,
@@ -393,6 +420,8 @@ pub(crate) fn append_and_move(
     if let Some(tail) = history.last() {
         if current.as_ref().map(|r| r.identity.as_str()) != Some(tail.identity.as_str()) {
             let same = tail.installed_sha == proof.installed_sha
+                && tail.syzygy_sha == proof.syzygy_sha
+                && tail.syzygy_signal == proof.syzygy_signal
                 && tail.installed_version == proof.installed_version
                 && tail.proof_battery == proof.proof_battery
                 && tail.aggregate_receipt_ref == proof.aggregate_receipt_ref;
@@ -442,6 +471,8 @@ pub(crate) fn append_and_move(
         identity: identity.clone(),
         surface: proof.surface.clone(),
         installed_sha: proof.installed_sha.clone(),
+        syzygy_sha: proof.syzygy_sha.clone(),
+        syzygy_signal: proof.syzygy_signal.clone(),
         installed_version: proof.installed_version.clone(),
         proof_time_unix_ms: proof.proof_time_unix_ms,
         proof_battery: proof.proof_battery.clone(),
@@ -530,6 +561,15 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let installed = root.path().join("installed");
         fs::write(&installed, b"first").unwrap();
+        fs::write(
+            root.path().join("update-set.json"),
+            serde_json::json!({
+                "syzygy_sha": "syzygy-committed-sha",
+                "syzygy_signal": "committed"
+            })
+            .to_string(),
+        )
+        .unwrap();
         let proof = prove_installed_state(
             "engine",
             &installed,
@@ -547,6 +587,12 @@ mod tests {
             serde_json::from_str::<KnownGoodRung>(&encoded).unwrap(),
             rung
         );
+        assert_eq!(rung.installed_sha, sha256_file(&installed).unwrap());
+        assert_eq!(rung.syzygy_sha.as_deref(), Some("syzygy-committed-sha"));
+        assert_eq!(rung.syzygy_signal, "committed");
+        let encoded_value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(encoded_value["syzygy_sha"], "syzygy-committed-sha");
+        assert_eq!(encoded_value["syzygy_signal"], "committed");
         assert_eq!(first.pointer_state, "moved");
         assert_eq!(read_history(root.path(), "engine").unwrap().len(), 1);
 
@@ -586,6 +632,13 @@ mod tests {
         )
         .unwrap();
         append_and_move(root.path(), proof).unwrap();
+        let rung = read_current(root.path(), "engine").unwrap().unwrap();
+        let encoded = serde_json::to_value(&rung).unwrap();
+        assert_eq!(encoded["syzygy_sha"], serde_json::Value::Null);
+        assert_eq!(
+            rung.syzygy_signal,
+            "syzygy-transaction-receipt-unresolved"
+        );
         let proof = prove_installed_state(
             "engine",
             &installed,
