@@ -6,11 +6,12 @@ import urllib.error
 import urllib.request
 
 API = "https://git.home.arpa/api/v1/repos/HOMESERVERSLTD/caduceus"
+PACKAGE_ROOT = "https://git.home.arpa/api/packages/HOMESERVERSLTD/generic/caduceus"
 LOCK_PATH = "locks/beam.json"
 SCHEMA = "harmonia.beam-lock-mint.v1"
 HEX40 = set("0123456789abcdef")
 HEX64 = set("0123456789abcdef")
-BLOCKER = "POST /v1/registry-pen/stamp accepts only child_repo,new_head,cause and cannot carry a source-file write"
+BLOCKER = "beam-lock-drift-no-source-seat-lane"
 receipt_state = {"caduceus_sha": "", "env_sha": "", "minted_from": {}}
 
 def valid_hex(value, length):
@@ -82,19 +83,7 @@ def main():
     receipt_state["minted_from"]["caduceus_release_tag"] = tag
     if target != tag:
         raise RuntimeError("latest release target_commitish does not align with tag_name")
-    release_id = latest.get("id")
-    if not isinstance(release_id, int):
-        raise RuntimeError("latest release has no numeric id")
-    assets = latest.get("assets")
-    if not isinstance(assets, list):
-        raise RuntimeError("latest release has no asset list")
-    manifest_asset = next((asset for asset in assets if isinstance(asset, dict) and asset.get("name") == "manifest.json"), None)
-    if manifest_asset is None:
-        raise RuntimeError("latest release is missing manifest.json")
-    asset_id = manifest_asset.get("id")
-    if not isinstance(asset_id, int):
-        raise RuntimeError("manifest.json asset has no numeric id")
-    manifest = parse_json(request(f"{API}/releases/{release_id}/assets/{asset_id}"), "manifest.json")
+    manifest = parse_json(request(f"{PACKAGE_ROOT}/{tag}/manifest.json"), "manifest.json")
     if manifest.get("schema") != "estate.artifact.manifest.v1":
         raise RuntimeError("manifest.json has an unsupported schema")
     manifest_source_sha = manifest.get("source_sha")
