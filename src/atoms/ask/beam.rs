@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub(crate) const LOCK_SCHEMA: &str = "harmonia.beam-lock.v1";
@@ -30,6 +32,62 @@ pub(crate) struct BeamDoor {
     pub profile: String,
     pub gui_face: Option<String>,
     pub syzygy_sha: Option<String>,
+}
+
+/// Capability minted only by the beam comparison owner for the exact locked
+/// Caduceus release. Callers can carry it, but cannot construct one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BeamConvergenceAuthorization {
+    caduceus_sha: String,
+}
+
+thread_local! {
+    static ACTIVE_CONVERGENCE_AUTHORIZATION: RefCell<Option<BeamConvergenceAuthorization>> = const { RefCell::new(None) };
+    static PENDING_BEAM_FINALIZATION: RefCell<Option<PendingBeamFinalization>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingBeamFinalization {
+    pub authorization: BeamConvergenceAuthorization,
+    pub receipt_dir: PathBuf,
+    pub door_url: String,
+}
+
+impl BeamConvergenceAuthorization {
+    pub(crate) fn caduceus_sha(&self) -> &str {
+        &self.caduceus_sha
+    }
+}
+
+pub(crate) fn authorize_convergence(
+    caduceus_sha: &str,
+    divergent: bool,
+    apply: bool,
+    developer_mode: bool,
+) -> Option<BeamConvergenceAuthorization> {
+    (divergent && apply && !developer_mode).then(|| BeamConvergenceAuthorization {
+        caduceus_sha: caduceus_sha.to_owned(),
+    })
+}
+
+pub(crate) fn install_convergence_authorization(authorization: Option<BeamConvergenceAuthorization>) {
+    ACTIVE_CONVERGENCE_AUTHORIZATION.with(|slot| *slot.borrow_mut() = authorization);
+}
+
+pub(crate) fn active_convergence_caduceus_sha() -> Option<String> {
+    ACTIVE_CONVERGENCE_AUTHORIZATION.with(|slot| slot.borrow().as_ref().map(|a| a.caduceus_sha.clone()))
+}
+
+pub(crate) fn install_pending_beam_finalization(authorization: BeamConvergenceAuthorization, receipt_dir: &Path, door_url: &str) {
+    PENDING_BEAM_FINALIZATION.with(|slot| *slot.borrow_mut() = Some(PendingBeamFinalization { authorization, receipt_dir: receipt_dir.to_owned(), door_url: door_url.to_owned() }));
+}
+
+pub(crate) fn take_pending_beam_finalization() -> Option<PendingBeamFinalization> {
+    PENDING_BEAM_FINALIZATION.with(|slot| slot.borrow_mut().take())
+}
+
+pub(crate) fn clear_pending_beam_finalization() {
+    PENDING_BEAM_FINALIZATION.with(|slot| *slot.borrow_mut() = None);
 }
 
 pub(crate) fn parse_lock(raw: &str) -> Result<BeamLock, String> {

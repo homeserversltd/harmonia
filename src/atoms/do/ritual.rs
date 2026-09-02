@@ -311,6 +311,8 @@ pub(crate) struct ProjectionChild {
     pub member: String,
     pub target_indices: Vec<usize>,
     pub service_indices: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_sha: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct SealedProjection {
@@ -416,6 +418,7 @@ pub(crate) fn seal_projection(
                 .enumerate()
                 .filter_map(|(i, s)| (s.name == member).then_some(i))
                 .collect(),
+            source_sha: (member == "caduceus").then(crate::atoms::ask::beam::active_convergence_caduceus_sha).flatten(),
             member,
         })
         .collect();
@@ -478,12 +481,14 @@ pub(crate) fn commit_projection(
         return Err("transaction-not-applied".into());
     }
     t.state = TransactionState::Committed;
+    crate::bands::compare::finalize_beam_after_commit()?;
     Ok(receipt_for(t))
 }
 pub(crate) fn rollback_projection(
     t: &mut ProjectionTransaction,
     key: &InvocationKey,
 ) -> Result<TransactionReceipt, String> {
+    crate::atoms::ask::beam::clear_pending_beam_finalization();
     if t.state == TransactionState::RolledBack {
         return Ok(receipt_for(t));
     }
