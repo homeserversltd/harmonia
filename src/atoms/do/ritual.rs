@@ -5,6 +5,7 @@ use crate::atoms::ask::change_unit::ServiceStateSnapshot;
 use crate::*;
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs,
@@ -340,6 +341,10 @@ pub(crate) struct TransactionReceipt {
     pub profile_identity: String,
     pub source_head: String,
     pub gui: Option<String>,
+    #[serde(skip)]
+    pub(crate) gui_member: Option<String>,
+    #[serde(skip)]
+    pub(crate) syzygy_sha: Option<String>,
     pub children: Vec<ProjectionChild>,
     pub target_count: usize,
     pub service_count: usize,
@@ -485,6 +490,8 @@ fn receipt_for(t: &ProjectionTransaction) -> TransactionReceipt {
         profile_identity: t.sealed.profile_identity.clone(),
         source_head: t.sealed.source_head.clone(),
         gui: t.sealed.gui_face.clone(),
+        gui_member: t.sealed.gui_member.clone(),
+        syzygy_sha: None,
         children: t.sealed.children.clone(),
         target_count: t.sealed.snapshot.roots.len(),
         service_count: t.sealed.services.len(),
@@ -525,6 +532,32 @@ pub(crate) fn rollback_projection(
         Err("rollback-incomplete".into())
     }
 }
+pub(crate) fn compute_syzygy_sha(
+    caduceus: &str,
+    sbin: &str,
+    gui: Option<&str>,
+) -> Result<String, String> {
+    for (member, sha) in [("caduceus", caduceus), ("sbin", sbin)]
+        .into_iter()
+        .chain(gui.into_iter().map(|sha| ("gui", sha)))
+    {
+        if sha.len() != 40
+            || !sha
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(format!("syzygy-source-sha-invalid {member}"));
+        }
+    }
+    let mut bytes = String::with_capacity(120);
+    bytes.push_str(caduceus);
+    bytes.push_str(sbin);
+    if let Some(gui) = gui {
+        bytes.push_str(gui);
+    }
+    Ok(format!("{:x}", Sha256::digest(bytes.as_bytes())))
+}
+
 pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
     let verdict = match r.state {
         TransactionState::Committed => "ok",
@@ -533,5 +566,50 @@ pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
         TransactionState::RefusedForeignPostImage => "refused-foreign-post-image",
         _ => "failed",
     };
-    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
+    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
+}
+
+#[cfg(test)]
+mod syzygy_sha_tests {
+    use super::compute_syzygy_sha;
+    #[test]
+    fn fixed_member_order_changes_digest() {
+        let a =
+            compute_syzygy_sha(&"0".repeat(40), &"1".repeat(40), Some(&"2".repeat(40))).unwrap();
+        let b =
+            compute_syzygy_sha(&"1".repeat(40), &"0".repeat(40), Some(&"2".repeat(40))).unwrap();
+        assert_ne!(a, b);
+    }
+    #[test]
+    fn empty_gui_contributes_no_bytes() {
+        assert_eq!(
+            compute_syzygy_sha(
+                "0000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000001",
+                None
+            )
+            .unwrap(),
+            "4db7b49a94a77aa7f21dfab94156b5f6934670f0b801ee2a9784e4171b91660c"
+        );
+    }
+    #[test]
+    fn source_shas_require_lowercase_hex() {
+        assert!(compute_syzygy_sha(&"A".repeat(40), &"1".repeat(40), None).is_err());
+        let d = compute_syzygy_sha(&"a".repeat(40), &"f".repeat(40), None).unwrap();
+        assert!(d
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+    #[test]
+    fn known_answer_vector() {
+        assert_eq!(
+            compute_syzygy_sha(
+                "0123456789abcdef0123456789abcdef01234567",
+                &"a".repeat(40),
+                Some(&"f".repeat(40))
+            )
+            .unwrap(),
+            "f1820713847173c6f662ec7a077824eb6a5ca884f32724d58535b24479aa0ee5"
+        );
+    }
 }

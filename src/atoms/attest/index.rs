@@ -45,6 +45,7 @@ pub(crate) mod set_clock;
 #[path = "write_file.rs"]
 pub(crate) mod write_file;
 use super::Receipt;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -103,12 +104,163 @@ pub(crate) fn update_set_receipt(
     write_json_atomic(&dir.join("update-set.json"), &value)
 }
 
+fn committed_member_source_sha(dir: &Path, member: &str) -> Result<Option<String>, String> {
+    let Ok(entries) = fs::read_dir(dir.join("modules").join(member)) else {
+        return Ok(None);
+    };
+    let mut shas = BTreeSet::new();
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".routine.json"))
+        {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(&path).map_err(|e| format!("syzygy-routine-read-failed: {e}"))?,
+        )
+        .map_err(|e| format!("syzygy-routine-parse-failed: {e}"))?;
+        if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            if let Some(sha) = value
+                .pointer("/context/pull-repo.resolved_commit")
+                .and_then(serde_json::Value::as_str)
+            {
+                shas.insert(sha.to_owned());
+            }
+        }
+    }
+    match shas.len() {
+        0 => Ok(None),
+        1 => Ok(shas.into_iter().next()),
+        _ => Err(format!("syzygy-source-sha-ambiguous {member}")),
+    }
+}
+
+fn committed_gui_member_source_sha(dir: &Path, member: &str) -> Result<Option<String>, String> {
+    let modules = dir.join("modules");
+    let entries = match fs::read_dir(&modules) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "syzygy-modules-read-failed {}: {error}",
+                modules.display()
+            ))
+        }
+    };
+    let member = member.to_ascii_lowercase();
+    let mut module_dirs = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!("syzygy-modules-entry-failed {}: {error}", modules.display())
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "syzygy-module-type-failed {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(module_id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        module_dirs.push((module_id, entry.path()));
+    }
+    module_dirs.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut shas = BTreeSet::new();
+    for (module_id, module_dir) in module_dirs {
+        let module_id_lower = module_id.to_ascii_lowercase();
+        let entries = fs::read_dir(&module_dir)
+            .map_err(|error| format!("syzygy-module-read-failed {module_id}: {error}"))?;
+        let mut routines = Vec::new();
+        for entry in entries {
+            let path = entry
+                .map_err(|error| format!("syzygy-routine-entry-failed {module_id}: {error}"))?
+                .path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".routine.json"))
+            {
+                routines.push(path);
+            }
+        }
+        routines.sort();
+        for path in routines {
+            let bytes = fs::read(&path).map_err(|error| {
+                format!("syzygy-routine-read-failed {}: {error}", path.display())
+            })?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+                format!("syzygy-routine-parse-failed {}: {error}", path.display())
+            })?;
+            let component_lower = value
+                .pointer("/artifact_head_divergence_canary/component")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !(module_id_lower.contains(&member) || component_lower.contains(&member)) {
+                continue;
+            }
+            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                if let Some(sha) = value
+                    .pointer("/context/pull-repo.resolved_commit")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    shas.insert(sha.to_owned());
+                }
+            }
+        }
+    }
+    match shas.len() {
+        0 => Ok(None),
+        1 => Ok(shas.into_iter().next()),
+        _ => Err(format!("syzygy-source-sha-ambiguous {member}")),
+    }
+}
+fn committed_syzygy_sha(
+    dir: &Path,
+    r: &crate::atoms::r#do::transaction::TransactionReceipt,
+) -> Result<Option<String>, String> {
+    if r.state != crate::atoms::r#do::transaction::TransactionState::Committed {
+        return Ok(None);
+    }
+    let members = r
+        .children
+        .iter()
+        .map(|child| child.member.as_str())
+        .collect::<BTreeSet<_>>();
+    if !(members.contains("sbin") || members.contains("agathodaimon")) {
+        return Ok(None);
+    }
+    if !members.contains("caduceus") {
+        return Ok(None);
+    }
+    let caduceus = committed_member_source_sha(dir, "caduceus")?
+        .ok_or_else(|| "syzygy-source-sha-missing caduceus".to_string())?;
+    let partner_sha = committed_member_source_sha(dir, "sbin")?
+        .ok_or_else(|| "syzygy-source-sha-missing sbin".to_string())?;
+    let gui = r.gui_member.as_deref().map(|member| {
+        committed_gui_member_source_sha(dir, member)
+            .map(|sha| sha.unwrap_or_else(|| r.source_head.clone()))
+    });
+    let gui = gui.transpose()?;
+    crate::atoms::r#do::transaction::compute_syzygy_sha(&caduceus, &partner_sha, gui.as_deref())
+        .map(Some)
+}
+
 pub(crate) fn write_transaction_receipt(
     dir: &Path,
     receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
     failed_step: Option<&str>,
 ) -> Result<(), String> {
-    let mut value = crate::atoms::r#do::transaction::project_update_set_v1(receipt);
+    let mut enriched = receipt.clone();
+    enriched.syzygy_sha = committed_syzygy_sha(dir, receipt)?;
+    let mut value = crate::atoms::r#do::transaction::project_update_set_v1(&enriched);
     if let Some(step) = failed_step {
         value["failed_step"] = serde_json::json!(step);
     }
