@@ -1,9 +1,9 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
-use serde::Deserialize;
 use crate::tools::git_artifact::{fetch_release_assets, ReleaseRequest};
+use serde::Deserialize;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
@@ -12,12 +12,25 @@ const MAX_BODY_BYTES: &str = "67108864";
 
 fn hex_boundary(bytes: &[u8], start: usize, sha: &[u8]) -> bool {
     bytes.get(start..start + sha.len()) == Some(sha)
-        && !bytes.get(start.wrapping_sub(1)).is_some_and(|b| b.is_ascii_hexdigit())
-        && !bytes.get(start + sha.len()).is_some_and(|b| b.is_ascii_hexdigit())
+        && !bytes
+            .get(start.wrapping_sub(1))
+            .is_some_and(|b| b.is_ascii_hexdigit())
+        && !bytes
+            .get(start + sha.len())
+            .is_some_and(|b| b.is_ascii_hexdigit())
 }
 
-pub(crate) fn identity_matches_bytes(bytes: &[u8], source_sha: &str, identity: &str, component: &str) -> bool {
-    let marker = if identity == "embedded-sha" { None } else { Some(format!("{component}.liveness.v1").into_bytes()) };
+pub(crate) fn identity_matches_bytes(
+    bytes: &[u8],
+    source_sha: &str,
+    identity: &str,
+    component: &str,
+) -> bool {
+    let marker = if identity == "embedded-sha" {
+        None
+    } else {
+        Some(format!("{component}.liveness.v1").into_bytes())
+    };
     if let Some(marker) = marker {
         return bytes.windows(marker.len()).enumerate().any(|(i, w)| {
             if w != marker {
@@ -30,11 +43,20 @@ pub(crate) fn identity_matches_bytes(bytes: &[u8], source_sha: &str, identity: &
                     .is_some_and(|b| b.is_ascii_hexdigit())
         });
     }
-    bytes.windows(source_sha.len()).enumerate().any(|(i, _)| hex_boundary(bytes, i, source_sha.as_bytes()))
+    bytes
+        .windows(source_sha.len())
+        .enumerate()
+        .any(|(i, _)| hex_boundary(bytes, i, source_sha.as_bytes()))
 }
 
-pub(crate) fn identity_matches(destination: &Path, source_sha: &str, identity: &str, component: &str) -> bool {
-    fs::read(destination).is_ok_and(|bytes| identity_matches_bytes(&bytes, source_sha, identity, component))
+pub(crate) fn identity_matches(
+    destination: &Path,
+    source_sha: &str,
+    identity: &str,
+    component: &str,
+) -> bool {
+    fs::read(destination)
+        .is_ok_and(|bytes| identity_matches_bytes(&bytes, source_sha, identity, component))
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -119,12 +141,23 @@ fn curl_to_file(
 ) -> Result<u16, String> {
     let mut command = Command::new("curl");
     command.args([
-        "--fail", "--silent", "--show-error", "--location",
-        "--connect-timeout", "5", "--max-time", "30",
-        "--max-filesize", MAX_BODY_BYTES,
-        "--output", destination.to_str().ok_or("fetch-artifact-path-invalid")?,
-        "--stderr", stderr_path.to_str().ok_or("fetch-artifact-path-invalid")?,
-        "--write-out", "%{http_code}", url,
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        "30",
+        "--max-filesize",
+        MAX_BODY_BYTES,
+        "--output",
+        destination.to_str().ok_or("fetch-artifact-path-invalid")?,
+        "--stderr",
+        stderr_path.to_str().ok_or("fetch-artifact-path-invalid")?,
+        "--write-out",
+        "%{http_code}",
+        url,
     ]);
     let output = if let Some(token) = token {
         let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
@@ -146,8 +179,7 @@ fn curl_to_file(
     } else {
         command.output()
     };
-    let output = output
-        .map_err(|e| format!("fetch-artifact-registry-unreachable: {e}"))?;
+    let output = output.map_err(|e| format!("fetch-artifact-registry-unreachable: {e}"))?;
     let status = String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse::<u16>()
@@ -163,7 +195,9 @@ fn curl_to_file(
         return if detail.is_empty() {
             Err(format!("fetch-artifact-registry-refused-{status}"))
         } else {
-            Err(format!("fetch-artifact-registry-refused-{status}: {detail}"))
+            Err(format!(
+                "fetch-artifact-registry-refused-{status}: {detail}"
+            ))
         };
     }
     Ok(status)
@@ -176,22 +210,35 @@ fn registry_is_estate_host(base: &str) -> bool {
         .is_some_and(|authority| authority == "git.home.arpa")
 }
 
-fn configured_estate_token() -> Result<String, String> {
+fn configured_estate_token_path(api_root: &str) -> Result<PathBuf, String> {
     let path = crate::bands::renew_self::engine_config_path();
     let config = crate::bands::renew_self::load_engine_plane_config(&path)?;
-    let token_path = config
-        .into_iter()
-        .flat_map(|config| config.credential_scopes.into_values())
-        .find_map(|scope| {
-            (scope.https_host.as_deref() == Some("git.home.arpa"))
-                .then_some(scope.https_token_path)
-                .flatten()
-        })
+    let scopes = config
+        .as_ref()
+        .map(crate::bands::renew_self::credential_scopes)
+        .unwrap_or_default();
+    let endpoint_host = api_root
+        .strip_prefix("https://")
+        .or_else(|| api_root.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next());
+    let scope = scopes
+        .get(api_root)
+        .or_else(|| endpoint_host.and_then(|host| scopes.get(host)))
+        .or_else(|| {
+            scopes
+                .values()
+                .find(|scope| scope.https_host.as_deref() == Some("git.home.arpa"))
+        });
+    let token_path = scope
+        .and_then(|scope| scope.https_token_path.clone())
         .ok_or_else(|| "fetch-artifact-auth-required-configured-scope-missing".to_string())?;
+    Ok(token_path)
+}
+fn configured_estate_token(api_root: &str) -> Result<String, String> {
+    let token_path = configured_estate_token_path(api_root)?;
     crate::atoms::git_artifact::read_token(&token_path)
 }
-
-fn curl_with_anonymous_first(url: &str, destination: &Path) -> Result<u16, String> {
+fn curl_with_anonymous_first(api_root: &str, url: &str, destination: &Path) -> Result<u16, String> {
     let stderr_path = destination.with_extension("stderr");
     let anonymous = curl_to_file(url, destination, &stderr_path, None);
     if let Err(error) = &anonymous {
@@ -203,11 +250,11 @@ fn curl_with_anonymous_first(url: &str, destination: &Path) -> Result<u16, Strin
         let _ = fs::remove_file(&stderr_path);
         return anonymous;
     }
-    if !registry_is_estate_host(url) {
+    if !registry_is_estate_host(api_root) {
         let _ = fs::remove_file(&stderr_path);
         return Err("fetch-artifact-auth-required-non-estate-registry".into());
     }
-    let token = configured_estate_token()?;
+    let token = configured_estate_token(api_root)?;
     let result = curl_to_file(url, destination, &stderr_path, Some(&token));
     let _ = fs::remove_file(&stderr_path);
     result
@@ -238,6 +285,7 @@ pub(crate) fn download(
         let manifest_path = directory.join("manifest.json");
         let artifact_path = directory.join("artifact");
         curl_with_anonymous_first(
+            registry_base,
             &artifact_url(registry_base, component, source_sha, "manifest.json"),
             &manifest_path,
         )?;
@@ -248,71 +296,116 @@ pub(crate) fn download(
         .map_err(|e| format!("fetch-artifact-manifest-malformed: {e}"))?;
         validate_manifest(&manifest, component, source_sha)?;
         curl_with_anonymous_first(
+            registry_base,
             &artifact_url(registry_base, component, source_sha, artifact_name),
             &artifact_path,
         )?;
         let bytes = fs::read(&artifact_path)
             .map_err(|e| format!("fetch-artifact-download-read-failed: {e}"))?;
-        if bytes.len() > MAX_BODY_BYTES.parse::<usize>().expect("constant is numeric") {
+        if bytes.len()
+            > MAX_BODY_BYTES
+                .parse::<usize>()
+                .expect("constant is numeric")
+        {
             return Err("fetch-artifact-download-too-large".into());
         }
-        Ok(Download { manifest, bytes, identity: "liveness-marker".into() })
+        Ok(Download {
+            manifest,
+            bytes,
+            identity: "liveness-marker".into(),
+        })
     })();
     let _ = fs::remove_dir_all(&directory);
     result
 }
-pub(crate) fn download_release(component:&str,source_dir:&Path,release_repo:&str,tag:Option<&str>,api_root:&str,asset_name:Option<&str>,sidecar_name:Option<&str>)->Result<Option<Download>,String>{
- let (owner,repo)=release_repo.split_once('/').ok_or_else(||"fetch-artifact-release-repo-invalid".to_string())?; if owner.is_empty()||repo.is_empty()||repo.contains('/') {return Err("fetch-artifact-release-repo-invalid".into())}
- let tag=match tag {Some(v) if !v.trim().is_empty()=>v.to_owned(),_=>release_version(source_dir)?}; let arch=std::env::consts::ARCH;
- let asset=asset_name.map(str::to_owned).unwrap_or_else(||format!("{component}-{tag}-x86_64")); let sidecar=sidecar_name.map(str::to_owned).unwrap_or_else(||format!("{asset}.sha256"));
- let request=ReleaseRequest{kind:"forgejo-release".into(),base_url:api_root.into(),owner:owner.into(),repo:repo.into(),credential_token_path:None,credential_scope_found:false,cache_dir:std::env::temp_dir().join(format!("harmonia-release-{}",std::process::id()))};
- let Some(release)=fetch_release_assets(&request,&tag,&asset,&sidecar)? else{return Ok(None)};
- if !validate_source_sha(&release.target_commitish){return Err("fetch-artifact-release-target-commitish-invalid".into())}
- let digest=crate::atoms::file_sha256(&release.artifact); let sidecar_text=String::from_utf8(release.sidecar).map_err(|_|"fetch-artifact-release-sidecar-malformed".to_string())?; let expected=format!("{digest}  {asset}");
- if !is_hex(&digest,64)||sidecar_text.trim_end_matches(['\r','\n'])!=expected{return Err("fetch-artifact-release-sidecar-mismatch".into())}
- let manifest=Manifest{schema:MANIFEST_SCHEMA.into(),component:component.into(),source_sha:release.target_commitish,target:arch.into(),sha256:digest,built_at:tag,pipeline_url:release.metadata_url};
- Ok(Some(Download{manifest,bytes:release.artifact,identity:"embedded-sha".into()}))
+pub(crate) fn download_release(
+    component: &str,
+    binary_name: &str,
+    _source_dir: &Path,
+    release_repo: &str,
+    tag: Option<&str>,
+    api_root: &str,
+    asset_name: Option<&str>,
+    sidecar_name: Option<&str>,
+    source_build_sha: &str,
+) -> Result<Option<Download>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    let tag = match tag.filter(|value| !value.trim().is_empty()) {
+        Some(value) => value.to_owned(),
+        None => source_build_sha.to_owned(),
+    };
+    let asset = asset_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{binary_name}-x86_64"));
+    let sidecar = sidecar_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{asset}.sha256"));
+    let estate = registry_is_estate_host(api_root);
+    let (credential_token_path, credential_scope_found) = if estate {
+        (Some(configured_estate_token_path(api_root)?), true)
+    } else {
+        (None, false)
+    };
+    let request = ReleaseRequest {
+        kind: "forgejo-release".into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential_token_path,
+        credential_scope_found,
+        cache_dir: std::env::temp_dir().join(format!("harmonia-release-{}", std::process::id())),
+    };
+    let Some(release) = fetch_release_assets(&request, &tag, &asset, &sidecar)? else {
+        return Ok(None);
+    };
+    let digest = crate::atoms::file_sha256(&release.artifact);
+    let sidecar_text = String::from_utf8(release.sidecar)
+        .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
+    let expected = format!("{digest}  {asset}");
+    if !is_hex(&digest, 64) || sidecar_text.trim_end_matches(['\r', '\n']) != expected {
+        return Err("fetch-artifact-release-sidecar-mismatch".into());
+    }
+    let manifest = Manifest {
+        schema: MANIFEST_SCHEMA.into(),
+        component: component.into(),
+        source_sha: release.target_commitish,
+        target: std::env::consts::ARCH.into(),
+        sha256: digest,
+        built_at: tag,
+        pipeline_url: release.metadata_url,
+    };
+    Ok(Some(Download {
+        manifest,
+        bytes: release.artifact,
+        identity: "embedded-sha".into(),
+    }))
 }
-
 pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
     identity_matches(destination, source_sha, "liveness-marker", "caduceus")
 }
 
-pub(crate) fn release_version(source_dir: &Path) -> Result<String, String> {
-    let text = fs::read_to_string(source_dir.join("Cargo.toml"))
-        .map_err(|e| format!("fetch-artifact-release-source-read-failed: {e}"))?;
-    let mut package = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') { package = trimmed == "[package]"; continue; }
-        if package {
-            let Some((key, value)) = trimmed.split_once('=') else { continue };
-            if key.trim() != "version" {
-                continue;
-            }
-            let Some(value) = value.trim().strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
-                continue;
-            };
-            if !value.is_empty() {
-                return Ok(value.to_owned());
-            }
-        }
-    }
-    Err("fetch-artifact-release-version-missing".into())
-}
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn native_release_fixture_http_server_stages_binary_and_verifies_sidecar() {
-        let source = std::env::temp_dir().join(format!("harmonia-release-source-{}", std::process::id()));
+        let source =
+            std::env::temp_dir().join(format!("harmonia-release-source-{}", std::process::id()));
         fs::create_dir_all(&source).unwrap();
-        fs::write(source.join("Cargo.toml"), "[package]\nname=\"fixture\"\nversion=\"1.2.3\"\n").unwrap();
+        fs::write(
+            source.join("Cargo.toml"),
+            "[package]\nname=\"fixture\"\nversion=\"1.2.3\"\n",
+        )
+        .unwrap();
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::thread;
 
-        assert_eq!(release_version(&source).unwrap(), "1.2.3");
         let artifact = b"release-artifact-0123456789abcdef0123456789abcdef01234567";
         let digest = crate::atoms::file_sha256(artifact);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -320,21 +413,29 @@ mod tests {
         let release_body = serde_json::json!({
             "target_commitish": "0123456789abcdef0123456789abcdef01234567",
             "assets": [
-                {"name": "fixture-1.2.3-x86_64", "browser_download_url": format!("http://{address}/artifact")},
-                {"name": "fixture-1.2.3-x86_64.sha256", "browser_download_url": format!("http://{address}/sidecar")},
+                {"name": "fixture-x86_64", "browser_download_url": format!("http://{address}/artifact")},
+                {"name": "fixture-x86_64.sha256", "browser_download_url": format!("http://{address}/sidecar")},
             ],
         }).to_string().into_bytes();
         let server = thread::spawn(move || {
             for (path, body) in [
-                ("/api/v1/repos/OWNER/REPO/releases/tags/1.2.3", release_body),
+                ("/api/v1/repos/OWNER/REPO/releases/tags/0123456789abcdef0123456789abcdef01234567", release_body),
                 ("/artifact", artifact.to_vec()),
-                ("/sidecar", format!("{digest}  fixture-1.2.3-x86_64\n").into_bytes()),
+                (
+                    "/sidecar",
+                    format!("{digest}  fixture-x86_64\n").into_bytes(),
+                ),
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = [0; 4096];
                 let n = stream.read(&mut request).unwrap();
                 assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
                 stream.write_all(&body).unwrap();
             }
         });
@@ -344,14 +445,25 @@ mod tests {
         let args = [
             ("component", serde_json::json!("fixture")),
             ("release_repo", serde_json::json!("OWNER/REPO")),
-            ("api_root", serde_json::json!(format!("http://{address}/api/v1"))),
-            ("source_build_sha", serde_json::json!("0123456789abcdef0123456789abcdef01234567")),
+            (
+                "api_root",
+                serde_json::json!(format!("http://{address}/api/v1")),
+            ),
+            (
+                "source_build_sha",
+                serde_json::json!("0123456789abcdef0123456789abcdef01234567"),
+            ),
             ("source_dir", serde_json::json!(source)),
             ("destination", serde_json::json!(destination)),
             ("installed_binary", serde_json::json!(installed)),
-        ].into_iter().map(|(key, value)| (key.into(), value)).collect();
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
-        let outcome = crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation)).unwrap();
+        let outcome =
+            crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation))
+                .unwrap();
         server.join().unwrap();
         assert!(outcome.ok);
         assert!(outcome.changed);
@@ -379,10 +491,8 @@ mod tests {
             )
             .unwrap();
         });
-        let directory = std::env::temp_dir().join(format!(
-            "harmonia-fetch-auth-test-{}",
-            std::process::id()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("harmonia-fetch-auth-test-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         let destination = directory.join("artifact");
         let stderr_path = directory.join("stderr");
@@ -410,18 +520,36 @@ mod tests {
             let (mut stream, _) = loop {
                 match listener.accept() {
                     Ok(pair) => break pair,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(std::time::Duration::from_millis(5)),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(std::time::Duration::from_millis(5))
+                    }
                     Err(error) => panic!("{error}"),
                 }
             };
             let mut request = [0_u8; 2048];
             let length = stream.read(&mut request).unwrap();
             let request = String::from_utf8_lossy(&request[..length]);
-            assert!(request.starts_with("GET /caduceus/0123456789abcdef0123456789abcdef01234567/manifest.json"));
-            let body = format!(r#"{{"schema":"{}","component":"other","source_sha":"{}","target":"x86_64","sha256":"{}","built_at":"now","pipeline_url":"https://ci"}}"#, MANIFEST_SCHEMA, sha, "a".repeat(64));
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            assert!(request.starts_with(
+                "GET /caduceus/0123456789abcdef0123456789abcdef01234567/manifest.json"
+            ));
+            let body = format!(
+                r#"{{"schema":"{}","component":"other","source_sha":"{}","target":"x86_64","sha256":"{}","built_at":"now","pipeline_url":"https://ci"}}"#,
+                MANIFEST_SCHEMA,
+                sha,
+                "a".repeat(64)
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
             thread::sleep(std::time::Duration::from_millis(100));
-            assert!(listener.accept().is_err(), "artifact endpoint was contacted");
+            assert!(
+                listener.accept().is_err(),
+                "artifact endpoint was contacted"
+            );
         });
         let result = download("caduceus", &format!("http://{address}"), sha, "artifact");
         server.join().unwrap();

@@ -79,12 +79,26 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                 .cloned()
                 .unwrap_or_else(|| Value::String(String::new())),
         );
-        let native_release = args.get("release_repo").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty());
-        let registry_fetch = args.get("registry_base").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty());
+        let native_release = args
+            .get("release_repo")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+        let registry_fetch = args
+            .get("registry_base")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
         let release_fetch = registry_fetch || native_release;
         let stages = [
             ("pull-repo", "pull-repo", "acquire"),
-            ("build", if release_fetch { "fetch-artifact" } else { "build-crate" }, if release_fetch { "fetch" } else { "build" }),
+            (
+                "build",
+                if release_fetch {
+                    "fetch-artifact"
+                } else {
+                    "build-crate"
+                },
+                if release_fetch { "fetch" } else { "build" },
+            ),
             ("binary-install", "place-file", "binary-promotion"),
             ("managed-files", "files", "managed-files"),
             ("service-daemon-reload", "systemd", "daemon-reload"),
@@ -123,27 +137,98 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                 let child_args = match name {
                     "pull-repo" => pull.clone(),
                     "build" if tool == "fetch-artifact" => {
-                        let component = args.get("component").cloned().unwrap_or(Value::String(String::new()));
-                        let source_dir = args.get("source_dir").and_then(Value::as_str).unwrap_or("");
-                        let binary_name = args.get("binary_name").cloned().unwrap_or_else(|| Value::String("caduceus".into()));
-                        let destination_root = if native_release { "target/harmonia-release" } else { "target/harmonia-registry" };
-                        let destination = Value::String(Path::new(source_dir).join(destination_root).join(binary_name.as_str().unwrap_or("caduceus")).to_string_lossy().into_owned());
+                        let component = args
+                            .get("component")
+                            .cloned()
+                            .unwrap_or(Value::String(String::new()));
+                        let source_dir = args
+                            .get("source_dir")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let binary_name = args
+                            .get("binary_name")
+                            .cloned()
+                            .unwrap_or_else(|| Value::String("caduceus".into()));
+                        let destination_root = if native_release {
+                            "target/harmonia-release"
+                        } else {
+                            "target/harmonia-registry"
+                        };
+                        let destination = Value::String(
+                            Path::new(source_dir)
+                                .join(destination_root)
+                                .join(binary_name.as_str().unwrap_or("caduceus"))
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
                         let mut child = BTreeMap::from([
                             ("component".into(), component),
-                            ("registry_base".into(), args.get("registry_base").cloned().unwrap_or(Value::String(String::new()))),
-                            ("release_repo".into(), args.get("release_repo").cloned().unwrap_or(Value::String(String::new()))),
-                            ("release_tag".into(), args.get("release_tag").cloned().unwrap_or(Value::Null)),
-                            ("api_root".into(), args.get("api_root").cloned().unwrap_or(Value::String("https://git.home.arpa/api/v1".into()))),
-                            ("asset_name".into(), args.get("asset_name").cloned().unwrap_or(Value::Null)),
-                            ("sidecar_name".into(), args.get("sidecar_name").cloned().unwrap_or(Value::Null)),
-                            ("source_build_sha".into(), serde_json::json!({"from":"pull-repo.resolved_commit"})),
-                            ("source_dir".into(), serde_json::json!({"from":"pull-repo.path"})),
-                            ("identity".into(), args.get("identity").cloned().unwrap_or_else(|| Value::String(if native_release { "embedded-sha" } else { "liveness-marker" }.into()))),
+                            (
+                                "registry_base".into(),
+                                args.get("registry_base")
+                                    .cloned()
+                                    .unwrap_or(Value::String(String::new())),
+                            ),
+                            (
+                                "release_repo".into(),
+                                args.get("release_repo")
+                                    .cloned()
+                                    .unwrap_or(Value::String(String::new())),
+                            ),
+                            (
+                                "release_tag".into(),
+                                args.get("release_tag").cloned().unwrap_or_else(|| {
+                                    serde_json::json!({"from":"pull-repo.resolved_commit"})
+                                }),
+                            ),
+                            (
+                                "api_root".into(),
+                                args.get("api_root").cloned().unwrap_or(Value::String(
+                                    "https://git.home.arpa/api/v1".into(),
+                                )),
+                            ),
+                            (
+                                "asset_name".into(),
+                                args.get("asset_name").cloned().unwrap_or(Value::Null),
+                            ),
+                            (
+                                "sidecar_name".into(),
+                                args.get("sidecar_name").cloned().unwrap_or(Value::Null),
+                            ),
+                            (
+                                "source_build_sha".into(),
+                                serde_json::json!({"from":"pull-repo.resolved_commit"}),
+                            ),
+                            (
+                                "source_dir".into(),
+                                serde_json::json!({"from":"pull-repo.path"}),
+                            ),
+                            (
+                                "identity".into(),
+                                args.get("identity").cloned().unwrap_or_else(|| {
+                                    Value::String(
+                                        if native_release {
+                                            "embedded-sha"
+                                        } else {
+                                            "liveness-marker"
+                                        }
+                                        .into(),
+                                    )
+                                }),
+                            ),
                             ("destination".into(), destination),
-                            ("installed_binary".into(), args.get("install_bin").cloned().unwrap_or(Value::String(String::new()))),
+                            (
+                                "installed_binary".into(),
+                                args.get("install_bin")
+                                    .cloned()
+                                    .unwrap_or(Value::String(String::new())),
+                            ),
                             ("artifact_name".into(), binary_name),
                         ]);
-                        child.insert("source_policy".into(), serde_json::json!({"from":"pull-repo.source_policy","default":"artifact"}));
+                        child.insert(
+                            "source_policy".into(),
+                            serde_json::json!({"from":"pull-repo.source_policy","default":"artifact"}),
+                        );
                         child
                     }
                     "build" => {
@@ -760,7 +845,8 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn service_runtime_material_gates_ignore_build_only_changes_and_cover_quiet_binary_and_managed() {
+    fn service_runtime_material_gates_ignore_build_only_changes_and_cover_quiet_binary_and_managed()
+    {
         assert_eq!(
             super::service_runtime_material_gates("restart", false, false),
             (false, false)
@@ -818,15 +904,26 @@ mod tests {
     }
     #[test]
     fn coronatio_lowering_derives_native_release_artifact_and_destination() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("profiles/homeserver/modules/coronatio/manifest.json");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles/homeserver/modules/coronatio/manifest.json");
         let manifest = load_ladder_manifest(&path).unwrap();
         let mut manifest = manifest;
         super::lower_service_runtime_steps(&mut manifest);
-        let routine = manifest.ladder.iter().find(|s| s.step_id == "coronatio-service-runtime").unwrap();
+        let routine = manifest
+            .ladder
+            .iter()
+            .find(|s| s.step_id == "coronatio-service-runtime")
+            .unwrap();
         let build = routine.steps.iter().find(|s| s.name == "build").unwrap();
         assert_eq!(build.tool, "fetch-artifact");
-        assert_eq!(build.args.get("artifact_name").and_then(Value::as_str), Some("coronatio"));
-        assert_eq!(build.args.get("destination").and_then(Value::as_str), Some("/opt/coronatio/source/target/harmonia-release/coronatio"));
+        assert_eq!(
+            build.args.get("artifact_name").and_then(Value::as_str),
+            Some("coronatio")
+        );
+        assert_eq!(
+            build.args.get("destination").and_then(Value::as_str),
+            Some("/opt/coronatio/source/target/harmonia-release/coronatio")
+        );
     }
 
     #[test]
@@ -839,7 +936,9 @@ mod tests {
             .iter()
             .find(|step| step.step_id == "caduceus-service-runtime")
             .expect("real Caduceus lowered routine");
-        assert!(crate::tools::ladder::is_lowered_service_runtime_converge(routine));
+        assert!(crate::tools::ladder::is_lowered_service_runtime_converge(
+            routine
+        ));
         assert!(crate::tools::ladder::service_runtime_converge_args(routine).is_some());
 
         let build = routine
@@ -849,7 +948,10 @@ mod tests {
             .expect("lowered fetch-artifact build child");
         assert_eq!(build.tool, "fetch-artifact");
         assert_eq!(build.permutation.as_deref(), Some("fetch"));
-        assert_eq!(build.args.get("component").and_then(Value::as_str), Some("caduceus"));
+        assert_eq!(
+            build.args.get("component").and_then(Value::as_str),
+            Some("caduceus")
+        );
         assert_eq!(
             build.args.get("source_build_sha"),
             Some(&json!({"from":"pull-repo.resolved_commit"}))
@@ -873,7 +975,10 @@ mod tests {
             build.args.get("installed_binary").and_then(Value::as_str),
             Some("/usr/local/bin/caduceus")
         );
-        assert_eq!(build.args.get("artifact_name").and_then(Value::as_str), Some("caduceus"));
+        assert_eq!(
+            build.args.get("artifact_name").and_then(Value::as_str),
+            Some("caduceus")
+        );
         assert!(routine
             .steps
             .iter()
@@ -1041,13 +1146,7 @@ mod profile_source_collection_tests {
         ]);
         let collected = collect_profile_sources(&args);
         assert_eq!(collected.len(), 2);
-        assert_eq!(
-            collected["alpha_profile_source"],
-            json!({"source": "a"})
-        );
-        assert_eq!(
-            collected["beta_profile_source"],
-            json!({"source": "b"})
-        );
+        assert_eq!(collected["alpha_profile_source"], json!({"source": "a"}));
+        assert_eq!(collected["beta_profile_source"], json!({"source": "b"}));
     }
 }
