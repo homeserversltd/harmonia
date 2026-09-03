@@ -69,6 +69,11 @@ pub(crate) struct Manifest {
     pub sha256: String,
     pub built_at: String,
     pub pipeline_url: String,
+    /// BeamPair toolchain identity minted by CI (pali:harmonia-beam-syzygy-law):
+    /// sha256(rustc -Vv || cargo -V || target triple). Optional so manifests
+    /// published before 2026-09-02 still parse; when present it SHALL be 64-hex.
+    #[serde(default)]
+    pub env_sha: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Download {
@@ -112,6 +117,11 @@ pub(crate) fn validate_manifest(
     }
     if !is_hex(&manifest.sha256, 64) {
         return Err("fetch-artifact-manifest-sha256-malformed".into());
+    }
+    if let Some(env_sha) = manifest.env_sha.as_deref() {
+        if !is_hex(env_sha, 64) {
+            return Err("fetch-artifact-manifest-env-sha-malformed".into());
+        }
     }
     for (value, field) in [
         (&manifest.target, "target"),
@@ -379,6 +389,7 @@ pub(crate) fn download_release(
             sha256: digest,
             built_at: tag,
             pipeline_url: release.metadata_url,
+            env_sha: None,
         };
         Ok(Some(Download {
             manifest,

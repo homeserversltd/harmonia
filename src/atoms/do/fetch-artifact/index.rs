@@ -94,6 +94,7 @@ mod tests {
                 sha256: digest.into(),
                 built_at: "now".into(),
                 pipeline_url: "https://ci".into(),
+                env_sha: None,
             },
             bytes,
             identity: "liveness-marker".into(),
