@@ -20,6 +20,8 @@ pub(crate) mod change_owner;
 pub(crate) mod check_health;
 #[path = "beam.rs"]
 pub(crate) mod beam;
+#[path = "ruyi.rs"]
+pub(crate) mod ruyi;
 #[path = "copy_file.rs"]
 pub(crate) mod copy_file;
 #[path = "install_package.rs"]

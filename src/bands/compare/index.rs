@@ -168,6 +168,13 @@ pub(crate) fn execute_manifest_modules(
     events: &mut File,
 ) -> Result<(), String> {
     let mut beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
+    let ruyi = crate::atoms::ask::ruyi::ruyi_receipt(&beam, receipt_dir)?;
+    crate::write_json(&receipt_dir.join("ruyi.json"), &ruyi)?;
+    if let Some(state @ ("gateway-unreachable" | "refused")) =
+        ruyi.get("state").and_then(Value::as_str)
+    {
+        println!("ruyi state={state}");
+    }
     let developer_mode = crate::bands::renew_self::load_engine_plane_config(
         &crate::bands::renew_self::engine_config_path(),
     )?

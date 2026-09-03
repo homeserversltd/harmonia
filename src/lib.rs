@@ -355,6 +355,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("update") => update_from_certificate(&args[1..], invocation),
         Some("demo") => demo_command(&args[1..], invocation),
         Some("beam") => beam_command(&args[1..]),
+        Some("ruyi") => ruyi_command(&args[1..]),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
         Some("validate-ladder") => {
@@ -1017,6 +1018,15 @@ fn demo_command(args: &[String], _invocation: Invocation) -> Result<(), String> 
     demo_registry::run(name)
 }
 
+fn ruyi_command(_args: &[String]) -> Result<(), String> {
+    let receipt = crate::atoms::ask::ruyi::fetch_roster_receipt()?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
 fn beam_command(args: &[String]) -> Result<(), String> {
     let mut lock_path = None;
     let mut door_url = crate::atoms::ask::beam::DEFAULT_DOOR_URL.to_string();
@@ -1069,6 +1079,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
     println!("  harmonia beam [--lock <path>] [--door-url <url>]");
+    println!("  harmonia ruyi");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id> owner");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");
