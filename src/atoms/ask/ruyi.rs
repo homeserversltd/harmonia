@@ -93,12 +93,18 @@ pub(crate) struct GatewayReceipt {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct RuyiIdentity {
+    pub harmonia_sha_source: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RuyiReceipt {
     pub schema: String,
     pub state: String,
     pub gateway: Option<GatewayReceipt>,
     #[serde(rename = "self")]
     pub self_row: Option<RuyiRow>,
+    pub identity: Option<RuyiIdentity>,
     pub roster_count: usize,
     pub roster: Vec<RuyiRow>,
     pub first_missing_signal: String,
@@ -395,12 +401,27 @@ fn caduceus_port() -> (u16, &'static str) {
 fn base(g: Ipv4Addr, p: u16) -> String {
     format!("http://{g}:{p}")
 }
+fn resolve_harmonia_sha(
+    embedded: Option<&str>,
+    lock: Option<&crate::atoms::ask::beam::BeamLock>,
+) -> Result<(String, &'static str), &'static str> {
+    if let Some(sha) = embedded.and_then(|x| valid_sha(x, 40).then_some(x)) {
+        return Ok((sha.to_owned(), "embedded"));
+    }
+    match lock {
+        Some(crate::atoms::ask::beam::BeamLock::Legacy { minted_from, .. }) => {
+            Ok((minted_from.harmonia_sha.clone(), "legacy-lock"))
+        }
+        _ => Err("ruyi-harmonia-sha-absent"),
+    }
+}
 fn empty(state: &str, signal: &str) -> RuyiReceipt {
     RuyiReceipt {
         schema: REGISTER_SCHEMA.into(),
         state: state.into(),
         gateway: None,
         self_row: None,
+        identity: None,
         roster_count: 0,
         roster: vec![],
         first_missing_signal: signal.into(),
@@ -544,6 +565,7 @@ fn register(
     g: GatewayReceipt,
     transport: &str,
     self_gateway: bool,
+    identity: &RuyiIdentity,
 ) -> Result<RuyiReceipt, String> {
     let bytes = serde_json::to_vec(&row).map_err(|_| "ruyi-row-malformed".to_string())?;
     let put = format!("{transport}/api/v1/ruyi/{}", row.mac);
@@ -556,6 +578,7 @@ fn register(
                     state: "refused".into(),
                     gateway: Some(g),
                     self_row: Some(row),
+                    identity: Some(identity.clone()),
                     roster_count: 0,
                     roster: vec![],
                     first_missing_signal: e,
@@ -576,6 +599,7 @@ fn register(
                 .into(),
                 gateway: Some(g),
                 self_row: Some(row),
+                identity: Some(identity.clone()),
                 roster_count: 0,
                 roster: vec![],
                 first_missing_signal: x.detail,
@@ -592,6 +616,7 @@ fn register(
                     state: "refused".into(),
                     gateway: Some(g),
                     self_row: Some(stored),
+                    identity: Some(identity.clone()),
                     roster_count: 0,
                     roster: vec![],
                     first_missing_signal: signal,
@@ -612,6 +637,7 @@ fn register(
                 .into(),
                 gateway: Some(g),
                 self_row: Some(stored),
+                identity: Some(identity.clone()),
                 roster_count: 0,
                 roster: vec![],
                 first_missing_signal: x.detail,
@@ -623,6 +649,7 @@ fn register(
         state: reg_state(self_gateway, RegistrationResult::Registered).into(),
         gateway: Some(g),
         self_row: Some(stored),
+        identity: Some(identity.clone()),
         roster_count: roster.len(),
         roster,
         first_missing_signal: "none".into(),
@@ -655,20 +682,23 @@ pub(crate) fn ruyi_receipt_from_beam(
     let Some(host) = local_hostname()? else {
         return Ok(pre_declaration_receipt("ruyi-hostname-absent"));
     };
-    let lock = match crate::atoms::ask::beam::read_embedded_lock() {
+    let embedded = option_env!("HARMONIA_BUILD_SHA");
+    let lock = if embedded.is_some_and(|x| valid_sha(x, 40)) {
+        None
+    } else {
+        crate::atoms::ask::beam::read_embedded_lock().ok()
+    };
+    let (harmonia_sha, harmonia_sha_source) = match resolve_harmonia_sha(embedded, lock.as_ref()) {
         Ok(x) => x,
-        Err(_) => return Ok(pre_declaration_receipt("ruyi-beam-lock-absent")),
+        Err(signal) => return Ok(pre_declaration_receipt(signal)),
     };
     let door = match beam.door.as_ref() {
         Some(x) => x,
         None => return Ok(pre_declaration_receipt("ruyi-beam-door-absent")),
     };
     let run = current_run_id(dir);
-    let harmonia_sha = match lock {
-        crate::atoms::ask::beam::BeamLock::Legacy { minted_from, .. } => minted_from.harmonia_sha,
-        crate::atoms::ask::beam::BeamLock::Slot { .. } => {
-            return Ok(pre_declaration_receipt("ruyi-beam-lock-harmonia-sha-absent"));
-        }
+    let identity = RuyiIdentity {
+        harmonia_sha_source: harmonia_sha_source.into(),
     };
     let row = validate_row(RuyiRow {
         schema: ROW_SCHEMA.into(),
@@ -697,7 +727,7 @@ pub(crate) fn ruyi_receipt_from_beam(
     } else {
         base(gateway, port)
     };
-    register(row, gr, &transport, self_gateway)
+    register(row, gr, &transport, self_gateway, &identity)
 }
 pub(crate) fn ruyi_receipt(beam: &BeamCompareReceipt, dir: &Path) -> Result<Value, String> {
     let receipt = match crate::device_profile::resolve_certificate_profile() {
@@ -742,6 +772,7 @@ pub(crate) fn fetch_roster_receipt() -> Result<Value, String> {
                 .into(),
                 gateway: Some(gateway_receipt),
                 self_row: None,
+                identity: None,
                 roster_count: 0,
                 roster: vec![],
                 first_missing_signal: failure.detail,
@@ -757,6 +788,7 @@ pub(crate) fn fetch_roster_receipt() -> Result<Value, String> {
                 state: "refused".into(),
                 gateway: Some(gateway_receipt),
                 self_row: None,
+                identity: None,
                 roster_count: 0,
                 roster: vec![],
                 first_missing_signal: signal,
@@ -769,6 +801,7 @@ pub(crate) fn fetch_roster_receipt() -> Result<Value, String> {
         state: "registered".into(),
         gateway: Some(gateway_receipt),
         self_row: None,
+        identity: None,
         roster_count: roster.len(),
         roster,
         first_missing_signal: "none".into(),
@@ -807,6 +840,31 @@ mod tests {
             "self-is-gateway"
         );
         assert_eq!(reg_state(false, RegistrationResult::Refused), "refused")
+    }
+    #[test]
+    fn harmonia_sha_resolution_precedence() {
+        let legacy = crate::atoms::ask::beam::BeamLock::Legacy {
+            schema: crate::atoms::ask::beam::LOCK_SCHEMA.into(),
+            caduceus_sha: "b".repeat(40),
+            env_sha: "c".repeat(64),
+            minted_from: crate::atoms::ask::beam::MintedFrom {
+                harmonia_sha: "d".repeat(40),
+                caduceus_release_tag: "e".repeat(40),
+            },
+        };
+        let embedded = "a".repeat(40);
+        let (sha, source) = resolve_harmonia_sha(Some(&embedded), Some(&legacy)).unwrap();
+        assert_eq!(sha, embedded);
+        assert_eq!(source, "embedded");
+
+        let (sha, source) = resolve_harmonia_sha(None, Some(&legacy)).unwrap();
+        assert_eq!(sha, "d".repeat(40));
+        assert_eq!(source, "legacy-lock");
+
+        assert_eq!(
+            resolve_harmonia_sha(None, None),
+            Err("ruyi-harmonia-sha-absent")
+        );
     }
     #[test]
     fn put_wrapper_parse() {
