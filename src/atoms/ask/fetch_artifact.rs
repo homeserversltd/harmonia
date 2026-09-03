@@ -32,15 +32,17 @@ pub(crate) fn identity_matches_bytes(
         Some(format!("{component}.liveness.v1").into_bytes())
     };
     if let Some(marker) = marker {
+        // The marker anchors the compiled build-sha constant; the exact 40-hex
+        // match is the identity (pali:harmonia-component-release-identity-law).
+        // rustc packs string literals back to back, so the byte after the sha is
+        // whatever literal follows (a real caduceus binary carries "caduceus-p...",
+        // a hex digit) and is never a boundary signal here.
         return bytes.windows(marker.len()).enumerate().any(|(i, w)| {
             if w != marker {
                 return false;
             }
             let start = i + marker.len();
             bytes.get(start..start + source_sha.len()) == Some(source_sha.as_bytes())
-                && !bytes
-                    .get(start + source_sha.len())
-                    .is_some_and(|b| b.is_ascii_hexdigit())
         });
     }
     bytes
