@@ -12,11 +12,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::Path;
 
-pub(crate) fn execute_command_precondition(step: &ValidatedStep, precondition: &crate::tools::ladder::CommandPrecondition, manifest: &LadderManifest, module_dir: &Path) -> Result<OperationOutcome, String> {
+pub(crate) fn execute_command_precondition(
+    step: &ValidatedStep,
+    precondition: &crate::tools::ladder::CommandPrecondition,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+) -> Result<OperationOutcome, String> {
     let argv: Vec<&str> = precondition.args.iter().map(String::as_str).collect();
-    let result = crate::tools::command::capture_with_options(&precondition.program, &argv, crate::tools::command::CaptureOptions::new().cwd(precondition.cwd.as_deref()).timeout_secs(precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS)));
-    crate::write_json(&module_dir.join(format!("{}-precondition.json", step.step_id)), &serde_json::json!({"schema":"harmonia.command_precondition.v1","module":manifest.id,"step_id":step.step_id,"state":if result.ok {"satisfied"} else {"blocked"},"program":precondition.program,"args":precondition.args,"cwd":precondition.cwd,"timeout_secs":precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),"raw_command_ran":false,"probe":result,"probe_error":if result.ok {"none".to_string()} else {format!("exit_code={} stderr={}",result.code,result.stderr)},"first_missing_signal":if result.ok {"none"} else {"command-precondition-blocked"}}))?;
-    Ok(OperationOutcome { ok:result.ok, changed:false, skipped:false, message:format!("command precondition {}",precondition.program), command:Some(result) })
+    let result = crate::tools::command::capture_with_options(
+        &precondition.program,
+        &argv,
+        crate::tools::command::CaptureOptions::new()
+            .cwd(precondition.cwd.as_deref())
+            .timeout_secs(
+                precondition
+                    .timeout_secs
+                    .unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),
+            ),
+    );
+    crate::write_json(
+        &module_dir.join(format!("{}-precondition.json", step.step_id)),
+        &serde_json::json!({"schema":"harmonia.command_precondition.v1","module":manifest.id,"step_id":step.step_id,"state":if result.ok {"satisfied"} else {"blocked"},"program":precondition.program,"args":precondition.args,"cwd":precondition.cwd,"timeout_secs":precondition.timeout_secs.unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),"raw_command_ran":false,"probe":result,"probe_error":if result.ok {"none".to_string()} else {format!("exit_code={} stderr={}",result.code,result.stderr)},"first_missing_signal":if result.ok {"none"} else {"command-precondition-blocked"}}),
+    )?;
+    Ok(OperationOutcome {
+        ok: result.ok,
+        changed: false,
+        skipped: false,
+        message: format!("command precondition {}", precondition.program),
+        command: Some(result),
+    })
 }
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
@@ -168,6 +192,13 @@ pub(crate) fn execute_manifest_modules(
     events: &mut File,
 ) -> Result<(), String> {
     let mut beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
+    let ruyi = crate::atoms::ask::ruyi::ruyi_receipt(&beam, receipt_dir)?;
+    crate::write_json(&receipt_dir.join("ruyi.json"), &ruyi)?;
+    if let Some(state @ ("gateway-unreachable" | "refused")) =
+        ruyi.get("state").and_then(Value::as_str)
+    {
+        println!("ruyi state={state}");
+    }
     let developer_mode = crate::bands::renew_self::load_engine_plane_config(
         &crate::bands::renew_self::engine_config_path(),
     )?
@@ -207,7 +238,10 @@ pub(crate) fn execute_manifest_modules(
     let beam_value = serde_json::to_value(&beam)
         .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
     crate::write_json(&receipt_dir.join("beam.json"), &beam_value)?;
-    if matches!(beam.first_missing_signal, "beam-lock-malformed" | "beam-door-malformed") {
+    if matches!(
+        beam.first_missing_signal,
+        "beam-lock-malformed" | "beam-door-malformed"
+    ) {
         *ok = false;
         if *first_missing_signal == "none" {
             *first_missing_signal = beam.first_missing_signal.to_string();
@@ -356,15 +390,12 @@ pub(crate) fn execute_group_live_probe(
     execute_group_live_probe_validated(manifest, &step, receipt_dir)
 }
 
-
-
 // Arcadia fast-check ownership: preserve the legacy CLI surface while keeping
 // source comparison and SHA probes in the Compare band.
+use crate::{hyalos, CmdResult};
+use crate::{write_command_receipt, write_json};
 use serde_json::json;
 use std::time::Instant;
-use crate::{CmdResult, hyalos};
-use crate::{write_command_receipt, write_json};
-
 
 pub(crate) fn homeconsole_arcadia_check(
     profile: &Profile,
@@ -571,7 +602,11 @@ pub(crate) fn compare_beam(
     };
     BeamCompareReceipt {
         schema: "harmonia.beam-compare.v1",
-        state: if member.is_some() { "divergent" } else { "aligned" },
+        state: if member.is_some() {
+            "divergent"
+        } else {
+            "aligned"
+        },
         converged: member.is_none(),
         lock: Some(lock_projection),
         door: Some(door_projection),
@@ -672,7 +707,10 @@ pub(crate) fn beam_receipt(
             }
         },
     };
-    Ok(compare_beam(lock, crate::atoms::ask::beam::fetch_door(door_url)))
+    Ok(compare_beam(
+        lock,
+        crate::atoms::ask::beam::fetch_door(door_url),
+    ))
 }
 
 #[cfg(test)]
@@ -729,9 +767,19 @@ mod beam_tests {
 
     #[test]
     fn divergent_nondeveloper_is_triple_ladder_even_in_observe() {
-        let mut receipt = compare_beam(Some(lock()), Ok({ let mut d = door(); d.env_sha = "e".repeat(64); d }));
+        let mut receipt = compare_beam(
+            Some(lock()),
+            Ok({
+                let mut d = door();
+                d.env_sha = "e".repeat(64);
+                d
+            }),
+        );
         assert!(authorize_beam(&mut receipt, false, false).is_none());
-        assert_eq!(receipt.authorization, BeamAuthorizationReceipt::TripleLadder);
+        assert_eq!(
+            receipt.authorization,
+            BeamAuthorizationReceipt::TripleLadder
+        );
     }
 
     #[test]
@@ -743,9 +791,19 @@ mod beam_tests {
 
     #[test]
     fn divergent_developer_is_held_even_in_observe() {
-        let mut receipt = compare_beam(Some(lock()), Ok({ let mut d = door(); d.env_sha = "e".repeat(64); d }));
+        let mut receipt = compare_beam(
+            Some(lock()),
+            Ok({
+                let mut d = door();
+                d.env_sha = "e".repeat(64);
+                d
+            }),
+        );
         assert!(authorize_beam(&mut receipt, false, true).is_none());
-        assert_eq!(receipt.authorization, BeamAuthorizationReceipt::HeldDeveloperMode);
+        assert_eq!(
+            receipt.authorization,
+            BeamAuthorizationReceipt::HeldDeveloperMode
+        );
     }
 
     #[test]
@@ -767,7 +825,15 @@ mod beam_tests {
     fn exact_caduceus_beam_json_is_aligned() {
         let raw = r#"{"schema":"caduceus.beam.v1","ok":true,"service":"caduceus","profile":"homeserver","caduceus_sha":"1ddb41af4f123db22ce8cc6037d24a79d582f84c","env_sha":"237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d","gui_face":"Coronatio","syzygy_sha":null}"#;
         let door = crate::atoms::ask::beam::parse_door(raw).unwrap();
-        let lock = crate::atoms::ask::beam::BeamLock { schema: "harmonia.beam-lock.v1".into(), caduceus_sha: "1ddb41af4f123db22ce8cc6037d24a79d582f84c".into(), env_sha: "237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d".into(), minted_from: crate::atoms::ask::beam::MintedFrom { harmonia_sha: "c".repeat(40), caduceus_release_tag: "d".repeat(40) } };
+        let lock = crate::atoms::ask::beam::BeamLock {
+            schema: "harmonia.beam-lock.v1".into(),
+            caduceus_sha: "1ddb41af4f123db22ce8cc6037d24a79d582f84c".into(),
+            env_sha: "237777c45ef88dee8f2426e564bf0c8754f21856d64383f848ca4d4ffa85091d".into(),
+            minted_from: crate::atoms::ask::beam::MintedFrom {
+                harmonia_sha: "c".repeat(40),
+                caduceus_release_tag: "d".repeat(40),
+            },
+        };
         let receipt = compare_beam(Some(lock), Ok(door));
         assert_eq!(receipt.state, "aligned");
         assert!(receipt.converged);
@@ -831,49 +897,126 @@ mod beam_tests {
                 let mut request = [0_u8; 4096];
                 let n = stream.read(&mut request).unwrap();
                 assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
                 stream.write_all(&body).unwrap();
             }
         });
 
-        let divergent_door = { let mut door = door(); door.env_sha = "e".repeat(64); door };
+        let divergent_door = {
+            let mut door = door();
+            door.env_sha = "e".repeat(64);
+            door
+        };
         let mut beam = compare_beam(Some(lock), Ok(divergent_door));
         let authorization = authorize_beam(&mut beam, true, false).unwrap();
         assert_eq!(beam.authorization, BeamAuthorizationReceipt::TripleLadder);
         assert_eq!(authorization.caduceus_sha(), lock_sha);
 
         let args: BTreeMap<String, Value> = [
-            ("component", json!("caduceus")), ("registry_base", json!(&registry)),
-            ("source_build_sha", json!(lock_sha)), ("artifact_name", json!("artifact")),
-            ("destination", json!(&destination)), ("installed_binary", json!(&installed)),
-        ].into_iter().map(|(key, value)| (key.into(), value)).collect();
+            ("component", json!("caduceus")),
+            ("registry_base", json!(&registry)),
+            ("source_build_sha", json!(lock_sha)),
+            ("artifact_name", json!("artifact")),
+            ("destination", json!(&destination)),
+            ("installed_binary", json!(&installed)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
-        let outcome = crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation)).unwrap();
+        let outcome =
+            crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation))
+                .unwrap();
         assert!(outcome.changed);
-        assert!(crate::atoms::ask::fetch_artifact::destination_identity(&destination, &lock_sha));
+        assert!(crate::atoms::ask::fetch_artifact::destination_identity(
+            &destination,
+            &lock_sha
+        ));
 
         let plan = crate::atoms::r#do::transaction::UpdatePlan {
-            targets: Vec::new(), services: Vec::new(), gui_face: Some("Coronatio".into()), gui_member: Some("face".into()),
-            caduceus_count: 1, pinned_members: Some(vec!["caduceus".into(), "sbin".into(), "face".into()]),
+            targets: Vec::new(),
+            services: Vec::new(),
+            gui_face: Some("Coronatio".into()),
+            gui_member: Some("face".into()),
+            caduceus_count: 1,
+            pinned_members: Some(vec!["caduceus".into(), "sbin".into(), "face".into()]),
             member_modules: BTreeMap::new(),
         };
-        let mut transaction = crate::atoms::r#do::transaction::seal_projection(&plan, "profile", "identity", "source-head").unwrap();
-        transaction.authorize_caduceus_source(&authorization).unwrap();
+        let mut transaction = crate::atoms::r#do::transaction::seal_projection(
+            &plan,
+            "profile",
+            "identity",
+            "source-head",
+        )
+        .unwrap();
+        transaction
+            .authorize_caduceus_source(&authorization)
+            .unwrap();
         for child in 0..transaction.sealed.children.len() {
-            crate::atoms::r#do::transaction::apply_projection(&mut transaction, child, &invocation).unwrap();
+            crate::atoms::r#do::transaction::apply_projection(&mut transaction, child, &invocation)
+                .unwrap();
         }
         let receipt = crate::atoms::r#do::transaction::commit_projection(&mut transaction).unwrap();
-        assert_eq!(receipt.state, crate::atoms::r#do::transaction::TransactionState::Committed);
-        assert_eq!(receipt.children[0].source_sha.as_deref(), Some(lock_sha.as_str()));
+        assert_eq!(
+            receipt.state,
+            crate::atoms::r#do::transaction::TransactionState::Committed
+        );
+        assert_eq!(
+            receipt.children[0].source_sha.as_deref(),
+            Some(lock_sha.as_str())
+        );
         assert_eq!(receipt.children[1].source_sha, None);
         assert_eq!(receipt.children[2].source_sha, None);
 
         let manifest: crate::tools::ladder::LadderManifest = serde_json::from_value(json!({"schema":"harmonia.module.ladder.v1","id":"restart","version":"1","ladder":[{"step_id":"health-proof-routine","tool":"routine","permutation":"execute","steps":[{"name":"health-proof","tool":"check-health","permutation":"probe","args":{"component":"caduceus","url":format!("{registry}/health")}}]}]})).unwrap();
-        let step = crate::tools::routine::ValidatedStep { step_id: "health-proof-routine".into(), tool: "routine".into(), permutation: "execute".into(), args: BTreeMap::new(), on_failure: crate::tools::ladder::OnFailure::Stop };
-        let child = crate::tools::routine::ProjectedRoutineChild { name: "health-proof".into(), tool: "check-health".into(), permutation: "probe".into(), args: [("component".into(), json!("caduceus")), ("url".into(), json!(format!("{registry}/health")))].into_iter().collect(), on_failure: crate::tools::ladder::OnFailure::Stop, band: crate::bands::Band::RestartServices };
+        let step = crate::tools::routine::ValidatedStep {
+            step_id: "health-proof-routine".into(),
+            tool: "routine".into(),
+            permutation: "execute".into(),
+            args: BTreeMap::new(),
+            on_failure: crate::tools::ladder::OnFailure::Stop,
+        };
+        let child = crate::tools::routine::ProjectedRoutineChild {
+            name: "health-proof".into(),
+            tool: "check-health".into(),
+            permutation: "probe".into(),
+            args: [
+                ("component".into(), json!("caduceus")),
+                ("url".into(), json!(format!("{registry}/health"))),
+            ]
+            .into_iter()
+            .collect(),
+            on_failure: crate::tools::ladder::OnFailure::Stop,
+            band: crate::bands::Band::RestartServices,
+        };
         let mut states = BTreeMap::new();
-        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, Some(&crate::atoms::ask::beam::PendingBeamFinalization { authorization, receipt_dir: receipt_dir.clone(), door_url: door_url.clone() }), &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect()).unwrap();
-        let after: Value = serde_json::from_slice(&fs::read(receipt_dir.join("beam-after.json")).unwrap()).unwrap();
+        crate::bands::restart_services::execute_manifest_band(
+            &manifest,
+            &receipt_dir,
+            None,
+            None,
+            Some(&invocation),
+            true,
+            Some(&crate::atoms::ask::beam::PendingBeamFinalization {
+                authorization,
+                receipt_dir: receipt_dir.clone(),
+                door_url: door_url.clone(),
+            }),
+            &mut states,
+            &[step],
+            &[("health-proof-routine".into(), vec![child])]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        let after: Value =
+            serde_json::from_slice(&fs::read(receipt_dir.join("beam-after.json")).unwrap())
+                .unwrap();
         assert_eq!(after["state"], "aligned");
         assert_eq!(after["converged"], true);
         assert_eq!(after["authorization"], "triple-ladder");
