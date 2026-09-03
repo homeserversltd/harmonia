@@ -1,0 +1,2 @@
+# Caduceus journal maintenance: one exact vacuum entry so the appliance manages its own systemd journal.
+caduceus ALL=(root) NOPASSWD: /usr/bin/journalctl --vacuum-size=300M
