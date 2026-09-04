@@ -33,41 +33,25 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::env;
-use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::fs;
+use std::io::Read;
 
 pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
 const ENGINE_CONFIG_ENV: &str = "HARMONIA_ENGINE_CONFIG_PATH";
 const DEFAULT_ENGINE_CONFIG: &str = "/etc/harmonia/engine.json";
-const BOOTSTRAP_ORDER: &str = "credential-validation->source->build->proof->promotion->reexec";
 const ENGINE_RATCHET_LOCK_SCHEMA: &str = "harmonia.engine.ratchet_lock.v1";
 const DEFAULT_ENGINE_RATCHET_LOCK_NAME: &str = "engine-ratchet-lock.json";
-const LEGACY_ROOT_GITCONFIG: &str = "/root/.gitconfig";
-const LEGACY_ROOT_FORGEJO_INCLUDE: &str = "/root/.gitconfig.d/forgejo-credentials.inc";
-const LEGACY_ROOT_FORGEJO_STORE: &str = "/root/.git-credentials-forgejo";
-const LEGACY_OWNER_FORGEJO_STORE: &str = "/home/owner/.git-credentials-forgejo";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct EnginePlaneConfig {
-    #[serde(default = "crate::bands::pull_source::default_source_policy")]
-    pub source_policy: String,
-    pub source_repo_url: String,
-    pub branch: String,
-    pub source_dir: PathBuf,
-    /// Owner-refreshed local checkout consumed read-only by the root engine lane.
-    /// When present, preflight never fetches `source_repo_url`.
-    #[serde(default)]
-    pub local_source_checkout: Option<PathBuf>,
     pub install_bin: PathBuf,
     pub enabled: bool,
-    /// Compatibility field retained for installer/live-config schema parity.
-    /// Credential custody is fixed to `owner` operationally and this value is
-    /// never consulted after load validation.
-    #[serde(default = "default_git_bearer")]
-    pub git_bearer: String,
+    /// Local staging/build mechanics only; source identity is certificate-owned.
+    #[serde(default = "default_build_root")]
+    pub build_root: PathBuf,
     #[serde(default = "default_remote")]
     pub remote: String,
     #[serde(default)]
@@ -84,20 +68,6 @@ pub(crate) struct EnginePlaneConfig {
     pub artifact_transport: Option<EngineArtifactTransport>,
     #[serde(default)]
     pub artifact_transports: Vec<EngineArtifactTransport>,
-    /// Additive body declaration for non-engine Git source components.
-    #[serde(default)]
-    pub source_components: BTreeMap<String, EngineSourceComponent>,
-    /// Compatibility projection for established source callers. Renew-self
-    /// never uses selector names or reads any credential from this map.
-    #[serde(default)]
-    pub credential_scopes: BTreeMap<String, tools::git_artifact::CredentialScope>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub(crate) struct EngineSourceComponent {
-    pub repo_url: String,
-    #[serde(default = "default_artifact_branch")]
-    pub branch: String,
 }
 
 impl EnginePlaneConfig {
@@ -110,39 +80,22 @@ impl EnginePlaneConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct EngineArtifactTransport {
     #[serde(default = "default_artifact_kind")]
     pub kind: String,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub repo_url: Option<String>,
-    #[serde(default = "default_artifact_branch")]
-    pub branch: String,
     pub cache_dir: PathBuf,
     #[serde(default = "default_remote")]
     pub remote: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub host: Option<String>,
-    #[serde(default)]
-    pub owner: Option<String>,
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub credential_scope: Option<String>,
 }
 
 impl EngineArtifactTransport {
     fn label(&self) -> String {
-        self.name.clone().unwrap_or_else(|| {
-            format!(
-                "{}:{}",
-                self.remote,
-                self.repo_url.as_deref().unwrap_or("release")
-            )
-        })
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", self.remote, self.kind))
     }
 }
 
@@ -150,8 +103,8 @@ fn default_artifact_kind() -> String {
     "git".to_string()
 }
 
-fn default_artifact_branch() -> String {
-    "main".to_string()
+fn default_build_root() -> PathBuf {
+    PathBuf::from("/var/lib/harmonia/engine-source")
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -168,10 +121,6 @@ pub(crate) struct EngineRatchetLock {
 pub(crate) struct EngineRatchetArtifact {
     pub name: String,
     pub sha256: String,
-}
-
-fn default_git_bearer() -> String {
-    "owner".to_string()
 }
 
 fn default_remote() -> String {
@@ -247,17 +196,18 @@ fn validate_declared_source_path(field: &str, path: &Path) -> Result<(), String>
 }
 
 fn validate_engine_plane_config(config: EnginePlaneConfig) -> Result<EnginePlaneConfig, String> {
-    crate::bands::pull_source::validate_source_policy(Some(&config.source_policy))?;
-    if config.git_bearer != "owner" {
-        return Err(format!(
-            "engine-config-git-bearer-forbidden expected=owner actual={}",
-            config.git_bearer
-        ));
+    validate_declared_source_path("install-bin", &config.install_bin)?;
+    if let Some(path) = config.staged_bin.as_deref() {
+        validate_declared_source_path("staged-bin", path)?;
     }
-    validate_credential_scopes(&config.credential_scopes)?;
-    validate_declared_source_path("source-dir", &config.source_dir)?;
-    if let Some(checkout) = config.local_source_checkout.as_deref() {
-        validate_declared_source_path("local-source-checkout", checkout)?;
+    if let Some(path) = config.profile_index.as_deref() {
+        validate_declared_source_path("profile-index", path)?;
+    }
+    if let Some(path) = config.ratchet_lock.as_deref() {
+        validate_declared_source_path("ratchet-lock", path)?;
+    }
+    for transport in config.artifact_transport_chain() {
+        validate_declared_source_path("artifact-cache-dir", &transport.cache_dir)?;
     }
     Ok(config)
 }
@@ -271,123 +221,6 @@ fn parse_validate_engine_plane_config(
     validate_engine_plane_config(config)
 }
 
-fn migrate_retired_engine_config(path: &Path, receipt_dir: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
-    let mut value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
-    let Some(object) = value.as_object_mut() else {
-        return Err(format!(
-            "engine-config-parse-failed {}: top-level-not-object",
-            path.display()
-        ));
-    };
-    let retired = [
-        "git_https_credential_host",
-        "git_https_credential_token_path",
-    ];
-    let migrated: Vec<&str> = retired
-        .iter()
-        .copied()
-        .filter(|key| object.remove(*key).is_some())
-        .collect();
-    if migrated.is_empty() {
-        return Ok(());
-    }
-    let cleaned = serde_json::to_string_pretty(&value)
-        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
-    let _ = parse_validate_engine_plane_config(&cleaned, path)?;
-    let metadata = fs::metadata(path)
-        .map_err(|e| format!("engine-config-stat-failed {}: {e}", path.display()))?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temp = parent.join(format!(
-        ".{}.migration-{}",
-        path.file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or("engine.json"),
-        std::process::id()
-    ));
-    let cleanup = |error: String| {
-        let _ = fs::remove_file(&temp);
-        Err(error)
-    };
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
-        Ok(file) => file,
-        Err(e) => {
-            return Err(format!(
-                "engine-config-migration-write-failed {}: {e}",
-                temp.display()
-            ))
-        }
-    };
-    if let Err(e) = file.write_all(cleaned.as_bytes()) {
-        return cleanup(format!(
-            "engine-config-migration-write-failed {}: {e}",
-            temp.display()
-        ));
-    }
-    if let Err(e) = file.set_permissions(metadata.permissions()) {
-        return cleanup(format!(
-            "engine-config-migration-permissions-failed {}: {e}",
-            temp.display()
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::fs::MetadataExt;
-        let name = match CString::new(temp.as_os_str().as_bytes()) {
-            Ok(name) => name,
-            Err(_) => {
-                return cleanup(format!(
-                    "engine-config-migration-owner-failed {}",
-                    temp.display()
-                ))
-            }
-        };
-        if unsafe { libc::chown(name.as_ptr(), metadata.uid(), metadata.gid()) } != 0 {
-            return cleanup(format!(
-                "engine-config-migration-owner-failed {}: {}",
-                temp.display(),
-                std::io::Error::last_os_error()
-            ));
-        }
-    }
-    if let Err(e) = file.sync_all() {
-        return cleanup(format!(
-            "engine-config-migration-sync-failed {}: {e}",
-            temp.display()
-        ));
-    }
-    drop(file);
-    if let Err(e) = fs::rename(&temp, path) {
-        return cleanup(format!(
-            "engine-config-migration-promote-failed {}: {e}",
-            path.display()
-        ));
-    }
-    if let Ok(dir) = fs::File::open(parent) {
-        dir.sync_all().map_err(|e| {
-            format!(
-                "engine-config-migration-parent-sync-failed {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-    write_json(
-        &receipt_dir.join("engine-config-migration.json"),
-        &json!({
-            "schema": "harmonia.engine.config_migration.v1", "ok": true,
-            "path": path, "migrated_keys": migrated, "unknown_keys_remain_fatal": true,
-        }),
-    )?;
-    Ok(())
-}
-
 pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlaneConfig>, String> {
     if !path.exists() {
         return Ok(None);
@@ -396,65 +229,6 @@ pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlane
         .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
     let config = parse_validate_engine_plane_config(&text, path)?;
     Ok(Some(config))
-}
-
-/// Compatibility accessor for the established source callers. This is a
-/// projection only; renew-self does not resolve selectors or read credentials.
-pub(crate) fn credential_scopes(
-    config: &EnginePlaneConfig,
-) -> BTreeMap<String, tools::git_artifact::CredentialScope> {
-    config.credential_scopes.clone()
-}
-
-fn selected_release_scope(
-    transport: &EngineArtifactTransport,
-    scopes: &BTreeMap<String, tools::git_artifact::CredentialScope>,
-) -> (bool, Option<PathBuf>) {
-    let endpoint = transport.base_url.as_deref().or(transport.host.as_deref());
-    let endpoint_host = transport.base_url.as_deref().and_then(|url| {
-        url.strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))
-            .and_then(|rest| rest.split('/').next())
-    });
-    let selected = transport
-        .credential_scope
-        .as_deref()
-        .and_then(|name| scopes.get(name))
-        .or_else(|| endpoint.and_then(|name| scopes.get(name)))
-        .or_else(|| endpoint_host.and_then(|name| scopes.get(name)));
-    (
-        transport.credential_scope.is_none() || selected.is_some(),
-        selected.and_then(|scope| scope.https_token_path.clone()),
-    )
-}
-
-fn validate_credential_scopes(
-    scopes: &BTreeMap<String, tools::git_artifact::CredentialScope>,
-) -> Result<(), String> {
-    const FIXED_TOKEN_PATH: &str = "/home/owner/.ssh/forgejo-token";
-    for (selector, scope) in scopes {
-        if scope.ssh_key_path.is_some() {
-            return Err(format!(
-                "engine-config-credential-scope-ssh-key-forbidden selector={selector}"
-            ));
-        }
-        if let Some(host) = scope.https_host.as_deref() {
-            if host != "git.home.arpa" {
-                return Err(format!(
-                    "engine-config-credential-scope-https-host-forbidden selector={selector} host={host}"
-                ));
-            }
-        }
-        if let Some(path) = scope.https_token_path.as_deref() {
-            if path != Path::new(FIXED_TOKEN_PATH) {
-                return Err(format!(
-                    "engine-config-credential-scope-token-path-forbidden selector={selector} path={}",
-                    path.display()
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn install_bin_fingerprint(path: &Path) -> Option<String> {
@@ -495,65 +269,15 @@ fn stage_signal(stage: &str) -> String {
     format!("engine-{stage}-failed")
 }
 
-fn retired_compatibility_outcome(stage: &str) -> OperationOutcome {
-    OperationOutcome {
-        ok: true,
-        changed: false,
-        skipped: true,
-        message: format!(
-            "{stage} retired from renew-self; read-only compatibility projection; no mutation"
-        ),
-        command: None,
-    }
-}
-
-fn emit_retired_package_receipt(
-    preflight_dir: &Path,
-    name: &str,
-    action: &str,
-    outcome: &OperationOutcome,
-) -> Result<(), String> {
-    write_json(
-        &preflight_dir.join(format!("{name}.json")),
-        &json!({
-            "schema": "harmonia.package_tool.v1", "name": name, "tool": "package",
-            "permutation": action, "declared_package_backend": "pacman",
-            "ok": outcome.ok, "changed": outcome.changed, "skipped": outcome.skipped,
-            "message": outcome.message, "command": outcome.command,
-        }),
-    )
-}
-
-fn emit_retired_keyring_receipt(
-    preflight_dir: &Path,
-    name: &str,
-    apply: bool,
-    operation_count: usize,
-    outcome: &OperationOutcome,
-) -> Result<(), String> {
-    write_json(
-        &preflight_dir.join(format!("{name}.json")),
-        &json!({
-            "schema": "harmonia.package_keyring_repair.v1", "name": name, "tool": "package",
-            "permutation": "keyring-repair", "ok": outcome.ok, "changed": outcome.changed,
-            "skipped": outcome.skipped, "apply": apply, "package": "archlinux-keyring",
-            "pacman_present": false, "pacman_key_present": false, "operation_count": operation_count,
-            "first_missing_signal": "none",
-        }),
-    )
-}
-
 fn write_source_possession_receipt(
     receipt_dir: &Path,
     result: &CmdResult,
     source_dir: &Path,
-    local_source_checkout: Option<&Path>,
     candidate: &tools::git_artifact::SourceCandidate,
     apply: bool,
 ) -> Result<(), String> {
-    // Keep this engine-preflight projection byte-compatible with the legacy
-    // command receipt. The source owner retains richer acquisition facts in a
-    // separately named additive receipt rather than widening the old schema.
+    // Source authority is the certificate; this receipt records only the
+    // resulting owner-lane operation and local destination mechanics.
     write_json(
         &receipt_dir.join("source-possession.json"),
         &json!({
@@ -578,12 +302,13 @@ fn write_source_possession_receipt(
             "stderr": result.stderr,
             "first_missing_signal": if result.ok { "none" } else { "engine-possession-failed" },
             "apply": apply,
-            "source_dir": source_dir,
-            "local_source_checkout": local_source_checkout,
+            "source_authority": "device-profile-certificate-sources",
             "candidate_kind": format!("{:?}", candidate.kind),
             "candidate_locator": candidate.locator,
             "destination": source_dir,
             "read_only_custody": !apply,
+            "credential_selector": "validated-and-ignored",
+            "git_bearer": "owner",
         }),
     )
 }
@@ -622,7 +347,7 @@ fn staged_bin(config: &EnginePlaneConfig) -> PathBuf {
     config
         .staged_bin
         .clone()
-        .unwrap_or_else(|| config.source_dir.join("target/release/harmonia"))
+        .unwrap_or_else(|| config.build_root.join("target/release/harmonia"))
 }
 
 fn profile_index_from(module_root: &Path, config: &EnginePlaneConfig) -> PathBuf {
@@ -805,22 +530,17 @@ fn promote_staged_binary(
 
 fn emit_preflight_receipt(
     preflight_dir: &Path,
+    config_path: &Path,
+    config: &EnginePlaneConfig,
+    component: &str,
+    source_head: Option<&str>,
+    staged_sha: Option<&str>,
+    installed_sha: Option<&str>,
     ok: bool,
     apply: bool,
     changed: bool,
     first_missing_signal: &str,
-    config_path: &Path,
-    config: Option<&EnginePlaneConfig>,
     operation_count: usize,
-    reexec_planned: bool,
-    lane: &str,
-    lock_path: Option<&Path>,
-    lock_sha256: Option<&str>,
-    staged_sha256: Option<&str>,
-    installed_sha256: Option<&str>,
-    transport_used: Option<&str>,
-    engine_content_head: Option<&str>,
-    artifact_transport_attempts: &[serde_json::Value],
 ) -> Result<(), String> {
     write_json(
         &preflight_dir.join("run.json"),
@@ -833,33 +553,52 @@ fn emit_preflight_receipt(
             "first_missing_signal": first_missing_signal,
             "operation_count": operation_count,
             "engine_config": config_path,
-            "enabled": config.map(|c| c.enabled),
-            "source_repo_url": config.map(|c| c.source_repo_url.as_str()),
-            "local_source_checkout": config.and_then(|c| c.local_source_checkout.as_deref()),
-            "source_possession_authority": if config.and_then(|c| c.local_source_checkout.as_ref()).is_some() { "declared-local-checkout-owner-plane-freshness" } else { "source-repository-fetch" },
-            "branch": config.map(|c| c.branch.as_str()),
-            "source_dir": config.map(|c| c.source_dir.as_path()),
-            "install_bin": config.map(|c| c.install_bin.as_path()),
-            "old_engine_preserved": true,
-            "bootstrap_order": BOOTSTRAP_ORDER,
-            "pre_sync_source_build": "absent",
-            "successor_promoted_only_after": "explain+validate-ladder+plan-run",
-            "artifact_ratchet": "version+sha-lock",
-            "engine_content_head": engine_content_head.unwrap_or("unknown"),
-            "lane": lane,
-            "transport_used": transport_used,
-            "artifact_transport_attempts": artifact_transport_attempts,
-            "ratchet_lock_path": lock_path,
-            "ratchet_lock_sha256": lock_sha256,
-            "staged_sha256": staged_sha256,
-            "installed_sha256": installed_sha256,
-            "failure_mode": "honest-staleness",
-            "retired_sidecar_gate": "absent",
-            "profile_runtime_module": "absent",
-            "reexec_once_guard_preserved": true,
-            "reexec_planned": reexec_planned,
+            "enabled": config.enabled,
+            "source_authority": "device-profile-certificate-sources",
+            "engine_component": component,
+            "build_root": config.build_root,
+            "install_bin": config.install_bin,
+            "source_head": source_head.unwrap_or("unknown"),
+            "staged_sha256": staged_sha,
+            "installed_sha256": installed_sha,
+            "credential_selector": serde_json::Value::Null,
+            "credentials": [],
+            "git_bearer": "owner",
+            "artifact_transport_count": config.artifact_transport_chain().len(),
+            "failure_mode": "honest-source-resolution",
         }),
     )
+}
+
+fn failed_execution(signal: &str) -> ModuleExecution {
+    ModuleExecution {
+        ok: false,
+        changed: false,
+        operation_count: 0,
+        first_missing_signal: Some(signal.to_string()),
+        placements: Vec::new(),
+    }
+}
+
+fn engine_source_gate(
+    certificate_path: &Path,
+) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
+    let component = crate::device_profile::certificate_engine_component_at(certificate_path)?;
+    let resolution_receipt = crate::bands::pull_source::resolve_source(
+        certificate_path,
+        &component,
+        "engine-plane",
+        "source-acquisition",
+    );
+    let resolution = match resolution_receipt.resolution {
+        Some(resolution) => resolution,
+        None => {
+            return Err(resolution_receipt
+                .blocker
+                .unwrap_or_else(|| "engine-source-resolution-blocked".to_string()))
+        }
+    };
+    Ok((component, resolution))
 }
 
 pub(crate) fn run_engine_preflight(
@@ -871,602 +610,156 @@ pub(crate) fn run_engine_preflight(
     let preflight_dir = receipt_dir.join("engine-preflight");
     crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
     let config_path = engine_config_path();
-    migrate_retired_engine_config(&config_path, &preflight_dir)?;
     let Some(config) = load_engine_plane_config(&config_path)? else {
         let signal = "engine-self-possession-unconfigured";
-        emit_preflight_receipt(
-            &preflight_dir,
-            false,
-            apply,
-            false,
-            signal,
-            &config_path,
-            None,
-            0,
-            false,
-            "unconfigured",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
+        write_json(
+            &preflight_dir.join("run.json"),
+            &json!({
+                "schema": PREFLIGHT_SCHEMA,
+                "ok": false,
+                "apply": apply,
+                "changed": false,
+                "first_missing_signal": signal,
+                "engine_config": config_path,
+                "source_authority": "device-profile-certificate-sources",
+            }),
         )?;
-        return Ok(ModuleExecution {
-            ok: false,
-            changed: false,
-            operation_count: 0,
-            first_missing_signal: Some(signal.into()),
-            placements: Vec::new(),
-        });
+        return Ok(failed_execution(signal));
     };
     if !config.enabled {
         let signal = "engine-self-possession-disabled";
         emit_preflight_receipt(
             &preflight_dir,
+            &config_path,
+            &config,
+            "unknown",
+            None,
+            None,
+            install_bin_fingerprint(&config.install_bin).as_deref(),
             false,
             apply,
             false,
             signal,
-            &config_path,
-            Some(&config),
             0,
-            false,
-            "disabled",
-            None,
-            None,
-            install_bin_fingerprint(&config.install_bin).as_deref(),
-            None,
-            None,
-            None,
-            &[],
         )?;
-        return Ok(ModuleExecution {
-            ok: false,
-            changed: false,
-            operation_count: 0,
-            first_missing_signal: Some(signal.into()),
-            placements: Vec::new(),
-        });
+        return Ok(failed_execution(signal));
     }
 
-    write_json(
-        &preflight_dir.join("harmonia-engine-preflight-explain.json"),
-        &json!({
-            "schema": PREFLIGHT_SCHEMA,
-            "ok": true,
-            "stage": "engine-plane-config-loaded",
-            "version": env!("CARGO_PKG_VERSION"),
-            "config_path": config_path,
-            "source_repo_url": config.source_repo_url,
-            "branch": config.branch,
-            "source_dir": config.source_dir,
-            "install_bin": config.install_bin,
-            "reexec_guard_active": self_update_reexec_guard_active(),
-            "retired_sidecar_gate": "absent",
-        }),
-    )?;
-
-    let mut operation_count = 0usize;
-    let credential_retirement = retired_compatibility_outcome("root-git-credential-retirement");
-    write_json(
-        &preflight_dir.join("root-git-credential-retirement.json"),
-        &json!({
-            "schema": "harmonia.root_git_credential_retirement.v1", "ok": true, "apply": apply,
-            "changed": false, "message": credential_retirement.message,
-            "forbidden_paths": [LEGACY_ROOT_FORGEJO_INCLUDE, LEGACY_ROOT_FORGEJO_STORE, LEGACY_OWNER_FORGEJO_STORE],
-            "root_gitconfig": LEGACY_ROOT_GITCONFIG,
-        }),
-    )?;
-    operation_count += 1;
-    let keyring = retired_compatibility_outcome("keyring-trust");
-    emit_retired_keyring_receipt(
-        &preflight_dir,
-        "keyring-trust",
-        apply,
-        operation_count,
-        &keyring,
-    )?;
-    operation_count += 1;
-    let transport = retired_compatibility_outcome("transport-organs");
-    emit_retired_package_receipt(&preflight_dir, "transport-organs", "install", &transport)?;
-    operation_count += 1;
-    let system_sync = retired_compatibility_outcome("system-sync");
-    emit_retired_package_receipt(&preflight_dir, "system-sync", "upgrade", &system_sync)?;
-    operation_count += 1;
-    let mut changed = false;
-    let mut first_missing_signal = "none".to_string();
-    let lock_path = ratchet_lock_path(&config_path, &config);
-    let lock_sha = sha256_file(&lock_path).ok();
-    let ratchet_lock = load_ratchet_lock(&lock_path)?;
-    let mut lane = "source-fallback".to_string();
-    let mut transport_used: Option<String> = None;
-    let mut engine_content_head: Option<String> = ratchet_lock
+    let certificate_path = crate::device_profile::device_profile_certificate_path();
+    let source_gate = engine_source_gate(&certificate_path);
+    let component_for_receipt = source_gate
         .as_ref()
-        .map(|lock| lock.source_head_sha.clone());
-    let mut artifact_transport_attempts: Vec<serde_json::Value> = Vec::new();
-    let mut staged_sha: Option<String> = None;
+        .ok()
+        .map(|(component, _)| component.clone())
+        .or_else(|| crate::device_profile::certificate_engine_component_at(&certificate_path).ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let (component, resolution) = match source_gate {
+        Ok(resolved) => resolved,
+        Err(signal) => {
+            emit_preflight_receipt(
+                &preflight_dir,
+                &config_path,
+                &config,
+                &component_for_receipt,
+                None,
+                None,
+                install_bin_fingerprint(&config.install_bin).as_deref(),
+                false,
+                apply,
+                false,
+                &signal,
+                0,
+            )?;
+            return Ok(failed_execution(&signal));
+        }
+    };
+    let expected_commit = (resolution.requested_ref.len() == 40
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
+    .then(|| resolution.requested_ref.clone());
+    let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
+        &resolution,
+        config.build_root.clone(),
+        expected_commit,
+    );
+    let source = crate::bands::pull_source::execute_source(&source_plan, apply, invocation);
+    let source_command = CmdResult {
+        ok: source.ok,
+        code: if source.ok { 0 } else { -1 },
+        stdout: source.receipt.promotion.clone(),
+        stderr: if source.ok {
+            String::new()
+        } else {
+            source.receipt.promotion.clone()
+        },
+    };
+    if let Some(candidate) = source_plan.candidates.first() {
+        write_source_possession_receipt(
+            &preflight_dir,
+            &source_command,
+            &source_plan.destination,
+            candidate,
+            apply,
+        )?;
+    }
+    let mut operation_count = 1usize;
+    let source_head = source.receipt.resolved_commit.clone();
+    let mut changed = source.changed;
+    let mut first_missing_signal = if source.ok {
+        "none".to_string()
+    } else {
+        "engine-source-acquisition-failed".to_string()
+    };
     let install_before = install_bin_fingerprint(&config.install_bin);
-
-    let mut source_outcome = OperationOutcome {
-        ok: false,
-        changed: false,
-        skipped: true,
-        message: "source possession pending source decision".into(),
-        command: None,
-    };
-    let mut artifact_outcome = OperationOutcome {
-        ok: false,
-        changed: false,
-        skipped: true,
-        message: "artifact lane not configured or not blessed".into(),
-        command: None,
-    };
+    let staged = staged_bin(&config);
+    let mut staged_sha = None;
     let mut build = CmdResult {
         ok: false,
         code: -1,
         stdout: String::new(),
-        stderr: "staged build skipped before successful source possession".into(),
+        stderr: "engine build skipped before source acquisition".to_string(),
     };
-    let mut proof_ok = false;
-    let mut proof_failure: Option<String> = None;
-    let mut promote = CmdResult {
-        ok: true,
-        code: 0,
-        stdout: "promotion skipped before successful proof battery".into(),
-        stderr: String::new(),
-    };
-    let mut reexec_planned = false;
-    let staged = staged_bin(&config);
-
-    if first_missing_signal == "none" {
-        if let Some(lock) = ratchet_lock.as_ref() {
-            let arch = current_arch_key();
-            if let Some(artifact) = lock.artifacts.get(&arch) {
-                let version_order =
-                    compare_version(&lock.engine_version, env!("CARGO_PKG_VERSION"));
-                if version_order == std::cmp::Ordering::Greater
-                    || install_before.as_deref() != Some(artifact.sha256.as_str())
-                {
-                    let transport_chain = config.artifact_transport_chain();
-                    for (index, transport) in transport_chain.iter().enumerate() {
-                        let attempt_index = index + 1;
-                        let transport_label = transport.label();
-                        let git_outcome = if matches!(
-                            transport.kind.as_str(),
-                            "forgejo-release" | "github-release"
-                        ) {
-                            let base_url = transport
-                                .base_url
-                                .clone()
-                                .or_else(|| {
-                                    transport
-                                        .host
-                                        .as_ref()
-                                        .map(|host| format!("https://{host}"))
-                                })
-                                .unwrap_or_else(|| "https://api.github.com".into());
-                            let (scope_found, token_path) =
-                                selected_release_scope(transport, &config.credential_scopes);
-                            let request = tools::git_artifact::ReleaseRequest {
-                                kind: transport.kind.clone(),
-                                base_url,
-                                owner: transport.owner.clone().unwrap_or_default(),
-                                repo: transport.repo.clone().unwrap_or_default(),
-                                credential_token_path: token_path,
-                                credential_scope_found: scope_found,
-                                cache_dir: transport.cache_dir.clone(),
-                            };
-                            tools::git_artifact::fetch_release_asset(
-                                &request,
-                                &lock.engine_version,
-                                &artifact.name,
-                                apply,
-                            )
-                            .unwrap_or_else(|error| CmdResult {
-                                ok: false,
-                                code: -1,
-                                stdout: String::new(),
-                                stderr: error,
-                            })
-                        } else if transport.kind == "git" {
-                            let repo_url = canonicalize_git_candidate(
-                                transport
-                                    .repo_url
-                                    .as_deref()
-                                    .ok_or("git-repo-url-missing")?,
-                            )?;
-                            let request = tools::git_artifact::Request::new(
-                                Some(repo_url),
-                                transport.cache_dir.clone(),
-                                transport.branch.clone(),
-                                transport.remote.clone(),
-                            );
-                            let outcome = if apply {
-                                crate::pull_repo::apply(
-                                    &request,
-                                    invocation.ok_or("invocation-key-missing")?,
-                                )
-                            } else {
-                                tools::git_artifact::plan(&request)
-                            };
-                            crate::CmdResult {
-                                ok: outcome.ok,
-                                code: outcome.command.code,
-                                stdout: outcome.command.stdout,
-                                stderr: outcome.command.stderr,
-                            }
-                        } else {
-                            CmdResult {
-                                ok: false,
-                                code: 22,
-                                stdout: String::new(),
-                                stderr: format!(
-                                    "artifact-transport-kind-unsupported kind={}",
-                                    transport.kind
-                                ),
-                            }
-                        };
-                        let git_cmd = git_outcome.clone();
-                        write_command_receipt(
-                            &preflight_dir,
-                            &format!("artifact-transport-{attempt_index}"),
-                            &git_cmd,
-                        )?;
-                        if attempt_index == 1 {
-                            write_command_receipt(&preflight_dir, "artifact-transport", &git_cmd)?;
-                        }
-                        operation_count += 1;
-                        if !git_outcome.ok {
-                            artifact_transport_attempts.push(json!({
-                                "index": attempt_index,
-                                "transport": transport_label,
-                                "kind": transport.kind,
-                                "repo_url": transport.repo_url,
-                                "branch": transport.branch,
-                                "cache_dir": transport.cache_dir,
-                                "remote": transport.remote,
-                                "outcome": "miss",
-                                "reason": "fetch-failed",
-                                "ok": false,
-                                "code": git_cmd.code,
-                            }));
-                            continue;
-                        }
-
-                        let artifact_path = transport.cache_dir.join(&artifact.name);
-                        if !apply
-                            && matches!(
-                                transport.kind.as_str(),
-                                "forgejo-release" | "github-release"
-                            )
-                        {
-                            lane = "artifact".to_string();
-                            transport_used = Some(transport_label.clone());
-                            artifact_outcome = OperationOutcome {
-                                ok: true,
-                                changed: false,
-                                skipped: false,
-                                message: format!(
-                                    "planned release asset tag={} asset={} transport={}",
-                                    lock.engine_version, artifact.name, transport_label
-                                ),
-                                command: Some(git_cmd.clone()),
-                            };
-                            artifact_transport_attempts.push(json!({
-                                "index": attempt_index,
-                                "transport": transport_label,
-                                "kind": transport.kind,
-                                "outcome": "planned",
-                                "artifact_name": artifact.name,
-                                "ok": true,
-                            }));
-                            break;
-                        }
-                        if !artifact_path.exists() {
-                            let missing_cmd = CmdResult {
-                                ok: false,
-                                code: -1,
-                                stdout: String::new(),
-                                stderr: format!(
-                                    "engine-artifact-absent name={} transport={} path={}",
-                                    artifact.name,
-                                    transport_label,
-                                    artifact_path.display()
-                                ),
-                            };
-                            write_command_receipt(
-                                &preflight_dir,
-                                &format!("artifact-stage-{attempt_index}"),
-                                &missing_cmd,
-                            )?;
-                            operation_count += 1;
-                            artifact_transport_attempts.push(json!({
-                                "index": attempt_index,
-                                "transport": transport_label,
-                                "kind": transport.kind,
-                                "repo_url": transport.repo_url,
-                                "branch": transport.branch,
-                                "cache_dir": transport.cache_dir,
-                                "remote": transport.remote,
-                                "outcome": "miss",
-                                "reason": "artifact-absent",
-                                "artifact_name": artifact.name,
-                                "ok": false,
-                            }));
-                            continue;
-                        }
-
-                        let stage_cmd = copy_verified_artifact(
-                            &staged,
-                            &artifact_path,
-                            &artifact.sha256,
-                            apply,
-                            invocation,
-                            &preflight_dir,
-                        )?;
-                        write_command_receipt(
-                            &preflight_dir,
-                            &format!("artifact-stage-{attempt_index}"),
-                            &stage_cmd,
-                        )?;
-                        if attempt_index == 1 {
-                            write_command_receipt(&preflight_dir, "artifact-stage", &stage_cmd)?;
-                        }
-                        operation_count += 1;
-                        artifact_outcome = OperationOutcome {
-                            ok: stage_cmd.ok,
-                            changed: stage_cmd.ok && apply,
-                            skipped: false,
-                            message: format!(
-                                "artifact lane version={} arch={} source_head_sha={} transport={}",
-                                lock.engine_version, arch, lock.source_head_sha, transport_label
-                            ),
-                            command: Some(stage_cmd.clone()),
-                        };
-                        if artifact_outcome.ok {
-                            lane = "artifact".to_string();
-                            transport_used = Some(transport_label.clone());
-                            staged_sha = Some(artifact.sha256.clone());
-                            artifact_transport_attempts.push(json!({
-                                "index": attempt_index,
-                                "transport": transport_label,
-                                "kind": transport.kind,
-                                "repo_url": transport.repo_url,
-                                "branch": transport.branch,
-                                "cache_dir": transport.cache_dir,
-                                "remote": transport.remote,
-                                "outcome": "served",
-                                "artifact_name": artifact.name,
-                                "sha256": artifact.sha256,
-                                "ok": true,
-                            }));
-                            break;
-                        }
-
-                        artifact_transport_attempts.push(json!({
-                            "index": attempt_index,
-                            "transport": transport_label,
-                            "kind": transport.kind,
-                            "repo_url": transport.repo_url,
-                            "branch": transport.branch,
-                            "cache_dir": transport.cache_dir,
-                            "remote": transport.remote,
-                            "outcome": "hard-red",
-                            "reason": "sha256-mismatch",
-                            "artifact_name": artifact.name,
-                            "ok": false,
-                        }));
-                        first_missing_signal = stage_signal("artifact-sha256");
-                        break;
-                    }
-                    if lane != "artifact"
-                        && first_missing_signal == "none"
-                        && !transport_chain.is_empty()
-                    {
-                        artifact_outcome = OperationOutcome {
-                            ok: false,
-                            changed: false,
-                            skipped: false,
-                            message: "artifact transport chain missed; source fallback selected"
-                                .into(),
-                            command: None,
-                        };
-                    }
-                } else {
-                    lane = "artifact".to_string();
-                    staged_sha = install_before.clone();
-                    artifact_outcome = OperationOutcome {
-                        ok: true,
-                        changed: false,
-                        skipped: false,
-                        message: format!(
-                            "engine-current no-op version={} sha256={}",
-                            lock.engine_version, artifact.sha256
-                        ),
-                        command: None,
-                    };
-                    write_command_receipt(
-                        &preflight_dir,
-                        "artifact-current",
-                        &CmdResult {
-                            ok: true,
-                            code: 0,
-                            stdout: artifact_outcome.message.clone(),
-                            stderr: String::new(),
-                        },
-                    )?;
-                    operation_count += 1;
-                }
-            } else {
-                write_command_receipt(
-                    &preflight_dir,
-                    "artifact-transport",
-                    &CmdResult {
-                        ok: false,
-                        code: -1,
-                        stdout: String::new(),
-                        stderr: format!("engine-ratchet-arch-missing arch={arch}"),
-                    },
-                )?;
-                operation_count += 1;
-            }
-        }
-    }
-
-    let artifact_current_noop = lane == "artifact"
-        && artifact_outcome.ok
-        && (!apply
-            || (!artifact_outcome.changed
-                && install_before.is_some()
-                && staged_sha == install_before));
-
-    let mut source_build_sha = String::new();
-    if first_missing_signal == "none" && lane != "artifact" {
-        let candidate = if let Some(checkout) = config.local_source_checkout.as_ref() {
-            tools::git_artifact::SourceCandidate {
-                kind: tools::git_artifact::SourceCandidateKind::LocalCheckout,
-                locator: checkout.to_string_lossy().into_owned(),
-                credential_selector: None,
-            }
-        } else {
-            tools::git_artifact::SourceCandidate {
-                kind: tools::git_artifact::SourceCandidateKind::Git,
-                locator: canonicalize_git_candidate(&config.source_repo_url)?,
-                credential_selector: None,
-            }
+    if source.ok {
+        let Some(source_head) = source_head.as_deref() else {
+            first_missing_signal = "engine-source-head-absent".to_string();
+            emit_preflight_receipt(
+                &preflight_dir,
+                &config_path,
+                &config,
+                &component,
+                None,
+                None,
+                install_before.as_deref(),
+                false,
+                apply,
+                changed,
+                &first_missing_signal,
+                operation_count,
+            )?;
+            return Ok(failed_execution(&first_missing_signal));
         };
-        let source_plan = tools::git_artifact::SourcePlan {
-            candidates: vec![candidate.clone()],
-            reference: config.branch.clone(),
-            source_policy: config.source_policy.clone(),
-            destination: config.source_dir.clone(),
-            expected_commit: None,
-            bearer: "owner".to_string(),
-            credentials: std::collections::BTreeMap::new(),
-        };
-        let source = if apply {
-            crate::pull_repo::acquire_source(&source_plan, invocation)
-        } else if config.local_source_checkout.is_some() {
-            // The local checkout is an owner-refreshed, read-only source. The
-            // generic remote observer intentionally handles Git transports only;
-            // use the same declared-candidate probe for the local lane instead
-            // of manufacturing an unavailable result.
-            let probe = crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
-            tools::git_artifact::SourceOutcome {
-                ok: probe.remote_sha.is_some(),
-                changed: false,
-                receipt: tools::git_artifact::SourceReceipt {
-                    attempts: probe.failed_attempts,
-                    served_index: probe.candidate_index,
-                    resolved_commit: probe.remote_sha,
-                    promotion: format!(
-                        "{} candidate={} destination={}",
-                        probe.state,
-                        config.local_source_checkout.as_deref().unwrap().display(),
-                        config.source_dir.display()
-                    ),
-                },
-            }
-        } else {
-            crate::pull_repo::observe_source(&source_plan).unwrap_or(
-                tools::git_artifact::SourceOutcome {
-                    ok: false,
-                    changed: false,
-                    receipt: tools::git_artifact::SourceReceipt {
-                        attempts: Vec::new(),
-                        served_index: None,
-                        resolved_commit: None,
-                        promotion: "source-observation-unavailable".into(),
-                    },
-                },
-            )
-        };
-        source_build_sha = match source.receipt.resolved_commit.clone() {
-            Some(commit) => {
-                engine_content_head = Some(commit.clone());
-                commit
-            }
-            None => {
-                first_missing_signal = stage_signal("engine-source-head");
-                String::new()
-            }
-        };
-        let source_cmd = CmdResult {
-            ok: source.ok,
-            code: if source.ok { 0 } else { -1 },
-            stdout: source.receipt.promotion.clone(),
-            stderr: if source.ok {
-                String::new()
-            } else {
-                source.receipt.promotion.clone()
-            },
-        };
-        write_source_possession_receipt(
-            &preflight_dir,
-            &source_cmd,
-            &config.source_dir,
-            config.local_source_checkout.as_deref(),
-            &candidate,
-            apply,
-        )?;
-        source_outcome = OperationOutcome {
-            ok: source.ok,
-            changed: source.changed,
-            skipped: false,
-            message: source.receipt.promotion.clone(),
-            command: Some(source_cmd),
-        };
-        operation_count += 1;
-        changed |= source_outcome.changed;
-        if !source_outcome.ok {
-            first_missing_signal = stage_signal("engine-possession");
-        }
-        lane = if config.local_source_checkout.is_some() {
-            "local-checkout".to_string()
-        } else {
-            "source-fallback".to_string()
-        };
-    } else {
-        write_command_receipt(
-            &preflight_dir,
-            "source-possession",
-            &CmdResult {
-                ok: true,
-                code: 0,
-                stdout: format!("source fallback skipped lane={lane}"),
-                stderr: String::new(),
-            },
-        )?;
-        operation_count += 1;
-    }
-
-    if first_missing_signal == "none"
-        && matches!(lane.as_str(), "source-fallback" | "local-checkout")
-    {
-        let environment: Vec<(String, String)> = Vec::new();
-        let build_result = crate::build_crate::run_build_with_mode(
-            &config.source_dir,
-            &source_build_sha,
+        let observation = crate::build_crate::run_build_with_mode(
+            &config.build_root,
+            source_head,
             install_before.as_deref(),
             &config.install_bin,
             &staged,
             apply,
-            &environment,
+            &[],
             crate::atoms::r#do::build_crate::DEFAULT_TIMEOUT_SECS,
             &preflight_dir.join("harmonia-atoms.log"),
             "owner",
             invocation,
             crate::build_crate::IdentityMode::RegularExecutable,
         )?;
-        build = build_result
-            .as_ref()
-            .map(|observation| CmdResult {
-                ok: observation.ok,
-                code: observation.code.unwrap_or(-1),
-                stdout: observation.stdout.clone(),
-                stderr: observation.stderr.clone(),
+        build = observation
+            .map(|value| CmdResult {
+                ok: value.ok,
+                code: value.code.unwrap_or(-1),
+                stdout: value.stdout,
+                stderr: value.stderr,
             })
             .unwrap_or(CmdResult {
                 ok: true,
@@ -1474,33 +767,25 @@ pub(crate) fn run_engine_preflight(
                 stdout: "build-crate converged-quiet skipped=true".into(),
                 stderr: String::new(),
             });
-        write_bearer_command_receipt(&preflight_dir, "staged-build", &build, "owner")?;
         operation_count += 1;
+        write_bearer_command_receipt(&preflight_dir, "staged-build", &build, "owner")?;
         if !build.ok {
-            first_missing_signal = stage_signal("staged-build");
-        } else {
-            staged_sha = sha256_file(&staged).ok();
+            first_missing_signal = "engine-staged-build-failed".to_string();
+        } else if let Ok(value) = sha256_file(&staged) {
+            staged_sha = Some(value);
         }
     } else {
-        let skipped_message = if first_missing_signal == "none" {
-            format!("staged build skipped lane={lane}")
-        } else {
-            "staged build skipped before successful source possession".to_string()
-        };
-        write_command_receipt(
-            &preflight_dir,
-            "staged-build",
-            &CmdResult {
-                ok: true,
-                code: 0,
-                stdout: skipped_message,
-                stderr: String::new(),
-            },
-        )?;
+        write_command_receipt(&preflight_dir, "staged-build", &build)?;
         operation_count += 1;
     }
 
-    if first_missing_signal == "none" && !artifact_current_noop && install_before != staged_sha {
+    let mut promote = CmdResult {
+        ok: true,
+        code: 0,
+        stdout: "promotion skipped before successful proof".into(),
+        stderr: String::new(),
+    };
+    if first_missing_signal == "none" && apply && staged_sha.is_some() {
         let proof =
             crate::check_health::proof_battery(&crate::check_health::ProofBatteryRequest {
                 receipt_dir: &preflight_dir,
@@ -1509,182 +794,44 @@ pub(crate) fn run_engine_preflight(
                 profile_index: &profile_index_from(module_root, &config),
                 apply,
             })?;
-        proof_ok = proof.0;
-        proof_failure = proof.1;
         operation_count += proof.2;
-        if !proof_ok {
-            first_missing_signal = proof_failure
-                .clone()
-                .unwrap_or_else(|| stage_signal("proof-battery"));
-        }
-    }
-
-    let promotion_due =
-        first_missing_signal == "none" && !artifact_current_noop && install_before != staged_sha;
-    let mut promotion_attempted = false;
-    if promotion_due {
-        promotion_attempted = true;
-        promote = promote_staged_binary(
-            &staged,
-            &config.install_bin,
-            apply,
-            invocation,
-            &preflight_dir,
-        )?;
-        write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
-        operation_count += 1;
-        if !promote.ok {
-            first_missing_signal = stage_signal("promote-successor");
-        }
-    } else {
-        write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
-        operation_count += 1;
-    }
-
-    let promotion_skipped = !promotion_attempted;
-    let install_after = install_bin_fingerprint(&config.install_bin);
-    // Only a successful installed placement emits a ledger receipt; plan and
-    // quiet runs have no ledger claim, while failed attempts render refusals.
-    let installed_sha = sha256_file(&config.install_bin).ok();
-    let mut battery: Vec<String> = std::fs::read_dir(&preflight_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let name = path.file_stem()?.to_str()?.to_string();
-            if !name.starts_with("proof-") {
-                return None;
+        if !proof.0 {
+            first_missing_signal = proof
+                .1
+                .unwrap_or_else(|| "engine-proof-battery-failed".to_string());
+        } else {
+            promote = promote_staged_binary(
+                &staged,
+                &config.install_bin,
+                true,
+                invocation,
+                &preflight_dir,
+            )?;
+            operation_count += 1;
+            if !promote.ok {
+                first_missing_signal = "engine-promotion-failed".to_string();
+            } else {
+                changed = true;
             }
-            let value: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-            (value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)).then_some(name)
-        })
-        .collect();
-    battery.sort();
-    battery.dedup();
-    if promotion_attempted && promote.ok && apply && first_missing_signal == "none" {
-        battery.extend([
-            "promote-successor".to_string(),
-            "fresh-installed-sha256-readback".to_string(),
-        ]);
+        }
     }
-    let version = ratchet_lock
-        .as_ref()
-        .map(|lock| lock.engine_version.as_str());
-    let known_good = if !apply {
-        None
-    } else if promotion_attempted && promote.ok && first_missing_signal == "none" {
-        let expected_sha = staged_sha.as_deref();
-        let proof = crate::known_good_ledger::prove_installed_state(
-            "engine",
-            &config.install_bin,
-            expected_sha,
-            version,
-            battery.clone(),
-            expected_sha.is_some() && installed_sha.as_deref() == expected_sha,
-            &preflight_dir,
-        );
-        Some(
-            match proof.and_then(|proof| {
-                crate::known_good_ledger::append_and_move(
-                    &crate::known_good_ledger::integration_root(receipt_dir),
-                    proof,
-                )
-            }) {
-                Ok(receipt) => serde_json::to_value(receipt).map_err(|e| e.to_string())?,
-                Err(error) => {
-                    first_missing_signal = format!("known-good-ledger-failed: {error}");
-                    serde_json::to_value(crate::known_good_ledger::refusal_receipt(
-                        &crate::known_good_ledger::integration_root(receipt_dir),
-                        "engine",
-                        installed_sha.as_deref(),
-                        version,
-                        battery,
-                        &error,
-                        false,
-                        &preflight_dir.to_string_lossy(),
-                    )?)
-                    .map_err(|e| e.to_string())?
-                }
-            },
-        )
-    } else if first_missing_signal == "none" {
-        None
-    } else {
-        Some(
-            serde_json::to_value(crate::known_good_ledger::refusal_receipt(
-                &crate::known_good_ledger::integration_root(receipt_dir),
-                "engine",
-                installed_sha.as_deref(),
-                version,
-                battery,
-                &first_missing_signal,
-                false,
-                &preflight_dir.to_string_lossy(),
-            )?)
-            .map_err(|e| e.to_string())?,
-        )
-    };
-    if known_good.is_some()
-        && known_good
-            .as_ref()
-            .and_then(|v| v.get("converged"))
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        && apply
-        && first_missing_signal == "none"
-    {
-        first_missing_signal = "known-good-ledger-unconverged".into();
-    }
-    if let Some(known_good) = known_good.as_ref() {
-        write_json(&preflight_dir.join("known-good.json"), known_good)?;
-    }
-
-    if first_missing_signal == "none" {
-        changed = changed || install_before != install_after;
-        reexec_planned = should_self_update_reexec(
-            apply,
-            promote.ok,
-            install_before.clone(),
-            install_after.clone(),
-        );
-    }
+    write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
+    let installed_after = install_bin_fingerprint(&config.install_bin);
     let ok = first_missing_signal == "none";
     emit_preflight_receipt(
         &preflight_dir,
+        &config_path,
+        &config,
+        &component,
+        source_head.as_deref(),
+        staged_sha.as_deref(),
+        installed_after.as_deref(),
         ok,
         apply,
         changed,
         &first_missing_signal,
-        &config_path,
-        Some(&config),
         operation_count,
-        reexec_planned,
-        &lane,
-        Some(&lock_path),
-        lock_sha.as_deref(),
-        staged_sha.as_deref(),
-        install_after.as_deref(),
-        transport_used.as_deref(),
-        engine_content_head.as_deref(),
-        &artifact_transport_attempts,
     )?;
-    // Keep the aggregate run receipt and the dedicated ledger receipt in sync.
-    if apply {
-        if let Some(known_good) = std::fs::read(&preflight_dir.join("known-good.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        {
-            if let Some(mut aggregate) = std::fs::read(&preflight_dir.join("run.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            {
-                aggregate["known_good"] = known_good;
-                write_json(&preflight_dir.join("run.json"), &aggregate)?;
-            }
-        }
-    }
     crate::hyalos::forward_receipt(
         "harmonia.renew_self.preflight",
         &format!(
@@ -1695,122 +842,78 @@ pub(crate) fn run_engine_preflight(
         ),
         Some(ok),
     );
-
-    let mut execution = ModuleExecution::from_operations(
-        vec![
-            ("root-git-credential-retirement", credential_retirement),
-            ("keyring-trust", keyring),
-            ("transport-organs", transport),
-            ("system-sync", system_sync),
-            ("artifact-lane", artifact_outcome),
-            ("source-possession", source_outcome),
-            (
-                "staged-build",
-                OperationOutcome {
-                    ok: build.ok,
-                    changed: false,
-                    skipped: !apply,
-                    message: "staged engine build".into(),
-                    command: Some(build),
-                },
-            ),
-            (
-                "proof-battery",
-                OperationOutcome {
-                    ok: proof_ok || !ok && !matches!(first_missing_signal.as_str(), "none"),
-                    changed: false,
-                    skipped: first_missing_signal != "none" && proof_failure.is_none(),
-                    message: "staged engine proof battery".into(),
-                    command: None,
-                },
-            ),
-            (
-                "promote-successor",
-                OperationOutcome {
-                    ok: promotion_skipped || promote.ok,
-                    changed: changed && ok && !promotion_skipped,
-                    skipped: promotion_skipped,
-                    message: "promote staged successor after proof".into(),
-                    command: Some(promote),
-                },
-            ),
-        ],
-        "engine-preflight",
-    );
-    execution.ok = ok;
-    execution.changed = changed && ok;
-    execution.operation_count = operation_count;
-    execution.first_missing_signal = if ok { None } else { Some(first_missing_signal) };
-
-    if ok && reexec_planned {
-        write_json(
-            &preflight_dir.join("harmonia-self-update-reexec.json"),
-            &json!({"schema":"harmonia.runtime.self_update_reexec.v1","ok":true,"install_bin":config.install_bin,"reason":"engine pre-flight promoted a proved Harmonia successor; re-exec same argv before module convergence"}),
-        )?;
-        let args: Vec<String> = env::args().skip(1).collect();
-        let key = invocation
-            .ok_or_else(|| "harmonia-self-update-reexec-invocation-missing".to_string())?;
-        let plan = crate::atoms::r#do::replace_process::Plan {
-            successor: config.install_bin.clone(),
-            argv: args,
-            guard_name: SELF_UPDATE_REEXEC_ENV.into(),
-            guard_value: "1".into(),
-            receipt_path: preflight_dir.join("harmonia-self-update-reexec.json"),
-        };
-        return crate::atoms::r#do::replace_process::replace(&plan, key)
-            .map(|_| unreachable!())
-            .map_err(|err| format!("harmonia-self-update-reexec-failed: {err}"));
-    }
-    Ok(execution)
+    Ok(ModuleExecution {
+        ok,
+        changed: changed && ok,
+        operation_count,
+        first_missing_signal: (!ok).then_some(first_missing_signal),
+        placements: Vec::new(),
+    })
 }
 
 #[cfg(test)]
 mod release_transport_tests {
-    use super::EngineArtifactTransport;
+    use super::{engine_source_gate, EngineArtifactTransport};
     use std::path::PathBuf;
 
     #[test]
-    fn engine_config_source_policy_defaults_to_artifact() {
-        let config = super::parse_validate_engine_plane_config(
-            r#"{"source_repo_url":"https://example.invalid/repo.git","branch":"main","source_dir":"/var/lib/harmonia/source","install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
-            std::path::Path::new("engine.json"),
+    fn engine_config_uses_local_mechanics_and_certificate_source_authority() {
+        let config: super::EnginePlaneConfig = serde_json::from_str(
+            r#"{"install_bin":"/usr/local/bin/harmonia","enabled":true,"build_root":"/var/lib/harmonia/source","artifact_transport":{"kind":"git","name":"cache","cache_dir":"/var/cache/harmonia","remote":"origin"}}"#,
+        ).unwrap();
+        assert_eq!(config.build_root, PathBuf::from("/var/lib/harmonia/source"));
+        assert_eq!(config.artifact_transport.unwrap().remote, "origin");
+    }
+
+    #[test]
+    fn artifact_transport_has_no_source_or_credential_authority() {
+        let transport: EngineArtifactTransport = serde_json::from_str(
+            r#"{"kind":"git","name":"cache","cache_dir":"/var/cache/harmonia","remote":"origin"}"#,
         )
         .unwrap();
-        assert_eq!(config.source_policy, "artifact");
+        assert_eq!(transport.kind, "git");
+        assert_eq!(transport.cache_dir, PathBuf::from("/var/cache/harmonia"));
     }
 
     #[test]
-    fn engine_config_source_policy_developer_is_echoed() {
-        let config = super::parse_validate_engine_plane_config(
-            r#"{"source_policy":"developer","source_repo_url":"https://example.invalid/repo.git","branch":"main","source_dir":"/var/lib/harmonia/source","install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
-            std::path::Path::new("engine.json"),
+    fn absent_engine_component_blocks_before_mutation_and_preserves_old_engine() {
+        let root = tempfile::tempdir().unwrap();
+        let certificate_path = root.path().join("profile.json");
+        std::fs::write(
+            &certificate_path,
+            r#"{
+                "schema": "homeserver.device-profile.v1",
+                "kernel": { "profile": "homeserver" },
+                "source_policy": "developer",
+                "sources": {
+                    "harmonia": {
+                        "ref": "main",
+                        "candidates": [{
+                            "kind": "git",
+                            "url": "https://git.home.arpa/HOMESERVERSLTD/harmonia.git"
+                        }]
+                    }
+                }
+            }"#,
         )
         .unwrap();
-        assert_eq!(config.source_policy, "developer");
-    }
+        let installed_engine = root.path().join("installed/harmonia");
+        std::fs::create_dir_all(installed_engine.parent().unwrap()).unwrap();
+        std::fs::write(&installed_engine, b"old-engine-sentinel").unwrap();
+        let source_destination = root.path().join("source");
+        let build_destination = root.path().join("build");
 
-    #[test]
-    fn engine_config_source_policy_garbage_is_exact_blocker() {
-        let error = super::parse_validate_engine_plane_config(
-            r#"{"source_policy":"garbage","source_repo_url":"https://example.invalid/repo.git","branch":"main","source_dir":"/var/lib/harmonia/source","install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
-            std::path::Path::new("engine.json"),
-        )
-        .unwrap_err();
-        assert_eq!(error, "source-policy-invalid policy=garbage");
-    }
+        let result = engine_source_gate(&certificate_path);
 
-    #[test]
-    fn release_kinds_and_legacy_git_deserialize() {
-        let forgejo: EngineArtifactTransport = serde_json::from_str(r#"{"kind":"forgejo-release","base_url":"https://git.home.arpa","owner":"HOMESERVERSLTD","repo":"harmonia","cache_dir":"/var/cache/harmonia"}"#).unwrap();
-        assert_eq!(forgejo.kind, "forgejo-release");
-        let github: EngineArtifactTransport = serde_json::from_str(r#"{"kind":"github-release","owner":"homeserversltd","repo":"harmonia","cache_dir":"/var/cache/harmonia"}"#).unwrap();
-        assert_eq!(github.kind, "github-release");
-        let legacy: EngineArtifactTransport = serde_json::from_str(r#"{"repo_url":"https://github.com/example/harmonia.git","cache_dir":"/var/cache/harmonia"}"#).unwrap();
-        assert_eq!(legacy.kind, "git");
+        assert!(matches!(
+            result,
+            Err(signal) if signal == "device-profile-kernel-engine-component-missing"
+        ));
         assert_eq!(
-            legacy.repo_url.as_deref(),
-            Some("https://github.com/example/harmonia.git")
+            std::fs::read(&installed_engine).unwrap(),
+            b"old-engine-sentinel"
         );
-        assert_eq!(legacy.cache_dir, PathBuf::from("/var/cache/harmonia"));
+        assert!(!source_destination.exists());
+        assert!(!build_destination.exists());
     }
 }

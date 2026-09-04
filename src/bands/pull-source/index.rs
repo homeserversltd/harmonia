@@ -637,17 +637,14 @@ pub(crate) fn selector_is_safe(selector: &str) -> bool {
             .any(|forbidden| selector.to_ascii_lowercase().contains(forbidden))
 }
 
-/// Bridge certificate policy and body-local material without merging their
-/// authorities. The certificate supplies candidates and opaque selectors; the
-/// supplied map supplies only selector-keyed CredentialScope material. Missing
-/// named scopes remain unresolved so `acquire_source` produces its established
-/// hard-red receipt instead of falling back anonymously.
+/// Bridge certificate candidates into the owner-only Git acquisition lane.
+/// A certificate credential selector is validated metadata and is deliberately
+/// ignored: every Git child executes as owner over SSH and no engine credential
+/// material is resolved or carried.
 pub(crate) fn bridge_acquisition_plan(
     resolution: &SourceResolution,
     destination: PathBuf,
-    bearer: String,
     expected_commit: Option<String>,
-    credentials: BTreeMap<String, crate::tools::git_artifact::CredentialScope>,
 ) -> crate::tools::git_artifact::SourcePlan {
     crate::tools::git_artifact::SourcePlan {
         candidates: resolution
@@ -662,15 +659,15 @@ pub(crate) fn bridge_acquisition_plan(
                     _ => unreachable!("source resolution admits only supported candidate kinds"),
                 },
                 locator: candidate.locator.clone(),
-                credential_selector: candidate.credential_selector.clone(),
+                credential_selector: None,
             })
             .collect(),
         reference: resolution.requested_ref.clone(),
         source_policy: resolution.source_policy.clone(),
         destination,
         expected_commit,
-        bearer,
-        credentials,
+        bearer: "owner".to_string(),
+        credentials: BTreeMap::new(),
     }
 }
 
@@ -1007,9 +1004,6 @@ fn routine_source_plan_with_blessed_ref(
                 manifest.id, step.step_id
             )
         })?;
-    let config = crate::bands::renew_self::load_engine_plane_config(
-        &crate::bands::renew_self::engine_config_path(),
-    )?;
     let certificate = crate::device_profile_certificate_path();
     let certificate_resolution = crate::bands::pull_source::resolve_source(
         &certificate,
@@ -1020,26 +1014,20 @@ fn routine_source_plan_with_blessed_ref(
     // Carry the exact validated value from this receipt before resolution is
     // reduced to the acquisition plan. Do not re-read or infer it later.
     let blessed_ref = certificate_resolution.blessed_ref.clone();
-    let resolution = select_source_resolution(
-        certificate_resolution,
-        config.as_ref(),
-        component,
-        &manifest.id,
-        &step.step_id,
-    )?;
-    let credentials = config
-        .as_ref()
-        .map(crate::bands::renew_self::credential_scopes)
-        .unwrap_or_default();
+    let resolution = certificate_resolution.resolution.ok_or_else(|| {
+        let blocker = certificate_resolution
+            .blocker
+            .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
+        format!(
+            "source-resolution-blocked module={} step_id={} component={} blocker={blocker}",
+            manifest.id, step.step_id, component
+        )
+    })?;
     let expected_commit = expected_commit_for_resolution(&resolution);
     let plan = crate::bands::pull_source::bridge_acquisition_plan(
         &resolution,
         PathBuf::from(destination),
-        optional_string_arg(&step.args, "bearer")
-            .unwrap_or("owner")
-            .to_string(),
         expected_commit,
-        credentials,
     );
     Ok((plan, blessed_ref))
 }
@@ -1077,76 +1065,6 @@ pub(crate) fn execute_source(
             promotion: "planned source acquisition".into(),
         },
     }
-}
-
-fn normalize_engine_source_locator(locator: &str) -> String {
-    const ENGINE_HTTPS_PREFIX: &str = "https://git.home.arpa/";
-    locator
-        .strip_prefix(ENGINE_HTTPS_PREFIX)
-        .map(|path| format!("git@git.home.arpa:{path}"))
-        .unwrap_or_else(|| locator.to_string())
-}
-
-fn engine_source_resolution(
-    component: &str,
-    config: &crate::bands::renew_self::EnginePlaneConfig,
-) -> Result<SourceResolution, String> {
-    let source_policy = validate_source_policy(Some(&config.source_policy))?;
-    let declared = config.source_components.get(component);
-    let (source_repo_url, branch) = if let Some(declared) = declared {
-        (&declared.repo_url, &declared.branch)
-    } else {
-        (&config.source_repo_url, &config.branch)
-    };
-    let source_component = config
-        .source_components
-        .get(component)
-        .map(|_| component)
-        .unwrap_or_else(|| {
-            config
-                .source_repo_url
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .and_then(|segment| segment.rsplit(':').next())
-                .unwrap_or_default()
-                .trim_end_matches(".git")
-        });
-    if source_component != component {
-        return Err(format!(
-            "source-component-undeclared component={component}; engine-source-component={source_component}"
-        ));
-    }
-    let requested_ref = branch.trim();
-    if requested_ref.is_empty() {
-        return Err(format!("source-ref-empty component={component}"));
-    }
-    let credential_selector = match config.credential_scopes.len() {
-        0 => None,
-        1 => config.credential_scopes.keys().next().cloned(),
-        _ => {
-            return Err(format!(
-                "engine-source-credential-selector-ambiguous component={component} scopes={}",
-                config.credential_scopes.len()
-            ));
-        }
-    };
-    let candidate = SourceCandidate {
-        kind: "git".to_string(),
-        url: Some(normalize_engine_source_locator(source_repo_url.trim())),
-        path: None,
-        credential_selector,
-    };
-    let (candidate, _, _) = candidate_plan(&candidate, 1).map_err(|blocker| {
-        format!("engine-source-candidate-invalid component={component} blocker={blocker}")
-    })?;
-    Ok(SourceResolution {
-        schema: SOURCE_PLAN_SCHEMA,
-        source_policy,
-        component: component.to_string(),
-        requested_ref: requested_ref.to_string(),
-        candidates: vec![candidate],
-    })
 }
 
 /// Execute the complete PullSource band lifecycle for one projected module.
@@ -1273,54 +1191,13 @@ pub(crate) fn execute_manifest_band(
     Ok(result)
 }
 
-fn select_source_resolution(
-    certificate_resolution: SourceResolutionReceipt,
-    config: Option<&crate::bands::renew_self::EnginePlaneConfig>,
-    component: &str,
-    module: &str,
-    step_id: &str,
-) -> Result<SourceResolution, String> {
-    let resolution = match certificate_resolution.resolution {
-        Some(resolution) => resolution,
-        None if certificate_resolution
-            .blocker
-            .as_deref()
-            .is_some_and(|blocker| {
-                blocker == format!("source-component-undeclared component={component}")
-            }) =>
-        {
-            let config = config.ok_or_else(|| {
-                format!(
-                    "source-resolution-blocked module={module} step_id={step_id} component={component} blocker=engine-config-missing"
-                )
-            })?;
-            engine_source_resolution(component, config)?
-        }
-        None => {
-            let blocker = certificate_resolution
-                .blocker
-                .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
-            return Err(format!(
-                "source-resolution-blocked module={module} step_id={step_id} component={component} blocker={blocker}"
-            ));
-        }
-    };
-    if resolution.source_policy == "developer" {
-        let config = config.ok_or_else(|| {
-            format!(
-                "source-resolution-blocked module={module} step_id={step_id} component={component} blocker=engine-config-missing"
-            )
-        })?;
-        engine_source_resolution(component, config)
-    } else {
-        Ok(resolution)
-    }
-}
-
 fn expected_commit_for_resolution(resolution: &SourceResolution) -> Option<String> {
     (resolution.source_policy == "artifact"
         && resolution.requested_ref.len() == 40
-        && resolution.requested_ref.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        && resolution
+            .requested_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()))
     .then(|| resolution.requested_ref.clone())
 }
 
@@ -1534,232 +1411,75 @@ pub(crate) fn execute_routine_child(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bands::renew_self::{EnginePlaneConfig, EngineSourceComponent};
-    use crate::tools::git_artifact::CredentialScope;
 
-    fn certificate_with_policy(policy: Option<&str>) -> std::path::PathBuf {
+    fn certificate(component: &str, selector: Option<&str>) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "harmonia-source-policy-{}-{}.json",
+            "harmonia-source-certificate-{}-{}.json",
             std::process::id(),
-            policy.unwrap_or("absent")
+            component
         ));
-        let policy = policy
-            .map(|value| format!(",\"source_policy\":\"{value}\""))
+        let selector = selector
+            .map(|value| format!(",\"credential_selector\":\"{value}\""))
             .unwrap_or_default();
         std::fs::write(
             &path,
-            format!(r#"{{"schema":"homeserver.device-profile.v1"{policy},"sources":{{"sbin":{{"ref":"main","candidates":[{{"kind":"git","url":"https://git.home.arpa/HOMESERVERSLTD/sbin.git"}}]}}}}}}"#),
+            format!(
+                r#"{{"schema":"homeserver.device-profile.v1","source_policy":"developer","sources":{{"{component}":{{"ref":"main","candidates":[{{"kind":"git","url":"https://git.home.arpa/HOMESERVERSLTD/{component}.git"{selector}}}]}}}}}}"#
+            ),
         )
         .unwrap();
         path
     }
 
     #[test]
-    fn certificate_source_policy_defaults_to_artifact() {
-        let path = certificate_with_policy(None);
-        let receipt = resolve_source(&path, "sbin", "test", "policy");
-        assert_eq!(receipt.source_policy, "artifact");
-        assert_eq!(receipt.resolution.unwrap().source_policy, "artifact");
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn certificate_source_policy_developer_is_echoed() {
-        let path = certificate_with_policy(Some("developer"));
-        let receipt = resolve_source(&path, "sbin", "test", "policy");
-        assert_eq!(receipt.source_policy, "developer");
-        assert_eq!(
-            receipt.resolution.as_ref().unwrap().source_policy,
-            "developer"
-        );
-        assert_eq!(receipt.blessed_ref, None);
-        let serialized = serde_json::to_value(&receipt).unwrap();
-        assert!(!serialized.as_object().unwrap().contains_key("blessed_ref"));
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn certificate_source_policy_garbage_is_exact_blocker() {
-        let path = certificate_with_policy(Some("garbage"));
-        let receipt = resolve_source(&path, "sbin", "test", "policy");
-        assert_eq!(
-            receipt.blocker.as_deref(),
-            Some("source-policy-invalid policy=garbage")
-        );
-        assert_eq!(receipt.source_policy, "garbage");
-        assert!(receipt.resolution.is_none());
-        let _ = std::fs::remove_file(path);
-    }
-
-    fn engine_config_for_plan(policy: &str, branch: &str) -> EnginePlaneConfig {
-        EnginePlaneConfig {
-            source_policy: policy.into(),
-            source_repo_url: "https://git.home.arpa/HOMESERVERSLTD/sbin.git".into(),
-            branch: branch.into(),
-            source_dir: PathBuf::from("/var/lib/harmonia/source"),
-            local_source_checkout: None,
-            install_bin: PathBuf::from("/usr/local/bin/harmonia"),
-            enabled: true,
-            git_bearer: "owner".into(),
-            remote: "origin".into(),
-            build_program: None,
-            build_args: None,
-            staged_bin: None,
-            profile_index: None,
-            ratchet_lock: None,
-            artifact_transport: None,
-            artifact_transports: Vec::new(),
-            source_components: [("sbin".into(), EngineSourceComponent {
-                repo_url: "https://git.home.arpa/HOMESERVERSLTD/sbin.git".into(),
-                branch: branch.into(),
-            })]
-            .into_iter()
-            .collect(),
-            credential_scopes: BTreeMap::new(),
-        }
-    }
-
-    #[test]
-    fn developer_plan_uses_configured_branch_and_retains_blessed_declaration() {
-        let sha = "0123456789abcdef0123456789abcdef01234567";
-        let path = certificate_with_policy(Some("developer"));
-        let mut text = std::fs::read_to_string(&path).unwrap();
-        text = text.replace(
-            "\"ref\":\"main\"",
-            &format!("\"ref\":\"{sha}\""),
-        );
-        std::fs::write(&path, text).unwrap();
-        let receipt = resolve_source(&path, "sbin", "test", "plan");
-        assert_eq!(receipt.blessed_ref.as_deref(), Some(sha));
-        let serialized = serde_json::to_value(&receipt).unwrap();
-        assert_eq!(
-            serialized.get("blessed_ref").and_then(Value::as_str),
-            Some(sha)
-        );
-        let config = engine_config_for_plan("developer", "developer-head");
-        let resolution = select_source_resolution(
-            receipt,
-            Some(&config),
-            "sbin",
-            "test",
-            "plan",
-        )
-        .unwrap();
-        let plan = bridge_acquisition_plan(
-            &resolution,
-            PathBuf::from("/tmp/source"),
-            "owner".into(),
-            expected_commit_for_resolution(&resolution),
-            BTreeMap::new(),
-        );
-        assert_eq!(plan.reference, "developer-head");
-        assert_eq!(plan.expected_commit, None);
-        assert_eq!(plan.source_policy, "developer");
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn artifact_plan_uses_declared_sha_as_reference_and_expected_commit() {
-        let sha = "0123456789abcdef0123456789abcdef01234567";
-        let path = certificate_with_policy(None);
-        let mut text = std::fs::read_to_string(&path).unwrap();
-        text = text.replace(
-            "\"ref\":\"main\"",
-            &format!("\"ref\":\"{sha}\""),
-        );
-        std::fs::write(&path, text).unwrap();
-        let receipt = resolve_source(&path, "sbin", "test", "plan");
-        let resolution =
-            select_source_resolution(receipt, None, "sbin", "test", "plan").unwrap();
-        let plan = bridge_acquisition_plan(
-            &resolution,
-            PathBuf::from("/tmp/source"),
-            "owner".into(),
-            expected_commit_for_resolution(&resolution),
-            BTreeMap::new(),
-        );
-        assert_eq!(plan.reference, sha);
-        assert_eq!(plan.expected_commit.as_deref(), Some(sha));
-        assert_eq!(plan.source_policy, "artifact");
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn artifact_pull_output_preserves_prior_field_set() {
-        let plan = tools::git_artifact::SourcePlan {
-            candidates: Vec::new(),
-            reference: "main".into(),
-            source_policy: "artifact".into(),
-            destination: PathBuf::from("/var/lib/harmonia/source"),
-            expected_commit: None,
-            bearer: "owner".into(),
-            credentials: BTreeMap::new(),
-        };
-        let outcome = tools::git_artifact::SourceOutcome {
-            ok: true,
-            changed: false,
-            receipt: tools::git_artifact::SourceReceipt {
-                attempts: Vec::new(),
-                served_index: None,
-                resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
-                promotion: "planned source acquisition".into(),
-            },
-        };
-        let output = routine_source_outputs(&plan, &outcome, None);
-        assert!(!output.contains_key("source_policy"));
-        assert_eq!(output.len(), 5);
-    }
-
-    #[test]
-    fn engine_source_resolution_normalizes_sbin_https_locator_to_ssh() {
-        let config = EnginePlaneConfig {
-            source_policy: "developer".into(),
-            source_repo_url: "https://git.home.arpa/HOMESERVERSLTD/harmonia.git".into(),
-            branch: "main".into(),
-            source_dir: PathBuf::from("/var/lib/harmonia/source"),
-            local_source_checkout: None,
-            install_bin: PathBuf::from("/usr/local/bin/harmonia"),
-            enabled: true,
-            git_bearer: "owner".into(),
-            remote: "origin".into(),
-            build_program: None,
-            build_args: None,
-            staged_bin: None,
-            profile_index: None,
-            ratchet_lock: None,
-            artifact_transport: None,
-            artifact_transports: Vec::new(),
-            source_components: [(
-                "sbin".into(),
-                EngineSourceComponent {
-                    repo_url: "https://git.home.arpa/HOMESERVERSLTD/sbin.git".into(),
-                    branch: "main".into(),
-                },
-            )]
-            .into_iter()
-            .collect(),
-            credential_scopes: [(
-                "owner-forge-ssh".into(),
-                CredentialScope {
-                    ssh_key_path: None,
-                    https_host: None,
-                    https_token_path: None,
-                },
-            )]
-            .into_iter()
-            .collect(),
-        };
-
-        let resolution = engine_source_resolution("sbin", &config).unwrap();
+    fn developer_source_policy_resolves_from_supplied_profile_certificate_only() {
+        let path = certificate("harmonia", None);
+        let resolution = resolve_source(&path, "harmonia", "test", "source");
+        assert!(resolution.ok);
         assert_eq!(resolution.source_policy, "developer");
-        let candidate = &resolution.candidates[0];
+        assert_eq!(resolution.certificate_path, path.display().to_string());
+        assert_eq!(resolution.resolution.unwrap().requested_ref, "main");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn undeclared_component_is_hard_blocked() {
+        let path = certificate("harmonia", None);
+        let resolution = resolve_source(&path, "sbin", "test", "source");
         assert_eq!(
-            candidate.locator,
-            "git@git.home.arpa:HOMESERVERSLTD/sbin.git"
+            resolution.blocker.as_deref(),
+            Some("source-component-undeclared component=sbin")
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn certificate_selector_is_validated_but_not_carried_to_git() {
+        let path = certificate("harmonia", Some("owner-forge-ssh"));
+        let resolution = resolve_source(&path, "harmonia", "test", "source");
+        assert_eq!(resolution.credential_selectors, vec!["owner-forge-ssh"]);
+        let plan = bridge_acquisition_plan(
+            &resolution.resolution.unwrap(),
+            PathBuf::from("/var/lib/harmonia/source"),
+            None,
+        );
+        assert_eq!(plan.bearer, "owner");
+        assert!(plan.credentials.is_empty());
+        assert!(plan
+            .candidates
+            .iter()
+            .all(|candidate| candidate.credential_selector.is_none()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_certificate_selector_is_blocked() {
+        let path = certificate("harmonia", Some("../secret"));
+        let resolution = resolve_source(&path, "harmonia", "test", "source");
         assert_eq!(
-            candidate.credential_selector.as_deref(),
-            Some("owner-forge-ssh")
+            resolution.blocker.as_deref(),
+            Some("source-credential-selector-invalid component-candidate=1")
         );
+        let _ = std::fs::remove_file(path);
     }
 }

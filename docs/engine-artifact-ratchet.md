@@ -24,97 +24,49 @@ The kernel-owned lock lives beside `engine.json` by default:
 A body converges only to the local blessed lock. Newer observed releases are
 receipt evidence, not local authority. A body does not self-advance this lock.
 
-## Version releases and assets
+## Versioned artifacts and local trust
 
-Every source repository owns a version release on its Forgejo or GitHub project.
-The tag is the version. Each architecture publishes the binary asset
-`harmonia-<version>-<arch>` and the sidecar
-`harmonia-<version>-<arch>.sha256`. The release’s hosting location is transport
-only; it never replaces the local lock or the proof battery.
+Versioned engine artifacts are subordinate to the local ratchet lock. The lock
+is the only artifact trust authority; a release, cache, or transport can supply
+an observation, but cannot change the admitted version or checksum. A missing
+or unusable artifact is receipted as a refusal, and an integrity mismatch stops
+the walk rather than changing authority.
 
-## Retrieval and mirrors
+## Source authority
 
-The default retrieval chain is explicitly ordered:
+`engine.json` contains local engine mechanics only: enablement, installation,
+build/staging, profile-index, ratchet-lock, and receipt/cache concerns. It does
+not declare source identity, source selection, or credentials.
 
-1. Forgejo release for the same source repository at `git.home.arpa`;
-2. GitHub release for that same source repository.
+`profile.json` is the source authority. Its `sources` declaration together with
+`kernel.engine_component` selects the exact public or private component for the
+engine. The engine consumes that selected declaration; it does not infer a
+component from the host, an installed path, a release, or a fallback name.
 
-The release tag is the version, and each release carries the binary asset
-`harmonia-<version>-<arch>` plus its checksum asset
-`harmonia-<version>-<arch>.sha256`. Chrysalis’ `release-publish` tool in
-deployables publishes these releases and mirrors the assets.
+An absent `kernel.engine_component`, or a component that is absent from the
+profile's `sources`, is a hard block before acquisition, build, or promotion.
+The installed engine remains untouched in either case. The same preservation
+rule applies when the selected source declaration is malformed or unusable.
 
-This is the local-fork/precession model: an estate may run a local Forgejo fork
-and explicitly precess/bless it, while the same source repository’s GitHub
-release remains the ordered fallback. A MISS (missing repository, release,
-asset, or fetch) is receipted and continues to the next transport. A SHA-256
-mismatch after a successful fetch is tamper evidence: the walk stops hard-red
-and never tries a later transport.
+The `credential_selector` field is syntax-validated metadata only. It is not a
+credential possession request, is ignored after validation, and is never used
+to select engine credentials or alter the owner-only acquisition lane.
 
-The lock remains sovereign: every fetched binary must match the locally blessed
-lock SHA-256 before proof and promotion. Harmonia consumes assets; it does not
-publish, mirror, install, or uninstall machine surfaces.
+## Owner-borne SSH custody
 
-## Transport configuration
+Source acquisition runs as the owner over the owner's SSH identity. That
+owner-borne SSH identity is the complete credential story for the engine source
+lane. The engine does not accept a configured alternate identity or other
+credential input, and it never writes credential material to its
+configuration, environment, receipts, or observed state.
 
-A release chain uses this exact shape (legacy Git entries may omit `kind` and
-continue to parse as `git`):
+## Observed appliance state
 
-```json
-{
-  "credential_scopes": {
-    "forgejo-release": {"https_host": "git.home.arpa", "https_token_path": "/home/owner/.ssh/forgejo-token"}
-  },
-  "artifact_transports": [
-    {"kind": "forgejo-release", "base_url": "https://git.home.arpa", "owner": "HOMESERVERSLTD", "repo": "harmonia", "credential_scope": "forgejo-release", "cache_dir": "/var/cache/harmonia/artifacts/forgejo"},
-    {"kind": "github-release", "owner": "homeserversltd", "repo": "harmonia", "cache_dir": "/var/cache/harmonia/artifacts/github"}
-  ]
-}
-```
-
-Existing singular `artifact_transport` configs remain valid as a one-element
-chain, and existing `artifact_transports` configs remain valid. Both singular
-and plural Git configurations parse without `kind`, which defaults to `git`. A
-missing Git repository remains a receipted MISS and continues to the next
-transport.
-
-## Local source checkout possession
-
-A body may declare `local_source_checkout` in `/etc/harmonia/engine.json`. It
-must equal `source_dir` and name an owner-refreshed Git checkout. In this mode
-the root engine lane performs only local `git rev-parse`/branch readback, builds
-from that checkout, and promotes only after the usual proof battery. It does
-not clone, fetch, configure a credential helper, or open an SSH key for source
-possession. The owner-plane refresh lane owns source freshness; the engine
-receipt names that split as `declared-local-checkout-owner-plane-freshness`.
-
-## Owner-bearer Forgejo SSH transport
-
-`/etc/harmonia/engine.json` may declare `git_ssh_key_path` beside
-`git_bearer`. It is an absolute path to the named non-root bearer's Forgejo
-key; no default is inferred. Harmonia validates only that the declared path
-exists as a regular file, then starts Git with
-`GIT_SSH_COMMAND="ssh -i <declared-path> -o IdentitiesOnly=yes"`. When the
-engine parent is root, Git and its SSH child execute only after the existing
-`setgroups -> setgid -> setuid` drop to `git_bearer`; root never opens or
-uses that key for Git authentication. Omitting the field preserves ordinary
-Git SSH resolution for bodies with a correctly provisioned default key.
-
-## Source HTTPS credentials
-
-The generated zero-configuration `/etc/harmonia/engine.json` uses
-`https://github.com/homeserversltd/harmonia.git` as `source_repo_url`. It uses
-anonymous HTTPS and never adds a credential helper.
-
-An estate that serves its source from a private HTTPS forge declares both
-`git_https_credential_host` and `git_https_credential_token_path` in that same
-engine configuration, alongside its private `source_repo_url`. The helper is
-constructed only when both settings are present and the requested repository
-uses `https://<git_https_credential_host>/`. It is passed to Git as a
-command-local setting after the Git child has dropped to `git_bearer`; the token
-path is never opened by the parent and no credential is written to Git config,
-environment, or receipts. A missing setting, a non-HTTPS repository, or a host
-mismatch leaves the helper disengaged.
+`ruyi.json` is engine-maintained observed appliance state. Projectio owns its
+readback and writes; it is not a declaration, source authority, credential
+authority, or replacement for `profile.json`. Observed state can describe what
+was seen on the appliance, but it cannot select a source or authorize an engine
+change.
 
 ## Product and operator boundary
 

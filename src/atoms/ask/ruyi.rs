@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    env,
     fs,
     io::{Read, Write},
     net::{Ipv4Addr, UdpSocket},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
     thread,
@@ -808,6 +809,212 @@ pub(crate) fn fetch_roster_receipt() -> Result<Value, String> {
     })
     .map_err(|e| format!("ruyi-receipt-serialize-failed: {e}"))
 }
+
+
+// Local Ruyi state is a post-commit projection, not a declaration or roster
+// operation.  The caller supplies the already serialized beam facts so this
+// seam never reinterprets a receipt type that is intentionally Serialize-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalIdentity {
+    pub mac: String,
+    pub hostname: String,
+    pub ipv4: String,
+}
+
+const STATE_PATH_ENV: &str = "HARMONIA_RUYI_STATE_PATH";
+const DEFAULT_STATE_PATH: &str = "/etc/appliance/ruyi.json";
+
+pub(crate) fn state_path() -> PathBuf {
+    env::var_os(STATE_PATH_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_PATH))
+}
+
+fn local_identity() -> Result<LocalIdentity, String> {
+    let mac = fs::read_dir("/sys/class/net")
+        .map_err(|e| format!("ruyi-mac-directory-read-failed: {e}"))?
+        .flatten()
+        .filter(|entry| entry.file_name() != "lo")
+        .find_map(|entry| {
+            let value = fs::read_to_string(entry.path().join("address")).ok()?.trim().to_ascii_lowercase();
+            valid_mac(&value).then_some(value)
+        })
+        .ok_or_else(|| "ruyi-mac-absent".to_string())?;
+    let hostname = fs::read_to_string("/etc/hostname")
+        .map_err(|e| format!("ruyi-hostname-read-failed: {e}"))?
+        .trim()
+        .to_ascii_lowercase();
+    if !valid_name(&hostname) {
+        return Err("ruyi-hostname-absent".into());
+    }
+    #[cfg(unix)]
+    let ipv4 = unsafe {
+        let mut head = std::ptr::null_mut();
+        if libc::getifaddrs(&mut head) != 0 {
+            return Err(format!("ruyi-ipv4-read-failed: {}", std::io::Error::last_os_error()));
+        }
+        let mut current = head;
+        let mut found = None;
+        while !current.is_null() {
+            let item = &*current;
+            if !item.ifa_name.is_null() && !item.ifa_addr.is_null()
+                && (*item.ifa_addr).sa_family as i32 == libc::AF_INET
+            {
+                let name = std::ffi::CStr::from_ptr(item.ifa_name).to_string_lossy();
+                if name != "lo" {
+                    let address = &*(item.ifa_addr as *const libc::sockaddr_in);
+                    found = Some(std::net::Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes()).to_string());
+                    break;
+                }
+            }
+            current = item.ifa_next;
+        }
+        libc::freeifaddrs(head);
+        found.ok_or_else(|| "ruyi-ipv4-absent".to_string())?
+    };
+    #[cfg(not(unix))]
+    let ipv4 = return Err("ruyi-ipv4-absent".into());
+    Ok(LocalIdentity { mac, hostname, ipv4 })
+}
+
+fn local_state_beam_identity(beam: &Value) -> Result<(String, String, Option<String>, Option<String>), String> {
+    let door = beam
+        .get("door")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "ruyi-beam-door-absent".to_string())?;
+    let caduceus = door
+        .get("caduceus_sha")
+        .and_then(Value::as_str)
+        .filter(|value| valid_sha(value, 40))
+        .ok_or_else(|| "ruyi-caduceus-sha-absent".to_string())?
+        .to_owned();
+    let env = door
+        .get("env_sha")
+        .and_then(Value::as_str)
+        .filter(|value| valid_sha(value, 64))
+        .ok_or_else(|| "ruyi-env-sha-absent".to_string())?
+        .to_owned();
+    let gui = door.get("gui_face").and_then(Value::as_str).map(ToOwned::to_owned);
+    let syzygy = door
+        .get("syzygy_sha")
+        .and_then(Value::as_str)
+        .filter(|value| valid_sha(value, 64))
+        .map(ToOwned::to_owned);
+    Ok((caduceus, env, gui, syzygy))
+}
+
+fn local_harmonia_sha() -> Result<String, String> {
+    let embedded = option_env!("HARMONIA_BUILD_SHA");
+    let lock = if embedded.is_some_and(|value| valid_sha(value, 40)) {
+        None
+    } else {
+        crate::atoms::ask::beam::read_embedded_lock().ok()
+    };
+    let (sha, _) = resolve_harmonia_sha(embedded, lock.as_ref())
+        .map_err(str::to_string)?;
+    valid_sha(&sha, 40)
+        .then_some(sha)
+        .ok_or_else(|| "ruyi-harmonia-sha-absent".to_string())
+}
+
+fn local_state_row(
+    identity: &LocalIdentity,
+    profile: &str,
+    run_id: &str,
+    converged: bool,
+    gui_face: Option<String>,
+    caduceus_sha: String,
+    env_sha: String,
+    harmonia_sha: String,
+    syzygy_sha: Option<String>,
+) -> Result<RuyiRow, String> {
+    validate_row(RuyiRow {
+        schema: ROW_SCHEMA.into(),
+        mac: identity.mac.clone(),
+        hostname: identity.hostname.clone(),
+        canonical_name: format!("{}.home.arpa", identity.hostname),
+        ipv4: identity.ipv4.clone(),
+        profile: profile.into(),
+        gui_face,
+        caduceus_sha,
+        env_sha,
+        harmonia_sha,
+        syzygy_sha,
+        last_seen: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs(),
+        last_update: LastUpdate { run_id: run_id.into(), converged },
+    })
+}
+
+/// Write the exact local state row after a committed transaction. `beam` is
+/// the concrete serialized post-comparison value already owned by the run.
+pub(crate) fn write_local_state(
+    profile: &Profile,
+    receipt_dir: &Path,
+    transaction: &crate::atoms::r#do::transaction::TransactionReceipt,
+    beam: &Value,
+) -> Result<(), String> {
+    if transaction.state != crate::atoms::r#do::transaction::TransactionState::Committed {
+        return Err("ruyi-state-requires-committed-transaction".into());
+    }
+    let (caduceus, env, gui, beam_syzygy) = local_state_beam_identity(beam)?;
+    let row = local_state_row(
+        &local_identity()?,
+        &profile.id,
+        &current_run_id(receipt_dir),
+        true,
+        gui.or_else(|| transaction.gui.clone()),
+        caduceus,
+        env,
+        local_harmonia_sha()?,
+        transaction.syzygy_sha.clone().or(beam_syzygy),
+    )?;
+    let bytes = serde_json::to_vec_pretty(&row)
+        .map_err(|e| format!("ruyi-state-serialize-failed: {e}"))?;
+    crate::atoms::projectio::write_state(crate::atoms::projectio::StateRequest {
+        target: &state_path(),
+        desired_bytes: &bytes,
+        backup_path: &receipt_dir.join("backups/ruyi-before.json"),
+        witness: crate::atoms::projectio::state_acceptance(),
+    })?;
+    Ok(())
+}
+
+/// Scratch seam used by tests and fixtures; it never consults appliance paths.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_local_state_at(
+    target: &Path,
+    backup: &Path,
+    identity: &LocalIdentity,
+    profile: &str,
+    run_id: &str,
+    converged: bool,
+    gui_face: Option<String>,
+    caduceus_sha: String,
+    env_sha: String,
+    harmonia_sha: String,
+    syzygy_sha: Option<String>,
+) -> Result<RuyiRow, String> {
+    let row = local_state_row(identity, profile, run_id, converged, gui_face, caduceus_sha, env_sha, harmonia_sha, syzygy_sha)?;
+    let bytes = serde_json::to_vec_pretty(&row)
+        .map_err(|e| format!("ruyi-state-serialize-failed: {e}"))?;
+    crate::atoms::projectio::write_state(crate::atoms::projectio::StateRequest {
+        target,
+        desired_bytes: &bytes,
+        backup_path: backup,
+        witness: crate::atoms::projectio::state_acceptance(),
+    })?;
+    Ok(row)
+}
+
+pub(crate) fn read_local_state() -> Result<Value, String> {
+    let bytes = fs::read(state_path()).map_err(|e| format!("ruyi-state-read-failed: {e}"))?;
+    let row: RuyiRow = serde_json::from_slice(&bytes).map_err(|e| format!("ruyi-state-malformed: {e}"))?;
+    serde_json::to_value(validate_row(row)?).map_err(|e| format!("ruyi-state-serialize-failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -931,4 +1138,34 @@ mod tests {
             "run-2"
         )
     }
+
+    #[test]
+    fn local_state_write_has_exact_row_schema_without_live_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("ruyi.json");
+        let identity = LocalIdentity { mac: "aa:bb:cc:dd:ee:ff".into(), hostname: "host".into(), ipv4: "192.0.2.1".into() };
+        let row = write_local_state_at(
+            &target, &root.path().join("backup.json"), &identity, "homeserver", "run-1", true,
+            Some("Coronatio".into()), "a".repeat(40), "b".repeat(64), "c".repeat(40), Some("d".repeat(64)),
+        ).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        assert_eq!(value["schema"], ROW_SCHEMA);
+        assert_eq!(value["last_update"]["run_id"], "run-1");
+        assert!(value.get("gateway").is_none());
+        assert_eq!(validate_row(row).unwrap().syzygy_sha, Some("d".repeat(64)));
+    }
+
+    #[test]
+    fn malformed_local_state_is_refused_before_projectio_write() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("ruyi.json");
+        let identity = LocalIdentity { mac: "aa:bb:cc:dd:ee:ff".into(), hostname: "host".into(), ipv4: "192.0.2.1".into() };
+        let error = write_local_state_at(
+            &target, &root.path().join("backup.json"), &identity, "homeserver", "run-1", false,
+            None, "not-a-sha".into(), "b".repeat(64), "c".repeat(40), None,
+        ).unwrap_err();
+        assert_eq!(error, "ruyi-row-malformed");
+        assert!(!target.exists());
+    }
+
 }

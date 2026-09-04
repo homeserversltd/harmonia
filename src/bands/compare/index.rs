@@ -168,17 +168,9 @@ pub(crate) fn execute_manifest_modules(
     events: &mut File,
 ) -> Result<(), String> {
     let mut beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
-    let ruyi = crate::atoms::ask::ruyi::ruyi_receipt(&beam, receipt_dir)?;
-    crate::write_json(&receipt_dir.join("ruyi.json"), &ruyi)?;
-    if let Some(state @ ("gateway-unreachable" | "refused")) =
-        ruyi.get("state").and_then(Value::as_str)
-    {
-        println!("ruyi state={state}");
-    }
-    let developer_mode = crate::bands::renew_self::load_engine_plane_config(
-        &crate::bands::renew_self::engine_config_path(),
-    )?
-    .is_some_and(|config| config.source_policy == "developer");
+    // Developer mode is never inferred from engine configuration. Source
+    // policy and locators come only from the profile certificate.
+    let developer_mode = false;
     let beam_authorization = authorize_beam(&mut beam, mode_apply, developer_mode);
     if let Some(authorization) = beam_authorization.as_ref() {
         match projection.authorize_beam_convergence(

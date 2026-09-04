@@ -328,6 +328,32 @@ pub(crate) fn rolling_update_run(
             )?;
             return Err(error);
         }
+        // The local Ruyi row is a post-commit Projectio projection. Tests use
+        // the scratch writer directly and never touch the appliance state path.
+        #[cfg(not(test))]
+        {
+            let beam_bytes = fs::read(effective_receipt_dir.join("beam.json"))
+                .map_err(|error| format!("ruyi-beam-state-read-failed: {error}"))?;
+            let beam: serde_json::Value = serde_json::from_slice(&beam_bytes)
+                .map_err(|error| format!("ruyi-beam-state-malformed: {error}"))?;
+            if let Err(error) = crate::atoms::ask::ruyi::write_local_state(
+                profile,
+                &effective_receipt_dir,
+                &receipt,
+                &beam,
+            ) {
+                write_transaction_failure_run_receipt(
+                    &effective_receipt_dir,
+                    profile,
+                    module_root,
+                    "ruyi-state-failed",
+                    Some(&error),
+                    changed,
+                    operation_count,
+                )?;
+                return Err(error);
+            }
+        }
         let Some(summary) = carrier.borrow_mut().deferred_terminal_summary.take() else {
             write_transaction_failure_run_receipt(
                 &effective_receipt_dir,

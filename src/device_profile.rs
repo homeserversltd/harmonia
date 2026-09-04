@@ -17,13 +17,13 @@ thread_local! {
 struct DeviceProfileCertificate {
     schema: String,
     kernel: DeviceProfileKernel,
-    #[serde(default, alias = "syzygy_declaration")]
-    syzygy: Option<crate::SyzygyDeclaration>,
 }
 
 #[derive(Debug, Deserialize)]
 struct DeviceProfileKernel {
     profile: String,
+    #[serde(default)]
+    engine_component: Option<String>,
 }
 
 pub(crate) fn run_identity_source() -> &'static str {
@@ -38,12 +38,11 @@ pub(crate) fn device_profile_certificate_path() -> PathBuf {
     PathBuf::from(DEVICE_PROFILE_CERTIFICATE)
 }
 
-fn load_certificate() -> Result<DeviceProfileCertificate, String> {
-    let path = device_profile_certificate_path();
+fn load_certificate_at(path: &Path) -> Result<DeviceProfileCertificate, String> {
     if !path.exists() {
         return Err("device-profile-certificate-missing".to_string());
     }
-    let text = fs::read_to_string(&path).map_err(|err| {
+    let text = fs::read_to_string(path).map_err(|err| {
         format!(
             "device-profile-certificate-read-failed {}: {err}",
             path.display()
@@ -61,25 +60,56 @@ fn load_certificate() -> Result<DeviceProfileCertificate, String> {
             DEVICE_PROFILE_SCHEMA, certificate.schema
         ));
     }
-    if let Some(declaration) = certificate.syzygy.as_ref() {
-        validate_syzygy_declaration(declaration)?;
-    }
     Ok(certificate)
 }
 
-fn validate_syzygy_declaration(declaration: &crate::SyzygyDeclaration) -> Result<(), String> {
-    if declaration.schema != "appliance.syzygy.v1" {
+fn load_certificate() -> Result<DeviceProfileCertificate, String> {
+    load_certificate_at(&device_profile_certificate_path())
+}
+
+/// The profile certificate is the sole authority for the engine source
+/// component. Hostname, profile aliases, and private estate authorities are
+/// deliberately not consulted.
+pub(crate) fn certificate_engine_component_at(path: &Path) -> Result<String, String> {
+    let certificate = load_certificate_at(path)?;
+    let component = certificate
+        .kernel
+        .engine_component
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "device-profile-kernel-engine-component-missing".to_string())?;
+    if component.contains(char::from(47))
+        || component.contains(char::from(92))
+        || component == "."
+        || component == ".."
+    {
         return Err(format!(
-            "device-profile-syzygy-schema-unsupported {}",
-            declaration.schema
+            "device-profile-kernel-engine-component-invalid component={component}"
         ));
     }
-    if let Some(face) = declaration.gui_face.as_deref() {
-        if !matches!(face, "Hyprland" | "Arcadia" | "Coronatio") {
-            return Err(format!("device-profile-syzygy-gui-face-unsupported {face}"));
-        }
-    }
-    Ok(())
+    Ok(component.to_string())
+}
+
+pub(crate) fn certificate_engine_component() -> Result<String, String> {
+    certificate_engine_component_at(&device_profile_certificate_path())
+}
+
+pub(crate) fn certificate_source_policy() -> Result<String, String> {
+    let path = device_profile_certificate_path();
+    let text = fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "device-profile-certificate-read-failed {}: {err}",
+            path.display()
+        )
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|err| format!("device-profile-certificate-parse-failed: {err}"))?;
+    Ok(value
+        .get("source_policy")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("artifact")
+        .to_string())
 }
 
 fn certificate_profile() -> Result<String, String> {
@@ -144,13 +174,39 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
             profile_id, profile.id
         ));
     }
-    let mut profile = profile;
-    if let Some(declaration) = certificate.syzygy {
-        validate_syzygy_declaration(&declaration)?;
-        profile.syzygy_declaration = Some(declaration);
-    }
     set_run_identity_source("certificate");
     Ok((profile, profile_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeviceProfileCertificate, DEVICE_PROFILE_SCHEMA};
+
+    #[test]
+    fn certificate_ignores_foreign_syzygy_field() {
+        let certificate: DeviceProfileCertificate = serde_json::from_str(
+            r#"{
+                "schema": "homeserver.device-profile.v1",
+                "kernel": {
+                    "profile": "homeserver",
+                    "engine_component": "harmonia"
+                },
+                "syzygy": {
+                    "schema": "foreign.invalid.syzygy.v99",
+                    "gui_face": "not-a-real-face",
+                    "credential_path": "/foreign/credential"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(certificate.schema, DEVICE_PROFILE_SCHEMA);
+        assert_eq!(certificate.kernel.profile, "homeserver");
+        assert_eq!(
+            certificate.kernel.engine_component.as_deref(),
+            Some("harmonia")
+        );
+    }
 }
 
 /// Capability for the software plane only. Its field remains private so only
@@ -287,6 +343,24 @@ pub(crate) fn update_from_certificate(
         }
     };
     let certificate_path = device_profile_certificate_path();
+    if let Err(reason) = certificate_engine_component() {
+        write_json(
+            &receipt_dir.join("run.json"),
+            &json!({
+                "schema": "harmonia.run_profile.v1",
+                "ok": false,
+                "mutation": mode.is_software_apply(),
+                "mode": if mode.is_software_apply() { "apply" } else { "report-only" },
+                "profile_id": serde_json::Value::Null,
+                "identity": serde_json::Value::Null,
+                "identity_source": "certificate",
+                "source_validation": "blocked-before-self-renew-mutation",
+                "first_missing_signal": reason,
+            }),
+        )
+        .map_err(|err| format!("device-profile-engine-component-refusal-receipt-failed: {err}"))?;
+        return Err(reason);
+    }
     if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
         write_json(
             &receipt_dir.join("run.json"),

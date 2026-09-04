@@ -434,15 +434,15 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             Ok(())
         }
         Some("acquire-source") => {
-            let component = args
-                .get(1)
-                .ok_or("acquire-source requires <component> --certificate <path> --engine-config <path> --destination <path>")?;
-            let certificate = value_arg(&args, "--certificate")
-                .ok_or("acquire-source requires <component> --certificate <path> --engine-config <path> --destination <path>")?;
-            let engine_config = value_arg(&args, "--engine-config")
-                .ok_or("acquire-source requires <component> --certificate <path> --engine-config <path> --destination <path>")?;
-            let destination = value_arg(&args, "--destination")
-                .ok_or("acquire-source requires <component> --certificate <path> --engine-config <path> --destination <path>")?;
+            let component = args.get(1).ok_or(
+                "acquire-source requires <component> --certificate <path> --destination <path>",
+            )?;
+            let certificate = value_arg(&args, "--certificate").ok_or(
+                "acquire-source requires <component> --certificate <path> --destination <path>",
+            )?;
+            let destination = value_arg(&args, "--destination").ok_or(
+                "acquire-source requires <component> --certificate <path> --destination <path>",
+            )?;
             let resolution = crate::bands::pull_source::resolve_source(
                 &certificate,
                 component,
@@ -460,16 +460,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let plan = resolution
                 .resolution
                 .ok_or("source-acquisition-plan-missing")?;
-            let config = crate::bands::renew_self::load_engine_plane_config(&engine_config)?
-                .ok_or_else(|| format!("engine-config-missing {}", engine_config.display()))?;
-            let bearer = value_arg_string(&args, "--bearer").unwrap_or_else(|| "owner".to_string());
             let expected_commit = value_arg_string(&args, "--expected-commit");
             let acquisition = crate::bands::pull_source::bridge_acquisition_plan(
                 &plan,
                 destination,
-                bearer,
                 expected_commit,
-                std::collections::BTreeMap::new(),
             );
             let outcome = tools::git_artifact::acquire_source(&acquisition, invocation.key());
             println!(
@@ -485,7 +480,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
                         "locator": attempt.locator,
                         "credential_selector": attempt.credential_selector,
-                        "credential_scope_applied": attempt.credential_selector.as_ref().is_some_and(|selector| acquisition.credentials.contains_key(selector)),
+                        "credential_scope_applied": false,
                         "disposition": attempt.disposition,
                         "resolved_commit": attempt.resolved_commit,
                         "external_freshness": attempt.external_freshness,

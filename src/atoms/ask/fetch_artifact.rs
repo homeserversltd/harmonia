@@ -264,59 +264,9 @@ fn curl_to_file(
     Ok(status)
 }
 
-fn registry_is_estate_host(base: &str) -> bool {
-    base.trim()
-        .split_once("://")
-        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
-        .is_some_and(|authority| authority == "git.home.arpa")
-}
-
-fn configured_estate_token_path(api_root: &str) -> Result<PathBuf, String> {
-    let path = crate::bands::renew_self::engine_config_path();
-    let config = crate::bands::renew_self::load_engine_plane_config(&path)?;
-    let scopes = config
-        .as_ref()
-        .map(crate::bands::renew_self::credential_scopes)
-        .unwrap_or_default();
-    let endpoint_host = api_root
-        .strip_prefix("https://")
-        .or_else(|| api_root.strip_prefix("http://"))
-        .and_then(|rest| rest.split('/').next());
-    let scope = scopes
-        .get(api_root)
-        .or_else(|| endpoint_host.and_then(|host| scopes.get(host)))
-        .or_else(|| {
-            scopes
-                .values()
-                .find(|scope| scope.https_host.as_deref() == Some("git.home.arpa"))
-        });
-    let token_path = scope
-        .and_then(|scope| scope.https_token_path.clone())
-        .ok_or_else(|| "fetch-artifact-auth-required-configured-scope-missing".to_string())?;
-    Ok(token_path)
-}
-fn configured_estate_token(api_root: &str) -> Result<String, String> {
-    let token_path = configured_estate_token_path(api_root)?;
-    crate::atoms::git_artifact::read_token(&token_path)
-}
-fn curl_with_anonymous_first(api_root: &str, url: &str, destination: &Path) -> Result<u16, String> {
+fn curl_with_anonymous_first(_api_root: &str, url: &str, destination: &Path) -> Result<u16, String> {
     let stderr_path = destination.with_extension("stderr");
-    let anonymous = curl_to_file(url, destination, &stderr_path, None);
-    if let Err(error) = &anonymous {
-        if error != "fetch-artifact-auth-required" {
-            let _ = fs::remove_file(&stderr_path);
-            return anonymous;
-        }
-    } else {
-        let _ = fs::remove_file(&stderr_path);
-        return anonymous;
-    }
-    if !registry_is_estate_host(api_root) {
-        let _ = fs::remove_file(&stderr_path);
-        return Err("fetch-artifact-auth-required-non-estate-registry".into());
-    }
-    let token = configured_estate_token(api_root)?;
-    let result = curl_to_file(url, destination, &stderr_path, Some(&token));
+    let result = curl_to_file(url, destination, &stderr_path, None);
     let _ = fs::remove_file(&stderr_path);
     result
 }
@@ -406,12 +356,10 @@ pub(crate) fn download_release(
     let sidecar = sidecar_name
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{asset}.sha256"));
-    let estate = registry_is_estate_host(api_root);
-    let (credential_token_path, credential_scope_found) = if estate {
-        (Some(configured_estate_token_path(api_root)?), true)
-    } else {
-        (None, false)
-    };
+    // Engine artifact transport is deliberately credential-free. Estate
+    // endpoints are attempted anonymously and report auth-required rather than
+    // consulting engine configuration or reading a token.
+    let (credential_token_path, credential_scope_found) = (None, false);
     let request = ReleaseRequest {
         kind: "forgejo-release".into(),
         base_url: api_root.into(),

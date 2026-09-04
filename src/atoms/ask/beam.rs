@@ -251,41 +251,12 @@ fn registry_is_estate_host(url: &str) -> bool {
         .is_some_and(|authority| authority == "git.home.arpa")
 }
 
-fn configured_beam_token(api_root: &str) -> Result<String, String> {
-    let path = crate::bands::renew_self::engine_config_path();
-    let config = crate::bands::renew_self::load_engine_plane_config(&path)?;
-    let scopes = config
-        .as_ref()
-        .map(crate::bands::renew_self::credential_scopes)
-        .unwrap_or_default();
-    let endpoint_host = api_root
-        .strip_prefix("https://")
-        .or_else(|| api_root.strip_prefix("http://"))
-        .and_then(|rest| rest.split('/').next());
-    let scope = scopes
-        .get(api_root)
-        .or_else(|| endpoint_host.and_then(|host| scopes.get(host)))
-        .or_else(|| {
-            scopes
-                .values()
-                .find(|scope| scope.https_host.as_deref() == Some("git.home.arpa"))
-        });
-    let token_path = scope
-        .and_then(|scope| scope.https_token_path.clone())
-        .ok_or_else(|| "beam-flag-unresolvable".to_string())?;
-    crate::atoms::git_artifact::read_token(&token_path)
-        .map_err(|_| "beam-flag-unresolvable".to_string())
-}
-
 fn fetch_flag(url: &str, destination: &std::path::Path) -> Result<u16, String> {
     let status = flag_request(url, destination, None)?;
-    if status != 401 && status != 403 {
-        return Ok(status);
-    }
-    if !registry_is_estate_host(url) {
+    if status == 401 || status == 403 {
         return Err("beam-flag-unresolvable".into());
     }
-    flag_request(url, destination, Some(&configured_beam_token(url)?))
+    Ok(status)
 }
 
 #[derive(Debug, Deserialize)]
