@@ -635,7 +635,16 @@ mod update_set_receipt_tests {
         std::fs::create_dir_all(&caduceus).expect("caduceus module");
         std::fs::create_dir_all(&sbin).expect("sbin module");
         std::fs::write(
-            caduceus.join("step.routine.json"),
+            dir.path().join("beam.json"),
+            serde_json::json!({
+                "schema": "harmonia.beam-compare.v1",
+                "lock": {"env_sha": "e".repeat(64)}
+            })
+            .to_string(),
+        )
+        .expect("beam receipt");
+        std::fs::write(
+            caduceus.join("source.routine.json"),
             serde_json::json!({
                 "ok": true,
                 "context": {"pull-repo.resolved_commit": "0000000000000000000000000000000000000000"}
@@ -677,7 +686,8 @@ mod update_set_receipt_tests {
             service_count: 0,
             caduceus_count: 1,
         };
-        crate::atoms::attest::write_transaction_receipt(dir.path(), &receipt, None)
+        let mint = crate::atoms::attest::committed_syzygy_mint(dir.path(), &receipt);
+        crate::atoms::attest::write_transaction_receipt(dir.path(), &receipt, &mint, None)
             .expect("update-set receipt");
         let value: serde_json::Value = serde_json::from_slice(
             &std::fs::read(dir.path().join("update-set.json")).expect("update-set.json"),

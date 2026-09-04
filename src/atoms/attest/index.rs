@@ -196,70 +196,283 @@ fn committed_member_source_sha(
         _ => (None, format!("syzygy-source-sha-ambiguous {member}")),
     }
 }
-fn committed_syzygy_sha(
-    dir: &Path,
-    r: &crate::atoms::r#do::transaction::TransactionReceipt,
-) -> (Option<String>, String) {
-    if r.state != crate::atoms::r#do::transaction::TransactionState::Committed {
-        return (None, "syzygy-transaction-not-committed".into());
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SyzygyMint {
+    pub(crate) caduceus_sha: String,
+    pub(crate) partner_sha: String,
+    pub(crate) gui_sha: Option<String>,
+    pub(crate) syzygy_sha: Option<String>,
+    pub(crate) env_sha: String,
+    pub(crate) signal: String,
+}
+
+impl SyzygyMint {
+    fn failed(signal: String) -> Self {
+        Self {
+            caduceus_sha: String::new(),
+            partner_sha: String::new(),
+            gui_sha: None,
+            syzygy_sha: None,
+            env_sha: String::new(),
+            signal,
+        }
     }
-    let members = r
+
+    fn failed_with_env(env_sha: String, signal: String) -> Self {
+        Self {
+            env_sha,
+            ..Self::failed(signal)
+        }
+    }
+}
+
+fn valid_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn committed_beam_env_sha(dir: &Path) -> Result<String, String> {
+    let path = dir.join("beam.json");
+    let bytes = fs::read(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "syzygy-beam-receipt-absent".to_string()
+        } else {
+            "syzygy-beam-receipt-malformed".to_string()
+        }
+    })?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "syzygy-beam-receipt-malformed".to_string())?;
+    if value.get("schema").and_then(serde_json::Value::as_str)
+        != Some("harmonia.beam-compare.v1")
+    {
+        return Err("syzygy-beam-receipt-malformed".into());
+    }
+    let env_sha = value
+        .get("lock")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|lock| lock.get("env_sha"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "syzygy-beam-receipt-malformed".to_string())?;
+    if !valid_lower_hex(env_sha, 64) {
+        return Err("syzygy-beam-env-sha-invalid".into());
+    }
+    Ok(env_sha.to_owned())
+}
+
+/// Mint the typed Syzygy identity from the committed transaction evidence.
+/// The mint is computed once and carried to every consumer; consumers do not
+/// reparse receipt files or independently derive the digest.
+pub(crate) fn committed_syzygy_mint(
+    dir: &Path,
+    receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+) -> SyzygyMint {
+    if receipt.state != crate::atoms::r#do::transaction::TransactionState::Committed {
+        return SyzygyMint::failed("syzygy-transaction-not-committed".into());
+    }
+    let env_sha = match committed_beam_env_sha(dir) {
+        Ok(env_sha) => env_sha,
+        Err(signal) => return SyzygyMint::failed(signal),
+    };
+    let members = receipt
         .children
         .iter()
         .map(|child| child.member.as_str())
         .collect::<BTreeSet<_>>();
     if !(members.contains("sbin") || members.contains("agathodaimon")) {
-        return (None, "syzygy-required-partner-missing".into());
+        return SyzygyMint::failed_with_env(env_sha, "syzygy-required-partner-missing".into());
     }
     if !members.contains("caduceus") {
-        return (None, "syzygy-caduceus-member-missing".into());
+        return SyzygyMint::failed_with_env(env_sha, "syzygy-caduceus-member-missing".into());
     }
-    let (caduceus, signal) = committed_member_source_sha(dir, &r.member_modules, "caduceus");
-    let Some(caduceus) = caduceus else {
-        return (None, signal);
+    let (caduceus_sha, signal) =
+        committed_member_source_sha(dir, &receipt.member_modules, "caduceus");
+    let Some(caduceus_sha) = caduceus_sha else {
+        return SyzygyMint::failed_with_env(env_sha, signal);
     };
     let partner = if members.contains("sbin") {
         "sbin"
     } else {
         "agathodaimon"
     };
-    let (partner_sha, signal) = committed_member_source_sha(dir, &r.member_modules, partner);
+    let (partner_sha, signal) =
+        committed_member_source_sha(dir, &receipt.member_modules, partner);
     let Some(partner_sha) = partner_sha else {
-        return (None, signal);
+        return SyzygyMint {
+            caduceus_sha,
+            partner_sha: String::new(),
+            gui_sha: None,
+            syzygy_sha: None,
+            env_sha,
+            signal,
+        };
     };
-    let gui = if let Some(gui_member) = r.gui_member.as_deref() {
-        let (sha, signal) = committed_member_source_sha(dir, &r.member_modules, gui_member);
+    let gui_sha = if let Some(gui_member) = receipt.gui_member.as_deref() {
+        let (sha, signal) = committed_member_source_sha(dir, &receipt.member_modules, gui_member);
         let Some(sha) = sha else {
-            return (None, signal);
+            return SyzygyMint {
+                caduceus_sha,
+                partner_sha,
+                gui_sha: None,
+                syzygy_sha: None,
+                env_sha,
+                signal,
+            };
         };
         Some(sha)
     } else {
         None
     };
     match crate::atoms::r#do::transaction::compute_syzygy_sha(
-        &caduceus,
+        &caduceus_sha,
         &partner_sha,
-        gui.as_deref(),
+        gui_sha.as_deref(),
     ) {
-        Ok(sha) => (Some(sha), "none".into()),
-        Err(signal) => (None, signal),
+        Ok(sha) => SyzygyMint {
+            caduceus_sha,
+            partner_sha,
+            gui_sha,
+            syzygy_sha: Some(sha),
+            env_sha,
+            signal: "none".into(),
+        },
+        Err(signal) => SyzygyMint {
+            caduceus_sha,
+            partner_sha,
+            gui_sha,
+            syzygy_sha: None,
+            env_sha,
+            signal,
+        },
     }
 }
 
 pub(crate) fn write_transaction_receipt(
     dir: &Path,
     receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+    mint: &SyzygyMint,
     failed_step: Option<&str>,
 ) -> Result<(), String> {
     let mut enriched = receipt.clone();
-    let (syzygy_sha, syzygy_signal) = committed_syzygy_sha(dir, receipt);
-    enriched.syzygy_sha = syzygy_sha;
-    enriched.syzygy_signal = syzygy_signal;
+    enriched.syzygy_sha = mint.syzygy_sha.clone();
+    enriched.syzygy_signal = mint.signal.clone();
     let mut value = crate::atoms::r#do::transaction::project_update_set_v1(&enriched);
     if let Some(step) = failed_step {
         value["failed_step"] = serde_json::json!(step);
     }
     write_json_atomic(&dir.join("update-set.json"), &value)
+}
+
+#[cfg(test)]
+mod syzygy_mint_tests {
+    use super::*;
+    use std::{collections::BTreeMap, fs, path::Path};
+
+    fn transaction(state: crate::atoms::r#do::transaction::TransactionState) -> crate::atoms::r#do::transaction::TransactionReceipt {
+        crate::atoms::r#do::transaction::TransactionReceipt {
+            schema: "harmonia.transaction.v1",
+            state,
+            profile_id: "test".into(),
+            profile_identity: "test".into(),
+            source_head: "test".into(),
+            gui: None,
+            gui_member: None,
+            syzygy_sha: None,
+            syzygy_signal: "none".into(),
+            member_modules: BTreeMap::new(),
+            children: Vec::new(),
+            target_count: 0,
+            service_count: 0,
+            caduceus_count: 0,
+        }
+    }
+
+    #[test]
+    fn non_committed_transaction_preserves_failure_signal() {
+        let receipt = transaction(crate::atoms::r#do::transaction::TransactionState::Open);
+        let mint = committed_syzygy_mint(Path::new("/does/not/exist"), &receipt);
+        assert_eq!(mint.caduceus_sha, "");
+        assert_eq!(mint.partner_sha, "");
+        assert_eq!(mint.gui_sha, None);
+        assert_eq!(mint.syzygy_sha, None);
+        assert_eq!(mint.env_sha, "");
+        assert_eq!(mint.signal, "syzygy-transaction-not-committed");
+    }
+
+    #[test]
+    fn committed_mint_carries_env_sha_from_current_beam_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_sha = "b".repeat(64);
+        fs::write(
+            dir.path().join("beam.json"),
+            serde_json::json!({
+                "schema": "harmonia.beam-compare.v1",
+                "state": "aligned",
+                "converged": true,
+                "lock": {"caduceus_sha": "a".repeat(40), "env_sha": env_sha},
+                "lock_source": "literal",
+                "door": null,
+                "first_divergent_member": null,
+                "first_missing_signal": "none",
+                "authorization": "none"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut receipt = transaction(crate::atoms::r#do::transaction::TransactionState::Committed);
+        receipt.member_modules = BTreeMap::from([
+            ("caduceus".into(), vec!["module-caduceus".into()]),
+            ("sbin".into(), vec!["module-sbin".into()]),
+        ]);
+        receipt.children = vec![
+            crate::atoms::r#do::transaction::ProjectionChild {
+                ordinal: 0,
+                member: "caduceus".into(),
+                target_indices: Vec::new(),
+                service_indices: Vec::new(),
+                source_sha: None,
+            },
+            crate::atoms::r#do::transaction::ProjectionChild {
+                ordinal: 1,
+                member: "sbin".into(),
+                target_indices: Vec::new(),
+                service_indices: Vec::new(),
+                source_sha: None,
+            },
+        ];
+
+        let mint = committed_syzygy_mint(dir.path(), &receipt);
+        assert_eq!(mint.env_sha, "b".repeat(64));
+        assert_eq!(mint.signal, "syzygy-source-sha-missing caduceus");
+    }
+
+    #[test]
+    fn missing_or_malformed_beam_evidence_fails_the_mint() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = transaction(crate::atoms::r#do::transaction::TransactionState::Committed);
+        let mint = committed_syzygy_mint(dir.path(), &receipt);
+        assert_eq!(mint.signal, "syzygy-beam-receipt-absent");
+        assert_eq!(mint.env_sha, "");
+
+        fs::write(dir.path().join("beam.json"), "{}").unwrap();
+        let mint = committed_syzygy_mint(dir.path(), &receipt);
+        assert_eq!(mint.signal, "syzygy-beam-receipt-malformed");
+        assert_eq!(mint.env_sha, "");
+
+        fs::write(
+            dir.path().join("beam.json"),
+            serde_json::json!({
+                "schema": "harmonia.beam-compare.v1",
+                "lock": {"env_sha": "A".repeat(64)}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mint = committed_syzygy_mint(dir.path(), &receipt);
+        assert_eq!(mint.signal, "syzygy-beam-env-sha-invalid");
+        assert_eq!(mint.env_sha, "");
+    }
 }
 
 /// Persist a JSON receipt through the attest durability membrane.

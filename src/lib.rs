@@ -1033,10 +1033,10 @@ fn demo_command(args: &[String], _invocation: Invocation) -> Result<(), String> 
 }
 
 fn ruyi_command(_args: &[String]) -> Result<(), String> {
-    let receipt = crate::atoms::ask::ruyi::fetch_roster_receipt()?;
+    let row = crate::atoms::ask::ruyi::read_row()?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?
+        serde_json::to_string_pretty(&row).map_err(|e| e.to_string())?
     );
     Ok(())
 }

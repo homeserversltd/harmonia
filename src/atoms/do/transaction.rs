@@ -238,9 +238,12 @@ pub(crate) fn rolling_update_run(
                 if let Ok(receipt) =
                     crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
                 {
+                    let mint =
+                        crate::atoms::attest::committed_syzygy_mint(&effective_receipt_dir, &receipt);
                     let _ = crate::atoms::attest::write_transaction_receipt(
                         &effective_receipt_dir,
                         &receipt,
+                        &mint,
                         Some(&error),
                     );
                 }
@@ -277,9 +280,14 @@ pub(crate) fn rolling_update_run(
                     if let Ok(receipt) =
                         crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
                     {
+                        let mint = crate::atoms::attest::committed_syzygy_mint(
+                            &effective_receipt_dir,
+                            &receipt,
+                        );
                         let _ = crate::atoms::attest::write_transaction_receipt(
                             &effective_receipt_dir,
                             &receipt,
+                            &mint,
                             Some(&error),
                         );
                     }
@@ -314,8 +322,47 @@ pub(crate) fn rolling_update_run(
                 return Err(error);
             }
         };
+        let mint = crate::atoms::attest::committed_syzygy_mint(&effective_receipt_dir, &receipt);
+        let identity = match crate::atoms::ask::ruyi::local_identity() {
+            Ok(identity) => identity,
+            Err(error) => {
+                write_transaction_failure_run_receipt(
+                    &effective_receipt_dir,
+                    profile,
+                    module_root,
+                    "ruyi-local-identity-unavailable",
+                    Some(&error),
+                    changed,
+                    operation_count,
+                )?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = crate::atoms::ask::ruyi::write_committed_state(
+            profile,
+            &run_id,
+            &receipt,
+            &mint,
+            &identity,
+        ) {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "ruyi-state-write-failed",
+                Some(&error),
+                changed,
+                operation_count,
+            )?;
+            return Err(error);
+        }
         if let Err(error) =
-            crate::atoms::attest::write_transaction_receipt(&effective_receipt_dir, &receipt, None)
+            crate::atoms::attest::write_transaction_receipt(
+                &effective_receipt_dir,
+                &receipt,
+                &mint,
+                None,
+            )
         {
             write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
@@ -327,32 +374,6 @@ pub(crate) fn rolling_update_run(
                 operation_count,
             )?;
             return Err(error);
-        }
-        // The local Ruyi row is a post-commit Projectio projection. Tests use
-        // the scratch writer directly and never touch the appliance state path.
-        #[cfg(not(test))]
-        {
-            let beam_bytes = fs::read(effective_receipt_dir.join("beam.json"))
-                .map_err(|error| format!("ruyi-beam-state-read-failed: {error}"))?;
-            let beam: serde_json::Value = serde_json::from_slice(&beam_bytes)
-                .map_err(|error| format!("ruyi-beam-state-malformed: {error}"))?;
-            if let Err(error) = crate::atoms::ask::ruyi::write_local_state(
-                profile,
-                &effective_receipt_dir,
-                &receipt,
-                &beam,
-            ) {
-                write_transaction_failure_run_receipt(
-                    &effective_receipt_dir,
-                    profile,
-                    module_root,
-                    "ruyi-state-failed",
-                    Some(&error),
-                    changed,
-                    operation_count,
-                )?;
-                return Err(error);
-            }
         }
         let Some(summary) = carrier.borrow_mut().deferred_terminal_summary.take() else {
             write_transaction_failure_run_receipt(

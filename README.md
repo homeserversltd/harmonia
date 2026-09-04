@@ -12,6 +12,8 @@ Harmonia is a Rust appliance update engine. Each invocation follows one bounded 
 
 Profiles provide ordered module declarations and constants. Receipts are written for the run and its module and tool work.
 
+`profile.json` and `config.json` are declarations; `/etc/appliance/ruyi.json` is engine-maintained observed state, not declaration or source authority.
+
 ## Repository map
 
 ```text
