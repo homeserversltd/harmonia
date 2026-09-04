@@ -13,6 +13,37 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::Path;
 
+#[cfg(test)]
+mod test_fixtures {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) struct Guard {
+        root: PathBuf,
+    }
+
+    impl Guard {
+        pub(super) fn new(prefix: &str) -> Self {
+            let id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()));
+            std::fs::create_dir(&root).unwrap();
+            Self { root }
+        }
+
+        pub(super) fn root(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::PullSource)
 }
@@ -280,15 +311,13 @@ pub(crate) struct SourceResolutionReceipt {
 
 #[cfg(test)]
 mod artifact_head_divergence_canary_tests {
+    use super::test_fixtures;
     use super::*;
     use std::process::Command;
 
-    fn fixture(name: &str) -> (PathBuf, PathBuf) {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-canary-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let repo = root.join("repo");
+    fn fixture(name: &str) -> (test_fixtures::Guard, PathBuf) {
+        let fixture = test_fixtures::Guard::new(&format!("harmonia-canary-{name}"));
+        let repo = fixture.root().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         Command::new("git")
             .args(["init", "-q"])
@@ -309,7 +338,7 @@ mod artifact_head_divergence_canary_tests {
             .current_dir(&repo)
             .status()
             .unwrap();
-        (root, repo)
+        (fixture, repo)
     }
 
     fn head(repo: &Path) -> String {
@@ -328,7 +357,7 @@ mod artifact_head_divergence_canary_tests {
 
     #[test]
     fn divergent_pair_reports_gap_and_persistence() {
-        let (root, repo) = fixture("divergent");
+        let (fixture, repo) = fixture("divergent");
         let blessed = head(&repo);
         Command::new("git")
             .args([
@@ -346,7 +375,7 @@ mod artifact_head_divergence_canary_tests {
             .unwrap();
         let current = head(&repo);
         let first = artifact_head_divergence_canary(
-            &root,
+            fixture.root(),
             "component",
             "developer",
             true,
@@ -357,7 +386,7 @@ mod artifact_head_divergence_canary_tests {
         )
         .unwrap();
         let second = artifact_head_divergence_canary(
-            &root,
+            fixture.root(),
             "component",
             "developer",
             true,
@@ -371,15 +400,14 @@ mod artifact_head_divergence_canary_tests {
         assert_eq!(first.diverged, Some(true));
         assert_eq!(second.first_observed, first.first_observed);
         assert!(second.persistence.is_some());
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn identical_pair_is_not_diverged() {
-        let (root, repo) = fixture("identical");
+        let (fixture, repo) = fixture("identical");
         let commit = head(&repo);
         let receipt = artifact_head_divergence_canary(
-            &root,
+            fixture.root(),
             "component",
             "artifact",
             true,
@@ -391,15 +419,14 @@ mod artifact_head_divergence_canary_tests {
         .unwrap();
         assert_eq!(receipt.diverged, Some(false));
         assert_eq!(receipt.commit_gap, Some(0));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn missing_pull_head_is_explicitly_unobservable() {
-        let (root, repo) = fixture("unknown-head");
+        let (fixture, repo) = fixture("unknown-head");
         let commit = head(&repo);
         let receipt = artifact_head_divergence_canary(
-            &root,
+            fixture.root(),
             "component",
             "developer",
             false,
@@ -416,17 +443,16 @@ mod artifact_head_divergence_canary_tests {
             receipt.unobservable_reason.as_deref(),
             Some("pull-head-unobservable")
         );
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn arbitrary_binary_bytes_do_not_supply_blessed_identity() {
-        let (root, repo) = fixture("binary-identity");
+        let (fixture, repo) = fixture("binary-identity");
         let commit = head(&repo);
-        let binary = root.join("installed");
+        let binary = fixture.root().join("installed");
         std::fs::write(&binary, format!("prefix-{commit}-suffix")).unwrap();
         let receipt = artifact_head_divergence_canary(
-            &root,
+            fixture.root(),
             "component",
             "artifact",
             true,
@@ -442,12 +468,11 @@ mod artifact_head_divergence_canary_tests {
             receipt.unobservable_reason.as_deref(),
             Some("blessed-commit-unobservable")
         );
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn persistence_is_carried_by_state_file() {
-        let (root, repo) = fixture("state-file");
+        let (fixture, repo) = fixture("state-file");
         let blessed = head(&repo);
         Command::new("git")
             .args([
@@ -465,7 +490,7 @@ mod artifact_head_divergence_canary_tests {
             .unwrap();
         let current = head(&repo);
         let first = artifact_head_divergence_canary(
-            &root,
+            fixture.root(),
             "component",
             "developer",
             true,
@@ -476,7 +501,7 @@ mod artifact_head_divergence_canary_tests {
         )
         .unwrap();
         let second = artifact_head_divergence_canary(
-            &root,
+            fixture.root(),
             "component",
             "developer",
             true,
@@ -487,11 +512,11 @@ mod artifact_head_divergence_canary_tests {
         )
         .unwrap();
         assert_eq!(first.first_observed, second.first_observed);
-        assert!(root
+        assert!(fixture
+            .root()
             .join("state/artifact-head-divergence-canary")
             .join(format!("{}.json", component_state_key("component")))
             .is_file());
-        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -1410,14 +1435,15 @@ pub(crate) fn execute_routine_child(
 
 #[cfg(test)]
 mod tests {
+    use super::test_fixtures;
     use super::*;
 
-    fn certificate(component: &str, selector: Option<&str>) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "harmonia-source-certificate-{}-{}.json",
-            std::process::id(),
-            component
-        ));
+    fn certificate(
+        component: &str,
+        selector: Option<&str>,
+    ) -> (test_fixtures::Guard, std::path::PathBuf) {
+        let fixture = test_fixtures::Guard::new("harmonia-source-certificate");
+        let path = fixture.root().join(format!("{component}.json"));
         let selector = selector
             .map(|value| format!(",\"credential_selector\":\"{value}\""))
             .unwrap_or_default();
@@ -1428,34 +1454,32 @@ mod tests {
             ),
         )
         .unwrap();
-        path
+        (fixture, path)
     }
 
     #[test]
     fn developer_source_policy_resolves_from_supplied_profile_certificate_only() {
-        let path = certificate("harmonia", None);
+        let (_fixture, path) = certificate("harmonia", None);
         let resolution = resolve_source(&path, "harmonia", "test", "source");
         assert!(resolution.ok);
         assert_eq!(resolution.source_policy, "developer");
         assert_eq!(resolution.certificate_path, path.display().to_string());
         assert_eq!(resolution.resolution.unwrap().requested_ref, "main");
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn undeclared_component_is_hard_blocked() {
-        let path = certificate("harmonia", None);
+        let (_fixture, path) = certificate("harmonia", None);
         let resolution = resolve_source(&path, "sbin", "test", "source");
         assert_eq!(
             resolution.blocker.as_deref(),
             Some("source-component-undeclared component=sbin")
         );
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn certificate_selector_is_validated_but_not_carried_to_git() {
-        let path = certificate("harmonia", Some("owner-forge-ssh"));
+        let (_fixture, path) = certificate("harmonia", Some("owner-forge-ssh"));
         let resolution = resolve_source(&path, "harmonia", "test", "source");
         assert_eq!(resolution.credential_selectors, vec!["owner-forge-ssh"]);
         let plan = bridge_acquisition_plan(
@@ -1469,17 +1493,15 @@ mod tests {
             .candidates
             .iter()
             .all(|candidate| candidate.credential_selector.is_none()));
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn invalid_certificate_selector_is_blocked() {
-        let path = certificate("harmonia", Some("../secret"));
+        let (_fixture, path) = certificate("harmonia", Some("../secret"));
         let resolution = resolve_source(&path, "harmonia", "test", "source");
         assert_eq!(
             resolution.blocker.as_deref(),
             Some("source-credential-selector-invalid component-candidate=1")
         );
-        let _ = std::fs::remove_file(path);
     }
 }
