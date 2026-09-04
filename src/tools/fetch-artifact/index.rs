@@ -48,6 +48,38 @@ pub(crate) fn execute(
         return Err("fetch-artifact-source-sha-invalid".into());
     }
 
+    let profile_axis = crate::atoms::ask::fetch_artifact::profile_axis_declared(args)?;
+    let profile = if profile_axis {
+        let profile_source = args
+            .get("profile_source")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::atoms::ask::fetch_artifact::DEFAULT_PROFILE_SOURCE);
+        Some(crate::atoms::ask::fetch_artifact::read_profile_source(
+            Path::new(profile_source),
+        )?)
+    } else {
+        None
+    };
+    let (release_asset_name, release_sidecar_name) = match profile.as_deref() {
+        Some(profile) => {
+            let (asset, sidecar) = crate::atoms::ask::fetch_artifact::profile_release_names(
+                artifact_name,
+                profile,
+                args.get("asset_name").and_then(Value::as_str),
+                args.get("sidecar_name").and_then(Value::as_str),
+            )?;
+            (Some(asset), Some(sidecar))
+        }
+        None => (
+            args.get("asset_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            args.get("sidecar_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        ),
+    };
+
     let native_release = !release_repo.trim().is_empty();
     let native_download = if native_release {
         let source_dir = Path::new(args.get("source_dir").and_then(Value::as_str).unwrap_or(""));
@@ -65,8 +97,8 @@ pub(crate) fn execute(
             args.get("api_root")
                 .and_then(Value::as_str)
                 .unwrap_or("https://git.home.arpa/api/v1"),
-            args.get("asset_name").and_then(Value::as_str),
-            args.get("sidecar_name").and_then(Value::as_str),
+            release_asset_name.as_deref(),
+            release_sidecar_name.as_deref(),
             source_sha,
         ) {
             Ok(Some(download)) => Some(download),
@@ -146,11 +178,12 @@ pub(crate) fn execute(
     let download = if let Some(download) = native_download {
         download
     } else {
+        let registry_artifact_name = release_asset_name.as_deref().unwrap_or(artifact_name);
         match crate::atoms::ask::fetch_artifact::download(
             component,
             registry_base,
             source_sha,
-            artifact_name,
+            registry_artifact_name,
         ) {
             Ok(download) => download,
             Err(error) => {
@@ -401,6 +434,224 @@ mod tests {
     }
 
     #[test]
+    fn profile_source_refusal_preserves_installed_bytes_before_download() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("installed");
+        let before = b"installed-before-profile-blocker";
+        fs::write(&installed, before).unwrap();
+        let cases = [
+            (
+                "missing",
+                root.path().join("missing"),
+                "fetch-artifact-profile-source-missing",
+            ),
+            (
+                "unreadable",
+                root.path().join("unreadable"),
+                "fetch-artifact-profile-source-unreadable",
+            ),
+            (
+                "malformed",
+                root.path().join("malformed.json"),
+                "fetch-artifact-profile-source-malformed",
+            ),
+            (
+                "profile-less",
+                root.path().join("profile-less.json"),
+                "fetch-artifact-profile-source-profile-missing",
+            ),
+        ];
+        fs::create_dir(cases[1].1.clone()).unwrap();
+        fs::write(&cases[2].1, "{").unwrap();
+        fs::write(&cases[3].1, "{}").unwrap();
+
+        for (name, profile_source, expected) in cases {
+            let destination = root.path().join(format!("destination-{name}"));
+            let args: BTreeMap<String, serde_json::Value> = [
+                ("component", json!("fixture")),
+                ("release_repo", json!("OWNER/REPO")),
+                ("api_root", json!("http://127.0.0.1:1/api/v1")),
+                (
+                    "source_build_sha",
+                    json!("0123456789abcdef0123456789abcdef01234567"),
+                ),
+                ("artifact_name", json!("fixture")),
+                ("profile_axis", json!("profile")),
+                ("profile_source", json!(profile_source)),
+                ("destination", json!(&destination)),
+                ("installed_binary", json!(&installed)),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.into(), value))
+            .collect();
+            let error = execute(&args, &root.path().join("receipts"), true, None)
+                .expect_err("profile source blocker");
+            assert_eq!(error, expected, "case={name}");
+            assert_eq!(fs::read(&installed).unwrap(), before, "case={name}");
+            assert!(!destination.exists(), "case={name}");
+        }
+    }
+
+    #[test]
+    fn profile_axis_rejects_invalid_axis_before_profile_source_read() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        let installed = root.path().join("installed");
+        let args: BTreeMap<String, serde_json::Value> = [
+            ("component", json!("fixture")),
+            ("release_repo", json!("OWNER/REPO")),
+            (
+                "source_build_sha",
+                json!("0123456789abcdef0123456789abcdef01234567"),
+            ),
+            ("profile_axis", json!("unsupported")),
+            ("destination", json!(&destination)),
+            ("installed_binary", json!(&installed)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
+
+        let error = execute(&args, &root.path().join("receipts"), true, None)
+            .expect_err("invalid profile axis");
+        assert_eq!(error, "fetch-artifact-profile-axis-invalid");
+    }
+
+    #[test]
+    fn profile_axis_rejects_unsafe_profile_and_name_overrides() {
+        let root = tempfile::tempdir().unwrap();
+        let profile_source = root.path().join("profile.json");
+        fs::write(&profile_source, r#"{"profile":"../homeserver"}"#).unwrap();
+        let destination = root.path().join("destination");
+        let installed = root.path().join("installed");
+        let base_args: BTreeMap<String, serde_json::Value> = [
+            ("component", json!("fixture")),
+            ("release_repo", json!("OWNER/REPO")),
+            (
+                "source_build_sha",
+                json!("0123456789abcdef0123456789abcdef01234567"),
+            ),
+            ("artifact_name", json!("fixture")),
+            ("profile_axis", json!("profile")),
+            ("profile_source", json!(&profile_source)),
+            ("destination", json!(&destination)),
+            ("installed_binary", json!(&installed)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
+        let error = execute(&base_args, &root.path().join("receipts"), true, None)
+            .expect_err("unsafe profile");
+        assert_eq!(error, "fetch-artifact-profile-invalid");
+
+        fs::write(&profile_source, r#"{"profile":"homeserver"}"#).unwrap();
+        for (key, value, expected) in [
+            (
+                "asset_name",
+                "fixture-x86_64",
+                "fetch-artifact-profile-asset-name-mismatch",
+            ),
+            (
+                "sidecar_name",
+                "fixture-homeserver-x86_64.digest",
+                "fetch-artifact-profile-sidecar-name-mismatch",
+            ),
+        ] {
+            let mut args = base_args.clone();
+            args.insert(key.into(), json!(value));
+            let error = execute(&args, &root.path().join("receipts"), true, None)
+                .expect_err("profile name override");
+            assert_eq!(error, expected, "override={key}");
+        }
+    }
+
+    #[test]
+    fn profile_axis_native_release_uses_profile_specific_asset_and_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        let profile_source = root.path().join("profile.json");
+        fs::write(&profile_source, r#"{"profile":"homeserver"}"#).unwrap();
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let artifact = format!("profile-specific-release-artifact-{source_sha}").into_bytes();
+        let digest = crate::atoms::file_sha256(&artifact);
+        let asset_name = "caduceus-homeserver-x86_64";
+        let sidecar_name = "caduceus-homeserver-x86_64.sha256";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let release_body = json!({
+            "target_commitish": source_sha,
+            "assets": [
+                {
+                    "name": asset_name,
+                    "browser_download_url": format!("http://{address}/artifact"),
+                },
+                {
+                    "name": sidecar_name,
+                    "browser_download_url": format!("http://{address}/sidecar"),
+                },
+            ],
+        })
+        .to_string()
+        .into_bytes();
+        let artifact_for_server = artifact.clone();
+        let server = thread::spawn(move || {
+            for (path, body) in [
+                (
+                    format!("/api/v1/repos/OWNER/REPO/releases/tags/{source_sha}"),
+                    release_body,
+                ),
+                ("/artifact".into(), artifact_for_server),
+                (
+                    "/sidecar".into(),
+                    format!("{digest}  {asset_name}\n").into_bytes(),
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                assert!(
+                    String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")),
+                    "unexpected request for {path}"
+                );
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let destination = root.path().join("destination");
+        let installed = root.path().join("installed");
+        let args: BTreeMap<String, serde_json::Value> = [
+            ("component", json!("caduceus")),
+            ("release_repo", json!("OWNER/REPO")),
+            ("api_root", json!(format!("http://{address}/api/v1"))),
+            ("source_build_sha", json!(source_sha)),
+            ("artifact_name", json!("caduceus")),
+            ("profile_axis", json!("profile")),
+            ("profile_source", json!(&profile_source)),
+            ("destination", json!(&destination)),
+            ("installed_binary", json!(&installed)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = execute(
+            &args,
+            &root.path().join("receipts"),
+            true,
+            Some(&invocation),
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(fs::read(destination).unwrap(), artifact);
+    }
+
+    #[test]
     fn beam_refetches_current_embedded_identity() {
         let new = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
         let temp = tempfile::tempdir().unwrap();
@@ -408,8 +659,7 @@ mod tests {
         let installed = root.join("installed");
         let destination = root.join("destination");
         let receipts = root.join("receipts");
-        fs::write(&installed, format!("caduceus.liveness.v1{new}"))
-        .unwrap();
+        fs::write(&installed, format!("caduceus.liveness.v1{new}")).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {

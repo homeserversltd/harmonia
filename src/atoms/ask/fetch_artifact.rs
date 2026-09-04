@@ -1,14 +1,63 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
 use crate::tools::git_artifact::{fetch_release_assets, unique_temp_suffix, ReleaseRequest};
 use serde::Deserialize;
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
+pub(crate) const DEFAULT_PROFILE_SOURCE: &str = "/etc/appliance/profile.json";
+pub(crate) const PROFILE_AXIS: &str = "profile";
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: &str = "67108864";
+
+pub(crate) fn profile_axis_declared(args: &BTreeMap<String, Value>) -> Result<bool, String> {
+    match args.get("profile_axis") {
+        None => Ok(false),
+        Some(value) if value.as_str() == Some(PROFILE_AXIS) => Ok(true),
+        Some(_) => Err("fetch-artifact-profile-axis-invalid".into()),
+    }
+}
+
+pub(crate) fn read_profile_source(path: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => "fetch-artifact-profile-source-missing",
+        _ => "fetch-artifact-profile-source-unreadable",
+    })?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|_| "fetch-artifact-profile-source-malformed")?;
+    let profile = value
+        .get("profile")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .ok_or("fetch-artifact-profile-source-profile-missing")?;
+    Ok(profile.to_owned())
+}
+
+pub(crate) fn profile_release_names(
+    artifact_name: &str,
+    profile: &str,
+    asset_name: Option<&str>,
+    sidecar_name: Option<&str>,
+) -> Result<(String, String), String> {
+    validate_segment(profile, "profile")?;
+    let expected_asset = format!("{artifact_name}-{profile}-x86_64");
+    let expected_sidecar = format!("{expected_asset}.sha256");
+    if asset_name.is_some_and(|name| name != expected_asset.as_str()) {
+        return Err("fetch-artifact-profile-asset-name-mismatch".into());
+    }
+    if sidecar_name.is_some_and(|name| name != expected_sidecar.as_str()) {
+        return Err("fetch-artifact-profile-sidecar-name-mismatch".into());
+    }
+    Ok((
+        asset_name.unwrap_or(&expected_asset).to_owned(),
+        sidecar_name.unwrap_or(&expected_sidecar).to_owned(),
+    ))
+}
 
 fn hex_boundary(bytes: &[u8], start: usize, sha: &[u8]) -> bool {
     bytes.get(start..start + sha.len()) == Some(sha)

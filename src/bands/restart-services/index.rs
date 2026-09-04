@@ -134,7 +134,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                             .is_some())
             })
             .map(|(name, tool, permutation)| {
-                let child_args = match name {
+                let mut child_args = match name {
                     "pull-repo" => pull.clone(),
                     "build" if tool == "fetch-artifact" => {
                         let component = args
@@ -406,6 +406,29 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                         c
                     }
                 };
+                if name == "build"
+                    && tool == "fetch-artifact"
+                    && args.contains_key("profile_axis")
+                {
+                    child_args.insert(
+                        "profile_axis".into(),
+                        args.get("profile_axis")
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                Value::String(
+                                    crate::atoms::ask::fetch_artifact::PROFILE_AXIS.into(),
+                                )
+                            }),
+                    );
+                    child_args.insert(
+                        "profile_source".into(),
+                        args.get("profile_source").cloned().unwrap_or_else(|| {
+                            Value::String(
+                                crate::atoms::ask::fetch_artifact::DEFAULT_PROFILE_SOURCE.into(),
+                            )
+                        }),
+                    );
+                }
                 RoutineStep {
                     name: name.into(),
                     tool: tool.into(),
@@ -932,6 +955,45 @@ mod tests {
         assert_eq!(request.retries, 0);
     }
     #[test]
+    fn profile_axis_lowering_propagates_default_profile_source_to_fetch_artifact() {
+        let mut manifest: crate::tools::ladder::LadderManifest = serde_json::from_value(json!({
+            "schema": "harmonia.module.ladder.v1",
+            "id": "profile-aware-module",
+            "version": "1",
+            "ladder": [{
+                "step_id": "profile-aware-service-runtime",
+                "tool": "service-runtime",
+                "permutation": "converge",
+                "args": {
+                    "component": "fixture",
+                    "release_repo": "OWNER/REPO",
+                    "source_dir": "/opt/fixture/source",
+                    "binary_name": "fixture",
+                    "install_bin": "/usr/local/bin/fixture",
+                    "profile_axis": "profile"
+                }
+            }]
+        }))
+        .unwrap();
+
+        super::lower_service_runtime_steps(&mut manifest);
+        let build = manifest.ladder[0]
+            .steps
+            .iter()
+            .find(|child| child.name == "build")
+            .unwrap();
+        assert_eq!(build.tool, "fetch-artifact");
+        assert_eq!(
+            build.args.get("profile_axis").and_then(Value::as_str),
+            Some("profile")
+        );
+        assert_eq!(
+            build.args.get("profile_source").and_then(Value::as_str),
+            Some("/etc/appliance/profile.json")
+        );
+    }
+
+    #[test]
     fn coronatio_lowering_derives_native_release_artifact_and_destination() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("profiles/homeserver/modules/coronatio/manifest.json");
@@ -1008,6 +1070,8 @@ mod tests {
             build.args.get("artifact_name").and_then(Value::as_str),
             Some("caduceus")
         );
+        assert!(!build.args.contains_key("profile_axis"));
+        assert!(!build.args.contains_key("profile_source"));
         assert!(routine
             .steps
             .iter()
