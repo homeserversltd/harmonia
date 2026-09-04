@@ -283,12 +283,10 @@ mod artifact_head_divergence_canary_tests {
     use super::*;
     use std::process::Command;
 
-    fn fixture(name: &str) -> (PathBuf, PathBuf) {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-canary-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let repo = root.join("repo");
+    fn fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let prefix = format!("harmonia-canary-{name}-");
+        let root = tempfile::Builder::new().prefix(&prefix).tempdir().unwrap();
+        let repo = root.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         Command::new("git")
             .args(["init", "-q"])
@@ -346,7 +344,7 @@ mod artifact_head_divergence_canary_tests {
             .unwrap();
         let current = head(&repo);
         let first = artifact_head_divergence_canary(
-            &root,
+            root.path(),
             "component",
             "developer",
             true,
@@ -357,7 +355,7 @@ mod artifact_head_divergence_canary_tests {
         )
         .unwrap();
         let second = artifact_head_divergence_canary(
-            &root,
+            root.path(),
             "component",
             "developer",
             true,
@@ -371,7 +369,6 @@ mod artifact_head_divergence_canary_tests {
         assert_eq!(first.diverged, Some(true));
         assert_eq!(second.first_observed, first.first_observed);
         assert!(second.persistence.is_some());
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -379,7 +376,7 @@ mod artifact_head_divergence_canary_tests {
         let (root, repo) = fixture("identical");
         let commit = head(&repo);
         let receipt = artifact_head_divergence_canary(
-            &root,
+            root.path(),
             "component",
             "artifact",
             true,
@@ -391,7 +388,6 @@ mod artifact_head_divergence_canary_tests {
         .unwrap();
         assert_eq!(receipt.diverged, Some(false));
         assert_eq!(receipt.commit_gap, Some(0));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -399,7 +395,7 @@ mod artifact_head_divergence_canary_tests {
         let (root, repo) = fixture("unknown-head");
         let commit = head(&repo);
         let receipt = artifact_head_divergence_canary(
-            &root,
+            root.path(),
             "component",
             "developer",
             false,
@@ -416,17 +412,16 @@ mod artifact_head_divergence_canary_tests {
             receipt.unobservable_reason.as_deref(),
             Some("pull-head-unobservable")
         );
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn arbitrary_binary_bytes_do_not_supply_blessed_identity() {
         let (root, repo) = fixture("binary-identity");
         let commit = head(&repo);
-        let binary = root.join("installed");
+        let binary = root.path().join("installed");
         std::fs::write(&binary, format!("prefix-{commit}-suffix")).unwrap();
         let receipt = artifact_head_divergence_canary(
-            &root,
+            root.path(),
             "component",
             "artifact",
             true,
@@ -442,7 +437,6 @@ mod artifact_head_divergence_canary_tests {
             receipt.unobservable_reason.as_deref(),
             Some("blessed-commit-unobservable")
         );
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -465,7 +459,7 @@ mod artifact_head_divergence_canary_tests {
             .unwrap();
         let current = head(&repo);
         let first = artifact_head_divergence_canary(
-            &root,
+            root.path(),
             "component",
             "developer",
             true,
@@ -476,7 +470,7 @@ mod artifact_head_divergence_canary_tests {
         )
         .unwrap();
         let second = artifact_head_divergence_canary(
-            &root,
+            root.path(),
             "component",
             "developer",
             true,
@@ -488,10 +482,10 @@ mod artifact_head_divergence_canary_tests {
         .unwrap();
         assert_eq!(first.first_observed, second.first_observed);
         assert!(root
+            .path()
             .join("state/artifact-head-divergence-canary")
             .join(format!("{}.json", component_state_key("component")))
             .is_file());
-        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -1412,51 +1406,65 @@ pub(crate) fn execute_routine_child(
 mod tests {
     use super::*;
 
-    fn certificate(component: &str, selector: Option<&str>) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "harmonia-source-certificate-{}-{}.json",
-            std::process::id(),
-            component
-        ));
+    fn certificate(
+        discriminator: &str,
+        component: &str,
+        selector: Option<&str>,
+    ) -> tempfile::NamedTempFile {
+        let prefix = format!("harmonia-source-certificate-{discriminator}-");
+        let file = tempfile::Builder::new()
+            .prefix(&prefix)
+            .suffix(".json")
+            .tempfile()
+            .unwrap();
         let selector = selector
             .map(|value| format!(",\"credential_selector\":\"{value}\""))
             .unwrap_or_default();
         std::fs::write(
-            &path,
+            file.path(),
             format!(
                 r#"{{"schema":"homeserver.device-profile.v1","source_policy":"developer","sources":{{"{component}":{{"ref":"main","candidates":[{{"kind":"git","url":"https://git.home.arpa/HOMESERVERSLTD/{component}.git"{selector}}}]}}}}}}"#
             ),
         )
         .unwrap();
-        path
+        file
     }
 
     #[test]
     fn developer_source_policy_resolves_from_supplied_profile_certificate_only() {
-        let path = certificate("harmonia", None);
-        let resolution = resolve_source(&path, "harmonia", "test", "source");
+        let path = certificate(
+            "developer_source_policy_resolves_from_supplied_profile_certificate_only",
+            "harmonia",
+            None,
+        );
+        let resolution = resolve_source(path.path(), "harmonia", "test", "source");
         assert!(resolution.ok);
         assert_eq!(resolution.source_policy, "developer");
-        assert_eq!(resolution.certificate_path, path.display().to_string());
+        assert_eq!(
+            resolution.certificate_path,
+            path.path().display().to_string()
+        );
         assert_eq!(resolution.resolution.unwrap().requested_ref, "main");
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn undeclared_component_is_hard_blocked() {
-        let path = certificate("harmonia", None);
-        let resolution = resolve_source(&path, "sbin", "test", "source");
+        let path = certificate("undeclared_component_is_hard_blocked", "harmonia", None);
+        let resolution = resolve_source(path.path(), "sbin", "test", "source");
         assert_eq!(
             resolution.blocker.as_deref(),
             Some("source-component-undeclared component=sbin")
         );
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn certificate_selector_is_validated_but_not_carried_to_git() {
-        let path = certificate("harmonia", Some("owner-forge-ssh"));
-        let resolution = resolve_source(&path, "harmonia", "test", "source");
+        let path = certificate(
+            "certificate_selector_is_validated_but_not_carried_to_git",
+            "harmonia",
+            Some("owner-forge-ssh"),
+        );
+        let resolution = resolve_source(path.path(), "harmonia", "test", "source");
         assert_eq!(resolution.credential_selectors, vec!["owner-forge-ssh"]);
         let plan = bridge_acquisition_plan(
             &resolution.resolution.unwrap(),
@@ -1469,17 +1477,19 @@ mod tests {
             .candidates
             .iter()
             .all(|candidate| candidate.credential_selector.is_none()));
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn invalid_certificate_selector_is_blocked() {
-        let path = certificate("harmonia", Some("../secret"));
-        let resolution = resolve_source(&path, "harmonia", "test", "source");
+        let path = certificate(
+            "invalid_certificate_selector_is_blocked",
+            "harmonia",
+            Some("../secret"),
+        );
+        let resolution = resolve_source(path.path(), "harmonia", "test", "source");
         assert_eq!(
             resolution.blocker.as_deref(),
             Some("source-credential-selector-invalid component-candidate=1")
         );
-        let _ = std::fs::remove_file(path);
     }
 }
