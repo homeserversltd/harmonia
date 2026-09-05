@@ -39,6 +39,9 @@ use std::io::Read;
 
 pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
+const SELF_UPDATE_REEXEC_GENERATION: u64 = 1;
+const SELF_UPDATE_REEXEC_RUNNING_FINGERPRINT_MISSING: &str =
+    "harmonia-self-update-reexec-running-fingerprint-missing";
 const ENGINE_CONFIG_ENV: &str = "HARMONIA_ENGINE_CONFIG_PATH";
 const DEFAULT_ENGINE_CONFIG: &str = "/etc/harmonia/engine.json";
 const ENGINE_RATCHET_LOCK_SCHEMA: &str = "harmonia.engine.ratchet_lock.v1";
@@ -385,6 +388,13 @@ pub(crate) fn install_bin_fingerprint(path: &Path) -> Option<String> {
     sha256_file(path).ok()
 }
 
+fn running_binary_fingerprint() -> Option<String> {
+    let running_path = fs::read_link("/proc/self/exe")
+        .ok()
+        .or_else(|| env::current_exe().ok())?;
+    install_bin_fingerprint(&running_path)
+}
+
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file =
         fs::File::open(path).map_err(|e| format!("sha256-open-failed {}: {e}", path.display()))?;
@@ -407,12 +417,61 @@ pub(crate) fn self_update_reexec_guard_active() -> bool {
 }
 
 pub(crate) fn should_self_update_reexec(
-    apply: bool,
-    install_ok: bool,
-    before: Option<String>,
-    after: Option<String>,
+    promotion_changed: bool,
+    running_sha: Option<String>,
+    installed_sha: Option<String>,
 ) -> bool {
-    apply && install_ok && !self_update_reexec_guard_active() && after.is_some() && before != after
+    promotion_changed
+        && !self_update_reexec_guard_active()
+        && running_sha.is_some()
+        && installed_sha.is_some()
+        && running_sha != installed_sha
+}
+
+fn promotion_changed(
+    apply: bool,
+    promote_ok: bool,
+    install_before: Option<&str>,
+    installed_after: Option<&str>,
+) -> bool {
+    apply && promote_ok && installed_after.is_some() && install_before != installed_after
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SelfUpdateReexec {
+    from_sha: String,
+    to_sha: String,
+    generation: u64,
+}
+
+fn self_update_reexec_receipt(
+    promotion_changed: bool,
+    running_sha: Option<String>,
+    installed_sha: Option<String>,
+) -> Option<SelfUpdateReexec> {
+    should_self_update_reexec(
+        promotion_changed,
+        running_sha.clone(),
+        installed_sha.clone(),
+    )
+    .then(|| SelfUpdateReexec {
+        from_sha: running_sha.unwrap_or_default(),
+        to_sha: installed_sha.unwrap_or_default(),
+        generation: SELF_UPDATE_REEXEC_GENERATION,
+    })
+}
+
+fn mark_reexec_failure(preflight_dir: &Path, signal: &str) -> Result<(), String> {
+    let path = preflight_dir.join("run.json");
+    let mut receipt: Value = serde_json::from_str(
+        &fs::read_to_string(&path)
+            .map_err(|error| format!("engine-reexec-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-reexec-receipt-parse-failed: {error}"))?;
+    receipt["ok"] = json!(false);
+    receipt["stage"] = json!(signal);
+    receipt["first_missing_signal"] = json!(signal);
+    write_json(&path, &receipt)
 }
 
 fn stage_signal(stage: &str) -> String {
@@ -694,6 +753,7 @@ fn emit_preflight_receipt(
     first_missing_signal: &str,
     operation_count: usize,
     staged_build_identity: Option<&BuildEnvironmentIdentity>,
+    reexec: Option<&SelfUpdateReexec>,
 ) -> Result<(), String> {
     write_json(
         &preflight_dir.join("run.json"),
@@ -717,6 +777,7 @@ fn emit_preflight_receipt(
             "staged_sha256": staged_sha,
             "installed_sha256": installed_sha,
             "staged_build_identity": staged_build_identity.and_then(|identity| identity.env_sha.as_deref().zip(source_head).map(|(env_sha, source_sha)| json!({"source_sha": source_sha, "env_sha": env_sha}))),
+            "reexec": reexec,
             "git_bearer": "owner",
             "artifact_transport_count": config.artifact_transport_chain().len(),
             "failure_mode": "honest-source-resolution",
@@ -780,6 +841,32 @@ fn ignored_engine_component_receipt_line(value: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+fn forward_preflight_receipt(
+    ok: bool,
+    apply: bool,
+    changed: bool,
+    first_missing_signal: &str,
+    component: &str,
+    engine_component_ignored: Option<&str>,
+    retired_engine_config_fields: &[String],
+) {
+    let ignored_component_line =
+        match ignored_engine_component_receipt_line(engine_component_ignored) {
+            line if line.is_empty() => line,
+            line => format!(" {line}"),
+        };
+    crate::hyalos::forward_receipt(
+        "harmonia.renew_self.preflight",
+        &format!(
+            "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}{ignored_component_line}"
+        ),
+        Some(
+            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "retired_engine_config_fields": retired_engine_config_fields, "attest_owner": "hyalos.forward_receipt"}),
+        ),
+        Some(ok),
+    );
+}
+
 pub(crate) fn run_engine_preflight(
     module_root: &Path,
     receipt_dir: &Path,
@@ -804,6 +891,7 @@ pub(crate) fn run_engine_preflight(
                 "engine_config": config_path,
                 "retired_engine_config_fields": [],
                 "source_authority": "device-profile-certificate-sources",
+                "reexec": null,
             }),
         )?;
         return Ok(failed_execution(signal));
@@ -825,6 +913,7 @@ pub(crate) fn run_engine_preflight(
             false,
             signal,
             0,
+            None,
             None,
         )?;
         return Ok(failed_execution(signal));
@@ -857,6 +946,7 @@ pub(crate) fn run_engine_preflight(
                 false,
                 &signal,
                 0,
+                None,
                 None,
             )?;
             return Ok(failed_execution(&signal));
@@ -901,6 +991,7 @@ pub(crate) fn run_engine_preflight(
     } else {
         "engine-source-acquisition-failed".to_string()
     };
+    let running_before = running_binary_fingerprint();
     let install_before = install_bin_fingerprint(&config.install_bin);
     let staged = staged_bin(&config);
     let mut staged_sha = None;
@@ -929,6 +1020,7 @@ pub(crate) fn run_engine_preflight(
                 changed,
                 &first_missing_signal,
                 operation_count,
+                None,
                 None,
             )?;
             return Ok(failed_execution(&first_missing_signal));
@@ -1012,6 +1104,22 @@ pub(crate) fn run_engine_preflight(
     }
     write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
     let installed_after = install_bin_fingerprint(&config.install_bin);
+    let install_changed = promotion_changed(
+        apply,
+        promote.ok,
+        install_before.as_deref(),
+        installed_after.as_deref(),
+    );
+    let reexec = if first_missing_signal == "none" {
+        if install_changed && running_before.is_none() {
+            first_missing_signal = SELF_UPDATE_REEXEC_RUNNING_FINGERPRINT_MISSING.to_string();
+            None
+        } else {
+            self_update_reexec_receipt(install_changed, running_before, installed_after.clone())
+        }
+    } else {
+        None
+    };
     let ok = first_missing_signal == "none";
     emit_preflight_receipt(
         &preflight_dir,
@@ -1029,22 +1137,56 @@ pub(crate) fn run_engine_preflight(
         &first_missing_signal,
         operation_count,
         staged_build_identity.as_ref(),
+        reexec.as_ref(),
     )?;
-    let ignored_component_line = match ignored_engine_component_receipt_line(
+    if reexec.is_some() {
+        let Some(invocation) = invocation else {
+            let signal = "harmonia-self-update-reexec-invocation-missing";
+            mark_reexec_failure(&preflight_dir, signal)?;
+            forward_preflight_receipt(
+                false,
+                apply,
+                changed,
+                signal,
+                &component,
+                engine_component_ignored.as_deref(),
+                &retired_engine_config_fields,
+            );
+            return Err(signal.to_string());
+        };
+        let plan = crate::atoms::r#do::replace_process::Plan {
+            successor: config.install_bin.clone(),
+            argv: env::args().skip(1).collect(),
+            guard_name: SELF_UPDATE_REEXEC_ENV.to_string(),
+            guard_value: "1".to_string(),
+            receipt_path: preflight_dir.join("replace-process.json"),
+        };
+        if let Err(error) = crate::atoms::r#do::replace_process::replace(&plan, invocation) {
+            let signal = format!("harmonia-self-update-reexec-failed: {error}");
+            if let Err(receipt_error) = mark_reexec_failure(&preflight_dir, &signal) {
+                return Err(format!("{signal}; receipt update failed: {receipt_error}"));
+            }
+            forward_preflight_receipt(
+                false,
+                apply,
+                changed,
+                &signal,
+                &component,
+                engine_component_ignored.as_deref(),
+                &retired_engine_config_fields,
+            );
+            return Err(signal);
+        }
+        unreachable!("replace-process::replace only returns after exec failure");
+    }
+    forward_preflight_receipt(
+        ok,
+        apply,
+        changed,
+        &first_missing_signal,
+        &component,
         engine_component_ignored.as_deref(),
-    ) {
-        line if line.is_empty() => line,
-        line => format!(" {line}"),
-    };
-    crate::hyalos::forward_receipt(
-        "harmonia.renew_self.preflight",
-        &format!(
-            "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}{ignored_component_line}"
-        ),
-        Some(
-            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "retired_engine_config_fields": retired_engine_config_fields, "attest_owner": "hyalos.forward_receipt"}),
-        ),
-        Some(ok),
+        &retired_engine_config_fields,
     );
     Ok(ModuleExecution {
         ok,
@@ -1059,13 +1201,37 @@ pub(crate) fn run_engine_preflight(
 mod release_transport_tests {
     use super::{
         build_environment_for_source_head, build_environment_sha, capture_build_environment,
-        engine_source_gate, engine_source_gate_for_component, ignored_engine_component,
-        ignored_engine_component_receipt_line, parse_validate_engine_plane_config,
-        EngineArtifactTransport,
+        emit_preflight_receipt, engine_source_gate, engine_source_gate_for_component,
+        ignored_engine_component, ignored_engine_component_receipt_line, install_bin_fingerprint,
+        parse_validate_engine_plane_config, promote_staged_binary, promotion_changed,
+        self_update_reexec_guard_active, self_update_reexec_receipt, should_self_update_reexec,
+        EngineArtifactTransport, SELF_UPDATE_REEXEC_ENV,
     };
     use serde_json::json;
     use std::path::{Path, PathBuf};
-    use tempfile::NamedTempFile;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::{tempdir, NamedTempFile};
+
+    static REEXEC_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct ReexecEnvGuard(Option<std::ffi::OsString>);
+
+    impl ReexecEnvGuard {
+        fn activate() -> Self {
+            let previous = std::env::var_os(SELF_UPDATE_REEXEC_ENV);
+            std::env::set_var(SELF_UPDATE_REEXEC_ENV, "1");
+            Self(previous)
+        }
+    }
+
+    impl Drop for ReexecEnvGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var(SELF_UPDATE_REEXEC_ENV, value),
+                None => std::env::remove_var(SELF_UPDATE_REEXEC_ENV),
+            }
+        }
+    }
 
     #[test]
     fn retired_engine_config_fields_are_stripped_and_reported_deterministically() {
@@ -1356,7 +1522,8 @@ mod release_transport_tests {
 
     #[test]
     fn disagreeing_legacy_engine_component_is_ignored_with_receipt_line() {
-        let certificate = certificate_fixture(Some("legacy-component"), &[crate::COMPILED_COMPONENT]);
+        let certificate =
+            certificate_fixture(Some("legacy-component"), &[crate::COMPILED_COMPONENT]);
         let ignored = ignored_engine_component(certificate.path(), crate::COMPILED_COMPONENT)
             .expect("disagreeing legacy field is reported");
 
@@ -1368,4 +1535,138 @@ mod release_transport_tests {
         assert!(engine_source_gate(certificate.path()).is_ok());
     }
 
+    #[test]
+    fn promoted_stub_successor_from_absent_install_receipts_reexec_and_guard_blocks_second_exec() {
+        let _env_lock = REEXEC_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let root = tempdir().unwrap();
+        let running = root.path().join("running-harmonia");
+        let successor = root.path().join("stub-successor");
+        let installed = root.path().join("installed/harmonia");
+        let preflight_dir = root.path().join("engine-preflight");
+        std::fs::create_dir_all(&preflight_dir).unwrap();
+        std::fs::write(&running, b"running-engine").unwrap();
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&successor, b"promoted-stub-successor").unwrap();
+        let from_sha = install_bin_fingerprint(&running).unwrap();
+        let install_before = install_bin_fingerprint(&installed);
+        assert!(install_before.is_none());
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let promotion = promote_staged_binary(
+            &successor,
+            &installed,
+            true,
+            Some(&invocation),
+            &preflight_dir,
+        )
+        .unwrap();
+        assert!(promotion.ok);
+        let installed_after = install_bin_fingerprint(&installed);
+        let to_sha = installed_after.clone().unwrap();
+        assert!(promotion_changed(
+            true,
+            promotion.ok,
+            install_before.as_deref(),
+            installed_after.as_deref(),
+        ));
+
+        let config = super::EnginePlaneConfig {
+            install_bin: installed.clone(),
+            enabled: true,
+            build_root: root.path().join("build-root"),
+            remote: "origin".into(),
+            build_program: None,
+            build_args: None,
+            staged_bin: None,
+            profile_index: None,
+            ratchet_lock: None,
+            artifact_transport: None,
+            artifact_transports: Vec::new(),
+        };
+        let reexec = self_update_reexec_receipt(true, Some(from_sha.clone()), Some(to_sha.clone()))
+            .expect("changed promoted successor requires reexec");
+        emit_preflight_receipt(
+            &preflight_dir,
+            &root.path().join("engine.json"),
+            &config,
+            &[],
+            "harmonia",
+            None,
+            None,
+            None,
+            Some(&to_sha),
+            true,
+            true,
+            true,
+            "none",
+            1,
+            None,
+            Some(&reexec),
+        )
+        .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(preflight_dir.join("run.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["reexec"]["from_sha"], from_sha);
+        assert_eq!(receipt["reexec"]["to_sha"], to_sha);
+        assert_eq!(receipt["reexec"]["generation"], 1);
+
+        let _env_guard = ReexecEnvGuard::activate();
+        assert!(self_update_reexec_guard_active());
+        assert!(!should_self_update_reexec(
+            true,
+            Some("old".into()),
+            Some("new".into()),
+        ));
+        assert!(
+            self_update_reexec_receipt(true, Some("old".into()), Some("new".into()),).is_none()
+        );
+    }
+
+    #[test]
+    fn no_promotion_receipts_null_reexec() {
+        let root = tempdir().unwrap();
+        let config = super::EnginePlaneConfig {
+            install_bin: root.path().join("install-bin"),
+            enabled: true,
+            build_root: root.path().join("build-root"),
+            remote: "origin".into(),
+            build_program: None,
+            build_args: None,
+            staged_bin: None,
+            profile_index: None,
+            ratchet_lock: None,
+            artifact_transport: None,
+            artifact_transports: Vec::new(),
+        };
+        let preflight_dir = root.path().join("engine-preflight");
+        std::fs::create_dir_all(&preflight_dir).unwrap();
+        assert!(!promotion_changed(false, false, None, None));
+        assert!(!promotion_changed(true, true, Some("same"), Some("same")));
+        emit_preflight_receipt(
+            &preflight_dir,
+            &root.path().join("engine.json"),
+            &config,
+            &[],
+            "harmonia",
+            None,
+            None,
+            None,
+            None,
+            true,
+            true,
+            false,
+            "none",
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(preflight_dir.join("run.json")).unwrap())
+                .unwrap();
+        assert!(receipt["reexec"].is_null());
+    }
 }
