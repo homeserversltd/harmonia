@@ -77,16 +77,81 @@ pub(crate) fn run_build_with_mode(
     invocation: Option<&atoms::r#do::InvocationKey>,
     identity_mode: IdentityMode,
 ) -> Result<Option<crate::atoms::CommandObservation>, String> {
+    run_build_with_mode_and_component(
+        cwd,
+        source_build_sha,
+        installed_build_sha,
+        installed_binary,
+        artifact,
+        apply,
+        environment,
+        timeout_secs,
+        log,
+        bearer,
+        invocation,
+        identity_mode,
+        None,
+    )
+}
+
+pub(crate) fn run_build_with_mode_for_component(
+    cwd: &Path,
+    source_build_sha: &str,
+    installed_build_sha: Option<&str>,
+    installed_binary: &Path,
+    artifact: &Path,
+    apply: bool,
+    environment: &[(String, String)],
+    timeout_secs: u64,
+    log: &Path,
+    bearer: &str,
+    invocation: Option<&atoms::r#do::InvocationKey>,
+    component: &str,
+    identity_mode: IdentityMode,
+) -> Result<Option<crate::atoms::CommandObservation>, String> {
+    run_build_with_mode_and_component(
+        cwd,
+        source_build_sha,
+        installed_build_sha,
+        installed_binary,
+        artifact,
+        apply,
+        environment,
+        timeout_secs,
+        log,
+        bearer,
+        invocation,
+        identity_mode,
+        Some(component),
+    )
+}
+
+fn run_build_with_mode_and_component(
+    cwd: &Path,
+    source_build_sha: &str,
+    installed_build_sha: Option<&str>,
+    installed_binary: &Path,
+    artifact: &Path,
+    apply: bool,
+    environment: &[(String, String)],
+    timeout_secs: u64,
+    log: &Path,
+    bearer: &str,
+    invocation: Option<&atoms::r#do::InvocationKey>,
+    identity_mode: IdentityMode,
+    component: Option<&str>,
+) -> Result<Option<crate::atoms::CommandObservation>, String> {
     let run = crate::tools::declaration::execute_with_failure_receipt(
         "build-crate",
         "build-crate",
         || {
-            crate::atoms::ask::build_crate::build_identity_with_environment(
+            crate::atoms::ask::build_crate::build_identity_with_environment_and_component(
                 source_build_sha,
                 installed_build_sha,
                 artifact,
                 identity_mode,
                 environment,
+                component,
             )
         },
         |observation| {

@@ -12,8 +12,6 @@ pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
 pub(crate) const DEFAULT_PROFILE_SOURCE: &str = "/etc/appliance/profile.json";
 pub(crate) const PROFILE_AXIS: &str = "profile";
 pub(crate) const BUILD_TARGET: &str = "x86_64-unknown-linux-gnu";
-pub(crate) const BUILD_SHA_ENV: &str = "CADUCEUS_BUILD_SHA";
-pub(crate) const BUILD_ENV_SHA_ENV: &str = "CADUCEUS_BUILD_ENV_SHA";
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: &str = "67108864";
 
@@ -89,7 +87,36 @@ pub(crate) fn normalize_auth_required_error(error: &str, fallback_url: &str) -> 
         .map(|url| format!("fetch-artifact-auth-required url={url}"))
 }
 
+pub(crate) fn build_environment_prefix(component: &str) -> String {
+    let mut prefix = component
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    prefix.push('_');
+    prefix
+}
+
+pub(crate) fn build_environment_variables(
+    component: &str,
+    source_build_sha: &str,
+    environment_sha: &str,
+) -> Vec<(String, String)> {
+    let prefix = build_environment_prefix(component);
+    vec![
+        (format!("{prefix}BUILD_SHA"), source_build_sha.into()),
+        (format!("{prefix}SOURCE_SHA"), source_build_sha.into()),
+        (format!("{prefix}BUILD_ENV_SHA"), environment_sha.into()),
+    ]
+}
+
 pub(crate) fn build_environment(
+    component: &str,
     source_build_sha: &str,
 ) -> Result<(Vec<(String, String)>, String), String> {
     let rustc = crate::atoms::command::capture("rustc", &["-Vv"]);
@@ -117,10 +144,7 @@ pub(crate) fn build_environment(
     );
     let environment_sha = crate::atoms::file_sha256(material.as_bytes());
     Ok((
-        vec![
-            (BUILD_SHA_ENV.into(), source_build_sha.into()),
-            (BUILD_ENV_SHA_ENV.into(), environment_sha.clone()),
-        ],
+        build_environment_variables(component, source_build_sha, &environment_sha),
         environment_sha,
     ))
 }
@@ -691,6 +715,48 @@ mod tests {
         assert_eq!(
             result.expect_err("manifest mismatch should reject before artifact fetch"),
             "fetch-artifact-manifest-component-mismatch"
+        );
+    }
+
+    #[test]
+    fn caduceus_build_environment_prefix_exports_source_and_build_sha() {
+        let environment = build_environment_variables("caduceus", "source-sha", "environment-sha");
+        assert_eq!(build_environment_prefix("caduceus"), "CADUCEUS_");
+        assert_eq!(
+            environment,
+            vec![
+                ("CADUCEUS_BUILD_SHA".into(), "source-sha".into()),
+                ("CADUCEUS_SOURCE_SHA".into(), "source-sha".into()),
+                ("CADUCEUS_BUILD_ENV_SHA".into(), "environment-sha".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coronatio_build_environment_prefix_exports_source_and_build_sha() {
+        let environment = build_environment_variables("coronatio", "source-sha", "environment-sha");
+        assert_eq!(build_environment_prefix("coronatio"), "CORONATIO_");
+        assert_eq!(
+            environment,
+            vec![
+                ("CORONATIO_BUILD_SHA".into(), "source-sha".into()),
+                ("CORONATIO_SOURCE_SHA".into(), "source-sha".into()),
+                ("CORONATIO_BUILD_ENV_SHA".into(), "environment-sha".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dashed_component_build_environment_prefix_replaces_separator() {
+        let environment = build_environment_variables("foo-bar", "source-sha", "environment-sha");
+        assert_eq!(build_environment_prefix("foo-bar"), "FOO_BAR_");
+        assert_eq!(
+            environment,
+            vec![
+                ("FOO_BAR_BUILD_SHA".into(), "source-sha".into()),
+                ("FOO_BAR_SOURCE_SHA".into(), "source-sha".into()),
+                ("FOO_BAR_BUILD_ENV_SHA".into(), "environment-sha".into()),
+            ]
         );
     }
 

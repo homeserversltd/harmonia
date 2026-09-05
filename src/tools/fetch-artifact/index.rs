@@ -236,7 +236,7 @@ pub(crate) fn execute(
         let source_dir_text = source_dir.display().to_string();
         let artifact = source_dir.join("target/release").join(artifact_name);
         let (environment, build_environment_sha) =
-            crate::atoms::ask::fetch_artifact::build_environment(source_sha)?;
+            crate::atoms::ask::fetch_artifact::build_environment(component, source_sha)?;
         crate::write_json(
             &receipt_dir.join("fallback.json"),
             &serde_json::json!({
@@ -263,7 +263,7 @@ pub(crate) fn execute(
                 command: None,
             });
         }
-        let build = crate::build_crate::run_build_with_mode(
+        let build = crate::build_crate::run_build_with_mode_for_component(
             source_dir,
             source_sha,
             None,
@@ -279,6 +279,7 @@ pub(crate) fn execute(
                 .and_then(Value::as_str)
                 .unwrap_or("owner"),
             invocation,
+            component,
             crate::build_crate::IdentityMode::EmbeddedSourceSha,
         )?;
         if let Some(build) = build.filter(|build| !build.ok) {
@@ -302,7 +303,7 @@ pub(crate) fn execute(
         crate::atoms::ask::fetch_artifact::Download {
             manifest,
             bytes,
-            identity: "embedded-sha".into(),
+            identity: "liveness-marker".into(),
         }
     } else {
         registry_download.ok_or("fetch-artifact-registry-download-missing")?
@@ -334,7 +335,7 @@ pub(crate) fn execute(
                 Ok(crate::atoms::ask::fetch_artifact::identity_matches(
                     destination,
                     &effective_source_sha,
-                    identity,
+                    &download.identity,
                     component,
                 ))
             }
@@ -441,7 +442,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.path().join("src/main.rs"),
-            "fn main() { println!(\"{}\", env!(\"CADUCEUS_BUILD_SHA\")); }\n",
+            "fn main() { println!(\"{}\", concat!(\"caduceus.liveness.v1\", env!(\"CADUCEUS_BUILD_SHA\"))); }\n",
         )
         .unwrap();
         root
@@ -512,7 +513,7 @@ mod tests {
         assert!(crate::atoms::ask::fetch_artifact::identity_matches(
             &destination,
             SOURCE_SHA,
-            "embedded-sha",
+            "liveness-marker",
             "caduceus"
         ));
     }

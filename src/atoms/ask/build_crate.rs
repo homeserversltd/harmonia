@@ -70,10 +70,28 @@ pub(crate) fn build_identity_with_mode(
 
 pub(crate) fn build_identity_with_environment(
     source_build_sha: &str,
+    installed_build_sha: Option<&str>,
+    artifact: &Path,
+    identity_mode: IdentityMode,
+    environment: &[(String, String)],
+) -> Result<Observation, String> {
+    build_identity_with_environment_and_component(
+        source_build_sha,
+        installed_build_sha,
+        artifact,
+        identity_mode,
+        environment,
+        None,
+    )
+}
+
+pub(crate) fn build_identity_with_environment_and_component(
+    source_build_sha: &str,
     _installed_build_sha: Option<&str>,
     artifact: &Path,
     identity_mode: IdentityMode,
     environment: &[(String, String)],
+    component: Option<&str>,
 ) -> Result<Observation, String> {
     let source_build_sha = source_build_sha.trim().to_string();
     if !crate::bands::compare::is_hex_sha(&source_build_sha) {
@@ -86,10 +104,16 @@ pub(crate) fn build_identity_with_environment(
     let bytes = artifact_present.then(|| fs::read(artifact).ok()).flatten();
     let artifact_build_sha = match identity_mode {
         IdentityMode::EmbeddedSourceSha => bytes.as_deref().and_then(|bytes| {
-            bytes
-                .windows(source_build_sha.len())
-                .any(|window| window == source_build_sha.as_bytes())
-                .then(|| source_build_sha.clone())
+            let matches = if let Some(component) = component {
+                let mut marker = format!("{component}.liveness.v1").into_bytes();
+                marker.extend_from_slice(source_build_sha.as_bytes());
+                bytes.windows(marker.len()).any(|window| window == marker)
+            } else {
+                bytes
+                    .windows(source_build_sha.len())
+                    .any(|window| window == source_build_sha.as_bytes())
+            };
+            matches.then(|| source_build_sha.clone())
         }),
         IdentityMode::RegularExecutable => artifact
             .with_file_name(format!(
@@ -155,4 +179,55 @@ pub(crate) fn environment_sha(environment: &[(String, String)]) -> String {
         .collect::<std::collections::BTreeMap<_, _>>();
     let encoded = serde_json::to_vec(&environment).expect("build environment is serializable");
     atoms::file_sha256(&encoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    const SOURCE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn embedded_source_identity_accepts_coronatio_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join("artifact");
+        fs::write(
+            &artifact,
+            format!("coronatio.liveness.v1{SOURCE_SHA}:artifact"),
+        )
+        .unwrap();
+        let observation = build_identity_with_environment_and_component(
+            SOURCE_SHA,
+            None,
+            &artifact,
+            IdentityMode::EmbeddedSourceSha,
+            &[],
+            Some("coronatio"),
+        )
+        .unwrap();
+        assert!(observation.identity_matches());
+    }
+
+    #[test]
+    fn embedded_source_identity_rejects_wrong_or_unmarked_component_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join("artifact");
+        for contents in [
+            format!("caduceus.liveness.v1{SOURCE_SHA}"),
+            SOURCE_SHA.to_string(),
+        ] {
+            fs::write(&artifact, contents).unwrap();
+            let observation = build_identity_with_environment_and_component(
+                SOURCE_SHA,
+                None,
+                &artifact,
+                IdentityMode::EmbeddedSourceSha,
+                &[],
+                Some("coronatio"),
+            )
+            .unwrap();
+            assert!(!observation.identity_matches());
+        }
+    }
 }
