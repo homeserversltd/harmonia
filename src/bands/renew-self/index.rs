@@ -31,7 +31,7 @@ pub(crate) fn is_stale_staged_validation_failure(execution: &ModuleExecution) ->
 
 use crate::*;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
@@ -297,16 +297,68 @@ fn validate_engine_plane_config(config: EnginePlaneConfig) -> Result<EnginePlane
     Ok(config)
 }
 
+const RETIRED_ENGINE_TOP_LEVEL_FIELDS: &[&str] = &[
+    "source_repo_url",
+    "branch",
+    "source_dir",
+    "local_source_checkout",
+    "git_bearer",
+    "source_components",
+    "credential_scopes",
+];
+
 fn parse_validate_engine_plane_config(
     text: &str,
     path: &Path,
-) -> Result<EnginePlaneConfig, String> {
-    let config: EnginePlaneConfig = serde_json::from_str(text)
+) -> Result<(EnginePlaneConfig, Vec<String>), String> {
+    let mut raw: Value = serde_json::from_str(text)
         .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
-    validate_engine_plane_config(config)
+    let mut retired = Vec::new();
+    if let Value::Object(object) = &mut raw {
+        for field in RETIRED_ENGINE_TOP_LEVEL_FIELDS {
+            if object.remove(*field).is_some() {
+                record_retired_engine_config_field(&mut retired, field);
+            }
+        }
+        if let Some(Value::Array(transports)) = object.get_mut("artifact_transports") {
+            for transport in transports {
+                let Value::Object(transport) = transport else {
+                    continue;
+                };
+                if transport.remove("repo_url").is_some() {
+                    record_retired_engine_config_field(
+                        &mut retired,
+                        "artifact_transports[].repo_url",
+                    );
+                }
+                if transport.remove("branch").is_some() {
+                    record_retired_engine_config_field(
+                        &mut retired,
+                        "artifact_transports[].branch",
+                    );
+                }
+            }
+        }
+    }
+    let config: EnginePlaneConfig = serde_json::from_value(raw)
+        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
+    let config = validate_engine_plane_config(config)?;
+    Ok((config, retired))
+}
+
+fn record_retired_engine_config_field(retired: &mut Vec<String>, field: &str) {
+    if !retired.iter().any(|existing| existing == field) {
+        retired.push(field.to_string());
+    }
 }
 
 pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlaneConfig>, String> {
+    load_engine_plane_config_with_debt(path).map(|config| config.map(|(config, _retired)| config))
+}
+
+pub(crate) fn load_engine_plane_config_with_debt(
+    path: &Path,
+) -> Result<Option<(EnginePlaneConfig, Vec<String>)>, String> {
     if !path.exists() {
         return Ok(None);
     }
@@ -617,6 +669,7 @@ fn emit_preflight_receipt(
     preflight_dir: &Path,
     config_path: &Path,
     config: &EnginePlaneConfig,
+    retired_engine_config_fields: &[String],
     component: &str,
     source_head: Option<&str>,
     staged_sha: Option<&str>,
@@ -639,6 +692,7 @@ fn emit_preflight_receipt(
             "first_missing_signal": first_missing_signal,
             "operation_count": operation_count,
             "engine_config": config_path,
+            "retired_engine_config_fields": retired_engine_config_fields,
             "enabled": config.enabled,
             "source_authority": "device-profile-certificate-sources",
             "engine_component": component,
@@ -697,7 +751,9 @@ pub(crate) fn run_engine_preflight(
     let preflight_dir = receipt_dir.join("engine-preflight");
     crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
     let config_path = engine_config_path();
-    let Some(config) = load_engine_plane_config(&config_path)? else {
+    let Some((config, retired_engine_config_fields)) =
+        load_engine_plane_config_with_debt(&config_path)?
+    else {
         let signal = "engine-self-possession-unconfigured";
         write_json(
             &preflight_dir.join("run.json"),
@@ -708,6 +764,7 @@ pub(crate) fn run_engine_preflight(
                 "changed": false,
                 "first_missing_signal": signal,
                 "engine_config": config_path,
+                "retired_engine_config_fields": [],
                 "source_authority": "device-profile-certificate-sources",
             }),
         )?;
@@ -719,6 +776,7 @@ pub(crate) fn run_engine_preflight(
             &preflight_dir,
             &config_path,
             &config,
+            &retired_engine_config_fields,
             "unknown",
             None,
             None,
@@ -748,6 +806,7 @@ pub(crate) fn run_engine_preflight(
                 &preflight_dir,
                 &config_path,
                 &config,
+                &retired_engine_config_fields,
                 &component_for_receipt,
                 None,
                 None,
@@ -818,6 +877,7 @@ pub(crate) fn run_engine_preflight(
                 &preflight_dir,
                 &config_path,
                 &config,
+                &retired_engine_config_fields,
                 &component,
                 None,
                 None,
@@ -915,6 +975,7 @@ pub(crate) fn run_engine_preflight(
         &preflight_dir,
         &config_path,
         &config,
+        &retired_engine_config_fields,
         &component,
         source_head.as_deref(),
         staged_sha.as_deref(),
@@ -932,7 +993,7 @@ pub(crate) fn run_engine_preflight(
             "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}"
         ),
         Some(
-            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "attest_owner": "hyalos.forward_receipt"}),
+            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "retired_engine_config_fields": retired_engine_config_fields, "attest_owner": "hyalos.forward_receipt"}),
         ),
         Some(ok),
     );
@@ -949,9 +1010,100 @@ pub(crate) fn run_engine_preflight(
 mod release_transport_tests {
     use super::{
         build_environment_for_source_head, build_environment_sha, capture_build_environment,
-        engine_source_gate, EngineArtifactTransport,
+        engine_source_gate, parse_validate_engine_plane_config, EngineArtifactTransport,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn retired_engine_config_fields_are_stripped_and_reported_deterministically() {
+        let (config, retired) = parse_validate_engine_plane_config(
+            r#"{
+                "install_bin": "/usr/local/bin/harmonia",
+                "enabled": true,
+                "source_repo_url": {"nonsense": [true, 7]},
+                "branch": [null, {"not": "a-branch"}],
+                "source_dir": 42,
+                "local_source_checkout": false,
+                "git_bearer": {"token": ["not", "a", "bearer"]},
+                "source_components": {"not": "an-array"},
+                "credential_scopes": "not-an-array",
+                "artifact_transports": [
+                    {
+                        "kind": "git",
+                        "name": "cache-one",
+                        "cache_dir": "/var/cache/harmonia-one",
+                        "remote": "origin",
+                        "repo_url": {"not": "a-url"},
+                        "branch": [1, 2, 3]
+                    },
+                    {
+                        "kind": "git",
+                        "name": "cache-two",
+                        "cache_dir": "/var/cache/harmonia-two",
+                        "remote": "origin",
+                        "repo_url": ["not", "a", "url"],
+                        "branch": {"not": "a-branch"}
+                    }
+                ]
+            }"#,
+            Path::new("/etc/harmonia/engine.json"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            retired,
+            vec![
+                "source_repo_url",
+                "branch",
+                "source_dir",
+                "local_source_checkout",
+                "git_bearer",
+                "source_components",
+                "credential_scopes",
+                "artifact_transports[].repo_url",
+                "artifact_transports[].branch",
+            ]
+        );
+        assert_eq!(config.install_bin, PathBuf::from("/usr/local/bin/harmonia"));
+        assert!(config.enabled);
+        assert_eq!(config.artifact_transports.len(), 2);
+        let parsed_config = serde_json::to_string(&config).unwrap();
+        for retired_value in [
+            "nonsense",
+            "a-branch",
+            "not-an-array",
+            "bearer",
+            "a-url",
+            "not",
+        ] {
+            assert!(
+                !parsed_config.contains(retired_value),
+                "retired value leaked: {retired_value}"
+            );
+        }
+    }
+
+    #[test]
+    fn genuinely_unknown_engine_config_field_still_fails_strict_parse() {
+        let error = parse_validate_engine_plane_config(
+            r#"{"install_bin":"/usr/local/bin/harmonia","enabled":true,"genuinely_unknown":"sentinel"}"#,
+            Path::new("/etc/harmonia/engine.json"),
+        )
+        .unwrap_err();
+        assert!(error.contains("engine-config-parse-failed"));
+        assert!(error.contains("genuinely_unknown"));
+    }
+
+    #[test]
+    fn current_engine_config_shape_reports_no_retired_fields() {
+        let (config, retired) = parse_validate_engine_plane_config(
+            r#"{"install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
+            Path::new("/etc/harmonia/engine.json"),
+        )
+        .unwrap();
+        assert!(retired.is_empty());
+        assert_eq!(config.install_bin, PathBuf::from("/usr/local/bin/harmonia"));
+    }
 
     #[test]
     fn engine_config_uses_local_mechanics_and_certificate_source_authority() {
