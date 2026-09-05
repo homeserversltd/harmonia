@@ -3,7 +3,7 @@
   "id": "install-caduceus",
   "category": "known-good",
   "config_deploy": "interactable",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "HomeConsole module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "constants": {},
   "ladder": [
@@ -24,7 +24,9 @@
       "args": {
         "module_id": "install-caduceus",
         "component": "caduceus",
-        "registry_base": "https://git.home.arpa/api/packages/HOMESERVERSLTD/generic",
+        "release_repo": "HOMESERVERSLTD/caduceus",
+        "profile_axis": "profile",
+        "identity": "liveness-marker",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",
         "service": "caduceus.service",

@@ -3,7 +3,7 @@
   "id": "caduceus",
   "category": "known-good",
   "config_deploy": "interactable",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "HOMESERVER module installs and maintains Caduceus. It provisions the agathodaimon Python environment and maintains the sudoers refresh consumer.",
   "constants": {
     "staff_venv": "/var/lib/caduceus/venv",
@@ -44,7 +44,9 @@
       "args": {
         "module_id": "caduceus",
         "component": "caduceus",
-        "registry_base": "https://git.home.arpa/api/packages/HOMESERVERSLTD/generic",
+        "release_repo": "HOMESERVERSLTD/caduceus",
+        "profile_axis": "profile",
+        "identity": "liveness-marker",
         "bearer": "owner",
         "source_dir": "/opt/caduceus/source",
         "install_bin": "/usr/local/bin/caduceus",

@@ -1059,12 +1059,28 @@ mod tests {
             }))
         );
         assert_eq!(
+            build.args.get("release_repo").and_then(Value::as_str),
+            Some("HOMESERVERSLTD/caduceus")
+        );
+        assert_eq!(
+            build.args.get("profile_axis").and_then(Value::as_str),
+            Some("profile")
+        );
+        assert_eq!(
+            build.args.get("profile_source").and_then(Value::as_str),
+            Some("/etc/appliance/profile.json")
+        );
+        assert_eq!(
+            build.args.get("identity").and_then(Value::as_str),
+            Some("liveness-marker")
+        );
+        assert_eq!(
             build.args.get("registry_base").and_then(Value::as_str),
-            Some("https://git.home.arpa/api/packages/HOMESERVERSLTD/generic")
+            Some("")
         );
         assert_eq!(
             build.args.get("destination").and_then(Value::as_str),
-            Some("/opt/caduceus/source/target/harmonia-registry/caduceus")
+            Some("/opt/caduceus/source/target/harmonia-release/caduceus")
         );
         assert_eq!(
             build.args.get("installed_binary").and_then(Value::as_str),
@@ -1074,8 +1090,6 @@ mod tests {
             build.args.get("artifact_name").and_then(Value::as_str),
             Some("caduceus")
         );
-        assert!(!build.args.contains_key("profile_axis"));
-        assert!(!build.args.contains_key("profile_source"));
         assert!(routine
             .steps
             .iter()
