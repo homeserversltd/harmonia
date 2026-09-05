@@ -46,6 +46,7 @@ const DEFAULT_ENGINE_RATCHET_LOCK_NAME: &str = "engine-ratchet-lock.json";
 const HARMONIA_BUILD_TARGET: &str = "x86_64-unknown-linux-gnu";
 const HARMONIA_BUILD_SHA_ENV: &str = "HARMONIA_BUILD_SHA";
 const HARMONIA_BUILD_ENV_SHA_ENV: &str = "HARMONIA_BUILD_ENV_SHA";
+const HARMONIA_COMPONENT_ENV: &str = "HARMONIA_COMPONENT";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BuildEnvironmentIdentity {
@@ -61,13 +62,20 @@ fn trim_trailing_crlf(value: &str) -> &str {
     value.trim_end_matches(|character: char| character == '\r' || character == '\n')
 }
 
-fn build_environment_sha(rustc_version: &str, cargo_version: &str, target_triple: &str) -> String {
+fn build_environment_sha(
+    rustc_version: &str,
+    cargo_version: &str,
+    target_triple: &str,
+    component: &str,
+) -> String {
     let mut digest = Sha256::new();
     digest.update(rustc_version.as_bytes());
     digest.update(b"\n");
     digest.update(cargo_version.as_bytes());
     digest.update(b"\n");
     digest.update(target_triple.as_bytes());
+    digest.update(b"\n");
+    digest.update(component.as_bytes());
     digest.update(b"\n");
     format!("{:x}", digest.finalize())
 }
@@ -88,11 +96,16 @@ fn build_environment_for_source_head(
         trim_trailing_crlf(rustc_version),
         trim_trailing_crlf(cargo_version),
         target_triple,
+        crate::COMPILED_COMPONENT,
     );
     BuildEnvironmentIdentity {
         environment: vec![
             (HARMONIA_BUILD_SHA_ENV.into(), source_sha.into()),
             (HARMONIA_BUILD_ENV_SHA_ENV.into(), env_sha.clone()),
+            (
+                HARMONIA_COMPONENT_ENV.into(),
+                crate::COMPILED_COMPONENT.into(),
+            ),
         ],
         env_sha: Some(env_sha),
     }
@@ -1165,7 +1178,7 @@ mod release_transport_tests {
     }
 
     #[test]
-    fn valid_build_environment_has_exactly_both_variables_and_known_env_hash() {
+    fn valid_build_environment_has_build_identity_and_known_env_hash() {
         let source_sha = "0123456789abcdef0123456789abcdef01234567";
         let identity = build_environment_for_source_head(
             source_sha,
@@ -1174,20 +1187,24 @@ mod release_transport_tests {
             "x86_64-unknown-linux-gnu",
         );
 
-        assert_eq!(identity.environment.len(), 2);
+        assert_eq!(identity.environment.len(), 3);
         assert_eq!(
             identity.environment,
             vec![
                 ("HARMONIA_BUILD_SHA".to_string(), source_sha.to_string()),
                 (
                     "HARMONIA_BUILD_ENV_SHA".to_string(),
-                    "2c6f162390520881dd7a311df1686a515659915157a3b32bb91bb6d485798859".to_string(),
+                    "0e5eb85d1e4bda0a9e1ab61a3e0c21fd31bb198df218061c31168969ea51d4f1".to_string(),
+                ),
+                (
+                    "HARMONIA_COMPONENT".to_string(),
+                    crate::COMPILED_COMPONENT.to_string(),
                 ),
             ]
         );
         assert_eq!(
             identity.env_sha.as_deref(),
-            Some("2c6f162390520881dd7a311df1686a515659915157a3b32bb91bb6d485798859")
+            Some("0e5eb85d1e4bda0a9e1ab61a3e0c21fd31bb198df218061c31168969ea51d4f1")
         );
     }
 
@@ -1220,14 +1237,34 @@ mod release_transport_tests {
                 "rustc 1.85.0 (fake)",
                 "cargo 1.85.0 (fake)",
                 "x86_64-unknown-linux-gnu",
+                crate::COMPILED_COMPONENT,
             ),
             build_environment_sha(
                 "rustc 1.85.0 (fake)",
                 "cargo 1.85.0 (fake)",
                 "x86_64-unknown-linux-gnu",
+                crate::COMPILED_COMPONENT,
             )
         );
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn build_environment_hash_changes_when_compiled_component_changes() {
+        let first = build_environment_sha(
+            "rustc 1.85.0 (fake)",
+            "cargo 1.85.0 (fake)",
+            "x86_64-unknown-linux-gnu",
+            "harmonia",
+        );
+        let second = build_environment_sha(
+            "rustc 1.85.0 (fake)",
+            "cargo 1.85.0 (fake)",
+            "x86_64-unknown-linux-gnu",
+            "harmonia-monad",
+        );
+
+        assert_ne!(first, second);
     }
 
     fn certificate_fixture(
