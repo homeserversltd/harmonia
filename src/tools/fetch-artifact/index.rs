@@ -109,6 +109,7 @@ pub(crate) fn execute(
             api_root,
             release_asset_name.as_deref(),
             release_sidecar_name.as_deref(),
+            identity,
             source_sha,
         ) {
             Ok(Some(download)) => Some(download),

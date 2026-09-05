@@ -534,6 +534,7 @@ pub(crate) fn download_release(
     api_root: &str,
     asset_name: Option<&str>,
     sidecar_name: Option<&str>,
+    identity: &str,
     source_build_sha: &str,
 ) -> Result<Option<Download>, String> {
     let (owner, repo) = release_repo
@@ -589,7 +590,7 @@ pub(crate) fn download_release(
         Ok(Some(Download {
             manifest,
             bytes: release.artifact,
-            identity: "embedded-sha".into(),
+            identity: identity.into(),
         }))
     })();
     let _ = std::fs::remove_dir_all(&request.cache_dir);
@@ -608,13 +609,12 @@ pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn native_release_fixture_http_server_stages_binary_and_verifies_sidecar() {
-        let source =
-            std::env::temp_dir().join(format!("harmonia-release-source-{}", std::process::id()));
-        fs::create_dir_all(&source).unwrap();
+    const RELEASE_SOURCE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn native_release_fixture(identity: &str) -> Result<crate::OperationOutcome, String> {
+        let source_dir = tempfile::tempdir().unwrap();
         fs::write(
-            source.join("Cargo.toml"),
+            source_dir.path().join("Cargo.toml"),
             "[package]\nname=\"fixture\"\nversion=\"1.2.3\"\n",
         )
         .unwrap();
@@ -622,23 +622,30 @@ mod tests {
         use std::net::TcpListener;
         use std::thread;
 
-        let artifact = b"release-artifact-0123456789abcdef0123456789abcdef01234567";
-        let digest = crate::atoms::file_sha256(artifact);
+        let artifact = format!(
+            "caduceus.liveness.v1{RELEASE_SOURCE_SHA}caduceus-profile"
+        )
+        .into_bytes();
+        let digest = crate::atoms::file_sha256(&artifact);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let release_body = serde_json::json!({
-            "target_commitish": "0123456789abcdef0123456789abcdef01234567",
+            "target_commitish": RELEASE_SOURCE_SHA,
             "assets": [
                 {"name": "fixture-x86_64", "browser_download_url": format!("http://{address}/artifact")},
                 {"name": "fixture-x86_64.sha256", "browser_download_url": format!("http://{address}/sidecar")},
             ],
         }).to_string().into_bytes();
+        let served_artifact = artifact.clone();
         let server = thread::spawn(move || {
+            let release_path = format!(
+                "/api/v1/repos/OWNER/REPO/releases/tags/{RELEASE_SOURCE_SHA}"
+            );
             for (path, body) in [
-                ("/api/v1/repos/OWNER/REPO/releases/tags/0123456789abcdef0123456789abcdef01234567", release_body),
-                ("/artifact", artifact.to_vec()),
+                (release_path, release_body),
+                ("/artifact".into(), served_artifact.clone()),
                 (
-                    "/sidecar",
+                    "/sidecar".into(),
                     format!("{digest}  fixture-x86_64\n").into_bytes(),
                 ),
             ] {
@@ -659,37 +666,48 @@ mod tests {
                 stream.write_all(&body).unwrap();
             }
         });
-        let destination = source.join("target/harmonia-release/fixture");
-        let installed = source.join("installed");
-        let receipt_dir = source.join("receipts");
+        let destination = source_dir.path().join("target/harmonia-release/fixture");
+        let installed = source_dir.path().join("installed");
+        let receipt_dir = source_dir.path().join("receipts");
         let args = [
-            ("component", serde_json::json!("fixture")),
+            ("component", serde_json::json!("caduceus")),
             ("release_repo", serde_json::json!("OWNER/REPO")),
             (
                 "api_root",
                 serde_json::json!(format!("http://{address}/api/v1")),
             ),
-            (
-                "source_build_sha",
-                serde_json::json!("0123456789abcdef0123456789abcdef01234567"),
-            ),
-            ("source_dir", serde_json::json!(source)),
-            ("destination", serde_json::json!(destination)),
-            ("installed_binary", serde_json::json!(installed)),
+            ("source_build_sha", serde_json::json!(RELEASE_SOURCE_SHA)),
+            ("artifact_name", serde_json::json!("fixture")),
+            ("identity", serde_json::json!(identity)),
+            ("source_dir", serde_json::json!(source_dir.path())),
+            ("destination", serde_json::json!(&destination)),
+            ("installed_binary", serde_json::json!(&installed)),
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), value))
         .collect();
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
         let outcome =
-            crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation))
-                .unwrap();
+            crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation));
         server.join().unwrap();
-        println!("trace release credential=absent anonymous=true");
+        if outcome.is_ok() {
+            assert_eq!(fs::read(&destination).unwrap(), artifact);
+        }
+        outcome
+    }
+
+    #[test]
+    fn native_release_fixture_http_server_stages_binary_and_verifies_sidecar() {
+        let outcome = native_release_fixture("liveness-marker").unwrap();
         assert!(outcome.ok);
         assert!(outcome.changed);
-        assert_eq!(fs::read(destination).unwrap(), artifact);
-        let _ = fs::remove_dir_all(source);
+        assert_eq!(outcome.message, "fetch-artifact-installed");
+    }
+
+    #[test]
+    fn native_release_fixture_http_server_rejects_embedded_identity() {
+        let error = native_release_fixture("embedded-sha").unwrap_err();
+        assert_eq!(error, "fetch-artifact-source-identity-missing");
     }
 
     #[test]
