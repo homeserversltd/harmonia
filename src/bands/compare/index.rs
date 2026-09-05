@@ -513,6 +513,7 @@ pub(crate) struct BeamCompareReceipt {
     pub lock_source: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_from: Option<BeamResolvedFrom>,
+    pub credential: &'static str,
     pub door: Option<BeamDoorProjection>,
     pub first_divergent_member: Option<&'static str>,
     pub first_missing_signal: &'static str,
@@ -539,6 +540,7 @@ pub(crate) fn compare_beam(
             lock: None,
             lock_source: "literal",
             resolved_from: None,
+            credential: "absent",
             door: None,
             first_divergent_member: None,
             first_missing_signal: "beam-lock-absent",
@@ -559,6 +561,7 @@ pub(crate) fn compare_beam(
                 lock: Some(lock_projection),
                 lock_source: "literal",
                 resolved_from: None,
+                credential: "absent",
                 door: None,
                 first_divergent_member: None,
                 first_missing_signal: if signal == "beam-door-unreachable" {
@@ -590,6 +593,7 @@ pub(crate) fn compare_beam(
         lock: Some(lock_projection),
         lock_source: "literal",
         resolved_from: None,
+        credential: "absent",
         door: Some(door_projection),
         first_divergent_member: member,
         first_missing_signal: if member == Some("caduceus_sha") {
@@ -652,20 +656,101 @@ pub(crate) fn finalize_beam_after_health(
         .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
     crate::write_json(&receipt_dir.join("beam-after.json"), &value)
 }
+fn beam_receipt_with_resolver(
+    lock_path: Option<&Path>,
+    door_url: &str,
+    resolve_slot: impl FnOnce(
+        &crate::atoms::ask::beam::BeamLock,
+    ) -> Result<
+        crate::atoms::ask::beam::ResolvedBeamLock,
+        crate::atoms::ask::beam::SlotResolutionError,
+    >,
+) -> Result<BeamCompareReceipt, String> {
+    let lock = match lock_path {
+        Some(path) => crate::atoms::ask::beam::read_lock_path(path),
+        None => crate::atoms::ask::beam::read_embedded_lock().map(Some),
+    };
+    let lock = match lock {
+        Ok(Some(slot @ crate::atoms::ask::beam::BeamLock::Slot { .. })) => {
+            match resolve_slot(&slot) {
+                Ok(resolved) => {
+                    let mut receipt = compare_beam(
+                        Some(resolved.lock),
+                        crate::atoms::ask::beam::fetch_door(door_url),
+                    );
+                    receipt.lock_source = "slot-resolved";
+                    receipt.resolved_from = Some(BeamResolvedFrom {
+                        version: resolved.version,
+                        flagged_at: resolved.flagged_at,
+                    });
+                    receipt.credential = resolved.credential;
+                    return Ok(receipt);
+                }
+                Err(error) => {
+                    return Ok(BeamCompareReceipt {
+                        schema: "harmonia.beam-compare.v1",
+                        state: "pre-declaration",
+                        converged: false,
+                        lock: None,
+                        lock_source: "slot-resolved",
+                        resolved_from: None,
+                        credential: error.credential,
+                        door: None,
+                        first_divergent_member: None,
+                        first_missing_signal: if error.signal == "beam-flag-absent" {
+                            "beam-flag-absent"
+                        } else {
+                            "beam-flag-unresolvable"
+                        },
+                        authorization: BeamAuthorizationReceipt::None,
+                    });
+                }
+            }
+        }
+        Ok(lock) => lock,
+        Err(_) => {
+            return Ok(BeamCompareReceipt {
+                schema: "harmonia.beam-compare.v1",
+                state: "divergent",
+                converged: false,
+                lock: None,
+                lock_source: "literal",
+                resolved_from: None,
+                credential: "absent",
+                door: None,
+                first_divergent_member: None,
+                first_missing_signal: "beam-lock-malformed",
+                authorization: BeamAuthorizationReceipt::None,
+            });
+        }
+    };
+    Ok(compare_beam(
+        lock,
+        crate::atoms::ask::beam::fetch_door(door_url),
+    ))
+}
+
 pub(crate) fn beam_receipt(
     lock_path: Option<&Path>,
     door_url: &str,
 ) -> Result<BeamCompareReceipt, String> {
-    let lock = match lock_path { Some(path) => crate::atoms::ask::beam::read_lock_path(path), None => crate::atoms::ask::beam::read_embedded_lock().map(Some) };
-    let lock = match lock {
-        Ok(Some(slot @ crate::atoms::ask::beam::BeamLock::Slot { .. })) => match crate::atoms::ask::beam::resolve_slot(&slot) {
-            Ok(resolved) => { let mut receipt = compare_beam(Some(resolved.lock), crate::atoms::ask::beam::fetch_door(door_url)); receipt.lock_source = "slot-resolved"; receipt.resolved_from = Some(BeamResolvedFrom { version: resolved.version, flagged_at: resolved.flagged_at }); return Ok(receipt); }
-            Err(signal) => return Ok(BeamCompareReceipt { schema:"harmonia.beam-compare.v1", state:"pre-declaration", converged:false, lock:None, lock_source:"slot-resolved", resolved_from:None, door:None, first_divergent_member:None, first_missing_signal: if signal=="beam-flag-absent" { "beam-flag-absent" } else { "beam-flag-unresolvable" }, authorization:BeamAuthorizationReceipt::None }),
-        },
-        Ok(lock) => lock,
-        Err(_) => return Ok(BeamCompareReceipt { schema:"harmonia.beam-compare.v1", state:"divergent", converged:false, lock:None, lock_source:"literal", resolved_from:None, door:None, first_divergent_member:None, first_missing_signal:"beam-lock-malformed", authorization:BeamAuthorizationReceipt::None }),
-    };
-    Ok(compare_beam(lock, crate::atoms::ask::beam::fetch_door(door_url)))
+    beam_receipt_with_resolver(lock_path, door_url, crate::atoms::ask::beam::resolve_slot)
+}
+
+#[cfg(test)]
+fn beam_receipt_with_credential_path(
+    lock_path: Option<&Path>,
+    door_url: &str,
+    credential_path: &Path,
+    estate_host: &str,
+) -> Result<BeamCompareReceipt, String> {
+    beam_receipt_with_resolver(lock_path, door_url, |slot| {
+        crate::atoms::ask::beam::resolve_slot_with_credential_path(
+            slot,
+            credential_path,
+            estate_host,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -858,6 +943,130 @@ mod beam_tests {
         assert_eq!(receipt.state, "pre-declaration");
         assert_eq!(receipt.first_missing_signal, "beam-flag-unresolvable");
         assert!(receipt.door.is_none());
+    }
+
+    #[test]
+    fn slot_registry_requires_authorization_and_reports_credential_state() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::os::unix::fs::PermissionsExt;
+        use std::thread;
+
+        let source = "a".repeat(40);
+        let env = "1".repeat(64);
+        let listing = serde_json::json!([
+            {"name":"caduceus", "version": &source, "created_at":"2026-01-01T00:00:00Z"}
+        ])
+        .to_string()
+        .into_bytes();
+        for (credential_contents, expected_credential) in [
+            (Some("FORGEJO_TOKEN=test-token\n"), "present"),
+            (None, "absent"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server_listing = listing.clone();
+            let server_source = source.clone();
+            let server_env = env.clone();
+            let expected_header = expected_credential == "present";
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let length = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..length]);
+                assert!(request.starts_with(
+                    "GET /api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1 "
+                ));
+                let authorized = request.contains("Authorization: token test-token");
+                assert_eq!(authorized, expected_header);
+                let (status, body) = if authorized {
+                    (200, server_listing)
+                } else {
+                    (403, Vec::new())
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+                if authorized {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = [0_u8; 4096];
+                    let length = stream.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..length]);
+                    assert!(request.starts_with(&format!(
+                        "GET /api/packages/HOMESERVERSLTD/generic/caduceus/{server_source}/release.flag "
+                    )));
+                    assert!(request.contains("Authorization: token test-token"));
+                    let body = flag(&server_source, &server_env, "2026-02-01T00:00:00Z");
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&body).unwrap();
+
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = [0_u8; 4096];
+                    let length = stream.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..length]);
+                    assert!(request.starts_with("GET /beam "));
+                    let body = serde_json::json!({
+                        "schema":"caduceus.beam.v1", "ok":true, "service":"caduceus",
+                        "caduceus_sha":server_source, "env_sha":server_env, "profile":"homeserver"
+                    })
+                    .to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(body.as_bytes()).unwrap();
+                }
+            });
+            let credential = tempfile::NamedTempFile::new().unwrap();
+            if let Some(contents) = credential_contents {
+                std::fs::write(credential.path(), contents).unwrap();
+                let mut permissions = std::fs::metadata(credential.path()).unwrap().permissions();
+                permissions.set_mode(0o600);
+                std::fs::set_permissions(credential.path(), permissions).unwrap();
+            }
+            let missing = credential.path().with_extension("missing");
+            let credential_path = credential_contents
+                .is_some()
+                .then_some(credential.path())
+                .unwrap_or(missing.as_path());
+            let registry = format!("http://{address}");
+            let lock_path = credential.path().with_extension("beam.json");
+            write_slot(&lock_path, &registry);
+            let receipt = beam_receipt_with_credential_path(
+                Some(&lock_path),
+                &format!("http://{address}/beam"),
+                credential_path,
+                &address.ip().to_string(),
+            )
+            .unwrap();
+            server.join().unwrap();
+            assert_eq!(receipt.credential, expected_credential);
+            assert_eq!(receipt.lock_source, "slot-resolved");
+            match expected_credential {
+                "present" => {
+                    assert_eq!(receipt.state, "aligned");
+                    assert_eq!(receipt.first_missing_signal, "none");
+                    assert_eq!(receipt.resolved_from.unwrap().version, source);
+                }
+                "absent" => {
+                    assert_eq!(receipt.state, "pre-declaration");
+                    assert_eq!(receipt.first_missing_signal, "beam-flag-unresolvable");
+                    assert!(receipt.door.is_none());
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[test]

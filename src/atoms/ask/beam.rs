@@ -30,6 +30,20 @@ pub(crate) struct ResolvedBeamLock {
     pub lock: BeamLock,
     pub version: String,
     pub flagged_at: String,
+    pub credential: &'static str,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlotResolutionError {
+    pub signal: String,
+    pub credential: &'static str,
+}
+impl SlotResolutionError {
+    fn new(signal: impl Into<String>, credential: &'static str) -> Self {
+        Self {
+            signal: signal.into(),
+            credential,
+        }
+    }
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -217,7 +231,11 @@ fn flag_request(
         .args(["--write-out", "%{http_code}"]);
     if let Some(token) = token {
         let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
-        command.arg("--config").arg("-").stdin(Stdio::piped());
+        command
+            .arg("--config")
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
         let mut child = command
             .arg(url)
             .spawn()
@@ -245,14 +263,12 @@ fn flag_request(
         .parse()
         .unwrap_or(0))
 }
-fn registry_is_estate_host(url: &str) -> bool {
-    url.split_once("://")
-        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
-        .is_some_and(|authority| authority == "git.home.arpa")
-}
-
-fn fetch_flag(url: &str, destination: &std::path::Path) -> Result<u16, String> {
-    let status = flag_request(url, destination, None)?;
+fn fetch_flag(
+    url: &str,
+    destination: &std::path::Path,
+    token: Option<&str>,
+) -> Result<u16, String> {
+    let status = flag_request(url, destination, token)?;
     if status == 401 || status == 403 {
         return Err("beam-flag-unresolvable".into());
     }
@@ -266,14 +282,52 @@ struct RegistryVersion {
     created_at: String,
 }
 
-pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> {
+pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, SlotResolutionError> {
+    resolve_slot_with_credential_source(slot, |listing_url| {
+        crate::atoms::forge_credential::credential_for_url(listing_url)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_slot_with_credential_path(
+    slot: &BeamLock,
+    credential_path: &std::path::Path,
+    estate_host: &str,
+) -> Result<ResolvedBeamLock, SlotResolutionError> {
+    resolve_slot_with_credential_source(slot, |listing_url| {
+        match crate::atoms::forge_credential::resolve_for_url_at(
+            listing_url,
+            credential_path,
+            estate_host,
+        ) {
+            crate::atoms::forge_credential::Outcome::Present { username, token } => {
+                Ok(Some(crate::atoms::forge_credential::Credential {
+                    username,
+                    token,
+                }))
+            }
+            crate::atoms::forge_credential::Outcome::Absent => Ok(None),
+            crate::atoms::forge_credential::Outcome::Err(reason) => Err(reason),
+        }
+    })
+}
+
+fn resolve_slot_with_credential_source(
+    slot: &BeamLock,
+    resolve_credential: impl FnOnce(
+        &str,
+    ) -> Result<
+        Option<crate::atoms::forge_credential::Credential>,
+        String,
+    >,
+) -> Result<ResolvedBeamLock, SlotResolutionError> {
     let BeamLock::Slot {
         component,
         registry_base,
         ..
     } = slot
     else {
-        return Err("beam-flag-unresolvable".into());
+        return Err(SlotResolutionError::new("beam-flag-unresolvable", "absent"));
     };
     let api = if let Some((authority, _)) = registry_base.split_once("/api/packages/") {
         format!("{authority}/api/v1/packages/HOMESERVERSLTD?type=generic&q={component}")
@@ -291,25 +345,45 @@ pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> 
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     ));
-    std::fs::create_dir_all(&dir).map_err(|_| "beam-flag-unresolvable")?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", "absent"))?;
     let listing_path = dir.join("listing");
+    let listing_url = format!("{api}&limit=50&page=1");
+    let credential = resolve_credential(&listing_url)
+        .map_err(|signal| SlotResolutionError::new(signal, "absent"))?;
+    let credential_state = if credential.is_some() {
+        "present"
+    } else {
+        "absent"
+    };
+    let token = credential
+        .as_ref()
+        .map(|credential| credential.token.as_str());
     let mut versions = Vec::new();
     // Forgejo listing pagination is capped at five pages.
     for page in 1..=5 {
         let listing_url = format!("{api}&limit=50&page={page}");
-        let status = fetch_flag(&listing_url, &listing_path)?;
+        let status = fetch_flag(&listing_url, &listing_path, token)
+            .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
         if !(200..300).contains(&status) {
             let _ = std::fs::remove_dir_all(&dir);
-            return Err("beam-flag-unresolvable".into());
+            return Err(SlotResolutionError::new(
+                "beam-flag-unresolvable",
+                credential_state,
+            ));
         }
-        let value: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&listing_path).map_err(|_| "beam-flag-unresolvable")?,
-        )
-        .map_err(|_| "beam-flag-unresolvable".to_string())?;
-        let raw_items = value.as_array().ok_or("beam-flag-unresolvable")?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&listing_path).map_err(|_| {
+                SlotResolutionError::new("beam-flag-unresolvable", credential_state)
+            })?)
+            .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
+        let raw_items = value
+            .as_array()
+            .ok_or_else(|| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
         for item in raw_items {
-            let parsed: RegistryVersion =
-                serde_json::from_value(item.clone()).map_err(|_| "beam-flag-unresolvable")?;
+            let parsed: RegistryVersion = serde_json::from_value(item.clone()).map_err(|_| {
+                SlotResolutionError::new("beam-flag-unresolvable", credential_state)
+            })?;
             if parsed.name != component.as_str() || !hex_len(&parsed.version, 40) {
                 continue;
             }
@@ -329,18 +403,23 @@ pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> 
             component,
             item.version
         );
-        let status = fetch_flag(&url, &flag_path)?;
+        let status = fetch_flag(&url, &flag_path, token)
+            .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
         if status == 404 {
             continue;
         }
         if !(200..300).contains(&status) {
             let _ = std::fs::remove_dir_all(&dir);
-            return Err("beam-flag-unresolvable".into());
+            return Err(SlotResolutionError::new(
+                "beam-flag-unresolvable",
+                credential_state,
+            ));
         }
-        let flag: ReleaseFlag = serde_json::from_slice(
-            &std::fs::read(&flag_path).map_err(|_| "beam-flag-unresolvable")?,
-        )
-        .map_err(|_| "beam-flag-unresolvable")?;
+        let flag: ReleaseFlag =
+            serde_json::from_slice(&std::fs::read(&flag_path).map_err(|_| {
+                SlotResolutionError::new("beam-flag-unresolvable", credential_state)
+            })?)
+            .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
         if flag.schema != "estate.release-flag.v1"
             || flag.component != component.as_str()
             || flag.source_sha != item.version
@@ -350,7 +429,10 @@ pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> 
             || flag.pipeline_url.trim().is_empty()
         {
             let _ = std::fs::remove_dir_all(&dir);
-            return Err("beam-flag-unresolvable".into());
+            return Err(SlotResolutionError::new(
+                "beam-flag-unresolvable",
+                credential_state,
+            ));
         }
         if selected
             .as_ref()
@@ -361,7 +443,10 @@ pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> 
     }
     let _ = std::fs::remove_dir_all(&dir);
     let Some((version, flagged_at, env_sha)) = selected else {
-        return Err("beam-flag-absent".into());
+        return Err(SlotResolutionError::new(
+            "beam-flag-absent",
+            credential_state,
+        ));
     };
     Ok(ResolvedBeamLock {
         lock: BeamLock::Legacy {
@@ -375,6 +460,7 @@ pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, String> 
         },
         version,
         flagged_at,
+        credential: credential_state,
     })
 }
 
