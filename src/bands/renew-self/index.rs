@@ -671,6 +671,7 @@ fn emit_preflight_receipt(
     config: &EnginePlaneConfig,
     retired_engine_config_fields: &[String],
     component: &str,
+    engine_component_ignored: Option<&str>,
     source_head: Option<&str>,
     staged_sha: Option<&str>,
     installed_sha: Option<&str>,
@@ -695,7 +696,8 @@ fn emit_preflight_receipt(
             "retired_engine_config_fields": retired_engine_config_fields,
             "enabled": config.enabled,
             "source_authority": "device-profile-certificate-sources",
-            "engine_component": component,
+            "compiled_component": component,
+            "engine_component_ignored": engine_component_ignored,
             "build_root": config.build_root,
             "install_bin": config.install_bin,
             "source_head": source_head.unwrap_or("unknown"),
@@ -719,25 +721,50 @@ fn failed_execution(signal: &str) -> ModuleExecution {
     }
 }
 
-fn engine_source_gate(
+fn engine_source_gate_for_component(
     certificate_path: &Path,
+    component: &str,
 ) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
-    let component = crate::device_profile::certificate_engine_component_at(certificate_path)?;
     let resolution_receipt = crate::bands::pull_source::resolve_source(
         certificate_path,
-        &component,
+        component,
         "engine-plane",
         "source-acquisition",
     );
     let resolution = match resolution_receipt.resolution {
         Some(resolution) => resolution,
         None => {
-            return Err(resolution_receipt
+            let blocker = resolution_receipt
                 .blocker
-                .unwrap_or_else(|| "engine-source-resolution-blocked".to_string()))
+                .unwrap_or_else(|| "engine-source-resolution-blocked".to_string());
+            if blocker == format!("source-component-undeclared component={component}") {
+                return Err(format!(
+                    "device-profile-engine-source-absent component={component}"
+                ));
+            }
+            return Err(blocker);
         }
     };
-    Ok((component, resolution))
+    Ok((component.to_string(), resolution))
+}
+
+fn engine_source_gate(
+    certificate_path: &Path,
+) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
+    engine_source_gate_for_component(certificate_path, crate::COMPILED_COMPONENT)
+}
+
+fn ignored_engine_component(certificate_path: &Path, compiled_component: &str) -> Option<String> {
+    crate::device_profile::legacy_engine_component_at(certificate_path)
+        .ok()
+        .flatten()
+        .filter(|value| value != compiled_component)
+}
+
+fn ignored_engine_component_receipt_line(value: Option<&str>) -> String {
+    value
+        .map(|value| format!("engine_component_ignored: {value}"))
+        .unwrap_or_default()
 }
 
 pub(crate) fn run_engine_preflight(
@@ -778,6 +805,7 @@ pub(crate) fn run_engine_preflight(
             "unknown",
             None,
             None,
+            None,
             install_bin_fingerprint(&config.install_bin).as_deref(),
             false,
             apply,
@@ -790,13 +818,14 @@ pub(crate) fn run_engine_preflight(
     }
 
     let certificate_path = crate::device_profile::device_profile_certificate_path();
+    let engine_component_ignored =
+        ignored_engine_component(&certificate_path, crate::COMPILED_COMPONENT);
     let source_gate = engine_source_gate(&certificate_path);
     let component_for_receipt = source_gate
         .as_ref()
         .ok()
         .map(|(component, _)| component.clone())
-        .or_else(|| crate::device_profile::certificate_engine_component_at(&certificate_path).ok())
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| crate::COMPILED_COMPONENT.to_string());
     let (component, resolution) = match source_gate {
         Ok(resolved) => resolved,
         Err(signal) => {
@@ -806,6 +835,7 @@ pub(crate) fn run_engine_preflight(
                 &config,
                 &retired_engine_config_fields,
                 &component_for_receipt,
+                engine_component_ignored.as_deref(),
                 None,
                 None,
                 install_bin_fingerprint(&config.install_bin).as_deref(),
@@ -877,6 +907,7 @@ pub(crate) fn run_engine_preflight(
                 &config,
                 &retired_engine_config_fields,
                 &component,
+                engine_component_ignored.as_deref(),
                 None,
                 None,
                 install_before.as_deref(),
@@ -975,6 +1006,7 @@ pub(crate) fn run_engine_preflight(
         &config,
         &retired_engine_config_fields,
         &component,
+        engine_component_ignored.as_deref(),
         source_head.as_deref(),
         staged_sha.as_deref(),
         installed_after.as_deref(),
@@ -985,13 +1017,19 @@ pub(crate) fn run_engine_preflight(
         operation_count,
         staged_build_identity.as_ref(),
     )?;
+    let ignored_component_line = match ignored_engine_component_receipt_line(
+        engine_component_ignored.as_deref(),
+    ) {
+        line if line.is_empty() => line,
+        line => format!(" {line}"),
+    };
     crate::hyalos::forward_receipt(
         "harmonia.renew_self.preflight",
         &format!(
-            "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}"
+            "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}{ignored_component_line}"
         ),
         Some(
-            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "retired_engine_config_fields": retired_engine_config_fields, "attest_owner": "hyalos.forward_receipt"}),
+            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "retired_engine_config_fields": retired_engine_config_fields, "attest_owner": "hyalos.forward_receipt"}),
         ),
         Some(ok),
     );
@@ -1008,9 +1046,13 @@ pub(crate) fn run_engine_preflight(
 mod release_transport_tests {
     use super::{
         build_environment_for_source_head, build_environment_sha, capture_build_environment,
-        engine_source_gate, parse_validate_engine_plane_config, EngineArtifactTransport,
+        engine_source_gate, engine_source_gate_for_component, ignored_engine_component,
+        ignored_engine_component_receipt_line, parse_validate_engine_plane_config,
+        EngineArtifactTransport,
     };
+    use serde_json::json;
     use std::path::{Path, PathBuf};
+    use tempfile::NamedTempFile;
 
     #[test]
     fn retired_engine_config_fields_are_stripped_and_reported_deterministically() {
@@ -1188,39 +1230,84 @@ mod release_transport_tests {
         assert_eq!(first, second);
     }
 
-    #[test]
-    fn absent_engine_component_blocks_before_mutation_and_preserves_old_engine() {
-        let root = tempfile::tempdir().unwrap();
-        let certificate_path = root.path().join("profile.json");
-        std::fs::write(
-            &certificate_path,
-            r#"{
-                "schema": "homeserver.device-profile.v1",
-                "kernel": { "profile": "homeserver" },
-                "source_policy": "developer",
-                "sources": {
-                    "harmonia": {
+    fn certificate_fixture(
+        legacy_component: Option<&str>,
+        source_components: &[&str],
+    ) -> NamedTempFile {
+        let mut kernel = json!({"profile": "homeserver"});
+        if let Some(component) = legacy_component {
+            kernel["engine_component"] = json!(component);
+        }
+        let sources = source_components
+            .iter()
+            .map(|component| {
+                (
+                    (*component).to_string(),
+                    json!({
                         "ref": "main",
                         "candidates": [{
                             "kind": "git",
-                            "url": "https://git.home.arpa/HOMESERVERSLTD/harmonia.git"
+                            "url": format!("https://git.home.arpa/HOMESERVERSLTD/{component}.git")
                         }]
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let certificate = json!({
+            "schema": "homeserver.device-profile.v1",
+            "kernel": kernel,
+            "source_policy": "developer",
+            "sources": sources,
+        });
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&certificate).unwrap()).unwrap();
+        file
+    }
+
+    #[test]
+    fn public_source_resolves_without_legacy_engine_component() {
+        let certificate = certificate_fixture(None, &["harmonia"]);
+        let (component, resolution) =
+            engine_source_gate_for_component(certificate.path(), "harmonia").unwrap();
+
+        assert_eq!(component, "harmonia");
+        assert_eq!(resolution.component, "harmonia");
+        assert_eq!(resolution.requested_ref, "main");
+    }
+
+    #[test]
+    fn public_and_private_identity_sources_resolve_independently() {
+        let private_component = ["harmonia", "monad"].join("-");
+        let components = vec!["harmonia", private_component.as_str()];
+        let certificate = certificate_fixture(None, &components);
+
+        for component in components {
+            let (resolved_component, resolution) =
+                engine_source_gate_for_component(certificate.path(), component).unwrap();
+            assert_eq!(resolved_component, component);
+            assert_eq!(resolution.component, component);
+            assert_eq!(resolution.requested_ref, "main");
+        }
+    }
+
+    #[test]
+    fn missing_compiled_identity_source_refuses_exactly_and_preserves_installed_engine() {
+        let certificate = certificate_fixture(Some("legacy"), &["not-the-engine"]);
+        let root = tempfile::tempdir().unwrap();
         let installed_engine = root.path().join("installed/harmonia");
         std::fs::create_dir_all(installed_engine.parent().unwrap()).unwrap();
         std::fs::write(&installed_engine, b"old-engine-sentinel").unwrap();
         let source_destination = root.path().join("source");
         let build_destination = root.path().join("build");
 
-        let result = engine_source_gate(&certificate_path);
+        let result = engine_source_gate(certificate.path());
 
         assert!(matches!(
             result,
-            Err(signal) if signal == "device-profile-kernel-engine-component-missing"
+            Err(signal) if signal == format!(
+                "device-profile-engine-source-absent component={}",
+                crate::COMPILED_COMPONENT
+            )
         ));
         assert_eq!(
             std::fs::read(&installed_engine).unwrap(),
@@ -1229,4 +1316,19 @@ mod release_transport_tests {
         assert!(!source_destination.exists());
         assert!(!build_destination.exists());
     }
+
+    #[test]
+    fn disagreeing_legacy_engine_component_is_ignored_with_receipt_line() {
+        let certificate = certificate_fixture(Some("legacy-component"), &[crate::COMPILED_COMPONENT]);
+        let ignored = ignored_engine_component(certificate.path(), crate::COMPILED_COMPONENT)
+            .expect("disagreeing legacy field is reported");
+
+        assert_eq!(ignored, "legacy-component");
+        assert_eq!(
+            ignored_engine_component_receipt_line(Some(&ignored)),
+            "engine_component_ignored: legacy-component"
+        );
+        assert!(engine_source_gate(certificate.path()).is_ok());
+    }
+
 }

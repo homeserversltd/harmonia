@@ -38,19 +38,23 @@ the walk rather than changing authority.
 build/staging, profile-index, ratchet-lock, and receipt/cache concerns. It does
 not declare source identity, source selection, or credentials.
 
-`profile.json` is the source authority. Its `sources` declaration together with
-`kernel.engine_component` selects the exact public or private component for the
-engine. The engine consumes that selected declaration; it does not infer a
-component from the host, an installed path, a release, or a fallback name.
+`profile.json` is the source authority. Its `sources` declaration supplies the
+candidate URLs and ref for each source. The engine component identity is
+compiled into the binary from `HARMONIA_COMPONENT` (defaulting to `harmonia`),
+and renew-self resolves the matching `sources` entry. No certificate field
+selects which engine is running. A legacy `kernel.engine_component` value, when
+present, is optional compatibility metadata and is ignored.
 
-An absent `kernel.engine_component`, or a component that is absent from the
-profile's `sources`, is a hard block before acquisition, build, or promotion.
-The installed engine remains untouched in either case. The same preservation
-rule applies when the selected source declaration is malformed or unusable.
+If the compiled component has no matching `sources` entry, acquisition, build,
+and promotion are refused and the installed engine remains untouched. The same
+preservation rule applies when the selected source declaration is malformed or
+unusable.
 
-The `credential_selector` field is syntax-validated metadata only. It is not a
-credential possession request, is ignored after validation, and is never used
-to select engine credentials or alter the owner-only acquisition lane.
+Credentials are selected from the candidate URL host: `git.home.arpa` uses the
+owner credential in `/etc/default/forgejo`, while foreign hosts are attempted
+anonymously. The `credential_selector` field is syntax-validated metadata only;
+it is not a credential possession request and cannot alter host-selected
+credentials or the owner-only acquisition lane.
 
 ## Owner-borne SSH custody
 

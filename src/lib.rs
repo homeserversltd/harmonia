@@ -38,6 +38,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const COMPILED_COMPONENT: &str = env!("HARMONIA_COMPONENT");
 pub(crate) const SOURCE_ROOT: &str = "/opt/harmonia/source";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

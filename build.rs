@@ -1,6 +1,10 @@
 use std::env;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=HARMONIA_COMPONENT");
+    let component = env::var("HARMONIA_COMPONENT").unwrap_or_else(|_| "harmonia".to_string());
+    println!("cargo:rustc-env=HARMONIA_COMPONENT={component}");
+
     println!("cargo:rerun-if-env-changed=HARMONIA_BUILD_ENV_SHA");
     match env::var("HARMONIA_BUILD_ENV_SHA") {
         Ok(value) => {

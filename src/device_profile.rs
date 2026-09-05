@@ -67,32 +67,11 @@ fn load_certificate() -> Result<DeviceProfileCertificate, String> {
     load_certificate_at(&device_profile_certificate_path())
 }
 
-/// The profile certificate is the sole authority for the engine source
-/// component. Hostname, profile aliases, and private estate authorities are
-/// deliberately not consulted.
-pub(crate) fn certificate_engine_component_at(path: &Path) -> Result<String, String> {
+/// Preserve the legacy certificate field as optional compatibility metadata.
+/// It is never used to select or gate an engine source.
+pub(crate) fn legacy_engine_component_at(path: &Path) -> Result<Option<String>, String> {
     let certificate = load_certificate_at(path)?;
-    let component = certificate
-        .kernel
-        .engine_component
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "device-profile-kernel-engine-component-missing".to_string())?;
-    if component.contains(char::from(47))
-        || component.contains(char::from(92))
-        || component == "."
-        || component == ".."
-    {
-        return Err(format!(
-            "device-profile-kernel-engine-component-invalid component={component}"
-        ));
-    }
-    Ok(component.to_string())
-}
-
-pub(crate) fn certificate_engine_component() -> Result<String, String> {
-    certificate_engine_component_at(&device_profile_certificate_path())
+    Ok(certificate.kernel.engine_component)
 }
 
 pub(crate) fn certificate_source_policy() -> Result<String, String> {
@@ -351,24 +330,6 @@ pub(crate) fn update_from_certificate(
         }
     };
     let certificate_path = device_profile_certificate_path();
-    if let Err(reason) = certificate_engine_component() {
-        write_json(
-            &receipt_dir.join("run.json"),
-            &json!({
-                "schema": "harmonia.run_profile.v1",
-                "ok": false,
-                "mutation": mode.is_software_apply(),
-                "mode": if mode.is_software_apply() { "apply" } else { "report-only" },
-                "profile_id": serde_json::Value::Null,
-                "identity": serde_json::Value::Null,
-                "identity_source": "certificate",
-                "source_validation": "blocked-before-self-renew-mutation",
-                "first_missing_signal": reason,
-            }),
-        )
-        .map_err(|err| format!("device-profile-engine-component-refusal-receipt-failed: {err}"))?;
-        return Err(reason);
-    }
     if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
         write_json(
             &receipt_dir.join("run.json"),
