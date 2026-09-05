@@ -316,35 +316,6 @@ pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
                 failed_attempts,
             };
         }
-        if let Some(selector) = candidate.credential_selector.as_deref() {
-            if !plan.credentials.contains_key(selector) {
-                let command = CommandReceipt {
-                    ok: false,
-                    code: -1,
-                    stdout: String::new(),
-                    stderr: "credential-selector-unresolved".into(),
-                };
-                failed_attempts.push(source_attempt(
-                    index,
-                    candidate,
-                    "hard-red-credential",
-                    None,
-                    false,
-                    command.stderr.clone(),
-                ));
-                return RemoteHeadProbe {
-                    state: "probe-unavailable".into(),
-                    candidate_index: None,
-                    candidate_kind: None,
-                    locator: None,
-                    credential_selector: None,
-                    reference: plan.reference.clone(),
-                    remote_sha: None,
-                    command,
-                    failed_attempts,
-                };
-            }
-        }
         let request = scoped_request(plan, candidate, plan.destination.clone());
         let command = git_observe(
             &request,
@@ -465,11 +436,6 @@ pub(crate) fn compare_source_candidates(
     let Some(observation) = observations.first() else {
         return DiffDecision::Different;
     };
-    if candidate.credential_selector.as_deref().is_some_and(|selector| {
-        !plan.credentials.contains_key(selector)
-    }) {
-        return DiffDecision::Different;
-    }
     if !observation.destination_is_git_checkout
         || observation.dirty
         || observation.local_head.is_none()
@@ -486,11 +452,6 @@ pub(crate) fn compare_source_candidates(
 pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome> {
     let candidate = plan.candidates.first()?;
     if candidate.kind != SourceCandidateKind::Git {
-        return None;
-    }
-    if candidate.credential_selector.as_deref().is_some_and(|selector| {
-        !plan.credentials.contains_key(selector)
-    }) {
         return None;
     }
     let destination = source_head(&plan.destination, &plan.bearer);

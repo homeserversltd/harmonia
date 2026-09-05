@@ -11,6 +11,7 @@ pub mod command;
 pub mod comparison;
 pub mod declaration;
 pub mod files;
+pub mod forge_credential;
 pub mod git_artifact;
 pub mod health;
 pub mod package;

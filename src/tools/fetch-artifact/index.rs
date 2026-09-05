@@ -87,6 +87,7 @@ pub(crate) fn execute(
         .map(Path::new);
     let native_release = !release_repo.trim().is_empty();
     let mut release_fallback: Option<(String, String)> = None;
+    let mut credential_state = "absent";
     let native_download = if native_release {
         let release_source_dir = source_dir.unwrap_or(Path::new(""));
         let tag = args
@@ -98,6 +99,7 @@ pub(crate) fn execute(
             .get("api_root")
             .and_then(Value::as_str)
             .unwrap_or("https://git.home.arpa/api/v1");
+        credential_state = crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
         match crate::atoms::ask::fetch_artifact::download_release(
             component,
             artifact_name,
@@ -200,6 +202,7 @@ pub(crate) fn execute(
             source_sha,
             "manifest.json",
         );
+        credential_state = crate::atoms::ask::fetch_artifact::credential_state_for_url(&manifest_url)?;
         match crate::atoms::ask::fetch_artifact::download(
             component,
             registry_base,
@@ -243,6 +246,7 @@ pub(crate) fn execute(
                 "schema": "harmonia.fetch-artifact.fallback.v1",
                 "fallback_reason": fallback_reason,
                 "artifact_url": artifact_url,
+                "credential": credential_state,
                 "source_build_sha": source_sha,
                 "source_dir": source_dir_text,
                 "build_environment_sha": build_environment_sha,

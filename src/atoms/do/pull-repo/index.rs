@@ -513,21 +513,6 @@ pub(crate) fn acquire_source(
 
     for (offset, candidate) in plan.candidates.iter().enumerate() {
         let index = offset + 1;
-        if candidate.kind == SourceCandidateKind::Git {
-            if let Some(selector) = candidate.credential_selector.as_deref() {
-                if !plan.credentials.contains_key(selector) {
-                    attempts.push(source_attempt(
-                        index,
-                        candidate,
-                        "hard-red-credential",
-                        None,
-                        false,
-                        "credential-selector-unresolved".into(),
-                    ));
-                    return source_hard_red(attempts, precondition_changed);
-                }
-            }
-        }
         let candidate_was_dirty = candidate.kind == SourceCandidateKind::Git
             && observations.get(index - 1).is_some_and(|observation| observation.dirty);
         match candidate.kind {

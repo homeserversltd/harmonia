@@ -702,8 +702,6 @@ fn emit_preflight_receipt(
             "staged_sha256": staged_sha,
             "installed_sha256": installed_sha,
             "staged_build_identity": staged_build_identity.and_then(|identity| identity.env_sha.as_deref().zip(source_head).map(|(env_sha, source_sha)| json!({"source_sha": source_sha, "env_sha": env_sha}))),
-            "credential_selector": serde_json::Value::Null,
-            "credentials": [],
             "git_bearer": "owner",
             "artifact_transport_count": config.artifact_transport_chain().len(),
             "failure_mode": "honest-source-resolution",

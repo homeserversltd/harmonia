@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
@@ -399,15 +399,34 @@ fn curl_to_file(
     Ok(status)
 }
 
-fn curl_with_anonymous_first(
-    _api_root: &str,
+fn curl_with_resolved_credential(
     url: &str,
     destination: &Path,
+    credential_path: &Path,
+    estate_host: &str,
 ) -> Result<u16, String> {
+    // Credential placement and resolution obey pali:keyman-forgejo-token-one-place-law.
+    let credential = match crate::atoms::forge_credential::resolve_for_url_at(
+        url,
+        credential_path,
+        estate_host,
+    ) {
+        crate::atoms::forge_credential::Outcome::Present { token, .. } => Some(token),
+        crate::atoms::forge_credential::Outcome::Absent => None,
+        crate::atoms::forge_credential::Outcome::Err(reason) => return Err(reason),
+    };
     let stderr_path = destination.with_extension("stderr");
-    let result = curl_to_file(url, destination, &stderr_path, None);
+    let result = curl_to_file(url, destination, &stderr_path, credential.as_deref());
     let _ = fs::remove_file(&stderr_path);
     result.map_err(|error| normalize_auth_required_error(&error, url).unwrap_or(error))
+}
+
+pub(crate) fn credential_state_for_url(url: &str) -> Result<&'static str, String> {
+    match crate::atoms::forge_credential::resolve_for_url(url) {
+        crate::atoms::forge_credential::Outcome::Present { .. } => Ok("present"),
+        crate::atoms::forge_credential::Outcome::Absent => Ok("absent"),
+        crate::atoms::forge_credential::Outcome::Err(reason) => Err(reason),
+    }
 }
 
 pub(crate) fn download(
@@ -415,6 +434,43 @@ pub(crate) fn download(
     registry_base: &str,
     source_sha: &str,
     artifact_name: &str,
+) -> Result<Download, String> {
+    download_with_credential_source(
+        component,
+        registry_base,
+        source_sha,
+        artifact_name,
+        Path::new(crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL),
+        crate::atoms::forge_credential::ESTATE_FORGEJO_HOST,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn download_with_credential_path(
+    component: &str,
+    registry_base: &str,
+    source_sha: &str,
+    artifact_name: &str,
+    credential_path: &Path,
+    estate_host: &str,
+) -> Result<Download, String> {
+    download_with_credential_source(
+        component,
+        registry_base,
+        source_sha,
+        artifact_name,
+        credential_path,
+        estate_host,
+    )
+}
+
+fn download_with_credential_source(
+    component: &str,
+    registry_base: &str,
+    source_sha: &str,
+    artifact_name: &str,
+    credential_path: &Path,
+    estate_host: &str,
 ) -> Result<Download, String> {
     validate_segment(component, "component")?;
     validate_segment(artifact_name, "artifact-name")?;
@@ -425,19 +481,19 @@ pub(crate) fn download(
         return Err("fetch-artifact-registry-base-missing".into());
     }
     let directory = std::env::temp_dir().join(format!(
-        "harmonia-fetch-{}-{}",
-        std::process::id(),
-        source_sha
+        "harmonia-fetch-{source_sha}-{}",
+        unique_temp_suffix()
     ));
     fs::create_dir_all(&directory)
         .map_err(|e| format!("fetch-artifact-temp-create-failed: {e}"))?;
     let result = (|| {
         let manifest_path = directory.join("manifest.json");
         let artifact_path = directory.join("artifact");
-        curl_with_anonymous_first(
-            registry_base,
+        curl_with_resolved_credential(
             &artifact_url(registry_base, component, source_sha, "manifest.json"),
             &manifest_path,
+            credential_path,
+            estate_host,
         )?;
         let manifest: Manifest = serde_json::from_slice(
             &fs::read(&manifest_path)
@@ -445,10 +501,11 @@ pub(crate) fn download(
         )
         .map_err(|e| format!("fetch-artifact-manifest-malformed: {e}"))?;
         validate_manifest(&manifest, component, source_sha)?;
-        curl_with_anonymous_first(
-            registry_base,
+        curl_with_resolved_credential(
             &artifact_url(registry_base, component, source_sha, artifact_name),
             &artifact_path,
+            credential_path,
+            estate_host,
         )?;
         let bytes = fs::read(&artifact_path)
             .map_err(|e| format!("fetch-artifact-download-read-failed: {e}"))?;
@@ -495,16 +552,16 @@ pub(crate) fn download_release(
     let sidecar = sidecar_name
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{asset}.sha256"));
-    // Engine artifact transport is deliberately credential-free. Estate
-    // endpoints are attempted anonymously and report auth-required rather than
-    // consulting engine configuration or reading a token.
-    let (credential_token_path, credential_scope_found) = (None, false);
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let credential_scope_found = credential.is_some();
+    let credential_host = crate::atoms::forge_credential::url_host(api_root);
     let request = ReleaseRequest {
         kind: "forgejo-release".into(),
         base_url: api_root.into(),
         owner: owner.into(),
         repo: repo.into(),
-        credential_token_path,
+        credential,
+        credential_host,
         credential_scope_found,
         cache_dir: std::env::temp_dir().join(format!("harmonia-release-{}", unique_temp_suffix())),
     };
@@ -588,7 +645,11 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = [0; 4096];
                 let n = stream.read(&mut request).unwrap();
-                assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
+                let request = String::from_utf8_lossy(&request[..n]);
+                assert!(request.starts_with(&format!("GET {path} ")));
+                assert!(!request
+                    .lines()
+                    .any(|line| line.to_ascii_lowercase().starts_with("authorization:")));
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -624,6 +685,7 @@ mod tests {
             crate::tools::fetch_artifact::execute(&args, &receipt_dir, true, Some(&invocation))
                 .unwrap();
         server.join().unwrap();
+        println!("trace release credential=absent anonymous=true");
         assert!(outcome.ok);
         assert!(outcome.changed);
         assert_eq!(fs::read(destination).unwrap(), artifact);
@@ -664,6 +726,76 @@ mod tests {
         server.join().unwrap();
         let _ = fs::remove_dir_all(&directory);
         assert_eq!(result.unwrap(), 200);
+    }
+
+    #[test]
+    fn forgejo_credential_contract_registry_present_header_and_absent_anonymous() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::os::unix::fs::PermissionsExt;
+        use std::thread;
+
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let artifact = b"registry-artifact";
+        let digest = crate::atoms::file_sha256(artifact);
+        for (credential_contents, expected_header, trace) in [
+            (Some("FORGEJO_TOKEN=test-token\n"), true, "present"),
+            (None, false, "absent"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let digest = digest.clone();
+            let server = thread::spawn(move || {
+                for (path, body) in [
+                    (
+                        format!("/caduceus/{source_sha}/manifest.json"),
+                        format!(
+                            r#"{{"schema":"estate.artifact.manifest.v1","component":"caduceus","source_sha":"{source_sha}","target":"x86_64","sha256":"{digest}","built_at":"now","pipeline_url":"https://ci"}}"#
+                        )
+                        .into_bytes(),
+                    ),
+                    (format!("/caduceus/{source_sha}/artifact"), artifact.to_vec()),
+                ] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = [0_u8; 4096];
+                    let length = stream.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..length]);
+                    assert!(request.starts_with(&format!("GET {path} ")));
+                    assert_eq!(request.contains("Authorization: token test-token"), expected_header);
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+            });
+            let credential = tempfile::NamedTempFile::new().unwrap();
+            if let Some(contents) = credential_contents {
+                std::fs::write(credential.path(), contents).unwrap();
+                let mut permissions = std::fs::metadata(credential.path()).unwrap().permissions();
+                permissions.set_mode(0o600);
+                std::fs::set_permissions(credential.path(), permissions).unwrap();
+            }
+            let missing = credential.path().with_extension("missing");
+            let credential_path = if credential_contents.is_some() {
+                credential.path()
+            } else {
+                missing.as_path()
+            };
+            let result = download_with_credential_path(
+                "caduceus",
+                &format!("http://{address}"),
+                source_sha,
+                "artifact",
+                credential_path,
+                &address.ip().to_string(),
+            );
+            server.join().unwrap();
+            assert!(result.is_ok(), "registry fixture failed for {trace}");
+            println!("trace registry credential={trace} header={}", if expected_header { "present" } else { "absent" });
+        }
     }
 
     #[test]

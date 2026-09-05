@@ -24,9 +24,22 @@ pub(crate) struct ReleaseRequest {
     pub base_url: String,
     pub owner: String,
     pub repo: String,
-    pub credential_token_path: Option<PathBuf>,
+    pub credential: Option<crate::atoms::forge_credential::Credential>,
+    pub credential_host: Option<String>,
     pub credential_scope_found: bool,
     pub cache_dir: PathBuf,
+}
+
+impl ReleaseRequest {
+    fn credential_for_url<'a>(
+        &'a self,
+        url: &str,
+    ) -> Option<&'a crate::atoms::forge_credential::Credential> {
+        let host = crate::atoms::forge_credential::url_host(url)?;
+        (self.credential_host.as_deref() == Some(host.as_str()))
+            .then_some(self.credential.as_ref())
+            .flatten()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +73,7 @@ fn lookup_release_metadata(
         .join(format!(".metadata-{}", unique_temp_suffix()));
     let mut args = curl_args(&url, &path.to_string_lossy());
     args.extend(["-w".into(), "%{http_code}".into()]);
-    let result = run_curl(&args, r.credential_token_path.as_deref())?;
+    let result = run_curl(&args, r.credential_for_url(&url))?;
     if result.stdout.trim() == "404" {
         let _ = fs::remove_file(&path);
         return Ok(None);
@@ -69,7 +82,7 @@ fn lookup_release_metadata(
         let _ = fs::remove_file(&path);
         let error = format!("release-metadata-fetch-failed: {}", result.stderr);
         let error_with_status = format!("{error} http_status={}", result.stdout.trim());
-        return Err(if r.credential_token_path.is_none() {
+        return Err(if r.credential_for_url(&url).is_none() {
             crate::atoms::ask::fetch_artifact::normalize_auth_required_error(
                 &error_with_status,
                 &url,
@@ -117,12 +130,12 @@ fn download_release_asset(r: &ReleaseRequest, url: &str, name: &str) -> Result<V
         .join(format!(".{name}-{}", unique_temp_suffix()));
     let x = run_curl(
         &curl_args(url, &p.to_string_lossy()),
-        r.credential_token_path.as_deref(),
+        r.credential_for_url(url),
     )?;
     if !x.ok {
         let _ = fs::remove_file(&p);
         let error = format!("release-asset-fetch-failed: {}", x.stderr);
-        return Err(if r.credential_token_path.is_none() {
+        return Err(if r.credential_for_url(&url).is_none() {
             crate::atoms::ask::fetch_artifact::normalize_auth_required_error(&error, url)
                 .unwrap_or(error)
         } else {
@@ -185,9 +198,6 @@ pub(crate) fn fetch_release_asset(
             stdout: format!("release-asset-planned tag={tag} asset={asset_name}"),
             stderr: String::new(),
         });
-    }
-    if request.kind == "forgejo-release" && !request.credential_scope_found {
-        return Ok(miss("release-credential-scope-missing"));
     }
     let Some(metadata) = (match lookup_release_metadata(request, tag) {
         Ok(v) => v,
@@ -257,32 +267,13 @@ fn safe_asset_name(value: &str) -> bool {
     safe_release_segment(value) && !value.contains('/') && !value.contains('\\')
 }
 
-pub(crate) fn parse_forgejo_token(contents: &str) -> Result<String, String> {
-    contents
-        .lines()
-        .find_map(|line| {
-            line.trim()
-                .strip_prefix("FORGEJO_TOKEN=")
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| "forgejo-token-empty".into())
-}
-
 fn run_curl(
     args: &[String],
-    token_path: Option<&std::path::Path>,
+    credential: Option<&crate::atoms::forge_credential::Credential>,
 ) -> Result<crate::CmdResult, String> {
-    let header = if let Some(path) = token_path {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| format!("release-token-unavailable {}: {e}", path.display()))?;
-        let token = parse_forgejo_token(&contents)
-            .map_err(|e| format!("release-token-invalid {}: {e}", path.display()))?;
-        Some(format!("Authorization: token {token}\n"))
-    } else {
-        None
-    };
+    let header = credential.map(|credential| {
+        format!("Authorization: token {}\n", credential.token)
+    });
     let mut command = Command::new("/usr/bin/curl");
     command.args(args);
     if header.is_some() {
@@ -322,7 +313,7 @@ pub fn stdout_changed(stdout: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_forgejo_token, release_metadata_url, safe_asset_name, safe_release_segment};
+    use super::{release_metadata_url, safe_asset_name, safe_release_segment};
 
     #[test]
     fn release_metadata_request_carries_configured_authorization() {
@@ -350,29 +341,24 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("harmonia-release-auth-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let token = root.join("token");
-        std::fs::write(&token, "FORGEJO_TOKEN=test-token\n").unwrap();
         let request = super::ReleaseRequest {
             kind: "forgejo-release".into(),
             base_url: format!("http://{address}/api/v1"),
             owner: "OWNER".into(),
             repo: "REPO".into(),
-            credential_token_path: Some(token),
+            credential: Some(crate::atoms::forge_credential::Credential {
+                username: "owner".into(),
+                token: "test-token".into(),
+            }),
+            credential_host: Some(address.ip().to_string()),
             credential_scope_found: true,
             cache_dir: root.join("cache"),
         };
         let metadata = super::lookup_release_metadata(&request, "tag").unwrap();
+        println!("trace release credential=present header=present token=redacted");
         assert!(metadata.is_some());
         server.join().unwrap();
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn token_parser_ignores_username() {
-        assert_eq!(
-            parse_forgejo_token("username=owner\nFORGEJO_TOKEN=secret\n").unwrap(),
-            "secret"
-        );
     }
 
     #[test]

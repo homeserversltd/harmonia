@@ -7,8 +7,6 @@ use std::process::Command;
 pub type CommandReceipt = crate::CmdResult;
 
 const DEFAULT_BEARER: &str = "owner";
-const ESTATE_FORGEJO_PREFIX: &str = "https://git.home.arpa/";
-const ESTATE_FORGEJO_TOKEN_PATH: &str = "/home/owner/.ssh/forgejo-token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -26,8 +24,6 @@ pub struct Request {
     pub remote: String,
     pub bearer: String,
     pub ssh_key_path: Option<PathBuf>,
-    pub git_https_credential_host: Option<String>,
-    pub git_https_credential_token_path: Option<PathBuf>,
     /// Exact declared checkout paths trusted only for this Git child.
     pub safe_directories: Vec<PathBuf>,
 }
@@ -41,8 +37,6 @@ impl Request {
             remote,
             bearer: DEFAULT_BEARER.to_string(),
             ssh_key_path: None,
-            git_https_credential_host: None,
-            git_https_credential_token_path: None,
             safe_directories: Vec::new(),
         }
     }
@@ -54,16 +48,6 @@ impl Request {
 
     pub fn with_ssh_key_path(mut self, path: Option<PathBuf>) -> Self {
         self.ssh_key_path = path;
-        self
-    }
-
-    pub fn with_https_credentials(
-        mut self,
-        host: Option<String>,
-        token_path: Option<PathBuf>,
-    ) -> Self {
-        self.git_https_credential_host = host;
-        self.git_https_credential_token_path = token_path;
         self
     }
 
@@ -79,16 +63,33 @@ pub(crate) struct GitCommandContext {
 }
 
 pub(crate) fn git_command_context(request: &Request) -> Result<GitCommandContext, String> {
+    git_command_context_for_credential_source(
+        request,
+        Path::new(crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL),
+        crate::atoms::forge_credential::ESTATE_FORGEJO_HOST,
+    )
+}
+
+fn git_command_context_for_credential_source(
+    request: &Request,
+    credential_path: &Path,
+    estate_host: &str,
+) -> Result<GitCommandContext, String> {
     let mut env = git_ssh_env(request.ssh_key_path.as_deref())?;
     env.insert("GIT_OPTIONAL_LOCKS".into(), "0".into());
-    let estate_single_source = request
-        .repo
-        .as_deref()
-        .is_some_and(|repo| repo.starts_with(ESTATE_FORGEJO_PREFIX));
-    let credential_helper = if estate_single_source {
-        Some(estate_forgejo_credential_helper()?)
-    } else {
-        owner_https_credential_helper(request)
+    let credential_helper = match request.repo.as_deref() {
+        Some(repo) => match crate::atoms::forge_credential::resolve_for_url_at(
+            repo,
+            credential_path,
+            estate_host,
+        ) {
+            crate::atoms::forge_credential::Outcome::Present { .. } => {
+                Some(owner_https_credential_helper())
+            }
+            crate::atoms::forge_credential::Outcome::Absent => None,
+            crate::atoms::forge_credential::Outcome::Err(reason) => return Err(reason),
+        },
+        None => None,
     };
     let mut safe_configs = Vec::with_capacity(request.safe_directories.len());
     for path in &request.safe_directories {
@@ -109,16 +110,15 @@ pub(crate) fn git_command_context(request: &Request) -> Result<GitCommandContext
 }
 
 pub(crate) fn credential_scope(request: &Request) -> String {
-    format!(
-        "ssh_key_configured={};https_credentials_configured={};estate_forgejo={}",
-        request.ssh_key_path.is_some(),
-        request.git_https_credential_host.is_some()
-            && request.git_https_credential_token_path.is_some(),
-        request
-            .repo
-            .as_deref()
-            .is_some_and(|repo| repo.starts_with(ESTATE_FORGEJO_PREFIX)),
-    )
+    let credential = request
+        .repo
+        .as_deref()
+        .map(crate::atoms::forge_credential::resolve_for_url);
+    let credential = match credential {
+        Some(crate::atoms::forge_credential::Outcome::Present { .. }) => "present",
+        _ => "absent",
+    };
+    format!("ssh_key_configured={};credential={credential}", request.ssh_key_path.is_some())
 }
 
 pub(crate) fn ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> CommandReceipt {
@@ -143,54 +143,14 @@ pub(crate) fn ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> Comman
     }
 }
 
-fn estate_forgejo_credential_helper() -> Result<String, String> {
-    // Validate in the engine so absent/empty owner material enters the existing
-    // Git unavailable receipt path before a child is started. The inline helper
-    // re-reads the same file at Git's credential query boundary, so the token
-    // never enters Git argv, the repository config, or a filesystem helper.
-    read_forgejo_token(Path::new(ESTATE_FORGEJO_TOKEN_PATH))?;
-    Ok(format!(
-        "credential.helper=!f() {{ protocol= host=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${{line#protocol=}} ;; host=*) host=${{line#host=}} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = git.home.arpa ]; then token=; while IFS= read -r line || [ -n \"$line\" ]; do value=$(printf '%s' \"$line\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'); case \"$value\" in FORGEJO_TOKEN=*) token=${{value#FORGEJO_TOKEN=}} ;; *=*) ;; *) token=$value ;; esac; [ -n \"$token\" ] && break; done < {}; if [ -n \"$token\" ]; then printf \"username=owner\\npassword=%s\\n\" \"$token\"; fi; fi; }}; f",
-        shell_quote(ESTATE_FORGEJO_TOKEN_PATH),
-    ))
-}
-
-pub(crate) fn read_token(path: &Path) -> Result<String, String> {
-    let contents = fs::read_to_string(path)
-        .map_err(|err| format!("forgejo-token-unavailable {}: {err}", path.display()))?;
-    let token = contents.lines().find_map(|line| {
-        let value = line.trim();
-        if value.is_empty() {
-            return None;
-        }
-        value
-            .strip_prefix("FORGEJO_TOKEN=")
-            .map(str::trim)
-            .or((!value.contains('=')).then_some(value))
-            .filter(|token| !token.is_empty())
-    });
-    token
-        .map(str::to_owned)
-        .ok_or_else(|| format!("forgejo-token-empty {}", path.display()))
-}
-
-fn read_forgejo_token(path: &Path) -> Result<(), String> {
-    read_token(path).map(|_| ())
-}
-
-fn owner_https_credential_helper(request: &Request) -> Option<String> {
-    let host = request.git_https_credential_host.as_deref()?;
-    let token_path = request.git_https_credential_token_path.as_deref()?;
-    let repo = request.repo.as_deref()?;
-    if !repo.starts_with(&format!("https://{host}/")) {
-        return None;
-    }
-    let token_path = token_path.to_str()?;
-    Some(format!(
-        "credential.helper=!f() {{ protocol= host= username= token=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${{line#protocol=}} ;; host=*) host=${{line#host=}} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = {} ]; then while IFS= read -r line; do case \"$line\" in FORGEJO_USERNAME=*) username=${{line#FORGEJO_USERNAME=}} ;; FORGEJO_TOKEN=*) token=${{line#FORGEJO_TOKEN=}} ;; esac; done < {}; if [ -n \"$username\" ] && [ -n \"$token\" ]; then printf \"username=%s\\npassword=%s\\n\" \"$username\" \"$token\"; fi; fi; }}; f",
+fn owner_https_credential_helper() -> String {
+    let host = crate::atoms::forge_credential::ESTATE_FORGEJO_HOST;
+    let path = crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL;
+    format!(
+        "credential.helper=!f() {{ protocol= host= username= token=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${{line#protocol=}} ;; host=*) host=${{line#host=}} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = {} ]; then while IFS= read -r line || [ -n \"$line\" ]; do value=$(printf '%s' \"$line\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'); case \"$value\" in FORGEJO_USERNAME=*) username=${{value#FORGEJO_USERNAME=}} ;; FORGEJO_TOKEN=*) [ -n \"$token\" ] || token=${{value#FORGEJO_TOKEN=}} ;; *=*) ;; *) [ -n \"$token\" ] || token=$value ;; esac; done < {}; if [ -z \"$username\" ]; then username=owner; fi; if [ -n \"$token\" ]; then printf \"username=%s\\npassword=%s\\n\" \"$username\" \"$token\"; fi; fi; }}; f",
         shell_quote(host),
-        shell_quote(token_path),
-    ))
+        shell_quote(path),
+    )
 }
 
 fn shell_quote(value: &str) -> String {
@@ -259,7 +219,6 @@ pub struct SourcePlan {
     pub destination: PathBuf,
     pub expected_commit: Option<String>,
     pub bearer: String,
-    pub credentials: BTreeMap<String, CredentialScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,13 +233,6 @@ pub struct SourceCandidate {
 pub enum SourceCandidateKind {
     Git,
     LocalCheckout,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct CredentialScope {
-    pub ssh_key_path: Option<PathBuf>,
-    pub https_host: Option<String>,
-    pub https_token_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,13 +301,6 @@ pub(crate) fn scoped_request(
     if candidate.kind == SourceCandidateKind::LocalCheckout {
         request = request.with_safe_directory(path);
     }
-    if let Some(selector) = candidate.credential_selector.as_deref() {
-        if let Some(scope) = plan.credentials.get(selector) {
-            request = request
-                .with_ssh_key_path(scope.ssh_key_path.clone())
-                .with_https_credentials(scope.https_host.clone(), scope.https_token_path.clone());
-        }
-    }
     request
 }
 
@@ -381,4 +326,85 @@ pub(crate) fn source_attempt(
 
 pub fn source_head(path: &Path, bearer: &str) -> CommandReceipt {
     crate::atoms::ask::pull_repo::source_head(path, bearer)
+}
+
+
+#[cfg(test)]
+mod forgejo_credential_contract_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn has_credential_helper(context: &GitCommandContext) -> bool {
+        context
+            .config_args
+            .iter()
+            .any(|argument| argument.starts_with("credential.helper=!f()"))
+    }
+
+    #[test]
+    fn forgejo_credential_contract_git_context_helper_scope() {
+        let credential = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            credential.path(),
+            "FORGEJO_TOKEN=test-token\nFORGEJO_USERNAME=owner\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(credential.path()).unwrap().permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(credential.path(), permissions).unwrap();
+
+        let present = Request::new(
+            Some("https://git.home.arpa/HOMESERVERSLTD/harmonia.git".into()),
+            ".".into(),
+            "main".into(),
+            "origin".into(),
+        );
+        let context = git_command_context_for_credential_source(
+            &present,
+            credential.path(),
+            "git.home.arpa",
+        )
+        .unwrap();
+        let helper = context
+            .config_args
+            .iter()
+            .find(|argument| argument.starts_with("credential.helper=!f()"))
+            .expect("present Forgejo repository must receive generated helper");
+        assert!(helper.contains("git.home.arpa"));
+        assert!(helper.contains("*) [ -n \"$token\" ] || token=$value"));
+        assert!(helper.contains(crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL));
+        assert!(has_credential_helper(&context));
+        println!("trace git credential=present generated_helper=true token=redacted");
+
+        let missing = credential.path().with_extension("missing");
+        let missing_request = Request::new(
+            Some("https://git.home.arpa/HOMESERVERSLTD/harmonia.git".into()),
+            ".".into(),
+            "main".into(),
+            "origin".into(),
+        );
+        let missing_context = git_command_context_for_credential_source(
+            &missing_request,
+            &missing,
+            "git.home.arpa",
+        )
+        .unwrap();
+        assert!(!has_credential_helper(&missing_context));
+        println!("trace git credential=missing generated_helper=false");
+
+        let foreign_request = Request::new(
+            Some("https://foreign.example/HOMESERVERSLTD/harmonia.git".into()),
+            ".".into(),
+            "main".into(),
+            "origin".into(),
+        );
+        let foreign_context = git_command_context_for_credential_source(
+            &foreign_request,
+            credential.path(),
+            "git.home.arpa",
+        )
+        .unwrap();
+        assert!(!has_credential_helper(&foreign_context));
+        println!("trace git credential=foreign generated_helper=false");
+    }
 }

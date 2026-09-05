@@ -661,7 +661,6 @@ pub(crate) fn bridge_acquisition_plan(
         destination,
         expected_commit,
         bearer: "owner".to_string(),
-        credentials: BTreeMap::new(),
     }
 }
 
@@ -1472,7 +1471,6 @@ mod tests {
             None,
         );
         assert_eq!(plan.bearer, "owner");
-        assert!(plan.credentials.is_empty());
         assert!(plan
             .candidates
             .iter()
