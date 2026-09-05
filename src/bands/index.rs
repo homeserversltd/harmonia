@@ -506,24 +506,31 @@ pub(crate) fn run_profile_engine_with_projection(
             }
             crate::bands::Band::ProposeEdits => {
                 record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
-                crate::bands::propose_edits::execute_manifest_modules(
+                let propose_result =
+                    crate::bands::propose_edits::execute_manifest_modules(
+                        &active_profile,
+                        receipt_dir,
+                        mode,
+                        apply,
+                        &device_module_policy.disabled_modules,
+                        &active_projection,
+                        &mut state.module_states,
+                        &mut routine_states,
+                        &mut halted_modules,
+                        &mut state.module_count,
+                        &mut state.operation_count,
+                        &mut state.changed,
+                        &mut state.ok,
+                        &mut state.first_missing_signal,
+                        &mut events,
+                        context.map(|value| value.face.as_str()),
+                    );
+                let prune_result = crate::bands::propose_edits::prune_stale_interactables(
                     &active_profile,
-                    receipt_dir,
-                    mode,
-                    apply,
-                    &device_module_policy.disabled_modules,
-                    &active_projection,
-                    &mut state.module_states,
-                    &mut routine_states,
-                    &mut halted_modules,
-                    &mut state.module_count,
-                    &mut state.operation_count,
-                    &mut state.changed,
-                    &mut state.ok,
-                    &mut state.first_missing_signal,
                     &mut events,
-                    context.map(|value| value.face.as_str()),
-                )?;
+                );
+                propose_result?;
+                prune_result?;
             }
             crate::bands::Band::ReportHome => {
                 let target_carrier = carrier.or_else(|| context.map(|value| &value.carrier));

@@ -102,6 +102,57 @@ pub(crate) fn persist_feed_with_writes(
     Ok(writes)
 }
 
+pub(crate) fn prune_stale_interactables(
+    profile: &Profile,
+    events: &mut File,
+) -> Result<(), String> {
+    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    prune_stale_interactables_at_path(&path, profile, events)
+}
+
+pub(crate) fn prune_stale_interactables_at_path(
+    path: &Path,
+    profile: &Profile,
+    events: &mut File,
+) -> Result<(), String> {
+    let mut feed = interactables::load_feed(path)?;
+    let active_modules = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
+    let mut retained = Vec::with_capacity(feed.interactables.len());
+    let mut removed = Vec::new();
+
+    for entry in feed.interactables.drain(..) {
+        let reason = if !active_modules.contains(&entry.module_id) {
+            Some("module-absent-from-profile")
+        } else if !entry.reference_source_path.is_file() {
+            Some("reference-absent")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            removed.push(serde_json::json!({
+                "schema": "harmonia.interactables.prune.v1",
+                "id": entry.id,
+                "module_id": entry.module_id,
+                "target_path": entry.target_path,
+                "reason": reason,
+            }));
+        } else {
+            retained.push(entry);
+        }
+    }
+    if removed.is_empty() {
+        return Ok(());
+    }
+    feed.interactables = retained;
+    persist_feed(path, &feed)?;
+    for receipt in removed {
+        crate::atoms::attest::append_jsonl_to(events, &receipt)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn refresh_interactables_for_convergence(
     manifest: &LadderManifest,
     request: &FileConvergenceRequest,
@@ -538,14 +589,15 @@ pub(crate) fn execute_manifest_modules(
 
 #[cfg(test)]
 mod refresh_interactables_tests {
-    use super::refresh_interactables_at_path;
+    use super::{persist_feed, prune_stale_interactables_at_path, refresh_interactables_at_path};
     use crate::interactables::{self, DriftSummary, Interactable};
     use crate::tools::files::{
         FileConvergenceEntry, FileConvergenceOutcome, FileConvergenceRequest, FileSpec,
     };
     use crate::tools::ladder::LadderManifest;
+    use crate::Profile;
     use std::collections::BTreeMap;
-    use std::fs;
+    use std::fs::{self, File};
     use std::path::{Path, PathBuf};
 
     fn scratch() -> PathBuf {
@@ -665,6 +717,155 @@ mod refresh_interactables_tests {
             }],
             message: "fixture".into(),
         }
+    }
+
+    fn prune_item(
+        root: &Path,
+        id: &str,
+        module_id: &str,
+        target_path: PathBuf,
+        reference_source_path: PathBuf,
+        has_run: bool,
+    ) -> Interactable {
+        let mut item = unrelated_item(root);
+        item.id = id.into();
+        item.module_id = module_id.into();
+        item.target_path = target_path;
+        item.reference_source_path = reference_source_path;
+        item.has_run = has_run;
+        item
+    }
+
+    #[test]
+    fn prune_stale_interactables_keeps_live_rows_and_receipts_ghosts() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-prune-interactables-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let feed_path = root.join("interactables.json");
+        let events_path = root.join("events.jsonl");
+        let reference = root.join("known-good.conf");
+        let shared_target = root.join("shared.conf");
+        fs::write(&reference, b"known-good\n").unwrap();
+
+        let backup = root
+            .join("interactables-backups")
+            .join("ghost-entry")
+            .join("has-run-copy");
+        fs::create_dir_all(backup.parent().unwrap()).unwrap();
+        fs::write(&backup, b"preserve me\n").unwrap();
+
+        let entries = vec![
+            prune_item(
+                &root,
+                "live-entry",
+                "live-module",
+                root.join("live.conf"),
+                reference.clone(),
+                false,
+            ),
+            prune_item(
+                &root,
+                "absent-entry",
+                "absent-module",
+                root.join("absent.conf"),
+                reference.clone(),
+                false,
+            ),
+            prune_item(
+                &root,
+                "missing-entry",
+                "missing-module",
+                root.join("missing.conf"),
+                root.join("missing-reference.conf"),
+                false,
+            ),
+            prune_item(
+                &root,
+                "ghost-entry",
+                "ghost-module",
+                shared_target.clone(),
+                root.join("ghost-reference.conf"),
+                true,
+            ),
+            prune_item(
+                &root,
+                "survivor-entry",
+                "survivor-module",
+                shared_target.clone(),
+                reference.clone(),
+                false,
+            ),
+        ];
+        persist_feed(&feed_path, &interactables::make_feed(entries)).unwrap();
+        let mut events = File::create(&events_path).unwrap();
+        let profile = Profile {
+            id: "fixture-profile".into(),
+            identity: "fixture-identity".into(),
+            package_authority: None,
+            modules: vec![
+                "live-module".into(),
+                "missing-module".into(),
+                "survivor-module".into(),
+            ],
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        };
+
+        prune_stale_interactables_at_path(&feed_path, &profile, &mut events).unwrap();
+        drop(events);
+
+        let retained = interactables::load_feed(&feed_path).unwrap().interactables;
+        assert_eq!(
+            retained.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec!["live-entry", "survivor-entry"]
+        );
+        assert_eq!(fs::read(&backup).unwrap(), b"preserve me\n");
+
+        let receipts = fs::read_to_string(&events_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            receipts,
+            vec![
+                serde_json::json!({
+                    "schema": "harmonia.interactables.prune.v1",
+                    "id": "absent-entry",
+                    "module_id": "absent-module",
+                    "target_path": root.join("absent.conf"),
+                    "reason": "module-absent-from-profile",
+                }),
+                serde_json::json!({
+                    "schema": "harmonia.interactables.prune.v1",
+                    "id": "missing-entry",
+                    "module_id": "missing-module",
+                    "target_path": root.join("missing.conf"),
+                    "reason": "reference-absent",
+                }),
+                serde_json::json!({
+                    "schema": "harmonia.interactables.prune.v1",
+                    "id": "ghost-entry",
+                    "module_id": "ghost-module",
+                    "target_path": shared_target,
+                    "reason": "module-absent-from-profile",
+                }),
+            ]
+        );
+        assert!(receipts.iter().all(|receipt| {
+            receipt
+                .as_object()
+                .is_some_and(|fields| fields.len() == 5)
+        }));
+        println!(
+            "prune_receipt={}",
+            serde_json::to_string(&receipts[0]).unwrap()
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
