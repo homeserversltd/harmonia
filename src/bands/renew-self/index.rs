@@ -43,6 +43,91 @@ const ENGINE_CONFIG_ENV: &str = "HARMONIA_ENGINE_CONFIG_PATH";
 const DEFAULT_ENGINE_CONFIG: &str = "/etc/harmonia/engine.json";
 const ENGINE_RATCHET_LOCK_SCHEMA: &str = "harmonia.engine.ratchet_lock.v1";
 const DEFAULT_ENGINE_RATCHET_LOCK_NAME: &str = "engine-ratchet-lock.json";
+const HARMONIA_BUILD_TARGET: &str = "x86_64-unknown-linux-gnu";
+const HARMONIA_BUILD_SHA_ENV: &str = "HARMONIA_BUILD_SHA";
+const HARMONIA_BUILD_ENV_SHA_ENV: &str = "HARMONIA_BUILD_ENV_SHA";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuildEnvironmentIdentity {
+    environment: Vec<(String, String)>,
+    env_sha: Option<String>,
+}
+
+fn is_valid_acquired_source_head(source_sha: &str) -> bool {
+    source_sha.len() == 40 && source_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn trim_trailing_crlf(value: &str) -> &str {
+    value.trim_end_matches(|character: char| character == '\r' || character == '\n')
+}
+
+fn build_environment_sha(rustc_version: &str, cargo_version: &str, target_triple: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(rustc_version.as_bytes());
+    digest.update(b"\n");
+    digest.update(cargo_version.as_bytes());
+    digest.update(b"\n");
+    digest.update(target_triple.as_bytes());
+    digest.update(b"\n");
+    format!("{:x}", digest.finalize())
+}
+
+fn build_environment_for_source_head(
+    source_sha: &str,
+    rustc_version: &str,
+    cargo_version: &str,
+    target_triple: &str,
+) -> BuildEnvironmentIdentity {
+    if !is_valid_acquired_source_head(source_sha) {
+        return BuildEnvironmentIdentity {
+            environment: Vec::new(),
+            env_sha: None,
+        };
+    }
+    let env_sha = build_environment_sha(
+        trim_trailing_crlf(rustc_version),
+        trim_trailing_crlf(cargo_version),
+        target_triple,
+    );
+    BuildEnvironmentIdentity {
+        environment: vec![
+            (HARMONIA_BUILD_SHA_ENV.into(), source_sha.into()),
+            (HARMONIA_BUILD_ENV_SHA_ENV.into(), env_sha.clone()),
+        ],
+        env_sha: Some(env_sha),
+    }
+}
+
+fn capture_build_environment(source_sha: &str) -> Result<BuildEnvironmentIdentity, String> {
+    if !is_valid_acquired_source_head(source_sha) {
+        return Ok(build_environment_for_source_head(
+            source_sha,
+            "",
+            "",
+            HARMONIA_BUILD_TARGET,
+        ));
+    }
+    let rustc = crate::atoms::command::capture("rustc", &["-Vv"]);
+    if !rustc.ok {
+        return Err(format!(
+            "engine-toolchain-rustc-version-failed: {}",
+            rustc.stderr
+        ));
+    }
+    let cargo = crate::atoms::command::capture("cargo", &["-V"]);
+    if !cargo.ok {
+        return Err(format!(
+            "engine-toolchain-cargo-version-failed: {}",
+            cargo.stderr
+        ));
+    }
+    Ok(build_environment_for_source_head(
+        source_sha,
+        trim_trailing_crlf(&rustc.stdout),
+        trim_trailing_crlf(&cargo.stdout),
+        HARMONIA_BUILD_TARGET,
+    ))
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -541,6 +626,7 @@ fn emit_preflight_receipt(
     changed: bool,
     first_missing_signal: &str,
     operation_count: usize,
+    staged_build_identity: Option<&BuildEnvironmentIdentity>,
 ) -> Result<(), String> {
     write_json(
         &preflight_dir.join("run.json"),
@@ -561,6 +647,7 @@ fn emit_preflight_receipt(
             "source_head": source_head.unwrap_or("unknown"),
             "staged_sha256": staged_sha,
             "installed_sha256": installed_sha,
+            "staged_build_identity": staged_build_identity.and_then(|identity| identity.env_sha.as_deref().zip(source_head).map(|(env_sha, source_sha)| json!({"source_sha": source_sha, "env_sha": env_sha}))),
             "credential_selector": serde_json::Value::Null,
             "credentials": [],
             "git_bearer": "owner",
@@ -641,6 +728,7 @@ pub(crate) fn run_engine_preflight(
             false,
             signal,
             0,
+            None,
         )?;
         return Ok(failed_execution(signal));
     }
@@ -669,6 +757,7 @@ pub(crate) fn run_engine_preflight(
                 false,
                 &signal,
                 0,
+                None,
             )?;
             return Ok(failed_execution(&signal));
         }
@@ -715,6 +804,7 @@ pub(crate) fn run_engine_preflight(
     let install_before = install_bin_fingerprint(&config.install_bin);
     let staged = staged_bin(&config);
     let mut staged_sha = None;
+    let mut staged_build_identity = None;
     let mut build = CmdResult {
         ok: false,
         code: -1,
@@ -737,9 +827,11 @@ pub(crate) fn run_engine_preflight(
                 changed,
                 &first_missing_signal,
                 operation_count,
+                None,
             )?;
             return Ok(failed_execution(&first_missing_signal));
         };
+        let build_identity = capture_build_environment(source_head)?;
         let observation = crate::build_crate::run_build_with_mode(
             &config.build_root,
             source_head,
@@ -747,7 +839,7 @@ pub(crate) fn run_engine_preflight(
             &config.install_bin,
             &staged,
             apply,
-            &[],
+            &build_identity.environment,
             crate::atoms::r#do::build_crate::DEFAULT_TIMEOUT_SECS,
             &preflight_dir.join("harmonia-atoms.log"),
             "owner",
@@ -769,6 +861,7 @@ pub(crate) fn run_engine_preflight(
             });
         operation_count += 1;
         write_bearer_command_receipt(&preflight_dir, "staged-build", &build, "owner")?;
+        staged_build_identity = Some(build_identity);
         if !build.ok {
             first_missing_signal = "engine-staged-build-failed".to_string();
         } else if let Ok(value) = sha256_file(&staged) {
@@ -831,6 +924,7 @@ pub(crate) fn run_engine_preflight(
         changed,
         &first_missing_signal,
         operation_count,
+        staged_build_identity.as_ref(),
     )?;
     crate::hyalos::forward_receipt(
         "harmonia.renew_self.preflight",
@@ -853,7 +947,10 @@ pub(crate) fn run_engine_preflight(
 
 #[cfg(test)]
 mod release_transport_tests {
-    use super::{engine_source_gate, EngineArtifactTransport};
+    use super::{
+        build_environment_for_source_head, build_environment_sha, capture_build_environment,
+        engine_source_gate, EngineArtifactTransport,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -873,6 +970,72 @@ mod release_transport_tests {
         .unwrap();
         assert_eq!(transport.kind, "git");
         assert_eq!(transport.cache_dir, PathBuf::from("/var/cache/harmonia"));
+    }
+
+    #[test]
+    fn valid_build_environment_has_exactly_both_variables_and_known_env_hash() {
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let identity = build_environment_for_source_head(
+            source_sha,
+            "rustc 1.85.0 (fake)",
+            "cargo 1.85.0 (fake)",
+            "x86_64-unknown-linux-gnu",
+        );
+
+        assert_eq!(identity.environment.len(), 2);
+        assert_eq!(
+            identity.environment,
+            vec![
+                ("HARMONIA_BUILD_SHA".to_string(), source_sha.to_string()),
+                (
+                    "HARMONIA_BUILD_ENV_SHA".to_string(),
+                    "2c6f162390520881dd7a311df1686a515659915157a3b32bb91bb6d485798859".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(
+            identity.env_sha.as_deref(),
+            Some("2c6f162390520881dd7a311df1686a515659915157a3b32bb91bb6d485798859")
+        );
+    }
+
+    #[test]
+    fn invalid_build_environment_is_empty_and_has_neither_variable() {
+        let identity = capture_build_environment("not-a-valid-source-head").unwrap();
+
+        assert!(identity.environment.is_empty());
+        assert_eq!(identity.env_sha, None);
+    }
+
+    #[test]
+    fn fixed_input_build_environment_hash_is_deterministic_and_trailing_crlf_equivalent() {
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let first = build_environment_for_source_head(
+            source_sha,
+            "rustc 1.85.0 (fake)",
+            "cargo 1.85.0 (fake)",
+            "x86_64-unknown-linux-gnu",
+        );
+        let second = build_environment_for_source_head(
+            source_sha,
+            "rustc 1.85.0 (fake)\r\n\n",
+            "cargo 1.85.0 (fake)\n\r",
+            "x86_64-unknown-linux-gnu",
+        );
+
+        assert_eq!(
+            build_environment_sha(
+                "rustc 1.85.0 (fake)",
+                "cargo 1.85.0 (fake)",
+                "x86_64-unknown-linux-gnu",
+            ),
+            build_environment_sha(
+                "rustc 1.85.0 (fake)",
+                "cargo 1.85.0 (fake)",
+                "x86_64-unknown-linux-gnu",
+            )
+        );
+        assert_eq!(first, second);
     }
 
     #[test]
