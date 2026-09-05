@@ -38,41 +38,55 @@ pub(crate) fn release_metadata_url(api_root: &str, release_repo: &str, tag: &str
     )
 }
 
-fn is_http_status(error: &str, status: &str) -> bool {
+pub(crate) fn is_http_status(error: &str, status: &str) -> bool {
     error
         .split(|character: char| !character.is_ascii_digit())
         .any(|part| part == status)
 }
 
-fn is_estate_registry(api_root: &str) -> bool {
-    api_root
-        .split_once("://")
-        .and_then(|(_, rest)| rest.split('/').next())
-        .and_then(|host| {
-            host.rsplit_once(':')
-                .map_or(Some(host), |(host, _)| Some(host))
-        })
-        == Some("git.home.arpa")
+fn has_optional_detail(error: &str, prefix: &str) -> bool {
+    error == prefix
+        || error
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with(':') || rest.starts_with(' '))
 }
 
-fn normalize_anonymous_release_auth_error(
-    error: &str,
-    api_root: &str,
-    release_repo: &str,
-    tag: &str,
-) -> Option<String> {
-    if !is_http_status(error, "401") && !is_http_status(error, "403") {
-        return None;
+pub(crate) fn auth_required_url(error: &str, fallback_url: &str) -> Option<String> {
+    for prefix in [
+        "fetch-artifact-auth-required url=",
+        "fetch-artifact-auth-required-non-estate-registry url=",
+    ] {
+        if let Some(url) = error.strip_prefix(prefix) {
+            return Some(if url.is_empty() {
+                fallback_url.to_owned()
+            } else {
+                url.to_owned()
+            });
+        }
     }
-    let prefix = if is_estate_registry(api_root) {
-        "fetch-artifact-auth-required"
-    } else {
-        "fetch-artifact-auth-required-non-estate-registry"
-    };
-    Some(format!(
-        "{prefix} url={}",
-        release_metadata_url(api_root, release_repo, tag)
-    ))
+    if error == "fetch-artifact-auth-required"
+        || error == "fetch-artifact-auth-required-non-estate-registry"
+    {
+        return Some(fallback_url.to_owned());
+    }
+    if has_optional_detail(error, "fetch-artifact-registry-refused-401")
+        || has_optional_detail(error, "fetch-artifact-registry-refused-403")
+    {
+        return Some(fallback_url.to_owned());
+    }
+    if (has_optional_detail(error, "release-metadata-fetch-failed")
+        || has_optional_detail(error, "release-asset-fetch-failed")
+        || has_optional_detail(error, "release-asset-download-failed"))
+        && (is_http_status(error, "401") || is_http_status(error, "403"))
+    {
+        return Some(fallback_url.to_owned());
+    }
+    None
+}
+
+pub(crate) fn normalize_auth_required_error(error: &str, fallback_url: &str) -> Option<String> {
+    auth_required_url(error, fallback_url)
+        .map(|url| format!("fetch-artifact-auth-required url={url}"))
 }
 
 pub(crate) fn build_environment(
@@ -282,7 +296,7 @@ pub(crate) fn validate_manifest(
     }
     Ok(())
 }
-fn artifact_url(base: &str, component: &str, source_sha: &str, name: &str) -> String {
+pub(crate) fn artifact_url(base: &str, component: &str, source_sha: &str, name: &str) -> String {
     format!(
         "{}/{}/{}/{}",
         base.trim_end_matches('/'),
@@ -342,8 +356,8 @@ fn curl_to_file(
         .trim()
         .parse::<u16>()
         .unwrap_or(0);
-    if status == 401 || status == 403 {
-        return Err("fetch-artifact-auth-required".into());
+    if token.is_none() && (status == 401 || status == 403) {
+        return Err(format!("fetch-artifact-auth-required url={url}"));
     }
     if !(200..300).contains(&status) || !output.status.success() {
         let stderr = fs::read(stderr_path).unwrap_or_default();
@@ -369,7 +383,7 @@ fn curl_with_anonymous_first(
     let stderr_path = destination.with_extension("stderr");
     let result = curl_to_file(url, destination, &stderr_path, None);
     let _ = fs::remove_file(&stderr_path);
-    result
+    result.map_err(|error| normalize_auth_required_error(&error, url).unwrap_or(error))
 }
 
 pub(crate) fn download(
@@ -500,13 +514,8 @@ pub(crate) fn download_release(
     let _ = std::fs::remove_dir_all(&request.cache_dir);
     match result {
         Err(error) if !credential_scope_found => {
-            if let Some(normalized) =
-                normalize_anonymous_release_auth_error(&error, api_root, release_repo, &tag)
-            {
-                Err(normalized)
-            } else {
-                Err(error)
-            }
+            let metadata_url = release_metadata_url(api_root, release_repo, &tag);
+            Err(normalize_auth_required_error(&error, &metadata_url).unwrap_or(error))
         }
         other => other,
     }
@@ -690,5 +699,26 @@ mod tests {
         assert_eq!(trim_trailing_crlf(" \trustc -Vv\r\n"), " \trustc -Vv");
         assert_eq!(trim_trailing_crlf("\nrustc -Vv"), "\nrustc -Vv");
         assert_eq!(trim_trailing_crlf("rustc -Vv \t\r\n"), "rustc -Vv \t");
+    }
+
+    #[test]
+    fn bare_auth_required_fixture_normalizes_with_fallback_url() {
+        let url = "https://git.home.arpa/api/v1/refusing";
+        assert_eq!(
+            normalize_auth_required_error("fetch-artifact-auth-required", url),
+            Some(format!("fetch-artifact-auth-required url={url}"))
+        );
+    }
+
+    #[test]
+    fn release_metadata_403_fixture_normalizes_with_fallback_url() {
+        let url = "https://git.home.arpa/api/v1/refusing";
+        assert_eq!(
+            normalize_auth_required_error(
+                "release-metadata-fetch-failed: curl: (22) The requested URL returned error: 403",
+                url,
+            ),
+            Some(format!("fetch-artifact-auth-required url={url}"))
+        );
     }
 }

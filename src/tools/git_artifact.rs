@@ -67,7 +67,17 @@ fn lookup_release_metadata(
     }
     if !result.ok {
         let _ = fs::remove_file(&path);
-        return Err(format!("release-metadata-fetch-failed: {}", result.stderr));
+        let error = format!("release-metadata-fetch-failed: {}", result.stderr);
+        let error_with_status = format!("{error} http_status={}", result.stdout.trim());
+        return Err(if r.credential_token_path.is_none() {
+            crate::atoms::ask::fetch_artifact::normalize_auth_required_error(
+                &error_with_status,
+                &url,
+            )
+            .unwrap_or(error)
+        } else {
+            error
+        });
     }
     let text =
         fs::read_to_string(&path).map_err(|e| format!("release-metadata-read-failed: {e}"))?;
@@ -111,7 +121,13 @@ fn download_release_asset(r: &ReleaseRequest, url: &str, name: &str) -> Result<V
     )?;
     if !x.ok {
         let _ = fs::remove_file(&p);
-        return Err(format!("release-asset-fetch-failed: {}", x.stderr));
+        let error = format!("release-asset-fetch-failed: {}", x.stderr);
+        return Err(if r.credential_token_path.is_none() {
+            crate::atoms::ask::fetch_artifact::normalize_auth_required_error(&error, url)
+                .unwrap_or(error)
+        } else {
+            error
+        });
     }
     let b = fs::read(&p).map_err(|e| format!("release-asset-read-failed: {e}"))?;
     let _ = fs::remove_file(&p);

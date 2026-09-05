@@ -121,32 +121,7 @@ pub(crate) fn execute(
                 ));
                 None
             }
-            Err(error)
-                if error.starts_with("fetch-artifact-auth-required ")
-                    || error.starts_with("fetch-artifact-auth-required-non-estate-registry ") =>
-            {
-                let artifact_url = error
-                    .strip_prefix("fetch-artifact-auth-required ")
-                    .or_else(|| {
-                        error.strip_prefix("fetch-artifact-auth-required-non-estate-registry ")
-                    })
-                    .and_then(|value| value.strip_prefix("url="))
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| {
-                        crate::atoms::ask::fetch_artifact::release_metadata_url(
-                            api_root,
-                            release_repo,
-                            &tag,
-                        )
-                    });
-                release_fallback = Some(("auth-required".into(), artifact_url));
-                None
-            }
-            Err(error)
-                if error
-                    .split(|character: char| !character.is_ascii_digit())
-                    .any(|part| part == "404") =>
-            {
+            Err(error) if crate::atoms::ask::fetch_artifact::is_http_status(&error, "404") => {
                 release_fallback = Some((
                     "release-miss".into(),
                     crate::atoms::ask::fetch_artifact::release_metadata_url(
@@ -158,15 +133,27 @@ pub(crate) fn execute(
                 None
             }
             Err(error) => {
-                let _ = crate::atoms::attest::fetch_artifact::attest(
-                    &receipt_dir.join("harmonia-atoms.log"),
-                    false,
-                    false,
-                    &format!(
-                        "state=Drift; care=artifact acquisition refused; after=Drift; error={error}"
-                    ),
+                let metadata_url = crate::atoms::ask::fetch_artifact::release_metadata_url(
+                    api_root,
+                    release_repo,
+                    &tag,
                 );
-                return Err(error);
+                if let Some(artifact_url) =
+                    crate::atoms::ask::fetch_artifact::auth_required_url(&error, &metadata_url)
+                {
+                    release_fallback = Some(("auth-required".into(), artifact_url));
+                    None
+                } else {
+                    let _ = crate::atoms::attest::fetch_artifact::attest(
+                        &receipt_dir.join("harmonia-atoms.log"),
+                        false,
+                        false,
+                        &format!(
+                            "state=Drift; care=artifact acquisition refused; after=Drift; error={error}"
+                        ),
+                    );
+                    return Err(error);
+                }
             }
         }
     } else {
@@ -205,6 +192,43 @@ pub(crate) fn execute(
             "state=Drift; care=beam env SHA divergence requires artifact refetch; after=Drift; reason=fetch-artifact-refetch-beam-env-sha",
         )?;
     }
+    let registry_download = if native_download.is_none() && release_fallback.is_none() {
+        let registry_artifact_name = release_asset_name.as_deref().unwrap_or(artifact_name);
+        let manifest_url = crate::atoms::ask::fetch_artifact::artifact_url(
+            registry_base,
+            component,
+            source_sha,
+            "manifest.json",
+        );
+        match crate::atoms::ask::fetch_artifact::download(
+            component,
+            registry_base,
+            source_sha,
+            registry_artifact_name,
+        ) {
+            Ok(download) => Some(download),
+            Err(error) => {
+                if let Some(artifact_url) =
+                    crate::atoms::ask::fetch_artifact::auth_required_url(&error, &manifest_url)
+                {
+                    release_fallback = Some(("auth-required".into(), artifact_url));
+                    None
+                } else {
+                    let _ = crate::atoms::attest::fetch_artifact::attest(
+                        &receipt_dir.join("harmonia-atoms.log"),
+                        false,
+                        false,
+                        &format!(
+                            "state=Drift; care=artifact acquisition refused; after=Drift; error={error}"
+                        ),
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    } else {
+        None
+    };
     let download = if let Some(download) = native_download {
         download
     } else if let Some((fallback_reason, artifact_url)) = release_fallback {
@@ -281,26 +305,7 @@ pub(crate) fn execute(
             identity: "embedded-sha".into(),
         }
     } else {
-        let registry_artifact_name = release_asset_name.as_deref().unwrap_or(artifact_name);
-        match crate::atoms::ask::fetch_artifact::download(
-            component,
-            registry_base,
-            source_sha,
-            registry_artifact_name,
-        ) {
-            Ok(download) => download,
-            Err(error) => {
-                let _ = crate::atoms::attest::fetch_artifact::attest(
-                    &receipt_dir.join("harmonia-atoms.log"),
-                    false,
-                    false,
-                    &format!(
-                        "state=Drift; care=artifact acquisition refused; after=Drift; error={error}"
-                    ),
-                );
-                return Err(error);
-            }
-        }
+        registry_download.ok_or("fetch-artifact-registry-download-missing")?
     };
     if !apply {
         crate::atoms::attest::fetch_artifact::attest(
@@ -532,6 +537,56 @@ mod tests {
         assert_eq!(fallback["schema"], "harmonia.fetch-artifact.fallback.v1");
         assert_eq!(fallback["fallback_reason"], "auth-required");
         assert_eq!(fallback["artifact_url"], expected_artifact_url);
+        assert_eq!(fallback["source_build_sha"], SOURCE_SHA);
+        assert!(destination.exists());
+    }
+
+    #[test]
+    fn registry_403_builds_source_fallback_and_records_refusing_manifest_url() {
+        let root = source_fixture();
+        let destination = root.path().join("destination");
+        let installed_binary = root.path().join("installed");
+        let receipts = root.path().join("receipts");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let length = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..length]).starts_with(
+                "GET /caduceus/0123456789abcdef0123456789abcdef01234567/manifest.json "
+            ));
+            write!(
+                stream,
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        let registry_base = format!("http://{address}");
+        let expected_manifest_url = format!("{registry_base}/caduceus/{SOURCE_SHA}/manifest.json");
+        let args: BTreeMap<String, serde_json::Value> = [
+            ("component", json!("caduceus")),
+            ("registry_base", json!(&registry_base)),
+            ("source_build_sha", json!(SOURCE_SHA)),
+            ("artifact_name", json!(ARTIFACT_NAME)),
+            ("source_dir", json!(root.path())),
+            ("destination", json!(&destination)),
+            ("installed_binary", json!(&installed_binary)),
+            ("bearer", json!("owner")),
+            ("identity", json!("embedded-sha")),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = execute(&args, &receipts, true, Some(&invocation)).unwrap();
+        server.join().unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        let fallback: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("fallback.json")).unwrap()).unwrap();
+        assert_eq!(fallback["fallback_reason"], "auth-required");
+        assert_eq!(fallback["artifact_url"], expected_manifest_url);
         assert_eq!(fallback["source_build_sha"], SOURCE_SHA);
         assert!(destination.exists());
     }
