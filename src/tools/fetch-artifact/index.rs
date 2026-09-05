@@ -215,11 +215,12 @@ pub(crate) fn execute(
         });
     }
     let invocation = invocation.ok_or("fetch-artifact-invocation-key-missing")?;
-    let mut beam_refetch_pre_act = beam_refetch;
+    // Force Drift only for the pre-act observation; allow convergence afterward.
+    let mut force_stage_pre_act = true;
     let result = crate::atoms::comparison::execute(
         "fetch-artifact",
         || {
-            if std::mem::take(&mut beam_refetch_pre_act) {
+            if std::mem::take(&mut force_stage_pre_act) {
                 Ok(false)
             } else {
                 Ok(crate::atoms::ask::fetch_artifact::identity_matches(
@@ -367,7 +368,7 @@ mod tests {
     };
 
     #[test]
-    fn stale_installed_identity_applies_fresh_artifact() {
+    fn staged_present_stale_installed_identity_is_drift_and_downloads_fresh_artifact() {
         let old = "0123456789abcdef0123456789abcdef01234567";
         let new = "fedcba9876543210fedcba9876543210fedcba98";
         let root =
@@ -376,9 +377,10 @@ mod tests {
         let installed = root.join("installed");
         let destination = root.join("destination");
         let receipts = root.join("receipts");
+        fs::write(&installed, format!("caduceus.liveness.v1{old}")).unwrap();
         fs::write(
-            &installed,
-            format!("caduceus.liveness.v1{old}; unrelated={new}"),
+            &destination,
+            format!("caduceus.liveness.v1{new}:staged-by-earlier-run"),
         )
         .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -426,11 +426,7 @@ pub(crate) fn execute_routine_child(
             }
             let outcome = crate::tools::fetch_artifact::execute(args, receipt_dir, apply, invocation)?;
             let changed = outcome.changed;
-            let artifact = if outcome.skipped {
-                args.get("installed_binary").cloned().unwrap_or(Value::Null)
-            } else {
-                args.get("destination").cloned().unwrap_or(Value::Null)
-            };
+            let artifact = select_fetch_artifact_output(&outcome, args);
             let path = artifact.as_str().map(Path::new);
             let sha = path.and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
             Ok((
@@ -579,11 +575,83 @@ pub(crate) fn execute_routine_child(
     }
 }
 
+fn select_fetch_artifact_output(
+    outcome: &crate::OperationOutcome,
+    args: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Value {
+    if !outcome.skipped {
+        return args.get("destination").cloned().unwrap_or(Value::Null);
+    }
+    if outcome.message != "fetch-artifact-current" {
+        return args.get("installed_binary").cloned().unwrap_or(Value::Null);
+    }
+    let destination = args.get("destination").and_then(Value::as_str);
+    let source_sha = args.get("source_build_sha").and_then(Value::as_str);
+    if let (Some(destination), Some(source_sha)) = (destination, source_sha) {
+        let destination = Path::new(destination);
+        if destination.exists()
+            && crate::atoms::ask::fetch_artifact::destination_identity(destination, source_sha)
+        {
+            return Value::String(destination.to_string_lossy().into_owned());
+        }
+    }
+    args.get("installed_binary").cloned().unwrap_or(Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn skipped_fetch_artifact_selects_valid_staged_destination_over_stale_installed_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "harmonia-fetch-artifact-output-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let destination = root.join("staged");
+        let installed = root.join("installed");
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        fs::write(
+            &destination,
+            format!("caduceus.liveness.v1{source_sha}:image"),
+        )
+        .unwrap();
+        fs::write(&installed, "caduceus.liveness.v1stale-source-sha:image").unwrap();
+        let args = BTreeMap::from([
+            (
+                "destination".into(),
+                Value::String(destination.to_string_lossy().into_owned()),
+            ),
+            (
+                "installed_binary".into(),
+                Value::String(installed.to_string_lossy().into_owned()),
+            ),
+            ("source_build_sha".into(), Value::String(source_sha.into())),
+        ]);
+        let outcome = crate::OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "fetch-artifact-current".into(),
+            command: None,
+        };
+        assert_eq!(
+            select_fetch_artifact_output(&outcome, &args),
+            Value::String(destination.to_string_lossy().into_owned())
+        );
+        let planned = crate::OperationOutcome {
+            message: "fetch-artifact-planned".into(),
+            ..outcome
+        };
+        assert_eq!(
+            select_fetch_artifact_output(&planned, &args),
+            Value::String(installed.to_string_lossy().into_owned())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn lowered_real_manifest_build_child_resolves_pull_context_and_quiets_install() {
         let root = std::env::temp_dir().join(format!(
