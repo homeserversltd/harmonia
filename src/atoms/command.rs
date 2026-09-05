@@ -1,10 +1,12 @@
 use crate::CmdResult;
 #[cfg(any(test, feature = "test-facade"))]
-use std::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(any(test, feature = "test-facade"))]
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -56,35 +58,106 @@ struct Bearer {
 }
 
 #[cfg(any(test, feature = "test-facade"))]
-thread_local! {
-    static TEST_BEARER: RefCell<Option<Bearer>> = const { RefCell::new(None) };
+#[derive(Clone)]
+enum TestBearerOverride {
+    #[cfg(feature = "test-facade")]
+    CurrentEffectiveUser,
+    Fixed(Bearer),
 }
 
 #[cfg(any(test, feature = "test-facade"))]
+struct TestBearerScope {
+    id: u64,
+    value: TestBearerOverride,
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+#[derive(Default)]
+struct TestBearerRegistry {
+    next_scope_id: u64,
+    by_thread: HashMap<thread::ThreadId, Vec<TestBearerScope>>,
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+static TEST_BEARER: OnceLock<Mutex<TestBearerRegistry>> = OnceLock::new();
+
+#[cfg(any(test, feature = "test-facade"))]
 pub(crate) struct TestBearerGuard {
-    previous: Option<Bearer>,
+    thread_id: thread::ThreadId,
+    scope_id: u64,
 }
 
 #[cfg(any(test, feature = "test-facade"))]
 impl Drop for TestBearerGuard {
     fn drop(&mut self) {
-        TEST_BEARER.with(|slot| {
-            *slot.borrow_mut() = self.previous.take();
+        let mut registry = TEST_BEARER
+            .get_or_init(|| Mutex::new(TestBearerRegistry::default()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let remove_thread = if let Some(scopes) = registry.by_thread.get_mut(&self.thread_id) {
+            if let Some(index) = scopes.iter().position(|scope| scope.id == self.scope_id) {
+                scopes.remove(index);
+            }
+            scopes.is_empty()
+        } else {
+            false
+        };
+        if remove_thread {
+            registry.by_thread.remove(&self.thread_id);
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+fn install_test_bearer_override(value: TestBearerOverride) -> TestBearerGuard {
+    let thread_id = thread::current().id();
+    let mut registry = TEST_BEARER
+        .get_or_init(|| Mutex::new(TestBearerRegistry::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let scope_id = registry.next_scope_id;
+    registry.next_scope_id = registry.next_scope_id.wrapping_add(1);
+    registry
+        .by_thread
+        .entry(thread_id)
+        .or_default()
+        .push(TestBearerScope {
+            id: scope_id,
+            value,
         });
+    TestBearerGuard {
+        thread_id,
+        scope_id,
     }
 }
 
 #[cfg(any(test, feature = "test-facade"))]
 pub(crate) fn install_test_bearer(name: &str, uid: u32, gid: u32, home: &Path) -> TestBearerGuard {
-    let previous = TEST_BEARER.with(|slot| {
-        slot.borrow_mut().replace(Bearer {
-            uid,
-            gid,
-            name: name.to_string(),
-            home: home.display().to_string(),
-        })
-    });
-    TestBearerGuard { previous }
+    install_test_bearer_override(TestBearerOverride::Fixed(Bearer {
+        uid,
+        gid,
+        name: name.to_string(),
+        home: home.display().to_string(),
+    }))
+}
+
+#[cfg(feature = "test-facade")]
+pub(crate) fn install_test_current_effective_user() -> TestBearerGuard {
+    install_test_bearer_override(TestBearerOverride::CurrentEffectiveUser)
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+fn current_test_bearer_override() -> Option<TestBearerOverride> {
+    let thread_id = thread::current().id();
+    let registry = TEST_BEARER
+        .get_or_init(|| Mutex::new(TestBearerRegistry::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry
+        .by_thread
+        .get(&thread_id)
+        .and_then(|scopes| scopes.last())
+        .map(|scope| scope.value.clone())
 }
 
 impl<'a> CaptureOptions<'a> {
@@ -186,29 +259,22 @@ pub(crate) fn capture_with_cwd_as_bearer_and_timeout(
     bearer: &str,
     timeout_secs: u64,
 ) -> CmdResult {
-    if unsafe { libc::geteuid() } != 0 {
-        return capture_with_options(
-            program,
-            args,
-            CaptureOptions::new().cwd(cwd).timeout_secs(timeout_secs),
-        );
+    let bearer = match resolve_bearer_for_capture(bearer) {
+        Ok(bearer) => bearer,
+        Err(err) => {
+            return CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: err,
+            }
+        }
+    };
+    let mut options = CaptureOptions::new().cwd(cwd).timeout_secs(timeout_secs);
+    if let Some(bearer) = bearer {
+        options = options.bearer(bearer);
     }
-    match resolve_non_root_bearer(bearer) {
-        Ok(bearer) => capture_with_options(
-            program,
-            args,
-            CaptureOptions::new()
-                .cwd(cwd)
-                .timeout_secs(timeout_secs)
-                .bearer(bearer),
-        ),
-        Err(err) => CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: err,
-        },
-    }
+    capture_with_options(program, args, options)
 }
 
 /// Execute a filesystem-writing child with an explicitly scoped environment
@@ -240,39 +306,46 @@ pub(crate) fn capture_with_cwd_as_bearer_and_env_and_timeout(
     env: BTreeMap<String, String>,
     timeout_secs: u64,
 ) -> CmdResult {
-    if unsafe { libc::geteuid() } != 0 {
-        return capture_with_options(
-            program,
-            args,
-            CaptureOptions::new()
-                .cwd(cwd)
-                .env(env)
-                .timeout_secs(timeout_secs),
-        );
+    let bearer = match resolve_bearer_for_capture(bearer) {
+        Ok(bearer) => bearer,
+        Err(err) => {
+            return CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: err,
+            }
+        }
+    };
+    let mut options = CaptureOptions::new()
+        .cwd(cwd)
+        .env(env)
+        .timeout_secs(timeout_secs);
+    if let Some(bearer) = bearer {
+        options = options.bearer(bearer);
     }
-    match resolve_non_root_bearer(bearer) {
-        Ok(bearer) => capture_with_options(
-            program,
-            args,
-            CaptureOptions::new()
-                .cwd(cwd)
-                .env(env)
-                .timeout_secs(timeout_secs)
-                .bearer(bearer),
-        ),
-        Err(err) => CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: err,
-        },
+    capture_with_options(program, args, options)
+}
+
+fn resolve_bearer_for_capture(bearer: &str) -> Result<Option<Bearer>, String> {
+    #[cfg(feature = "test-facade")]
+    if matches!(
+        current_test_bearer_override(),
+        Some(TestBearerOverride::CurrentEffectiveUser)
+    ) {
+        return Ok(None);
+    }
+    if unsafe { libc::geteuid() } != 0 {
+        Ok(None)
+    } else {
+        resolve_non_root_bearer(bearer).map(Some)
     }
 }
 
 fn resolve_non_root_bearer(bearer: &str) -> Result<Bearer, String> {
     let name = std::ffi::CString::new(bearer).map_err(|_| "git-bearer-invalid-name".to_string())?;
     #[cfg(any(test, feature = "test-facade"))]
-    if let Some(injected) = TEST_BEARER.with(|slot| slot.borrow().as_ref().cloned()) {
+    if let Some(TestBearerOverride::Fixed(injected)) = current_test_bearer_override() {
         if injected.name != bearer {
             return Err(format!("git-bearer-unknown {bearer}"));
         }

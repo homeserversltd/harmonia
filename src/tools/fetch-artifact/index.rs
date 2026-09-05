@@ -501,6 +501,8 @@ mod tests {
 
     #[test]
     fn release_404_builds_source_fallback_and_installs_destination() {
+        #[cfg(feature = "test-facade")]
+        let _bearer_guard = crate::atoms::command::install_test_current_effective_user();
         let root = source_fixture();
         let destination = root.path().join("destination");
         let installed_binary = root.path().join("installed");
@@ -524,6 +526,8 @@ mod tests {
 
     #[test]
     fn release_401_writes_fallback_schema_and_installs_destination() {
+        #[cfg(feature = "test-facade")]
+        let _bearer_guard = crate::atoms::command::install_test_current_effective_user();
         let root = source_fixture();
         let destination = root.path().join("destination");
         let installed_binary = root.path().join("installed");
@@ -548,6 +552,8 @@ mod tests {
 
     #[test]
     fn registry_403_builds_source_fallback_and_records_refusing_manifest_url() {
+        #[cfg(feature = "test-facade")]
+        let _bearer_guard = crate::atoms::command::install_test_current_effective_user();
         let root = source_fixture();
         let destination = root.path().join("destination");
         let installed_binary = root.path().join("installed");
