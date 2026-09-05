@@ -31,17 +31,31 @@ pub(crate) struct ResolvedBeamLock {
     pub version: String,
     pub flagged_at: String,
     pub credential: &'static str,
+    pub malformed_flags: usize,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlotResolutionError {
     pub signal: String,
     pub credential: &'static str,
+    pub malformed_flags: usize,
 }
 impl SlotResolutionError {
     fn new(signal: impl Into<String>, credential: &'static str) -> Self {
         Self {
             signal: signal.into(),
             credential,
+            malformed_flags: 0,
+        }
+    }
+    fn with_malformed_flags(
+        signal: impl Into<String>,
+        credential: &'static str,
+        malformed_flags: usize,
+    ) -> Self {
+        Self {
+            signal: signal.into(),
+            credential,
+            malformed_flags,
         }
     }
 }
@@ -395,6 +409,7 @@ fn resolve_slot_with_credential_source(
     }
     versions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     let mut selected = None;
+    let mut malformed_flags = 0;
     for item in versions.into_iter().take(20) {
         let flag_path = dir.join("flag");
         let url = format!(
@@ -403,23 +418,35 @@ fn resolve_slot_with_credential_source(
             component,
             item.version
         );
-        let status = fetch_flag(&url, &flag_path, token)
-            .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
+        let status = fetch_flag(&url, &flag_path, token).map_err(|signal| {
+            SlotResolutionError::with_malformed_flags(signal, credential_state, malformed_flags)
+        })?;
         if status == 404 {
             continue;
         }
         if !(200..300).contains(&status) {
             let _ = std::fs::remove_dir_all(&dir);
-            return Err(SlotResolutionError::new(
+            return Err(SlotResolutionError::with_malformed_flags(
                 "beam-flag-unresolvable",
                 credential_state,
+                malformed_flags,
             ));
         }
         let flag: ReleaseFlag =
             serde_json::from_slice(&std::fs::read(&flag_path).map_err(|_| {
-                SlotResolutionError::new("beam-flag-unresolvable", credential_state)
+                SlotResolutionError::with_malformed_flags(
+                    "beam-flag-unresolvable",
+                    credential_state,
+                    malformed_flags,
+                )
             })?)
-            .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
+            .map_err(|_| {
+                SlotResolutionError::with_malformed_flags(
+                    "beam-flag-unresolvable",
+                    credential_state,
+                    malformed_flags,
+                )
+            })?;
         if flag.schema != "estate.release-flag.v1"
             || flag.component != component.as_str()
             || flag.source_sha != item.version
@@ -428,11 +455,8 @@ fn resolve_slot_with_credential_source(
             || flag.flagged_at.trim().is_empty()
             || flag.pipeline_url.trim().is_empty()
         {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(SlotResolutionError::new(
-                "beam-flag-unresolvable",
-                credential_state,
-            ));
+            malformed_flags += 1;
+            continue;
         }
         if selected
             .as_ref()
@@ -443,9 +467,10 @@ fn resolve_slot_with_credential_source(
     }
     let _ = std::fs::remove_dir_all(&dir);
     let Some((version, flagged_at, env_sha)) = selected else {
-        return Err(SlotResolutionError::new(
+        return Err(SlotResolutionError::with_malformed_flags(
             "beam-flag-absent",
             credential_state,
+            malformed_flags,
         ));
     };
     Ok(ResolvedBeamLock {
@@ -461,6 +486,7 @@ fn resolve_slot_with_credential_source(
         version,
         flagged_at,
         credential: credential_state,
+        malformed_flags,
     })
 }
 

@@ -513,6 +513,7 @@ pub(crate) struct BeamCompareReceipt {
     pub lock_source: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_from: Option<BeamResolvedFrom>,
+    pub malformed_flags: usize,
     pub credential: &'static str,
     pub door: Option<BeamDoorProjection>,
     pub first_divergent_member: Option<&'static str>,
@@ -540,6 +541,7 @@ pub(crate) fn compare_beam(
             lock: None,
             lock_source: "literal",
             resolved_from: None,
+            malformed_flags: 0,
             credential: "absent",
             door: None,
             first_divergent_member: None,
@@ -561,6 +563,7 @@ pub(crate) fn compare_beam(
                 lock: Some(lock_projection),
                 lock_source: "literal",
                 resolved_from: None,
+                malformed_flags: 0,
                 credential: "absent",
                 door: None,
                 first_divergent_member: None,
@@ -593,6 +596,7 @@ pub(crate) fn compare_beam(
         lock: Some(lock_projection),
         lock_source: "literal",
         resolved_from: None,
+        malformed_flags: 0,
         credential: "absent",
         door: Some(door_projection),
         first_divergent_member: member,
@@ -683,6 +687,7 @@ fn beam_receipt_with_resolver(
                         version: resolved.version,
                         flagged_at: resolved.flagged_at,
                     });
+                    receipt.malformed_flags = resolved.malformed_flags;
                     receipt.credential = resolved.credential;
                     return Ok(receipt);
                 }
@@ -694,6 +699,7 @@ fn beam_receipt_with_resolver(
                         lock: None,
                         lock_source: "slot-resolved",
                         resolved_from: None,
+                        malformed_flags: error.malformed_flags,
                         credential: error.credential,
                         door: None,
                         first_divergent_member: None,
@@ -716,6 +722,7 @@ fn beam_receipt_with_resolver(
                 lock: None,
                 lock_source: "literal",
                 resolved_from: None,
+                malformed_flags: 0,
                 credential: "absent",
                 door: None,
                 first_divergent_member: None,
@@ -828,6 +835,81 @@ mod beam_tests {
             "source_sha": source, "env_sha": env, "sha256": "e".repeat(64),
             "flagged_at": flagged_at, "pipeline_url": "https://ci"
         }).to_string().into_bytes()
+    }
+
+    #[test]
+    fn slot_valid_flag_with_older_hollow_selects_valid_and_counts_one() {
+        let valid = "a".repeat(40);
+        let hollow = "b".repeat(40);
+        let env = "1".repeat(64);
+        let listing = serde_json::json!([
+            {"name":"caduceus", "version": &valid, "created_at":"2026-03-01T00:00:00Z"},
+            {"name":"caduceus", "version": &hollow, "created_at":"2026-02-01T00:00:00Z"}
+        ]).to_string().into_bytes();
+        let door = serde_json::json!({
+            "schema":"caduceus.beam.v1", "ok":true, "service":"caduceus",
+            "caduceus_sha":valid, "env_sha":env, "profile":"homeserver"
+        }).to_string().into_bytes();
+        let (registry, server) = fake_registry(vec![
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1".into(), 200, listing),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{valid}/release.flag"), 200, flag(&valid, &env, "2026-03-01T00:00:00Z")),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{hollow}/release.flag"), 200, flag(&hollow, "", "2026-02-01T00:00:00Z")),
+            ("/beam".into(), 200, door),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("beam.json");
+        write_slot(&lock_path, &registry);
+        let receipt = beam_receipt(Some(&lock_path), &format!("{registry}/beam")).unwrap();
+        assert_eq!(server.join().unwrap().len(), 4);
+        assert_eq!(receipt.state, "aligned");
+        assert_eq!(receipt.lock.as_ref().unwrap().caduceus_sha, valid);
+        assert_eq!(receipt.resolved_from.unwrap().version, valid);
+        assert_eq!(receipt.malformed_flags, 1);
+    }
+
+    #[test]
+    fn slot_all_hollow_flags_are_absent_and_counted() {
+        let first = "a".repeat(40);
+        let second = "b".repeat(40);
+        let listing = serde_json::json!([
+            {"name":"caduceus", "version": &first, "created_at":"2026-03-01T00:00:00Z"},
+            {"name":"caduceus", "version": &second, "created_at":"2026-02-01T00:00:00Z"}
+        ]).to_string().into_bytes();
+        let (registry, server) = fake_registry(vec![
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1".into(), 200, listing),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{first}/release.flag"), 200, flag(&first, "", "2026-03-01T00:00:00Z")),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{second}/release.flag"), 200, flag(&second, "", "2026-02-01T00:00:00Z")),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("beam.json");
+        write_slot(&lock_path, &registry);
+        let receipt = beam_receipt(Some(&lock_path), &format!("{registry}/beam")).unwrap();
+        assert_eq!(server.join().unwrap().len(), 3);
+        assert_eq!(receipt.state, "pre-declaration");
+        assert_eq!(receipt.first_missing_signal, "beam-flag-absent");
+        assert_eq!(receipt.malformed_flags, 2);
+        assert!(receipt.door.is_none());
+    }
+
+    #[test]
+    fn slot_500_flag_is_unresolvable() {
+        let source = "a".repeat(40);
+        let listing = serde_json::json!([
+            {"name":"caduceus", "version": &source, "created_at":"2026-01-01T00:00:00Z"}
+        ]).to_string().into_bytes();
+        let (registry, server) = fake_registry(vec![
+            ("/api/v1/packages/HOMESERVERSLTD?type=generic&q=caduceus&limit=50&page=1".into(), 200, listing),
+            (format!("/api/packages/HOMESERVERSLTD/generic/caduceus/{source}/release.flag"), 500, Vec::new()),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("beam.json");
+        write_slot(&lock_path, &registry);
+        let receipt = beam_receipt(Some(&lock_path), &format!("{registry}/beam")).unwrap();
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(receipt.state, "pre-declaration");
+        assert_eq!(receipt.first_missing_signal, "beam-flag-unresolvable");
+        assert_eq!(receipt.malformed_flags, 0);
+        assert!(receipt.door.is_none());
     }
 
     #[test]
