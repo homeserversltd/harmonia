@@ -4,8 +4,7 @@ when:
 
 steps:
   - name: cargo-test
-    image: rust:1.85-bookworm
-    failure: ignore
+    image: git.home.arpa/homeserversltd/rust-house:house
     commands:
       - cargo test --all-targets --locked --features test-facade
 
@@ -99,7 +98,7 @@ steps:
         PY
 
   - name: build-harmonia-release
-    image: rust:1.85-bookworm
+    image: git.home.arpa/homeserversltd/rust-house:house
     when:
       - event: push
         branch: main
