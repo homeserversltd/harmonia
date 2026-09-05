@@ -36,6 +36,7 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::Read;
+use std::process::Command;
 
 pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
@@ -250,6 +251,74 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         h.update(&buf[..n]);
     }
     Ok(format!("{:x}", h.finalize()))
+}
+
+fn is_valid_source_head(source_head: &str) -> bool {
+    source_head.len() == 40 && source_head.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn strip_command_substitution_line_endings(value: &str) -> &str {
+    value.trim_end_matches(|character| character == char::from(13) || character == char::from(10))
+}
+
+fn ci_environment_sha(rustc_version: &str, cargo_version: &str, target: &str) -> String {
+    let preimage = format!(
+        "{}\n{}\n{}\n",
+        strip_command_substitution_line_endings(rustc_version),
+        strip_command_substitution_line_endings(cargo_version),
+        strip_command_substitution_line_endings(target),
+    );
+    let mut hasher = Sha256::new();
+    hasher.update(preimage.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn observe_toolchain_command(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("engine-build-identity-{program}-probe-failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "engine-build-identity-{program}-probe-failed exit={:?} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ));
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|error| format!("engine-build-identity-{program}-probe-not-utf8: {error}"))?;
+    let value = strip_command_substitution_line_endings(&value);
+    if value.is_empty() {
+        return Err(format!("engine-build-identity-{program}-probe-empty"));
+    }
+    Ok(value.to_string())
+}
+
+fn observe_toolchain_identity() -> Result<String, String> {
+    let rustc_version = observe_toolchain_command("rustc", &["-Vv"])?;
+    let target = rustc_version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .filter(|target| !target.is_empty())
+        .ok_or_else(|| "engine-build-identity-rustc-host-missing".to_string())?;
+    let cargo_version = observe_toolchain_command("cargo", &["-V"])?;
+    Ok(ci_environment_sha(&rustc_version, &cargo_version, target))
+}
+
+fn staged_build_environment(
+    source_head: &str,
+    environment_sha: Option<&str>,
+) -> Vec<(String, String)> {
+    if !is_valid_source_head(source_head) {
+        return Vec::new();
+    }
+    let Some(environment_sha) = environment_sha else {
+        return Vec::new();
+    };
+    vec![
+        ("HARMONIA_BUILD_SHA".into(), source_head.to_string()),
+        ("HARMONIA_BUILD_ENV_SHA".into(), environment_sha.to_string()),
+    ]
 }
 
 pub(crate) fn self_update_reexec_guard_active() -> bool {
@@ -541,6 +610,8 @@ fn emit_preflight_receipt(
     changed: bool,
     first_missing_signal: &str,
     operation_count: usize,
+    staged_source_sha: Option<&str>,
+    staged_environment_sha: Option<&str>,
 ) -> Result<(), String> {
     write_json(
         &preflight_dir.join("run.json"),
@@ -561,6 +632,10 @@ fn emit_preflight_receipt(
             "source_head": source_head.unwrap_or("unknown"),
             "staged_sha256": staged_sha,
             "installed_sha256": installed_sha,
+            "staged_build_identity": {
+                "source_sha": staged_source_sha,
+                "env_sha": staged_environment_sha,
+            },
             "credential_selector": serde_json::Value::Null,
             "credentials": [],
             "git_bearer": "owner",
@@ -622,6 +697,7 @@ pub(crate) fn run_engine_preflight(
                 "first_missing_signal": signal,
                 "engine_config": config_path,
                 "source_authority": "device-profile-certificate-sources",
+                "staged_build_identity": {"source_sha": null, "env_sha": null},
             }),
         )?;
         return Ok(failed_execution(signal));
@@ -641,6 +717,8 @@ pub(crate) fn run_engine_preflight(
             false,
             signal,
             0,
+            None,
+            None,
         )?;
         return Ok(failed_execution(signal));
     }
@@ -669,6 +747,8 @@ pub(crate) fn run_engine_preflight(
                 false,
                 &signal,
                 0,
+                None,
+                None,
             )?;
             return Ok(failed_execution(&signal));
         }
@@ -721,8 +801,16 @@ pub(crate) fn run_engine_preflight(
         stdout: String::new(),
         stderr: "engine build skipped before source acquisition".to_string(),
     };
+    let staged_source_sha = if source.ok {
+        source_head
+            .as_deref()
+            .filter(|source_head| is_valid_source_head(source_head))
+    } else {
+        None
+    };
+    let mut staged_environment_sha = None;
     if source.ok {
-        let Some(source_head) = source_head.as_deref() else {
+        let Some(acquired_source_head) = source_head.as_deref() else {
             first_missing_signal = "engine-source-head-absent".to_string();
             emit_preflight_receipt(
                 &preflight_dir,
@@ -737,17 +825,51 @@ pub(crate) fn run_engine_preflight(
                 changed,
                 &first_missing_signal,
                 operation_count,
+                None,
+                None,
             )?;
             return Ok(failed_execution(&first_missing_signal));
         };
+        let build_environment = if staged_source_sha.is_some() {
+            let environment_sha = match observe_toolchain_identity() {
+                Ok(environment_sha) => environment_sha,
+                Err(error) => {
+                    first_missing_signal = "engine-build-identity-observation-failed".to_string();
+                    build.stderr = error;
+                    write_bearer_command_receipt(&preflight_dir, "staged-build", &build, "owner")?;
+                    operation_count += 1;
+                    emit_preflight_receipt(
+                        &preflight_dir,
+                        &config_path,
+                        &config,
+                        &component,
+                        source_head.as_deref(),
+                        None,
+                        install_before.as_deref(),
+                        false,
+                        apply,
+                        changed,
+                        &first_missing_signal,
+                        operation_count,
+                        staged_source_sha,
+                        None,
+                    )?;
+                    return Ok(failed_execution(&first_missing_signal));
+                }
+            };
+            staged_environment_sha = Some(environment_sha);
+            staged_build_environment(acquired_source_head, staged_environment_sha.as_deref())
+        } else {
+            staged_build_environment(acquired_source_head, None)
+        };
         let observation = crate::build_crate::run_build_with_mode(
             &config.build_root,
-            source_head,
+            acquired_source_head,
             install_before.as_deref(),
             &config.install_bin,
             &staged,
             apply,
-            &[],
+            &build_environment,
             crate::atoms::r#do::build_crate::DEFAULT_TIMEOUT_SECS,
             &preflight_dir.join("harmonia-atoms.log"),
             "owner",
@@ -831,6 +953,8 @@ pub(crate) fn run_engine_preflight(
         changed,
         &first_missing_signal,
         operation_count,
+        staged_source_sha,
+        staged_environment_sha.as_deref(),
     )?;
     crate::hyalos::forward_receipt(
         "harmonia.renew_self.preflight",
@@ -853,8 +977,49 @@ pub(crate) fn run_engine_preflight(
 
 #[cfg(test)]
 mod release_transport_tests {
-    use super::{engine_source_gate, EngineArtifactTransport};
+    use super::{
+        ci_environment_sha, engine_source_gate, staged_build_environment, EngineArtifactTransport,
+    };
+    use sha2::{Digest, Sha256};
     use std::path::PathBuf;
+
+    #[test]
+    fn valid_source_head_build_environment_contains_exact_identity_variables() {
+        let source_head = "0123456789abcdef0123456789abcdef01234567";
+        let environment_sha = "a".repeat(64);
+
+        assert_eq!(
+            staged_build_environment(source_head, Some(&environment_sha)),
+            vec![
+                ("HARMONIA_BUILD_SHA".to_string(), source_head.to_string()),
+                ("HARMONIA_BUILD_ENV_SHA".to_string(), environment_sha),
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_source_head_build_environment_has_no_identity_variables() {
+        assert!(staged_build_environment(&"g".repeat(40), Some(&"a".repeat(64))).is_empty());
+    }
+
+    #[test]
+    fn ci_environment_sha_is_deterministic_and_uses_one_newline_per_field() {
+        let rustc_version = "rustc 1.2.3\nrelease: stable\r\n";
+        let cargo_version = "cargo 1.2.3\n";
+        let target = "x86_64-unknown-linux-gnu\r\n";
+        let expected_preimage =
+            "rustc 1.2.3\nrelease: stable\ncargo 1.2.3\nx86_64-unknown-linux-gnu\n";
+        let expected = format!("{:x}", Sha256::digest(expected_preimage.as_bytes()));
+
+        assert_eq!(
+            ci_environment_sha(rustc_version, cargo_version, target),
+            expected
+        );
+        assert_eq!(
+            ci_environment_sha(rustc_version, cargo_version, target),
+            ci_environment_sha(rustc_version, cargo_version, target)
+        );
+    }
 
     #[test]
     fn engine_config_uses_local_mechanics_and_certificate_source_authority() {
