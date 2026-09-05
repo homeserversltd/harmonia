@@ -174,17 +174,23 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
             profile_id, profile.id
         ));
     }
+    let mut profile = profile;
+    profile.syzygy_declaration =
+        crate::bands::stage_profile::groups::read_device_syzygy_declaration()?;
     set_run_identity_source("certificate");
     Ok((profile, profile_path))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceProfileCertificate, DEVICE_PROFILE_SCHEMA};
+    use super::{load_certificate_at, DeviceProfileCertificate, DEVICE_PROFILE_SCHEMA};
+    use std::fs;
 
     #[test]
     fn certificate_ignores_foreign_syzygy_field() {
-        let certificate: DeviceProfileCertificate = serde_json::from_str(
+        let file = tempfile::NamedTempFile::new().expect("certificate file");
+        fs::write(
+            file.path(),
             r#"{
                 "schema": "homeserver.device-profile.v1",
                 "kernel": {
@@ -198,7 +204,9 @@ mod tests {
                 }
             }"#,
         )
-        .unwrap();
+        .expect("certificate contents");
+        let certificate: DeviceProfileCertificate =
+            load_certificate_at(file.path()).expect("foreign syzygy is ignored");
 
         assert_eq!(certificate.schema, DEVICE_PROFILE_SCHEMA);
         assert_eq!(certificate.kernel.profile, "homeserver");

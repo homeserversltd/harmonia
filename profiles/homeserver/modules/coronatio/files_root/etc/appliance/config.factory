@@ -1,4 +1,9 @@
 {
+    "syzygy": {
+      "schema": "appliance.syzygy.v1",
+      "members": ["harmonia", "caduceus", "sbin", "coronatio"],
+      "gui_face": "Coronatio"
+    },
     "tabs": {
       "admin": {
         "config": {

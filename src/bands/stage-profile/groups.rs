@@ -41,15 +41,13 @@ const APPLIANCE_CONFIG_PATH: &str = "/etc/appliance/config.json";
 #[derive(Default)]
 pub(crate) struct DeviceModulePolicy {
     pub(crate) disabled_modules: BTreeSet<String>,
+    pub(crate) syzygy_declaration: Option<SyzygyDeclaration>,
 }
 
-pub(crate) fn read_device_module_policy() -> Result<DeviceModulePolicy, String> {
-    let path = Path::new(APPLIANCE_CONFIG_PATH);
+fn read_device_config_at(path: &Path) -> Result<Option<serde_json::Value>, String> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Ok(DeviceModulePolicy::default())
-        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             return Err(format!(
                 "appliance-config-read-failed {}: {err}",
@@ -57,8 +55,46 @@ pub(crate) fn read_device_module_policy() -> Result<DeviceModulePolicy, String> 
             ))
         }
     };
-    let config: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|err| format!("appliance-config-parse-failed {}: {err}", path.display()))?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|err| format!("appliance-config-parse-failed {}: {err}", path.display()))
+}
+
+fn parse_syzygy_declaration(
+    config: &serde_json::Value,
+    path: &Path,
+) -> Result<Option<SyzygyDeclaration>, String> {
+    let Some(raw) = config.get("syzygy") else {
+        return Ok(None);
+    };
+    let declaration: SyzygyDeclaration = serde_json::from_value(raw.clone()).map_err(|err| {
+        format!(
+            "appliance-config-syzygy-parse-failed {}: {err}",
+            path.display()
+        )
+    })?;
+    if declaration.schema != "appliance.syzygy.v1" {
+        return Err(format!(
+            "device-profile-syzygy-schema-unsupported {}",
+            declaration.schema
+        ));
+    }
+    if let Some(face) = declaration.gui_face.as_deref() {
+        if !matches!(face, "Hyprland" | "Arcadia" | "Coronatio") {
+            return Err(format!("device-profile-syzygy-gui-face-unsupported {face}"));
+        }
+    }
+    Ok(Some(declaration))
+}
+
+pub(crate) fn read_device_module_policy() -> Result<DeviceModulePolicy, String> {
+    read_device_module_policy_at(Path::new(APPLIANCE_CONFIG_PATH))
+}
+
+fn read_device_module_policy_at(path: &Path) -> Result<DeviceModulePolicy, String> {
+    let Some(config) = read_device_config_at(path)? else {
+        return Ok(DeviceModulePolicy::default());
+    };
     let disabled_modules = config
         .get("harmonia")
         .and_then(|harmonia| harmonia.get("disabled_modules"))
@@ -71,7 +107,15 @@ pub(crate) fn read_device_module_policy() -> Result<DeviceModulePolicy, String> 
                 .collect()
         })
         .unwrap_or_default();
-    Ok(DeviceModulePolicy { disabled_modules })
+    let syzygy_declaration = parse_syzygy_declaration(&config, path)?;
+    Ok(DeviceModulePolicy {
+        disabled_modules,
+        syzygy_declaration,
+    })
+}
+
+pub(crate) fn read_device_syzygy_declaration() -> Result<Option<SyzygyDeclaration>, String> {
+    Ok(read_device_module_policy()?.syzygy_declaration)
 }
 
 pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
@@ -284,4 +328,62 @@ fn write_group_selection_receipt(
             "losers": selection.losers,
         }),
     )
+}
+
+#[cfg(test)]
+mod syzygy_tests {
+    use super::read_device_module_policy_at;
+    use crate::SyzygyDeclaration;
+    use std::fs;
+
+    fn config_file(config: serde_json::Value) -> tempfile::TempPath {
+        let file = tempfile::NamedTempFile::new().expect("config file");
+        fs::write(file.path(), config.to_string()).expect("config contents");
+        file.into_temp_path()
+    }
+
+    #[test]
+    fn reads_present_top_level_syzygy_declaration() {
+        let path = config_file(serde_json::json!({
+            "syzygy": {
+                "schema": "appliance.syzygy.v1",
+                "members": ["harmonia", "caduceus", "sbin", "coronatio"],
+                "gui_face": "Coronatio"
+            }
+        }));
+
+        let policy = read_device_module_policy_at(&path).expect("syzygy config");
+        let declaration: SyzygyDeclaration = policy
+            .syzygy_declaration
+            .expect("present syzygy declaration");
+        assert_eq!(declaration.schema, "appliance.syzygy.v1");
+        assert_eq!(
+            declaration.members,
+            vec!["harmonia", "caduceus", "sbin", "coronatio"]
+        );
+        assert_eq!(declaration.gui_face.as_deref(), Some("Coronatio"));
+    }
+
+    #[test]
+    fn absent_syzygy_is_pre_declaration() {
+        let path = config_file(serde_json::json!({"harmonia": {"disabled_modules": []}}));
+        let policy = read_device_module_policy_at(&path).expect("config without syzygy");
+        assert!(policy.syzygy_declaration.is_none());
+    }
+
+    #[test]
+    fn malformed_syzygy_is_rejected() {
+        let path = config_file(serde_json::json!({
+            "syzygy": {
+                "schema": "foreign.invalid.syzygy.v99",
+                "members": [],
+                "gui_face": "Coronatio"
+            }
+        }));
+        let error = match read_device_module_policy_at(&path) {
+            Ok(_) => panic!("foreign schema must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("device-profile-syzygy-schema-unsupported"));
+    }
 }
