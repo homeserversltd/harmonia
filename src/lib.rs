@@ -978,11 +978,28 @@ pub(crate) fn toolbelt() -> Result<(), String> {
 }
 
 pub(crate) fn explain() -> Result<(), String> {
+    let retired_engine_config_fields =
+        crate::bands::renew_self::load_engine_plane_config_with_debt(
+            &crate::bands::renew_self::engine_config_path(),
+        )?
+        .map(|(_, fields)| fields)
+        .unwrap_or_default();
+    let engine_config_debt = !retired_engine_config_fields.is_empty();
+    let retired_engine_config_fields_json =
+        serde_json::to_string(&retired_engine_config_fields).map_err(|e| e.to_string())?;
     println!("schema=harmonia.explain.v1");
     hyalos::forward_receipt(
         "schema=harmonia.explain.v1",
-        &format!("schema=harmonia.explain.v1 ok={}", true),
-        Some(serde_json::json!({"schema": "harmonia.explain.v1", "ok": true})),
+        &format!(
+            "schema=harmonia.explain.v1 ok={} engine_config_debt={}",
+            true, engine_config_debt
+        ),
+        Some(serde_json::json!({
+            "schema": "harmonia.explain.v1",
+            "ok": true,
+            "retired_engine_config_fields": retired_engine_config_fields,
+            "engine_config_debt": engine_config_debt,
+        })),
         Some(true),
     );
     println!("ok=true");
@@ -993,6 +1010,8 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("python_helper_lane=false");
     println!("profiles=homeserver,homeconsole,tv");
     println!("homeconsole_identity=homeconsole");
+    println!("retired_engine_config_fields={retired_engine_config_fields_json}");
+    println!("engine_config_debt={engine_config_debt}");
     Ok(())
 }
 
