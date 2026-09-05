@@ -83,7 +83,9 @@ fn git_command_context_for_credential_source(
             credential_path,
             estate_host,
         ) {
-            crate::atoms::forge_credential::Outcome::Present { .. } => {
+            crate::atoms::forge_credential::Outcome::Present { username, token } => {
+                env.insert("HARMONIA_FORGEJO_USERNAME".into(), username);
+                env.insert("HARMONIA_FORGEJO_TOKEN".into(), token);
                 Some(owner_https_credential_helper())
             }
             crate::atoms::forge_credential::Outcome::Absent => None,
@@ -145,11 +147,9 @@ pub(crate) fn ls_remote(repo: &str, refspec: &str, insecure_tls: bool) -> Comman
 
 fn owner_https_credential_helper() -> String {
     let host = crate::atoms::forge_credential::ESTATE_FORGEJO_HOST;
-    let path = crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL;
     format!(
-        "credential.helper=!f() {{ protocol= host= username= token=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${{line#protocol=}} ;; host=*) host=${{line#host=}} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = {} ]; then while IFS= read -r line || [ -n \"$line\" ]; do value=$(printf '%s' \"$line\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'); case \"$value\" in FORGEJO_USERNAME=*) username=${{value#FORGEJO_USERNAME=}} ;; FORGEJO_TOKEN=*) [ -n \"$token\" ] || token=${{value#FORGEJO_TOKEN=}} ;; *=*) ;; *) [ -n \"$token\" ] || token=$value ;; esac; done < {}; if [ -z \"$username\" ]; then username=owner; fi; if [ -n \"$token\" ]; then printf \"username=%s\\npassword=%s\\n\" \"$username\" \"$token\"; fi; fi; }}; f",
+        "credential.helper=!f() {{ protocol= host=; while IFS= read -r line && [ -n \"$line\" ]; do case \"$line\" in protocol=*) protocol=${{line#protocol=}} ;; host=*) host=${{line#host=}} ;; esac; done; if [ \"$protocol\" = https ] && [ \"$host\" = {} ]; then printf \"username=%s\\npassword=%s\\n\" \"$HARMONIA_FORGEJO_USERNAME\" \"$HARMONIA_FORGEJO_TOKEN\"; fi; }}; f",
         shell_quote(host),
-        shell_quote(path),
     )
 }
 
@@ -332,13 +332,36 @@ pub fn source_head(path: &Path, bearer: &str) -> CommandReceipt {
 #[cfg(test)]
 mod forgejo_credential_contract_tests {
     use super::*;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
 
     fn has_credential_helper(context: &GitCommandContext) -> bool {
         context
             .config_args
             .iter()
             .any(|argument| argument.starts_with("credential.helper=!f()"))
+    }
+
+    fn run_credential_helper(helper: &str, host: &str) -> String {
+        let script = helper
+            .strip_prefix("credential.helper=!")
+            .expect("generated helper must be a git credential helper config");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .env("HARMONIA_FORGEJO_USERNAME", "owner")
+            .env("HARMONIA_FORGEJO_TOKEN", "test-token")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(child.stdin.as_mut().unwrap(), "protocol=https").unwrap();
+        writeln!(child.stdin.as_mut().unwrap(), "host={host}").unwrap();
+        writeln!(child.stdin.as_mut().unwrap()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
     }
 
     #[test]
@@ -371,8 +394,22 @@ mod forgejo_credential_contract_tests {
             .find(|argument| argument.starts_with("credential.helper=!f()"))
             .expect("present Forgejo repository must receive generated helper");
         assert!(helper.contains("git.home.arpa"));
-        assert!(helper.contains("*) [ -n \"$token\" ] || token=$value"));
-        assert!(helper.contains(crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL));
+        assert!(helper.contains("HARMONIA_FORGEJO_TOKEN"));
+        assert!(!helper.contains('/'));
+        assert!(!helper.contains("test-token"));
+        assert_eq!(
+            context.env.get("HARMONIA_FORGEJO_USERNAME"),
+            Some(&"owner".to_string())
+        );
+        assert_eq!(
+            context.env.get("HARMONIA_FORGEJO_TOKEN"),
+            Some(&"test-token".to_string())
+        );
+        assert_eq!(
+            run_credential_helper(helper, "git.home.arpa"),
+            "username=owner\npassword=test-token\n"
+        );
+        assert_eq!(run_credential_helper(helper, "foreign.example"), "");
         assert!(has_credential_helper(&context));
         println!("trace git credential=present generated_helper=true token=redacted");
 
@@ -390,6 +427,8 @@ mod forgejo_credential_contract_tests {
         )
         .unwrap();
         assert!(!has_credential_helper(&missing_context));
+        assert!(!missing_context.env.contains_key("HARMONIA_FORGEJO_USERNAME"));
+        assert!(!missing_context.env.contains_key("HARMONIA_FORGEJO_TOKEN"));
         println!("trace git credential=missing generated_helper=false");
 
         let foreign_request = Request::new(
@@ -405,6 +444,8 @@ mod forgejo_credential_contract_tests {
         )
         .unwrap();
         assert!(!has_credential_helper(&foreign_context));
+        assert!(!foreign_context.env.contains_key("HARMONIA_FORGEJO_USERNAME"));
+        assert!(!foreign_context.env.contains_key("HARMONIA_FORGEJO_TOKEN"));
         println!("trace git credential=foreign generated_helper=false");
     }
 }
