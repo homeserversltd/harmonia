@@ -7,7 +7,7 @@ server {
     listen 443 ssl;
     server_name git.home.arpa;
 
-    client_max_body_size 100M;
+    client_max_body_size 0; # registry blobs and release assets exceed 100M; LAN-only forge
     ssl_certificate /etc/ssl/home.arpa/cert.pem;
     ssl_certificate_key /etc/ssl/home.arpa/key.pem;
     include /etc/nginx/ssl_params.conf;
@@ -28,7 +28,7 @@ server {
 server {
     listen *:13000 ssl;
 
-    client_max_body_size 100M;
+    client_max_body_size 0; # registry blobs and release assets exceed 100M; LAN-only forge
     ssl_certificate /etc/ssl/home.arpa/cert.pem;
     ssl_certificate_key /etc/ssl/home.arpa/key.pem;
 

@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "nginx",
   "category": "interactable",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration.",
   "constants": {
     "sites": [
