@@ -80,52 +80,82 @@ pub(crate) fn execute(
         ),
     };
 
+    let source_dir = args
+        .get("source_dir")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(Path::new);
     let native_release = !release_repo.trim().is_empty();
+    let mut release_fallback: Option<(String, String)> = None;
     let native_download = if native_release {
-        let source_dir = Path::new(args.get("source_dir").and_then(Value::as_str).unwrap_or(""));
+        let release_source_dir = source_dir.unwrap_or(Path::new(""));
         let tag = args
             .get("release_tag")
             .and_then(Value::as_str)
             .map(str::to_owned)
             .unwrap_or_else(|| source_sha.to_owned());
+        let api_root = args
+            .get("api_root")
+            .and_then(Value::as_str)
+            .unwrap_or("https://git.home.arpa/api/v1");
         match crate::atoms::ask::fetch_artifact::download_release(
             component,
             artifact_name,
-            source_dir,
+            release_source_dir,
             release_repo,
             (!tag.is_empty()).then_some(tag.as_str()),
-            args.get("api_root")
-                .and_then(Value::as_str)
-                .unwrap_or("https://git.home.arpa/api/v1"),
+            api_root,
             release_asset_name.as_deref(),
             release_sidecar_name.as_deref(),
             source_sha,
         ) {
             Ok(Some(download)) => Some(download),
             Ok(None) => {
-                let api = args
-                    .get("api_root")
-                    .and_then(Value::as_str)
-                    .unwrap_or("https://git.home.arpa/api/v1")
-                    .trim_end_matches('/');
-                let message = format!(
-                    "fetch-artifact-release-absent tag={tag} url={api}/repos/{release_repo}/releases/tags/{tag}"
-                );
-                crate::atoms::attest::fetch_artifact::attest(
-                    &receipt_dir.join("harmonia-atoms.log"),
-                    false,
-                    false,
-                    &format!(
-                        "state=Drift; care=artifact acquisition refused; after=Drift; error={message}"
+                release_fallback = Some((
+                    "release-miss".into(),
+                    crate::atoms::ask::fetch_artifact::release_metadata_url(
+                        api_root,
+                        release_repo,
+                        &tag,
                     ),
-                )?;
-                return Ok(crate::OperationOutcome {
-                    ok: false,
-                    changed: false,
-                    skipped: true,
-                    message,
-                    command: None,
-                });
+                ));
+                None
+            }
+            Err(error)
+                if error.starts_with("fetch-artifact-auth-required ")
+                    || error.starts_with("fetch-artifact-auth-required-non-estate-registry ") =>
+            {
+                let artifact_url = error
+                    .strip_prefix("fetch-artifact-auth-required ")
+                    .or_else(|| {
+                        error.strip_prefix("fetch-artifact-auth-required-non-estate-registry ")
+                    })
+                    .and_then(|value| value.strip_prefix("url="))
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        crate::atoms::ask::fetch_artifact::release_metadata_url(
+                            api_root,
+                            release_repo,
+                            &tag,
+                        )
+                    });
+                release_fallback = Some(("auth-required".into(), artifact_url));
+                None
+            }
+            Err(error)
+                if error
+                    .split(|character: char| !character.is_ascii_digit())
+                    .any(|part| part == "404") =>
+            {
+                release_fallback = Some((
+                    "release-miss".into(),
+                    crate::atoms::ask::fetch_artifact::release_metadata_url(
+                        api_root,
+                        release_repo,
+                        &tag,
+                    ),
+                ));
+                None
             }
             Err(error) => {
                 let _ = crate::atoms::attest::fetch_artifact::attest(
@@ -177,6 +207,79 @@ pub(crate) fn execute(
     }
     let download = if let Some(download) = native_download {
         download
+    } else if let Some((fallback_reason, artifact_url)) = release_fallback {
+        let source_dir = source_dir.ok_or("fetch-artifact-source-dir-missing")?;
+        let source_dir_text = source_dir.display().to_string();
+        let artifact = source_dir.join("target/release").join(artifact_name);
+        let (environment, build_environment_sha) =
+            crate::atoms::ask::fetch_artifact::build_environment(source_sha)?;
+        crate::write_json(
+            &receipt_dir.join("fallback.json"),
+            &serde_json::json!({
+                "schema": "harmonia.fetch-artifact.fallback.v1",
+                "fallback_reason": fallback_reason,
+                "artifact_url": artifact_url,
+                "source_build_sha": source_sha,
+                "source_dir": source_dir_text,
+                "build_environment_sha": build_environment_sha,
+            }),
+        )?;
+        if !apply {
+            crate::atoms::attest::fetch_artifact::attest(
+                &receipt_dir.join("harmonia-atoms.log"),
+                true,
+                false,
+                "state=Drift; care=release miss requires source build; after=Drift (planned)",
+            )?;
+            return Ok(crate::OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: "fetch-artifact-planned".into(),
+                command: None,
+            });
+        }
+        let build = crate::build_crate::run_build_with_mode(
+            source_dir,
+            source_sha,
+            None,
+            installed_binary,
+            &artifact,
+            apply,
+            &environment,
+            args.get("timeout_secs")
+                .and_then(Value::as_u64)
+                .unwrap_or(crate::atoms::r#do::build_crate::DEFAULT_TIMEOUT_SECS),
+            &receipt_dir.join("harmonia-atoms.log"),
+            args.get("bearer")
+                .and_then(Value::as_str)
+                .unwrap_or("owner"),
+            invocation,
+            crate::build_crate::IdentityMode::EmbeddedSourceSha,
+        )?;
+        if let Some(build) = build.filter(|build| !build.ok) {
+            return Err(format!(
+                "fetch-artifact-source-build-failed: {}",
+                build.stderr
+            ));
+        }
+        let bytes = std::fs::read(&artifact)
+            .map_err(|error| format!("fetch-artifact-source-build-read-failed: {error}"))?;
+        let manifest = crate::atoms::ask::fetch_artifact::Manifest {
+            schema: crate::atoms::ask::fetch_artifact::MANIFEST_SCHEMA.into(),
+            component: component.into(),
+            source_sha: source_sha.into(),
+            target: crate::atoms::ask::fetch_artifact::BUILD_TARGET.into(),
+            sha256: crate::atoms::file_sha256(&bytes),
+            built_at: "fallback".into(),
+            pipeline_url: artifact_url,
+            env_sha: Some(build_environment_sha),
+        };
+        crate::atoms::ask::fetch_artifact::Download {
+            manifest,
+            bytes,
+            identity: "embedded-sha".into(),
+        }
     } else {
         let registry_artifact_name = release_asset_name.as_deref().unwrap_or(artifact_name);
         match crate::atoms::ask::fetch_artifact::download(
@@ -304,58 +407,6 @@ pub(crate) fn declaration(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn absent_release_tag_refuses_without_staging() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-fetch-absent-{}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("Cargo.toml"), "[package]\nversion=\"1.2.3\"\n").unwrap();
-        let installed = root.join("installed");
-        let destination = root.join("destination");
-        let installed_before = b"installed-before-sentinel";
-        fs::write(&installed, installed_before).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 4096];
-            let n = stream.read(&mut request).unwrap();
-            assert!(String::from_utf8_lossy(&request[..n])
-                .starts_with("GET /api/v1/repos/OWNER/REPO/releases/tags/0123456789abcdef0123456789abcdef01234567 "));
-            write!(
-                stream,
-                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            )
-            .unwrap();
-        });
-        let args = [
-            ("component", json!("fixture")),
-            ("release_repo", json!("OWNER/REPO")),
-            (
-                "source_build_sha",
-                json!("0123456789abcdef0123456789abcdef01234567"),
-            ),
-            ("source_dir", json!(root)),
-            ("api_root", json!(format!("http://{address}/api/v1"))),
-            ("destination", json!(destination)),
-            ("installed_binary", json!(installed)),
-        ]
-        .into_iter()
-        .map(|(key, value)| (key.into(), value))
-        .collect();
-        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
-        let outcome = execute(&args, &root.join("receipts"), true, Some(&invocation)).unwrap();
-        server.join().unwrap();
-        assert!(!outcome.ok);
-        assert!(!outcome.changed);
-        assert!(outcome.skipped);
-        assert_eq!(outcome.command, None);
-        assert_eq!(outcome.message, format!("fetch-artifact-release-absent tag=0123456789abcdef0123456789abcdef01234567 url=http://{address}/api/v1/repos/OWNER/REPO/releases/tags/0123456789abcdef0123456789abcdef01234567"));
-        assert_eq!(fs::read(&installed).unwrap(), installed_before);
-        assert!(!destination.exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
     use super::execute;
     use serde_json::json;
     use std::{
@@ -366,6 +417,145 @@ mod tests {
         path::PathBuf,
         thread,
     };
+
+    const SOURCE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+    const ARTIFACT_NAME: &str = "fallback-fixture";
+
+    fn source_fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname = \"fallback-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("Cargo.lock"),
+            "# This file is automatically @generated by Cargo.\nversion = 3\n\n[[package]]\nname = \"fallback-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/main.rs"),
+            "fn main() { println!(\"{}\", env!(\"CADUCEUS_BUILD_SHA\")); }\n",
+        )
+        .unwrap();
+        root
+    }
+
+    fn release_fallback_args(
+        root: &std::path::Path,
+        api_root: String,
+        destination: &std::path::Path,
+        installed_binary: &std::path::Path,
+    ) -> BTreeMap<String, serde_json::Value> {
+        [
+            ("component", json!("caduceus")),
+            ("release_repo", json!("OWNER/REPO")),
+            ("api_root", json!(api_root)),
+            ("source_build_sha", json!(SOURCE_SHA)),
+            ("artifact_name", json!(ARTIFACT_NAME)),
+            ("source_dir", json!(root)),
+            ("destination", json!(destination)),
+            ("installed_binary", json!(installed_binary)),
+            ("bearer", json!("owner")),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect()
+    }
+
+    fn one_response_server(status: u16) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let length = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..length]).starts_with(
+                "GET /api/v1/repos/OWNER/REPO/releases/tags/0123456789abcdef0123456789abcdef01234567 "
+            ));
+            let reason = match status {
+                401 => "Unauthorized",
+                404 => "Not Found",
+                500 => "Internal Server Error",
+                _ => "Unexpected",
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        (format!("http://{address}/api/v1"), server)
+    }
+
+    #[test]
+    fn release_404_builds_source_fallback_and_installs_destination() {
+        let root = source_fixture();
+        let destination = root.path().join("destination");
+        let installed_binary = root.path().join("installed");
+        let receipts = root.path().join("receipts");
+        let (api_root, server) = one_response_server(404);
+        let args = release_fallback_args(root.path(), api_root, &destination, &installed_binary);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = execute(&args, &receipts, true, Some(&invocation)).unwrap();
+        server.join().unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert!(!outcome.skipped);
+        assert!(destination.exists());
+        assert!(crate::atoms::ask::fetch_artifact::identity_matches(
+            &destination,
+            SOURCE_SHA,
+            "embedded-sha",
+            "caduceus"
+        ));
+    }
+
+    #[test]
+    fn release_401_writes_fallback_schema_and_installs_destination() {
+        let root = source_fixture();
+        let destination = root.path().join("destination");
+        let installed_binary = root.path().join("installed");
+        let receipts = root.path().join("receipts");
+        let (api_root, server) = one_response_server(401);
+        let expected_artifact_url =
+            format!("{api_root}/repos/OWNER/REPO/releases/tags/{SOURCE_SHA}");
+        let args = release_fallback_args(root.path(), api_root, &destination, &installed_binary);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = execute(&args, &receipts, true, Some(&invocation)).unwrap();
+        server.join().unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        let fallback: serde_json::Value =
+            serde_json::from_slice(&fs::read(receipts.join("fallback.json")).unwrap()).unwrap();
+        assert_eq!(fallback["schema"], "harmonia.fetch-artifact.fallback.v1");
+        assert_eq!(fallback["fallback_reason"], "auth-required");
+        assert_eq!(fallback["artifact_url"], expected_artifact_url);
+        assert_eq!(fallback["source_build_sha"], SOURCE_SHA);
+        assert!(destination.exists());
+    }
+
+    #[test]
+    fn release_500_refuses_without_invoking_source_fallback_build() {
+        let root = source_fixture();
+        let destination = root.path().join("destination");
+        let installed_binary = root.path().join("installed");
+        let receipts = root.path().join("receipts");
+        let (api_root, server) = one_response_server(500);
+        let args = release_fallback_args(root.path(), api_root, &destination, &installed_binary);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let error = execute(&args, &receipts, true, Some(&invocation))
+            .expect_err("server failure must not invoke source fallback");
+        server.join().unwrap();
+        assert!(error.contains("500"), "unexpected error: {error}");
+        assert!(!root
+            .path()
+            .join("target/release")
+            .join(ARTIFACT_NAME)
+            .exists());
+        assert!(!destination.exists());
+    }
 
     #[test]
     fn staged_present_stale_installed_identity_is_drift_and_downloads_fresh_artifact() {

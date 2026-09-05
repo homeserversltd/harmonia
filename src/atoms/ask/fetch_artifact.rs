@@ -11,8 +11,105 @@ use std::process::{Command, Stdio};
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
 pub(crate) const DEFAULT_PROFILE_SOURCE: &str = "/etc/appliance/profile.json";
 pub(crate) const PROFILE_AXIS: &str = "profile";
+pub(crate) const BUILD_TARGET: &str = "x86_64-unknown-linux-gnu";
+pub(crate) const BUILD_SHA_ENV: &str = "CADUCEUS_BUILD_SHA";
+pub(crate) const BUILD_ENV_SHA_ENV: &str = "CADUCEUS_BUILD_ENV_SHA";
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: &str = "67108864";
+
+fn trim_trailing_crlf(value: &str) -> &str {
+    value.trim_end_matches(|character: char| character == '\r' || character == '\n')
+}
+
+fn release_api_root(api_root: &str) -> String {
+    let base = api_root.trim_end_matches('/');
+    if base.ends_with("/api/v1") {
+        base.to_owned()
+    } else {
+        format!("{base}/api/v1")
+    }
+}
+
+pub(crate) fn release_metadata_url(api_root: &str, release_repo: &str, tag: &str) -> String {
+    let (owner, repo) = release_repo.split_once('/').unwrap_or((release_repo, ""));
+    format!(
+        "{}/repos/{owner}/{repo}/releases/tags/{tag}",
+        release_api_root(api_root)
+    )
+}
+
+fn is_http_status(error: &str, status: &str) -> bool {
+    error
+        .split(|character: char| !character.is_ascii_digit())
+        .any(|part| part == status)
+}
+
+fn is_estate_registry(api_root: &str) -> bool {
+    api_root
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .and_then(|host| {
+            host.rsplit_once(':')
+                .map_or(Some(host), |(host, _)| Some(host))
+        })
+        == Some("git.home.arpa")
+}
+
+fn normalize_anonymous_release_auth_error(
+    error: &str,
+    api_root: &str,
+    release_repo: &str,
+    tag: &str,
+) -> Option<String> {
+    if !is_http_status(error, "401") && !is_http_status(error, "403") {
+        return None;
+    }
+    let prefix = if is_estate_registry(api_root) {
+        "fetch-artifact-auth-required"
+    } else {
+        "fetch-artifact-auth-required-non-estate-registry"
+    };
+    Some(format!(
+        "{prefix} url={}",
+        release_metadata_url(api_root, release_repo, tag)
+    ))
+}
+
+pub(crate) fn build_environment(
+    source_build_sha: &str,
+) -> Result<(Vec<(String, String)>, String), String> {
+    let rustc = crate::atoms::command::capture("rustc", &["-Vv"]);
+    if !rustc.ok {
+        return Err(format!(
+            "fetch-artifact-build-rustc-version-failed: {}",
+            rustc.stderr
+        ));
+    }
+    let cargo = crate::atoms::command::capture("cargo", &["-V"]);
+    if !cargo.ok {
+        return Err(format!(
+            "fetch-artifact-build-cargo-version-failed: {}",
+            cargo.stderr
+        ));
+    }
+    let material = format!(
+        "{}
+{}
+{}
+",
+        trim_trailing_crlf(&rustc.stdout),
+        trim_trailing_crlf(&cargo.stdout),
+        BUILD_TARGET
+    );
+    let environment_sha = crate::atoms::file_sha256(material.as_bytes());
+    Ok((
+        vec![
+            (BUILD_SHA_ENV.into(), source_build_sha.into()),
+            (BUILD_ENV_SHA_ENV.into(), environment_sha.clone()),
+        ],
+        environment_sha,
+    ))
+}
 
 pub(crate) fn profile_axis_declared(args: &BTreeMap<String, Value>) -> Result<bool, String> {
     match args.get("profile_axis") {
@@ -264,7 +361,11 @@ fn curl_to_file(
     Ok(status)
 }
 
-fn curl_with_anonymous_first(_api_root: &str, url: &str, destination: &Path) -> Result<u16, String> {
+fn curl_with_anonymous_first(
+    _api_root: &str,
+    url: &str,
+    destination: &Path,
+) -> Result<u16, String> {
     let stderr_path = destination.with_extension("stderr");
     let result = curl_to_file(url, destination, &stderr_path, None);
     let _ = fs::remove_file(&stderr_path);
@@ -369,7 +470,7 @@ pub(crate) fn download_release(
         credential_scope_found,
         cache_dir: std::env::temp_dir().join(format!("harmonia-release-{}", unique_temp_suffix())),
     };
-    let result = (|| {
+    let result: Result<Option<Download>, String> = (|| {
         let Some(release) = fetch_release_assets(&request, &tag, &asset, &sidecar)? else {
             return Ok(None);
         };
@@ -386,7 +487,7 @@ pub(crate) fn download_release(
             source_sha: release.target_commitish,
             target: std::env::consts::ARCH.into(),
             sha256: digest,
-            built_at: tag,
+            built_at: tag.clone(),
             pipeline_url: release.metadata_url,
             env_sha: None,
         };
@@ -397,7 +498,18 @@ pub(crate) fn download_release(
         }))
     })();
     let _ = std::fs::remove_dir_all(&request.cache_dir);
-    result
+    match result {
+        Err(error) if !credential_scope_found => {
+            if let Some(normalized) =
+                normalize_anonymous_release_auth_error(&error, api_root, release_repo, &tag)
+            {
+                Err(normalized)
+            } else {
+                Err(error)
+            }
+        }
+        other => other,
+    }
 }
 pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
     identity_matches(destination, source_sha, "liveness-marker", "caduceus")
@@ -571,5 +683,12 @@ mod tests {
             result.expect_err("manifest mismatch should reject before artifact fetch"),
             "fetch-artifact-manifest-component-mismatch"
         );
+    }
+
+    #[test]
+    fn build_environment_normalizes_only_trailing_crlf() {
+        assert_eq!(trim_trailing_crlf(" \trustc -Vv\r\n"), " \trustc -Vv");
+        assert_eq!(trim_trailing_crlf("\nrustc -Vv"), "\nrustc -Vv");
+        assert_eq!(trim_trailing_crlf("rustc -Vv \t\r\n"), "rustc -Vv \t");
     }
 }
