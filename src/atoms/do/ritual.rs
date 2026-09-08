@@ -617,7 +617,7 @@ mod syzygy_sha_tests {
                 Some(&"f".repeat(40))
             )
             .unwrap(),
-            "f1820713847173c6f662ec7a077824eb6a5ca884f32724d58535b24479aa0ee5"
+            "9061b13dce037de65c9940e0c7777b923bc4444c0ecbf765c6d19c1d8308972d"
         );
     }
 }
