@@ -381,9 +381,9 @@ mod syzygy_mint_tests {
         )
         .unwrap();
         let mut receipt = transaction(crate::atoms::r#do::transaction::TransactionState::Committed);
+        // No sbin child: this beam-provenance test must not query the forge.
         receipt.member_modules = BTreeMap::from([
             ("caduceus".into(), vec!["module-caduceus".into()]),
-            ("sbin".into(), vec!["module-sbin".into()]),
         ]);
         receipt.children = vec![
             crate::atoms::r#do::transaction::ProjectionChild {
@@ -393,44 +393,59 @@ mod syzygy_mint_tests {
                 service_indices: Vec::new(),
                 source_sha: None,
             },
-            crate::atoms::r#do::transaction::ProjectionChild {
-                ordinal: 1,
-                member: "sbin".into(),
-                target_indices: Vec::new(),
-                service_indices: Vec::new(),
-                source_sha: None,
-            },
         ];
 
         let mint = committed_syzygy_mint(dir.path(), &receipt);
         assert_eq!(mint.env_sha, "b".repeat(64));
-        assert_eq!(mint.signal, "syzygy-source-sha-missing caduceus");
+        assert_eq!(mint.caduceus_sha, "a".repeat(40));
+        assert_eq!(mint.member_flags["caduceus"]["source_sha"], "a".repeat(40));
+        assert_eq!(mint.syzygy_sha, None);
+        let seats = crate::atoms::ask::mint_seats::at_start();
+        assert_eq!(mint.signal, seats.signal().unwrap_or("syzygy-required-partner-missing"));
+        let mut signals = seats.signal().into_iter().collect::<Vec<_>>();
+        signals.push("syzygy-required-partner-missing");
+        assert_eq!(mint.observations["signals"], serde_json::json!(signals));
     }
 
     #[test]
     fn missing_or_malformed_beam_evidence_fails_the_mint() {
         let dir = tempfile::tempdir().unwrap();
         let receipt = transaction(crate::atoms::r#do::transaction::TransactionState::Committed);
+        let seats = crate::atoms::ask::mint_seats::at_start();
+        let assert_failed = |mint: &SyzygyEvidence, beam_signal: &str| {
+            assert_eq!(mint.signal, seats.signal().unwrap_or(beam_signal));
+            assert_eq!(mint.syzygy_sha, None);
+            let mut signals = seats.signal().into_iter().collect::<Vec<_>>();
+            signals.extend([
+                beam_signal,
+                "syzygy-caduceus-member-missing",
+                "syzygy-required-partner-missing",
+            ]);
+            assert_eq!(mint.observations["signals"], serde_json::json!(signals));
+        };
         let mint = committed_syzygy_mint(dir.path(), &receipt);
-        assert_eq!(mint.signal, "syzygy-beam-receipt-absent");
+        assert_failed(&mint, "syzygy-beam-receipt-absent");
+        assert_eq!(mint.member_flags["caduceus"], "syzygy-beam-receipt-absent");
         assert_eq!(mint.env_sha, "");
 
         fs::write(dir.path().join("beam.json"), "{}").unwrap();
         let mint = committed_syzygy_mint(dir.path(), &receipt);
-        assert_eq!(mint.signal, "syzygy-beam-receipt-malformed");
+        assert_failed(&mint, "syzygy-beam-receipt-malformed");
+        assert_eq!(mint.member_flags["caduceus"], "syzygy-beam-receipt-malformed");
         assert_eq!(mint.env_sha, "");
 
         fs::write(
             dir.path().join("beam.json"),
             serde_json::json!({
                 "schema": "harmonia.beam-compare.v1",
-                "lock": {"env_sha": "A".repeat(64)}
+                "lock": {"caduceus_sha": "a".repeat(40), "env_sha": "A".repeat(64)}
             })
             .to_string(),
         )
         .unwrap();
         let mint = committed_syzygy_mint(dir.path(), &receipt);
-        assert_eq!(mint.signal, "syzygy-beam-env-sha-invalid");
+        assert_failed(&mint, "syzygy-beam-env_sha-invalid");
+        assert_eq!(mint.caduceus_sha, "a".repeat(40));
         assert_eq!(mint.env_sha, "");
     }
 }

@@ -630,28 +630,10 @@ mod update_set_receipt_tests {
     #[test]
     fn committed_unresolvable_sbin_still_writes_update_set() {
         let dir = tempfile::tempdir().expect("receipt directory");
-        let caduceus = dir.path().join("modules/caduceus");
-        let sbin = dir.path().join("modules/sbin");
-        std::fs::create_dir_all(&caduceus).expect("caduceus module");
-        std::fs::create_dir_all(&sbin).expect("sbin module");
-        std::fs::write(
-            dir.path().join("beam.json"),
-            serde_json::json!({
-                "schema": "harmonia.beam-compare.v1",
-                "lock": {"env_sha": "e".repeat(64)}
-            })
-            .to_string(),
-        )
-        .expect("beam receipt");
-        std::fs::write(
-            caduceus.join("source.routine.json"),
-            serde_json::json!({
-                "ok": true,
-                "context": {"pull-repo.resolved_commit": "0000000000000000000000000000000000000000"}
-            })
-            .to_string(),
-        )
-        .expect("caduceus routine");
+        // Exercise receipt persistence with an unresolved resolver result,
+        // independent of the machine's schema door, forge, or credentials.
+        let caduceus_sha = "a".repeat(40);
+        let signal = "syzygy-flag-unresolvable sbin";
         let mut member_modules = BTreeMap::new();
         member_modules.insert("caduceus".into(), vec!["caduceus".into()]);
         member_modules.insert("sbin".into(), vec!["sbin".into()]);
@@ -686,7 +668,25 @@ mod update_set_receipt_tests {
             service_count: 0,
             caduceus_count: 1,
         };
-        let mint = crate::atoms::attest::committed_syzygy_mint(dir.path(), &receipt);
+        let mint = crate::atoms::attest::SyzygyEvidence {
+            mint: crate::atoms::attest::SyzygyMint {
+                caduceus_sha: caduceus_sha.clone(),
+                partner_sha: String::new(),
+                gui_sha: None,
+                syzygy_sha: None,
+                env_sha: "e".repeat(64),
+                signal: signal.into(),
+            },
+            member_flags: serde_json::json!({
+                "caduceus": {
+                    "source_sha": caduceus_sha,
+                    "flagged_at": "2026-09-08T00:00:00Z",
+                    "malformed_flags": 0
+                },
+                "sbin": signal
+            }),
+            observations: serde_json::json!({"signals": [signal]}),
+        };
         crate::atoms::attest::write_transaction_receipt(dir.path(), &receipt, &mint, None)
             .expect("update-set receipt");
         let value: serde_json::Value = serde_json::from_slice(
@@ -694,6 +694,21 @@ mod update_set_receipt_tests {
         )
         .expect("valid update-set.json");
         assert_eq!(value["syzygy_sha"], serde_json::Value::Null);
-        assert_eq!(value["syzygy_signal"], "syzygy-source-sha-missing sbin");
+        assert_eq!(value["syzygy_signal"], signal);
+        assert_eq!(value["schema"], "harmonia.update-set.v1");
+        assert_eq!(value["set_verdict"], "ok");
+        assert_eq!(value["member_flags"], mint.member_flags);
+        assert_eq!(value["member_flag_observations"], mint.observations);
+        let members = value["members"].as_array().expect("member receipts");
+        assert_eq!(members.len(), 2);
+        for (member, source_sha) in [
+            ("caduceus", serde_json::json!(caduceus_sha)),
+            ("sbin", serde_json::Value::Null),
+        ] {
+            let child = members.iter().find(|child| child["member"] == member)
+                .expect("declared member");
+            assert_eq!(child["source_sha"], source_sha);
+            assert_eq!(child["status"], "standing");
+        }
     }
 }
