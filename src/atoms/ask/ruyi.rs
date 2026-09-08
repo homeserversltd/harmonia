@@ -497,6 +497,7 @@ mod tests {
     }
 
     struct RuyiTestPeer {
+        port: u16,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
         worker: Option<std::thread::JoinHandle<Vec<serde_json::Value>>>,
     }
@@ -506,7 +507,7 @@ mod tests {
             use std::io::{BufRead, Read, Write};
             use std::sync::atomic::{AtomicBool, Ordering};
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            env::set_var("CADUCEUS_BIND", listener.local_addr().unwrap().to_string());
+            let port = listener.local_addr().unwrap().port();
             env::set_var(RUYI_PATH_ENV, path);
             listener.set_nonblocking(true).unwrap();
             let stop = std::sync::Arc::new(AtomicBool::new(false));
@@ -575,9 +576,14 @@ mod tests {
                 puts
             });
             Self {
+                port,
                 stop,
                 worker: Some(worker),
             }
+        }
+
+        fn port(&self) -> u16 {
+            self.port
         }
 
         fn finish(mut self) -> Vec<serde_json::Value> {
@@ -637,6 +643,22 @@ mod tests {
         let path = temp.path().join("etc/appliance/ruyi.json");
         let before = seed_test_perspective(&path);
         let peer = RuyiTestPeer::start(&path);
+        let config_path = temp.path().join("etc/appliance/config.json");
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "caduceus": {
+                    "bind": format!("127.0.0.1:{}", peer.port()),
+                    "seat_port": peer.port()
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        env::set_var(
+            crate::bands::stage_profile::TEST_APPLIANCE_CONFIG_PATH_ENV,
+            &config_path,
+        );
         let profile = crate::Profile {
             id: "homeconsole".into(),
             identity: "test".into(),
@@ -736,6 +758,22 @@ mod tests {
         let path = temp.path().join("etc/appliance/ruyi.json");
         let before = seed_test_perspective(&path);
         let peer = RuyiTestPeer::start(&path);
+        let config_path = temp.path().join("etc/appliance/config.json");
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "caduceus": {
+                    "bind": format!("127.0.0.1:{}", peer.port()),
+                    "seat_port": peer.port()
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        env::set_var(
+            crate::bands::stage_profile::TEST_APPLIANCE_CONFIG_PATH_ENV,
+            &config_path,
+        );
         let live_path = Path::new(DEFAULT_RUYI_PATH);
         let live_before = fs::read(live_path).ok();
         let profile = crate::Profile {

@@ -38,6 +38,17 @@ pub(crate) struct GroupSelection {
 
 const APPLIANCE_CONFIG_PATH: &str = "/etc/appliance/config.json";
 
+#[cfg(test)]
+pub(crate) const TEST_APPLIANCE_CONFIG_PATH_ENV: &str = "HARMONIA_TEST_APPLIANCE_CONFIG_PATH";
+
+fn appliance_config_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os(TEST_APPLIANCE_CONFIG_PATH_ENV) {
+        return PathBuf::from(path);
+    }
+    PathBuf::from(APPLIANCE_CONFIG_PATH)
+}
+
 #[derive(Default)]
 pub(crate) struct DeviceModulePolicy {
     pub(crate) disabled_modules: BTreeSet<String>,
@@ -88,7 +99,7 @@ fn parse_syzygy_declaration(
 }
 
 pub(crate) fn read_device_module_policy() -> Result<DeviceModulePolicy, String> {
-    read_device_module_policy_at(Path::new(APPLIANCE_CONFIG_PATH))
+    read_device_module_policy_at(&appliance_config_path())
 }
 
 fn read_device_module_policy_at(path: &Path) -> Result<DeviceModulePolicy, String> {
@@ -117,7 +128,7 @@ fn read_device_module_policy_at(path: &Path) -> Result<DeviceModulePolicy, Strin
 /// The gateway roster port is a separate, integer device declaration.
 pub(crate) fn read_device_caduceus_seat_port() -> Result<Option<u16>, String> {
     Ok(
-        read_device_config_at(Path::new(APPLIANCE_CONFIG_PATH))?.and_then(|config| {
+        read_device_config_at(&appliance_config_path())?.and_then(|config| {
             let port = config.get("caduceus")?.get("seat_port")?.as_u64()?;
             u16::try_from(port).ok().filter(|port| *port != 0)
         }),
@@ -129,7 +140,7 @@ pub(crate) fn read_device_caduceus_seat_port() -> Result<Option<u16>, String> {
 /// module-selection failure.
 pub(crate) fn read_device_caduceus_bind() -> Result<Option<String>, String> {
     Ok(
-        read_device_config_at(Path::new(APPLIANCE_CONFIG_PATH))?.and_then(|config| {
+        read_device_config_at(&appliance_config_path())?.and_then(|config| {
             config
                 .get("caduceus")?
                 .get("bind")?
