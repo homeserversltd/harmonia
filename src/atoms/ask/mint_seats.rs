@@ -76,6 +76,18 @@ impl Seat {
         self.validate_kernel(&self.raw, envelope, self.id, false)
     }
 
+    pub(crate) fn validate_compatible(
+        &self,
+        envelope: &Value,
+        compatible_ids: &[&str],
+    ) -> Result<(), String> {
+        let declared = envelope.get("schema").and_then(Value::as_str);
+        if declared != Some(self.id) && !compatible_ids.iter().any(|id| Some(*id) == declared) {
+            return Err(format!("schema-foreign {}", self.id));
+        }
+        self.validate_kernel(&self.raw, envelope, self.id, true)
+    }
+
     /// Only the loaded seat names the frozen kernel. Additive fields are not
     /// projected away and schema-version equality is deliberately not a gate.
     pub(crate) fn validate(&self, envelope: &Value) -> Result<(), String> {
@@ -126,6 +138,47 @@ impl Seat {
             }
         }
         Ok(())
+    }
+}
+
+pub(crate) const INTERACTABLE_FEED: &str = "harmonia.config_proposals.feed.v1";
+pub(crate) const RUYI_BUMP_RECEIPT: &str = "harmonia.interactables.ruyi_bump.receipt.v1";
+pub(crate) const DNS_RECORD_RECEIPT: &str = "harmonia.interactables.dns_record.receipt.v1";
+
+#[derive(Debug)]
+pub(crate) struct InteractableSeats {
+    pub(crate) feed: Result<Seat, String>,
+    pub(crate) ruyi_bump_receipt: Result<Seat, String>,
+    pub(crate) dns_record_receipt: Result<Seat, String>,
+}
+
+static INTERACTABLE_SEATS: OnceLock<InteractableSeats> = OnceLock::new();
+
+pub(crate) fn interactables_at_start() -> &'static InteractableSeats {
+    INTERACTABLE_SEATS.get_or_init(|| match super::caduceus_door::base_url() {
+        Ok(base) => InteractableSeats {
+            feed: Seat::load(INTERACTABLE_FEED, base),
+            ruyi_bump_receipt: Seat::load(RUYI_BUMP_RECEIPT, base),
+            dns_record_receipt: Seat::load(DNS_RECORD_RECEIPT, base),
+        },
+        Err(signal) => InteractableSeats {
+            feed: Err(format!("schema-seat-unreachable {INTERACTABLE_FEED}: {signal}")),
+            ruyi_bump_receipt: Err(format!("schema-seat-unreachable {RUYI_BUMP_RECEIPT}: {signal}")),
+            dns_record_receipt: Err(format!("schema-seat-unreachable {DNS_RECORD_RECEIPT}: {signal}")),
+        },
+    })
+}
+
+pub(crate) fn emit_interactable_seat_signals() {
+    let seats = interactables_at_start();
+    for (id, seat) in [
+        (INTERACTABLE_FEED, &seats.feed),
+        (RUYI_BUMP_RECEIPT, &seats.ruyi_bump_receipt),
+        (DNS_RECORD_RECEIPT, &seats.dns_record_receipt),
+    ] {
+        if seat.is_err() {
+            eprintln!("schema-seat-unreachable {id}");
+        }
     }
 }
 

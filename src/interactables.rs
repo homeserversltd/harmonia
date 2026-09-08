@@ -3,9 +3,10 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
+pub(crate) const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
+pub(crate) const LEGACY_FEED_SCHEMA: &str = "harmonia.interactables.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
 pub(crate) struct OperatorHand(());
@@ -21,6 +22,8 @@ pub(crate) struct InteractablesFeed {
     pub(crate) interactables: Vec<Interactable>,
     #[serde(default)]
     pub(crate) receipts: Vec<serde_json::Value>,
+    #[serde(flatten)]
+    pub(crate) extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,8 +34,10 @@ pub(crate) struct Interactable {
     #[serde(default)]
     pub(crate) description: String,
     pub(crate) kind: String,
-    pub(crate) target_path: PathBuf,
-    pub(crate) reference_source_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) target_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reference_source_path: Option<PathBuf>,
     pub(crate) drift: DriftSummary,
     pub(crate) created_at: String,
     pub(crate) refreshed_at: String,
@@ -73,6 +78,10 @@ pub(crate) struct Interactable {
     pub(crate) show_only_if: String,
     #[serde(default)]
     pub(crate) completion_check: String,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub(crate) evidence: serde_json::Value,
+    #[serde(flatten)]
+    pub(crate) extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Compare configuration by meaningful lines, not formatting noise. The score is
@@ -144,6 +153,7 @@ pub(crate) fn make_feed(interactables: Vec<Interactable>) -> InteractablesFeed {
         schema: FEED_SCHEMA.to_string(),
         interactables,
         receipts: Vec::new(),
+        extra: serde_json::Map::new(),
     }
 }
 
@@ -157,11 +167,15 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
                     path.display()
                 )
             })?;
-            if feed.schema != FEED_SCHEMA && feed.schema != "harmonia.interactables.feed.v1" {
+            if feed.schema != FEED_SCHEMA && feed.schema != LEGACY_FEED_SCHEMA {
                 return Err(format!(
                     "interactables-feed-schema-unsupported {}",
                     feed.schema
                 ));
+            }
+            if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start().feed {
+                let raw = serde_json::to_value(&feed).map_err(|error| error.to_string())?;
+                seat.validate_compatible(&raw, &[LEGACY_FEED_SCHEMA])?;
             }
             Ok(InteractablesFeed {
                 schema: FEED_SCHEMA.to_string(),
@@ -172,6 +186,7 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
             schema: FEED_SCHEMA.to_string(),
             interactables: Vec::new(),
             receipts: Vec::new(),
+            extra: serde_json::Map::new(),
         }),
     }
 }
@@ -208,11 +223,17 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
         println!("proposal_count={}", feed.interactables.len());
         for item in feed.interactables {
             println!(
-                "id={} module_id={} kind={} target={}",
+                "id={} module_id={} kind={} target={} name={} evidence={}",
                 item.id,
                 item.module_id,
                 item.kind,
-                item.target_path.display()
+                item.target_path
+                    .as_deref()
+                    .map(Path::display)
+                    .map(|path| path.to_string())
+                    .unwrap_or_default(),
+                item.name,
+                serde_json::to_string(&item.evidence).map_err(|error| error.to_string())?
             );
         }
     }
@@ -221,7 +242,7 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
 
 fn interactable_run(
     args: &[String],
-    _invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
     if args.len() != 1 {
         return Err("config-proposal accept requires exactly one <id>".to_string());
@@ -234,30 +255,43 @@ fn interactable_run(
         .position(|item| item.id == args[0])
         .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
     let item = feed.interactables[position].clone();
-    if item.kind != "hard-stamp" {
-        return Err(format!("interactable-kind-unsupported {}", item.kind));
+    match item.kind.as_str() {
+        "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
+        "dns-record" => {
+            return run_dns_record(&path, &mut feed, position, &item, invocation)
+        }
+        "hard-stamp" => {}
+        _ => return Err(format!("interactable-kind-unsupported {}", item.kind)),
     }
     let backup_root = path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("interactables-backups");
-    crate::atoms::files::validate_interactable_target(&item.target_path)?;
-    if !item.reference_source_path.is_file() {
+    let target_path = item
+        .target_path
+        .as_deref()
+        .ok_or_else(|| "interactable-target-path-absent".to_string())?;
+    let reference_source_path = item
+        .reference_source_path
+        .as_deref()
+        .ok_or_else(|| "interactable-reference-source-absent".to_string())?;
+    crate::atoms::files::validate_interactable_target(target_path)?;
+    if !reference_source_path.is_file() {
         return Err(format!(
             "interactable-reference-source-missing {}",
-            item.reference_source_path.display()
+            reference_source_path.display()
         ));
     }
-    let target_metadata = fs::symlink_metadata(&item.target_path).map_err(|error| {
+    let target_metadata = fs::symlink_metadata(target_path).map_err(|error| {
         format!(
             "interactable-target-stat-failed {}: {error}",
-            item.target_path.display()
+            target_path.display()
         )
     })?;
     if !target_metadata.file_type().is_file() {
         return Err(format!(
             "interactable-target-not-regular-file {}",
-            item.target_path.display()
+            target_path.display()
         ));
     }
     let desired_uid = item
@@ -274,7 +308,7 @@ fn interactable_run(
         .unwrap_or_else(|| target_metadata.gid());
     let desired_mode = item
         .mode
-        .or_else(|| crate::atoms::files::source_mode(&item.reference_source_path).ok())
+        .or_else(|| crate::atoms::files::source_mode(reference_source_path).ok())
         .ok_or_else(|| "interactable-reference-source-mode-failed".to_string())?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -283,19 +317,19 @@ fn interactable_run(
     let backup = backup_root.join(&item.id).join(format!(
         "{}-{}",
         stamp,
-        item.target_path
+        target_path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("target")
     ));
-    let desired_bytes = fs::read(&item.reference_source_path).map_err(|error| {
+    let desired_bytes = fs::read(reference_source_path).map_err(|error| {
         format!(
             "interactable-reference-source-read-failed {}: {error}",
-            item.reference_source_path.display()
+            reference_source_path.display()
         )
     })?;
     let projectio_receipt = crate::atoms::projectio::strike(crate::atoms::projectio::Request {
-        target: &item.target_path,
+        target: target_path,
         desired_bytes: &desired_bytes,
         mode: desired_mode,
         uid: desired_uid,
@@ -335,6 +369,378 @@ fn interactable_run(
         "{}",
         serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
     );
+    Ok(())
+}
+
+fn term_state(newest: Option<&str>, wears: Option<&str>) -> &'static str {
+    match (newest, wears) {
+        (Some(a), Some(b)) if a == b => "same",
+        (Some(_), Some(_)) => "older",
+        _ => "unknown",
+    }
+}
+
+fn member_source<'a>(row: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+    row.pointer(&format!("/member_flags/{name}/source_sha"))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn face_source(row: &serde_json::Value) -> Option<&str> {
+    member_source(row, "face").or_else(|| {
+        row.get("gui_face")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .and_then(|name| member_source(row, &name))
+    })
+}
+
+fn canonical_dns_name(value: &str) -> Option<String> {
+    let name = value.strip_suffix('.').unwrap_or(value);
+    (!name.is_empty()
+        && !name.ends_with('.')
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                })
+        }))
+    .then(|| format!("{name}."))
+}
+
+pub(crate) fn reconcile_ruyi(
+    profile: &crate::Profile,
+    self_row: &serde_json::Value,
+    roster: &serde_json::Value,
+    staves: &[serde_json::Value],
+    is_gateway: bool,
+) -> Result<Vec<String>, String> {
+    let path = feed_path();
+    let mut feed = load_feed(&path)?;
+    let created = feed
+        .interactables
+        .iter()
+        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .map(|item| (item.id.clone(), item.created_at.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let unknown = feed
+        .interactables
+        .iter()
+        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .map(|item| (item.id.clone(), item.extra.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    feed.interactables
+        .retain(|item| item.kind != "ruyi-bump" && item.kind != "dns-record");
+    let module = profile
+        .caduceus_module_id()
+        .ok_or_else(|| "ruyi-caduceus-module-absent".to_string())?;
+    let self_mac = self_row.get("mac").and_then(serde_json::Value::as_str);
+    let newest = [
+        self_row.get("caduceus_sha").and_then(serde_json::Value::as_str),
+        member_source(self_row, "sbin"),
+        face_source(self_row),
+    ];
+    let now = now_seconds();
+    let mut held_back_by = Vec::new();
+    for peer in staves {
+        let Some(mac) = peer.get("mac").and_then(serde_json::Value::as_str) else { continue; };
+        if Some(mac) == self_mac { continue; }
+        let peer_view = peer
+            .pointer("/perspective/self")
+            .or_else(|| roster.pointer(&format!("/perspectives/{mac}/self")));
+        let wears = [
+            peer.get("caduceus_sha").and_then(serde_json::Value::as_str),
+            peer_view.and_then(|row| member_source(row, "sbin")),
+            peer_view.and_then(face_source),
+        ];
+        let terms = [
+            term_state(newest[0], wears[0]),
+            term_state(newest[1], wears[1]),
+            term_state(newest[2], wears[2]),
+        ];
+        if terms.iter().all(|term| *term == "same") { continue; }
+        let hostname = peer.get("hostname").and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let canonical_name = peer.get("canonical_name").cloned().unwrap_or(serde_json::Value::Null);
+        let last_checked = peer.get("last_seen").and_then(serde_json::Value::as_u64);
+        let last_event_age_s = last_checked.map(|last| now.saturating_sub(last));
+        let last_event_age = last_event_age_s
+            .map(|age| format!("{age}s"))
+            .unwrap_or_else(|| "unknown".to_string());
+        let description = format!(
+            "For {hostname} {mac}, the worn triple is (caduceus={}, sbin={}, face={}), the newest triple is (caduceus={}, sbin={}, face={}), the term triple is (caduceus={}, sbin={}, face={}), and the last-event age is {last_event_age}.",
+            wears[0].unwrap_or("unknown"),
+            wears[1].unwrap_or("unknown"),
+            wears[2].unwrap_or("unknown"),
+            newest[0].unwrap_or("unknown"),
+            newest[1].unwrap_or("unknown"),
+            newest[2].unwrap_or("unknown"),
+            terms[0],
+            terms[1],
+            terms[2],
+        );
+        let id = format!("ruyi-bump-{}", mac.replace(':', ""));
+        held_back_by.push(mac.to_string());
+        feed.interactables.push(Interactable {
+            id: id.clone(), module_id: module.to_string(),
+            name: format!("{hostname} {mac}"),
+            description,
+            kind: "ruyi-bump".into(), target_path: None, reference_source_path: None,
+            drift: DriftSummary { content: true, mode: false, ownership: false },
+            created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
+            refreshed_at: now.to_string(), available_at: None,
+            has_run: false, mode: None, owner: None, group: None, source_sha: None,
+            target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
+            recognition_score: None, script: format!("harmonia interactable run {id}"),
+            show_only_if: String::new(), completion_check: String::new(),
+            evidence: serde_json::json!({
+                "mac": mac, "hostname": hostname, "canonical_name": canonical_name,
+                "wears": {"caduceus": wears[0], "sbin": wears[1], "face": wears[2]},
+                "newest": {"caduceus": newest[0], "sbin": newest[1], "face": newest[2]},
+                "terms": {"caduceus": terms[0], "sbin": terms[1], "face": terms[2]},
+                "last_checked_in_at": last_checked,
+                "last_event_age_s": last_event_age_s
+            }),
+            extra: unknown.get(&id).cloned().unwrap_or_default(),
+        });
+    }
+    if is_gateway {
+        if let Some(unresolved) = roster.get("dns_unresolved").and_then(serde_json::Value::as_array) {
+            let dns_module = profile.dns_module_id().unwrap_or(module);
+            for entry in unresolved {
+                let Some(hostname) = entry.get("hostname").and_then(serde_json::Value::as_str) else { continue; };
+                let Some(canonical) = entry.get("canonical_name").and_then(serde_json::Value::as_str) else { continue; };
+                let Some(ipv4) = entry.get("ipv4").and_then(serde_json::Value::as_str) else { continue; };
+                let Some(canonical) = canonical_dns_name(canonical) else { continue; };
+                if ipv4.parse::<std::net::Ipv4Addr>().is_err()
+                    || hostname.contains('/')
+                    || hostname.contains('\\')
+                    || hostname.contains('\n')
+                    || hostname.contains('\r')
+                {
+                    continue;
+                }
+                let record = format!("local-data: \"{canonical} IN A {ipv4}\"");
+                let id = format!("dns-record-{hostname}");
+                feed.interactables.push(Interactable {
+                    id: id.clone(), module_id: dns_module.to_string(), name: format!("Add DNS record for {hostname}"),
+                    description: format!("Add the validated home.arpa address for {hostname} to Unbound."),
+                    kind: "dns-record".into(), target_path: None, reference_source_path: None,
+                    drift: DriftSummary { content: true, mode: false, ownership: false },
+                    created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
+            refreshed_at: now.to_string(), available_at: None,
+                    has_run: false, mode: None, owner: None, group: None, source_sha: None,
+                    target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
+                    recognition_score: None, script: format!("harmonia interactable run {id}"),
+                    show_only_if: String::new(), completion_check: String::new(),
+                    evidence: serde_json::json!({"mac": entry.get("mac"), "hostname": hostname,
+                        "canonical_name": canonical, "ipv4": ipv4, "record": record}),
+                    extra: unknown.get(&id).cloned().unwrap_or_default(),
+                });
+            }
+        }
+    }
+    feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
+    crate::bands::propose_edits::persist_feed(&path, &feed)?;
+    Ok(held_back_by)
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn run_ruyi_bump(
+    path: &Path,
+    feed: &mut InteractablesFeed,
+    position: usize,
+    item: &Interactable,
+) -> Result<(), String> {
+    let Some(port) = crate::bands::stage_profile::read_device_caduceus_seat_port()? else {
+        eprintln!("ruyi-seat-undeclared");
+        return Err("ruyi-seat-undeclared".into());
+    };
+    let mac = item.evidence.get("mac").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "ruyi-bump-mac-absent".to_string())?;
+    let hostname = item.evidence.get("hostname").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "ruyi-bump-hostname-absent".to_string())?;
+    let perspective = crate::atoms::ask::ruyi::read_perspective()?;
+    let self_row = perspective.get("self").cloned().unwrap_or(serde_json::Value::Null);
+    let host = crate::atoms::ask::ruyi::registrant::routed_host(&self_row)?;
+    let (seat_reply, status) = crate::atoms::ask::beam::delete(
+        &format!("http://{host}:{port}/api/v1/ruyi/{mac}"),
+    )
+    .map_err(|error| {
+        eprintln!("{error} id={}", item.id);
+        error
+    })?;
+    if !(200..300).contains(&status) && status != 404 {
+        eprintln!("ruyi-bump-seat-refused id={} status={status}", item.id);
+        return Err(format!("ruyi-bump-seat-refused-{status}"));
+    }
+    let seat_reply = serde_json::from_str::<serde_json::Value>(&seat_reply)
+        .unwrap_or_else(|_| serde_json::json!(seat_reply));
+    let receipt = serde_json::json!({
+        "schema": crate::atoms::ask::mint_seats::RUYI_BUMP_RECEIPT,
+        "ok": true, "id": item.id, "mac": mac, "hostname": hostname,
+        "seat_reply": seat_reply, "at": now_seconds()
+    });
+    if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start().ruyi_bump_receipt {
+        seat.validate(&receipt)?;
+    }
+    feed.receipts.push(receipt.clone());
+    feed.interactables.remove(position);
+    crate::bands::propose_edits::persist_feed(path, feed)?;
+    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+fn configured_unbound_target() -> PathBuf {
+    env::var_os("HARMONIA_INTERACTABLE_CONFIG_ROOT")
+        .map(PathBuf::from)
+        .map(|root| root.join("etc/unbound/unbound.conf"))
+        .unwrap_or_else(|| PathBuf::from("/etc/unbound/unbound.conf"))
+}
+
+fn insert_dns_record(original: &[u8], record: &str) -> Result<Vec<u8>, String> {
+    if record.contains('\n') || record.contains('\r') { return Err("dns-record-line-invalid".into()); }
+    let text = std::str::from_utf8(original).map_err(|_| "dns-record-config-not-utf8".to_string())?;
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let server = lines.iter().position(|line| line.trim() == "server:")
+        .ok_or_else(|| "dns-record-server-block-absent".to_string())?;
+    let end = lines.iter().enumerate().skip(server + 1)
+        .find(|(_, line)| {
+            !line.trim().is_empty() && !line.starts_with(' ') && !line.starts_with('\t')
+        })
+        .map(|(index, _)| index).unwrap_or(lines.len());
+    if lines[server + 1..end].iter().any(|line| line.trim() == record) {
+        return Ok(original.to_vec());
+    }
+    let last_local = (server + 1..end).rev()
+        .find(|index| lines[*index].trim_start().starts_with("local-data:"));
+    let insertion = last_local.map(|index| index + 1).unwrap_or(end);
+    let indent = last_local
+        .map(|index| lines[index].len() - lines[index].trim_start().len())
+        .unwrap_or(4);
+    lines.insert(insertion, format!("{}{record}", " ".repeat(indent)));
+    let mut candidate = lines.join("\n").into_bytes();
+    if text.ends_with('\n') { candidate.push(b'\n'); }
+    Ok(candidate)
+}
+
+fn persist_dns_receipt(
+    path: &Path,
+    feed: &mut InteractablesFeed,
+    receipt: &serde_json::Value,
+) -> Result<(), String> {
+    if let Ok(seat) =
+        &crate::atoms::ask::mint_seats::interactables_at_start().dns_record_receipt
+    {
+        seat.validate(receipt)?;
+    }
+    feed.receipts.push(receipt.clone());
+    crate::bands::propose_edits::persist_feed(path, feed)
+}
+
+fn run_dns_record(
+    path: &Path,
+    feed: &mut InteractablesFeed,
+    position: usize,
+    item: &Interactable,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
+    let perspective = crate::atoms::ask::ruyi::read_perspective()?;
+    let self_row = perspective
+        .get("self")
+        .filter(|row| row.is_object())
+        .ok_or_else(|| "ruyi-current-self-unavailable".to_string())?;
+    let gateway = crate::atoms::ask::ruyi::registrant::default_gateway()?;
+    if !crate::atoms::ask::ruyi::registrant::gateway_is_local(gateway, self_row) {
+        return Err("interactable-kind-not-for-this-body".into());
+    }
+    let record = item.evidence.get("record").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "dns-record-evidence-invalid".to_string())?;
+    let target = configured_unbound_target();
+    let metadata = fs::symlink_metadata(&target)
+        .map_err(|error| format!("dns-record-target-stat-failed: {error}"))?;
+    if !metadata.file_type().is_file() { return Err("dns-record-target-not-regular-file".into()); }
+    let original = fs::read(&target).map_err(|error| format!("dns-record-target-read-failed: {error}"))?;
+    let candidate = insert_dns_record(&original, record)?;
+    let scratch = path.parent().unwrap_or_else(|| Path::new("."))
+        .join("interactable-candidates").join(format!("{}.conf", item.id));
+    fs::create_dir_all(scratch.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::write(&scratch, &candidate).map_err(|e| format!("dns-record-candidate-write-failed: {e}"))?;
+    let check_program = env::var("HARMONIA_UNBOUND_CHECKCONF")
+        .unwrap_or_else(|_| "/usr/sbin/unbound-checkconf".into());
+    let check = crate::atoms::ask::read_only_command_with_timeout(
+        &check_program, &[scratch.to_string_lossy().into_owned()], Duration::from_secs(10));
+    let mut receipt = serde_json::json!({
+        "schema": crate::atoms::ask::mint_seats::DNS_RECORD_RECEIPT,
+        "ok": false, "id": item.id, "hostname": item.evidence.get("hostname"),
+        "record": record, "checkconf": {"ok": check.ok, "code": check.code,
+        "stdout": check.stdout, "stderr": check.stderr}, "reload": null, "at": now_seconds()
+    });
+    if !check.ok {
+        persist_dns_receipt(path, feed, &receipt)?;
+        eprintln!("dns-record-checkconf-failed {}", receipt["checkconf"]);
+        return Err("dns-record-checkconf-failed".into());
+    }
+    let invocation = invocation
+        .ok_or_else(|| "dns-record-systemd-invocation-key-missing".to_string())?;
+    let backup = path.parent().unwrap_or_else(|| Path::new("."))
+        .join("interactables-backups").join(&item.id)
+        .join(format!("{}-unbound.conf", now_seconds()));
+    let projection = match crate::atoms::projectio::strike(crate::atoms::projectio::Request {
+        target: &target, desired_bytes: &candidate, mode: metadata.mode() & 0o7777,
+        uid: metadata.uid(), gid: metadata.gid(), backup_path: &backup,
+        witness: crate::atoms::projectio::owner_acceptance(operator_hand()),
+    }) {
+        Ok(projection) => projection,
+        Err(error) => {
+            receipt["projectio"] = serde_json::json!({"ok": false, "error": error});
+            persist_dns_receipt(path, feed, &receipt)?;
+            return Err("dns-record-projectio-failed".into());
+        }
+    };
+    receipt["projectio"] = serde_json::to_value(&projection).map_err(|e| e.to_string())?;
+    let reload_run = crate::atoms::comparison::execute_once(
+        "dns-record-systemd-reload",
+        || Ok::<_, String>(()),
+        |_| crate::atoms::comparison::DiffDecision::Different,
+        |authorization, _| {
+            crate::atoms::r#do::change_unit::unit_change_scoped(
+                &authorization,
+                invocation,
+                "unbound",
+                crate::atoms::r#do::change_unit::UnitVerb::Reload,
+                false,
+                None,
+                30,
+            )
+        },
+    )?;
+    let reload = match reload_run {
+        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement,
+        crate::atoms::comparison::ComparisonRun::Current { .. } => {
+            return Err("dns-record-reload-not-authorized".into())
+        }
+    };
+    receipt["reload"] = serde_json::json!({"ok": reload.ok, "code": reload.code,
+        "stdout": reload.stdout, "stderr": reload.stderr});
+    receipt["ok"] = serde_json::json!(reload.ok);
+    if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start().dns_record_receipt {
+        seat.validate(&receipt)?;
+    }
+    feed.receipts.push(receipt.clone());
+    if reload.ok { feed.interactables.remove(position); }
+    crate::bands::propose_edits::persist_feed(path, feed)?;
+    if !reload.ok { return Err("dns-record-reload-failed".into()); }
+    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?);
     Ok(())
 }
 
@@ -401,8 +807,8 @@ mod tests {
             name: "config proposal acceptance".into(),
             description: String::new(),
             kind: "hard-stamp".into(),
-            target_path: root.join("config_deploy:interactable/target.conf"),
-            reference_source_path: root.join("source.conf"),
+            target_path: Some(root.join("config_deploy:interactable/target.conf")),
+            reference_source_path: Some(root.join("source.conf")),
             drift: DriftSummary {
                 content: true,
                 mode: false,
@@ -424,6 +830,8 @@ mod tests {
             script: String::new(),
             show_only_if: String::new(),
             completion_check: String::new(),
+            evidence: serde_json::Value::Null,
+            extra: serde_json::Map::new(),
         }
     }
 

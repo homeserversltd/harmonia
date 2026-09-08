@@ -125,7 +125,9 @@ pub(crate) fn prune_stale_interactables_at_path(
     for entry in feed.interactables.drain(..) {
         let reason = if !active_modules.contains(&entry.module_id) {
             Some("module-absent-from-profile")
-        } else if !entry.reference_source_path.is_file() {
+        } else if !matches!(entry.kind.as_str(), "ruyi-bump" | "dns-record")
+            && !entry.reference_source_path.as_deref().is_some_and(Path::is_file)
+        {
             Some("reference-absent")
         } else {
             None
@@ -220,7 +222,7 @@ fn refresh_interactables_at_path_with_policy(
             .map(|e| e.created_at.clone())
             .unwrap_or_else(|| now.clone());
         // A new pair supersedes stale offers for this surface only.
-        feed.interactables.retain(|e| e.target_path != entry.target);
+        feed.interactables.retain(|e| e.target_path.as_deref() != Some(entry.target.as_path()));
         let recognized = interactables::recognize_against_known_goods(
             &live_bytes,
             &[interactables::RecognitionCandidate {
@@ -276,8 +278,8 @@ fn refresh_interactables_at_path_with_policy(
             name: format!("{}: {}", manifest.id, entry.relative_path),
             description: manifest.description.clone(),
             kind: "hard-stamp".into(),
-            target_path: entry.target.clone(),
-            reference_source_path: entry.source.clone(),
+            target_path: Some(entry.target.clone()),
+            reference_source_path: Some(entry.source.clone()),
             drift,
             created_at,
             refreshed_at: now.clone(),
@@ -295,6 +297,8 @@ fn refresh_interactables_at_path_with_policy(
             script: format!("harmonia interactable run {} owner", interactable_id),
             show_only_if: "config_state=interactable".into(),
             completion_check: format!("sha256:{reference_sha}"),
+            evidence: serde_json::Value::Null,
+            extra: serde_json::Map::new(),
         });
         recognitions.push(ConfigRecognition {
             config_state: state.to_string(),
@@ -617,8 +621,8 @@ mod refresh_interactables_tests {
             name: "unrelated proposal".into(),
             description: "keep me".into(),
             kind: "hard-stamp".into(),
-            target_path: root.join("other.conf"),
-            reference_source_path: root.join("other-source.conf"),
+            target_path: Some(root.join("other.conf")),
+            reference_source_path: Some(root.join("other-source.conf")),
             drift: DriftSummary {
                 content: true,
                 mode: false,
@@ -640,6 +644,8 @@ mod refresh_interactables_tests {
             script: "keep".into(),
             show_only_if: "".into(),
             completion_check: "".into(),
+            evidence: serde_json::Value::Null,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -730,8 +736,8 @@ mod refresh_interactables_tests {
         let mut item = unrelated_item(root);
         item.id = id.into();
         item.module_id = module_id.into();
-        item.target_path = target_path;
-        item.reference_source_path = reference_source_path;
+        item.target_path = Some(target_path);
+        item.reference_source_path = Some(reference_source_path);
         item.has_run = has_run;
         item
     }

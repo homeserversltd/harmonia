@@ -194,6 +194,38 @@ pub(crate) fn put_json(url: &str, bytes: &[u8]) -> Result<String, String> {
     Ok(body.to_owned())
 }
 
+/// One bounded Ruyi DELETE; curl owns the three-second transport deadline.
+pub(crate) fn delete(url: &str) -> Result<(String, u16), String> {
+    let output = Command::new("/usr/bin/curl")
+        .args([
+            "-sS",
+            "--max-time",
+            "3",
+            "-X",
+            "DELETE",
+            "-w",
+            "\n%{http_code}",
+            url,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|_| "ruyi-bump-transport-failed".to_string())?;
+    if !output.status.success() {
+        return Err("ruyi-bump-transport-failed".into());
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "ruyi-bump-seat-reply-malformed".to_string())?;
+    let (body, status) = text
+        .rsplit_once('\n')
+        .ok_or_else(|| "ruyi-bump-seat-reply-malformed".to_string())?;
+    let status = status
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "ruyi-bump-seat-reply-malformed".to_string())?;
+    Ok((body.to_owned(), status))
+}
+
 pub(crate) fn fetch_door(url: &str) -> Result<BeamDoor, String> {
     let args = vec!["-fsS".into(), "--max-time".into(), "3".into(), url.into()];
     let result = crate::atoms::ask::read_only_command_with_timeout(

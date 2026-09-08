@@ -45,7 +45,14 @@ fn at_start() -> &'static Seats {
     SEATS.get_or_init(|| match crate::atoms::ask::caduceus_door::base_url() {
         Ok(base) => Seats {
             perspective: crate::atoms::ask::mint_seats::Seat::load_ruyi(PERSPECTIVE, base),
-            register: crate::atoms::ask::mint_seats::Seat::load_ruyi(REGISTER, base),
+            register: crate::atoms::ask::mint_seats::Seat::load(REGISTER, base).map_err(|error| {
+                eprintln!("schema-seat-unreachable schema={REGISTER}: {error}");
+                if error.starts_with("schema-seat-unreachable") {
+                    "ruyi-schema-seat-unreachable".to_string()
+                } else {
+                    error
+                }
+            }),
         },
         Err(_) => unreachable_seats(),
     })
@@ -183,7 +190,21 @@ fn prior_perspective() -> Result<Value, String> {
 
 fn receipt(state: &str, row: Value, roster: Vec<Value>, signal: &str) -> Value {
     json!({"schema": REGISTER, "state": state, "self": row,
-        "roster_count": roster.len(), "roster": roster, "first_missing_signal": signal})
+        "roster_count": roster.len(), "roster": roster, "first_missing_signal": signal,
+        "event": "new-artifact", "held_back_by": []})
+}
+
+fn amend_update_set_held_back_by(dir: &Path, held_back_by: &Value) -> Result<(), String> {
+    let path = dir.join("update-set.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("update-set-read-failed: {error}")),
+    };
+    let mut value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("update-set-parse-failed: {error}"))?;
+    value["held_back_by"] = held_back_by.clone();
+    crate::atoms::attest::write_json_atomic(&path, &value)
 }
 
 fn save_receipt(dir: &Path, value: Value) -> Result<Value, String> {
@@ -255,7 +276,8 @@ pub(crate) fn register_promoted(
         }),
     );
     prior["self"] = row.clone();
-    let result = exchange(row, prior, seats, port)?;
+    let result = exchange(profile, row, prior, seats, port)?;
+    amend_update_set_held_back_by(dir, &result["held_back_by"])?;
     save_receipt(dir, result)
 }
 
@@ -282,7 +304,13 @@ fn declaration_signal(row: &Value) -> Option<&'static str> {
     None
 }
 
-fn default_gateway() -> Result<Ipv4Addr, String> {
+pub(crate) fn default_gateway() -> Result<Ipv4Addr, String> {
+    if let Some(gateway) = std::env::var_os("HARMONIA_DEFAULT_GATEWAY") {
+        return gateway
+            .to_string_lossy()
+            .parse()
+            .map_err(|_| "ruyi-default-gateway-unavailable".to_string());
+    }
     let routes = fs::read_to_string("/proc/net/route")
         .map_err(|_| "ruyi-default-gateway-unavailable".to_string())?;
     routes
@@ -299,7 +327,7 @@ fn default_gateway() -> Result<Ipv4Addr, String> {
         .ok_or_else(|| "ruyi-default-gateway-unavailable".into())
 }
 
-fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
+pub(crate) fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
     if row
         .get("ipv4")
         .and_then(Value::as_str)
@@ -322,6 +350,29 @@ fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
         })
 }
 
+pub(crate) fn routed_host(row: &Value) -> Result<Ipv4Addr, String> {
+    let mac = row.get("mac").and_then(Value::as_str).unwrap_or_default();
+    let prior_self_seat = read_perspective()
+        .ok()
+        .and_then(|perspective| {
+            perspective
+                .pointer("/gateway_seat/mac")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some(mac);
+    if prior_self_seat {
+        return Ok(Ipv4Addr::LOCALHOST);
+    }
+    let gateway = default_gateway()?;
+    Ok(if gateway_is_local(gateway, row) {
+        Ipv4Addr::LOCALHOST
+    } else {
+        gateway
+    })
+}
+
 fn get_roster(url: &str) -> Result<Value, String> {
     let observed = crate::atoms::ask::read_only_command_with_timeout(
         "/usr/bin/curl",
@@ -340,6 +391,7 @@ fn get_roster(url: &str) -> Result<Value, String> {
 }
 
 fn exchange(
+    profile: &crate::Profile,
     mut row: Value,
     mut perspective: Value,
     seats: &Seats,
@@ -366,16 +418,12 @@ fn exchange(
         .pointer("/gateway_seat/mac")
         .and_then(Value::as_str)
         == Some(mac.as_str());
-    let gateway = if prior_self_seat {
-        Ipv4Addr::LOCALHOST
-    } else {
-        match default_gateway() {
-            Ok(gateway) => gateway,
-            Err(error) => return Ok(receipt("gateway-unreachable", row, Vec::new(), &error)),
-        }
+    let gateway = match default_gateway() {
+        Ok(gateway) => gateway,
+        Err(error) => return Ok(receipt("gateway-unreachable", row, Vec::new(), &error)),
     };
-    let is_gateway = prior_self_seat || gateway_is_local(gateway, &row);
-    let host = if is_gateway {
+    let is_gateway = gateway_is_local(gateway, &row);
+    let host = if is_gateway || prior_self_seat {
         Ipv4Addr::LOCALHOST
     } else {
         gateway
@@ -449,13 +497,15 @@ fn exchange(
     if let Err(error) = accumulate(&mut perspective, &roster, &staves, &mac) {
         return Ok(receipt("refused", row, staves, &error));
     }
+    let held_back_by =
+        crate::interactables::reconcile_ruyi(profile, &row, &roster, &staves, is_gateway)?;
     perspective["written_at"] = json!(now()?);
     // Preserve the last observed seat, allowing the next event's self-seat path
     // without adding a discovery GET ahead of the PUT.
     if let Some(seat) = roster.get("seat") {
         perspective["gateway_seat"] = seat.clone();
     }
-    let result = receipt(
+    let mut result = receipt(
         if is_gateway {
             "self-is-gateway"
         } else {
@@ -465,8 +515,9 @@ fn exchange(
         staves,
         signal,
     );
+    result["held_back_by"] = json!(held_back_by);
     if let Ok(seat) = &seats.register {
-        if let Err(error) = seat.validate_ruyi(&result) {
+        if let Err(error) = seat.validate(&result) {
             return Ok(receipt(
                 "refused",
                 result["self"].clone(),
@@ -573,13 +624,28 @@ fn accumulate(
             }
         }
     }
+    let roster_macs = staves
+        .iter()
+        .filter_map(|peer| peer.get("mac").and_then(Value::as_str))
+        .filter(|peer_mac| *peer_mac != mac)
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    for field in ["seen", "their_view_of_me"] {
+        perspective[field]
+            .as_object_mut()
+            .expect("validated perspective object")
+            .retain(|peer_mac, _| roster_macs.contains(peer_mac));
+    }
     Ok(())
 }
 
 /// StaffStart uses the existing self envelope; it never applies or moves a rung.
 pub(crate) fn announce() -> Result<Value, String> {
     let run_id = crate::run_id_from_stamp();
-    let dir = Path::new("/var/lib/harmonia/receipts").join(&run_id);
+    let receipt_root = std::env::var_os("HARMONIA_RECEIPTS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts"));
+    let dir = receipt_root.join(&run_id);
     let Some(port) = port() else {
         let mut result = receipt(
             "pre-declaration",
@@ -587,6 +653,7 @@ pub(crate) fn announce() -> Result<Value, String> {
             Vec::new(),
             "ruyi-seat-undeclared",
         );
+        result["event"] = json!("staff-start");
         result["staff_start_wait_ms"] = json!(0);
         return save_receipt(&dir, result);
     };
@@ -598,6 +665,7 @@ pub(crate) fn announce() -> Result<Value, String> {
                 Vec::new(),
                 "ruyi-profile-absent",
             );
+            result["event"] = json!("staff-start");
             result["staff_start_wait_ms"] = json!(0);
             return save_receipt(&dir, result);
         }
@@ -608,13 +676,16 @@ pub(crate) fn announce() -> Result<Value, String> {
     // Exhaustion is an unavailable seat observation, not another load timeout.
     let unavailable = unreachable_seats();
     let seats = if ready { at_start() } else { &unavailable };
+    let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
     let prior = read_perspective_with_seats(seats)?;
     let row = prior
         .get("self")
         .filter(|row| row.is_object())
         .cloned()
         .ok_or_else(|| "ruyi-current-self-unavailable".to_string())?;
-    let mut result = exchange(row, prior, seats, port)?;
+    let mut result = exchange(&profile, row, prior, seats, port)?;
+    result["event"] = json!("staff-start");
     result["staff_start_wait_ms"] = json!(wait_ms);
+    amend_update_set_held_back_by(&dir, &result["held_back_by"])?;
     save_receipt(&dir, result)
 }
