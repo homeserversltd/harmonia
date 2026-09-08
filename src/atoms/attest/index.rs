@@ -250,8 +250,8 @@ pub(crate) fn committed_syzygy_mint(
     } else {
         signals.push("syzygy-required-partner-missing".into());
     }
-    // Hyprland is a package, not a repository vertex. Repository GUI flags
-    // retain their term but their resolution is explicitly a follow-on lane.
+    // Hyprland is a package, not a repository vertex. Every other declared
+    // GUI member resolves its own repository flag on the known-good axis.
     if receipt.gui.as_deref() != Some("Hyprland") {
         let gui_member = receipt.gui_member.as_deref().or(match receipt.gui.as_deref() {
             Some("Arcadia") => Some("arcadia"),
@@ -259,14 +259,49 @@ pub(crate) fn committed_syzygy_mint(
             _ => None,
         });
         if let Some(member) = gui_member {
-            let signal = format!("syzygy-flag-absent {member}");
-            evidence.member_flags[member] = json!(signal);
-            signals.push(signal);
+            let component = if member.eq_ignore_ascii_case("arcadia") {
+                "arcadia"
+            } else if member.eq_ignore_ascii_case("coronatio") {
+                "coronatio"
+            } else {
+                member
+            };
+            match &seats.release_flag {
+                Ok(seat) => {
+                    let observed =
+                        crate::atoms::ask::member_flag::resolve_component(component, seat);
+                    evidence.observations[member] = observed.evidence();
+                    if observed.signal == "none" {
+                        if let Some(flag) = &observed.selected {
+                            evidence.mint.gui_sha = Some(
+                                flag.get("source_sha")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                            );
+                            evidence.member_flags[member] = json!({
+                                "source_sha": evidence.mint.gui_sha,
+                                "flagged_at": flag.get("flagged_at"),
+                                "malformed_flags": observed.malformed_flags,
+                                "release_flag": flag
+                            });
+                        }
+                    } else {
+                        evidence.member_flags[member] = json!(observed.signal);
+                        signals.push(observed.signal);
+                    }
+                }
+                Err(signal) => {
+                    evidence.member_flags[member] = json!(signal);
+                }
+            }
         }
     }
     if signals.is_empty() {
         match crate::atoms::r#do::transaction::compute_syzygy_sha(
-            &evidence.mint.caduceus_sha, &evidence.mint.partner_sha, None,
+            &evidence.mint.caduceus_sha,
+            &evidence.mint.partner_sha,
+            evidence.mint.gui_sha.as_deref(),
         ) {
             Ok(sha) => evidence.mint.syzygy_sha = Some(sha),
             Err(signal) => signals.push(signal),

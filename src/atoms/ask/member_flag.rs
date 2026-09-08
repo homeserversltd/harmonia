@@ -1,9 +1,7 @@
-//! Interpreted sbin release evidence, separate from compiled beam acceptance.
+//! Repository member release evidence, separate from compiled beam acceptance.
 use serde_json::{json, Value};
 use std::io::Write;
 use std::process::{Command, Stdio};
-
-const SBIN_RELEASES: &str = "https://git.home.arpa/api/v1/repos/HOMESERVERSLTD/sbin/releases";
 
 #[derive(Debug, Clone)]
 pub(crate) struct Observation {
@@ -87,26 +85,31 @@ fn get(url: &str, token: Option<&str>) -> Result<(u16, Vec<u8>), ()> {
     Ok((status, output.stdout[..split].to_vec()))
 }
 
-fn validate(flag: &Value, tag: &str, seat: &super::mint_seats::Seat) -> Result<(), String> {
+fn validate(
+    flag: &Value,
+    tag: &str,
+    component: &str,
+    seat: &super::mint_seats::Seat,
+) -> Result<(), String> {
     seat.validate(flag)?;
     if flag
         .get("component")
-        .is_some_and(|value| value.as_str() != Some("sbin"))
+        .is_some_and(|value| value.as_str() != Some(component))
     {
-        return Err("syzygy-flag-component-invalid sbin".into());
+        return Err(format!("syzygy-flag-component-invalid {component}"));
     }
     if flag
         .get("source_sha")
         .is_some_and(|value| value.as_str() != Some(tag))
     {
-        return Err("syzygy-flag-source-sha-invalid sbin".into());
+        return Err(format!("syzygy-flag-source-sha-invalid {component}"));
     }
     for name in ["flagged_at", "pipeline_url"] {
         if flag
             .get(name)
             .is_some_and(|value| value.as_str().is_none_or(|s| s.trim().is_empty()))
         {
-            return Err(format!("syzygy-flag-{name}-invalid sbin"));
+            return Err(format!("syzygy-flag-{name}-invalid {component}"));
         }
     }
     for name in ["env_sha", "sha256"] {
@@ -114,24 +117,30 @@ fn validate(flag: &Value, tag: &str, seat: &super::mint_seats::Seat) -> Result<(
             .get(name)
             .is_some_and(|value| value.as_str().is_none_or(|s| !hex(s, 64)))
         {
-            return Err(format!("syzygy-flag-{name}-invalid sbin"));
+            return Err(format!("syzygy-flag-{name}-invalid {component}"));
         }
     }
     Ok(())
 }
 
 pub(crate) fn resolve_sbin(seat: &super::mint_seats::Seat) -> Observation {
+    resolve_component("sbin", seat)
+}
+
+pub(crate) fn resolve_component(component: &str, seat: &super::mint_seats::Seat) -> Observation {
+    let releases_url =
+        format!("https://git.home.arpa/api/v1/repos/HOMESERVERSLTD/{component}/releases");
     let mut observed = Observation {
         selected: None,
-        signal: "syzygy-flag-absent sbin".into(),
+        signal: format!("syzygy-flag-absent {component}"),
         malformed_flags: 0,
         credential: "absent",
         refusals: Vec::new(),
     };
-    let credential = match crate::atoms::forge_credential::credential_for_url(SBIN_RELEASES) {
+    let credential = match crate::atoms::forge_credential::credential_for_url(&releases_url) {
         Ok(value) => value,
         Err(reason) => {
-            observed.signal = "syzygy-flag-unresolvable sbin".into();
+            observed.signal = format!("syzygy-flag-unresolvable {component}");
             observed.refusals.push(json!({"signal": reason}));
             return observed;
         }
@@ -147,19 +156,19 @@ pub(crate) fn resolve_sbin(seat: &super::mint_seats::Seat) -> Observation {
     let mut releases = Vec::new();
     // Same bounded listing observation as the beam: five pages, fifty rows.
     for page in 1..=5 {
-        let response = get(&format!("{SBIN_RELEASES}?limit=50&page={page}"), token);
+        let response = get(&format!("{releases_url}?limit=50&page={page}"), token);
         let bytes = match response {
             Ok((404, _)) => break,
             Ok((200..=299, bytes)) => bytes,
             _ => {
-                observed.signal = "syzygy-flag-unresolvable sbin".into();
+                observed.signal = format!("syzygy-flag-unresolvable {component}");
                 return observed;
             }
         };
         let listing = match serde_json::from_slice::<Value>(&bytes) {
             Ok(Value::Array(listing)) => listing,
             _ => {
-                observed.signal = "syzygy-flag-unresolvable sbin".into();
+                observed.signal = format!("syzygy-flag-unresolvable {component}");
                 return observed;
             }
         };
@@ -202,7 +211,7 @@ pub(crate) fn resolve_sbin(seat: &super::mint_seats::Seat) -> Observation {
             else {
                 observed.malformed_flags += 1;
                 observed.refusals.push(
-                    json!({"tag":tag,"signal":"syzygy-flag-asset-url-missing sbin","asset":asset}),
+                    json!({"tag":tag,"signal":format!("syzygy-flag-asset-url-missing {component}"),"asset":asset}),
                 );
                 continue;
             };
@@ -210,7 +219,7 @@ pub(crate) fn resolve_sbin(seat: &super::mint_seats::Seat) -> Observation {
                 Ok((404, _)) => continue,
                 Ok((200..=299, bytes)) => bytes,
                 _ => {
-                    observed.signal = "syzygy-flag-unresolvable sbin".into();
+                    observed.signal = format!("syzygy-flag-unresolvable {component}");
                     return observed;
                 }
             };
@@ -220,11 +229,11 @@ pub(crate) fn resolve_sbin(seat: &super::mint_seats::Seat) -> Observation {
                     observed.malformed_flags += 1;
                     observed
                         .refusals
-                        .push(json!({"tag":tag,"signal":"syzygy-flag-json-malformed sbin"}));
+                        .push(json!({"tag":tag,"signal":format!("syzygy-flag-json-malformed {component}")}));
                     continue;
                 }
             };
-            if let Err(signal) = validate(&flag, tag, seat) {
+            if let Err(signal) = validate(&flag, tag, component, seat) {
                 observed.malformed_flags += 1;
                 observed
                     .refusals

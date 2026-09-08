@@ -558,11 +558,11 @@ pub(crate) fn compute_syzygy_sha(
         }
     }
     let mut bytes = String::with_capacity(120);
-    bytes.push_str(caduceus);
-    bytes.push_str(sbin);
     if let Some(gui) = gui {
         bytes.push_str(gui);
     }
+    bytes.push_str(caduceus);
+    bytes.push_str(sbin);
     Ok(format!("{:x}", Sha256::digest(bytes.as_bytes())))
 }
 
