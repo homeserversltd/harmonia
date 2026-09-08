@@ -6,7 +6,25 @@
   "version": "1.0.2",
   "description": "HomeConsole module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "constants": {},
+  "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "caduceus-factory-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/appliance/config.factory"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "caduceus-factory-config"
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "caduceus-bootstrap-source-from-declared-profile",
       "tool": "git-artifact",
@@ -48,7 +66,7 @@
           }
         ],
         "caduceus_profile_source": {
-          "source": "profiles/console/index.yaml",
+          "source": "profiles/homeconsole/index.yaml",
           "path": "/etc/caduceus/profile.yaml",
           "mode": 420,
           "append": ""

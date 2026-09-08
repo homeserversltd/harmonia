@@ -9,6 +9,23 @@
   "constants": {},
   "ladder": [
     {
+      "step_id": "caduceus-factory-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/appliance/config.factory"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "caduceus-factory-config"
+      },
+      "on_failure": "stop"
+    },
+    {
       "step_id": "caduceus-bootstrap-source-from-declared-profile",
       "tool": "git-artifact",
       "permutation": "sync",

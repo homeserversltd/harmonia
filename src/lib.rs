@@ -1048,7 +1048,7 @@ fn ruyi_command(args: &[String]) -> Result<(), String> {
 
 fn beam_command(args: &[String]) -> Result<(), String> {
     let mut lock_path = None;
-    let mut door_url = crate::atoms::ask::beam::DEFAULT_DOOR_URL.to_string();
+    let mut door_url = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1065,14 +1065,18 @@ fn beam_command(args: &[String]) -> Result<(), String> {
             }
             lock_path = Some(PathBuf::from(value));
         } else {
-            if door_url != crate::atoms::ask::beam::DEFAULT_DOOR_URL {
+            if door_url.is_some() {
                 return Err("beam-duplicate---door-url".into());
             }
-            door_url = value;
+            door_url = Some(value);
         }
         index += 2;
     }
-    let receipt = bands::compare::beam_receipt(lock_path.as_deref(), &door_url)?;
+    let door_url = door_url.or_else(|| crate::atoms::ask::beam::door_url().ok());
+    let receipt = match door_url.as_deref() {
+        Some(url) => bands::compare::beam_receipt(lock_path.as_deref(), url)?,
+        None => bands::compare::beam_bind_undeclared_receipt(),
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?

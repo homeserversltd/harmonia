@@ -22,6 +22,8 @@ pub(crate) mod check_health;
 pub(crate) mod beam;
 #[path = "member_flag.rs"]
 pub(crate) mod member_flag;
+#[path = "caduceus_door.rs"]
+pub(crate) mod caduceus_door;
 #[path = "mint_seats.rs"]
 pub(crate) mod mint_seats;
 #[path = "ruyi.rs"]

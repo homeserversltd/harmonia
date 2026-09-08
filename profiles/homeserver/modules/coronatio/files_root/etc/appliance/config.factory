@@ -1,4 +1,7 @@
 {
+    "caduceus": {
+      "bind": "0.0.0.0:3014"
+    },
     "syzygy": {
       "schema": "appliance.syzygy.v1",
       "members": ["harmonia", "caduceus", "sbin", "coronatio"],

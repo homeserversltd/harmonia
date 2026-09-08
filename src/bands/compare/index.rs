@@ -167,17 +167,17 @@ pub(crate) fn execute_manifest_modules(
     first_missing_signal: &mut String,
     events: &mut File,
 ) -> Result<(), String> {
-    let mut beam = beam_receipt(None, crate::atoms::ask::beam::DEFAULT_DOOR_URL)?;
+    let door_url = crate::atoms::ask::beam::door_url();
+    let mut beam = match door_url.as_deref() {
+        Ok(url) => beam_receipt(None, url)?,
+        Err(_) => beam_bind_undeclared_receipt(),
+    };
     // Developer mode is never inferred from engine configuration. Source
     // policy and locators come only from the profile certificate.
     let developer_mode = false;
     let beam_authorization = authorize_beam(&mut beam, mode_apply, developer_mode);
-    if let Some(authorization) = beam_authorization.as_ref() {
-        match projection.authorize_beam_convergence(
-            authorization,
-            receipt_dir,
-            crate::atoms::ask::beam::DEFAULT_DOOR_URL,
-        ) {
+    if let (Some(authorization), Ok(url)) = (beam_authorization.as_ref(), door_url.as_deref()) {
+        match projection.authorize_beam_convergence(authorization, receipt_dir, url) {
             Ok(true) => {
                 if let Some(carrier) = carrier {
                     let mut value = carrier.borrow_mut();
@@ -231,6 +231,7 @@ pub(crate) fn execute_manifest_modules(
         beam.first_missing_signal,
         "none"
             | "beam-door-unreachable"
+            | "caduceus-bind-undeclared"
             | "beam-lock-absent"
             | "beam-divergent-caduceus_sha"
             | "beam-divergent-env_sha"
@@ -735,6 +736,17 @@ fn beam_receipt_with_resolver(
         lock,
         crate::atoms::ask::beam::fetch_door(door_url),
     ))
+}
+
+/// Missing appliance configuration is an honest door absence. Do not resolve
+/// release flags or mint convergence authority for an undeclared door.
+pub(crate) fn beam_bind_undeclared_receipt() -> BeamCompareReceipt {
+    let mut receipt = compare_beam(
+        None,
+        Err(crate::atoms::ask::caduceus_door::UNDECLARED.into()),
+    );
+    receipt.first_missing_signal = crate::atoms::ask::caduceus_door::UNDECLARED;
+    receipt
 }
 
 pub(crate) fn beam_receipt(

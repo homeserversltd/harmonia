@@ -114,6 +114,21 @@ fn read_device_module_policy_at(path: &Path) -> Result<DeviceModulePolicy, Strin
     })
 }
 
+/// Read the optional door declaration independently of module/syzygy policy.
+/// Missing or ill-typed binds are an observation for door consumers, not a
+/// module-selection failure.
+pub(crate) fn read_device_caduceus_bind() -> Result<Option<String>, String> {
+    Ok(
+        read_device_config_at(Path::new(APPLIANCE_CONFIG_PATH))?.and_then(|config| {
+            config
+                .get("caduceus")?
+                .get("bind")?
+                .as_str()
+                .map(str::to_owned)
+        }),
+    )
+}
+
 pub(crate) fn read_device_syzygy_declaration() -> Result<Option<SyzygyDeclaration>, String> {
     Ok(read_device_module_policy()?.syzygy_declaration)
 }

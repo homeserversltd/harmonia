@@ -1,9 +1,8 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-const DEFAULT_CADUCEUS_BIND: &str = "127.0.0.1:8787";
 const HYALOS_PATH: &str = "/api/v1/hyalos/reflect";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -17,27 +16,29 @@ pub(crate) fn forward_receipt(
     attributes_redacted: Option<Value>,
     ok: Option<bool>,
 ) {
-    let _ = forward_receipt_inner(kind, message, attributes_redacted, ok);
+    let base = match crate::atoms::ask::caduceus_door::base_url() {
+        Ok(base) => base,
+        Err(signal) => {
+            // Declaration absence remains visible without recursively trying
+            // to forward its own diagnostic through the missing door.
+            static DECLARATION_REPORTED: std::sync::Once = std::sync::Once::new();
+            DECLARATION_REPORTED.call_once(|| {
+                eprintln!("harmonia hyalos first_missing_signal={signal}");
+            });
+            return;
+        }
+    };
+    let _ = forward_receipt_inner(base, kind, message, attributes_redacted, ok);
 }
 
 fn forward_receipt_inner(
+    base: &str,
     kind: &str,
     message: &str,
     attributes_redacted: Option<Value>,
     ok: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bind = std::env::var("CADUCEUS_BIND")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_CADUCEUS_BIND.to_string());
-    let host = bind
-        .strip_prefix("http://")
-        .or_else(|| bind.strip_prefix("https://"))
-        .unwrap_or(&bind);
-    let host = match host {
-        "0.0.0.0:8787" | "[::]:8787" => DEFAULT_CADUCEUS_BIND,
-        _ => host,
-    };
+    let host = base.strip_prefix("http://").expect("resolved HTTP base");
     let mut payload = json!({
         "organ": "harmonia",
         "kind": kind,
@@ -50,7 +51,10 @@ fn forward_receipt_inner(
         payload["ok"] = json!(value);
     }
     let body = serde_json::to_vec(&payload)?;
-    let mut stream = TcpStream::connect_timeout(&host.parse()?, REQUEST_TIMEOUT)?;
+    let mut stream = host
+        .to_socket_addrs()?
+        .find_map(|address| TcpStream::connect_timeout(&address, REQUEST_TIMEOUT).ok())
+        .ok_or_else(|| std::io::Error::other("hyalos-door-unreachable"))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     write!(

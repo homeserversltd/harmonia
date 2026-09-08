@@ -704,7 +704,7 @@ mod tests {
                 projection.authorize_beam_convergence(
                     &authorization,
                     Path::new("/var/empty"),
-                    crate::atoms::ask::beam::DEFAULT_DOOR_URL,
+                    "http://127.0.0.1:19091/api/v1/beam",
                 ),
                 Ok(true),
                 "{profile_id}"
@@ -762,7 +762,7 @@ mod tests {
         let authorization = crate::atoms::ask::beam::authorize_convergence(
             &"1".repeat(40), Some("env_sha"), true, true, false,
         ).unwrap();
-        projection.authorize_beam_convergence(&authorization, Path::new("/var/empty"), crate::atoms::ask::beam::DEFAULT_DOOR_URL).unwrap();
+        projection.authorize_beam_convergence(&authorization, Path::new("/var/empty"), "http://127.0.0.1:19091/api/v1/beam").unwrap();
         let mut refetch = 0;
         let mut rewritten = 0;
         for module in projection.modules.values() {

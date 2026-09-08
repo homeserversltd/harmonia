@@ -14,8 +14,8 @@ pub(crate) struct Seat {
 
 impl Seat {
     /// Shared transport/JSON primitive; each reader owns its admission policy.
-    fn load_declaration(id: &'static str, port: u16) -> Result<Value, String> {
-        let url = format!("http://127.0.0.1:{port}/api/v1/schema/{id}");
+    fn load_declaration(id: &'static str, base: &str) -> Result<Value, String> {
+        let url = format!("{base}/api/v1/schema/{id}");
         let observed = super::read_only_command_with_timeout(
             "/usr/bin/curl",
             &["-fsS".into(), "--max-time".into(), "3".into(), url],
@@ -30,8 +30,8 @@ impl Seat {
         Ok(raw)
     }
 
-    pub(crate) fn load(id: &'static str, port: u16) -> Result<Self, String> {
-        let raw = Self::load_declaration(id, port)?;
+    pub(crate) fn load(id: &'static str, base: &str) -> Result<Self, String> {
+        let raw = Self::load_declaration(id, base)?;
         if raw.get("schema").and_then(Value::as_str) != Some(id) {
             return Err(format!(
                 "schema-seat-desync {id}: foreign schema {}; reload through Make Modern",
@@ -51,7 +51,7 @@ impl Seat {
     /// Ruyi keeps usable declarations even when they declare no kernel.
     /// Only an explicitly foreign seat ID is a refusal, not unavailability.
     pub(crate) fn load_ruyi(id: &'static str, port: u16) -> Result<Self, String> {
-        let raw = Self::load_declaration(id, port)
+        let raw = Self::load_declaration(id, &format!("http://127.0.0.1:{port}"))
             .map_err(|_| "ruyi-schema-seat-unreachable".to_string())?;
         match raw.get("schema").and_then(Value::as_str) {
             Some(declared) if declared != id => {
@@ -138,18 +138,15 @@ static SEATS: OnceLock<MintSeats> = OnceLock::new();
 /// Called at update-run start. Failed observations are retained, not retried
 /// after convergence, and never prevent modules from running.
 pub(crate) fn at_start() -> &'static MintSeats {
-    SEATS.get_or_init(|| {
-        let port = std::env::var("CADUCEUS_BIND")
-            .ok()
-            .and_then(|bind| {
-                bind.rsplit_once(':')
-                    .and_then(|(_, port)| port.parse::<u16>().ok())
-            })
-            .unwrap_or(3014);
-        MintSeats {
-            release_flag: Seat::load(RELEASE_FLAG, port),
-            update_set: Seat::load(UPDATE_SET, port),
-        }
+    SEATS.get_or_init(|| match super::caduceus_door::base_url() {
+        Ok(base) => MintSeats {
+            release_flag: Seat::load(RELEASE_FLAG, base),
+            update_set: Seat::load(UPDATE_SET, base),
+        },
+        Err(signal) => MintSeats {
+            release_flag: Err(signal.into()),
+            update_set: Err(signal.into()),
+        },
     })
 }
 

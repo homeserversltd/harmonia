@@ -7,7 +7,9 @@ use std::time::Duration;
 pub(crate) const LOCK_SCHEMA: &str = "harmonia.beam-lock.v1";
 pub(crate) const SLOT_SCHEMA: &str = "harmonia.beam-slot.v1";
 pub(crate) const DOOR_SCHEMA: &str = "caduceus.beam.v1";
-pub(crate) const DEFAULT_DOOR_URL: &str = "http://127.0.0.1:3014/api/v1/beam";
+pub(crate) fn door_url() -> Result<String, &'static str> {
+    super::caduceus_door::base_url().map(|base| format!("{base}/api/v1/beam"))
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged, deny_unknown_fields)]
