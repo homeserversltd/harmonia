@@ -50,8 +50,8 @@ impl Seat {
 
     /// Ruyi keeps usable declarations even when they declare no kernel.
     /// Only an explicitly foreign seat ID is a refusal, not unavailability.
-    pub(crate) fn load_ruyi(id: &'static str, port: u16) -> Result<Self, String> {
-        let raw = Self::load_declaration(id, &format!("http://127.0.0.1:{port}"))
+    pub(crate) fn load_ruyi(id: &'static str, base: &str) -> Result<Self, String> {
+        let raw = Self::load_declaration(id, base)
             .map_err(|_| "ruyi-schema-seat-unreachable".to_string())?;
         match raw.get("schema").and_then(Value::as_str) {
             Some(declared) if declared != id => {

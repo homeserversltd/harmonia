@@ -27,22 +27,111 @@ impl Seats {
     }
 }
 
-fn port() -> u16 {
-    env::var("CADUCEUS_BIND")
+fn port() -> Option<u16> {
+    crate::bands::stage_profile::read_device_caduceus_seat_port()
         .ok()
-        .and_then(|bind| {
-            bind.rsplit_once(':')
-                .and_then(|(_, port)| port.parse().ok())
-        })
-        .unwrap_or(3014)
+        .flatten()
+}
+
+fn unreachable_seats() -> Seats {
+    Seats {
+        perspective: Err("ruyi-schema-seat-unreachable".into()),
+        register: Err("ruyi-schema-seat-unreachable".into()),
+    }
 }
 
 fn at_start() -> &'static Seats {
     static SEATS: OnceLock<Seats> = OnceLock::new();
-    SEATS.get_or_init(|| Seats {
-        perspective: crate::atoms::ask::mint_seats::Seat::load_ruyi(PERSPECTIVE, port()),
-        register: crate::atoms::ask::mint_seats::Seat::load_ruyi(REGISTER, port()),
+    SEATS.get_or_init(|| match crate::atoms::ask::caduceus_door::base_url() {
+        Ok(base) => Seats {
+            perspective: crate::atoms::ask::mint_seats::Seat::load_ruyi(PERSPECTIVE, base),
+            register: crate::atoms::ask::mint_seats::Seat::load_ruyi(REGISTER, base),
+        },
+        Err(_) => unreachable_seats(),
     })
+}
+
+/// One bounded StaffStart observation, never an exchange retry or an event.
+fn wait_for_staff() -> (u64, bool) {
+    use std::time::Instant;
+    let Ok(base) = crate::atoms::ask::caduceus_door::base_url() else {
+        return (0, false);
+    };
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(10);
+    let cadence = Duration::from_millis(500);
+    // Resolve once, with the same overall deadline; health polling itself is
+    // native HTTP and never starts a subprocess or invokes a staff actuator.
+    let authority = base.strip_prefix("http://").unwrap_or_default().to_owned();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::net::ToSocketAddrs;
+        let address = authority
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addresses| addresses.next());
+        let _ = send.send(address);
+    });
+    let address = match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(Some(address)) => address,
+        _ => return (started.elapsed().as_millis() as u64, false),
+    };
+    loop {
+        let probe_started = Instant::now();
+        let remaining = deadline.saturating_duration_since(probe_started);
+        if remaining.is_zero() {
+            return (started.elapsed().as_millis() as u64, false);
+        }
+        let probe_deadline = (probe_started + cadence).min(deadline);
+        if staff_health(address, base, probe_deadline) {
+            return (started.elapsed().as_millis() as u64, true);
+        }
+        let next = (probe_started + cadence).min(deadline);
+        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+    }
+}
+
+fn staff_health(address: std::net::SocketAddr, base: &str, deadline: std::time::Instant) -> bool {
+    use std::io::{Read, Write};
+    use std::time::Instant;
+    let probe = || -> std::io::Result<bool> {
+        let remaining = || deadline.saturating_duration_since(Instant::now());
+        let mut stream = std::net::TcpStream::connect_timeout(&address, remaining())?;
+        let request = format!(
+            "GET /health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            base.strip_prefix("http://").unwrap_or_default()
+        );
+        let mut pending = request.as_bytes();
+        while !pending.is_empty() {
+            stream.set_write_timeout(Some(remaining()))?;
+            let written = stream.write(pending)?;
+            if written == 0 {
+                return Ok(false);
+            }
+            pending = &pending[written..];
+        }
+        // A bounded HTTP status line is sufficient; never consume a body or
+        // let a slow response reset the absolute probe deadline.
+        let mut line = Vec::new();
+        while line.len() < 128 {
+            stream.set_read_timeout(Some(remaining()))?;
+            let mut byte = [0];
+            if stream.read(&mut byte)? == 0 {
+                return Ok(false);
+            }
+            line.push(byte[0]);
+            if byte[0] == b'\n' {
+                let text = String::from_utf8_lossy(&line);
+                let mut fields = text.split_whitespace();
+                let protocol = fields.next().unwrap_or_default();
+                let status = fields.next().and_then(|value| value.parse::<u16>().ok());
+                return Ok(matches!(protocol, "HTTP/1.0" | "HTTP/1.1")
+                    && status.is_some_and(|status| (200..300).contains(&status)));
+            }
+        }
+        Ok(false)
+    };
+    probe().unwrap_or(false)
 }
 
 fn now() -> Result<u64, String> {
@@ -58,7 +147,10 @@ fn empty_perspective() -> Value {
 }
 
 pub(crate) fn read_perspective() -> Result<Value, String> {
-    let seats = at_start();
+    read_perspective_with_seats(at_start())
+}
+
+fn read_perspective_with_seats(seats: &Seats) -> Result<Value, String> {
     seats.signal()?;
     let bytes =
         fs::read(ruyi_path()).map_err(|error| format!("ruyi-state-read-failed: {error}"))?;
@@ -108,6 +200,17 @@ pub(crate) fn register_promoted(
     identity: &LocalIdentity,
     dir: &Path,
 ) -> Result<Value, String> {
+    let Some(port) = port() else {
+        return save_receipt(
+            dir,
+            receipt(
+                "pre-declaration",
+                Value::Null,
+                Vec::new(),
+                "ruyi-seat-undeclared",
+            ),
+        );
+    };
     let beam = evidence.observations.get("caduceus");
     // A failed slot resolution also has lock:null. Only explicit absence means
     // the carried lock is absent; failed resolution must keep a non-null self.
@@ -152,7 +255,7 @@ pub(crate) fn register_promoted(
         }),
     );
     prior["self"] = row.clone();
-    let result = exchange(row, prior, seats)?;
+    let result = exchange(row, prior, seats, port)?;
     save_receipt(dir, result)
 }
 
@@ -236,7 +339,12 @@ fn get_roster(url: &str) -> Result<Value, String> {
     serde_json::from_str(&observed.stdout).map_err(|_| "ruyi-roster-malformed".into())
 }
 
-fn exchange(mut row: Value, mut perspective: Value, seats: &Seats) -> Result<Value, String> {
+fn exchange(
+    mut row: Value,
+    mut perspective: Value,
+    seats: &Seats,
+    port: u16,
+) -> Result<Value, String> {
     let signal = match seats.signal() {
         Ok(signal) => signal,
         Err(error) => return Ok(receipt("refused", row, Vec::new(), &error)),
@@ -272,7 +380,7 @@ fn exchange(mut row: Value, mut perspective: Value, seats: &Seats) -> Result<Val
     } else {
         gateway
     };
-    let url = format!("http://{host}:{}/api/v1/ruyi", port());
+    let url = format!("http://{host}:{port}/api/v1/ruyi");
     perspective["self"] = row.clone();
     perspective["written_at"] = json!(now()?);
     if let Ok(seat) = &seats.perspective {
@@ -472,28 +580,41 @@ fn accumulate(
 pub(crate) fn announce() -> Result<Value, String> {
     let run_id = crate::run_id_from_stamp();
     let dir = Path::new("/var/lib/harmonia/receipts").join(&run_id);
+    let Some(port) = port() else {
+        let mut result = receipt(
+            "pre-declaration",
+            Value::Null,
+            Vec::new(),
+            "ruyi-seat-undeclared",
+        );
+        result["staff_start_wait_ms"] = json!(0);
+        return save_receipt(&dir, result);
+    };
     match fs::metadata(crate::device_profile::device_profile_certificate_path()) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return save_receipt(
-                &dir,
-                receipt(
-                    "pre-declaration",
-                    Value::Null,
-                    Vec::new(),
-                    "ruyi-profile-absent",
-                ),
+            let mut result = receipt(
+                "pre-declaration",
+                Value::Null,
+                Vec::new(),
+                "ruyi-profile-absent",
             );
+            result["staff_start_wait_ms"] = json!(0);
+            return save_receipt(&dir, result);
         }
         Err(error) => return Err(format!("ruyi-profile-read-failed: {error}")),
         Ok(_) => {}
     }
-    let seats = at_start();
-    let prior = read_perspective()?;
+    let (wait_ms, ready) = wait_for_staff();
+    // Exhaustion is an unavailable seat observation, not another load timeout.
+    let unavailable = unreachable_seats();
+    let seats = if ready { at_start() } else { &unavailable };
+    let prior = read_perspective_with_seats(seats)?;
     let row = prior
         .get("self")
         .filter(|row| row.is_object())
         .cloned()
         .ok_or_else(|| "ruyi-current-self-unavailable".to_string())?;
-    let result = exchange(row, prior, seats)?;
+    let mut result = exchange(row, prior, seats, port)?;
+    result["staff_start_wait_ms"] = json!(wait_ms);
     save_receipt(&dir, result)
 }

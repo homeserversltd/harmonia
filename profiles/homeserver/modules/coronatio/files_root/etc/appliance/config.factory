@@ -1,6 +1,7 @@
 {
     "caduceus": {
-      "bind": "0.0.0.0:3014"
+      "bind": "0.0.0.0:3014",
+      "seat_port": 3014
     },
     "syzygy": {
       "schema": "appliance.syzygy.v1",

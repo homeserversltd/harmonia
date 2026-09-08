@@ -114,6 +114,16 @@ fn read_device_module_policy_at(path: &Path) -> Result<DeviceModulePolicy, Strin
     })
 }
 
+/// The gateway roster port is a separate, integer device declaration.
+pub(crate) fn read_device_caduceus_seat_port() -> Result<Option<u16>, String> {
+    Ok(
+        read_device_config_at(Path::new(APPLIANCE_CONFIG_PATH))?.and_then(|config| {
+            let port = config.get("caduceus")?.get("seat_port")?.as_u64()?;
+            u16::try_from(port).ok().filter(|port| *port != 0)
+        }),
+    )
+}
+
 /// Read the optional door declaration independently of module/syzygy policy.
 /// Missing or ill-typed binds are an observation for door consumers, not a
 /// module-selection failure.
