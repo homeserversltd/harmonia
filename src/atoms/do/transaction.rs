@@ -151,6 +151,7 @@ pub(crate) fn rolling_update_run(
     materialize_receipt: fn(&Path, &str) -> Result<PathBuf, String>,
     try_acquire_lock: fn(&Path) -> Result<ConvergenceLockGuard, ConvergenceLockBusy>,
 ) -> Result<(), String> {
+    let _mint_seats = crate::atoms::ask::mint_seats::at_start();
     let apply = mode.is_software_apply();
     let run_id = run_id_from_stamp();
     let effective_receipt_dir = materialize_receipt(receipt_dir, &run_id)?;
@@ -323,6 +324,25 @@ pub(crate) fn rolling_update_run(
             }
         };
         let mint = crate::atoms::attest::committed_syzygy_mint(&effective_receipt_dir, &receipt);
+        if let Err(error) =
+            crate::atoms::attest::write_transaction_receipt(
+                &effective_receipt_dir,
+                &receipt,
+                &mint,
+                None,
+            )
+        {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-receipt-failed",
+                Some(&error),
+                changed,
+                operation_count,
+            )?;
+            return Err(error);
+        }
         let identity = match crate::atoms::ask::ruyi::local_identity() {
             Ok(identity) => identity,
             Err(error) => {
@@ -350,25 +370,6 @@ pub(crate) fn rolling_update_run(
                 profile,
                 module_root,
                 "ruyi-state-write-failed",
-                Some(&error),
-                changed,
-                operation_count,
-            )?;
-            return Err(error);
-        }
-        if let Err(error) =
-            crate::atoms::attest::write_transaction_receipt(
-                &effective_receipt_dir,
-                &receipt,
-                &mint,
-                None,
-            )
-        {
-            write_transaction_failure_run_receipt(
-                &effective_receipt_dir,
-                profile,
-                module_root,
-                "transaction-receipt-failed",
                 Some(&error),
                 changed,
                 operation_count,

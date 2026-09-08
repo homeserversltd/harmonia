@@ -45,7 +45,7 @@ pub(crate) mod set_clock;
 #[path = "write_file.rs"]
 pub(crate) mod write_file;
 use super::Receipt;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -104,98 +104,6 @@ pub(crate) fn update_set_receipt(
     write_json_atomic(&dir.join("update-set.json"), &value)
 }
 
-fn successful_child<'a>(
-    value: &'a serde_json::Value,
-    tool: &'a str,
-) -> impl Iterator<Item = &'a serde_json::Value> + 'a {
-    value
-        .get("children")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flat_map(|children| children.iter())
-        .filter(move |child| {
-            child.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
-                && (child.get("tool").and_then(serde_json::Value::as_str) == Some(tool)
-                    || child.get("name").and_then(serde_json::Value::as_str) == Some(tool))
-        })
-}
-
-fn routine_source_evidence(value: &serde_json::Value) -> (BTreeSet<String>, BTreeSet<String>) {
-    let mut fetch = BTreeSet::new();
-    let mut pull = BTreeSet::new();
-    if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-        return (fetch, pull);
-    }
-    if let Some(sha) = value
-        .pointer("/context/fetch-artifact.source_sha")
-        .and_then(serde_json::Value::as_str)
-    {
-        fetch.insert(sha.to_owned());
-    }
-    if let Some(sha) = value
-        .pointer("/context/pull-repo.resolved_commit")
-        .and_then(serde_json::Value::as_str)
-    {
-        pull.insert(sha.to_owned());
-    }
-    for child in successful_child(value, "fetch-artifact") {
-        if let Some(sha) = child
-            .pointer("/outputs/source_sha")
-            .and_then(serde_json::Value::as_str)
-        {
-            fetch.insert(sha.to_owned());
-        }
-    }
-    for child in successful_child(value, "pull-repo") {
-        if let Some(sha) = child
-            .pointer("/outputs/resolved_commit")
-            .and_then(serde_json::Value::as_str)
-        {
-            pull.insert(sha.to_owned());
-        }
-    }
-    (fetch, pull)
-}
-
-fn committed_member_source_sha(
-    dir: &Path,
-    member_modules: &BTreeMap<String, Vec<String>>,
-    member: &str,
-) -> (Option<String>, String) {
-    let mut fetch = BTreeSet::new();
-    let mut pull = BTreeSet::new();
-    let Some(module_ids) = member_modules.get(member) else {
-        return (None, format!("syzygy-source-sha-missing {member}"));
-    };
-    for module_id in module_ids {
-        let Ok(entries) = fs::read_dir(dir.join("modules").join(module_id)) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".routine.json"))
-            {
-                continue;
-            }
-            let Ok(bytes) = fs::read(path) else { continue };
-            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            let (routine_fetch, routine_pull) = routine_source_evidence(&value);
-            fetch.extend(routine_fetch);
-            pull.extend(routine_pull);
-        }
-    }
-    let shas = if fetch.is_empty() { pull } else { fetch };
-    match shas.len() {
-        0 => (None, format!("syzygy-source-sha-missing {member}")),
-        1 => (shas.into_iter().next(), "none".into()),
-        _ => (None, format!("syzygy-source-sha-ambiguous {member}")),
-    }
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SyzygyMint {
     pub(crate) caduceus_sha: String,
@@ -217,13 +125,6 @@ impl SyzygyMint {
             signal,
         }
     }
-
-    fn failed_with_env(env_sha: String, signal: String) -> Self {
-        Self {
-            env_sha,
-            ..Self::failed(signal)
-        }
-    }
 }
 
 fn valid_lower_hex(value: &str, length: usize) -> bool {
@@ -233,9 +134,21 @@ fn valid_lower_hex(value: &str, length: usize) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn committed_beam_env_sha(dir: &Path) -> Result<String, String> {
-    let path = dir.join("beam.json");
-    let bytes = fs::read(&path).map_err(|error| {
+/// Raw member observations accompany the typed mint without becoming its identity.
+#[derive(Debug, Clone)]
+pub(crate) struct SyzygyEvidence {
+    pub(crate) mint: SyzygyMint,
+    pub(crate) member_flags: serde_json::Value,
+    pub(crate) observations: serde_json::Value,
+}
+
+impl std::ops::Deref for SyzygyEvidence {
+    type Target = SyzygyMint;
+    fn deref(&self) -> &Self::Target { &self.mint }
+}
+
+fn committed_beam(dir: &Path) -> Result<serde_json::Value, String> {
+    let bytes = fs::read(dir.join("beam.json")).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             "syzygy-beam-receipt-absent".to_string()
         } else {
@@ -244,123 +157,170 @@ fn committed_beam_env_sha(dir: &Path) -> Result<String, String> {
     })?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| "syzygy-beam-receipt-malformed".to_string())?;
-    if value.get("schema").and_then(serde_json::Value::as_str)
-        != Some("harmonia.beam-compare.v1")
-    {
+    if value.get("schema").and_then(serde_json::Value::as_str) != Some("harmonia.beam-compare.v1") {
         return Err("syzygy-beam-receipt-malformed".into());
     }
-    let env_sha = value
-        .get("lock")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|lock| lock.get("env_sha"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "syzygy-beam-receipt-malformed".to_string())?;
-    if !valid_lower_hex(env_sha, 64) {
-        return Err("syzygy-beam-env-sha-invalid".into());
-    }
-    Ok(env_sha.to_owned())
+    Ok(value)
 }
 
-/// Mint the typed Syzygy identity from the committed transaction evidence.
-/// The mint is computed once and carried to every consumer; consumers do not
-/// reparse receipt files or independently derive the digest.
+/// Resolve each available member independently, then mint only from a complete
+/// known-good set. No routine receipt or checkout head supplies member identity.
 pub(crate) fn committed_syzygy_mint(
     dir: &Path,
     receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
-) -> SyzygyMint {
+) -> SyzygyEvidence {
+    use serde_json::{json, Value};
+    let mut evidence = SyzygyEvidence {
+        mint: SyzygyMint::failed("none".into()),
+        member_flags: json!({}),
+        observations: json!({}),
+    };
+    for child in &receipt.children {
+        evidence.member_flags[&child.member] = json!(format!("syzygy-flag-absent {}", child.member));
+    }
     if receipt.state != crate::atoms::r#do::transaction::TransactionState::Committed {
-        return SyzygyMint::failed("syzygy-transaction-not-committed".into());
+        evidence.mint.signal = "syzygy-transaction-not-committed".into();
+        return evidence;
     }
-    let env_sha = match committed_beam_env_sha(dir) {
-        Ok(env_sha) => env_sha,
-        Err(signal) => return SyzygyMint::failed(signal),
-    };
-    let members = receipt
-        .children
-        .iter()
-        .map(|child| child.member.as_str())
-        .collect::<BTreeSet<_>>();
-    if !(members.contains("sbin") || members.contains("agathodaimon")) {
-        return SyzygyMint::failed_with_env(env_sha, "syzygy-required-partner-missing".into());
+    let seats = crate::atoms::ask::mint_seats::at_start();
+    evidence.observations["schema_seats"] = json!({
+        "estate.release-flag.v1": seats.release_flag.as_ref().err().map(String::as_str).unwrap_or("loaded"),
+        "harmonia.update-set.v1": seats.update_set.as_ref().err().map(String::as_str).unwrap_or("loaded")
+    });
+    let mut signals = Vec::<String>::new();
+    if let Some(signal) = seats.signal() { signals.push(signal.to_owned()); }
+    let members = receipt.children.iter().map(|child| child.member.as_str()).collect::<BTreeSet<_>>();
+    match committed_beam(dir) {
+        Ok(beam) => {
+            evidence.observations["caduceus"] = beam.clone();
+            for (name, length) in [("caduceus_sha", 40), ("env_sha", 64)] {
+                match beam.get("lock").and_then(|lock| lock.get(name)) {
+                    None | Some(Value::Null) => signals.push(format!("syzygy-beam-{name}-absent")),
+                    Some(value) => match value.as_str() {
+                        Some(sha) if valid_lower_hex(sha, length) => {
+                            if name == "caduceus_sha" { evidence.mint.caduceus_sha = sha.to_owned(); }
+                            else { evidence.mint.env_sha = sha.to_owned(); }
+                        }
+                        _ => signals.push(format!("syzygy-beam-{name}-invalid")),
+                    }
+                }
+            }
+            if !evidence.mint.caduceus_sha.is_empty() {
+                evidence.member_flags["caduceus"] = json!({
+                    "source_sha": evidence.mint.caduceus_sha,
+                    "flagged_at": beam.pointer("/resolved_from/flagged_at"),
+                    "malformed_flags": beam.get("malformed_flags").and_then(Value::as_u64).unwrap_or(0)
+                });
+            } else {
+                evidence.member_flags["caduceus"] = json!(signals.last());
+            }
+        }
+        Err(signal) => {
+            evidence.member_flags["caduceus"] = json!(signal);
+            signals.push(signal);
+        }
     }
-    if !members.contains("caduceus") {
-        return SyzygyMint::failed_with_env(env_sha, "syzygy-caduceus-member-missing".into());
-    }
-    let (caduceus_sha, signal) =
-        committed_member_source_sha(dir, &receipt.member_modules, "caduceus");
-    let Some(caduceus_sha) = caduceus_sha else {
-        return SyzygyMint::failed_with_env(env_sha, signal);
-    };
-    let partner = if members.contains("sbin") {
-        "sbin"
+    if !members.contains("caduceus") { signals.push("syzygy-caduceus-member-missing".into()); }
+    if members.contains("sbin") {
+        match &seats.release_flag {
+            Ok(seat) => {
+                let observed = crate::atoms::ask::member_flag::resolve_sbin(seat);
+                evidence.observations["sbin"] = observed.evidence();
+                if observed.signal == "none" {
+                    if let Some(flag) = &observed.selected {
+                        evidence.mint.partner_sha = flag.get("source_sha").and_then(Value::as_str).unwrap_or_default().to_owned();
+                        evidence.member_flags["sbin"] = json!({
+                            "source_sha": evidence.mint.partner_sha,
+                            "flagged_at": flag.get("flagged_at"),
+                            "malformed_flags": observed.malformed_flags,
+                            "release_flag": flag
+                        });
+                    }
+                } else {
+                    evidence.member_flags["sbin"] = json!(observed.signal);
+                    signals.push(observed.signal);
+                }
+            }
+            Err(signal) => {
+                evidence.member_flags["sbin"] = json!(signal);
+            }
+        }
+    } else if members.contains("agathodaimon") {
+        signals.push("syzygy-flag-absent agathodaimon".into());
     } else {
-        "agathodaimon"
-    };
-    let (partner_sha, signal) =
-        committed_member_source_sha(dir, &receipt.member_modules, partner);
-    let Some(partner_sha) = partner_sha else {
-        return SyzygyMint {
-            caduceus_sha,
-            partner_sha: String::new(),
-            gui_sha: None,
-            syzygy_sha: None,
-            env_sha,
-            signal,
-        };
-    };
-    let gui_sha = if let Some(gui_member) = receipt.gui_member.as_deref() {
-        let (sha, signal) = committed_member_source_sha(dir, &receipt.member_modules, gui_member);
-        let Some(sha) = sha else {
-            return SyzygyMint {
-                caduceus_sha,
-                partner_sha,
-                gui_sha: None,
-                syzygy_sha: None,
-                env_sha,
-                signal,
-            };
-        };
-        Some(sha)
-    } else {
-        None
-    };
-    match crate::atoms::r#do::transaction::compute_syzygy_sha(
-        &caduceus_sha,
-        &partner_sha,
-        gui_sha.as_deref(),
-    ) {
-        Ok(sha) => SyzygyMint {
-            caduceus_sha,
-            partner_sha,
-            gui_sha,
-            syzygy_sha: Some(sha),
-            env_sha,
-            signal: "none".into(),
-        },
-        Err(signal) => SyzygyMint {
-            caduceus_sha,
-            partner_sha,
-            gui_sha,
-            syzygy_sha: None,
-            env_sha,
-            signal,
-        },
+        signals.push("syzygy-required-partner-missing".into());
     }
+    // Hyprland is a package, not a repository vertex. Repository GUI flags
+    // retain their term but their resolution is explicitly a follow-on lane.
+    if receipt.gui.as_deref() != Some("Hyprland") {
+        let gui_member = receipt.gui_member.as_deref().or(match receipt.gui.as_deref() {
+            Some("Arcadia") => Some("arcadia"),
+            Some("Coronatio") => Some("coronatio"),
+            _ => None,
+        });
+        if let Some(member) = gui_member {
+            let signal = format!("syzygy-flag-absent {member}");
+            evidence.member_flags[member] = json!(signal);
+            signals.push(signal);
+        }
+    }
+    if signals.is_empty() {
+        match crate::atoms::r#do::transaction::compute_syzygy_sha(
+            &evidence.mint.caduceus_sha, &evidence.mint.partner_sha, None,
+        ) {
+            Ok(sha) => evidence.mint.syzygy_sha = Some(sha),
+            Err(signal) => signals.push(signal),
+        }
+    }
+    evidence.mint.signal = signals.first().cloned().unwrap_or_else(|| "none".into());
+    evidence.observations["signals"] = json!(signals);
+    // Validate before any consumer can persist the mint. A desync refuses the
+    // digest, never the already committed module transaction or its receipt.
+    let value = transaction_value(receipt, &evidence, None);
+    if let Ok(seat) = &seats.update_set {
+        if let Err(signal) = seat.validate(&value) {
+            evidence.mint.syzygy_sha = None;
+            evidence.mint.signal = signal.clone();
+            evidence.observations["update_set_seat"] = json!(signal);
+        }
+    }
+    evidence
+}
+
+fn transaction_value(
+    receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+    evidence: &SyzygyEvidence,
+    failed_step: Option<&str>,
+) -> serde_json::Value {
+    use serde_json::{json, Value};
+    let mut enriched = receipt.clone();
+    enriched.syzygy_sha = evidence.mint.syzygy_sha.clone();
+    enriched.syzygy_signal = evidence.mint.signal.clone();
+    let mut value = crate::atoms::r#do::transaction::project_update_set_v1(&enriched);
+    value["member_flags"] = evidence.member_flags.clone();
+    value["member_flag_observations"] = evidence.observations.clone();
+    if let Some(members) = value.get_mut("members").and_then(Value::as_array_mut) {
+        for member in members {
+            let source = member.get("member").and_then(Value::as_str)
+                .and_then(|name| {
+                    evidence.member_flags.get(name).and_then(|flag| flag.get("source_sha"))
+                        .or_else(|| evidence.observations.get(name)
+                            .and_then(|observed| observed.pointer("/selected/source_sha")))
+                }).cloned().unwrap_or(Value::Null);
+            member["source_sha"] = source;
+        }
+    }
+    if let Some(step) = failed_step { value["failed_step"] = json!(step); }
+    value
 }
 
 pub(crate) fn write_transaction_receipt(
     dir: &Path,
     receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
-    mint: &SyzygyMint,
+    evidence: &SyzygyEvidence,
     failed_step: Option<&str>,
 ) -> Result<(), String> {
-    let mut enriched = receipt.clone();
-    enriched.syzygy_sha = mint.syzygy_sha.clone();
-    enriched.syzygy_signal = mint.signal.clone();
-    let mut value = crate::atoms::r#do::transaction::project_update_set_v1(&enriched);
-    if let Some(step) = failed_step {
-        value["failed_step"] = serde_json::json!(step);
-    }
+    let value = transaction_value(receipt, evidence, failed_step);
     write_json_atomic(&dir.join("update-set.json"), &value)
 }
 

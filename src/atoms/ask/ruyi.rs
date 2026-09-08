@@ -11,14 +11,12 @@ const DEFAULT_RUYI_PATH: &str = "/etc/appliance/ruyi.json";
 const RUYI_PATH_ENV: &str = "HARMONIA_RUYI_PATH";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct LastUpdate {
     pub run_id: String,
     pub converged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RuyiRow {
     pub schema: String,
     pub mac: String,
@@ -27,7 +25,9 @@ pub(crate) struct RuyiRow {
     pub ipv4: String,
     pub profile: String,
     pub gui_face: Option<String>,
+    #[serde(default, deserialize_with = "nullable_string")]
     pub caduceus_sha: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     pub env_sha: String,
     pub harmonia_sha: String,
     pub syzygy_sha: Option<String>,
@@ -41,6 +41,10 @@ pub(crate) fn ruyi_path() -> PathBuf {
     env::var_os(RUYI_PATH_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_RUYI_PATH))
+}
+
+fn nullable_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn valid_name(value: &str) -> bool {
@@ -113,10 +117,12 @@ pub(crate) fn validate_row(row: &RuyiRow) -> Result<(), String> {
     {
         return Err("ruyi-gui-face-invalid".into());
     }
-    if !valid_hex(&row.caduceus_sha, 40) {
+    if (!row.caduceus_sha.is_empty() || row.syzygy_sha.is_some())
+        && !valid_hex(&row.caduceus_sha, 40) {
         return Err("ruyi-caduceus-sha-invalid".into());
     }
-    if !valid_hex(&row.env_sha, 64) {
+    if (!row.env_sha.is_empty() || row.syzygy_sha.is_some())
+        && !valid_hex(&row.env_sha, 64) {
         return Err("ruyi-env-sha-invalid".into());
     }
     if !valid_hex(&row.harmonia_sha, 40) {
@@ -158,16 +164,13 @@ pub(crate) struct LocalIdentity {
 }
 
 fn mint_error(mint: &crate::atoms::attest::SyzygyMint) -> Option<String> {
-    if mint.signal != "none" {
-        return Some("ruyi-syzygy-mint-invalid".into());
-    }
-    if !valid_hex(&mint.caduceus_sha, 40) {
+    if !mint.caduceus_sha.is_empty() && !valid_hex(&mint.caduceus_sha, 40) {
         return Some("ruyi-syzygy-mint-caduceus-invalid".into());
     }
-    if !valid_hex(&mint.partner_sha, 40) {
+    if !mint.partner_sha.is_empty() && !valid_hex(&mint.partner_sha, 40) {
         return Some("ruyi-syzygy-mint-partner-invalid".into());
     }
-    if !valid_hex(&mint.env_sha, 64) {
+    if !mint.env_sha.is_empty() && !valid_hex(&mint.env_sha, 64) {
         return Some("ruyi-syzygy-mint-env-invalid".into());
     }
     if mint
@@ -177,10 +180,10 @@ fn mint_error(mint: &crate::atoms::attest::SyzygyMint) -> Option<String> {
     {
         return Some("ruyi-syzygy-mint-gui-invalid".into());
     }
-    if !mint
+    if mint
         .syzygy_sha
         .as_deref()
-        .is_some_and(|sha| valid_hex(sha, 64))
+        .is_some_and(|sha| !valid_hex(sha, 64))
     {
         return Some("ruyi-syzygy-mint-syzygy-invalid".into());
     }
@@ -287,14 +290,45 @@ pub(crate) fn write_committed_state(
         caduceus_sha: mint.caduceus_sha.clone(),
         env_sha: mint.env_sha.clone(),
         harmonia_sha: receipt.source_head.clone(),
-        syzygy_sha: mint.syzygy_sha.clone(),
+        syzygy_sha: if mint.signal == "none" { mint.syzygy_sha.clone() } else { None },
         last_seen,
         last_update: LastUpdate {
             run_id: run_id.into(),
             converged: true,
         },
     };
-    write_row(&row)
+    validate_row(&row)?;
+    let mut value = serde_json::to_value(&row).map_err(|error| error.to_string())?;
+    value["syzygy_signal"] = serde_json::json!(mint.signal);
+    if row.caduceus_sha.is_empty() { value["caduceus_sha"] = serde_json::Value::Null; }
+    if row.env_sha.is_empty() { value["env_sha"] = serde_json::Value::Null; }
+    // Preserve additive fields in the existing raw envelope, including nested
+    // last_update evidence. Old digest bytes are overwritten even on absence.
+    let mut raw = match fs::read(ruyi_path()) {
+        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .map_err(|_| "ruyi-state-json-invalid".to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({"schema": ROW_SCHEMA}),
+        Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
+    };
+    if raw.get("schema").and_then(serde_json::Value::as_str) != Some(ROW_SCHEMA) {
+        return Err("ruyi-schema-invalid".into());
+    }
+    merge_fields(&mut raw, value);
+    let bytes = serde_json::to_vec(&raw).map_err(|error| error.to_string())?;
+    crate::atoms::projectio::write_engine_state(
+        &ruyi_path(), &bytes, crate::atoms::projectio::engine_state_witness(),
+    )
+}
+
+fn merge_fields(raw: &mut serde_json::Value, current: serde_json::Value) {
+    match (raw, current) {
+        (serde_json::Value::Object(raw), serde_json::Value::Object(current)) => {
+            for (name, value) in current {
+                merge_fields(raw.entry(name).or_insert(serde_json::Value::Null), value);
+            }
+        }
+        (raw, current) => *raw = current,
+    }
 }
 
 pub(crate) fn read_row() -> Result<RuyiRow, String> {

@@ -20,6 +20,10 @@ pub(crate) mod change_owner;
 pub(crate) mod check_health;
 #[path = "beam.rs"]
 pub(crate) mod beam;
+#[path = "member_flag.rs"]
+pub(crate) mod member_flag;
+#[path = "mint_seats.rs"]
+pub(crate) mod mint_seats;
 #[path = "ruyi.rs"]
 pub(crate) mod ruyi;
 #[path = "copy_file.rs"]
