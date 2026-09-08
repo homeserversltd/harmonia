@@ -467,10 +467,176 @@ mod tests {
         assert_eq!(validate_row(&invalid), Err("ruyi-syzygy-sha-invalid".into()));
     }
 
+    // These three cases use separate processes so environment overrides and the
+    // registrant's startup OnceLock cannot leak into another test.
+    fn isolated_ruyi_case() -> bool {
+        let thread = std::thread::current();
+        let name = thread.name().expect("named test thread");
+        if env::var("HARMONIA_RUYI_TEST_CHILD").ok().as_deref() == Some(name) {
+            return true;
+        }
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env("HARMONIA_RUYI_TEST_CHILD", name)
+            .env_remove(RUYI_PATH_ENV)
+            .env("NO_PROXY", "*")
+            .env("no_proxy", "*")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated {name}:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "the exact child test must execute"
+        );
+        false
+    }
+
+    struct RuyiTestPeer {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<Vec<serde_json::Value>>>,
+    }
+
+    impl RuyiTestPeer {
+        fn start(path: &Path) -> Self {
+            use std::io::{BufRead, Read, Write};
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            env::set_var("CADUCEUS_BIND", listener.local_addr().unwrap().to_string());
+            env::set_var(RUYI_PATH_ENV, path);
+            listener.set_nonblocking(true).unwrap();
+            let stop = std::sync::Arc::new(AtomicBool::new(false));
+            let stopping = stop.clone();
+            let worker = std::thread::spawn(move || {
+                let mut puts: Vec<serde_json::Value> = Vec::new();
+                while !stopping.load(Ordering::SeqCst) {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(error) => panic!("test peer accept: {error}"),
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                    let mut request = String::new();
+                    reader.read_line(&mut request).unwrap();
+                    let mut length = 0;
+                    loop {
+                        let mut header = String::new();
+                        reader.read_line(&mut header).unwrap();
+                        if header == "\r\n" {
+                            break;
+                        }
+                        assert!(!header.is_empty(), "incomplete request headers");
+                        if let Some((key, value)) = header.split_once(':') {
+                            if key.eq_ignore_ascii_case("content-length") {
+                                length = value.trim().parse::<usize>().unwrap();
+                            }
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let (status, reply) = if request.starts_with("GET /api/v1/schema/") {
+                        // Exercise the production unavailable-seat path, not a schema copy.
+                        ("404 Not Found", serde_json::json!({}))
+                    } else if request.starts_with("PUT /api/v1/ruyi/aa:bb:cc:dd:ee:ff ") {
+                        puts.push(serde_json::from_slice(&body).unwrap());
+                        ("200 OK", serde_json::json!({}))
+                    } else {
+                        assert!(request.starts_with("GET /api/v1/ruyi "), "{request}");
+                        let mut row = puts.last().expect("PUT precedes roster GET").clone();
+                        row.as_object_mut().unwrap().remove("perspective");
+                        (
+                            "200 OK",
+                            serde_json::json!({"staves": [row],
+                            "seat": {"mac": "aa:bb:cc:dd:ee:ff"}}),
+                        )
+                    };
+                    let body = serde_json::to_vec(&reply).unwrap();
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+                puts
+            });
+            Self {
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn finish(mut self) -> Vec<serde_json::Value> {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.worker.take().unwrap().join().unwrap()
+        }
+    }
+
+    impl Drop for RuyiTestPeer {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn seed_test_perspective(path: &Path) -> Vec<u8> {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema": "harmonia.ruyi-perspective.v1", "self": null,
+            "seen": {}, "their_view_of_me": {}, "written_at": null,
+            // Prior roster evidence selects loopback without probing the host LAN.
+            "gateway_seat": {"mac": "aa:bb:cc:dd:ee:ff"}
+        }))
+        .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
+    fn labelled_test_engine() -> bool {
+        HARMONIA_BUILD_SHA
+            .is_some_and(|sha| sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    }
+
+    fn test_state_backups(path: &Path) -> Vec<PathBuf> {
+        let mut backups = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".projectio-engine-state-")
+            })
+            .collect::<Vec<_>>();
+        backups.sort();
+        backups
+    }
+
     #[test]
     fn committed_state_uses_env_sha_carried_by_mint() {
+        if !isolated_ruyi_case() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("nested/ruyi.json");
+        let path = temp.path().join("etc/appliance/ruyi.json");
+        let before = seed_test_perspective(&path);
+        let peer = RuyiTestPeer::start(&path);
         let profile = crate::Profile {
             id: "homeconsole".into(),
             identity: "test".into(),
@@ -485,18 +651,58 @@ mod tests {
             ipv4: "192.0.2.1".into(),
         };
         let expected_env_sha = "d".repeat(64);
-        let expected = mint();
-        with_test_path(&path, || {
-            write_committed_state(
-                &profile,
-                "run-42",
-                &committed_receipt(),
-                &expected,
-                &identity,
-            )
-            .unwrap();
-            assert_eq!(read_row().unwrap().env_sha, expected_env_sha);
-        });
+        let evidence = crate::atoms::attest::SyzygyEvidence {
+            mint: mint(),
+            member_flags: serde_json::json!({}),
+            observations: serde_json::json!({}),
+        };
+        // A conflicting runtime label must not replace the compiled identity.
+        env::set_var("HARMONIA_BUILD_SHA", "not-the-compiled-engine");
+        let result = register_promoted(
+            &profile,
+            "run-42",
+            &committed_receipt(),
+            &evidence,
+            &identity,
+            &temp.path().join("receipts"),
+        )
+        .unwrap();
+        assert_eq!(result["self"]["env_sha"], expected_env_sha);
+        assert_eq!(
+            result["self"]["harmonia_sha"],
+            serde_json::json!(HARMONIA_BUILD_SHA)
+        );
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(temp.path().join("receipts/ruyi.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved, result);
+        let puts = peer.finish();
+        if labelled_test_engine() {
+            assert_eq!(result["state"], "self-is-gateway");
+            assert_eq!(
+                result["first_missing_signal"],
+                "ruyi-schema-seat-unreachable"
+            );
+            assert_eq!(puts.len(), 1);
+            assert_eq!(puts[0]["env_sha"], expected_env_sha);
+            assert_eq!(
+                puts[0]["harmonia_sha"],
+                serde_json::json!(HARMONIA_BUILD_SHA)
+            );
+            let perspective = read_perspective().unwrap();
+            assert_eq!(perspective["schema"], "harmonia.ruyi-perspective.v1");
+            assert_eq!(perspective["self"], result["self"]);
+            assert_eq!(perspective["self"]["env_sha"], expected_env_sha);
+        } else {
+            assert_eq!(result["state"], "pre-declaration");
+            assert_eq!(
+                result["first_missing_signal"],
+                "ruyi-harmonia-identity-unlabelled"
+            );
+            assert!(puts.is_empty(), "an unlabelled engine must not PUT");
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert!(test_state_backups(&path).is_empty());
+        }
     }
 
     #[test]
@@ -523,8 +729,13 @@ mod tests {
 
     #[test]
     fn committed_state_rewrites_temp_path_and_retains_distinct_rollback_artifacts() {
+        if !isolated_ruyi_case() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("nested/ruyi.json");
+        let path = temp.path().join("etc/appliance/ruyi.json");
+        let before = seed_test_perspective(&path);
+        let peer = RuyiTestPeer::start(&path);
         let live_path = Path::new(DEFAULT_RUYI_PATH);
         let live_before = fs::read(live_path).ok();
         let profile = crate::Profile {
@@ -540,48 +751,98 @@ mod tests {
             hostname: "arcadia".into(),
             ipv4: "192.0.2.1".into(),
         };
-        let (first, second, readback) = with_test_path(&path, || {
-            let first = write_committed_state(
-                &profile,
-                "run-first",
-                &committed_receipt(),
-                &mint(),
-                &identity,
-            )
-            .unwrap();
-            let second = write_committed_state(
-                &profile,
-                "run-second",
-                &committed_receipt(),
-                &mint(),
-                &identity,
-            )
-            .unwrap();
-            let readback = read_row().unwrap();
-            (first, second, readback)
-        });
-
-        assert_ne!(first.backup_path, second.backup_path);
-        assert_eq!(fs::read(&first.backup_path).unwrap(), b"");
-        assert_eq!(fs::read(&second.backup_path).unwrap(), first.struck_bytes);
-        assert_eq!(readback.last_update.run_id, "run-second");
-        assert!(readback.last_update.converged);
+        let evidence = crate::atoms::attest::SyzygyEvidence {
+            mint: mint(),
+            member_flags: serde_json::json!({}),
+            observations: serde_json::json!({}),
+        };
+        let first = register_promoted(
+            &profile,
+            "run-first",
+            &committed_receipt(),
+            &evidence,
+            &identity,
+            &temp.path().join("receipts/first"),
+        )
+        .unwrap();
+        let first_bytes = fs::read(&path).unwrap();
+        let first_backups = test_state_backups(&path);
+        let second = register_promoted(
+            &profile,
+            "run-second",
+            &committed_receipt(),
+            &evidence,
+            &identity,
+            &temp.path().join("receipts/second"),
+        )
+        .unwrap();
+        let second_bytes = fs::read(&path).unwrap();
+        let backups = test_state_backups(&path);
+        let puts = peer.finish();
+        assert_eq!(ruyi_path(), path);
+        for result in [&first, &second] {
+            assert_eq!(
+                result["self"]["harmonia_sha"],
+                serde_json::json!(HARMONIA_BUILD_SHA)
+            );
+        }
+        if labelled_test_engine() {
+            assert_eq!(first["state"], "self-is-gateway");
+            assert_eq!(second["state"], "self-is-gateway");
+            assert_eq!(puts.len(), 2);
+            assert_eq!(puts[0]["last_update"]["run_id"], "run-first");
+            assert_eq!(puts[1]["last_update"]["run_id"], "run-second");
+            assert_eq!(first_backups.len(), 1);
+            assert_eq!(backups.len(), 2);
+            let first_backup = &first_backups[0];
+            let second_backup = backups.iter().find(|path| *path != first_backup).unwrap();
+            assert_ne!(first_backup, second_backup);
+            assert!(backups.contains(first_backup));
+            assert_eq!(fs::read(first_backup).unwrap(), before);
+            assert_eq!(fs::read(second_backup).unwrap(), first_bytes);
+            assert_ne!(first_bytes, second_bytes);
+            let first_perspective: serde_json::Value =
+                serde_json::from_slice(&first_bytes).unwrap();
+            assert_eq!(first_perspective["schema"], "harmonia.ruyi-perspective.v1");
+            assert_eq!(first_perspective["self"], first["self"]);
+            let readback = read_perspective().unwrap();
+            assert_eq!(readback["schema"], "harmonia.ruyi-perspective.v1");
+            assert_eq!(readback["self"], second["self"]);
+            assert_eq!(readback["self"]["last_update"]["run_id"], "run-second");
+            assert_eq!(readback["self"]["last_update"]["converged"], true);
+        } else {
+            for result in [&first, &second] {
+                assert_eq!(result["state"], "pre-declaration");
+                assert_eq!(
+                    result["first_missing_signal"],
+                    "ruyi-harmonia-identity-unlabelled"
+                );
+            }
+            assert!(
+                puts.is_empty(),
+                "an unlabelled engine must not PUT or rewrite"
+            );
+            assert_eq!(first_bytes, before);
+            assert_eq!(second_bytes, before);
+            assert!(first_backups.is_empty());
+            assert!(backups.is_empty());
+        }
         assert_eq!(fs::read(live_path).ok(), live_before);
     }
 
     #[test]
     fn path_helper_uses_the_production_default() {
-        let _guard = RUYI_PATH_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap();
-        let prior = env::var_os(RUYI_PATH_ENV);
-        env::remove_var(RUYI_PATH_ENV);
-        assert_eq!(ruyi_path(), PathBuf::from(DEFAULT_RUYI_PATH));
-        match prior {
-            Some(value) => env::set_var(RUYI_PATH_ENV, value),
-            None => env::remove_var(RUYI_PATH_ENV),
+        if !isolated_ruyi_case() {
+            return;
         }
+        env::remove_var(RUYI_PATH_ENV);
+        assert_eq!(ruyi_path(), PathBuf::from("/etc/appliance/ruyi.json"));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("etc/appliance/ruyi.json");
+        env::set_var(RUYI_PATH_ENV, &path);
+        assert_eq!(ruyi_path(), path);
+        env::remove_var(RUYI_PATH_ENV);
+        assert_eq!(ruyi_path(), PathBuf::from("/etc/appliance/ruyi.json"));
     }
 
 }
