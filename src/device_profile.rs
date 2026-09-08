@@ -35,7 +35,9 @@ fn set_run_identity_source(source: &'static str) {
 }
 
 pub(crate) fn device_profile_certificate_path() -> PathBuf {
-    PathBuf::from(DEVICE_PROFILE_CERTIFICATE)
+    std::env::var_os("HARMONIA_DEVICE_PROFILE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEVICE_PROFILE_CERTIFICATE))
 }
 
 fn load_certificate_at(path: &Path) -> Result<DeviceProfileCertificate, String> {
@@ -130,7 +132,10 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
             "device-profile-certificate-profile-invalid profile={profile_id}"
         ));
     }
-    let profile_dir = Path::new(HARMONIA_MODULE_ROOT)
+    let module_root = std::env::var_os("HARMONIA_MODULE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(HARMONIA_MODULE_ROOT));
+    let profile_dir = module_root
         .join("profiles")
         .join(&profile_id);
     if !profile_dir.is_dir() {

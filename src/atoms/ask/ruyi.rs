@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[path = "ruyi/registrant.rs"]
-mod registrant;
+pub(crate) mod registrant;
 pub(crate) use registrant::{announce, read_perspective, register_promoted};
 
 // Identity of this running engine, not a checkout, receipt, or release lookup.

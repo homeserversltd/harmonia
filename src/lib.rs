@@ -56,6 +56,23 @@ struct Profile {
     syzygy_declaration: Option<SyzygyDeclaration>,
 }
 
+impl Profile {
+    pub(crate) fn caduceus_module_id(&self) -> Option<&str> {
+        self.modules
+            .iter()
+            .find(|module| module.as_str() == "caduceus")
+            .or_else(|| self.modules.iter().find(|module| module.contains("caduceus")))
+            .map(String::as_str)
+    }
+
+    pub(crate) fn dns_module_id(&self) -> Option<&str> {
+        self.modules
+            .iter()
+            .find(|module| matches!(module.as_str(), "dns" | "unbound" | "firewall"))
+            .map(String::as_str)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct SyzygyDeclaration {
     pub schema: String,
@@ -316,6 +333,7 @@ mod invocation_face {
 }
 
 pub fn invoke(args: Vec<String>) -> Result<(), String> {
+    crate::atoms::ask::mint_seats::emit_interactable_seat_signals();
     let invocation = invocation_face::mint(&args);
     run(args, invocation)
 }

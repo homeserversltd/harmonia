@@ -332,6 +332,8 @@ fn transaction_value(
     enriched.syzygy_sha = evidence.mint.syzygy_sha.clone();
     enriched.syzygy_signal = evidence.mint.signal.clone();
     let mut value = crate::atoms::r#do::transaction::project_update_set_v1(&enriched);
+    value["event"] = json!("new-artifact");
+    value["held_back_by"] = json!([]);
     value["member_flags"] = evidence.member_flags.clone();
     value["member_flag_observations"] = evidence.observations.clone();
     if let Some(members) = value.get_mut("members").and_then(Value::as_array_mut) {

@@ -1,12 +1,14 @@
 use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{CommandObservation, Drift, Receipt};
+use std::env;
 use std::time::Duration;
 
 pub(crate) enum UnitVerb {
     Start,
     Stop,
     Restart,
+    Reload,
     Enable,
     Disable,
     EnableNow,
@@ -21,6 +23,7 @@ impl UnitVerb {
             Self::Start => &["start"],
             Self::Stop => &["stop"],
             Self::Restart => &["restart"],
+            Self::Reload => &["reload"],
             Self::Enable => &["enable"],
             Self::Disable => &["disable"],
             Self::EnableNow => &["enable", "--now"],
@@ -34,13 +37,17 @@ impl UnitVerb {
         !matches!(self, Self::DaemonReload)
     }
 }
+fn systemctl_program() -> String {
+    env::var("HARMONIA_SYSTEMCTL").unwrap_or_else(|_| "/usr/bin/systemctl".into())
+}
+
 pub(crate) fn unit_change(
     authorization: ActionAuthorization,
     invocation: InvocationKey,
     unit: &str,
     verb: UnitVerb,
 ) -> Result<Receipt, String> {
-    let program = "/usr/bin/systemctl";
+    let program = systemctl_program();
     let args = verb
         .argv()
         .iter()
@@ -192,6 +199,7 @@ pub(crate) fn unit_change_scoped(
     target_user: Option<&str>,
     timeout_secs: u64,
 ) -> Result<CommandObservation, String> {
+    let program = systemctl_program();
     let mut args = Vec::new();
     if user {
         args.push("--user".into());
@@ -206,7 +214,7 @@ pub(crate) fn unit_change_scoped(
     super::run_command::command_with_timeout(
         authorization,
         invocation,
-        "/usr/bin/systemctl",
+        &program,
         &args,
         Duration::from_secs(timeout_secs),
     )
