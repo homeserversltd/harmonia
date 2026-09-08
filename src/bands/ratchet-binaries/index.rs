@@ -275,6 +275,7 @@ pub(crate) fn execute_manifest_modules(
     ok: &mut bool,
     first_missing_signal: &mut String,
     events: &mut File,
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
 ) -> Result<(), String> {
     for module_id in &profile.modules {
         if disabled_modules.contains(module_id) || halted.contains(module_id) {
@@ -327,6 +328,17 @@ pub(crate) fn execute_manifest_modules(
         });
         match result {
             Ok(part) => {
+                if let Some(carrier) = carrier {
+                    for placement in &part.placements {
+                        if let Some(rung) = placement.get("known_good") {
+                            if rung.get("pointer_moved").and_then(Value::as_bool) == Some(true) {
+                                if let Some(identity) = rung.get("rung_identity").and_then(Value::as_str) {
+                                    carrier.borrow_mut().rung_promoted.push(identity.to_owned());
+                                }
+                            }
+                        }
+                    }
+                }
                 state.operation_count += part.operation_count;
                 state.changed |= part.changed;
                 state.placements.extend(part.placements);

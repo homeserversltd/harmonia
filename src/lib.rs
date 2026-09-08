@@ -1033,8 +1033,12 @@ fn demo_command(args: &[String], _invocation: Invocation) -> Result<(), String> 
     demo_registry::run(name)
 }
 
-fn ruyi_command(_args: &[String]) -> Result<(), String> {
-    let row = crate::atoms::ask::ruyi::read_row()?;
+fn ruyi_command(args: &[String]) -> Result<(), String> {
+    let row = match args.first().map(String::as_str) {
+        None | Some("show") if args.len() <= 1 => crate::atoms::ask::ruyi::read_perspective()?,
+        Some("announce") if args.len() == 1 => crate::atoms::ask::ruyi::announce()?,
+        _ => return Err("usage: harmonia ruyi [show|announce]".into()),
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&row).map_err(|e| e.to_string())?
@@ -1094,7 +1098,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");
     println!("  harmonia toolbelt");
     println!("  harmonia beam [--lock <path>] [--door-url <url>]");
-    println!("  harmonia ruyi");
+    println!("  harmonia ruyi [show|announce]");
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id> owner");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");

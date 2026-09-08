@@ -482,6 +482,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.ok,
                     &mut state.first_missing_signal,
                     &mut events,
+                    carrier.or_else(|| context.map(|value| &value.carrier)),
                 )?;
             }
             crate::bands::Band::BackfillFiles => {

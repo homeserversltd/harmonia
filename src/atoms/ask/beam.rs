@@ -165,6 +165,33 @@ pub(crate) fn read_lock_path(path: &std::path::Path) -> Result<Option<BeamLock>,
         Err(_) => Err("beam-lock-malformed".to_string()),
     }
 }
+/// One bounded Ruyi PUT; curl owns the three-second transport deadline.
+pub(crate) fn put_json(url: &str, bytes: &[u8]) -> Result<String, String> {
+    let mut child = Command::new("/usr/bin/curl")
+        .args(["-fsS", "--max-time", "3", "-X", "PUT", "-H",
+            "content-type: application/json", "--data-binary", "@-", "-w", "\n%{http_code}", url])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().map_err(|_| "ruyi-gateway-unreachable".to_string())?;
+    let sent = child.stdin.take().ok_or_else(|| "ruyi-put-stdin-unavailable".to_string())?
+        .write_all(bytes);
+    let output = child.wait_with_output()
+        .map_err(|_| "ruyi-gateway-unreachable".to_string())?;
+    if output.status.code() == Some(22) {
+        return Err("ruyi-put-refused".into());
+    }
+    if !output.status.success() || sent.is_err() {
+        return Err("ruyi-gateway-unreachable".into());
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "ruyi-put-response-malformed".to_string())?;
+    let (body, status) = text.rsplit_once('\n')
+        .ok_or_else(|| "ruyi-put-response-malformed".to_string())?;
+    if !status.parse::<u16>().is_ok_and(|status| (200..300).contains(&status)) {
+        return Err("ruyi-put-refused".into());
+    }
+    Ok(body.to_owned())
+}
+
 pub(crate) fn fetch_door(url: &str) -> Result<BeamDoor, String> {
     let args = vec!["-fsS".into(), "--max-time".into(), "3".into(), url.into()];
     let result = crate::atoms::ask::read_only_command_with_timeout(

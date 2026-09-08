@@ -1,0 +1,499 @@
+//! Event-only Ruyi exchange. Raw envelopes retain additive peer evidence.
+use super::*;
+use serde_json::{json, Value};
+use std::sync::OnceLock;
+
+const PERSPECTIVE: &str = "harmonia.ruyi-perspective.v1";
+const REGISTER: &str = "harmonia.ruyi-register.v1";
+
+struct Seats {
+    perspective: Result<crate::atoms::ask::mint_seats::Seat, String>,
+    register: Result<crate::atoms::ask::mint_seats::Seat, String>,
+}
+
+impl Seats {
+    fn signal(&self) -> Result<&'static str, String> {
+        let mut signal = "none";
+        for seat in [&self.perspective, &self.register] {
+            if let Err(error) = seat {
+                if error == "ruyi-schema-seat-unreachable" {
+                    signal = "ruyi-schema-seat-unreachable";
+                } else {
+                    return Err(error.clone());
+                }
+            }
+        }
+        Ok(signal)
+    }
+}
+
+fn port() -> u16 {
+    env::var("CADUCEUS_BIND")
+        .ok()
+        .and_then(|bind| {
+            bind.rsplit_once(':')
+                .and_then(|(_, port)| port.parse().ok())
+        })
+        .unwrap_or(3014)
+}
+
+fn at_start() -> &'static Seats {
+    static SEATS: OnceLock<Seats> = OnceLock::new();
+    SEATS.get_or_init(|| Seats {
+        perspective: crate::atoms::ask::mint_seats::Seat::load_ruyi(PERSPECTIVE, port()),
+        register: crate::atoms::ask::mint_seats::Seat::load_ruyi(REGISTER, port()),
+    })
+}
+
+fn now() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_secs())
+        .map_err(|_| "ruyi-clock-invalid".into())
+}
+
+fn empty_perspective() -> Value {
+    json!({"schema": PERSPECTIVE, "self": null, "seen": {},
+        "their_view_of_me": {}, "written_at": null})
+}
+
+pub(crate) fn read_perspective() -> Result<Value, String> {
+    let seats = at_start();
+    seats.signal()?;
+    let bytes =
+        fs::read(ruyi_path()).map_err(|error| format!("ruyi-state-read-failed: {error}"))?;
+    let raw: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("ruyi-state-json-invalid: {error}"))?;
+    match raw.get("schema").and_then(Value::as_str) {
+        Some(PERSPECTIVE) => {
+            if let Ok(seat) = &seats.perspective {
+                seat.validate_ruyi(&raw)?;
+            }
+            Ok(raw)
+        }
+        // The former bare row becomes self without narrowing its unknown fields.
+        Some(ROW_SCHEMA) => {
+            let mut perspective = empty_perspective();
+            perspective["self"] = raw;
+            Ok(perspective)
+        }
+        _ => Err("ruyi-schema-invalid".into()),
+    }
+}
+
+fn prior_perspective() -> Result<Value, String> {
+    match fs::metadata(ruyi_path()) {
+        Ok(_) => read_perspective(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(empty_perspective()),
+        Err(error) => Err(format!("ruyi-state-read-failed: {error}")),
+    }
+}
+
+fn receipt(state: &str, row: Value, roster: Vec<Value>, signal: &str) -> Value {
+    json!({"schema": REGISTER, "state": state, "self": row,
+        "roster_count": roster.len(), "roster": roster, "first_missing_signal": signal})
+}
+
+fn save_receipt(dir: &Path, value: Value) -> Result<Value, String> {
+    crate::atoms::attest::write_json_atomic(&dir.join("ruyi.json"), &value)?;
+    Ok(value)
+}
+
+/// Reuse the committed mint and its raw evidence; do not resolve any member again.
+pub(crate) fn register_promoted(
+    profile: &crate::Profile,
+    run_id: &str,
+    transaction: &crate::atoms::r#do::transaction::TransactionReceipt,
+    evidence: &crate::atoms::attest::SyzygyEvidence,
+    identity: &LocalIdentity,
+    dir: &Path,
+) -> Result<Value, String> {
+    let beam = evidence.observations.get("caduceus");
+    // A failed slot resolution also has lock:null. Only explicit absence means
+    // the carried lock is absent; failed resolution must keep a non-null self.
+    let lock_absent = beam
+        .and_then(|beam| beam.get("first_missing_signal"))
+        .and_then(Value::as_str)
+        == Some("beam-lock-absent");
+    if profile.id.is_empty() || lock_absent {
+        return save_receipt(
+            dir,
+            receipt(
+                "pre-declaration",
+                Value::Null,
+                Vec::new(),
+                if lock_absent {
+                    "ruyi-beam-lock-absent"
+                } else {
+                    "ruyi-profile-absent"
+                },
+            ),
+        );
+    }
+    let seats = at_start();
+    let mut prior = prior_perspective()?;
+    let mut row = prior
+        .get("self")
+        .filter(|row| row.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    merge_fields(
+        &mut row,
+        json!({
+            "schema": ROW_SCHEMA, "mac": identity.mac, "hostname": identity.hostname,
+            "canonical_name": format!("{}.home.arpa", identity.hostname), "ipv4": identity.ipv4,
+            "profile": profile.id, "gui_face": transaction.gui,
+            "caduceus_sha": if evidence.caduceus_sha.is_empty() { Value::Null } else { json!(evidence.caduceus_sha) },
+            "env_sha": if evidence.env_sha.is_empty() { Value::Null } else { json!(evidence.env_sha) },
+            "harmonia_sha": HARMONIA_BUILD_SHA,
+            "syzygy_sha": evidence.syzygy_sha, "syzygy_signal": evidence.signal,
+            "member_flags": evidence.member_flags,
+            "last_seen": now()?, "last_update": {"run_id": run_id, "converged": true}
+        }),
+    );
+    prior["self"] = row.clone();
+    let result = exchange(row, prior, seats)?;
+    save_receipt(dir, result)
+}
+
+fn declaration_signal(row: &Value) -> Option<&'static str> {
+    if !HARMONIA_BUILD_SHA
+        .is_some_and(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Some("ruyi-harmonia-identity-unlabelled");
+    }
+    if !row
+        .get("caduceus_sha")
+        .and_then(Value::as_str)
+        .is_some_and(|sha| valid_hex(sha, 40))
+    {
+        return Some("ruyi-beam-caduceus-sha-absent");
+    }
+    if !row
+        .get("env_sha")
+        .and_then(Value::as_str)
+        .is_some_and(|sha| valid_hex(sha, 64))
+    {
+        return Some("ruyi-beam-env-sha-absent");
+    }
+    None
+}
+
+fn default_gateway() -> Result<Ipv4Addr, String> {
+    let routes = fs::read_to_string("/proc/net/route")
+        .map_err(|_| "ruyi-default-gateway-unavailable".to_string())?;
+    routes
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.get(1) != Some(&"00000000") {
+                return None;
+            }
+            let gateway = u32::from_str_radix(fields.get(2)?, 16).ok()?;
+            (gateway != 0).then(|| Ipv4Addr::from(gateway.to_le_bytes()))
+        })
+        .ok_or_else(|| "ruyi-default-gateway-unavailable".into())
+}
+
+fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
+    if row
+        .get("ipv4")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<Ipv4Addr>().ok())
+        == Some(gateway)
+    {
+        return true;
+    }
+    let observed = crate::atoms::ask::read_only_command_with_timeout(
+        "/usr/bin/ip",
+        &["-4".into(), "-o".into(), "addr".into(), "show".into()],
+        Duration::from_secs(2),
+    );
+    observed.ok
+        && observed.stdout.split_whitespace().any(|word| {
+            word.split('/')
+                .next()
+                .and_then(|s| s.parse::<Ipv4Addr>().ok())
+                == Some(gateway)
+        })
+}
+
+fn get_roster(url: &str) -> Result<Value, String> {
+    let observed = crate::atoms::ask::read_only_command_with_timeout(
+        "/usr/bin/curl",
+        &["-fsS".into(), "--max-time".into(), "3".into(), url.into()],
+        Duration::from_secs(4),
+    );
+    if !observed.ok {
+        return Err(if observed.code == Some(22) {
+            "ruyi-roster-refused"
+        } else {
+            "ruyi-gateway-unreachable"
+        }
+        .into());
+    }
+    serde_json::from_str(&observed.stdout).map_err(|_| "ruyi-roster-malformed".into())
+}
+
+fn exchange(mut row: Value, mut perspective: Value, seats: &Seats) -> Result<Value, String> {
+    let signal = match seats.signal() {
+        Ok(signal) => signal,
+        Err(error) => return Ok(receipt("refused", row, Vec::new(), &error)),
+    };
+    row["harmonia_sha"] = json!(HARMONIA_BUILD_SHA);
+    if let Some(signal) = declaration_signal(&row) {
+        return Ok(receipt("pre-declaration", row, Vec::new(), signal));
+    }
+
+    let Some(mac) = row
+        .get("mac")
+        .and_then(Value::as_str)
+        .filter(|mac| valid_mac(mac))
+        .map(str::to_owned)
+    else {
+        return Ok(receipt("refused", row, Vec::new(), "ruyi-mac-invalid"));
+    };
+    let prior_self_seat = perspective
+        .pointer("/gateway_seat/mac")
+        .and_then(Value::as_str)
+        == Some(mac.as_str());
+    let gateway = if prior_self_seat {
+        Ipv4Addr::LOCALHOST
+    } else {
+        match default_gateway() {
+            Ok(gateway) => gateway,
+            Err(error) => return Ok(receipt("gateway-unreachable", row, Vec::new(), &error)),
+        }
+    };
+    let is_gateway = prior_self_seat || gateway_is_local(gateway, &row);
+    let host = if is_gateway {
+        Ipv4Addr::LOCALHOST
+    } else {
+        gateway
+    };
+    let url = format!("http://{host}:{}/api/v1/ruyi", port());
+    perspective["self"] = row.clone();
+    perspective["written_at"] = json!(now()?);
+    if let Ok(seat) = &seats.perspective {
+        if let Err(error) = seat.validate_ruyi(&perspective) {
+            return Ok(receipt("refused", row, Vec::new(), &error));
+        }
+    }
+    let mut payload = row.clone();
+    payload["perspective"] = perspective.clone();
+    let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+    // Exactly one PUT followed by exactly one roster GET, including a failed PUT.
+    // Schema-door startup loads are separate observations, not roster exchanges.
+    let put = crate::atoms::ask::beam::put_json(&format!("{url}/{mac}"), &bytes);
+    let get = get_roster(&url);
+    if let Err(error) = put {
+        let state = if error == "ruyi-gateway-unreachable" {
+            "gateway-unreachable"
+        } else {
+            "refused"
+        };
+        return Ok(receipt(state, row, Vec::new(), &error));
+    }
+    let roster = match get {
+        Ok(roster) => roster,
+        Err(error) => {
+            let state = if error == "ruyi-gateway-unreachable" {
+                "gateway-unreachable"
+            } else {
+                "refused"
+            };
+            return Ok(receipt(state, row, Vec::new(), &error));
+        }
+    };
+    if !roster.is_object() || roster.get("ok").and_then(Value::as_bool) == Some(false) {
+        return Ok(receipt("refused", row, Vec::new(), "ruyi-roster-malformed"));
+    }
+    if roster
+        .get("schema")
+        .is_some_and(|schema| schema.as_str() != Some(ROW_SCHEMA))
+    {
+        return Ok(receipt(
+            "refused",
+            row,
+            Vec::new(),
+            "ruyi-roster-schema-foreign",
+        ));
+    }
+    let staves = match roster.get("staves") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(staves)) if staves.iter().all(Value::is_object) => staves.clone(),
+        _ => return Ok(receipt("refused", row, Vec::new(), "ruyi-roster-malformed")),
+    };
+    for stave in &staves {
+        if stave
+            .get("schema")
+            .is_some_and(|schema| schema.as_str() != Some(ROW_SCHEMA))
+        {
+            return Ok(receipt(
+                "refused",
+                row,
+                staves.clone(),
+                "ruyi-row-schema-foreign",
+            ));
+        }
+    }
+    if let Err(error) = accumulate(&mut perspective, &roster, &staves, &mac) {
+        return Ok(receipt("refused", row, staves, &error));
+    }
+    perspective["written_at"] = json!(now()?);
+    // Preserve the last observed seat, allowing the next event's self-seat path
+    // without adding a discovery GET ahead of the PUT.
+    if let Some(seat) = roster.get("seat") {
+        perspective["gateway_seat"] = seat.clone();
+    }
+    let result = receipt(
+        if is_gateway {
+            "self-is-gateway"
+        } else {
+            "registered"
+        },
+        row,
+        staves,
+        signal,
+    );
+    if let Ok(seat) = &seats.register {
+        if let Err(error) = seat.validate_ruyi(&result) {
+            return Ok(receipt(
+                "refused",
+                result["self"].clone(),
+                result["roster"].as_array().cloned().unwrap_or_default(),
+                &error,
+            ));
+        }
+    }
+    let bytes = serde_json::to_vec(&perspective).map_err(|error| error.to_string())?;
+    crate::atoms::projectio::write_engine_state(
+        &ruyi_path(),
+        &bytes,
+        crate::atoms::projectio::engine_state_witness(),
+    )?;
+    Ok(result)
+}
+
+fn beam_pair(row: &Value) -> Value {
+    json!({"caduceus_sha": row.get("caduceus_sha"), "env_sha": row.get("env_sha")})
+}
+
+fn accumulate(
+    perspective: &mut Value,
+    roster: &Value,
+    staves: &[Value],
+    mac: &str,
+) -> Result<(), String> {
+    for field in ["seen", "their_view_of_me"] {
+        if perspective.get(field).is_none_or(Value::is_null) {
+            perspective[field] = json!({});
+        }
+        if !perspective[field].is_object() {
+            return Err(format!("ruyi-perspective-{field}-malformed"));
+        }
+    }
+    for peer in staves {
+        let Some(peer_mac) = peer.get("mac").and_then(Value::as_str) else {
+            continue;
+        };
+        if peer_mac == mac {
+            continue;
+        }
+        let pair = beam_pair(peer);
+        let old = perspective["seen"]
+            .get(peer_mac)
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let moved = old.get("syzygy_sha").unwrap_or(&Value::Null)
+            != peer.get("syzygy_sha").unwrap_or(&Value::Null)
+            || old.get("beam_pair") != Some(&pair);
+        let mut entry = old.clone();
+        if !entry.is_object() {
+            return Err("ruyi-peer-entry-malformed".into());
+        }
+        let mut lineage = match old.get("lineage") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(lineage)) => lineage.clone(),
+            _ => return Err("ruyi-peer-lineage-malformed".into()),
+        };
+        let peer_perspective = roster.get("perspectives").and_then(|p| p.get(peer_mac));
+        if moved {
+            let flags = peer
+                .get("member_flags")
+                .or_else(|| peer_perspective.and_then(|p| p.pointer("/self/member_flags")));
+            let source = |name: &str| {
+                flags
+                    .and_then(|f| f.get(name))
+                    .and_then(|f| f.get("source_sha"))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            };
+            let gui = peer
+                .get("gui_face")
+                .and_then(Value::as_str)
+                .map(str::to_ascii_lowercase);
+            lineage.push(json!({"syzygy_sha": peer.get("syzygy_sha"),
+                "release_flags": {"caduceus": peer.get("caduceus_sha"), "sbin": source("sbin"),
+                    "gui": gui.as_deref().map(source).unwrap_or(Value::Null)},
+                "seen_at": now()?}));
+        }
+        merge_fields(
+            &mut entry,
+            json!({"mac": peer_mac, "hostname": peer.get("hostname"),
+            "canonical_name": peer.get("canonical_name"), "beam_pair": pair,
+            "syzygy_sha": peer.get("syzygy_sha"), "lineage": lineage,
+            "last_checked_in_at": peer.get("last_seen"), "seen_via": "gateway-roster"}),
+        );
+        perspective["seen"][peer_mac] = entry;
+        if let Some(reflection) = peer_perspective
+            .and_then(|p| p.get("seen"))
+            .and_then(|seen| seen.get(mac))
+        {
+            if reflection.is_object() {
+                merge_fields(
+                    &mut perspective["their_view_of_me"][peer_mac],
+                    reflection.clone(),
+                );
+                merge_fields(
+                    &mut perspective["their_view_of_me"][peer_mac],
+                    json!({"syzygy_sha": reflection.get("syzygy_sha"),
+                        "beam_pair": reflection.get("beam_pair"),
+                        "at": reflection.get("last_checked_in_at")}),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// StaffStart uses the existing self envelope; it never applies or moves a rung.
+pub(crate) fn announce() -> Result<Value, String> {
+    let run_id = crate::run_id_from_stamp();
+    let dir = Path::new("/var/lib/harmonia/receipts").join(&run_id);
+    match fs::metadata(crate::device_profile::device_profile_certificate_path()) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return save_receipt(
+                &dir,
+                receipt(
+                    "pre-declaration",
+                    Value::Null,
+                    Vec::new(),
+                    "ruyi-profile-absent",
+                ),
+            );
+        }
+        Err(error) => return Err(format!("ruyi-profile-read-failed: {error}")),
+        Ok(_) => {}
+    }
+    let seats = at_start();
+    let prior = read_perspective()?;
+    let row = prior
+        .get("self")
+        .filter(|row| row.is_object())
+        .cloned()
+        .ok_or_else(|| "ruyi-current-self-unavailable".to_string())?;
+    let result = exchange(row, prior, seats)?;
+    save_receipt(&dir, result)
+}

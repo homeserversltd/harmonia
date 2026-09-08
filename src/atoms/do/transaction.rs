@@ -111,6 +111,8 @@ pub(crate) fn derive_plan(
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunCarrier {
+    /// This run only: populated by actual pointer movement, never quiet success.
+    pub rung_promoted: Vec<String>,
     pub projection: Option<crate::bands::stage_profile::ProfileProjection>,
     pub update_plan: Option<UpdatePlan>,
     pub refreshed_profile: Option<RefreshedProfileIdentity>,
@@ -164,6 +166,7 @@ pub(crate) fn rolling_update_run(
                     crate::atoms::r#do::transaction::RunCarrier::default(),
                 ))
             });
+        carrier.borrow_mut().rung_promoted.clear();
         crate::bands::stage_profile::reconcile_legacy_module_seats(
             profile,
             module_root,
@@ -343,38 +346,13 @@ pub(crate) fn rolling_update_run(
             )?;
             return Err(error);
         }
-        let identity = match crate::atoms::ask::ruyi::local_identity() {
-            Ok(identity) => identity,
-            Err(error) => {
-                write_transaction_failure_run_receipt(
-                    &effective_receipt_dir,
-                    profile,
-                    module_root,
-                    "ruyi-local-identity-unavailable",
-                    Some(&error),
-                    changed,
-                    operation_count,
-                )?;
-                return Err(error);
-            }
-        };
-        if let Err(error) = crate::atoms::ask::ruyi::write_committed_state(
-            profile,
-            &run_id,
-            &receipt,
-            &mint,
-            &identity,
-        ) {
-            write_transaction_failure_run_receipt(
-                &effective_receipt_dir,
-                profile,
-                module_root,
-                "ruyi-state-write-failed",
-                Some(&error),
-                changed,
-                operation_count,
+        // The marker belongs to this carrier/run, not an older ledger pointer.
+        // Commit and its durable transaction receipt must precede any exchange.
+        if !carrier.borrow().rung_promoted.is_empty() {
+            let identity = crate::atoms::ask::ruyi::local_identity()?;
+            crate::atoms::ask::ruyi::register_promoted(
+                profile, &run_id, &receipt, &mint, &identity, &effective_receipt_dir,
             )?;
-            return Err(error);
         }
         let Some(summary) = carrier.borrow_mut().deferred_terminal_summary.take() else {
             write_transaction_failure_run_receipt(

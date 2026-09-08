@@ -6,6 +6,12 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[path = "ruyi/registrant.rs"]
+mod registrant;
+pub(crate) use registrant::{announce, read_perspective, register_promoted};
+
+// Identity of this running engine, not a checkout, receipt, or release lookup.
+const HARMONIA_BUILD_SHA: Option<&str> = option_env!("HARMONIA_BUILD_SHA");
 pub(crate) const ROW_SCHEMA: &str = "caduceus.ruyi.v1";
 const DEFAULT_RUYI_PATH: &str = "/etc/appliance/ruyi.json";
 const RUYI_PATH_ENV: &str = "HARMONIA_RUYI_PATH";
@@ -289,7 +295,7 @@ pub(crate) fn write_committed_state(
         gui_face: receipt.gui.clone(),
         caduceus_sha: mint.caduceus_sha.clone(),
         env_sha: mint.env_sha.clone(),
-        harmonia_sha: receipt.source_head.clone(),
+        harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
         syzygy_sha: if mint.signal == "none" { mint.syzygy_sha.clone() } else { None },
         last_seen,
         last_update: LastUpdate {
