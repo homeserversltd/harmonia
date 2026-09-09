@@ -453,10 +453,14 @@ pub(crate) fn execute_validated_step(
                 | ("aur", "install")
                 | ("aur", "build-pinned")
                 | ("command", "capture")
+                | ("xenia-runtime", "refusal")
                 | ("xenia-runtime", "retire")
         );
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("routine", "execute") => Err("routine-dispatch-internal".into()),
+        ("xenia-runtime", "refusal") => {
+            crate::bands::xenia::execute_refusal(&step.args, software_apply)
+        }
         ("xenia-runtime", "retire") => {
             crate::bands::xenia::execute_retire(
                 &step.args,

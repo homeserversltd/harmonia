@@ -397,6 +397,9 @@ fn xenia_command(args: &[String]) -> Result<(), String> {
                 &register_path,
                 register_schema_base,
             )?;
+            if let Some(reason) = register.entry_refusals.get(&id) {
+                return Err(format!("xenia-entry-refused-{id}: {reason}"));
+            }
             let entry = register
                 .xenoi
                 .get(&id)

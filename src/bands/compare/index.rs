@@ -482,8 +482,8 @@ pub(crate) fn homeconsole_arcadia_check(
         &format!("schema=harmonia.arcadia_fast_check.v1 ok={}", ok),
         Some(serde_json::json!({"schema": "harmonia.arcadia_fast_check.v1", "ok": ok})),
         Some(ok),
-        None,
-    );
+            None,
+);
     println!("ok={}", ok);
     println!("update_available={}", update_available);
     println!(
@@ -1350,7 +1350,8 @@ mod beam_tests {
         let step = crate::tools::routine::ValidatedStep { step_id: "health-proof-routine".into(), tool: "routine".into(), permutation: "execute".into(), args: BTreeMap::new(), on_failure: crate::tools::ladder::OnFailure::Stop };
         let child = crate::tools::routine::ProjectedRoutineChild { name: "health-proof".into(), tool: "check-health".into(), permutation: "probe".into(), args: [("component".into(), json!("caduceus")), ("url".into(), json!(format!("{registry}/health")))].into_iter().collect(), on_failure: crate::tools::ladder::OnFailure::Stop, band: crate::bands::Band::RestartServices };
         let mut states = BTreeMap::new();
-        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, None, &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect()).unwrap();
+        let mut halted_steps = crate::bands::HaltedSteps::new();
+        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, None, &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect(), &mut halted_steps).unwrap();
         server.join().unwrap();
     }
 

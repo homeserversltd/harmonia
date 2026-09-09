@@ -223,7 +223,7 @@
         },
         {
           "name": "unit-render",
-          "description": "Render a Xenia unit under guest register law and derived install.unit authority, then place it root:root 0644.",
+          "description": "The guest register law and the appliance.xenia.v1 seat's install.unit authorize the derived unit and configuration-gate exemption; render it and place it root:root 0644.",
           "args": [
             {
               "name": "unit",
@@ -1765,6 +1765,23 @@
       "description": "Lowered Xenia guest lifecycle operations.",
       "routine_summonable": true,
       "permutations": [
+        {
+          "name": "refusal",
+          "description": "Emit one failed Hyalos outcome for one plan-refused Xenia entry during apply only.",
+          "args": [
+            {
+              "name": "id",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "reason",
+              "kind": "string",
+              "required": true
+            }
+          ],
+          "placement": "RestartServices"
+        },
         {
           "name": "seat-present",
           "description": "Observe the declared bearer and guest seat without creating either.",

@@ -42,6 +42,7 @@ const FORBIDDEN_PREFIXES: &[&str] = &[
 pub(crate) struct Register {
     pub raw: Value,
     pub xenoi: BTreeMap<String, Value>,
+    pub entry_refusals: BTreeMap<String, String>,
 }
 
 fn string(value: &Value, path: &str) -> Result<String, String> {
@@ -83,6 +84,7 @@ pub(crate) fn load_register(path: &Path, schema_base: Option<&str>) -> Result<Re
         return Ok(Register {
             raw: json!({"schema":"appliance.xenia.v1","xenoi":{}}),
             xenoi: BTreeMap::new(),
+            entry_refusals: BTreeMap::new(),
         });
     }
     let bytes = fs::read(path)
@@ -91,6 +93,7 @@ pub(crate) fn load_register(path: &Path, schema_base: Option<&str>) -> Result<Re
         return Ok(Register {
             raw: json!({"schema":"appliance.xenia.v1","xenoi":{}}),
             xenoi: BTreeMap::new(),
+            entry_refusals: BTreeMap::new(),
         });
     }
     let raw: Value =
@@ -113,13 +116,23 @@ pub(crate) fn load_register(path: &Path, schema_base: Option<&str>) -> Result<Re
             .map(|(id, entry)| (id.clone(), entry.clone()))
             .collect(),
     };
-    for (id, entry) in &xenoi {
-        seat.validate(entry)?;
-        if entry.get("id").and_then(Value::as_str) != Some(id) {
-            return Err(format!("xenia-register-key-id-mismatch-{id}"));
-        }
-    }
-    Ok(Register { raw, xenoi })
+    let entry_refusals = xenoi
+        .iter()
+        .filter_map(|(id, entry)| {
+            seat.validate(entry)
+                .err()
+                .or_else(|| {
+                    (entry.get("id").and_then(Value::as_str) != Some(id.as_str()))
+                        .then(|| format!("xenia-register-key-id-mismatch-{id}"))
+                })
+                .map(|reason| (id.clone(), reason))
+        })
+        .collect();
+    Ok(Register {
+        raw,
+        xenoi,
+        entry_refusals,
+    })
 }
 
 fn repo_segment(repo: &str) -> &str {
@@ -138,11 +151,10 @@ fn unit_name(entry: &Value, id: &str) -> Result<String, String> {
     }
 }
 
-fn declaration(entry: &Value) -> Result<LadderStep, String> {
-    let id = string(entry, "/id")?;
+fn declaration(id: &str, entry: &Value) -> Result<LadderStep, String> {
     let release_repo = string(entry, "/source/release_repo")?;
     let bin = string(entry, "/install/bin")?;
-    let unit = unit_name(entry, &id)?;
+    let unit = unit_name(entry, id)?;
     let owner = string(entry, "/install/owner")?;
     let binary_name = repo_segment(&release_repo).to_string();
     let args = BTreeMap::from([
@@ -179,17 +191,33 @@ fn declaration(entry: &Value) -> Result<LadderStep, String> {
     })
 }
 
-fn refuse_entry(manifest: &mut LadderManifest, id: &str, reason: String) {
-    manifest
+fn refuse_entry(
+    manifest: &mut LadderManifest,
+    lowered: &mut Vec<LadderStep>,
+    id: &str,
+    reason: String,
+) {
+    let refusal = format!("xenia-plan-refused entry_id={id} reason={reason}");
+    if manifest
         .plan_refusals
-        .push(format!("xenia-plan-refused entry_id={id} reason={reason}"));
-    crate::hyalos::forward_receipt(
-        "xenia",
-        &format!("xenia plan outcome=refused id={id} reason={reason}"),
-        Some(json!({"id":id,"outcome":"refused","reason":reason})),
-        Some(false),
-        Some(id),
-    );
+        .iter()
+        .any(|existing| existing.starts_with(&format!("xenia-plan-refused entry_id={id} ")))
+    {
+        return;
+    }
+    manifest.plan_refusals.push(refusal);
+    lowered.push(LadderStep {
+        step_id: format!("xenia-refusal-{id}"),
+        tool: "xenia-runtime".into(),
+        permutation: "refusal".into(),
+        args: BTreeMap::from([
+            ("id".into(), json!(id)),
+            ("reason".into(), json!(reason)),
+        ]),
+        steps: Vec::new(),
+        on_failure: crate::tools::ladder::OnFailure::Stop,
+        extra: BTreeMap::new(),
+    });
 }
 
 pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), String> {
@@ -200,15 +228,11 @@ pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), Str
         return Err("xenia-isolation-must-be-per-step".into());
     }
     let register = load_register(&register_path(), debug_schema_base())?;
-    let mut entries: Vec<Value> = register.xenoi.values().cloned().collect();
-    entries.sort_by(|a, b| {
+    let mut entries: Vec<(String, Value)> = register.xenoi.clone().into_iter().collect();
+    entries.sort_by(|(a_id, a), (b_id, b)| {
         let ap = a.get("priority").and_then(Value::as_i64).unwrap_or(100);
         let bp = b.get("priority").and_then(Value::as_i64).unwrap_or(100);
-        ap.cmp(&bp).then_with(|| {
-            a.get("id")
-                .and_then(Value::as_str)
-                .cmp(&b.get("id").and_then(Value::as_str))
-        })
+        ap.cmp(&bp).then_with(|| a_id.cmp(b_id))
     });
     if entries.is_empty() {
         manifest.module_observation = Some("register-empty".into());
@@ -218,24 +242,38 @@ pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), Str
     for step in original {
         match (step.tool.as_str(), step.permutation.as_str()) {
             ("xenia", "converge") => {
-                for entry in &entries {
-                    let id = string(entry, "/id")?;
-                    let kind = string(entry, "/kind")?;
+                for (id, entry) in &entries {
+                    if let Some(reason) = register.entry_refusals.get(id) {
+                        refuse_entry(manifest, &mut lowered, id, reason.clone());
+                        continue;
+                    }
+                    let kind = match string(entry, "/kind") {
+                        Ok(kind) => kind,
+                        Err(reason) => {
+                            refuse_entry(manifest, &mut lowered, id, reason);
+                            continue;
+                        }
+                    };
                     if kind == "iframe" {
                         continue;
                     }
                     if kind == "cartridge-static" {
-                        refuse_entry(manifest, &id, "static-road-deferred".into());
+                        refuse_entry(manifest, &mut lowered, id, "static-road-deferred".into());
                         continue;
                     }
                     if kind != "cartridge-process" {
-                        refuse_entry(manifest, &id, "xenia-kind-unsupported".into());
+                        refuse_entry(
+                            manifest,
+                            &mut lowered,
+                            id,
+                            "xenia-kind-unsupported".into(),
+                        );
                         continue;
                     }
                     if entry.get("enabled").and_then(Value::as_bool).unwrap_or(true) {
-                        match declaration(entry) {
+                        match declaration(id, entry) {
                             Ok(step) => lowered.push(step),
-                            Err(reason) => refuse_entry(manifest, &id, reason),
+                            Err(reason) => refuse_entry(manifest, &mut lowered, id, reason),
                         }
                     }
                 }
@@ -669,6 +707,43 @@ pub(crate) fn execute_routine_child(
             "xenia-runtime-permutation-unsupported-{permutation}"
         )),
     }
+}
+
+pub(crate) fn execute_refusal(
+    args: &BTreeMap<String, Value>,
+    apply: bool,
+) -> Result<OperationOutcome, String> {
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("xenia-id-missing")?;
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .ok_or("xenia-refusal-reason-missing")?;
+    if !apply {
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: format!("xenia-refusal-planned id={id} reason={reason}"),
+            command: None,
+        });
+    }
+    crate::hyalos::forward_receipt(
+        "xenia",
+        &format!("xenia runtime outcome=failed id={id} reason={reason}"),
+        Some(json!({"id":id,"outcome":"failed","reason":reason})),
+        Some(false),
+        Some(id),
+    );
+    Ok(OperationOutcome {
+        ok: false,
+        changed: false,
+        skipped: false,
+        message: format!("xenia-entry-refused id={id} reason={reason}"),
+        command: None,
+    })
 }
 
 pub(crate) fn execute_status_door(
