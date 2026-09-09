@@ -350,6 +350,16 @@ pub(crate) fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
         })
 }
 
+pub(crate) fn self_is_gateway(perspective: &Value, gateway: Ipv4Addr, row: &Value) -> bool {
+    let persisted_gateway_mac = perspective
+        .pointer("/gateway_seat/mac")
+        .and_then(Value::as_str);
+    row.get("mac")
+        .and_then(Value::as_str)
+        .is_some_and(|self_mac| Some(self_mac) == persisted_gateway_mac)
+        || gateway_is_local(gateway, row)
+}
+
 pub(crate) fn routed_host(row: &Value) -> Result<Ipv4Addr, String> {
     let mac = row.get("mac").and_then(Value::as_str).unwrap_or_default();
     let prior_self_seat = read_perspective()
@@ -414,16 +424,12 @@ fn exchange(
     else {
         return Ok(receipt("refused", row, Vec::new(), "ruyi-mac-invalid"));
     };
-    let prior_self_seat = perspective
-        .pointer("/gateway_seat/mac")
-        .and_then(Value::as_str)
-        == Some(mac.as_str());
     let gateway = match default_gateway() {
         Ok(gateway) => gateway,
         Err(error) => return Ok(receipt("gateway-unreachable", row, Vec::new(), &error)),
     };
-    let is_gateway = prior_self_seat || gateway_is_local(gateway, &row);
-    let host = if is_gateway || prior_self_seat {
+    let is_gateway = self_is_gateway(&perspective, gateway, &row);
+    let host = if is_gateway {
         Ipv4Addr::LOCALHOST
     } else {
         gateway

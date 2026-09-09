@@ -660,7 +660,7 @@ fn run_dns_record(
         .filter(|row| row.is_object())
         .ok_or_else(|| "ruyi-current-self-unavailable".to_string())?;
     let gateway = crate::atoms::ask::ruyi::registrant::default_gateway()?;
-    if !crate::atoms::ask::ruyi::registrant::gateway_is_local(gateway, self_row) {
+    if !crate::atoms::ask::ruyi::registrant::self_is_gateway(&perspective, gateway, self_row) {
         return Err("interactable-kind-not-for-this-body".into());
     }
     let record = item.evidence.get("record").and_then(serde_json::Value::as_str)
