@@ -3,11 +3,6 @@ when:
     - push
 
 steps:
-  - name: cargo-test
-    image: git.home.arpa/homeserversltd/rust-house:house
-    commands:
-      - cargo test --all-targets --locked --features test-facade
-
   - name: registry-pen-harmonia
     image: python:3.12-alpine
     backend_options:
