@@ -133,27 +133,52 @@ impl Seat {
 pub(crate) struct MintSeats {
     pub(crate) release_flag: Result<Seat, String>,
     pub(crate) update_set: Result<Seat, String>,
-    pub(crate) source_resolution: Result<Seat, String>,
-    pub(crate) xenia: Result<Seat, String>,
 }
 
 static SEATS: OnceLock<MintSeats> = OnceLock::new();
+static SOURCE_RESOLUTION_SEAT: OnceLock<Seat> = OnceLock::new();
+static XENIA_SEAT: OnceLock<Seat> = OnceLock::new();
 
-/// Called at update-run start. Failed observations are retained, not retried
-/// after convergence, and never prevent modules from running.
+fn retryable_seat(cell: &'static OnceLock<Seat>, id: &'static str) -> Result<Seat, String> {
+    if let Some(seat) = cell.get() {
+        return Ok(seat.clone());
+    }
+    let base = super::caduceus_door::base_url()?;
+    let loaded = Seat::load(id, base)?;
+    let _ = cell.set(loaded.clone());
+    Ok(cell.get().cloned().unwrap_or(loaded))
+}
+
+pub(crate) fn source_resolution() -> Result<Seat, String> {
+    retryable_seat(&SOURCE_RESOLUTION_SEAT, SOURCE_RESOLUTION)
+}
+
+pub(crate) fn xenia() -> Result<Seat, String> {
+    retryable_seat(&XENIA_SEAT, XENIA)
+}
+
+/// Called at update-run start. Existing release/update seat behavior remains
+/// process-retained. Source/Xenia seats are attempted at startup, retain only
+/// successful loads, and retry lazily after startup failures.
 pub(crate) fn at_start() -> &'static MintSeats {
     SEATS.get_or_init(|| match super::caduceus_door::base_url() {
-        Ok(base) => MintSeats {
-            release_flag: Seat::load(RELEASE_FLAG, base),
-            update_set: Seat::load(UPDATE_SET, base),
-            source_resolution: Seat::load(SOURCE_RESOLUTION, base),
-            xenia: Seat::load(XENIA, base),
-        },
+        Ok(base) => {
+            let release_flag = Seat::load(RELEASE_FLAG, base);
+            let update_set = Seat::load(UPDATE_SET, base);
+            if let Ok(seat) = Seat::load(SOURCE_RESOLUTION, base) {
+                let _ = SOURCE_RESOLUTION_SEAT.set(seat);
+            }
+            if let Ok(seat) = Seat::load(XENIA, base) {
+                let _ = XENIA_SEAT.set(seat);
+            }
+            MintSeats {
+                release_flag,
+                update_set,
+            }
+        }
         Err(signal) => MintSeats {
             release_flag: Err(signal.into()),
             update_set: Err(signal.into()),
-            source_resolution: Err(signal.into()),
-            xenia: Err(signal.into()),
         },
     })
 }

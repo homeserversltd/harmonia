@@ -9,6 +9,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const INSPECTION_MAX_BODY_BYTES: &str = "67108864";
+const INSPECTION_OVERSIZE_BLOCKER: &str = "release-inspection-fetch-oversize max_bytes=67108864";
 
 pub(crate) fn unique_temp_suffix() -> String {
     format!(
@@ -67,17 +69,32 @@ fn lookup_release_metadata(
     r: &ReleaseRequest,
     tag: &str,
 ) -> Result<Option<ReleaseMetadata>, String> {
+    lookup_release_metadata_inner(r, tag, false)
+}
+fn lookup_release_metadata_inner(
+    r: &ReleaseRequest,
+    tag: &str,
+    inspection_bounds: bool,
+) -> Result<Option<ReleaseMetadata>, String> {
     let url = release_metadata_url(&release_api(r), &r.owner, &r.repo, tag);
     fs::create_dir_all(&r.cache_dir).map_err(|e| format!("release-cache-create-failed: {e}"))?;
     let path = r
         .cache_dir
         .join(format!(".metadata-{}", unique_temp_suffix()));
-    let mut args = curl_args(&url, &path.to_string_lossy());
+    let mut args = if inspection_bounds {
+        inspection_curl_args(&url, &path.to_string_lossy())
+    } else {
+        curl_args(&url, &path.to_string_lossy())
+    };
     args.extend(["-w".into(), "%{http_code}".into()]);
     let result = run_curl(&args, r.credential_for_url(&url))?;
     if result.stdout.trim() == "404" {
         let _ = fs::remove_file(&path);
         return Ok(None);
+    }
+    if inspection_bounds && result.code == 63 {
+        let _ = fs::remove_file(&path);
+        return Err(INSPECTION_OVERSIZE_BLOCKER.into());
     }
     if !result.ok {
         let _ = fs::remove_file(&path);
@@ -137,14 +154,25 @@ fn optional_release_asset_url(m: &ReleaseMetadata, name: &str) -> Option<String>
         .as_str()
         .map(str::to_owned)
 }
-fn download_release_asset(r: &ReleaseRequest, url: &str, name: &str) -> Result<Vec<u8>, String> {
+fn download_release_asset(
+    r: &ReleaseRequest,
+    url: &str,
+    name: &str,
+    inspection_bounds: bool,
+) -> Result<Vec<u8>, String> {
     let p = r
         .cache_dir
         .join(format!(".{name}-{}", unique_temp_suffix()));
-    let x = run_curl(
-        &curl_args(url, &p.to_string_lossy()),
-        r.credential_for_url(url),
-    )?;
+    let args = if inspection_bounds {
+        inspection_curl_args(url, &p.to_string_lossy())
+    } else {
+        curl_args(url, &p.to_string_lossy())
+    };
+    let x = run_curl(&args, r.credential_for_url(url))?;
+    if inspection_bounds && x.code == 63 {
+        let _ = fs::remove_file(&p);
+        return Err(INSPECTION_OVERSIZE_BLOCKER.into());
+    }
     if !x.ok {
         let _ = fs::remove_file(&p);
         let error = format!("release-asset-fetch-failed: {}", x.stderr);
@@ -192,7 +220,7 @@ fn fetch_release_assets_inner(
     {
         return Err("release-declaration-incomplete".into());
     }
-    let Some(m) = lookup_release_metadata(r, tag)? else {
+    let Some(m) = lookup_release_metadata_inner(r, tag, inspect_release_flag)? else {
         return Ok(None);
     };
     if require_tag_commitish_match && m.target_commitish != tag {
@@ -203,11 +231,11 @@ fn fetch_release_assets_inner(
     let release_flag = inspect_release_flag
         .then(|| optional_release_asset_url(&m, "release.flag"))
         .flatten()
-        .map(|url| download_release_asset(r, &url, "release.flag"))
+        .map(|url| download_release_asset(r, &url, "release.flag", inspect_release_flag))
         .transpose()?;
     Ok(Some(ReleaseAssets {
-        artifact: download_release_asset(r, &au, asset_name)?,
-        sidecar: download_release_asset(r, &su, sidecar_name)?,
+        artifact: download_release_asset(r, &au, asset_name, inspect_release_flag)?,
+        sidecar: download_release_asset(r, &su, sidecar_name, inspect_release_flag)?,
         release_flag,
         metadata_url: m.url,
         target_commitish: m.target_commitish,
@@ -253,7 +281,7 @@ pub(crate) fn fetch_release_asset(
     let temp = request
         .cache_dir
         .join(format!(".{asset_name}.download-{}", unique_temp_suffix()));
-    let bytes = match download_release_asset(request, &url, asset_name) {
+    let bytes = match download_release_asset(request, &url, asset_name, false) {
         Ok(v) => v,
         Err(e) => return Ok(miss(e)),
     };
@@ -277,6 +305,20 @@ fn curl_args(url: &str, output: &str) -> Vec<String> {
         "-fsSL".into(),
         "--max-time".into(),
         "120".into(),
+        "-o".into(),
+        output.into(),
+        url.into(),
+    ]
+}
+fn inspection_curl_args(url: &str, output: &str) -> Vec<String> {
+    vec![
+        "-fsSL".into(),
+        "--connect-timeout".into(),
+        "5".into(),
+        "--max-time".into(),
+        "120".into(),
+        "--max-filesize".into(),
+        INSPECTION_MAX_BODY_BYTES.into(),
         "-o".into(),
         output.into(),
         url.into(),

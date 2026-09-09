@@ -311,6 +311,8 @@ pub(crate) struct SourceResolutionReceipt {
     pub authority_ref: String,
     pub resolved_revision: Option<String>,
     pub digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_resolution_seat_observation: Option<String>,
     #[serde(skip)]
     validation_seat: Option<crate::atoms::ask::mint_seats::Seat>,
 }
@@ -320,6 +322,7 @@ impl SourceResolutionReceipt {
         let Some(seat) = self.validation_seat.take() else {
             self.ok = false;
             self.blocker = Some("source-resolution-seat-unavailable-for-revalidation".into());
+            self.resolution = None;
             self.resolved_revision = None;
             self.digest = None;
             return;
@@ -580,6 +583,7 @@ fn receipt(
     blocker: Option<String>,
     resolution: Option<SourceResolution>,
 ) -> SourceResolutionReceipt {
+    let resolution = if blocker.is_none() { resolution } else { None };
     let blessed_ref = (source_policy == "developer")
         .then(|| {
             requested_ref.as_deref().filter(|reference| {
@@ -612,6 +616,7 @@ fn receipt(
         authority_ref: authority.reference(),
         resolved_revision: None,
         digest: None,
+        source_resolution_seat_observation: None,
         validation_seat: None,
     }
 }
@@ -649,6 +654,7 @@ fn validate_receipt_against_seat(
         Err(error) => {
             receipt.ok = false;
             receipt.blocker = Some(format!("source-receipt-serialize-failed: {error}"));
+            receipt.resolution = None;
             receipt.resolved_revision = None;
             receipt.digest = None;
             return;
@@ -657,6 +663,7 @@ fn validate_receipt_against_seat(
     if let Err(blocker) = seat.validate(&raw) {
         receipt.ok = false;
         receipt.blocker = Some(blocker);
+        receipt.resolution = None;
         receipt.resolved_revision = None;
         receipt.digest = None;
     }
@@ -823,50 +830,69 @@ pub(crate) fn resolve_source(
     schema_base: Option<&str>,
     xenia_probe: Option<XeniaReleaseProbe<'_>>,
 ) -> SourceResolutionReceipt {
-    let source_seat = match schema_base {
+    let load_source_seat = || match schema_base {
         Some(base) => crate::atoms::ask::mint_seats::Seat::load(SOURCE_RECEIPT_SCHEMA, base),
-        None => crate::atoms::ask::mint_seats::at_start()
-            .source_resolution
-            .as_ref()
-            .cloned()
-            .map_err(|reason| reason.clone()),
+        None => crate::atoms::ask::mint_seats::source_resolution(),
     };
-    let source_seat = match source_seat {
-        Ok(seat) => seat,
-        Err(blocker) => {
-            return blocker_receipt(
+    match authority {
+        SourceAuthority::Certificate(certificate_path) => {
+            let mut receipt = resolve_certificate_source(
                 authority,
-                None,
-                default_source_policy(),
+                certificate_path,
                 component,
                 owning_module,
                 step_id,
-                blocker,
             );
+            match load_source_seat() {
+                Ok(seat) => {
+                    validate_receipt_against_seat(&mut receipt, &seat);
+                    receipt.validation_seat = Some(seat);
+                }
+                Err(reason) if !reason.starts_with("schema-seat-desync") => {
+                    receipt.source_resolution_seat_observation = Some(format!(
+                        "source-resolution-seat-unavailable reason={reason}"
+                    ));
+                }
+                Err(blocker) => {
+                    receipt.ok = false;
+                    receipt.blocker = Some(blocker);
+                    receipt.resolution = None;
+                    receipt.resolved_revision = None;
+                    receipt.digest = None;
+                }
+            }
+            receipt
         }
-    };
-    let mut receipt = match authority {
-        SourceAuthority::Certificate(certificate_path) => resolve_certificate_source(
-            authority,
-            certificate_path,
-            component,
-            owning_module,
-            step_id,
-        ),
-        SourceAuthority::XeniaEntry { entry_id, entry } => resolve_xenia_source(
-            authority,
-            entry_id,
-            entry,
-            component,
-            owning_module,
-            step_id,
-            schema_base,
-            xenia_probe,
-        ),
-    };
-    validate_receipt_against_seat(&mut receipt, &source_seat);
-    receipt.validation_seat = Some(source_seat);
-    receipt
+        SourceAuthority::XeniaEntry { entry_id, entry } => {
+            let source_seat = match load_source_seat() {
+                Ok(seat) => seat,
+                Err(blocker) => {
+                    return blocker_receipt(
+                        authority,
+                        None,
+                        default_source_policy(),
+                        component,
+                        owning_module,
+                        step_id,
+                        blocker,
+                    );
+                }
+            };
+            let mut receipt = resolve_xenia_source(
+                authority,
+                entry_id,
+                entry,
+                component,
+                owning_module,
+                step_id,
+                schema_base,
+                xenia_probe,
+            );
+            validate_receipt_against_seat(&mut receipt, &source_seat);
+            receipt.validation_seat = Some(source_seat);
+            receipt
+        }
+    }
 }
 
 fn resolve_certificate_source(
@@ -1011,11 +1037,7 @@ fn resolve_xenia_source(
 ) -> SourceResolutionReceipt {
     let xenia_seat = match schema_base {
         Some(base) => crate::atoms::ask::mint_seats::Seat::load(XENIA_SCHEMA, base),
-        None => crate::atoms::ask::mint_seats::at_start()
-            .xenia
-            .as_ref()
-            .cloned()
-            .map_err(|reason| reason.clone()),
+        None => crate::atoms::ask::mint_seats::xenia(),
     };
     let xenia_seat = match xenia_seat {
         Ok(seat) => seat,
@@ -1154,6 +1176,7 @@ fn resolve_xenia_source(
             Err(blocker) => {
                 result.ok = false;
                 result.blocker = Some(blocker);
+                result.resolution = None;
                 return result;
             }
         },
@@ -1180,10 +1203,12 @@ fn resolve_xenia_source(
         Ok(None) => {
             result.ok = false;
             result.blocker = Some("release-metadata-unavailable".into());
+            result.resolution = None;
         }
         Err(blocker) => {
             result.ok = false;
             result.blocker = Some(blocker);
+            result.resolution = None;
         }
     }
     result
@@ -1346,12 +1371,15 @@ fn routine_source_plan_with_blessed_ref(
     // Carry the exact validated value from this receipt before resolution is
     // reduced to the acquisition plan. Do not re-read or infer it later.
     let blessed_ref = certificate_resolution.blessed_ref.clone();
-    let resolution = certificate_resolution.resolution.ok_or_else(|| {
-        let blocker = certificate_resolution
-            .blocker
-            .unwrap_or_else(|| "source-resolution-plan-missing".to_string());
-        format!(
+    if let Some(blocker) = certificate_resolution.blocker {
+        return Err(format!(
             "source-resolution-blocked module={} step_id={} component={} blocker={blocker}",
+            manifest.id, step.step_id, component
+        ));
+    }
+    let resolution = certificate_resolution.resolution.ok_or_else(|| {
+        format!(
+            "source-resolution-blocked module={} step_id={} component={} blocker=source-resolution-plan-missing",
             manifest.id, step.step_id, component
         )
     })?;

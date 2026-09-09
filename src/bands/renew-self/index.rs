@@ -807,20 +807,17 @@ fn engine_source_gate_for_component(
         None,
         None,
     );
-    let resolution = match resolution_receipt.resolution {
-        Some(resolution) => resolution,
-        None => {
-            let blocker = resolution_receipt
-                .blocker
-                .unwrap_or_else(|| "engine-source-resolution-blocked".to_string());
-            if blocker == format!("source-component-undeclared component={component}") {
-                return Err(format!(
-                    "device-profile-engine-source-absent component={component}"
-                ));
-            }
-            return Err(blocker);
+    if let Some(blocker) = resolution_receipt.blocker {
+        if blocker == format!("source-component-undeclared component={component}") {
+            return Err(format!(
+                "device-profile-engine-source-absent component={component}"
+            ));
         }
-    };
+        return Err(blocker);
+    }
+    let resolution = resolution_receipt
+        .resolution
+        .ok_or_else(|| "engine-source-resolution-blocked".to_string())?;
     Ok((component.to_string(), resolution))
 }
 
