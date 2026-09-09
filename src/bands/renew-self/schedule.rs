@@ -91,7 +91,8 @@ fn invoke(action: &str, args: &[String], invocation: &InvocationKey) -> Result<(
             serde_json::json!({"action": action, "argv": child_args, "ok": result.ok, "code": result.code, "attest_owner": "hyalos"}),
         ),
         Some(result.ok),
-    );
+            None,
+);
     if !result.stdout.is_empty() {
         print!("{}", result.stdout);
         if !result.stdout.ends_with('\n') {

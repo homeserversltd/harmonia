@@ -353,6 +353,98 @@ pub fn validate_update_target(
     }
 }
 
+fn xenia_command(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("plan") => {
+            let register =
+                value_arg(args, "--register").ok_or("xenia plan requires --register <path>")?;
+            let schema_base = value_arg_string(args, "--schema-base");
+            std::env::set_var("HARMONIA_XENIA_REGISTER", &register);
+            if let Some(base) = schema_base {
+                crate::bands::xenia::set_debug_schema_base(&base)?;
+            }
+            let manifest = load_ladder_manifest(
+                &Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("profiles/homeserver/modules/xenia/manifest.json"),
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&manifest)
+                    .map_err(|e| format!("xenia-plan-serialize-failed: {e}"))?
+            );
+            Ok(())
+        }
+        Some("render-unit") => {
+            let register_path = value_arg(args, "--register")
+                .ok_or("xenia render-unit requires --register <path>")?;
+            let id =
+                value_arg_string(args, "--id").ok_or("xenia render-unit requires --id <id>")?;
+            let schema_base = value_arg_string(args, "--schema-base");
+            let explicit_bind = value_arg_string(args, "--caduceus-bind");
+            let explicit_base = explicit_bind
+                .as_deref()
+                .map(crate::atoms::ask::caduceus_door::resolve_bind)
+                .transpose()
+                .map_err(str::to_owned)?;
+            let bind = match explicit_base.as_deref() {
+                Some(base) => base.to_owned(),
+                None => crate::atoms::ask::caduceus_door::base_url()
+                    .map(str::to_owned)
+                    .map_err(str::to_owned)?,
+            };
+            let register_schema_base = explicit_base.as_deref().or(schema_base.as_deref());
+            let register = crate::bands::xenia::load_register(
+                &register_path,
+                register_schema_base,
+            )?;
+            let entry = register
+                .xenoi
+                .get(&id)
+                .ok_or_else(|| format!("xenia-entry-absent-{id}"))?;
+            let owner = entry
+                .pointer("/install/owner")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("xenia-install-owner-missing")?;
+            let bin = entry
+                .pointer("/install/bin")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("xenia-install-bin-missing")?;
+            let seat = format!("/var/lib/xenia/{id}");
+            let environment = std::collections::BTreeMap::from([
+                ("XENIA_ID".to_string(), id.clone()),
+                ("XENIA_SEAT".to_string(), seat.clone()),
+                (
+                    "XENIA_SCHEMA_BASE".to_string(),
+                    bind,
+                ),
+            ]);
+            let unit = crate::bands::xenia::render_unit(
+                &format!("{id}.service"),
+                &id,
+                &format!("Xenia guest {id}"),
+                bin,
+                &seat,
+                owner,
+                owner,
+                &environment,
+            )?;
+            print!("{unit}");
+            eprintln!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "schema":"harmonia.xenia.unit-render.v1",
+                    "ok":true,
+                    "sha256":crate::atoms::file_sha256(unit.as_bytes()),
+                    "forbidden_directives":[]
+                }))
+                .map_err(|e| e.to_string())?
+            );
+            Ok(())
+        }
+        _ => Err("xenia requires plan or render-unit".into()),
+    }
+}
+
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("interactable") | Some("config-proposal") => {
@@ -375,6 +467,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("demo") => demo_command(&args[1..], invocation),
         Some("beam") => beam_command(&args[1..]),
         Some("ruyi") => ruyi_command(&args[1..]),
+        Some("xenia") => xenia_command(&args[1..]),
         Some("explain") => explain(),
         Some("toolbelt") | Some("list-tools") => toolbelt(),
         Some("validate-ladder") => {
@@ -395,6 +488,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                             serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": true}),
                         ),
                         Some(true),
+                        None,
                     );
                     println!("ok=true");
                     println!("module_id={}", manifest.id);
@@ -412,6 +506,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                             serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": false}),
                         ),
                         Some(false),
+                        None,
                     );
                     println!("ok=false");
                     println!("module_id={}", manifest.id);
@@ -664,6 +759,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 &format!("schema=harmonia.profile.inspect.v1 ok={}", true),
                 Some(serde_json::json!({"schema": "harmonia.profile.inspect.v1", "ok": true})),
                 Some(true),
+                None,
             );
             println!("ok=true");
             println!("profile_id={}", profile.id);
@@ -710,6 +806,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 &format!("schema=harmonia.plan_run.v1 ok={}", true),
                 Some(serde_json::json!({"schema": "harmonia.plan_run.v1", "ok": true})),
                 Some(true),
+                None,
             );
             println!("ok=true");
             println!("profile_id={}", profile.id);
@@ -917,6 +1014,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     serde_json::json!({"schema": "harmonia.local_ai_runtime.v1", "ok": execution.ok}),
                 ),
                 Some(execution.ok),
+                None,
             );
             println!("ok={}", execution.ok);
             println!("changed={}", execution.changed);
@@ -990,6 +1088,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     serde_json::json!({"schema": "harmonia.homeconsole_sync.v1", "ok": execution.ok}),
                 ),
                 Some(execution.ok),
+                None,
             );
             println!("ok={}", execution.ok);
             println!("changed={}", execution.changed);
@@ -1044,6 +1143,7 @@ pub(crate) fn toolbelt() -> Result<(), String> {
         &format!("schema=harmonia.toolbelt.v1 ok={}", true),
         Some(serde_json::json!({"schema": "harmonia.toolbelt.v1", "ok": true})),
         Some(true),
+        None,
     );
     println!("ok=true");
     println!("tool_count={}", tools::all().len());
@@ -1128,6 +1228,7 @@ pub(crate) fn explain() -> Result<(), String> {
             "engine_config_debt": engine_config_debt,
         })),
         Some(true),
+        None,
     );
     println!("ok=true");
     println!("name=harmonia");
@@ -1229,6 +1330,10 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia toolbelt");
     println!("  harmonia beam [--lock <path>] [--door-url <url>]");
     println!("  harmonia ruyi [show|announce]");
+    println!("  harmonia xenia plan --register <path> [--schema-base <url>]");
+    println!(
+        "  harmonia xenia render-unit --register <path> --id <id> [--caduceus-bind <host:port>] [--schema-base <url>]"
+    );
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id> owner");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");

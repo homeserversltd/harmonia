@@ -15,6 +15,7 @@ pub(crate) fn forward_receipt(
     message: &str,
     attributes_redacted: Option<Value>,
     ok: Option<bool>,
+    correlation_id: Option<&str>,
 ) {
     let base = match crate::atoms::ask::caduceus_door::base_url() {
         Ok(base) => base,
@@ -28,7 +29,14 @@ pub(crate) fn forward_receipt(
             return;
         }
     };
-    let _ = forward_receipt_inner(base, kind, message, attributes_redacted, ok);
+    let _ = forward_receipt_inner(
+        base,
+        kind,
+        message,
+        attributes_redacted,
+        ok,
+        correlation_id,
+    );
 }
 
 fn forward_receipt_inner(
@@ -37,6 +45,7 @@ fn forward_receipt_inner(
     message: &str,
     attributes_redacted: Option<Value>,
     ok: Option<bool>,
+    correlation_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let host = base.strip_prefix("http://").expect("resolved HTTP base");
     let mut payload = json!({
@@ -49,6 +58,9 @@ fn forward_receipt_inner(
     }
     if let Some(value) = ok {
         payload["ok"] = json!(value);
+    }
+    if let Some(value) = correlation_id {
+        payload["correlation_id"] = json!(value);
     }
     let body = serde_json::to_vec(&payload)?;
     let mut stream = host

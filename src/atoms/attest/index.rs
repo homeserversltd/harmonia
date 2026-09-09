@@ -1061,6 +1061,7 @@ pub(crate) fn attest(
         &redacted.message,
         Some(serde_json::json!({"atom": redacted.atom, "drift": redacted.drift})),
         Some(redacted.ok),
-    );
+            None,
+);
     Ok(())
 }

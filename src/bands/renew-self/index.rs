@@ -863,7 +863,8 @@ fn forward_preflight_receipt(
             json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "retired_engine_config_fields": retired_engine_config_fields, "attest_owner": "hyalos.forward_receipt"}),
         ),
         Some(ok),
-    );
+            None,
+);
 }
 
 pub(crate) fn run_engine_preflight(

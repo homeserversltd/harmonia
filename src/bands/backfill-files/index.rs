@@ -1,10 +1,12 @@
-use crate::tools::ladder::{LadderManifest, OnFailure, ProjectedRoutineChild, RoutineStep, ValidatedStep};
+use crate::tools::ladder::{
+    LadderManifest, OnFailure, ProjectedRoutineChild, RoutineStep, ValidatedStep,
+};
 use crate::ModuleExecution;
 use crate::OperationOutcome;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::Band;
 
@@ -19,6 +21,7 @@ pub(crate) fn execute_files(
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
+    halted_steps: &mut crate::bands::HaltedSteps,
 ) -> Result<ModuleExecution, String> {
     let band = crate::bands::Band::BackfillFiles;
     let steps = projected_steps.to_vec();
@@ -40,6 +43,14 @@ pub(crate) fn execute_files(
                 continue;
             }
         } else if crate::tools::routine::placement_for_step(&step)? != band {
+            continue;
+        }
+        if crate::bands::step_halted(halted_steps, &manifest.id, &step.step_id) {
+            let origin_band = halted_steps
+                .get(&(manifest.id.clone(), step.step_id.clone()))
+                .cloned()
+                .expect("halted step retains its originating band");
+            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}",band),"status":"blocked","blocked_by":{"step_id":step.step_id,"origin_band":origin_band},"module":manifest.id}));
             continue;
         }
         let precondition = if step.tool == "routine" {
@@ -68,6 +79,10 @@ pub(crate) fn execute_files(
                 );
                 result.first_missing_signal.get_or_insert(signal.clone());
                 result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}", band),"status":"blocked","module":manifest.id}));
+                if manifest.isolation.as_deref() == Some("per-step") {
+                    crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, band);
+                    continue;
+                }
                 break;
             }
         }
@@ -136,7 +151,12 @@ pub(crate) fn execute_files(
                     step.step_id, outcome.message
                 ));
             }
-            if step.on_failure == OnFailure::Stop {
+            if manifest.isolation.as_deref() == Some("per-step") {
+                crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, band);
+            }
+            if step.on_failure == OnFailure::Stop
+                && manifest.isolation.as_deref() != Some("per-step")
+            {
                 break;
             }
         }
@@ -482,6 +502,7 @@ pub(crate) fn execute_manifest_modules(
     states: &mut BTreeMap<String, ModuleExecution>,
     routines: &mut BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>>,
     halted: &mut BTreeSet<String>,
+    halted_steps: &mut crate::bands::HaltedSteps,
     module_count: &mut usize,
     operation_count: &mut usize,
     changed: &mut bool,
@@ -516,6 +537,10 @@ pub(crate) fn execute_manifest_modules(
             event(events, "module-rejected", false, &err)?;
             continue;
         };
+        let per_step_isolation = matches!(
+            &projected.loaded,
+            LoadedModule::Ladder(manifest) if manifest.isolation.as_deref() == Some("per-step")
+        );
         *module_count = profile.modules.len();
         let result = match &projected.loaded {
             LoadedModule::Ladder(manifest) => execute_files(
@@ -529,6 +554,7 @@ pub(crate) fn execute_manifest_modules(
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,
+                halted_steps,
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };
@@ -553,7 +579,9 @@ pub(crate) fn execute_manifest_modules(
                         .take()
                         .or(part.first_missing_signal);
                     *ok = false;
-                    halted.insert(module_id.clone());
+                    if !per_step_isolation {
+                        halted.insert(module_id.clone());
+                    }
                     if *first_missing_signal == "none" {
                         *first_missing_signal = state
                             .first_missing_signal
@@ -574,7 +602,9 @@ pub(crate) fn execute_manifest_modules(
             Err(err) => {
                 state.ok = false;
                 state.first_missing_signal.get_or_insert(err.clone());
-                halted.insert(module_id.clone());
+                if !per_step_isolation {
+                    halted.insert(module_id.clone());
+                }
                 *ok = false;
                 if *first_missing_signal == "none" {
                     *first_missing_signal = err.clone();
@@ -661,13 +691,37 @@ pub(crate) fn execute_routine_child(
             Ok((out, std::collections::BTreeMap::new()))
         }
         "place-file" => {
-            let path = Path::new(
+            let unit_render = permutation.name == "unit-render";
+            let path_buf = crate::bands::xenia::unit_render_path(args).or_else(|| {
                 args.get("path")
                     .and_then(Value::as_str)
-                    .ok_or("place-file-path-missing")?,
-            );
+                    .map(PathBuf::from)
+            });
+            let path = path_buf.as_deref().ok_or("place-file-path-missing")?;
+            let rendered_unit = unit_render
+                .then(|| {
+                    let environment: BTreeMap<String, String> = serde_json::from_value(
+                        args.get("environment")
+                            .cloned()
+                            .ok_or("xenia-unit-environment-missing")?,
+                    )
+                    .map_err(|_| "xenia-unit-environment-invalid")?;
+                    crate::bands::xenia::render_unit(
+                        args.get("unit").and_then(Value::as_str).ok_or("xenia-unit-name-missing")?,
+                        args.get("xenia_id").and_then(Value::as_str).ok_or("xenia-unit-id-missing")?,
+                        args.get("description").and_then(Value::as_str).ok_or("xenia-unit-description-missing")?,
+                        args.get("exec_start").and_then(Value::as_str).ok_or("xenia-unit-exec-start-missing")?,
+                        args.get("working_directory").and_then(Value::as_str).ok_or("xenia-unit-working-directory-missing")?,
+                        args.get("user").and_then(Value::as_str).ok_or("xenia-unit-user-missing")?,
+                        args.get("group").and_then(Value::as_str).ok_or("xenia-unit-group-missing")?,
+                        &environment,
+                    )
+                })
+                .transpose()?;
             let source = args.get("source_path").and_then(Value::as_str);
-            let declared = args.get("declared_bytes").and_then(Value::as_str);
+            let declared = rendered_unit
+                .as_deref()
+                .or_else(|| args.get("declared_bytes").and_then(Value::as_str));
             if source.is_some() == declared.is_some() {
                 return Err("place-file-requires-exactly-one-source".into());
             }
@@ -676,7 +730,20 @@ pub(crate) fn execute_routine_child(
             } else {
                 declared.unwrap().as_bytes().to_vec()
             };
+            let forbidden_directives = unit_render
+                .then(|| crate::bands::xenia::forbidden_directives(std::str::from_utf8(&bytes).unwrap_or_default()))
+                .unwrap_or_default();
+            if !forbidden_directives.is_empty() {
+                return Err(format!("xenia-unit-forbidden-directives {}", forbidden_directives.join(",")));
+            }
             let target_class = crate::atoms::files::classify_target(path);
+            if permutation.name == "binary-promotion" {
+                if let Some(expected) = args.get("expected_digest").and_then(Value::as_str) {
+                    if crate::atoms::file_sha256(&bytes) != expected {
+                        return Err("xenia-digest-drift".into());
+                    }
+                }
+            }
             if let crate::atoms::files::TargetClass::Refused(reason) = &target_class {
                 return Err(reason.clone());
             }
@@ -796,10 +863,10 @@ pub(crate) fn execute_routine_child(
             let request = crate::place_file::PlaceFileRequest {
                 path,
                 declared_bytes: &bytes,
-                mode: args.get("mode").and_then(Value::as_u64).map(|x| x as u32),
+                mode: if unit_render { Some(0o644) } else { args.get("mode").and_then(Value::as_u64).map(|x| x as u32) },
                 ownership: crate::place_file::DeclaredOwnership {
-                    uid: args.get("uid").and_then(Value::as_u64).map(|x| x as u32),
-                    gid: args.get("gid").and_then(Value::as_u64).map(|x| x as u32),
+                    uid: if unit_render { Some(0) } else { args.get("uid").and_then(Value::as_u64).map(|x| x as u32) },
+                    gid: if unit_render { Some(0) } else { args.get("gid").and_then(Value::as_u64).map(|x| x as u32) },
                 },
                 backup: args
                     .get("backup_path")
@@ -812,9 +879,14 @@ pub(crate) fn execute_routine_child(
             let placed = crate::place_file::execute(request)?;
             let changed = apply && placed.movement.changed();
 
+            let mut receipt = serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up}});
+            if unit_render {
+                receipt["sha256"] = serde_json::json!(crate::atoms::file_sha256(&bytes));
+                receipt["forbidden_directives"] = serde_json::json!(forbidden_directives);
+            }
             crate::write_json(
                 &receipt_dir.join(format!("{name}.json")),
-                &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up}}),
+                &receipt,
             )?;
             Ok((
                 OperationOutcome {

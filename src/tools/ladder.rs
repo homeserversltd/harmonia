@@ -1,6 +1,6 @@
 use crate::tools;
 use crate::tools::routine::{
-    resolve_args, validate_args, validate_command_precondition, validate_tool_semantics,
+    resolve_args, validate_command_precondition, validate_tool_semantics,
 };
 pub(crate) use crate::tools::routine::{ProjectedRoutineChild, ValidatedStep};
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,12 @@ pub(crate) struct LadderManifest {
     pub files_root: Option<String>,
     #[serde(default)]
     pub config_deploy: Option<String>,
+    #[serde(default)]
+    pub isolation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_observation: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_refusals: Vec<String>,
     pub ladder: Vec<LadderStep>,
     #[serde(skip)]
     pub(crate) base_dir: PathBuf,
@@ -163,8 +169,16 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
                     .and_then(|name| name.to_str())
                     .unwrap_or_default();
                 validate_package_pin_module(module_name, &manifest.id, &manifest.package_pins)?;
-                validate_package_ceiling_module(module_name, &manifest.id, &manifest.package_ceilings)?;
+                validate_package_ceiling_module(
+                    module_name,
+                    &manifest.id,
+                    &manifest.package_ceilings,
+                )?;
+                crate::bands::xenia::lower_xenia_steps(&mut manifest)
+                    .map_err(|e| format!("ladder-manifest-lowering-failed {e}"))?;
                 lower_service_runtime_steps(&mut manifest)
+                    .map_err(|e| format!("ladder-manifest-lowering-failed {e}"))?;
+                crate::bands::xenia::reshape_routines(&mut manifest)
                     .map_err(|e| format!("ladder-manifest-lowering-failed {e}"))?;
                 manifest.base_dir = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
                 Ok(manifest)
@@ -298,17 +312,34 @@ pub(crate) fn validate_package_pin_module(
 
 pub(crate) fn validate_package_ceilings(ceilings: &BTreeMap<String, String>) -> Result<(), String> {
     for (name, version) in ceilings {
-        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._+:-".contains(&b)) {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"@._+:-".contains(&b))
+        {
             return Err(format!("package-ceiling-name-unsafe-{name}"));
         }
-        if version.is_empty() || version.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, ';'|'&'|'|'|'$'|'`'|'>'|'<'|'\\'|'\''|'"')) {
+        if version.is_empty()
+            || version.chars().any(|c| {
+                c.is_whitespace()
+                    || c.is_control()
+                    || matches!(
+                        c,
+                        ';' | '&' | '|' | '$' | '`' | '>' | '<' | '\\' | '\'' | '"'
+                    )
+            })
+        {
             return Err(format!("package-ceiling-version-unsafe-{name}"));
         }
     }
     Ok(())
 }
 
-pub(crate) fn validate_package_ceiling_module(module_name: &str, manifest_id: &str, ceilings: &BTreeMap<String, String>) -> Result<(), String> {
+pub(crate) fn validate_package_ceiling_module(
+    module_name: &str,
+    manifest_id: &str,
+    ceilings: &BTreeMap<String, String>,
+) -> Result<(), String> {
     if !ceilings.is_empty() && (module_name != "pins" || manifest_id != "pins") {
         return Err("ceiling-declared-outside-pins-module".into());
     }
@@ -355,10 +386,26 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
     let legacy_build = build.tool == "build-crate" && build.permutation.as_deref() == Some("build");
     let caduceus_build = build.tool == "fetch-artifact"
         && build.permutation.as_deref() == Some("fetch")
-        && build.args.get("component").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
-        && (build.args.get("registry_base").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
-            || build.args.get("release_repo").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()))
-        && build.args.get("destination").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
+        && build
+            .args
+            .get("component")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty())
+        && (build
+            .args
+            .get("registry_base")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty())
+            || build
+                .args
+                .get("release_repo")
+                .and_then(Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty()))
+        && build
+            .args
+            .get("destination")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty())
         && build.args.get("installed_binary").is_some();
     if pull.name != stages[0].0
         || pull.tool != stages[0].1
@@ -501,7 +548,11 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             == Some(&serde_json::json!({"from":"binary-install.changed"}))
         && (if caduceus_build {
             build.args.get("installed_binary") == epilogue.args.get("install_bin")
-                && build.args.get("artifact_name").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
+                && build
+                    .args
+                    .get("artifact_name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| !v.trim().is_empty())
         } else {
             build.args.get("op_prefix") == epilogue.args.get("op_prefix")
         })
@@ -589,12 +640,12 @@ pub(crate) fn validate_ladder(
                 defect: format!("unknown-tool-{}", step.tool),
             });
         };
-        let Some(permutation) = tool.permutation(&step.permutation) else {
+        if tool.permutation(&step.permutation).is_none() {
             return Err(LadderValidationError {
                 step_id: step.step_id.clone(),
                 defect: format!("undeclared-permutation-{}", step.permutation),
             });
-        };
+        }
         let resolved = resolve_args(&step.args, &manifest.constants).map_err(|defect| {
             LadderValidationError {
                 step_id: step.step_id.clone(),
@@ -615,7 +666,6 @@ pub(crate) fn validate_ladder(
                 defect: "legacy-source-ref-forbidden".into(),
             });
         }
-        validate_args(&step.step_id, permutation, &resolved)?;
         validate_tool_semantics(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validate_command_precondition(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validated.push(ValidatedStep {
@@ -724,19 +774,18 @@ pub(crate) fn validate_group(
             defect: format!("unknown-tool-{}", group.live_probe.tool),
         });
     };
-    let Some(permutation) = tool.permutation(&group.live_probe.permutation) else {
+    if tool.permutation(&group.live_probe.permutation).is_none() {
         return Err(LadderValidationError {
             step_id: step_id.into(),
             defect: format!("undeclared-permutation-{}", group.live_probe.permutation),
         });
-    };
+    }
     let resolved = resolve_args(&group.live_probe.args, constants).map_err(|defect| {
         LadderValidationError {
             step_id: step_id.into(),
             defect,
         }
     })?;
-    validate_args(step_id, permutation, &resolved)?;
     validate_tool_semantics(
         step_id,
         &group.live_probe.tool,
@@ -888,7 +937,10 @@ mod tests {
             let mut ceilings = BTreeMap::new();
             ceilings.insert(name.clone(), "1".to_string());
             let error = validate_package_ceilings(&ceilings).unwrap_err();
-            assert!(error.contains("package-ceiling-name-unsafe"), "name={name:?} error={error}");
+            assert!(
+                error.contains("package-ceiling-name-unsafe"),
+                "name={name:?} error={error}"
+            );
         }
 
         let unsafe_versions = vec![
@@ -910,7 +962,10 @@ mod tests {
             let mut ceilings = BTreeMap::new();
             ceilings.insert("pkg".to_string(), version.clone());
             let error = validate_package_ceilings(&ceilings).unwrap_err();
-            assert!(error.contains("package-ceiling-version-unsafe"), "version={version:?} error={error}");
+            assert!(
+                error.contains("package-ceiling-version-unsafe"),
+                "version={version:?} error={error}"
+            );
         }
 
         let mut valid = BTreeMap::new();
@@ -933,5 +988,4 @@ mod tests {
         assert!(validate_package_ceiling_module("pins", "pins", &ceilings).is_ok());
         assert!(validate_package_ceiling_module("other", "other", &BTreeMap::new()).is_ok());
     }
-
 }

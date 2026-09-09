@@ -306,7 +306,8 @@ pub(crate) fn capsule_pack_with_invocation(
         &format!("schema=harmonia.capsule.pack.v1 ok={}", true),
         Some(serde_json::json!({"schema": "harmonia.capsule.pack.v1", "ok": true})),
         Some(true),
-    );
+            None,
+);
     println!("ok=true");
     println!("profile_id={}", receipt.profile_id);
     println!("identity={}", receipt.identity);
@@ -438,7 +439,8 @@ pub(crate) fn capsule_verify(capsule_dir: &Path) -> Result<(), String> {
         &format!("schema=harmonia.capsule.verify.v1 ok={}", ok),
         Some(serde_json::json!({"schema": "harmonia.capsule.verify.v1", "ok": ok})),
         Some(ok),
-    );
+            None,
+);
     println!("ok={}", ok);
     println!("profile_id={}", receipt.profile_id);
     println!("module_count={}", receipt.modules.len());
@@ -661,7 +663,8 @@ pub(crate) fn capsule_install_with_invocation(
         &format!("schema=harmonia.capsule.install.v1 ok={}", true),
         Some(serde_json::json!({"schema": "harmonia.capsule.install.v1", "ok": true})),
         Some(true),
-    );
+            None,
+);
     println!("ok=true");
     println!("apply={}", apply);
     println!("profile_id={}", manifest.profile_id);

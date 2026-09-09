@@ -1,0 +1,23 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "xenia",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Converge and retire Xenia guests declared by the appliance guest register.",
+  "isolation": "per-step",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "xenia-converge",
+      "tool": "xenia",
+      "permutation": "converge",
+      "args": {}
+    },
+    {
+      "step_id": "xenia-retire",
+      "tool": "xenia",
+      "permutation": "retire",
+      "args": {}
+    }
+  ]
+}

@@ -30,8 +30,16 @@
           "name": "path-exists",
           "description": "observe whether one path exists",
           "args": [
-            {"name": "path", "kind": "string", "required": true},
-            {"name": "resolve_running_kernel", "kind": "bool", "required": false}
+            {
+              "name": "path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "resolve_running_kernel",
+              "kind": "bool",
+              "required": false
+            }
           ],
           "placement": "Compare"
         }
@@ -220,6 +228,53 @@
             }
           ],
           "placement": "RestartServices"
+        },
+        {
+          "name": "unit-render",
+          "description": "Render a Xenia unit from typed guest-register authority and place it root:root 0644.",
+          "args": [
+            {
+              "name": "unit",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "xenia_id",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "description",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "exec_start",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "working_directory",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "user",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "environment",
+              "kind": "json",
+              "required": true
+            }
+          ],
+          "placement": "BackfillFiles"
         }
       ]
     },
@@ -324,6 +379,28 @@
               "name": "retries",
               "kind": "integer",
               "required": false
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "status-door",
+          "description": "Read the Xenia status door; active without listeners is degraded but accepted.",
+          "args": [
+            {
+              "name": "id",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "retries",
+              "kind": "integer",
+              "required": true
+            },
+            {
+              "name": "retry_seconds",
+              "kind": "integer",
+              "required": true
             }
           ],
           "placement": "RestartServices"
@@ -623,12 +700,36 @@
           "name": "compile-fragments",
           "description": "compile sorted all and selected-appliance static fragments byte-for-byte",
           "args": [
-            {"name": "source_root", "kind": "string", "required": true},
-            {"name": "target_path", "kind": "string", "required": true},
-            {"name": "mode", "kind": "integer", "required": false},
-            {"name": "uid", "kind": "integer", "required": false},
-            {"name": "gid", "kind": "integer", "required": false},
-            {"name": "backup_existing", "kind": "bool", "required": true}
+            {
+              "name": "source_root",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "target_path",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "uid",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "gid",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "backup_existing",
+              "kind": "bool",
+              "required": true
+            }
           ],
           "placement": "BackfillFiles"
         },
@@ -1679,6 +1780,98 @@
             }
           ],
           "placement": "RatchetBinaries"
+        }
+      ]
+    },
+    {
+      "name": "xenia",
+      "description": "Declaration-only Xenia guest-register steps; lowering owns execution.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "converge",
+          "description": "Lower enabled process Xenia entries into isolated service routines.",
+          "args": [],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "retire",
+          "description": "Retire absent or disabled marked Xenia units after guest routines.",
+          "args": [],
+          "placement": "RestartServices"
+        }
+      ]
+    },
+    {
+      "name": "xenia-runtime",
+      "description": "Lowered Xenia guest lifecycle operations.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "seat-present",
+          "description": "Observe the declared bearer and guest seat without creating either.",
+          "args": [
+            {
+              "name": "id",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "seat",
+              "kind": "string",
+              "required": true
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "observe-stamp",
+          "description": "Post the exact installed Xenia observation to Caduceus.",
+          "args": [
+            {
+              "name": "id",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "source_sha",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "version",
+              "kind": "json",
+              "required": false
+            },
+            {
+              "name": "health",
+              "kind": "json",
+              "required": true
+            }
+          ],
+          "placement": "RestartServices"
+        },
+        {
+          "name": "retire",
+          "description": "Retire marked Xenia units absent or disabled in the register.",
+          "args": [
+            {
+              "name": "register",
+              "kind": "json",
+              "required": true
+            },
+            {
+              "name": "unit_root",
+              "kind": "string",
+              "required": true
+            }
+          ],
+          "placement": "RestartServices"
         }
       ]
     }

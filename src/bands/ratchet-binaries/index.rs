@@ -125,6 +125,7 @@ pub(crate) fn execute_manifest_band(
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
+    halted_steps: &mut crate::bands::HaltedSteps,
 ) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
@@ -148,6 +149,14 @@ pub(crate) fn execute_manifest_band(
         } else if crate::tools::routine::placement_for_step(step)?
             != crate::bands::Band::RatchetBinaries
         {
+            continue;
+        }
+        if crate::bands::step_halted(halted_steps, &manifest.id, &step.step_id) {
+            let origin_band = halted_steps
+                .get(&(manifest.id.clone(), step.step_id.clone()))
+                .cloned()
+                .expect("halted step retains its originating band");
+            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RatchetBinaries","status":"blocked","blocked_by":{"step_id":step.step_id,"origin_band":origin_band},"module":manifest.id}));
             continue;
         }
         if let Some(precondition) = if step.tool == "routine" {
@@ -175,6 +184,10 @@ pub(crate) fn execute_manifest_band(
                 );
                 result.first_missing_signal.get_or_insert(signal);
                 result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RatchetBinaries","status":"blocked","module":manifest.id}));
+                if manifest.isolation.as_deref() == Some("per-step") {
+                    crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::RatchetBinaries);
+                    continue;
+                }
                 break;
             }
         }
@@ -250,7 +263,12 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
+            if manifest.isolation.as_deref() == Some("per-step") {
+                crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::RatchetBinaries);
+            }
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop
+                && manifest.isolation.as_deref() != Some("per-step")
+            {
                 break;
             }
         }
@@ -269,6 +287,7 @@ pub(crate) fn execute_manifest_modules(
     states: &mut BTreeMap<String, ModuleExecution>,
     routines: &mut BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>>,
     halted: &mut BTreeSet<String>,
+    halted_steps: &mut crate::bands::HaltedSteps,
     module_count: &mut usize,
     operation_count: &mut usize,
     changed: &mut bool,
@@ -304,6 +323,10 @@ pub(crate) fn execute_manifest_modules(
             event(events, "module-rejected", false, &err)?;
             continue;
         };
+        let per_step_isolation = matches!(
+            &projected.loaded,
+            LoadedModule::Ladder(manifest) if manifest.isolation.as_deref() == Some("per-step")
+        );
         *module_count = profile.modules.len();
         let result = match &projected.loaded {
             LoadedModule::Ladder(manifest) => execute_manifest_band(
@@ -316,6 +339,7 @@ pub(crate) fn execute_manifest_modules(
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,
+                halted_steps,
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };
@@ -332,7 +356,9 @@ pub(crate) fn execute_manifest_modules(
                     for placement in &part.placements {
                         if let Some(rung) = placement.get("known_good") {
                             if rung.get("pointer_moved").and_then(Value::as_bool) == Some(true) {
-                                if let Some(identity) = rung.get("rung_identity").and_then(Value::as_str) {
+                                if let Some(identity) =
+                                    rung.get("rung_identity").and_then(Value::as_str)
+                                {
                                     carrier.borrow_mut().rung_promoted.push(identity.to_owned());
                                 }
                             }
@@ -351,7 +377,9 @@ pub(crate) fn execute_manifest_modules(
                         .take()
                         .or(part.first_missing_signal);
                     *ok = false;
-                    halted.insert(module_id.clone());
+                    if !per_step_isolation {
+                        halted.insert(module_id.clone());
+                    }
                     if *first_missing_signal == "none" {
                         *first_missing_signal = state
                             .first_missing_signal
@@ -372,7 +400,9 @@ pub(crate) fn execute_manifest_modules(
             Err(err) => {
                 state.ok = false;
                 state.first_missing_signal.get_or_insert(err.clone());
-                halted.insert(module_id.clone());
+                if !per_step_isolation {
+                    halted.insert(module_id.clone());
+                }
                 *ok = false;
                 if *first_missing_signal == "none" {
                     *first_missing_signal = err.clone();
@@ -414,10 +444,7 @@ pub(crate) fn execute_routine_child(
                 .and_then(Value::as_str)
                 .is_some_and(|policy| policy == "developer");
             if developer_mode {
-                let artifact = args
-                    .get("installed_binary")
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                let artifact = args.get("installed_binary").cloned().unwrap_or(Value::Null);
                 let outcome = crate::OperationOutcome {
                     ok: true,
                     changed: false,
@@ -436,11 +463,17 @@ pub(crate) fn execute_routine_child(
                     .collect(),
                 ));
             }
-            let outcome = crate::tools::fetch_artifact::execute(args, receipt_dir, apply, invocation)?;
+            let outcome =
+                crate::tools::fetch_artifact::execute(args, receipt_dir, apply, invocation)?;
             let changed = outcome.changed;
             let artifact = select_fetch_artifact_output(&outcome, args);
             let path = artifact.as_str().map(Path::new);
             let sha = path.and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
+            if let Some(expected) = args.get("expected_digest").and_then(Value::as_str) {
+                if sha.as_deref() != Some(expected) {
+                    return Err("xenia-digest-drift".into());
+                }
+            }
             Ok((
                 outcome,
                 [
@@ -843,10 +876,22 @@ mod tests {
             Some("artifact")
         );
 
-        let install = children.iter().find(|child| child.name == "binary-install").unwrap();
-        assert_eq!(install.args.get("source_path"), Some(&serde_json::json!({"from":"build.artifact"})));
-        let restart = children.iter().find(|child| child.name == "service-restart").unwrap();
-        assert_eq!(restart.args.get("service").and_then(Value::as_str), Some("arcadia.service"));
+        let install = children
+            .iter()
+            .find(|child| child.name == "binary-install")
+            .unwrap();
+        assert_eq!(
+            install.args.get("source_path"),
+            Some(&serde_json::json!({"from":"build.artifact"}))
+        );
+        let restart = children
+            .iter()
+            .find(|child| child.name == "service-restart")
+            .unwrap();
+        assert_eq!(
+            restart.args.get("service").and_then(Value::as_str),
+            Some("arcadia.service")
+        );
         assert_eq!(
             crate::bands::restart_services::service_runtime_material_gates("restart", false, false),
             (false, false)
@@ -872,7 +917,8 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         let manifest: LadderManifest = serde_json::from_str(include_str!(
             "../../../profiles/homeserver/modules/caduceus/manifest.json"
-        )).unwrap();
+        ))
+        .unwrap();
         let mut manifest = manifest;
         let service = manifest
             .ladder
@@ -983,14 +1029,24 @@ mod tests {
         fs::write(&installed, format!("caduceus.liveness.v1{sha}")).unwrap();
         let manifest: LadderManifest = serde_json::from_str(include_str!(
             "../../../profiles/homeserver/modules/caduceus/manifest.json"
-        )).unwrap();
+        ))
+        .unwrap();
         let args = [
             ("component".into(), Value::String("caduceus".into())),
-            ("registry_base".into(), Value::String("https://invalid.test".into())),
+            (
+                "registry_base".into(),
+                Value::String("https://invalid.test".into()),
+            ),
             ("source_build_sha".into(), Value::String(sha.into())),
             ("artifact_name".into(), Value::String("caduceus".into())),
-            ("destination".into(), Value::String(root.join("artifact").to_string_lossy().into_owned())),
-            ("installed_binary".into(), Value::String(installed.to_string_lossy().into_owned())),
+            (
+                "destination".into(),
+                Value::String(root.join("artifact").to_string_lossy().into_owned()),
+            ),
+            (
+                "installed_binary".into(),
+                Value::String(installed.to_string_lossy().into_owned()),
+            ),
         ]
         .into_iter()
         .collect();

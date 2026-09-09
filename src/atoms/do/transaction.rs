@@ -455,7 +455,8 @@ fn write_transaction_failure_run_receipt(
         "schema=harmonia.run_profile.v1 ok=false",
         Some(serde_json::json!({"schema":"harmonia.run_profile.v1","ok":false})),
         Some(false),
-    );
+            None,
+);
     println!("ok=false");
     println!("changed={}", changed);
     println!("profile_id={}", profile.id);

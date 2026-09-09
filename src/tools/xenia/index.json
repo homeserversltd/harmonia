@@ -1,0 +1,8 @@
+{
+  "schema": "harmonia.tool.v1",
+  "name": "xenia",
+  "state": "declaration-only",
+  "live_permutations": [],
+  "permutations": ["converge", "retire"],
+  "authority": "appliance.xenia.v1 guest register"
+}

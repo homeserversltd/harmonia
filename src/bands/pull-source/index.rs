@@ -312,6 +312,8 @@ pub(crate) struct SourceResolutionReceipt {
     pub resolved_revision: Option<String>,
     pub digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_resolution_seat_observation: Option<String>,
     #[serde(skip)]
     validation_seat: Option<crate::atoms::ask::mint_seats::Seat>,
@@ -325,6 +327,7 @@ impl SourceResolutionReceipt {
             self.resolution = None;
             self.resolved_revision = None;
             self.digest = None;
+            self.version = None;
             return;
         };
         validate_receipt_against_seat(self, &seat);
@@ -616,6 +619,7 @@ fn receipt(
         authority_ref: authority.reference(),
         resolved_revision: None,
         digest: None,
+        version: None,
         source_resolution_seat_observation: None,
         validation_seat: None,
     }
@@ -1199,6 +1203,7 @@ fn resolve_xenia_source(
         Ok(Some(evidence)) => {
             result.resolved_revision = Some(evidence.resolved_revision);
             result.digest = Some(evidence.digest);
+            result.version = evidence.version;
         }
         Ok(None) => {
             result.ok = false;
@@ -1441,6 +1446,7 @@ pub(crate) fn execute_manifest_band(
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
+    halted_steps: &mut crate::bands::HaltedSteps,
 ) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
@@ -1463,6 +1469,14 @@ pub(crate) fn execute_manifest_band(
             }
         } else if crate::tools::routine::placement_for_step(step)? != crate::bands::Band::PullSource
         {
+            continue;
+        }
+        if crate::bands::step_halted(halted_steps, &manifest.id, &step.step_id) {
+            let origin_band = halted_steps
+                .get(&(manifest.id.clone(), step.step_id.clone()))
+                .cloned()
+                .expect("halted step retains its originating band");
+            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"PullSource","status":"blocked","blocked_by":{"step_id":step.step_id,"origin_band":origin_band},"module":manifest.id}));
             continue;
         }
         if let Some(precondition) = if step.tool == "routine" {
@@ -1490,6 +1504,10 @@ pub(crate) fn execute_manifest_band(
                     step.step_id
                 );
                 result.first_missing_signal.get_or_insert(signal);
+                if manifest.isolation.as_deref() == Some("per-step") {
+                    crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::PullSource);
+                    continue;
+                }
                 break;
             }
         }
@@ -1543,7 +1561,12 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
+            if manifest.isolation.as_deref() == Some("per-step") {
+                crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::PullSource);
+            }
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop
+                && manifest.isolation.as_deref() != Some("per-step")
+            {
                 break;
             }
         }
@@ -1572,6 +1595,7 @@ pub(crate) fn execute_manifest_modules(
     states: &mut BTreeMap<String, ModuleExecution>,
     routines: &mut BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>>,
     halted: &mut BTreeSet<String>,
+    halted_steps: &mut crate::bands::HaltedSteps,
     module_count: &mut usize,
     operation_count: &mut usize,
     changed: &mut bool,
@@ -1606,6 +1630,10 @@ pub(crate) fn execute_manifest_modules(
             event(events, "module-rejected", false, &err)?;
             continue;
         };
+        let per_step_isolation = matches!(
+            &projected.loaded,
+            LoadedModule::Ladder(manifest) if manifest.isolation.as_deref() == Some("per-step")
+        );
         *module_count = profile.modules.len();
         let result = match &projected.loaded {
             LoadedModule::Ladder(manifest) => execute_manifest_band(
@@ -1618,6 +1646,7 @@ pub(crate) fn execute_manifest_modules(
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,
+                halted_steps,
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };
@@ -1642,7 +1671,9 @@ pub(crate) fn execute_manifest_modules(
                         .take()
                         .or(part.first_missing_signal);
                     *ok = false;
-                    halted.insert(module_id.clone());
+                    if !per_step_isolation {
+                        halted.insert(module_id.clone());
+                    }
                     if *first_missing_signal == "none" {
                         *first_missing_signal = state
                             .first_missing_signal
@@ -1663,7 +1694,9 @@ pub(crate) fn execute_manifest_modules(
             Err(err) => {
                 state.ok = false;
                 state.first_missing_signal.get_or_insert(err.clone());
-                halted.insert(module_id.clone());
+                if !per_step_isolation {
+                    halted.insert(module_id.clone());
+                }
                 *ok = false;
                 if *first_missing_signal == "none" {
                     *first_missing_signal = err.clone();
@@ -1739,6 +1772,68 @@ pub(crate) fn execute_routine_child(
     let name = tool.to_string();
     match tool {
         "pull-repo" => {
+            if args.get("authority").and_then(Value::as_str) == Some("xenia-entry") {
+                let entry_id = args
+                    .get("entry_id")
+                    .and_then(Value::as_str)
+                    .ok_or("xenia-entry-id-missing")?;
+                let entry = args.get("entry").ok_or("xenia-entry-missing")?;
+                let artifact_name = args
+                    .get("artifact_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(entry_id);
+                let resolution = resolve_source(
+                    SourceAuthority::XeniaEntry { entry_id, entry },
+                    entry_id,
+                    &manifest.id,
+                    &name,
+                    args.get("schema_base").and_then(Value::as_str),
+                    Some(XeniaReleaseProbe {
+                        forge_base: crate::atoms::ask::fetch_artifact::DEFAULT_FORGE_API_ROOT,
+                        artifact_name,
+                        profile: None,
+                    }),
+                );
+                if let Some(blocker) = resolution.blocker.clone() {
+                    return Err(blocker);
+                }
+                let resolved = resolution
+                    .resolved_revision
+                    .clone()
+                    .ok_or("xenia-resolved-revision-missing")?;
+                let digest = resolution.digest.clone().ok_or("xenia-digest-missing")?;
+                let outputs = BTreeMap::from([
+                    (
+                        "path".into(),
+                        json!(args.get("path").and_then(Value::as_str)),
+                    ),
+                    ("resolved_commit".into(), json!(resolved)),
+                    (
+                        "resolved_revision".into(),
+                        json!(resolution.resolved_revision),
+                    ),
+                    ("digest".into(), json!(digest)),
+                    (
+                        "version".into(),
+                        resolution.version.clone().unwrap_or(Value::Null),
+                    ),
+                    ("authority".into(), json!("xenia-entry")),
+                    ("entry_id".into(), json!(entry_id)),
+                    ("entry".into(), entry.clone()),
+                    ("source_policy".into(), json!("artifact")),
+                    ("changed".into(), json!(false)),
+                ]);
+                return Ok((
+                    OperationOutcome {
+                        ok: true,
+                        changed: false,
+                        skipped: false,
+                        message: "xenia-source-resolved".into(),
+                        command: None,
+                    },
+                    outputs,
+                ));
+            }
             let step = crate::tools::ladder::ValidatedStep {
                 step_id: name.clone(),
                 tool: tool.into(),

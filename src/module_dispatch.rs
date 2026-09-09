@@ -65,6 +65,7 @@ pub(crate) fn execute_profile_module(
         let manifest = load_ladder_manifest(&manifest_path)?;
         let plan = plan_ladder_module(&module.id, &manifest)?;
         let mut routine_states = BTreeMap::new();
+        let mut halted_steps = crate::bands::HaltedSteps::new();
         crate::bands::propose_edits::execute_manifest_band(
             &manifest,
             &module_dir,
@@ -75,6 +76,7 @@ pub(crate) fn execute_profile_module(
             &mut routine_states,
             &plan.steps,
             &plan.projected,
+            &mut halted_steps,
             active_lane,
         )
     } else {

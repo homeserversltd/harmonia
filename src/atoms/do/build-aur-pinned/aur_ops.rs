@@ -169,7 +169,8 @@ pub(crate) fn pinned_artifacts_command(
                     serde_json::json!({"schema": "harmonia.pinned_artifacts.check.v1", "ok": observation.ok}),
                 ),
                 Some(observation.ok),
-            );
+                    None,
+);
             println!("ok={}", observation.ok);
             println!("profile_id={}", profile.id);
             println!("artifact_count={}", observation.artifact_count);
@@ -357,7 +358,8 @@ mod mutation {
             &format!("schema=harmonia.pinned_artifacts.nudge.v1 ok={}", ok),
             Some(serde_json::json!({"schema": "harmonia.pinned_artifacts.nudge.v1", "ok": ok})),
             Some(ok),
-        );
+                None,
+);
         println!("ok={}", ok);
         println!("artifact={}", name);
         println!("candidate_version={}", version);
@@ -443,7 +445,8 @@ mod mutation {
             &format!("schema=harmonia.pinned_artifacts.bless.v1 ok={}", true),
             Some(serde_json::json!({"schema": "harmonia.pinned_artifacts.bless.v1", "ok": true})),
             Some(true),
-        );
+                None,
+);
         println!("ok=true");
         println!("mutation={}", apply);
         println!("artifact={}", name);

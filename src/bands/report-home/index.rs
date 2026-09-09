@@ -289,7 +289,8 @@ pub(crate) fn settle(
         &format!("schema=harmonia.run_profile.v1 ok={}", state.ok),
         Some(json!({"schema":"harmonia.run_profile.v1","ok":state.ok})),
         Some(state.ok),
-    );
+            None,
+);
     println!("ok={}", state.ok);
     println!("changed={}", state.changed);
     println!("profile_id={}", profile.id);
@@ -329,7 +330,8 @@ pub(crate) fn finalize_deferred_terminal(
         &format!("schema=harmonia.run_profile.v1 ok={}", summary.ok),
         Some(json!({"schema":"harmonia.run_profile.v1","ok":summary.ok})),
         Some(summary.ok),
-    );
+            None,
+);
     println!("ok={}", summary.ok);
     println!("changed={}", summary.changed);
     println!("profile_id={}", summary.profile_id);

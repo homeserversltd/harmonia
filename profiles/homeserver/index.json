@@ -44,7 +44,8 @@
       "rust-build-toolchain",
       "sudoers",
       "synapse",
-      "element"
+      "element",
+      "xenia"
     ]
   },
   "identity": "homeserver",
@@ -80,7 +81,8 @@
     "element",
     "homeserver-update-runtime",
     "sbin",
-    "linker"
+    "linker",
+    "xenia"
   ],
   "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Synapse and Element service modules, and the direct-owned sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
@@ -109,7 +111,8 @@
     "rust-build-toolchain",
     "sudoers",
     "synapse",
-    "element"
+    "element",
+    "xenia"
   ],
   "public_source_boundary": "public reusable product module concerns and non-secret configuration only",
   "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source",

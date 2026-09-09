@@ -13,7 +13,7 @@ pub(crate) fn observe(
 }
 pub(crate) fn act(
     authorization: crate::atoms::comparison::ActionAuthorization,
-    invocation: atoms::r#do::InvocationKey,
+    invocation: &atoms::r#do::InvocationKey,
     unit: &str,
     action: &str,
     unit_path: Option<&Path>,
@@ -74,7 +74,7 @@ mod mutation {
     use std::path::Path;
     pub(super) fn remove(
         authorization: crate::atoms::comparison::ActionAuthorization,
-        invocation: atoms::r#do::InvocationKey,
+        invocation: &atoms::r#do::InvocationKey,
         unit: &str,
         action: &str,
         path: Option<&Path>,
@@ -84,7 +84,7 @@ mod mutation {
     ) -> Result<CmdResult, String> {
         let result = atoms::r#do::change_unit::unit_change_scoped(
             &authorization,
-            &invocation,
+            invocation,
             unit,
             atoms::r#do::change_unit::UnitVerb::DisableNow,
             user,
@@ -96,7 +96,7 @@ mod mutation {
         let mut ok = result.ok;
         let mut code = result.code.unwrap_or(if ok { 0 } else { -1 });
         if ok && action == "disable-stop-remove" && path.is_some() {
-            if let Err(error) = atoms::r#do::remove_file::remove_file(&authorization, &invocation, path.unwrap()) {
+            if let Err(error) = atoms::r#do::remove_file::remove_file(&authorization, invocation, path.unwrap()) {
                 ok = false;
                 code = -1;
                 stderr = format!(

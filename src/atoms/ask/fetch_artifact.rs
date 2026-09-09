@@ -276,6 +276,7 @@ pub(crate) struct Download {
 pub(crate) struct ReleaseInspection {
     pub resolved_revision: String,
     pub digest: String,
+    pub version: Option<Value>,
 }
 
 fn is_hex(value: &str, length: usize) -> bool {
@@ -537,9 +538,9 @@ fn release_source_revision(
     release: &ReleaseAssets,
     component: &str,
     schema_base: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, Option<Value>), String> {
     let Some(flag_bytes) = release.release_flag.as_deref() else {
-        return Ok(release.target_commitish.clone());
+        return Ok((release.target_commitish.clone(), None));
     };
     let flag: Value = serde_json::from_slice(flag_bytes)
         .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
@@ -569,7 +570,10 @@ fn release_source_revision(
     if release.target_commitish != source_sha {
         return Err("fetch-artifact-release-commit-mismatch".into());
     }
-    Ok(source_sha.to_owned())
+    Ok((
+        source_sha.to_owned(),
+        flag.pointer("/lineage/version").cloned(),
+    ))
 }
 
 pub(crate) fn inspect_release(
@@ -605,7 +609,8 @@ pub(crate) fn inspect_release(
             return Ok(None);
         };
         let digest = crate::atoms::file_sha256(&release.artifact);
-        let resolved_revision = release_source_revision(&release, component, release_schema_base)?;
+        let (resolved_revision, version) =
+            release_source_revision(&release, component, release_schema_base)?;
         let sidecar_text = String::from_utf8(release.sidecar)
             .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
         if !is_hex(&digest, 64) || sidecar_text != format!("{digest}  {asset}\n") {
@@ -617,6 +622,7 @@ pub(crate) fn inspect_release(
         Ok(Some(ReleaseInspection {
             resolved_revision,
             digest,
+            version,
         }))
     })();
     let _ = std::fs::remove_dir_all(&request.cache_dir);

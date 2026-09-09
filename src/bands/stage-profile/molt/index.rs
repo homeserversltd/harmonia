@@ -346,7 +346,8 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         &format!("schema=harmonia.molt.v1 ok={}", true),
         Some(serde_json::json!({"schema": "harmonia.molt.v1", "ok": true})),
         Some(true),
-    );
+            None,
+);
     println!("ok=true");
     println!("profile_id={}", profile.id);
     println!("identity={}", profile.identity);

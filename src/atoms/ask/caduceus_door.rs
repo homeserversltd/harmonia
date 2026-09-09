@@ -19,7 +19,7 @@ pub(crate) fn base_url() -> Result<&'static str, &'static str> {
 }
 
 /// Accept a host:port declaration, never a URL or an environment fallback.
-fn resolve_bind(bind: &str) -> Result<String, &'static str> {
+pub(crate) fn resolve_bind(bind: &str) -> Result<String, &'static str> {
     let (host, port) = bind.rsplit_once(':').ok_or(UNDECLARED)?;
     if port.is_empty()
         || !port.bytes().all(|byte| byte.is_ascii_digit())

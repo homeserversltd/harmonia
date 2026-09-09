@@ -20,6 +20,8 @@ pub(crate) mod report_home;
 pub(crate) mod restart_services;
 #[path = "stage-profile/index.rs"]
 pub(crate) mod stage_profile;
+#[path = "xenia/index.rs"]
+pub(crate) mod xenia;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Band {
@@ -34,6 +36,27 @@ pub(crate) enum Band {
     BackfillFiles,
     ProposeEdits,
     ReportHome,
+}
+
+pub(crate) type HaltedSteps = BTreeMap<(String, String), String>;
+
+pub(crate) fn halt_step(
+    halted_steps: &mut HaltedSteps,
+    module_id: &str,
+    step_id: &str,
+    band: Band,
+) {
+    halted_steps
+        .entry((module_id.to_string(), step_id.to_string()))
+        .or_insert_with(|| format!("{band:?}"));
+}
+
+pub(crate) fn step_halted(
+    halted_steps: &HaltedSteps,
+    module_id: &str,
+    step_id: &str,
+) -> bool {
+    halted_steps.contains_key(&(module_id.to_string(), step_id.to_string()))
 }
 
 pub(crate) fn walk(mut enter: impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
@@ -64,6 +87,7 @@ fn record_downstream_blocked(
     state: &mut crate::bands::report_home::RunState,
     halted_modules: &BTreeSet<String>,
     halt_origins: &BTreeMap<String, String>,
+    halted_steps: &HaltedSteps,
     band: Band,
 ) {
     for module_id in halted_modules {
@@ -88,6 +112,29 @@ fn record_downstream_blocked(
                 "ok": false,
                 "changed": false,
                 "blocked_by": blocked_by,
+            }));
+    }
+    for ((module_id, step_id), origin_band) in halted_steps {
+        state
+            .module_states
+            .entry(module_id.clone())
+            .or_insert_with(|| crate::module_dispatch::ModuleExecution {
+                ok: false,
+                changed: false,
+                operation_count: 0,
+                first_missing_signal: Some(format!("step-halted-{step_id}")),
+                placements: Vec::new(),
+            })
+            .placements
+            .push(serde_json::json!({
+                "module": module_id,
+                "routine": step_id,
+                "band": format!("{band:?}"),
+                "originating_band": origin_band,
+                "status": "blocked",
+                "ok": false,
+                "changed": false,
+                "blocked_by": step_id,
             }));
     }
 }
@@ -193,6 +240,7 @@ pub(crate) fn run_profile_engine_with_projection(
         defer_terminal: materialize_on_stage,
     };
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
+    let mut halted_steps: HaltedSteps = BTreeMap::new();
     let mut halt_origins: BTreeMap<String, String> = BTreeMap::new();
     let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> =
         BTreeMap::new();
@@ -308,6 +356,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
+                    &mut halted_steps,
                     &mut state.module_count,
                     &mut state.operation_count,
                     &mut state.changed,
@@ -386,7 +435,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 }
             }
             crate::bands::Band::Compare => {
-                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, &halted_steps, band);
                 if let Some(target_carrier) =
                     carrier.or_else(|| context.map(|value| &value.carrier))
                 {
@@ -416,6 +465,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
+                    &mut halted_steps,
                     &mut state.module_count,
                     &mut state.operation_count,
                     &mut state.changed,
@@ -425,7 +475,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::InstallPackages => {
-                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, &halted_steps, band);
                 crate::bands::install_packages::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -436,6 +486,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
+                    &mut halted_steps,
                     &mut state.module_count,
                     &mut state.operation_count,
                     &mut state.changed,
@@ -445,7 +496,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::RestartServices => {
-                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, &halted_steps, band);
                 crate::bands::restart_services::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -456,6 +507,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
+                    &mut halted_steps,
                     &mut state.module_count,
                     &mut state.operation_count,
                     &mut state.changed,
@@ -465,7 +517,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::RatchetBinaries => {
-                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, &halted_steps, band);
                 crate::bands::ratchet_binaries::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -476,6 +528,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
+                    &mut halted_steps,
                     &mut state.module_count,
                     &mut state.operation_count,
                     &mut state.changed,
@@ -486,7 +539,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::BackfillFiles => {
-                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, &halted_steps, band);
                 crate::bands::backfill_files::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
@@ -497,6 +550,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.module_states,
                     &mut routine_states,
                     &mut halted_modules,
+                    &mut halted_steps,
                     &mut state.module_count,
                     &mut state.operation_count,
                     &mut state.changed,
@@ -506,7 +560,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 )?;
             }
             crate::bands::Band::ProposeEdits => {
-                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, band);
+                record_downstream_blocked(&mut state, &halted_modules, &halt_origins, &halted_steps, band);
                 let propose_result =
                     crate::bands::propose_edits::execute_manifest_modules(
                         &active_profile,
@@ -518,6 +572,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         &mut state.module_states,
                         &mut routine_states,
                         &mut halted_modules,
+                        &mut halted_steps,
                         &mut state.module_count,
                         &mut state.operation_count,
                         &mut state.changed,

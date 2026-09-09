@@ -153,7 +153,8 @@ pub(crate) fn emit_convergence_skipped_stdout(receipt_dir: &Path, reason: &str, 
         &format!("schema=harmonia.convergence.skipped.v1 ok={}", true),
         Some(serde_json::json!({"schema": "harmonia.convergence.skipped.v1", "ok": true})),
         Some(true),
-    );
+            None,
+);
     println!("ok=true");
     println!("changed=false");
     println!("profile_id={profile_id}");

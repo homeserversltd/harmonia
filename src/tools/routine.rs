@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::fs::{self};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::tools::ladder::{
     CommandPrecondition, LadderManifest, LadderStep, LadderValidationError, OnFailure,
@@ -55,34 +55,6 @@ fn resolve_value(value: &Value, constants: &BTreeMap<String, Value>) -> Result<V
         }
         _ => Ok(value.clone()),
     }
-}
-
-pub(crate) fn validate_args(
-    step_id: &str,
-    permutation: &tools::ToolPermutation,
-    args: &BTreeMap<String, Value>,
-) -> Result<(), LadderValidationError> {
-    for arg in permutation.args {
-        if arg.required && !args.contains_key(arg.name) {
-            return Err(LadderValidationError {
-                step_id: step_id.into(),
-                defect: format!("missing-argument-{}", arg.name),
-            });
-        }
-        if let Some(value) = args.get(arg.name) {
-            if value.as_object().is_some_and(is_optional_routine_reference)
-            {
-                continue;
-            }
-            if !arg.kind.matches(value) {
-                return Err(LadderValidationError {
-                    step_id: step_id.into(),
-                    defect: format!("type-mismatch-{}-expected-{}", arg.name, arg.kind.name()),
-                });
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn command_precondition(
@@ -240,7 +212,6 @@ pub(crate) fn project_routine_children(
                     step_id: step.step_id.clone(),
                     defect,
                 })?;
-            validate_args(&step.step_id, declaration, &args)?;
             validate_tool_semantics(&step.step_id, &child.tool, permutation, &args)?;
             validate_command_precondition(&step.step_id, &child.tool, permutation, &args)?;
             let band = declaration
@@ -340,15 +311,13 @@ fn execute_routine_tool(
             invocation,
         ) {
             Ok(outcome) => outcome,
-            Err(error) if error == "files-act-did-not-converge" => {
-                crate::OperationOutcome {
-                    ok: true,
-                    changed: true,
-                    skipped: true,
-                    message: "files-proposal-observed".to_string(),
-                    command: None,
-                }
-            }
+            Err(error) if error == "files-act-did-not-converge" => crate::OperationOutcome {
+                ok: true,
+                changed: true,
+                skipped: true,
+                message: "files-proposal-observed".to_string(),
+                command: None,
+            },
             Err(error) => return Err(error),
         };
         return Ok((outcome, BTreeMap::new()));
@@ -376,7 +345,13 @@ fn execute_routine_tool(
             invocation,
         ),
         "fetch-artifact" => crate::bands::ratchet_binaries::execute_routine_child(
-            "fetch-artifact", requested_permutation, args, manifest, receipt_dir, apply, invocation,
+            "fetch-artifact",
+            requested_permutation,
+            args,
+            manifest,
+            receipt_dir,
+            apply,
+            invocation,
         ),
         "build-crate" => crate::bands::ratchet_binaries::execute_routine_child(
             "build-crate",
@@ -408,6 +383,11 @@ fn execute_routine_tool(
                 invocation,
             )
         }
+        "xenia-runtime" => crate::bands::xenia::execute_routine_child(
+            requested_permutation.unwrap_or(""),
+            args,
+            apply,
+        ),
         "service-runtime" => Err("service-runtime-execution-removed".into()),
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
     }
@@ -444,9 +424,18 @@ pub(crate) fn execute_validated_step(
                 | ("aur", "install")
                 | ("aur", "build-pinned")
                 | ("command", "capture")
+                | ("xenia-runtime", "retire")
         );
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("routine", "execute") => Err("routine-dispatch-internal".into()),
+        ("xenia-runtime", "retire") => {
+            crate::bands::xenia::execute_retire(
+                &step.args,
+                software_apply,
+                module_dir,
+                invocation,
+            )
+        }
         ("ask", "path-exists") => tools::ask::execute_validated_step(step, module_dir),
         ("command", "capture") => {
             tools::command::execute_validated_step(step, module_dir, software_apply, active_lane)
@@ -552,6 +541,19 @@ fn is_managed_child_name(name: &str) -> bool {
         || name.starts_with("managed-symlink-")
 }
 
+fn routine_failure_signal(
+    manifest: &LadderManifest,
+    source: &crate::tools::ladder::LadderStep,
+    child: &ProjectedRoutineChild,
+    defect: impl std::fmt::Display,
+) -> String {
+    if manifest.isolation.as_deref() == Some("per-step") {
+        format!("xenos={} step_id={} defect={defect}", source.step_id, child.name)
+    } else {
+        format!("step_id={} defect={defect}", child.name)
+    }
+}
+
 pub(crate) fn execute_routine(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -602,9 +604,9 @@ pub(crate) fn execute_routine(
         };
         &mut owned
     };
-    let managed_child_will_execute = projected_children.iter().any(|child|
-        (local || child.band == band) && is_managed_child_name(&child.name)
-    );
+    let managed_child_will_execute = projected_children
+        .iter()
+        .any(|child| (local || child.band == band) && is_managed_child_name(&child.name));
     if !managed_child_will_execute {
         state
             .context
@@ -642,7 +644,12 @@ pub(crate) fn execute_routine(
             }
         }
         let (status, child_ok, child_changed, outputs, extra) = if let Some(reference) = missing {
-            let signal = format!("step_id={} defect=missing-stamp-{}", child.name, reference);
+            let signal = routine_failure_signal(
+                manifest,
+                source,
+                child,
+                format!("missing-stamp-{reference}"),
+            );
             state.ok = false;
             state.first_missing_signal.get_or_insert(signal.clone());
             state.blocked_by = Some(child.name.clone());
@@ -664,19 +671,23 @@ pub(crate) fn execute_routine(
             // Independently declared routine file children must cross the
             // canonical final-target membrane immediately before actuation.
             let target_gate = match child.tool.as_str() {
-                "place-file" | "backfill-file" => args
-                    .get("path")
-                    .and_then(Value::as_str)
+                "place-file" | "backfill-file" => crate::bands::xenia::unit_render_path(&args)
+                    .or_else(|| args.get("path").and_then(Value::as_str).map(PathBuf::from))
                     .ok_or_else(|| format!("{}-path-missing", child.tool))
                     .and_then(|path| {
-                        let path = Path::new(path);
+                        let path = path.as_path();
                         let managed_place_config = child.name.starts_with("managed-place-")
                             && child.tool == "place-file"
                             && child.permutation == "place"
                             && manifest.config_deploy.as_deref() == Some("interactable");
                         match crate::tools::files::classify_target(path) {
                             crate::tools::files::TargetClass::Refused(reason) => Err(reason),
-                            crate::tools::files::TargetClass::Config if managed_place_config => {
+                            crate::tools::files::TargetClass::Config
+                                if managed_place_config
+                                    || (manifest.id == "xenia"
+                                        && child.name == "unit-render"
+                                        && child.permutation == "unit-render") =>
+                            {
                                 Ok(())
                             }
                             _ => crate::tools::files::authorize_routine_target(path, apply)
@@ -706,10 +717,9 @@ pub(crate) fn execute_routine(
                 Ok((outcome, outputs)) => {
                     if !outcome.ok {
                         state.ok = false;
-                        state.first_missing_signal.get_or_insert(format!(
-                            "step_id={} defect={}",
-                            child.name, outcome.message
-                        ));
+                        state.first_missing_signal.get_or_insert_with(|| {
+                            routine_failure_signal(manifest, source, child, &outcome.message)
+                        });
                         state.blocked_by = Some(child.name.clone());
                     }
                     state.changed |= outcome.changed;
@@ -722,7 +732,7 @@ pub(crate) fn execute_routine(
                     )
                 }
                 Err(error) => {
-                    let signal = format!("step_id={} defect={}", child.name, error);
+                    let signal = routine_failure_signal(manifest, source, child, &error);
                     state.ok = false;
                     state.first_missing_signal.get_or_insert(signal);
                     state.blocked_by = Some(child.name.clone());
@@ -769,6 +779,42 @@ pub(crate) fn execute_routine(
         }
         crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
         state.children.push(receipt);
+    }
+    if apply
+        && manifest.id == "xenia"
+        && !state.context.contains_key("xenia.hyalos_forwarded")
+        && (state.blocked_by.is_some()
+            || state.children.iter().any(|receipt| {
+                receipt.get("name").and_then(Value::as_str) == Some("observe-stamp")
+            }))
+    {
+        let entry_id = source
+            .step_id
+            .strip_prefix("xenia-")
+            .unwrap_or(&source.step_id);
+        crate::hyalos::forward_receipt(
+            "xenia",
+            &format!(
+                "xenia outcome={} resolved_revision={}",
+                if state.ok { "converged" } else { "failed" },
+                state.context
+                    .get("pull-repo.resolved_revision")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unresolved")
+            ),
+            Some(json!({
+                "authority": state.context.get("pull-repo.authority").cloned().unwrap_or_else(|| json!("xenia-entry")),
+                "resolved_revision": state.context.get("pull-repo.resolved_revision").cloned().unwrap_or(Value::Null),
+                "digest": state.context.get("pull-repo.digest").cloned().unwrap_or(Value::Null),
+                "health": state.context.get("health-proof.health").cloned().unwrap_or(Value::Null),
+                "first_missing_signal": state.first_missing_signal,
+            })),
+            Some(state.ok),
+            Some(entry_id),
+        );
+        state
+            .context
+            .insert("xenia.hyalos_forwarded".into(), Value::Bool(true));
     }
     let canary_receipt = if let Some(pull_child) = projected_children
         .iter()

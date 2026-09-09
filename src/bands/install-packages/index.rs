@@ -198,6 +198,7 @@ pub(crate) fn execute_manifest_band(
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
+    halted_steps: &mut crate::bands::HaltedSteps,
 ) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
@@ -221,6 +222,14 @@ pub(crate) fn execute_manifest_band(
         } else if crate::tools::routine::placement_for_step(step)?
             != crate::bands::Band::InstallPackages
         {
+            continue;
+        }
+        if crate::bands::step_halted(halted_steps, &manifest.id, &step.step_id) {
+            let origin_band = halted_steps
+                .get(&(manifest.id.clone(), step.step_id.clone()))
+                .cloned()
+                .expect("halted step retains its originating band");
+            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"InstallPackages","status":"blocked","blocked_by":{"step_id":step.step_id,"origin_band":origin_band},"module":manifest.id}));
             continue;
         }
         if let Some(precondition) = if step.tool == "routine" {
@@ -248,6 +257,10 @@ pub(crate) fn execute_manifest_band(
                 );
                 result.first_missing_signal.get_or_insert(signal);
                 result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"InstallPackages","status":"blocked","module":manifest.id}));
+                if manifest.isolation.as_deref() == Some("per-step") {
+                    crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::InstallPackages);
+                    continue;
+                }
                 break;
             }
         }
@@ -299,7 +312,12 @@ pub(crate) fn execute_manifest_band(
             result.first_missing_signal.get_or_insert_with(|| {
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
-            if step.on_failure == crate::tools::ladder::OnFailure::Stop {
+            if manifest.isolation.as_deref() == Some("per-step") {
+                crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::InstallPackages);
+            }
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop
+                && manifest.isolation.as_deref() != Some("per-step")
+            {
                 break;
             }
         }
@@ -321,6 +339,7 @@ pub(crate) fn execute_manifest_modules(
     states: &mut BTreeMap<String, ModuleExecution>,
     routines: &mut BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>>,
     halted: &mut BTreeSet<String>,
+    halted_steps: &mut crate::bands::HaltedSteps,
     module_count: &mut usize,
     operation_count: &mut usize,
     changed: &mut bool,
@@ -355,6 +374,10 @@ pub(crate) fn execute_manifest_modules(
             event(events, "module-rejected", false, &err)?;
             continue;
         };
+        let per_step_isolation = matches!(
+            &projected.loaded,
+            LoadedModule::Ladder(manifest) if manifest.isolation.as_deref() == Some("per-step")
+        );
         *module_count = profile.modules.len();
         let result = match &projected.loaded {
             LoadedModule::Ladder(manifest) => execute_manifest_band(
@@ -367,6 +390,7 @@ pub(crate) fn execute_manifest_modules(
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,
+                halted_steps,
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };
@@ -391,7 +415,9 @@ pub(crate) fn execute_manifest_modules(
                         .take()
                         .or(part.first_missing_signal);
                     *ok = false;
-                    halted.insert(module_id.clone());
+                    if !per_step_isolation {
+                halted.insert(module_id.clone());
+            }
                     if *first_missing_signal == "none" {
                         *first_missing_signal = state
                             .first_missing_signal
@@ -412,7 +438,9 @@ pub(crate) fn execute_manifest_modules(
             Err(err) => {
                 state.ok = false;
                 state.first_missing_signal.get_or_insert(err.clone());
+                if !per_step_isolation {
                 halted.insert(module_id.clone());
+            }
                 *ok = false;
                 if *first_missing_signal == "none" {
                     *first_missing_signal = err.clone();
