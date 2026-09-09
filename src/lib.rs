@@ -404,23 +404,62 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             }
         }
         Some("resolve-source") => {
-            let component = args
-                .get(1)
-                .ok_or("resolve-source requires <component> --certificate <path>")?;
-            let certificate = value_arg(&args, "--certificate")
-                .ok_or("resolve-source requires <component> --certificate <path>")?;
+            let component = args.get(1).ok_or(
+                "resolve-source requires <component> and exactly one of --certificate <path> or --entry-file <path> --entry-id <id>",
+            )?;
+            let certificate = value_arg(&args, "--certificate");
+            let entry_file = value_arg(&args, "--entry-file");
             let owning_module = value_arg(&args, "--owner-module")
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "engine-plane".to_string());
             let step_id = value_arg(&args, "--step-id")
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "source-resolution".to_string());
-            let receipt = crate::bands::pull_source::resolve_source_json(
-                &certificate,
-                component,
-                &owning_module,
-                &step_id,
-            );
+            let schema_base = value_arg_string(&args, "--schema-base");
+            let forge_base = value_arg_string(&args, "--forge-base").unwrap_or_else(|| {
+                crate::atoms::ask::fetch_artifact::DEFAULT_FORGE_API_ROOT.to_string()
+            });
+            let artifact_name =
+                value_arg_string(&args, "--artifact-name").unwrap_or_else(|| component.to_string());
+            let profile = value_arg_string(&args, "--profile");
+            let receipt = match (certificate.as_deref(), entry_file.as_deref()) {
+                (Some(path), None) => crate::bands::pull_source::resolve_source_json(
+                    crate::bands::pull_source::SourceAuthority::Certificate(path),
+                    component,
+                    &owning_module,
+                    &step_id,
+                    schema_base.as_deref(),
+                    None,
+                ),
+                (None, Some(path)) => {
+                    let entry_id = value_arg_string(&args, "--entry-id")
+                        .ok_or("resolve-source --entry-file requires --entry-id <id>")?;
+                    let entry: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(path).map_err(|error| {
+                            format!("xenia-entry-read-failed {}: {error}", path.display())
+                        })?)
+                        .map_err(|error| format!("xenia-entry-malformed: {error}"))?;
+                    crate::bands::pull_source::resolve_source_json(
+                        crate::bands::pull_source::SourceAuthority::XeniaEntry {
+                            entry_id: &entry_id,
+                            entry: &entry,
+                        },
+                        component,
+                        &owning_module,
+                        &step_id,
+                        schema_base.as_deref(),
+                        Some(crate::bands::pull_source::XeniaReleaseProbe {
+                            forge_base: &forge_base,
+                            artifact_name: &artifact_name,
+                            profile: profile.as_deref(),
+                        }),
+                    )
+                }
+                _ => return Err(
+                    "resolve-source requires exactly one authority: --certificate or --entry-file"
+                        .into(),
+                ),
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&receipt)
@@ -436,67 +475,136 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         }
         Some("acquire-source") => {
             let component = args.get(1).ok_or(
-                "acquire-source requires <component> --certificate <path> --destination <path>",
+                "acquire-source requires <component> and exactly one of --certificate <path> or --entry-file <path> --entry-id <id>",
             )?;
-            let certificate = value_arg(&args, "--certificate").ok_or(
-                "acquire-source requires <component> --certificate <path> --destination <path>",
-            )?;
-            let destination = value_arg(&args, "--destination").ok_or(
-                "acquire-source requires <component> --certificate <path> --destination <path>",
-            )?;
-            let resolution = crate::bands::pull_source::resolve_source(
-                &certificate,
-                component,
-                "engine-plane",
-                "source-acquisition",
-            );
-            if let Some(ref blocker) = resolution.blocker {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&resolution)
-                        .map_err(|err| format!("source-receipt-serialize-failed: {err}"))?
-                );
-                return Err(blocker.clone());
+            let certificate = value_arg(&args, "--certificate");
+            let entry_file = value_arg(&args, "--entry-file");
+            let schema_base = value_arg_string(&args, "--schema-base");
+            match (certificate.as_deref(), entry_file.as_deref()) {
+                (Some(certificate), None) => {
+                    let destination = value_arg(&args, "--destination")
+                        .ok_or("acquire-source --certificate requires --destination <path>")?;
+                    let mut resolution = crate::bands::pull_source::resolve_source(
+                        crate::bands::pull_source::SourceAuthority::Certificate(certificate),
+                        component,
+                        "engine-plane",
+                        "source-acquisition",
+                        schema_base.as_deref(),
+                        None,
+                    );
+                    if let Some(ref blocker) = resolution.blocker {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&resolution)
+                                .map_err(|err| format!("source-receipt-serialize-failed: {err}"))?
+                        );
+                        return Err(blocker.clone());
+                    }
+                    let plan = resolution
+                        .resolution
+                        .clone()
+                        .ok_or("source-acquisition-plan-missing")?;
+                    let expected_commit = value_arg_string(&args, "--expected-commit");
+                    let acquisition = crate::bands::pull_source::bridge_acquisition_plan(
+                        &plan,
+                        destination,
+                        expected_commit,
+                    );
+                    let outcome =
+                        tools::git_artifact::acquire_source(&acquisition, invocation.key());
+                    resolution.network_access = true;
+                    resolution.ok = outcome.ok;
+                    if !outcome.ok {
+                        resolution.blocker = Some("source-acquisition-failed".to_string());
+                    }
+                    resolution.resolved_revision = outcome.receipt.resolved_commit.clone();
+                    resolution.digest = None;
+                    if outcome.ok && resolution.resolved_revision.is_none() {
+                        resolution.ok = false;
+                        resolution.blocker =
+                            Some("acquisition-resolved-commit-unavailable".to_string());
+                    }
+                    resolution.revalidate();
+                    let resolution_ok = resolution.ok;
+                    let resolution_blocker = resolution.blocker.clone();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "schema": "harmonia.engine.source_acquisition.v1",
+                            "ok": resolution_ok,
+                            "changed": outcome.changed,
+                            "component": component,
+                            "requested_ref": plan.requested_ref,
+                            "source_resolution": resolution,
+                            "attempts": outcome.receipt.attempts.iter().map(|attempt| json!({
+                                "index": attempt.index,
+                                "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
+                                "locator": attempt.locator,
+                                "credential_selector": attempt.credential_selector,
+                                "credential_scope_applied": false,
+                                "disposition": attempt.disposition,
+                                "resolved_commit": attempt.resolved_commit,
+                                "external_freshness": attempt.external_freshness,
+                                "detail": attempt.detail,
+                            })).collect::<Vec<_>>(),
+                            "served_index": outcome.receipt.served_index,
+                            "resolved_commit": outcome.receipt.resolved_commit,
+                            "promotion": outcome.receipt.promotion,
+                        }))
+                        .map_err(|err| format!(
+                            "source-acquisition-receipt-serialize-failed: {err}"
+                        ))?
+                    );
+                    if !resolution_ok {
+                        return Err(resolution_blocker
+                            .unwrap_or_else(|| "source-acquisition-failed".to_string()));
+                    }
+                    Ok(())
+                }
+                (None, Some(entry_file)) => {
+                    let entry_id = value_arg_string(&args, "--entry-id")
+                        .ok_or("acquire-source --entry-file requires --entry-id <id>")?;
+                    let entry: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(entry_file).map_err(|error| {
+                            format!("xenia-entry-read-failed {}: {error}", entry_file.display())
+                        })?)
+                        .map_err(|error| format!("xenia-entry-malformed: {error}"))?;
+                    let forge_base = value_arg_string(&args, "--forge-base").unwrap_or_else(|| {
+                        crate::atoms::ask::fetch_artifact::DEFAULT_FORGE_API_ROOT.to_string()
+                    });
+                    let artifact_name = value_arg_string(&args, "--artifact-name")
+                        .unwrap_or_else(|| component.to_string());
+                    let profile = value_arg_string(&args, "--profile");
+                    let receipt = crate::bands::pull_source::resolve_source(
+                        crate::bands::pull_source::SourceAuthority::XeniaEntry {
+                            entry_id: &entry_id,
+                            entry: &entry,
+                        },
+                        component,
+                        "engine-plane",
+                        "source-acquisition",
+                        schema_base.as_deref(),
+                        Some(crate::bands::pull_source::XeniaReleaseProbe {
+                            forge_base: &forge_base,
+                            artifact_name: &artifact_name,
+                            profile: profile.as_deref(),
+                        }),
+                    );
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&receipt)
+                            .map_err(|err| format!("source-receipt-serialize-failed: {err}"))?
+                    );
+                    if let Some(blocker) = receipt.blocker {
+                        return Err(blocker);
+                    }
+                    Ok(())
+                }
+                _ => Err(
+                    "acquire-source requires exactly one authority: --certificate or --entry-file"
+                        .into(),
+                ),
             }
-            let plan = resolution
-                .resolution
-                .ok_or("source-acquisition-plan-missing")?;
-            let expected_commit = value_arg_string(&args, "--expected-commit");
-            let acquisition = crate::bands::pull_source::bridge_acquisition_plan(
-                &plan,
-                destination,
-                expected_commit,
-            );
-            let outcome = tools::git_artifact::acquire_source(&acquisition, invocation.key());
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "schema": "harmonia.engine.source_acquisition.v1",
-                    "ok": outcome.ok,
-                    "changed": outcome.changed,
-                    "component": component,
-                    "requested_ref": plan.requested_ref,
-                    "attempts": outcome.receipt.attempts.iter().map(|attempt| json!({
-                        "index": attempt.index,
-                        "kind": format!("{:?}", attempt.kind).to_ascii_lowercase(),
-                        "locator": attempt.locator,
-                        "credential_selector": attempt.credential_selector,
-                        "credential_scope_applied": false,
-                        "disposition": attempt.disposition,
-                        "resolved_commit": attempt.resolved_commit,
-                        "external_freshness": attempt.external_freshness,
-                        "detail": attempt.detail,
-                    })).collect::<Vec<_>>(),
-                    "served_index": outcome.receipt.served_index,
-                    "resolved_commit": outcome.receipt.resolved_commit,
-                    "promotion": outcome.receipt.promotion,
-                }))
-                .map_err(|err| format!("source-acquisition-receipt-serialize-failed: {err}"))?
-            );
-            if !outcome.ok {
-                return Err("source-acquisition-failed".to_string());
-            }
-            Ok(())
         }
         Some("inspect-profile") => {
             let path = args
@@ -1108,8 +1216,9 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");
     println!("  harmonia uninstall-timer [--systemd-root <path>] [--dry-run]");
     println!("  harmonia validate-ladder <manifest.json>");
-    println!("  harmonia resolve-source <component> --certificate <path> [--owner-module <id>] [--step-id <id>]");
-    println!("  harmonia acquire-source <component> --certificate <path> --engine-config <path> --destination <path> [--bearer <name>] [--expected-commit <sha>]");
+    println!("  harmonia resolve-source <component> (--certificate <path> | --entry-file <path> --entry-id <id>) [--owner-module <id>] [--step-id <id>] [--artifact-name <binary>] [--profile <profile>] [--forge-base <url>] [--schema-base <url>]");
+    println!("  harmonia acquire-source <component> --certificate <path> --destination <path> [--expected-commit <sha>] [--schema-base <url>]");
+    println!("  harmonia acquire-source <component> --entry-file <path> --entry-id <id> [--artifact-name <binary>] [--profile <profile>] [--forge-base <url>] [--schema-base <url>]");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia renew-self (--plan|--apply) --receipt-dir <path> [--module-root <path>]");
     println!("  harmonia update [--apply] [--receipt-dir <path>]");

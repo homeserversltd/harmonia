@@ -17,11 +17,12 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
     enter(Band::PullSource)
 }
 
-// Pure engine-plane source policy resolution.
+// Engine-plane source authority resolution.
 //
-// This module reads an explicitly supplied device certificate and returns data
-// only.  It never opens a transport, probes a candidate, reads credentials, or
-// writes a receipt to disk.  The caller owns persistence and execution.
+// Certificate authority remains a data-only resolution path. Xenia-entry
+// authority validates its admitted release source and inspects the immutable
+// release metadata, artifact, sidecar, and optional release.flag. The caller
+// owns persistence and execution.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -31,6 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const SOURCE_PLAN_SCHEMA: &str = "harmonia.engine.source_plan.v1";
 pub(crate) const SOURCE_RECEIPT_SCHEMA: &str = "harmonia.engine.source_resolution.v1";
+pub(crate) const XENIA_SCHEMA: &str = "appliance.xenia.v1";
 pub(crate) const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -257,6 +259,35 @@ pub(crate) struct SourceResolution {
     pub candidates: Vec<SourceCandidatePlan>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SourceAuthority<'a> {
+    Certificate(&'a Path),
+    XeniaEntry { entry_id: &'a str, entry: &'a Value },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct XeniaReleaseProbe<'a> {
+    pub forge_base: &'a str,
+    pub artifact_name: &'a str,
+    pub profile: Option<&'a str>,
+}
+
+impl SourceAuthority<'_> {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Certificate(_) => "certificate",
+            Self::XeniaEntry { .. } => "xenia-entry",
+        }
+    }
+
+    fn reference(self) -> String {
+        match self {
+            Self::Certificate(path) => path.display().to_string(),
+            Self::XeniaEntry { entry_id, .. } => entry_id.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SourceResolutionReceipt {
     pub schema: &'static str,
@@ -276,6 +307,26 @@ pub(crate) struct SourceResolutionReceipt {
     pub credential_selectors: Vec<String>,
     pub blocker: Option<String>,
     pub resolution: Option<SourceResolution>,
+    pub authority: &'static str,
+    pub authority_ref: String,
+    pub resolved_revision: Option<String>,
+    pub digest: Option<String>,
+    #[serde(skip)]
+    validation_seat: Option<crate::atoms::ask::mint_seats::Seat>,
+}
+
+impl SourceResolutionReceipt {
+    pub(crate) fn revalidate(&mut self) {
+        let Some(seat) = self.validation_seat.take() else {
+            self.ok = false;
+            self.blocker = Some("source-resolution-seat-unavailable-for-revalidation".into());
+            self.resolved_revision = None;
+            self.digest = None;
+            return;
+        };
+        validate_receipt_against_seat(self, &seat);
+        self.validation_seat = Some(seat);
+    }
 }
 
 #[cfg(test)]
@@ -517,7 +568,7 @@ struct SourceCandidate {
 }
 
 fn receipt(
-    certificate_path: &Path,
+    authority: SourceAuthority<'_>,
     certificate_schema: Option<String>,
     source_policy: String,
     component: &str,
@@ -543,7 +594,10 @@ fn receipt(
         ok: blocker.is_none(),
         mutation: false,
         network_access: false,
-        certificate_path: certificate_path.display().to_string(),
+        certificate_path: match authority {
+            SourceAuthority::Certificate(path) => path.display().to_string(),
+            SourceAuthority::XeniaEntry { .. } => String::new(),
+        },
         certificate_schema,
         component: component.to_string(),
         owning_module: owning_module.to_string(),
@@ -554,11 +608,16 @@ fn receipt(
         credential_selectors: selectors,
         blocker,
         resolution,
+        authority: authority.name(),
+        authority_ref: authority.reference(),
+        resolved_revision: None,
+        digest: None,
+        validation_seat: None,
     }
 }
 
 fn blocker_receipt(
-    certificate_path: &Path,
+    authority: SourceAuthority<'_>,
     certificate_schema: Option<String>,
     source_policy: String,
     component: &str,
@@ -567,7 +626,7 @@ fn blocker_receipt(
     blocker: String,
 ) -> SourceResolutionReceipt {
     receipt(
-        certificate_path,
+        authority,
         certificate_schema,
         source_policy,
         component,
@@ -579,6 +638,28 @@ fn blocker_receipt(
         Some(blocker),
         None,
     )
+}
+
+fn validate_receipt_against_seat(
+    receipt: &mut SourceResolutionReceipt,
+    seat: &crate::atoms::ask::mint_seats::Seat,
+) {
+    let raw = match serde_json::to_value(&*receipt) {
+        Ok(raw) => raw,
+        Err(error) => {
+            receipt.ok = false;
+            receipt.blocker = Some(format!("source-receipt-serialize-failed: {error}"));
+            receipt.resolved_revision = None;
+            receipt.digest = None;
+            return;
+        }
+    };
+    if let Err(blocker) = seat.validate(&raw) {
+        receipt.ok = false;
+        receipt.blocker = Some(blocker);
+        receipt.resolved_revision = None;
+        receipt.digest = None;
+    }
 }
 
 fn parse_certificate(path: &Path) -> Result<Certificate, String> {
@@ -732,8 +813,64 @@ fn candidate_plan(
     ))
 }
 
-/// Resolve one component without executing transport or mutating local state.
+/// Resolve one component without mutating local state. Authority selection is
+/// explicit and never falls through to a component-name lookup or another form.
 pub(crate) fn resolve_source(
+    authority: SourceAuthority<'_>,
+    component: &str,
+    owning_module: &str,
+    step_id: &str,
+    schema_base: Option<&str>,
+    xenia_probe: Option<XeniaReleaseProbe<'_>>,
+) -> SourceResolutionReceipt {
+    let source_seat = match schema_base {
+        Some(base) => crate::atoms::ask::mint_seats::Seat::load(SOURCE_RECEIPT_SCHEMA, base),
+        None => crate::atoms::ask::mint_seats::at_start()
+            .source_resolution
+            .as_ref()
+            .cloned()
+            .map_err(|reason| reason.clone()),
+    };
+    let source_seat = match source_seat {
+        Ok(seat) => seat,
+        Err(blocker) => {
+            return blocker_receipt(
+                authority,
+                None,
+                default_source_policy(),
+                component,
+                owning_module,
+                step_id,
+                blocker,
+            );
+        }
+    };
+    let mut receipt = match authority {
+        SourceAuthority::Certificate(certificate_path) => resolve_certificate_source(
+            authority,
+            certificate_path,
+            component,
+            owning_module,
+            step_id,
+        ),
+        SourceAuthority::XeniaEntry { entry_id, entry } => resolve_xenia_source(
+            authority,
+            entry_id,
+            entry,
+            component,
+            owning_module,
+            step_id,
+            schema_base,
+            xenia_probe,
+        ),
+    };
+    validate_receipt_against_seat(&mut receipt, &source_seat);
+    receipt.validation_seat = Some(source_seat);
+    receipt
+}
+
+fn resolve_certificate_source(
+    authority: SourceAuthority<'_>,
     certificate_path: &Path,
     component: &str,
     owning_module: &str,
@@ -743,7 +880,7 @@ pub(crate) fn resolve_source(
         Ok(certificate) => certificate,
         Err(blocker) => {
             return blocker_receipt(
-                certificate_path,
+                authority,
                 None,
                 default_source_policy(),
                 component,
@@ -758,7 +895,7 @@ pub(crate) fn resolve_source(
         Ok(policy) => policy,
         Err(blocker) => {
             return blocker_receipt(
-                certificate_path,
+                authority,
                 schema,
                 certificate
                     .source_policy
@@ -773,7 +910,7 @@ pub(crate) fn resolve_source(
     };
     let Some(declaration) = certificate.sources.get(component) else {
         return blocker_receipt(
-            certificate_path,
+            authority,
             schema,
             source_policy.clone(),
             component,
@@ -785,7 +922,7 @@ pub(crate) fn resolve_source(
     let requested_ref = declaration.reference.trim();
     if requested_ref.is_empty() {
         return blocker_receipt(
-            certificate_path,
+            authority,
             schema,
             source_policy.clone(),
             component,
@@ -796,7 +933,7 @@ pub(crate) fn resolve_source(
     }
     if declaration.candidates.is_empty() {
         return receipt(
-            certificate_path,
+            authority,
             schema,
             source_policy.clone(),
             component,
@@ -825,7 +962,7 @@ pub(crate) fn resolve_source(
             Err(blocker) => {
                 identities.push(format!("{}:{}", candidate.kind, index + 1));
                 return receipt(
-                    certificate_path,
+                    authority,
                     schema,
                     source_policy.clone(),
                     component,
@@ -848,7 +985,7 @@ pub(crate) fn resolve_source(
         candidates,
     };
     receipt(
-        certificate_path,
+        authority,
         schema,
         source_policy,
         component,
@@ -860,6 +997,196 @@ pub(crate) fn resolve_source(
         None,
         Some(resolution),
     )
+}
+
+fn resolve_xenia_source(
+    authority: SourceAuthority<'_>,
+    entry_id: &str,
+    entry: &Value,
+    component: &str,
+    owning_module: &str,
+    step_id: &str,
+    schema_base: Option<&str>,
+    probe: Option<XeniaReleaseProbe<'_>>,
+) -> SourceResolutionReceipt {
+    let xenia_seat = match schema_base {
+        Some(base) => crate::atoms::ask::mint_seats::Seat::load(XENIA_SCHEMA, base),
+        None => crate::atoms::ask::mint_seats::at_start()
+            .xenia
+            .as_ref()
+            .cloned()
+            .map_err(|reason| reason.clone()),
+    };
+    let xenia_seat = match xenia_seat {
+        Ok(seat) => seat,
+        Err(blocker) => {
+            return blocker_receipt(
+                authority,
+                None,
+                default_source_policy(),
+                component,
+                owning_module,
+                step_id,
+                blocker,
+            );
+        }
+    };
+    if let Err(blocker) = xenia_seat.validate(entry) {
+        return blocker_receipt(
+            authority,
+            Some(XENIA_SCHEMA.into()),
+            default_source_policy(),
+            component,
+            owning_module,
+            step_id,
+            blocker,
+        );
+    }
+    if entry.get("id").and_then(Value::as_str) != Some(entry_id) {
+        return blocker_receipt(
+            authority,
+            Some(XENIA_SCHEMA.into()),
+            default_source_policy(),
+            component,
+            owning_module,
+            step_id,
+            format!("xenia-entry-id-mismatch authority_ref={entry_id}"),
+        );
+    }
+    if component != entry_id {
+        return blocker_receipt(
+            authority,
+            Some(XENIA_SCHEMA.into()),
+            default_source_policy(),
+            component,
+            owning_module,
+            step_id,
+            format!(
+                "xenia-entry-component-mismatch component={component} authority_ref={entry_id}"
+            ),
+        );
+    }
+    let Some(source) = entry.get("source").and_then(Value::as_object) else {
+        return blocker_receipt(
+            authority,
+            Some(XENIA_SCHEMA.into()),
+            default_source_policy(),
+            component,
+            owning_module,
+            step_id,
+            "schema-frozen-kernel-missing appliance.xenia.v1.source".into(),
+        );
+    };
+    if source
+        .get("candidates")
+        .filter(|value| !value.is_null())
+        .is_some()
+    {
+        return blocker_receipt(
+            authority,
+            Some(XENIA_SCHEMA.into()),
+            default_source_policy(),
+            component,
+            owning_module,
+            step_id,
+            "source-road-deferred".into(),
+        );
+    }
+    let release_repo = source
+        .get("release_repo")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let requested_ref = source
+        .get("ref")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (Some(release_repo), Some(requested_ref)) = (release_repo, requested_ref) else {
+        return blocker_receipt(
+            authority,
+            Some(XENIA_SCHEMA.into()),
+            default_source_policy(),
+            component,
+            owning_module,
+            step_id,
+            "xenia-release-source-incomplete".into(),
+        );
+    };
+    let resolution = SourceResolution {
+        schema: SOURCE_PLAN_SCHEMA,
+        source_policy: "artifact".into(),
+        component: component.to_string(),
+        requested_ref: requested_ref.to_string(),
+        candidates: vec![SourceCandidatePlan {
+            kind: "release".into(),
+            locator: release_repo.to_string(),
+            credential_selector: None,
+            freshness_authority: None,
+        }],
+    };
+    let mut result = receipt(
+        authority,
+        Some(XENIA_SCHEMA.into()),
+        "artifact".into(),
+        component,
+        owning_module,
+        step_id,
+        Some(requested_ref.to_string()),
+        vec!["release:1".into()],
+        Vec::new(),
+        None,
+        Some(resolution),
+    );
+    let forge_base = probe
+        .map(|probe| probe.forge_base)
+        .unwrap_or(crate::atoms::ask::fetch_artifact::DEFAULT_FORGE_API_ROOT);
+    let artifact_name = probe.map(|probe| probe.artifact_name).unwrap_or(component);
+    let profile = probe.and_then(|probe| probe.profile);
+    let (asset, sidecar) = match profile {
+        Some(profile) => match crate::atoms::ask::fetch_artifact::profile_release_names(
+            artifact_name,
+            profile,
+            None,
+            None,
+        ) {
+            Ok(names) => names,
+            Err(blocker) => {
+                result.ok = false;
+                result.blocker = Some(blocker);
+                return result;
+            }
+        },
+        None => {
+            let asset = format!("{artifact_name}-x86_64");
+            let sidecar = format!("{asset}.sha256");
+            (asset, sidecar)
+        }
+    };
+    result.network_access = true;
+    match crate::atoms::ask::fetch_artifact::inspect_release(
+        component,
+        release_repo,
+        requested_ref,
+        forge_base,
+        &asset,
+        &sidecar,
+        schema_base,
+    ) {
+        Ok(Some(evidence)) => {
+            result.resolved_revision = Some(evidence.resolved_revision);
+            result.digest = Some(evidence.digest);
+        }
+        Ok(None) => {
+            result.ok = false;
+            result.blocker = Some("release-metadata-unavailable".into());
+        }
+        Err(blocker) => {
+            result.ok = false;
+            result.blocker = Some(blocker);
+        }
+    }
+    result
 }
 
 /// Validate every declared source entry before any profile or module execution.
@@ -874,10 +1201,12 @@ pub(crate) fn validate_declared_sources(
     let mut receipts = Vec::new();
     for component in components {
         let resolution = resolve_source(
-            certificate_path,
+            SourceAuthority::Certificate(certificate_path),
             &component,
             "engine-plane",
             "certificate-source-validation",
+            None,
+            None,
         );
         if let Some(blocker) = resolution.blocker.clone() {
             return Err(format!(
@@ -894,16 +1223,20 @@ pub(crate) fn validate_declared_sources(
 }
 
 pub(crate) fn resolve_source_json(
-    certificate_path: &Path,
+    authority: SourceAuthority<'_>,
     component: &str,
     owning_module: &str,
     step_id: &str,
+    schema_base: Option<&str>,
+    xenia_probe: Option<XeniaReleaseProbe<'_>>,
 ) -> Value {
     serde_json::to_value(resolve_source(
-        certificate_path,
+        authority,
         component,
         owning_module,
         step_id,
+        schema_base,
+        xenia_probe,
     ))
     .unwrap_or_else(|err| {
         json!({
@@ -914,6 +1247,10 @@ pub(crate) fn resolve_source_json(
             "component": component,
             "owning_module": owning_module,
             "step_id": step_id,
+            "authority": authority.name(),
+            "authority_ref": authority.reference(),
+            "resolved_revision": null,
+            "digest": null,
             "blocker": format!("source-receipt-serialize-failed: {err}"),
         })
     })
@@ -999,10 +1336,12 @@ fn routine_source_plan_with_blessed_ref(
         })?;
     let certificate = crate::device_profile_certificate_path();
     let certificate_resolution = crate::bands::pull_source::resolve_source(
-        &certificate,
+        crate::bands::pull_source::SourceAuthority::Certificate(&certificate),
         component,
         &manifest.id,
         &step.step_id,
+        None,
+        None,
     );
     // Carry the exact validated value from this receipt before resolution is
     // reduced to the acquisition plan. Do not re-read or infer it later.
@@ -1436,7 +1775,14 @@ mod tests {
             "harmonia",
             None,
         );
-        let resolution = resolve_source(path.path(), "harmonia", "test", "source");
+        let resolution = resolve_source(
+            SourceAuthority::Certificate(path.path()),
+            "harmonia",
+            "test",
+            "source",
+            None,
+            None,
+        );
         assert!(resolution.ok);
         assert_eq!(resolution.source_policy, "developer");
         assert_eq!(
@@ -1449,7 +1795,14 @@ mod tests {
     #[test]
     fn undeclared_component_is_hard_blocked() {
         let path = certificate("undeclared_component_is_hard_blocked", "harmonia", None);
-        let resolution = resolve_source(path.path(), "sbin", "test", "source");
+        let resolution = resolve_source(
+            SourceAuthority::Certificate(path.path()),
+            "sbin",
+            "test",
+            "source",
+            None,
+            None,
+        );
         assert_eq!(
             resolution.blocker.as_deref(),
             Some("source-component-undeclared component=sbin")
@@ -1463,7 +1816,14 @@ mod tests {
             "harmonia",
             Some("owner-forge-ssh"),
         );
-        let resolution = resolve_source(path.path(), "harmonia", "test", "source");
+        let resolution = resolve_source(
+            SourceAuthority::Certificate(path.path()),
+            "harmonia",
+            "test",
+            "source",
+            None,
+            None,
+        );
         assert_eq!(resolution.credential_selectors, vec!["owner-forge-ssh"]);
         let plan = bridge_acquisition_plan(
             &resolution.resolution.unwrap(),
@@ -1484,7 +1844,14 @@ mod tests {
             "harmonia",
             Some("../secret"),
         );
-        let resolution = resolve_source(path.path(), "harmonia", "test", "source");
+        let resolution = resolve_source(
+            SourceAuthority::Certificate(path.path()),
+            "harmonia",
+            "test",
+            "source",
+            None,
+            None,
+        );
         assert_eq!(
             resolution.blocker.as_deref(),
             Some("source-credential-selector-invalid component-candidate=1")

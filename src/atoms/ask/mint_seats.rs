@@ -5,8 +5,10 @@ use std::time::Duration;
 
 pub(crate) const RELEASE_FLAG: &str = "estate.release-flag.v1";
 pub(crate) const UPDATE_SET: &str = "harmonia.update-set.v1";
+pub(crate) const SOURCE_RESOLUTION: &str = "harmonia.engine.source_resolution.v1";
+pub(crate) const XENIA: &str = "appliance.xenia.v1";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Seat {
     id: &'static str,
     raw: Value,
@@ -131,6 +133,8 @@ impl Seat {
 pub(crate) struct MintSeats {
     pub(crate) release_flag: Result<Seat, String>,
     pub(crate) update_set: Result<Seat, String>,
+    pub(crate) source_resolution: Result<Seat, String>,
+    pub(crate) xenia: Result<Seat, String>,
 }
 
 static SEATS: OnceLock<MintSeats> = OnceLock::new();
@@ -142,10 +146,14 @@ pub(crate) fn at_start() -> &'static MintSeats {
         Ok(base) => MintSeats {
             release_flag: Seat::load(RELEASE_FLAG, base),
             update_set: Seat::load(UPDATE_SET, base),
+            source_resolution: Seat::load(SOURCE_RESOLUTION, base),
+            xenia: Seat::load(XENIA, base),
         },
         Err(signal) => MintSeats {
             release_flag: Err(signal.into()),
             update_set: Err(signal.into()),
+            source_resolution: Err(signal.into()),
+            xenia: Err(signal.into()),
         },
     })
 }

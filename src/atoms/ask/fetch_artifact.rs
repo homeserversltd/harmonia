@@ -1,5 +1,8 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
-use crate::tools::git_artifact::{fetch_release_assets, unique_temp_suffix, ReleaseRequest};
+use crate::tools::git_artifact::{
+    fetch_release_assets, fetch_release_assets_for_inspection, unique_temp_suffix, ReleaseAssets,
+    ReleaseRequest,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -9,6 +12,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
+pub(crate) const DEFAULT_FORGE_API_ROOT: &str = "https://git.home.arpa/api/v1";
 pub(crate) const DEFAULT_PROFILE_SOURCE: &str = "/etc/appliance/profile.json";
 pub(crate) const PROFILE_AXIS: &str = "profile";
 pub(crate) const BUILD_TARGET: &str = "x86_64-unknown-linux-gnu";
@@ -268,6 +272,12 @@ pub(crate) struct Download {
     pub identity: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseInspection {
+    pub resolved_revision: String,
+    pub digest: String,
+}
+
 fn is_hex(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -406,15 +416,13 @@ fn curl_with_resolved_credential(
     estate_host: &str,
 ) -> Result<u16, String> {
     // Credential placement and resolution obey pali:keyman-forgejo-token-one-place-law.
-    let credential = match crate::atoms::forge_credential::resolve_for_url_at(
-        url,
-        credential_path,
-        estate_host,
-    ) {
-        crate::atoms::forge_credential::Outcome::Present { token, .. } => Some(token),
-        crate::atoms::forge_credential::Outcome::Absent => None,
-        crate::atoms::forge_credential::Outcome::Err(reason) => return Err(reason),
-    };
+    let credential =
+        match crate::atoms::forge_credential::resolve_for_url_at(url, credential_path, estate_host)
+        {
+            crate::atoms::forge_credential::Outcome::Present { token, .. } => Some(token),
+            crate::atoms::forge_credential::Outcome::Absent => None,
+            crate::atoms::forge_credential::Outcome::Err(reason) => return Err(reason),
+        };
     let stderr_path = destination.with_extension("stderr");
     let result = curl_to_file(url, destination, &stderr_path, credential.as_deref());
     let _ = fs::remove_file(&stderr_path);
@@ -525,6 +533,102 @@ fn download_with_credential_source(
     let _ = fs::remove_dir_all(&directory);
     result
 }
+fn release_source_revision(
+    release: &ReleaseAssets,
+    component: &str,
+    schema_base: Option<&str>,
+) -> Result<String, String> {
+    let Some(flag_bytes) = release.release_flag.as_deref() else {
+        return Ok(release.target_commitish.clone());
+    };
+    let flag: Value = serde_json::from_slice(flag_bytes)
+        .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
+    if let Some(base) = schema_base {
+        let seat = crate::atoms::ask::mint_seats::Seat::load(
+            crate::atoms::ask::mint_seats::RELEASE_FLAG,
+            base,
+        )?;
+        seat.validate(&flag)?;
+    } else {
+        let seat = crate::atoms::ask::mint_seats::at_start()
+            .release_flag
+            .as_ref()
+            .map_err(|reason| reason.clone())?;
+        seat.validate(&flag)?;
+    }
+    if flag.get("component").and_then(Value::as_str) != Some(component) {
+        return Err("fetch-artifact-release-flag-component-mismatch".into());
+    }
+    let source_sha = flag
+        .get("source_sha")
+        .and_then(Value::as_str)
+        .ok_or("fetch-artifact-release-flag-source-sha-missing")?;
+    if !validate_source_sha(source_sha) {
+        return Err("fetch-artifact-release-flag-source-sha-invalid".into());
+    }
+    if release.target_commitish != source_sha {
+        return Err("fetch-artifact-release-commit-mismatch".into());
+    }
+    Ok(source_sha.to_owned())
+}
+
+pub(crate) fn inspect_release(
+    component: &str,
+    release_repo: &str,
+    tag: &str,
+    api_root: &str,
+    asset: &str,
+    sidecar: &str,
+    release_schema_base: Option<&str>,
+) -> Result<Option<ReleaseInspection>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let credential_scope_found = credential.is_some();
+    let request = ReleaseRequest {
+        kind: "forgejo-release".into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential,
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found,
+        cache_dir: std::env::temp_dir().join(format!("harmonia-release-{}", unique_temp_suffix())),
+    };
+    let result: Result<Option<ReleaseInspection>, String> = (|| {
+        let Some(release) = fetch_release_assets_for_inspection(&request, tag, asset, sidecar)?
+        else {
+            return Ok(None);
+        };
+        let digest = crate::atoms::file_sha256(&release.artifact);
+        let resolved_revision = release_source_revision(&release, component, release_schema_base)?;
+        let sidecar_text = String::from_utf8(release.sidecar)
+            .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
+        if !is_hex(&digest, 64) || sidecar_text != format!("{digest}  {asset}\n") {
+            return Err("fetch-artifact-release-sidecar-mismatch".into());
+        }
+        if !validate_source_sha(&resolved_revision) {
+            return Err("fetch-artifact-release-revision-unavailable".into());
+        }
+        Ok(Some(ReleaseInspection {
+            resolved_revision,
+            digest,
+        }))
+    })();
+    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    match result {
+        Err(error) if !credential_scope_found => {
+            let metadata_url = release_metadata_url(api_root, release_repo, tag);
+            Err(normalize_auth_required_error(&error, &metadata_url).unwrap_or(error))
+        }
+        other => other,
+    }
+}
+
 pub(crate) fn download_release(
     component: &str,
     binary_name: &str,
@@ -622,10 +726,8 @@ mod tests {
         use std::net::TcpListener;
         use std::thread;
 
-        let artifact = format!(
-            "caduceus.liveness.v1{RELEASE_SOURCE_SHA}caduceus-profile"
-        )
-        .into_bytes();
+        let artifact =
+            format!("caduceus.liveness.v1{RELEASE_SOURCE_SHA}caduceus-profile").into_bytes();
         let digest = crate::atoms::file_sha256(&artifact);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -638,9 +740,8 @@ mod tests {
         }).to_string().into_bytes();
         let served_artifact = artifact.clone();
         let server = thread::spawn(move || {
-            let release_path = format!(
-                "/api/v1/repos/OWNER/REPO/releases/tags/{RELEASE_SOURCE_SHA}"
-            );
+            let release_path =
+                format!("/api/v1/repos/OWNER/REPO/releases/tags/{RELEASE_SOURCE_SHA}");
             for (path, body) in [
                 (release_path, release_body),
                 ("/artifact".into(), served_artifact.clone()),
@@ -812,7 +913,10 @@ mod tests {
             );
             server.join().unwrap();
             assert!(result.is_ok(), "registry fixture failed for {trace}");
-            println!("trace registry credential={trace} header={}", if expected_header { "present" } else { "absent" });
+            println!(
+                "trace registry credential={trace} header={}",
+                if expected_header { "present" } else { "absent" }
+            );
         }
     }
 

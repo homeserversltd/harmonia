@@ -46,6 +46,7 @@ impl ReleaseRequest {
 pub(crate) struct ReleaseAssets {
     pub artifact: Vec<u8>,
     pub sidecar: Vec<u8>,
+    pub release_flag: Option<Vec<u8>>,
     pub metadata_url: String,
     pub target_commitish: String,
 }
@@ -124,6 +125,18 @@ fn release_asset_url(m: &ReleaseMetadata, tag: &str, name: &str) -> Result<Strin
         .map(str::to_owned)
         .ok_or_else(|| format!("release-asset-missing tag={tag} asset={name}"))
 }
+fn optional_release_asset_url(m: &ReleaseMetadata, name: &str) -> Option<String> {
+    let asset = m
+        .assets
+        .as_array()?
+        .iter()
+        .find(|asset| asset.get("name").and_then(serde_json::Value::as_str) == Some(name))?;
+    asset
+        .get("browser_download_url")
+        .or_else(|| asset.get("url"))?
+        .as_str()
+        .map(str::to_owned)
+}
 fn download_release_asset(r: &ReleaseRequest, url: &str, name: &str) -> Result<Vec<u8>, String> {
     let p = r
         .cache_dir
@@ -152,6 +165,24 @@ pub(crate) fn fetch_release_assets(
     asset_name: &str,
     sidecar_name: &str,
 ) -> Result<Option<ReleaseAssets>, String> {
+    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, false, true)
+}
+pub(crate) fn fetch_release_assets_for_inspection(
+    r: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+) -> Result<Option<ReleaseAssets>, String> {
+    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, true, false)
+}
+fn fetch_release_assets_inner(
+    r: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    inspect_release_flag: bool,
+    require_tag_commitish_match: bool,
+) -> Result<Option<ReleaseAssets>, String> {
     if r.kind != "forgejo-release"
         || !safe_release_segment(tag)
         || !safe_release_segment(&r.owner)
@@ -164,14 +195,20 @@ pub(crate) fn fetch_release_assets(
     let Some(m) = lookup_release_metadata(r, tag)? else {
         return Ok(None);
     };
-    if m.target_commitish != tag {
+    if require_tag_commitish_match && m.target_commitish != tag {
         return Err("fetch-artifact-release-commit-mismatch".into());
     }
     let au = release_asset_url(&m, tag, asset_name)?;
     let su = release_asset_url(&m, tag, sidecar_name)?;
+    let release_flag = inspect_release_flag
+        .then(|| optional_release_asset_url(&m, "release.flag"))
+        .flatten()
+        .map(|url| download_release_asset(r, &url, "release.flag"))
+        .transpose()?;
     Ok(Some(ReleaseAssets {
         artifact: download_release_asset(r, &au, asset_name)?,
         sidecar: download_release_asset(r, &su, sidecar_name)?,
+        release_flag,
         metadata_url: m.url,
         target_commitish: m.target_commitish,
     }))

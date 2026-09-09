@@ -800,10 +800,12 @@ fn engine_source_gate_for_component(
     component: &str,
 ) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
     let resolution_receipt = crate::bands::pull_source::resolve_source(
-        certificate_path,
+        crate::bands::pull_source::SourceAuthority::Certificate(certificate_path),
         component,
         "engine-plane",
         "source-acquisition",
+        None,
+        None,
     );
     let resolution = match resolution_receipt.resolution {
         Some(resolution) => resolution,
