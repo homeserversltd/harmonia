@@ -422,7 +422,7 @@ fn exchange(
         Ok(gateway) => gateway,
         Err(error) => return Ok(receipt("gateway-unreachable", row, Vec::new(), &error)),
     };
-    let is_gateway = gateway_is_local(gateway, &row);
+    let is_gateway = prior_self_seat || gateway_is_local(gateway, &row);
     let host = if is_gateway || prior_self_seat {
         Ipv4Addr::LOCALHOST
     } else {

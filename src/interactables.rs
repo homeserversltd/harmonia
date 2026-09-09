@@ -531,7 +531,7 @@ pub(crate) fn reconcile_ruyi(
                     kind: "dns-record".into(), target_path: None, reference_source_path: None,
                     drift: DriftSummary { content: true, mode: false, ownership: false },
                     created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
-            refreshed_at: now.to_string(), available_at: None,
+                    refreshed_at: now.to_string(), available_at: None,
                     has_run: false, mode: None, owner: None, group: None, source_sha: None,
                     target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
                     recognition_score: None, script: format!("harmonia interactable run {id}"),
