@@ -601,10 +601,11 @@ fn run_ruyi_bump(
 }
 
 fn configured_unbound_target() -> PathBuf {
-    env::var_os("HARMONIA_INTERACTABLE_CONFIG_ROOT")
-        .map(PathBuf::from)
-        .map(|root| root.join("etc/unbound/unbound.conf"))
-        .unwrap_or_else(|| PathBuf::from("/etc/unbound/unbound.conf"))
+    #[cfg(any(test, feature = "test-facade"))]
+    if let Some(root) = env::var_os("HARMONIA_INTERACTABLE_CONFIG_ROOT") {
+        return PathBuf::from(root).join("etc/unbound/unbound.conf");
+    }
+    PathBuf::from("/etc/unbound/unbound.conf")
 }
 
 fn insert_dns_record(original: &[u8], record: &str) -> Result<Vec<u8>, String> {
@@ -675,8 +676,11 @@ fn run_dns_record(
         .join("interactable-candidates").join(format!("{}.conf", item.id));
     fs::create_dir_all(scratch.parent().unwrap()).map_err(|e| e.to_string())?;
     fs::write(&scratch, &candidate).map_err(|e| format!("dns-record-candidate-write-failed: {e}"))?;
+    #[cfg(any(test, feature = "test-facade"))]
     let check_program = env::var("HARMONIA_UNBOUND_CHECKCONF")
         .unwrap_or_else(|_| "/usr/sbin/unbound-checkconf".into());
+    #[cfg(not(any(test, feature = "test-facade")))]
+    let check_program = "/usr/sbin/unbound-checkconf".to_string();
     let check = crate::atoms::ask::read_only_command_with_timeout(
         &check_program, &[scratch.to_string_lossy().into_owned()], Duration::from_secs(10));
     let mut receipt = serde_json::json!({

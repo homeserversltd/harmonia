@@ -305,6 +305,7 @@ fn declaration_signal(row: &Value) -> Option<&'static str> {
 }
 
 pub(crate) fn default_gateway() -> Result<Ipv4Addr, String> {
+    #[cfg(any(test, feature = "test-facade"))]
     if let Some(gateway) = std::env::var_os("HARMONIA_DEFAULT_GATEWAY") {
         return gateway
             .to_string_lossy()
@@ -648,9 +649,12 @@ fn accumulate(
 /// StaffStart uses the existing self envelope; it never applies or moves a rung.
 pub(crate) fn announce() -> Result<Value, String> {
     let run_id = crate::run_id_from_stamp();
+    #[cfg(any(test, feature = "test-facade"))]
     let receipt_root = std::env::var_os("HARMONIA_RECEIPTS_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts"));
+    #[cfg(not(any(test, feature = "test-facade")))]
+    let receipt_root = PathBuf::from("/var/lib/harmonia/receipts");
     let dir = receipt_root.join(&run_id);
     let Some(port) = port() else {
         let mut result = receipt(

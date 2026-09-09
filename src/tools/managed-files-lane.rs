@@ -1581,7 +1581,9 @@ WantedBy=multi-user.target
         assert_eq!(
             feed.interactables
                 .iter()
-                .filter(|item| !item.has_run && item.target_path == target.as_path())
+                .filter(|item| {
+                    !item.has_run && item.target_path.as_deref() == Some(target.as_path())
+                })
                 .count(),
             1
         );

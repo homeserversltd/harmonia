@@ -1,6 +1,7 @@
 use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{CommandObservation, Drift, Receipt};
+#[cfg(any(test, feature = "test-facade"))]
 use std::env;
 use std::time::Duration;
 
@@ -37,8 +38,14 @@ impl UnitVerb {
         !matches!(self, Self::DaemonReload)
     }
 }
+#[cfg(any(test, feature = "test-facade"))]
 fn systemctl_program() -> String {
     env::var("HARMONIA_SYSTEMCTL").unwrap_or_else(|_| "/usr/bin/systemctl".into())
+}
+
+#[cfg(not(any(test, feature = "test-facade")))]
+fn systemctl_program() -> String {
+    "/usr/bin/systemctl".into()
 }
 
 pub(crate) fn unit_change(

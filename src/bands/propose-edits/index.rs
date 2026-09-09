@@ -927,7 +927,7 @@ mod refresh_interactables_tests {
         let proposal = first_feed
             .interactables
             .iter()
-            .find(|item| item.target_path == target)
+            .find(|item| item.target_path.as_deref() == Some(target.as_path()))
             .unwrap();
         assert!(!proposal.name.is_empty());
         assert!(!proposal.description.is_empty());
