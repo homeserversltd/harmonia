@@ -2126,6 +2126,205 @@ mod compile_fragments_tests {
     }
 
     #[test]
+    fn config_compile_without_config_deploy_mints_interactable() {
+        const CHILD_SENTINEL: &str = "HARMONIA_CONFIG_COMPILE_DEFAULT_NATIVE_TEST_CHILD";
+        if std::env::var_os(CHILD_SENTINEL).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("tools::files::managed_files_lane::compile_fragments_tests::config_compile_without_config_deploy_mints_interactable")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env(CHILD_SENTINEL, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let root = fixture("config-default-native");
+        let profile_root = root.join("profile");
+        let module_dir = profile_root.join("modules/dot-files");
+        let source_root = root.join("source");
+        let target = root.join("config_deploy:interactable").join("target.conf");
+        let feed_path = root.join("interactables.json");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(source_root.join("all")).unwrap();
+        fs::create_dir_all(source_root.join("tv")).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(profile_root.join("index.json"), br#"{"id":"tv"}"#).unwrap();
+        fs::write(source_root.join("all/00"), b"all\n").unwrap();
+        fs::write(source_root.join("tv/20"), b"tv\n").unwrap();
+        fs::write(&target, b"genuinely drifting\n").unwrap();
+
+        let step = ValidatedStep {
+            step_id: "compile-fragments-default-native".into(),
+            tool: "files".into(),
+            permutation: "compile-fragments".into(),
+            args: BTreeMap::from([
+                (
+                    "source_root".into(),
+                    Value::String(source_root.display().to_string()),
+                ),
+                (
+                    "target_path".into(),
+                    Value::String(target.display().to_string()),
+                ),
+                ("backup_existing".into(), Value::Bool(true)),
+            ]),
+            on_failure: OnFailure::Stop,
+        };
+        let manifest = LadderManifest {
+            schema: "test".into(),
+            id: "test".into(),
+            version: "1".into(),
+            description: String::new(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            category: None,
+            group: None,
+            constants: BTreeMap::new(),
+            package_pins: BTreeMap::new(),
+            package_ceilings: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: None,
+            suppress_interactable: false,
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
+            ladder: Vec::new(),
+            base_dir: module_dir.clone(),
+        };
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
+
+        let outcome = compile_fragments_step(&step, &manifest, &module_dir, false, None).unwrap();
+
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert!(!outcome.skipped);
+        assert_eq!(outcome.message, "compile-fragments-config-interactable");
+        assert_eq!(fs::read(&target).unwrap(), b"genuinely drifting\n");
+        let feed = crate::interactables::load_feed(&feed_path).unwrap();
+        assert_eq!(feed.interactables.len(), 1);
+        assert_eq!(
+            feed.interactables[0].target_path.as_deref(),
+            Some(target.as_path())
+        );
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(module_dir.join("compile-fragments.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["ok"], true);
+        assert_eq!(receipt["changed"], true);
+        assert_eq!(receipt["config_state"], "interactable");
+        std::env::remove_var("HARMONIA_INTERACTABLES_PATH");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn config_compile_with_suppression_is_exempt_without_proposal() {
+        const CHILD_SENTINEL: &str = "HARMONIA_CONFIG_COMPILE_EXEMPT_TEST_CHILD";
+        if std::env::var_os(CHILD_SENTINEL).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("tools::files::managed_files_lane::compile_fragments_tests::config_compile_with_suppression_is_exempt_without_proposal")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env(CHILD_SENTINEL, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let root = fixture("config-interactable-exempt");
+        let profile_root = root.join("profile");
+        let module_dir = profile_root.join("modules/dot-files");
+        let source_root = root.join("source");
+        let target = root.join("config_deploy:interactable").join("target.conf");
+        let feed_path = root.join("interactables.json");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(source_root.join("all")).unwrap();
+        fs::create_dir_all(source_root.join("tv")).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(profile_root.join("index.json"), br#"{"id":"tv"}"#).unwrap();
+        fs::write(source_root.join("all/00"), b"all\n").unwrap();
+        fs::write(source_root.join("tv/20"), b"tv\n").unwrap();
+        fs::write(&target, b"genuinely drifting\n").unwrap();
+
+        let step = ValidatedStep {
+            step_id: "compile-fragments-interactable-exempt".into(),
+            tool: "files".into(),
+            permutation: "compile-fragments".into(),
+            args: BTreeMap::from([
+                (
+                    "source_root".into(),
+                    Value::String(source_root.display().to_string()),
+                ),
+                (
+                    "target_path".into(),
+                    Value::String(target.display().to_string()),
+                ),
+                ("backup_existing".into(), Value::Bool(true)),
+            ]),
+            on_failure: OnFailure::Stop,
+        };
+        let manifest = LadderManifest {
+            schema: "test".into(),
+            id: "test".into(),
+            version: "1".into(),
+            description: String::new(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            category: None,
+            group: None,
+            constants: BTreeMap::new(),
+            package_pins: BTreeMap::new(),
+            package_ceilings: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: None,
+            suppress_interactable: true,
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
+            ladder: Vec::new(),
+            base_dir: module_dir.clone(),
+        };
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
+
+        let outcome = compile_fragments_step(&step, &manifest, &module_dir, false, None).unwrap();
+
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert!(outcome.skipped);
+        assert_eq!(
+            outcome.message,
+            "compile-fragments-config-interactable-exempt"
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"genuinely drifting\n");
+        let feed = crate::interactables::load_feed(&feed_path).unwrap();
+        assert!(feed.interactables.is_empty());
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(module_dir.join("compile-fragments.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["ok"], true);
+        assert_eq!(receipt["changed"], true);
+        assert_eq!(receipt["config_state"], "interactable-exempt");
+        std::env::remove_var("HARMONIA_INTERACTABLES_PATH");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn registry_exposes_compile_fragments_in_backfill_files() {
         let permutation = crate::tools::get("files")
             .unwrap()
