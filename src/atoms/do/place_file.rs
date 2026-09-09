@@ -94,7 +94,14 @@ pub(crate) fn execute_with_operator_hand(
 pub(crate) fn execute_estate_owned_declared_sudoers_fragment(
     request: PlaceFileRequest<'_>,
 ) -> Result<PlaceFileOutcome, String> {
-    if request.path.parent() != Some(Path::new("/etc/sudoers.d"))
+    execute_estate_owned_declared_sudoers_fragment_at(request, Path::new("/etc/sudoers.d"))
+}
+
+fn execute_estate_owned_declared_sudoers_fragment_at(
+    request: PlaceFileRequest<'_>,
+    target_root: &Path,
+) -> Result<PlaceFileOutcome, String> {
+    if request.path.parent() != Some(target_root)
         || request.mode != Some(0o440)
         || request.ownership.uid != Some(0)
         || request.ownership.gid != Some(0)
@@ -649,10 +656,26 @@ pub(crate) fn converge_declared_sudoers_fragments_authorized(
     authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
+    converge_declared_sudoers_fragments_authorized_at(
+        request,
+        receipt_dir,
+        authorization,
+        invocation,
+        Path::new("/etc/sudoers.d"),
+    )
+}
+
+pub(crate) fn converge_declared_sudoers_fragments_authorized_at(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    target_root: &Path,
+) -> Result<FileConvergenceOutcome, String> {
     if authorization.is_some() && invocation.is_none() {
         return Err("declared-sudoers-forced-clobber-invocation-required".into());
     }
-    let exact_fragment_set = request.target_root == Path::new("/etc/sudoers.d")
+    let exact_fragment_set = request.target_root == target_root
         && !request.backup_existing
         && request.owner.as_deref() == Some("root")
         && request.group.as_deref() == Some("root")
@@ -669,15 +692,14 @@ pub(crate) fn converge_declared_sudoers_fragments_authorized(
         receipt_dir,
         authorization,
         invocation,
-        ConvergencePolicy::EstateOwnedDeclaredSudoers,
+        ConvergencePolicy::EstateOwnedDeclaredSudoers(target_root.to_path_buf()),
     )
 }
 
-#[derive(Clone, Copy)]
 enum ConvergencePolicy {
     HoldConfig,
     ObserveConfigProposal,
-    EstateOwnedDeclaredSudoers,
+    EstateOwnedDeclaredSudoers(PathBuf),
 }
 
 pub(crate) fn converge_files_authorized_with_config_policy(
@@ -719,10 +741,10 @@ fn converge_files_authorized_with_policy(
             .any(|class| matches!(class, TargetClass::Config));
     let apply = authorization.is_some()
         && !held
-        && match policy {
-            ConvergencePolicy::EstateOwnedDeclaredSudoers => classes
-                .iter()
-                .all(|class| matches!(class, TargetClass::Config)),
+        && match &policy {
+            // This variant is constructed only after the dedicated sudoers
+            // contract gate has matched the exact target and metadata shape.
+            ConvergencePolicy::EstateOwnedDeclaredSudoers(_) => true,
             _ => classes
                 .iter()
                 .all(|class| matches!(class, TargetClass::Software)),
@@ -792,7 +814,8 @@ fn converge_files_authorized_with_policy(
             continue;
         }
 
-        if !target_exists_before && !matches!(policy, ConvergencePolicy::EstateOwnedDeclaredSudoers)
+        if !target_exists_before
+            && !matches!(&policy, ConvergencePolicy::EstateOwnedDeclaredSudoers(_))
         {
             missing_target_birth_debts.push(relative_path.clone());
             let file_diff = unified_file_diff(&source, &target)?;
@@ -926,10 +949,11 @@ fn converge_files_authorized_with_policy(
             },
             invocation: actuation_invocation,
         };
-        let place = if matches!(policy, ConvergencePolicy::EstateOwnedDeclaredSudoers) {
-            crate::place_file::execute_estate_owned_declared_sudoers_fragment(place_request)
-        } else {
-            crate::place_file::execute(place_request)
+        let place = match &policy {
+            ConvergencePolicy::EstateOwnedDeclaredSudoers(target_root) => {
+                execute_estate_owned_declared_sudoers_fragment_at(place_request, target_root)
+            }
+            _ => crate::place_file::execute(place_request),
         };
         let (backed_up_to, wrote_content, truthful_changed) = match place {
             Ok(outcome) => {
@@ -1085,6 +1109,161 @@ fn converge_files_authorized_with_policy(
     };
     write_convergence_receipt(receipt_dir, request, &outcome, apply, held)?;
     Ok(outcome)
+}
+
+#[cfg(test)]
+mod declared_sudoers_convergence_tests {
+    use super::*;
+
+    const FRAGMENT: &str = "90-harmonia-fixture";
+
+    fn fixture_request(root: &Path) -> FileConvergenceRequest {
+        FileConvergenceRequest {
+            source_root: root.join("source"),
+            target_root: root.join("sudoers.d"),
+            files: vec![crate::atoms::files::FileSpec {
+                relative_path: PathBuf::from(FRAGMENT),
+                mode: Some(0o440),
+            }],
+            backup_existing: false,
+            receipt_name: "declared-sudoers-fixture".into(),
+            owner: Some("root".into()),
+            group: Some("root".into()),
+        }
+    }
+
+    fn assert_contract_refused(request: &FileConvergenceRequest, target_root: &Path) {
+        let error = converge_declared_sudoers_fragments_authorized_at(
+            request,
+            &target_root.join("receipts"),
+            None,
+            None,
+            target_root,
+        )
+        .unwrap_err();
+        assert_eq!(error, "declared-sudoers-forced-clobber-contract-refused");
+    }
+
+    #[test]
+    fn declared_sudoers_refuses_wrong_target_root() {
+        let root = tempfile::tempdir().unwrap();
+        let request = fixture_request(root.path());
+        let error = converge_declared_sudoers_fragments_authorized(
+            &request,
+            &root.path().join("receipts"),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "declared-sudoers-forced-clobber-contract-refused");
+    }
+
+    #[test]
+    fn declared_sudoers_refuses_backup_existing() {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = fixture_request(root.path());
+        request.backup_existing = true;
+        assert_contract_refused(&request, &request.target_root);
+    }
+
+    #[test]
+    fn declared_sudoers_refuses_non_root_owner_or_group() {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = fixture_request(root.path());
+        request.owner = Some("owner".into());
+        assert_contract_refused(&request, &request.target_root);
+
+        request.owner = Some("root".into());
+        request.group = Some("owner".into());
+        assert_contract_refused(&request, &request.target_root);
+    }
+
+    #[test]
+    fn declared_sudoers_refuses_non_0440_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = fixture_request(root.path());
+        request.files[0].mode = Some(0o640);
+        assert_contract_refused(&request, &request.target_root);
+    }
+
+    #[test]
+    fn declared_sudoers_refuses_authorization_without_invocation() {
+        let root = tempfile::tempdir().unwrap();
+        let request = fixture_request(root.path());
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, None);
+        let error = converge_declared_sudoers_fragments_authorized_at(
+            &request,
+            &root.path().join("receipts"),
+            mode.software_authorization(),
+            None,
+            &request.target_root,
+        )
+        .unwrap_err();
+        assert_eq!(error, "declared-sudoers-forced-clobber-invocation-required");
+    }
+
+    #[test]
+    fn declared_sudoers_observe_only_admits_exact_shape_without_placement() {
+        let root = tempfile::tempdir().unwrap();
+        let request = fixture_request(root.path());
+        fs::create_dir_all(&request.source_root).unwrap();
+        fs::create_dir_all(&request.target_root).unwrap();
+        fs::write(request.source_root.join(FRAGMENT), b"declared\n").unwrap();
+        fs::write(request.target_root.join(FRAGMENT), b"drifted\n").unwrap();
+
+        let outcome = converge_declared_sudoers_fragments_authorized_at(
+            &request,
+            &root.path().join("receipts"),
+            None,
+            None,
+            &request.target_root,
+        )
+        .unwrap();
+
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(outcome.written, 0);
+        assert_eq!(
+            fs::read(request.target_root.join(FRAGMENT)).unwrap(),
+            b"drifted\n"
+        );
+        assert!(!root.path().join("interactables.json").exists());
+    }
+
+    #[test]
+    fn declared_sudoers_apply_replaces_drift_and_sets_exact_metadata_when_root() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let request = fixture_request(root.path());
+        fs::create_dir_all(&request.source_root).unwrap();
+        fs::create_dir_all(&request.target_root).unwrap();
+        fs::write(request.source_root.join(FRAGMENT), b"declared\n").unwrap();
+        fs::write(request.target_root.join(FRAGMENT), b"drifted\n").unwrap();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+
+        let outcome = converge_declared_sudoers_fragments_authorized_at(
+            &request,
+            &root.path().join("receipts"),
+            mode.software_authorization(),
+            Some(&invocation),
+            &request.target_root,
+        )
+        .unwrap();
+
+        let target = request.target_root.join(FRAGMENT);
+        let metadata = fs::metadata(&target).unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(outcome.written, 1);
+        assert_eq!(fs::read(&target).unwrap(), b"declared\n");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o440);
+        assert_eq!(metadata.uid(), 0);
+        assert_eq!(metadata.gid(), 0);
+        assert!(!root.path().join("interactables.json").exists());
+    }
 }
 
 pub(crate) fn hard_stamp_interactable(

@@ -896,6 +896,29 @@ pub(crate) fn files_validated_sudoers_converge_step(
     authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    files_validated_sudoers_converge_step_at(
+        step,
+        manifest,
+        module_dir,
+        authorization,
+        invocation,
+        Path::new("/etc/sudoers.d"),
+        command::capture_with_timeout,
+    )
+}
+
+fn files_validated_sudoers_converge_step_at<F>(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    declared_target_root: &Path,
+    mut validator: F,
+) -> Result<OperationOutcome, String>
+where
+    F: FnMut(&str, &[&str], u64) -> crate::CmdResult,
+{
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
     let owned_prefix = string_arg(&step.args, "owned_prefix");
@@ -903,7 +926,7 @@ pub(crate) fn files_validated_sudoers_converge_step(
     let validator_args = string_array_arg(&step.args, "validator_args");
     let files: Vec<String> = string_array_arg(&step.args, "files");
 
-    if target_root != PathBuf::from("/etc/sudoers.d") {
+    if target_root != declared_target_root {
         return Err("validated-sudoers-target-root-refused".into());
     }
     if owned_prefix.is_empty()
@@ -932,7 +955,7 @@ pub(crate) fn files_validated_sudoers_converge_step(
         let candidate = source_root.join(relative);
         let candidate_text = candidate.to_string_lossy();
         let refs = ["-cf", candidate_text.as_ref()];
-        let result = command::capture_with_timeout(validator_program, &refs, 30);
+        let result = validator(validator_program, &refs, 30);
         crate::write_command_receipt(
             module_dir,
             &format!("{}-{}-validation", step.step_id, name),
@@ -960,12 +983,14 @@ pub(crate) fn files_validated_sudoers_converge_step(
         owner: Some("root".to_string()),
         group: Some("root".to_string()),
     };
-    let outcome = crate::atoms::r#do::place_file::converge_declared_sudoers_fragments_authorized(
-        &request,
-        module_dir,
-        authorization,
-        invocation,
-    )?;
+    let outcome =
+        crate::atoms::r#do::place_file::converge_declared_sudoers_fragments_authorized_at(
+            &request,
+            module_dir,
+            authorization,
+            invocation,
+            declared_target_root,
+        )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
@@ -1346,6 +1371,206 @@ fn string_array_arg(
 }
 fn integer_arg(a: &std::collections::BTreeMap<String, serde_json::Value>, n: &str, d: u64) -> u64 {
     a.get(n).and_then(serde_json::Value::as_u64).unwrap_or(d)
+}
+
+#[cfg(test)]
+mod validated_sudoers_convergence_tests {
+    use super::files_validated_sudoers_converge_step_at;
+    use crate::tools::ladder::{LadderManifest, OnFailure};
+    use crate::tools::routine::ValidatedStep;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::Path;
+
+    const FRAGMENT: &str = "90-harmonia-fixture";
+
+    fn run_in_isolated_child(sentinel: &str, test_name: &str) -> bool {
+        if std::env::var_os(sentinel).is_some() {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg(test_name)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(sentinel, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child test failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
+    fn manifest(module_dir: &Path) -> LadderManifest {
+        LadderManifest {
+            schema: "test".into(),
+            id: "sudoers-fixture".into(),
+            version: "1".into(),
+            description: String::new(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            category: None,
+            group: None,
+            constants: BTreeMap::new(),
+            package_pins: BTreeMap::new(),
+            package_ceilings: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: None,
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
+            ladder: Vec::new(),
+            base_dir: module_dir.to_path_buf(),
+        }
+    }
+
+    fn step(source_root: &Path, target_root: &Path) -> ValidatedStep {
+        ValidatedStep {
+            step_id: "validated-sudoers".into(),
+            tool: "files".into(),
+            permutation: "validated-sudoers-converge".into(),
+            args: BTreeMap::from([
+                ("source_root".into(), json!(source_root)),
+                ("target_root".into(), json!(target_root)),
+                ("owned_prefix".into(), json!("90-harmonia-")),
+                ("validator_program".into(), json!("/usr/bin/visudo")),
+                ("validator_args".into(), json!(["-cf"])),
+                ("files".into(), json!([FRAGMENT])),
+                ("backup_existing".into(), json!(false)),
+                ("owner".into(), json!("root")),
+                ("group".into(), json!("root")),
+            ]),
+            on_failure: OnFailure::Stop,
+        }
+    }
+
+    fn validator_result(ok: bool) -> crate::CmdResult {
+        crate::CmdResult {
+            ok,
+            code: if ok { 0 } else { 1 },
+            stdout: String::new(),
+            stderr: if ok {
+                String::new()
+            } else {
+                "fixture syntax rejected".into()
+            },
+        }
+    }
+
+    #[test]
+    fn validated_sudoers_apply_replaces_drift_after_validator_without_interactable_when_root() {
+        const SENTINEL: &str = "HARMONIA_VALIDATED_SUDOERS_APPLY_TEST_CHILD";
+        if run_in_isolated_child(
+            SENTINEL,
+            "tools::files::managed_files_lane::validated_sudoers_convergence_tests::validated_sudoers_apply_replaces_drift_after_validator_without_interactable_when_root",
+        ) {
+            return;
+        }
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let module_dir = root.path().join("module");
+        let source_root = root.path().join("source");
+        let target_root = root.path().join("sudoers.d");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        fs::write(source_root.join(FRAGMENT), b"declared\n").unwrap();
+        fs::write(target_root.join(FRAGMENT), b"drifted\n").unwrap();
+        let interactables = root.path().join("interactables.json");
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &interactables);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+
+        let outcome = files_validated_sudoers_converge_step_at(
+            &step(&source_root, &target_root),
+            &manifest(&module_dir),
+            &module_dir,
+            mode.software_authorization(),
+            Some(&invocation),
+            &target_root,
+            |program, args, timeout| {
+                assert_eq!(program, "/usr/bin/visudo");
+                assert_eq!(args[0], "-cf");
+                assert_eq!(args[1], source_root.join(FRAGMENT).to_string_lossy());
+                assert_eq!(timeout, 30);
+                validator_result(true)
+            },
+        )
+        .unwrap();
+
+        let target = target_root.join(FRAGMENT);
+        let metadata = fs::metadata(&target).unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert!(!outcome.skipped);
+        assert_eq!(fs::read(&target).unwrap(), b"declared\n");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o440);
+        assert_eq!(metadata.uid(), 0);
+        assert_eq!(metadata.gid(), 0);
+        assert!(!interactables.exists());
+        assert!(module_dir
+            .join(format!("validated-sudoers-{FRAGMENT}-validation.json"))
+            .is_file());
+        assert!(module_dir.join("validated-sudoers.json").is_file());
+    }
+
+    #[test]
+    fn validated_sudoers_validator_failure_preserves_prior_bytes_without_interactable() {
+        const SENTINEL: &str = "HARMONIA_VALIDATED_SUDOERS_REJECTION_TEST_CHILD";
+        if run_in_isolated_child(
+            SENTINEL,
+            "tools::files::managed_files_lane::validated_sudoers_convergence_tests::validated_sudoers_validator_failure_preserves_prior_bytes_without_interactable",
+        ) {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let module_dir = root.path().join("module");
+        let source_root = root.path().join("source");
+        let target_root = root.path().join("sudoers.d");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        fs::write(source_root.join(FRAGMENT), b"invalid candidate\n").unwrap();
+        fs::write(target_root.join(FRAGMENT), b"prior live bytes\n").unwrap();
+        let interactables = root.path().join("interactables.json");
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &interactables);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+
+        let error = files_validated_sudoers_converge_step_at(
+            &step(&source_root, &target_root),
+            &manifest(&module_dir),
+            &module_dir,
+            mode.software_authorization(),
+            Some(&invocation),
+            &target_root,
+            |_, _, _| validator_result(false),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            format!("validated-sudoers-visudo-rejected {FRAGMENT}")
+        );
+        assert_eq!(
+            fs::read(target_root.join(FRAGMENT)).unwrap(),
+            b"prior live bytes\n"
+        );
+        assert!(!interactables.exists());
+        assert!(module_dir
+            .join(format!("validated-sudoers-{FRAGMENT}-validation.json"))
+            .is_file());
+        assert!(!module_dir.join("validated-sudoers.json").exists());
+    }
 }
 
 #[cfg(test)]
