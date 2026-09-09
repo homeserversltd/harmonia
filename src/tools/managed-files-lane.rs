@@ -1568,6 +1568,9 @@ WantedBy=multi-user.target
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: None,
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
             ladder: Vec::new(),
             base_dir: module_dir.clone(),
         };
@@ -1688,6 +1691,9 @@ mod compile_fragments_tests {
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: None,
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
             ladder: Vec::new(),
             base_dir: module_dir.clone(),
         };
@@ -1786,6 +1792,9 @@ mod compile_fragments_tests {
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: Some("interactable".into()),
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
             ladder: Vec::new(),
             base_dir: module_dir.clone(),
         };
@@ -1802,6 +1811,7 @@ mod compile_fragments_tests {
             &mut routine_states,
             &[step],
             &BTreeMap::new(),
+            &mut BTreeMap::new(),
         )
         .unwrap();
         assert!(execution.ok);

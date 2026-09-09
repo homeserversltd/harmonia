@@ -696,6 +696,9 @@ mod refresh_interactables_tests {
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: Some("interactable".into()),
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
             ladder: Vec::new(),
             base_dir: PathBuf::new(),
         }

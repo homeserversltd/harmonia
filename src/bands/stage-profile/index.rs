@@ -919,6 +919,7 @@ mod shared_dot_files_tests {
             &mut routine_states,
             &[step],
             &projected_routines,
+            &mut BTreeMap::new(),
         )
         .unwrap();
         assert!(execution.ok);
