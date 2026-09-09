@@ -72,6 +72,8 @@ pub(crate) struct Interactable {
     pub(crate) reference_sha: Option<String>,
     #[serde(default)]
     pub(crate) recognition_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) diff: Option<String>,
     #[serde(default)]
     pub(crate) script: String,
     #[serde(default)]
@@ -203,8 +205,11 @@ pub(crate) fn interactable_command(
 ) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
+        Some("inspect") => interactable_inspect(&args[1..]),
         Some("run") | Some("accept") | Some("swap") => interactable_run(&args[1..], invocation),
-        _ => Err("config-proposal requires list [--json] or accept <id>".to_string()),
+        _ => Err(
+            "interactable requires list [--json], inspect <id> [--json], or run <id>".to_string(),
+        ),
     }
 }
 
@@ -236,6 +241,38 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
                 serde_json::to_string(&item.evidence).map_err(|error| error.to_string())?
             );
         }
+    }
+    Ok(())
+}
+
+fn interactable_inspect(args: &[String]) -> Result<(), String> {
+    let (id, json) = match args {
+        [id] => (id, false),
+        [id, flag] if flag == "--json" => (id, true),
+        _ => {
+            return Err(
+                "interactable inspect requires exactly <id> followed optionally by --json"
+                    .to_string(),
+            )
+        }
+    };
+    let feed = load_feed(&feed_path())?;
+    let item = feed
+        .interactables
+        .iter()
+        .find(|item| item.id == id.as_str())
+        .ok_or_else(|| format!("interactable-unknown-id {id}"))?;
+    let diff = item
+        .diff
+        .as_deref()
+        .ok_or_else(|| format!("interactable-diff-absent {id}"))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(item).map_err(|error| error.to_string())?
+        );
+    } else {
+        print!("{diff}");
     }
     Ok(())
 }
@@ -494,7 +531,8 @@ pub(crate) fn reconcile_ruyi(
             refreshed_at: now.to_string(), available_at: None,
             has_run: false, mode: None, owner: None, group: None, source_sha: None,
             target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
-            recognition_score: None, script: format!("harmonia interactable run {id}"),
+            recognition_score: None, diff: None,
+            script: format!("harmonia interactable run {id}"),
             show_only_if: String::new(), completion_check: String::new(),
             evidence: serde_json::json!({
                 "mac": mac, "hostname": hostname, "canonical_name": canonical_name,
@@ -534,7 +572,8 @@ pub(crate) fn reconcile_ruyi(
                     refreshed_at: now.to_string(), available_at: None,
                     has_run: false, mode: None, owner: None, group: None, source_sha: None,
                     target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
-                    recognition_score: None, script: format!("harmonia interactable run {id}"),
+                    recognition_score: None, diff: None,
+                    script: format!("harmonia interactable run {id}"),
                     show_only_if: String::new(), completion_check: String::new(),
                     evidence: serde_json::json!({"mac": entry.get("mac"), "hostname": hostname,
                         "canonical_name": canonical, "ipv4": ipv4, "record": record}),
@@ -831,6 +870,7 @@ mod tests {
             live_sha: None,
             reference_sha: None,
             recognition_score: None,
+            diff: None,
             script: String::new(),
             show_only_if: String::new(),
             completion_check: String::new(),
