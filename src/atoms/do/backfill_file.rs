@@ -870,6 +870,7 @@ pub(crate) fn ensure_files_present_with_invocation(
         ok: true,
         changed,
         ownership_changed: false,
+        config_state: None,
         checked: request.files.len(),
         written,
         backed_up: 0,

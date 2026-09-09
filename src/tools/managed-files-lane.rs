@@ -52,6 +52,16 @@ pub(crate) fn execute_validated_step(
     }
 }
 
+pub(crate) fn interactable_policy(
+    manifest: &crate::tools::ladder::LadderManifest,
+) -> crate::atoms::files::InteractablePolicy {
+    if manifest.suppress_interactable {
+        crate::atoms::files::InteractablePolicy::SuppressInteractable
+    } else {
+        crate::atoms::files::InteractablePolicy::Default
+    }
+}
+
 pub(crate) fn structural_file_blocker(
     step: &crate::tools::routine::ValidatedStep,
     _manifest: &crate::tools::ladder::LadderManifest,
@@ -102,6 +112,7 @@ pub(crate) fn structural_file_blocker(
                         step.permutation.as_str(),
                         "managed-files"
                             | "converge"
+                            | "directory-sync"
                             | "validated-sudoers-converge"
                             | "validated-symlink"
                             | "compile-fragments"
@@ -252,9 +263,6 @@ pub(crate) fn compile_fragments_step(
         .map(|current| current != bytes)
         .unwrap_or(true);
     if matches!(target_class, crate::atoms::files::TargetClass::Config) {
-        if manifest.config_deploy.as_deref() != Some("interactable") {
-            return Err("configuration-actuator-authority-refused".into());
-        }
         let artifact_root = module_dir.join("compiled-fragments");
         crate::atoms::attest::prepare_receipt_parent(&artifact_root)?;
         let artifact_name = target
@@ -283,18 +291,34 @@ pub(crate) fn compile_fragments_step(
             owner: None,
             group: None,
         };
-        let outcome = crate::atoms::files::converge_files_authorized_with_config_policy(
-            &request, module_dir, None, None, true,
+        let outcome = crate::atoms::files::converge_files_authorized_with_interactable_policy(
+            &request,
+            module_dir,
+            None,
+            None,
+            interactable_policy(manifest),
         )?;
-        crate::bands::propose_edits::refresh_interactables_for_compiled_convergence(
-            manifest, &request, &outcome,
-        )?;
+        let recognitions =
+            crate::bands::propose_edits::refresh_interactables_for_compiled_convergence(
+                manifest, &request, &outcome,
+            )?;
         let target_is_regular_file = fs::symlink_metadata(&target)
             .map(|metadata| metadata.file_type().is_file())
             .unwrap_or(false);
-        let config_state = if !target_is_regular_file {
+        let config_state = if outcome.config_state
+            == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt)
+        {
+            "interactable-exempt"
+        } else if !target_is_regular_file
+            || recognitions
+                .iter()
+                .any(|recognition| recognition.config_state == "refused-unrecognized")
+        {
             "refused-unrecognized"
-        } else if outcome.entries.iter().any(|entry| entry.changed) {
+        } else if recognitions
+            .iter()
+            .any(|recognition| recognition.config_state == "interactable")
+        {
             "interactable"
         } else {
             "converged"
@@ -302,11 +326,11 @@ pub(crate) fn compile_fragments_step(
         let skipped = config_state != "interactable";
         crate::write_json(
             &module_dir.join("compile-fragments.json"),
-            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":true,"changed":false,"skipped":skipped,"config_state":config_state,"recognition_ok":outcome.ok,"target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
+            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":outcome.ok,"changed":outcome.changed,"ownership_changed":outcome.ownership_changed,"skipped":skipped,"config_state":config_state,"recognition_ok":outcome.ok,"target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
         )?;
         return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
+            ok: outcome.ok,
+            changed: outcome.changed,
             skipped,
             message: format!("compile-fragments-config-{config_state}"),
             command: None,
@@ -588,21 +612,48 @@ pub(crate) fn managed_files_step_with_authorization(
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let observed = crate::atoms::files::converge_files_authorized_with_config_policy(
-            &request, module_dir, None, invocation, true,
+        let observed = crate::atoms::files::converge_files_authorized_with_interactable_policy(
+            &request,
+            module_dir,
+            None,
+            invocation,
+            interactable_policy(manifest),
         )?;
-        crate::bands::propose_edits::refresh_interactables_for_convergence(
+        let recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence(
             manifest, &request, &observed,
         )?;
+        let interactable_exempt = observed.config_state
+            == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt);
+        result.changed |= observed.changed;
+        let config_state = if interactable_exempt {
+            "interactable-exempt"
+        } else if recognitions
+            .iter()
+            .any(|recognition| recognition.config_state == "refused-unrecognized")
+        {
+            "refused-unrecognized"
+        } else {
+            "interactable"
+        };
+        if interactable_exempt {
+            result.message = "managed-files-interactable-exempt".into();
+        }
         atoms::attest::attest(
             &attest_log,
             &crate::atoms::Receipt {
                 atom: "managed-files".into(),
-                ok: true,
+                ok: observed.ok,
                 drift: crate::atoms::Drift::Current,
                 message: format!(
-                    "state=interactable path={} proposal_count=1 target_write=false",
-                    target.display()
+                    "state={} path={} proposal_count={} target_write=false changed={} ownership_changed={}",
+                    config_state,
+                    target.display(),
+                    recognitions
+                        .iter()
+                        .filter(|recognition| recognition.config_state == "interactable")
+                        .count(),
+                    observed.changed,
+                    observed.ownership_changed,
                 ),
             },
             &[],
@@ -1145,12 +1196,12 @@ pub(crate) fn files_converge_step(
     let software_outcome = software_request
         .as_ref()
         .map(|request| {
-            crate::atoms::files::converge_files_authorized_with_config_policy(
+            crate::atoms::files::converge_files_authorized_with_interactable_policy(
                 request,
                 module_dir,
                 software_authorization,
                 invocation,
-                false,
+                interactable_policy(manifest),
             )
         })
         .transpose()?
@@ -1158,6 +1209,7 @@ pub(crate) fn files_converge_step(
             ok: true,
             changed: false,
             ownership_changed: false,
+            config_state: None,
             checked: 0,
             written: 0,
             backed_up: 0,
@@ -1173,8 +1225,12 @@ pub(crate) fn files_converge_step(
             // Configuration is observed through the recognition wall. A
             // recognized divergence is parked as an interactable; it never
             // enters the software transaction or its rollback path.
-            crate::atoms::files::converge_files_authorized_with_config_policy(
-                request, module_dir, None, None, true,
+            crate::atoms::files::converge_files_authorized_with_interactable_policy(
+                request,
+                module_dir,
+                None,
+                None,
+                interactable_policy(manifest),
             )
         })
         .transpose()?;
@@ -1188,6 +1244,7 @@ pub(crate) fn files_converge_step(
             ok: true,
             changed: false,
             ownership_changed: false,
+            config_state: None,
             checked: 0,
             written: 0,
             backed_up: 0,
@@ -1197,9 +1254,10 @@ pub(crate) fn files_converge_step(
             message: "config files absent".to_string(),
         });
     let effective_apply = apply && software_request.is_some();
-    let lawful_config_proposal = config_request.is_some();
     let outcome_ok = software_outcome.ok && config_outcome.ok;
-    let outcome_changed = software_outcome.changed;
+    let outcome_changed = software_outcome.changed || config_outcome.changed;
+    let outcome_ownership_changed =
+        software_outcome.ownership_changed || config_outcome.ownership_changed;
     let outcome_checked = software_outcome.checked + config_outcome.checked;
     let outcome_written = software_outcome.written + config_outcome.written;
     let outcome_backed_up = software_outcome.backed_up + config_outcome.backed_up;
@@ -1222,7 +1280,11 @@ pub(crate) fn files_converge_step(
             .get("schema")
             .and_then(Value::as_str)
             .unwrap_or("harmonia.files.summary.v1");
-        let aggregate_state = if config_recognitions
+        let aggregate_state = if config_outcome.config_state
+            == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt)
+        {
+            "interactable-exempt"
+        } else if config_recognitions
             .iter()
             .any(|r| r.config_state == "refused-unrecognized")
         {
@@ -1243,10 +1305,11 @@ pub(crate) fn files_converge_step(
             "written_file_count": outcome_written,
             "backed_up_file_count": outcome_backed_up,
             "changed": outcome_changed,
+            "ownership_changed": outcome_ownership_changed,
             "missing": outcome_missing,
             "authority": summary.get("authority").and_then(Value::as_str).unwrap_or(""),
             "waybar_contract": summary.get("waybar_contract").cloned().unwrap_or(Value::Null),
-            "first_missing_signal": if lawful_config_proposal { "none" } else if config_request.is_some() { "authority-refused" } else if outcome_ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
+            "first_missing_signal": if outcome_ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
         });
         if config_recognitions.len() == 1 {
             if let Some(record) = config_recognitions.first() {
@@ -1423,6 +1486,7 @@ mod validated_sudoers_convergence_tests {
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: None,
+            suppress_interactable: false,
             isolation: None,
             module_observation: None,
             plan_refusals: Vec::new(),
@@ -1793,6 +1857,7 @@ WantedBy=multi-user.target
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: None,
+            suppress_interactable: false,
             isolation: None,
             module_observation: None,
             plan_refusals: Vec::new(),
@@ -1916,6 +1981,7 @@ mod compile_fragments_tests {
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: None,
+            suppress_interactable: false,
             isolation: None,
             module_observation: None,
             plan_refusals: Vec::new(),
@@ -2017,6 +2083,7 @@ mod compile_fragments_tests {
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: Some("interactable".into()),
+            suppress_interactable: false,
             isolation: None,
             module_observation: None,
             plan_refusals: Vec::new(),

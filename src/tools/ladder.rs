@@ -42,6 +42,8 @@ pub(crate) struct LadderManifest {
     pub files_root: Option<String>,
     #[serde(default)]
     pub config_deploy: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub suppress_interactable: bool,
     #[serde(default)]
     pub isolation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +96,10 @@ pub(crate) struct RoutineStep {
     pub args: BTreeMap<String, Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn default_execute_permutation() -> String {

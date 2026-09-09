@@ -641,12 +641,12 @@ pub(crate) fn converge_files_authorized(
     authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FileConvergenceOutcome, String> {
-    converge_files_authorized_with_config_policy(
+    converge_files_authorized_with_interactable_policy(
         request,
         receipt_dir,
         authorization,
         invocation,
-        false,
+        crate::atoms::files::InteractablePolicy::Default,
     )
 }
 
@@ -697,28 +697,23 @@ pub(crate) fn converge_declared_sudoers_fragments_authorized_at(
 }
 
 enum ConvergencePolicy {
-    HoldConfig,
-    ObserveConfigProposal,
+    Interactable(crate::atoms::files::InteractablePolicy),
     EstateOwnedDeclaredSudoers(PathBuf),
 }
 
-pub(crate) fn converge_files_authorized_with_config_policy(
+pub(crate) fn converge_files_authorized_with_interactable_policy(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
     authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
-    allow_config_proposal: bool,
+    interactable_policy: crate::atoms::files::InteractablePolicy,
 ) -> Result<FileConvergenceOutcome, String> {
     converge_files_authorized_with_policy(
         request,
         receipt_dir,
         authorization,
         invocation,
-        if allow_config_proposal {
-            ConvergencePolicy::ObserveConfigProposal
-        } else {
-            ConvergencePolicy::HoldConfig
-        },
+        ConvergencePolicy::Interactable(interactable_policy),
     )
 }
 
@@ -735,17 +730,28 @@ fn converge_files_authorized_with_policy(
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
     let classes = classify_request(request)?;
-    let held = matches!(policy, ConvergencePolicy::HoldConfig)
-        && classes
-            .iter()
-            .any(|class| matches!(class, TargetClass::Config));
+    let has_config = classes
+        .iter()
+        .any(|class| matches!(class, TargetClass::Config));
+    let config_state = match &policy {
+        ConvergencePolicy::Interactable(interactable_policy) if has_config => {
+            Some(match interactable_policy {
+                crate::atoms::files::InteractablePolicy::Default => {
+                    crate::atoms::files::ConfigConvergenceState::ProposalEligible
+                }
+                crate::atoms::files::InteractablePolicy::SuppressInteractable => {
+                    crate::atoms::files::ConfigConvergenceState::InteractableExempt
+                }
+            })
+        }
+        _ => None,
+    };
     let apply = authorization.is_some()
-        && !held
         && match &policy {
             // This variant is constructed only after the dedicated sudoers
             // contract gate has matched the exact target and metadata shape.
             ConvergencePolicy::EstateOwnedDeclaredSudoers(_) => true,
-            _ => classes
+            ConvergencePolicy::Interactable(_) => classes
                 .iter()
                 .all(|class| matches!(class, TargetClass::Software)),
         };
@@ -1082,13 +1088,14 @@ fn converge_files_authorized_with_policy(
         });
     }
 
-    let ok = held || (missing.is_empty() && missing_target_birth_debts.is_empty());
-    let changed = !held && entries.iter().any(|entry| entry.changed);
-    let ownership_changed = !held && entries.iter().any(|entry| entry.ownership_changed);
+    let ok = missing.is_empty() && missing_target_birth_debts.is_empty();
+    let changed = entries.iter().any(|entry| entry.changed);
+    let ownership_changed = entries.iter().any(|entry| entry.ownership_changed);
     let outcome = FileConvergenceOutcome {
         ok,
         changed,
         ownership_changed,
+        config_state,
         checked: request.files.len(),
         written,
         backed_up,
@@ -1107,7 +1114,7 @@ fn converge_files_authorized_with_policy(
             "files convergence incomplete".to_string()
         },
     };
-    write_convergence_receipt(receipt_dir, request, &outcome, apply, held)?;
+    write_convergence_receipt(receipt_dir, request, &outcome, apply, config_state)?;
     Ok(outcome)
 }
 

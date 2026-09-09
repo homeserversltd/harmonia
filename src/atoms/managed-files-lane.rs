@@ -239,6 +239,8 @@ pub struct FileConvergenceOutcome {
     pub ok: bool,
     pub changed: bool,
     pub ownership_changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_state: Option<ConfigConvergenceState>,
     pub checked: usize,
     pub written: usize,
     pub backed_up: usize,
@@ -246,6 +248,19 @@ pub struct FileConvergenceOutcome {
     pub missing_target_birth_debts: Vec<String>,
     pub entries: Vec<FileConvergenceEntry>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfigConvergenceState {
+    ProposalEligible,
+    InteractableExempt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractablePolicy {
+    Default,
+    SuppressInteractable,
 }
 
 const UNIFIED_DIFF_BYTE_LIMIT: usize = 256 * 1024;
@@ -637,7 +652,7 @@ pub(crate) fn ownership_equal(
 }
 
 pub(crate) use crate::atoms::r#do::backfill_file::ensure_files_present_with_invocation;
-pub(crate) use crate::atoms::r#do::place_file::converge_files_authorized_with_config_policy;
+pub(crate) use crate::atoms::r#do::place_file::converge_files_authorized_with_interactable_policy;
 
 fn validate_executable_name(executable: &str) -> Result<(), String> {
     let path = Path::new(executable);
@@ -1018,6 +1033,7 @@ pub(crate) fn write_partial_failure_receipt(
         ok: false,
         changed: entries.iter().any(|entry| entry.changed) || written > 0 || backed_up > 0,
         ownership_changed: entries.iter().any(|entry| entry.ownership_changed),
+        config_state: None,
         checked,
         written,
         backed_up,
@@ -1026,13 +1042,13 @@ pub(crate) fn write_partial_failure_receipt(
         entries: entries.to_vec(),
         message: signal.to_string(),
     };
-    write_convergence_receipt(receipt_dir, request, &outcome, apply, false)
+    write_convergence_receipt(receipt_dir, request, &outcome, apply, None)
 }
 
 fn convergence_entry_receipt(
     entry: &FileConvergenceEntry,
     apply: bool,
-    held: bool,
+    config_state: Option<ConfigConvergenceState>,
 ) -> serde_json::Value {
     let mut receipt = serde_json::to_value(entry).expect("file convergence entry serializes");
     let object = receipt
@@ -1074,20 +1090,32 @@ fn convergence_entry_receipt(
     );
     object.insert("diff_decision".into(), json!(diff_decision));
     object.insert("movement".into(), json!(movement));
-    object.insert("truthful_changed".into(), json!(apply && entry.changed));
+    object.insert(
+        "truthful_changed".into(),
+        json!(
+            if config_state == Some(ConfigConvergenceState::InteractableExempt) {
+                entry.changed
+            } else {
+                apply && entry.changed
+            }
+        ),
+    );
     object.insert(
         "ok".into(),
         json!(
-            held || (entry.source_exists
+            entry.source_exists
                 && if apply {
                     entry.target_exists_after && entry.content_equal_after && entry.mode_equal_after
                 } else {
                     entry.target_exists_before
-                })
+                }
         ),
     );
-    if held {
-        object.insert("state".into(), json!("held/authority-refused"));
+    if let Some(config_state) = config_state {
+        object.insert(
+            "config_state".into(),
+            serde_json::to_value(config_state).expect("config state serializes"),
+        );
     }
     receipt
 }
@@ -1097,7 +1125,7 @@ pub(crate) fn write_convergence_receipt(
     request: &FileConvergenceRequest,
     outcome: &FileConvergenceOutcome,
     apply: bool,
-    held: bool,
+    config_state: Option<ConfigConvergenceState>,
 ) -> Result<(), String> {
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt = json!({
@@ -1112,13 +1140,14 @@ pub(crate) fn write_convergence_receipt(
         "checked": outcome.checked,
         "written": outcome.written,
         "backed_up": outcome.backed_up,
-        "changed": apply && outcome.changed,
-        "ownership_changed": apply && outcome.ownership_changed,
+        "changed": if config_state == Some(ConfigConvergenceState::InteractableExempt) { outcome.changed } else { apply && outcome.changed },
+        "ownership_changed": if config_state == Some(ConfigConvergenceState::InteractableExempt) { outcome.ownership_changed } else { apply && outcome.ownership_changed },
+        "config_state": config_state,
         "missing": outcome.missing,
         "missing_target_birth_debts": outcome.missing_target_birth_debts,
-        "state": if held { "held/authority-refused" } else if outcome.ok { "converged" } else { "incomplete" },
-        "entries": outcome.entries.iter().map(|entry| convergence_entry_receipt(entry, apply, held)).collect::<Vec<_>>(),
-        "first_missing_signal": if held { "authority-refused" } else if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
+        "state": if config_state == Some(ConfigConvergenceState::InteractableExempt) { "interactable-exempt" } else if config_state == Some(ConfigConvergenceState::ProposalEligible) { "proposal-eligible" } else if outcome.ok { "converged" } else { "incomplete" },
+        "entries": outcome.entries.iter().map(|entry| convergence_entry_receipt(entry, apply, config_state)).collect::<Vec<_>>(),
+        "first_missing_signal": if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
     });
     let mut receipt_name = request.receipt_name.clone();
     if receipt_name.is_empty() {

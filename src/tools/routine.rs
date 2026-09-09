@@ -711,8 +711,7 @@ pub(crate) fn execute_routine(
                         let path = path.as_path();
                         let managed_place_config = child.name.starts_with("managed-place-")
                             && child.tool == "place-file"
-                            && child.permutation == "place"
-                            && manifest.config_deploy.as_deref() == Some("interactable");
+                            && child.permutation == "place";
                         match crate::tools::files::classify_target(path) {
                             crate::tools::files::TargetClass::Refused(reason) => Err(reason),
                             crate::tools::files::TargetClass::Config

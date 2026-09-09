@@ -751,12 +751,6 @@ pub(crate) fn execute_routine_child(
                 && permutation.name == "place"
                 && matches!(target_class, crate::atoms::files::TargetClass::Config)
             {
-                if manifest.config_deploy.as_deref() != Some("interactable") {
-                    return Err(format!(
-                        "configuration-actuator-authority-refused {}",
-                        path.display()
-                    ));
-                }
                 let relative = path
                     .strip_prefix("/")
                     .map_err(|_| "managed-place-config-proposal-target-invalid")?;
@@ -778,43 +772,49 @@ pub(crate) fn execute_routine_child(
                     owner: None,
                     group: None,
                 };
-                let mut proposal =
-                    crate::atoms::files::converge_files_authorized_with_config_policy(
+                let proposal =
+                    crate::atoms::files::converge_files_authorized_with_interactable_policy(
                         &request,
                         receipt_dir,
                         None,
                         invocation,
-                        true,
+                        crate::tools::files::interactable_policy(manifest),
                     )?;
+                let config_state = proposal.config_state;
+                let exempt = config_state
+                    == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt);
                 crate::bands::propose_edits::refresh_interactables_for_convergence(
                     manifest, &request, &proposal,
                 )?;
-                proposal.changed = false;
-                proposal.ownership_changed = false;
                 crate::write_json(
                     &receipt_dir.join(format!("{name}.json")),
                     &serde_json::json!({
                         "schema":"harmonia.routine_tool.receipt.v1",
-                        "state":"proposal",
+                        "state":if exempt { "interactable-exempt" } else { "proposal" },
+                        "config_state":config_state,
                         "ok":proposal.ok,
-                        "changed":false,
-                        "ownership_changed":false,
-                        "skipped":false,
-                        "message":"managed-place-config-proposal",
+                        "changed":proposal.changed,
+                        "ownership_changed":proposal.ownership_changed,
+                        "skipped":exempt,
+                        "message":if exempt { "managed-place-config-interactable-exempt" } else { "managed-place-config-proposal" },
                         "effect":proposal
                     }),
                 )?;
                 return Ok((
                     OperationOutcome {
                         ok: proposal.ok,
-                        changed: false,
-                        skipped: false,
-                        message: "managed-place-config-proposal".into(),
+                        changed: proposal.changed,
+                        skipped: exempt,
+                        message: if exempt {
+                            "managed-place-config-interactable-exempt".into()
+                        } else {
+                            "managed-place-config-proposal".into()
+                        },
                         command: None,
                     },
                     [
                         ("path".into(), serde_json::json!(path)),
-                        ("changed".into(), serde_json::json!(false)),
+                        ("changed".into(), serde_json::json!(proposal.changed)),
                     ]
                     .into_iter()
                     .collect(),

@@ -193,6 +193,10 @@ fn refresh_interactables_at_path_with_policy(
     outcome: &FileConvergenceOutcome,
     compiled_artifact_authoritative: bool,
 ) -> Result<Vec<ConfigRecognition>, String> {
+    if outcome.config_state == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt)
+    {
+        return Ok(Vec::new());
+    }
     let mut feed = interactables::load_feed(path)?;
     let mut recognitions = Vec::new();
     let now = stamp();
@@ -696,6 +700,7 @@ mod refresh_interactables_tests {
             caduceus_commands: Vec::new(),
             files_root: None,
             config_deploy: Some("interactable".into()),
+            suppress_interactable: false,
             isolation: None,
             module_observation: None,
             plan_refusals: Vec::new(),
@@ -724,6 +729,7 @@ mod refresh_interactables_tests {
             ok: true,
             changed: true,
             ownership_changed: false,
+            config_state: Some(crate::atoms::files::ConfigConvergenceState::ProposalEligible),
             checked: 1,
             written: 1,
             backed_up: 1,
