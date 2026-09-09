@@ -30,16 +30,8 @@
           "name": "path-exists",
           "description": "observe whether one path exists",
           "args": [
-            {
-              "name": "path",
-              "kind": "string",
-              "required": true
-            },
-            {
-              "name": "resolve_running_kernel",
-              "kind": "bool",
-              "required": false
-            }
+            {"name": "path", "kind": "string", "required": true},
+            {"name": "resolve_running_kernel", "kind": "bool", "required": false}
           ],
           "placement": "Compare"
         }
@@ -231,7 +223,7 @@
         },
         {
           "name": "unit-render",
-          "description": "Render a Xenia unit from typed guest-register authority and place it root:root 0644.",
+          "description": "Render a Xenia unit under guest register law and derived install.unit authority, then place it root:root 0644.",
           "args": [
             {
               "name": "unit",
@@ -390,16 +382,6 @@
             {
               "name": "id",
               "kind": "string",
-              "required": true
-            },
-            {
-              "name": "retries",
-              "kind": "integer",
-              "required": true
-            },
-            {
-              "name": "retry_seconds",
-              "kind": "integer",
               "required": true
             }
           ],
@@ -700,36 +682,12 @@
           "name": "compile-fragments",
           "description": "compile sorted all and selected-appliance static fragments byte-for-byte",
           "args": [
-            {
-              "name": "source_root",
-              "kind": "string",
-              "required": true
-            },
-            {
-              "name": "target_path",
-              "kind": "string",
-              "required": true
-            },
-            {
-              "name": "mode",
-              "kind": "integer",
-              "required": false
-            },
-            {
-              "name": "uid",
-              "kind": "integer",
-              "required": false
-            },
-            {
-              "name": "gid",
-              "kind": "integer",
-              "required": false
-            },
-            {
-              "name": "backup_existing",
-              "kind": "bool",
-              "required": true
-            }
+            {"name": "source_root", "kind": "string", "required": true},
+            {"name": "target_path", "kind": "string", "required": true},
+            {"name": "mode", "kind": "integer", "required": false},
+            {"name": "uid", "kind": "integer", "required": false},
+            {"name": "gid", "kind": "integer", "required": false},
+            {"name": "backup_existing", "kind": "bool", "required": true}
           ],
           "placement": "BackfillFiles"
         },
@@ -1827,7 +1785,7 @@
               "required": true
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RatchetBinaries"
         },
         {
           "name": "observe-stamp",

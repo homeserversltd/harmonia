@@ -7,10 +7,11 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const REGISTER_PATH: &str = "/etc/appliance/xenia.json";
 const UNIT_ROOT: &str = "/etc/systemd/system";
+const HTTP_RESPONSE_CAP: usize = 1024 * 1024;
 static DEBUG_SCHEMA_BASE: OnceLock<String> = OnceLock::new();
 const FORBIDDEN_PREFIXES: &[&str] = &[
     "MemoryHigh",
@@ -97,10 +98,11 @@ pub(crate) fn load_register(path: &Path, schema_base: Option<&str>) -> Result<Re
     if raw.get("schema").and_then(Value::as_str) != Some("appliance.xenia.v1") {
         return Err("xenia-register-foreign-schema".into());
     }
-    let seat = match schema_base {
+    let seat = (match schema_base {
         Some(base) => crate::atoms::ask::mint_seats::Seat::load("appliance.xenia.v1", base),
         None => crate::atoms::ask::mint_seats::xenia(),
-    }?;
+    })
+    .map_err(|raw| format!("xenia-seat-unreachable reason={raw}"))?;
     seat.validate(&raw)?;
     let xenoi = match raw.get("xenoi") {
         None | Some(Value::Null) => BTreeMap::new(),
@@ -127,26 +129,28 @@ fn repo_segment(repo: &str) -> &str {
         .unwrap_or(repo)
 }
 
+fn unit_name(entry: &Value, id: &str) -> Result<String, String> {
+    let derived = format!("{id}.service");
+    match entry.pointer("/install/unit") {
+        None | Some(Value::Null) => Ok(derived),
+        Some(Value::String(unit)) if unit == &derived => Ok(derived),
+        Some(_) => Err("xenia-unit-name-mismatch".into()),
+    }
+}
+
 fn declaration(entry: &Value) -> Result<LadderStep, String> {
     let id = string(entry, "/id")?;
     let release_repo = string(entry, "/source/release_repo")?;
     let bin = string(entry, "/install/bin")?;
-    let unit = string(entry, "/install/unit")?;
-    if unit != format!("{id}.service") {
-        return Err(format!("xenia-unit-name-mismatch:{id}"));
-    }
+    let unit = unit_name(entry, &id)?;
     let owner = string(entry, "/install/owner")?;
     let binary_name = repo_segment(&release_repo).to_string();
     let args = BTreeMap::from([
         ("module_id".into(), json!("xenia")),
         ("component".into(), json!(id)),
         ("release_repo".into(), json!(release_repo)),
-        (
-            "release_tag".into(),
-            entry.pointer("/source/ref").cloned().unwrap_or(Value::Null),
-        ),
         ("install_bin".into(), json!(bin)),
-        ("service".into(), json!(format!("{id}.service"))),
+        ("service".into(), json!(unit)),
         ("url".into(), json!(format!("xenia://{id}"))),
         ("binary_name".into(), json!(binary_name)),
         (
@@ -173,6 +177,19 @@ fn declaration(entry: &Value) -> Result<LadderStep, String> {
         on_failure: crate::tools::ladder::OnFailure::Stop,
         extra: BTreeMap::new(),
     })
+}
+
+fn refuse_entry(manifest: &mut LadderManifest, id: &str, reason: String) {
+    manifest
+        .plan_refusals
+        .push(format!("xenia-plan-refused entry_id={id} reason={reason}"));
+    crate::hyalos::forward_receipt(
+        "xenia",
+        &format!("xenia plan outcome=refused id={id} reason={reason}"),
+        Some(json!({"id":id,"outcome":"refused","reason":reason})),
+        Some(false),
+        Some(id),
+    );
 }
 
 pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), String> {
@@ -204,22 +221,22 @@ pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), Str
                 for entry in &entries {
                     let id = string(entry, "/id")?;
                     let kind = string(entry, "/kind")?;
-                    if kind == "iframe"
-                        || entry.get("client_class").and_then(Value::as_str) == Some("iframe")
-                    {
+                    if kind == "iframe" {
                         continue;
                     }
                     if kind == "cartridge-static" {
-                        manifest
-                            .plan_refusals
-                            .push(format!("static-road-deferred entry_id={id}"));
+                        refuse_entry(manifest, &id, "static-road-deferred".into());
                         continue;
                     }
                     if kind != "cartridge-process" {
-                        return Err(format!("xenia-kind-unsupported entry_id={id}"));
+                        refuse_entry(manifest, &id, "xenia-kind-unsupported".into());
+                        continue;
                     }
                     if entry.get("enabled").and_then(Value::as_bool).unwrap_or(true) {
-                        lowered.push(declaration(entry)?);
+                        match declaration(entry) {
+                            Ok(step) => lowered.push(step),
+                            Err(reason) => refuse_entry(manifest, &id, reason),
+                        }
                     }
                 }
             }
@@ -263,7 +280,7 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
         let id = string(&entry, "/id")?;
         let owner = string(&entry, "/install/owner")?;
         let bin = string(&entry, "/install/bin")?;
-        let unit = string(&entry, "/install/unit")?;
+        let unit = unit_name(&entry, &id)?;
         let seat = format!("/var/lib/xenia/{id}");
         let bind = match debug_schema_base() {
             Some(base) => base.to_owned(),
@@ -310,13 +327,13 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                     .insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
             }
         }
-        let install = step
+        let build = step
             .steps
             .iter()
-            .position(|c| c.name == "binary-install")
-            .ok_or("xenia-binary-install-missing")?;
+            .position(|c| c.name == "build")
+            .ok_or("xenia-build-missing")?;
         step.steps.insert(
-            install,
+            build,
             RoutineStep {
                 name: "seat-present".into(),
                 tool: "xenia-runtime".into(),
@@ -355,11 +372,7 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
         );
         if let Some(health) = step.steps.iter_mut().find(|c| c.name == "health-proof") {
             health.permutation = Some("status-door".into());
-            health.args = BTreeMap::from([
-                ("id".into(), json!(id)),
-                ("retries".into(), json!(3)),
-                ("retry_seconds".into(), json!(3)),
-            ]);
+            health.args = BTreeMap::from([("id".into(), json!(id))]);
         }
         let health = step
             .steps
@@ -466,12 +479,20 @@ fn base_url(explicit: Option<&str>) -> Result<String, String> {
     }
 }
 
+fn remaining(deadline: Instant) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "xenia-observe-unreachable".to_string())
+}
+
 fn http(
     method: &str,
     url: &str,
     body: Option<&Value>,
     timeout: Duration,
 ) -> Result<(u16, Value), String> {
+    let deadline = Instant::now() + timeout;
     let rest = url
         .strip_prefix("http://")
         .ok_or("xenia-http-scheme-unsupported")?;
@@ -479,30 +500,56 @@ fn http(
         .split_once('/')
         .map(|(h, p)| (h, format!("/{p}")))
         .unwrap_or((rest, "/".into()));
-    let mut stream = host
+    let addresses = host
         .to_socket_addrs()
-        .map_err(|_| "xenia-observe-unreachable".to_string())?
-        .find_map(|a| TcpStream::connect_timeout(&a, timeout).ok())
-        .ok_or("xenia-observe-unreachable")?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "xenia-observe-unreachable".to_string())?;
+    let mut stream = None;
+    for address in addresses {
+        let timeout = remaining(deadline)?;
+        if let Ok(connected) = TcpStream::connect_timeout(&address, timeout) {
+            stream = Some(connected);
+            break;
+        }
+    }
+    let mut stream = stream.ok_or("xenia-observe-unreachable")?;
     let bytes = body
         .map(serde_json::to_vec)
         .transpose()
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    write!(stream,"{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).map_err(|_|"xenia-observe-unreachable")?;
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        bytes.len()
+    );
+    stream
+        .set_write_timeout(Some(remaining(deadline)?))
+        .map_err(|e| e.to_string())?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|_| "xenia-observe-unreachable")?;
+    stream
+        .set_write_timeout(Some(remaining(deadline)?))
+        .map_err(|e| e.to_string())?;
     stream
         .write_all(&bytes)
         .map_err(|_| "xenia-observe-unreachable")?;
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|_| "xenia-observe-unreachable")?;
+    let mut chunk = [0_u8; 8192];
+    loop {
+        stream
+            .set_read_timeout(Some(remaining(deadline)?))
+            .map_err(|e| e.to_string())?;
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|_| "xenia-observe-unreachable")?;
+        if read == 0 {
+            break;
+        }
+        if response.len() + read > HTTP_RESPONSE_CAP {
+            return Err("xenia-http-response-too-large".into());
+        }
+        response.extend_from_slice(&chunk[..read]);
+    }
     let text = String::from_utf8_lossy(&response);
     let (head, body) = text.split_once("\r\n\r\n").ok_or("xenia-http-malformed")?;
     let status = head
@@ -589,13 +636,21 @@ pub(crate) fn execute_routine_child(
                 Duration::from_secs(5),
             )
             .map_err(|_| "xenia-observe-unreachable".to_string())?;
-            if status != 200 || value.get("ok").and_then(Value::as_bool) == Some(false) {
+            if status == 503 || status >= 500 {
+                return Err("xenia-observe-unreachable".into());
+            }
+            if (400..500).contains(&status)
+                || value.get("ok").and_then(Value::as_bool) == Some(false)
+            {
                 let check = value
                     .get("check")
                     .or_else(|| value.get("verdict"))
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 return Err(format!("xenia-observe-refused {check}"));
+            }
+            if status != 200 {
+                return Err("xenia-observe-unreachable".into());
             }
             let mut out = BTreeMap::new();
             out.insert("entry".into(), value);
@@ -623,11 +678,8 @@ pub(crate) fn execute_status_door(
         .get("id")
         .and_then(Value::as_str)
         .ok_or("xenia-id-missing")?;
-    let retries = args.get("retries").and_then(Value::as_u64).unwrap_or(3);
-    let pause = args
-        .get("retry_seconds")
-        .and_then(Value::as_u64)
-        .unwrap_or(3);
+    let retries = crate::atoms::health::DEFAULT_PROBE_RETRIES as u64;
+    let pause = 1;
     let base = base_url(None)?;
     for attempt in 0..retries {
         if let Ok((200, value)) = http(
@@ -642,20 +694,22 @@ pub(crate) fn execute_status_door(
                     .and_then(Value::as_array)
                     .map(Vec::len)
                     .unwrap_or(0);
-                let health = if listeners > 0 { "healthy" } else { "degraded" };
-                let mut out = BTreeMap::new();
-                out.insert("health".into(), json!(health));
-                out.insert("status".into(), value);
-                return Ok((
-                    OperationOutcome {
-                        ok: true,
-                        changed: false,
-                        skipped: false,
-                        message: format!("xenia-{health}"),
-                        command: None,
-                    },
-                    out,
-                ));
+                if listeners > 0 || attempt + 1 == retries {
+                    let health = if listeners > 0 { "healthy" } else { "degraded" };
+                    let mut out = BTreeMap::new();
+                    out.insert("health".into(), json!(health));
+                    out.insert("status".into(), value);
+                    return Ok((
+                        OperationOutcome {
+                            ok: true,
+                            changed: false,
+                            skipped: false,
+                            message: format!("xenia-{health}"),
+                            command: None,
+                        },
+                        out,
+                    ));
+                }
             }
         }
         if attempt + 1 < retries {
@@ -866,10 +920,17 @@ pub(crate) fn execute_retire(
     }
     if apply {
         for (id, action, ok) in &retirements {
+            let outcome = if !ok {
+                "failed"
+            } else if action == "disable-stop-remove" {
+                "removed"
+            } else {
+                "disabled"
+            };
             crate::hyalos::forward_receipt(
                 "xenia",
-                &format!("xenia retirement outcome={} id={id} action={action}", if *ok { "retired" } else { "failed" }),
-                Some(json!({"id":id,"action":action,"outcome":if *ok {"retired"} else {"failed"}})),
+                &format!("xenia retirement outcome={outcome} id={id} action={action}"),
+                Some(json!({"id":id,"action":action,"outcome":outcome})),
                 Some(*ok),
                 Some(id),
             );

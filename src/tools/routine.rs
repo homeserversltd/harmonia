@@ -57,6 +57,34 @@ fn resolve_value(value: &Value, constants: &BTreeMap<String, Value>) -> Result<V
     }
 }
 
+pub(crate) fn validate_args(
+    step_id: &str,
+    permutation: &tools::ToolPermutation,
+    args: &BTreeMap<String, Value>,
+) -> Result<(), LadderValidationError> {
+    for arg in permutation.args {
+        if arg.required && !args.contains_key(arg.name) {
+            return Err(LadderValidationError {
+                step_id: step_id.into(),
+                defect: format!("missing-argument-{}", arg.name),
+            });
+        }
+        if let Some(value) = args.get(arg.name) {
+            if value.as_object().is_some_and(is_optional_routine_reference)
+            {
+                continue;
+            }
+            if !arg.kind.matches(value) {
+                return Err(LadderValidationError {
+                    step_id: step_id.into(),
+                    defect: format!("type-mismatch-{}-expected-{}", arg.name, arg.kind.name()),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn command_precondition(
     args: &BTreeMap<String, Value>,
 ) -> Result<Option<CommandPrecondition>, String> {
@@ -212,6 +240,7 @@ pub(crate) fn project_routine_children(
                     step_id: step.step_id.clone(),
                     defect,
                 })?;
+            validate_args(&step.step_id, declaration, &args)?;
             validate_tool_semantics(&step.step_id, &child.tool, permutation, &args)?;
             validate_command_precondition(&step.step_id, &child.tool, permutation, &args)?;
             let band = declaration

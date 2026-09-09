@@ -482,8 +482,8 @@ pub(crate) fn homeconsole_arcadia_check(
         &format!("schema=harmonia.arcadia_fast_check.v1 ok={}", ok),
         Some(serde_json::json!({"schema": "harmonia.arcadia_fast_check.v1", "ok": ok})),
         Some(ok),
-            None,
-);
+        None,
+    );
     println!("ok={}", ok);
     println!("update_available={}", update_available);
     println!(

@@ -1,6 +1,6 @@
 use crate::tools;
 use crate::tools::routine::{
-    resolve_args, validate_command_precondition, validate_tool_semantics,
+    resolve_args, validate_args, validate_command_precondition, validate_tool_semantics,
 };
 pub(crate) use crate::tools::routine::{ProjectedRoutineChild, ValidatedStep};
 use serde::{Deserialize, Serialize};
@@ -640,12 +640,12 @@ pub(crate) fn validate_ladder(
                 defect: format!("unknown-tool-{}", step.tool),
             });
         };
-        if tool.permutation(&step.permutation).is_none() {
+        let Some(permutation) = tool.permutation(&step.permutation) else {
             return Err(LadderValidationError {
                 step_id: step.step_id.clone(),
                 defect: format!("undeclared-permutation-{}", step.permutation),
             });
-        }
+        };
         let resolved = resolve_args(&step.args, &manifest.constants).map_err(|defect| {
             LadderValidationError {
                 step_id: step.step_id.clone(),
@@ -666,6 +666,7 @@ pub(crate) fn validate_ladder(
                 defect: "legacy-source-ref-forbidden".into(),
             });
         }
+        validate_args(&step.step_id, permutation, &resolved)?;
         validate_tool_semantics(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validate_command_precondition(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validated.push(ValidatedStep {
@@ -774,18 +775,19 @@ pub(crate) fn validate_group(
             defect: format!("unknown-tool-{}", group.live_probe.tool),
         });
     };
-    if tool.permutation(&group.live_probe.permutation).is_none() {
+    let Some(permutation) = tool.permutation(&group.live_probe.permutation) else {
         return Err(LadderValidationError {
             step_id: step_id.into(),
             defect: format!("undeclared-permutation-{}", group.live_probe.permutation),
         });
-    }
+    };
     let resolved = resolve_args(&group.live_probe.args, constants).map_err(|defect| {
         LadderValidationError {
             step_id: step_id.into(),
             defect,
         }
     })?;
+    validate_args(step_id, permutation, &resolved)?;
     validate_tool_semantics(
         step_id,
         &group.live_probe.tool,

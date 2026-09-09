@@ -429,13 +429,14 @@ fn xenia_command(args: &[String]) -> Result<(), String> {
                 &environment,
             )?;
             print!("{unit}");
+            let forbidden_directives = crate::bands::xenia::forbidden_directives(&unit);
             eprintln!(
                 "{}",
                 serde_json::to_string(&serde_json::json!({
                     "schema":"harmonia.xenia.unit-render.v1",
                     "ok":true,
                     "sha256":crate::atoms::file_sha256(unit.as_bytes()),
-                    "forbidden_directives":[]
+                    "forbidden_directives":forbidden_directives
                 }))
                 .map_err(|e| e.to_string())?
             );
