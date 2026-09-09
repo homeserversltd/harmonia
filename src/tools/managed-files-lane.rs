@@ -960,7 +960,7 @@ pub(crate) fn files_validated_sudoers_converge_step(
         owner: Some("root".to_string()),
         group: Some("root".to_string()),
     };
-    let outcome = crate::atoms::files::converge_files_authorized(
+    let outcome = crate::atoms::r#do::place_file::converge_declared_sudoers_fragments_authorized(
         &request,
         module_dir,
         authorization,

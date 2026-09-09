@@ -637,9 +637,7 @@ pub(crate) fn ownership_equal(
 }
 
 pub(crate) use crate::atoms::r#do::backfill_file::ensure_files_present_with_invocation;
-pub(crate) use crate::atoms::r#do::place_file::{
-    converge_files_authorized, converge_files_authorized_with_config_policy,
-};
+pub(crate) use crate::atoms::r#do::place_file::converge_files_authorized_with_config_policy;
 
 fn validate_executable_name(executable: &str) -> Result<(), String> {
     let path = Path::new(executable);

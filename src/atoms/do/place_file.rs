@@ -91,9 +91,24 @@ pub(crate) fn execute_with_operator_hand(
     execute_with_authority(request, Authority::OperatorHand(operator_hand))
 }
 
+pub(crate) fn execute_estate_owned_declared_sudoers_fragment(
+    request: PlaceFileRequest<'_>,
+) -> Result<PlaceFileOutcome, String> {
+    if request.path.parent() != Some(Path::new("/etc/sudoers.d"))
+        || request.mode != Some(0o440)
+        || request.ownership.uid != Some(0)
+        || request.ownership.gid != Some(0)
+        || !matches!(request.backup, BackupPolicy::None)
+    {
+        return Err("declared-sudoers-forced-clobber-contract-refused".into());
+    }
+    execute_with_authority(request, Authority::EstateOwnedDeclaredSudoers)
+}
+
 enum Authority {
     Machine,
     OperatorHand(crate::interactables::OperatorHand),
+    EstateOwnedDeclaredSudoers,
 }
 
 fn execute_with_authority(
@@ -628,6 +643,43 @@ pub(crate) fn converge_files_authorized(
     )
 }
 
+pub(crate) fn converge_declared_sudoers_fragments_authorized(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<FileConvergenceOutcome, String> {
+    if authorization.is_some() && invocation.is_none() {
+        return Err("declared-sudoers-forced-clobber-invocation-required".into());
+    }
+    let exact_fragment_set = request.target_root == Path::new("/etc/sudoers.d")
+        && !request.backup_existing
+        && request.owner.as_deref() == Some("root")
+        && request.group.as_deref() == Some("root")
+        && request.files.iter().all(|file| {
+            file.mode == Some(0o440)
+                && file.relative_path.components().count() == 1
+                && file.relative_path.file_name().is_some()
+        });
+    if !exact_fragment_set {
+        return Err("declared-sudoers-forced-clobber-contract-refused".into());
+    }
+    converge_files_authorized_with_policy(
+        request,
+        receipt_dir,
+        authorization,
+        invocation,
+        ConvergencePolicy::EstateOwnedDeclaredSudoers,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ConvergencePolicy {
+    HoldConfig,
+    ObserveConfigProposal,
+    EstateOwnedDeclaredSudoers,
+}
+
 pub(crate) fn converge_files_authorized_with_config_policy(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
@@ -635,21 +687,46 @@ pub(crate) fn converge_files_authorized_with_config_policy(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     allow_config_proposal: bool,
 ) -> Result<FileConvergenceOutcome, String> {
+    converge_files_authorized_with_policy(
+        request,
+        receipt_dir,
+        authorization,
+        invocation,
+        if allow_config_proposal {
+            ConvergencePolicy::ObserveConfigProposal
+        } else {
+            ConvergencePolicy::HoldConfig
+        },
+    )
+}
+
+fn converge_files_authorized_with_policy(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    policy: ConvergencePolicy,
+) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
         return Err("files-converge-empty-request".to_string());
     }
     validate_receipt_name(&request.receipt_name)?;
     validate_specs(&request.files)?;
     let classes = classify_request(request)?;
-    let held = !allow_config_proposal
+    let held = matches!(policy, ConvergencePolicy::HoldConfig)
         && classes
             .iter()
             .any(|class| matches!(class, TargetClass::Config));
     let apply = authorization.is_some()
         && !held
-        && classes
-            .iter()
-            .all(|class| matches!(class, TargetClass::Software));
+        && match policy {
+            ConvergencePolicy::EstateOwnedDeclaredSudoers => classes
+                .iter()
+                .all(|class| matches!(class, TargetClass::Config)),
+            _ => classes
+                .iter()
+                .all(|class| matches!(class, TargetClass::Software)),
+        };
     // InvocationKey is an actuator bearer, never an observation/proposal bearer.
     let actuation_invocation = apply.then_some(invocation).flatten();
     for spec in &request.files {
@@ -715,7 +792,8 @@ pub(crate) fn converge_files_authorized_with_config_policy(
             continue;
         }
 
-        if !target_exists_before {
+        if !target_exists_before && !matches!(policy, ConvergencePolicy::EstateOwnedDeclaredSudoers)
+        {
             missing_target_birth_debts.push(relative_path.clone());
             let file_diff = unified_file_diff(&source, &target)?;
             if let Some(diff) = file_diff.text.as_deref() {
@@ -833,7 +911,7 @@ pub(crate) fn converge_files_authorized_with_config_policy(
             });
             continue;
         }
-        let place = crate::place_file::execute(crate::place_file::PlaceFileRequest {
+        let place_request = crate::place_file::PlaceFileRequest {
             path: &target,
             declared_bytes: &desired_bytes,
             mode: final_mode,
@@ -847,7 +925,12 @@ pub(crate) fn converge_files_authorized_with_config_policy(
                 crate::place_file::BackupPolicy::None
             },
             invocation: actuation_invocation,
-        });
+        };
+        let place = if matches!(policy, ConvergencePolicy::EstateOwnedDeclaredSudoers) {
+            crate::place_file::execute_estate_owned_declared_sudoers_fragment(place_request)
+        } else {
+            crate::place_file::execute(place_request)
+        };
         let (backed_up_to, wrote_content, truthful_changed) = match place {
             Ok(outcome) => {
                 let _typed_receipt = outcome.receipt;
