@@ -334,6 +334,9 @@ fn interactable_run(
     let item = feed.interactables[position].clone();
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
+        "ruyi-perspective-seed" => {
+            return run_ruyi_perspective_seed(&path, &mut feed, position, &item)
+        }
         "dns-record" => {
             return run_dns_record(&path, &mut feed, position, &item, invocation)
         }
@@ -447,6 +450,73 @@ fn interactable_run(
         serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
     );
     Ok(())
+}
+
+pub(crate) fn propose_ruyi_perspective_seed(
+    identity: Option<&crate::atoms::ask::ruyi::LocalIdentity>,
+) -> Result<(), String> {
+    const ID: &str = "ruyi-perspective-seed";
+    let path = feed_path();
+    let mut feed = load_feed(&path)?;
+    if feed.interactables.iter().any(|item| item.kind == ID)
+        || feed
+            .receipts
+            .iter()
+            .any(|receipt| receipt.get("id").and_then(serde_json::Value::as_str) == Some(ID))
+    {
+        return Ok(());
+    }
+    let prior = feed
+        .interactables
+        .iter()
+        .find(|item| item.kind == ID)
+        .cloned();
+    feed.interactables.retain(|item| item.kind != ID);
+    let now = now_seconds().to_string();
+    feed.interactables.push(Interactable {
+        id: ID.into(),
+        module_id: "caduceus".into(),
+        name: "Seed this staff's Ruyi perspective".into(),
+        description: "Create the absent local Ruyi perspective after a human accepts this proposal."
+            .into(),
+        kind: ID.into(),
+        target_path: None,
+        reference_source_path: None,
+        drift: DriftSummary {
+            content: true,
+            mode: false,
+            ownership: false,
+        },
+        created_at: prior
+            .as_ref()
+            .map(|item| item.created_at.clone())
+            .unwrap_or_else(|| now.clone()),
+        refreshed_at: now,
+        available_at: None,
+        has_run: false,
+        mode: None,
+        owner: None,
+        group: None,
+        source_sha: None,
+        target_sha: None,
+        commits_behind: None,
+        live_sha: None,
+        reference_sha: None,
+        recognition_score: None,
+        diff: None,
+        script: format!("harmonia interactable run {ID}"),
+        show_only_if: String::new(),
+        completion_check: String::new(),
+        evidence: serde_json::json!({
+            "mac": identity.map(|identity| identity.mac.clone()),
+            "hostname": identity.map(|identity| identity.hostname.clone()),
+            "perspective_path": "/etc/appliance/ruyi.json",
+            "perspective_file_exists": false
+        }),
+        extra: prior.map(|item| item.extra).unwrap_or_default(),
+    });
+    feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
+    crate::bands::propose_edits::persist_feed(&path, &feed)
 }
 
 fn term_state(newest: Option<&str>, wears: Option<&str>) -> &'static str {
@@ -678,6 +748,56 @@ fn run_ruyi_bump(
     feed.interactables.remove(position);
     crate::bands::propose_edits::persist_feed(path, feed)?;
     println!("{}", serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+fn run_ruyi_perspective_seed(
+    path: &Path,
+    feed: &mut InteractablesFeed,
+    position: usize,
+    item: &Interactable,
+) -> Result<(), String> {
+    let perspective_path = crate::atoms::ask::ruyi::ruyi_path();
+    let (identity, written) = match fs::symlink_metadata(&perspective_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let (identity, perspective) =
+                crate::atoms::ask::ruyi::registrant::seed_perspective()?;
+            let bytes = serde_json::to_vec(&perspective).map_err(|error| error.to_string())?;
+            crate::atoms::projectio::write_engine_state(
+                &perspective_path,
+                &bytes,
+                crate::atoms::projectio::engine_state_witness(),
+            )?;
+            (identity, true)
+        }
+        Ok(metadata) if metadata.file_type().is_file() => {
+            (crate::atoms::ask::ruyi::local_identity()?, false)
+        }
+        Ok(_) => return Err("ruyi-perspective-target-not-regular-file".into()),
+        Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
+    };
+    let receipt = serde_json::json!({
+        "schema": crate::atoms::ask::mint_seats::RUYI_PERSPECTIVE_SEED_RECEIPT,
+        "ok": true,
+        "id": item.id,
+        "mac": identity.mac,
+        "hostname": identity.hostname,
+        "at": now_seconds(),
+        "perspective_file_written": written,
+        "first_missing_signal": if written { "ruyi-perspective-absent" } else { "none" }
+    });
+    if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start()
+        .ruyi_perspective_seed_receipt
+    {
+        seat.validate(&receipt)?;
+    }
+    feed.receipts.push(receipt.clone());
+    feed.interactables.remove(position);
+    crate::bands::propose_edits::persist_feed(path, feed)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+    );
     Ok(())
 }
 

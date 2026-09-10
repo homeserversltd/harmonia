@@ -3,7 +3,7 @@ use super::*;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 
-const PERSPECTIVE: &str = "harmonia.ruyi-perspective.v1";
+pub(crate) const PERSPECTIVE: &str = "harmonia.ruyi-perspective.v1";
 const REGISTER: &str = "harmonia.ruyi-register.v1";
 
 struct Seats {
@@ -153,14 +153,67 @@ fn empty_perspective() -> Value {
         "their_view_of_me": {}, "written_at": null})
 }
 
+pub(crate) fn validate_perspective(perspective: &Value) -> Result<(), String> {
+    if let Ok(seat) = &at_start().perspective {
+        seat.validate_ruyi(perspective)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn seed_perspective() -> Result<(LocalIdentity, Value), String> {
+    let identity = local_identity()?;
+    let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
+    let row = RuyiRow {
+        schema: ROW_SCHEMA.into(),
+        mac: identity.mac.clone(),
+        hostname: identity.hostname.clone(),
+        canonical_name: format!("{}.home.arpa", identity.hostname),
+        ipv4: identity.ipv4.clone(),
+        profile: profile.id,
+        gui_face: profile
+            .syzygy_declaration
+            .as_ref()
+            .and_then(|declaration| declaration.gui_face.clone()),
+        caduceus_sha: String::new(),
+        env_sha: String::new(),
+        harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
+        syzygy_sha: None,
+        last_seen: now()?,
+        last_update: LastUpdate {
+            run_id: crate::run_id_from_stamp(),
+            converged: false,
+        },
+    };
+    validate_row(&row)?;
+    let mut self_row = serde_json::to_value(row).map_err(|error| error.to_string())?;
+    self_row["caduceus_sha"] = Value::Null;
+    self_row["env_sha"] = Value::Null;
+    let perspective = json!({
+        "schema": PERSPECTIVE,
+        "self": self_row,
+        "seen": {},
+        "their_view_of_me": {},
+        "written_at": now()?
+    });
+    validate_perspective(&perspective)?;
+    Ok((identity, perspective))
+}
+
 pub(crate) fn read_perspective() -> Result<Value, String> {
     read_perspective_with_seats(at_start())
 }
 
 fn read_perspective_with_seats(seats: &Seats) -> Result<Value, String> {
+    let bytes = match fs::read(ruyi_path()) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let identity = local_identity().ok();
+            crate::interactables::propose_ruyi_perspective_seed(identity.as_ref())?;
+            return Ok(empty_perspective());
+        }
+        Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
+    };
     seats.signal()?;
-    let bytes =
-        fs::read(ruyi_path()).map_err(|error| format!("ruyi-state-read-failed: {error}"))?;
     let raw: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("ruyi-state-json-invalid: {error}"))?;
     match raw.get("schema").and_then(Value::as_str) {
@@ -221,6 +274,22 @@ pub(crate) fn register_promoted(
     identity: &LocalIdentity,
     dir: &Path,
 ) -> Result<Value, String> {
+    if matches!(
+        fs::metadata(ruyi_path()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ) {
+        crate::interactables::propose_ruyi_perspective_seed(Some(identity))?;
+        let result = receipt(
+            "pre-declaration",
+            Value::Null,
+            Vec::new(),
+            "ruyi-perspective-absent",
+        );
+        if let Ok(seat) = &at_start().register {
+            seat.validate(&result)?;
+        }
+        return save_receipt(dir, result);
+    }
     let Some(port) = port() else {
         return save_receipt(
             dir,
@@ -656,6 +725,22 @@ pub(crate) fn announce() -> Result<Value, String> {
     #[cfg(not(any(test, feature = "test-facade")))]
     let receipt_root = PathBuf::from("/var/lib/harmonia/receipts");
     let dir = receipt_root.join(&run_id);
+    if matches!(
+        fs::metadata(ruyi_path()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ) {
+        let identity = local_identity().ok();
+        crate::interactables::propose_ruyi_perspective_seed(identity.as_ref())?;
+        let mut result = receipt(
+            "pre-declaration",
+            Value::Null,
+            Vec::new(),
+            "ruyi-perspective-absent",
+        );
+        result["event"] = json!("staff-start");
+        result["staff_start_wait_ms"] = json!(0);
+        return save_receipt(&dir, result);
+    }
     let Some(port) = port() else {
         let mut result = receipt(
             "pre-declaration",
@@ -688,11 +773,17 @@ pub(crate) fn announce() -> Result<Value, String> {
     let seats = if ready { at_start() } else { &unavailable };
     let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
     let prior = read_perspective_with_seats(seats)?;
-    let row = prior
-        .get("self")
-        .filter(|row| row.is_object())
-        .cloned()
-        .ok_or_else(|| "ruyi-current-self-unavailable".to_string())?;
+    let Some(row) = prior.get("self").filter(|row| row.is_object()).cloned() else {
+        let mut result = receipt(
+            "pre-declaration",
+            Value::Null,
+            Vec::new(),
+            "ruyi-perspective-absent",
+        );
+        result["event"] = json!("staff-start");
+        result["staff_start_wait_ms"] = json!(wait_ms);
+        return save_receipt(&dir, result);
+    };
     let mut result = exchange(&profile, row, prior, seats, port)?;
     result["event"] = json!("staff-start");
     result["staff_start_wait_ms"] = json!(wait_ms);
