@@ -333,6 +333,17 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
         ]);
         for child in &mut step.steps {
             child.args.remove("xenia_entry");
+            if matches!(
+                child.name.as_str(),
+                "service-daemon-reload"
+                    | "service-enable"
+                    | "service-restart"
+                    | "service-active"
+                    | "unit-authority-proof"
+            ) {
+                child.args.remove("source_reference");
+                child.args.remove("source_remote");
+            }
             if child.name == "pull-repo" {
                 child.args.insert("authority".into(), json!("xenia-entry"));
                 child.args.insert("entry_id".into(), json!(id));
