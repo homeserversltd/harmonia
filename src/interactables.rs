@@ -45,6 +45,10 @@ pub(crate) struct Interactable {
     /// Legacy rows omit this field and deserialize as null.
     #[serde(default)]
     pub(crate) available_at: Option<String>,
+    #[serde(default)]
+    pub(crate) silenced: bool,
+    #[serde(default)]
+    pub(crate) silenced_at: Option<String>,
     pub(crate) has_run: bool,
     #[serde(default)]
     pub(crate) mode: Option<u32>,
@@ -206,27 +210,40 @@ pub(crate) fn interactable_command(
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
         Some("inspect") => interactable_inspect(&args[1..]),
+        Some("silence") => interactable_set_silenced(&args[1..], true),
+        Some("unsilence") => interactable_set_silenced(&args[1..], false),
         Some("run") | Some("accept") | Some("swap") => interactable_run(&args[1..], invocation),
         _ => Err(
-            "interactable requires list [--json], inspect <id> [--json], or run <id>".to_string(),
+            "interactable requires list [--json] [--silenced], inspect <id> [--json], run <id>, silence <id>, or unsilence <id>".to_string(),
         ),
     }
 }
 
 fn interactable_list(args: &[String]) -> Result<(), String> {
-    if args.iter().any(|arg| arg != "--json") {
-        return Err("config-proposal list accepts only --json".to_string());
+    if args
+        .iter()
+        .any(|arg| arg != "--json" && arg != "--silenced")
+    {
+        return Err("config-proposal list accepts only --json and --silenced".to_string());
     }
     let feed = load_feed(&feed_path())?;
+    let silenced = args.iter().any(|arg| arg == "--silenced");
+    let mut filtered_feed = feed.clone();
+    filtered_feed.interactables = feed
+        .interactables
+        .iter()
+        .filter(|item| item.silenced == silenced)
+        .cloned()
+        .collect();
     if args.iter().any(|arg| arg == "--json") {
         println!(
             "{}",
-            serde_json::to_string_pretty(&feed).map_err(|error| error.to_string())?
+            serde_json::to_string_pretty(&filtered_feed).map_err(|error| error.to_string())?
         );
     } else {
         println!("schema={FEED_SCHEMA}");
-        println!("proposal_count={}", feed.interactables.len());
-        for item in feed.interactables {
+        println!("proposal_count={}", filtered_feed.interactables.len());
+        for item in filtered_feed.interactables {
             println!(
                 "id={} module_id={} kind={} target={} name={} evidence={}",
                 item.id,
@@ -243,6 +260,29 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn interactable_set_silenced(args: &[String], silenced: bool) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "interactable {} requires exactly one <id>",
+            if silenced { "silence" } else { "unsilence" }
+        ));
+    }
+    let path = feed_path();
+    let mut feed = load_feed(&path)?;
+    let item = feed
+        .interactables
+        .iter_mut()
+        .find(|item| item.id == args[0])
+        .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
+    item.silenced = silenced;
+    item.silenced_at = if silenced {
+        Some(crate::bands::propose_edits::iso8601_now())
+    } else {
+        None
+    };
+    crate::bands::propose_edits::persist_feed(&path, &feed)
 }
 
 fn interactable_inspect(args: &[String]) -> Result<(), String> {
@@ -529,6 +569,7 @@ pub(crate) fn reconcile_ruyi(
             drift: DriftSummary { content: true, mode: false, ownership: false },
             created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
             refreshed_at: now.to_string(), available_at: None,
+            silenced: false, silenced_at: None,
             has_run: false, mode: None, owner: None, group: None, source_sha: None,
             target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
             recognition_score: None, diff: None,
@@ -570,6 +611,7 @@ pub(crate) fn reconcile_ruyi(
                     drift: DriftSummary { content: true, mode: false, ownership: false },
                     created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
                     refreshed_at: now.to_string(), available_at: None,
+                    silenced: false, silenced_at: None,
                     has_run: false, mode: None, owner: None, group: None, source_sha: None,
                     target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
                     recognition_score: None, diff: None,
@@ -860,6 +902,8 @@ mod tests {
             created_at: "0".into(),
             refreshed_at: "0".into(),
             available_at: None,
+            silenced: false,
+            silenced_at: None,
             has_run: false,
             mode: Some(0o644),
             owner: None,

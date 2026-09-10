@@ -25,7 +25,7 @@ fn stamp() -> String {
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "0".into())
 }
-fn iso8601_now() -> String {
+pub(crate) fn iso8601_now() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -219,6 +219,12 @@ fn refresh_interactables_at_path_with_policy(
         let live_sha = format!("{:x}", Sha256::digest(&live_bytes));
         let reference_sha = format!("{:x}", Sha256::digest(&reference_bytes));
         let id = stable_id(&entry.target, &live_sha, &reference_sha);
+        let prior_silence = feed
+            .interactables
+            .iter()
+            .find(|e| e.target_path.as_deref() == Some(entry.target.as_path()))
+            .map(|e| (e.silenced, e.silenced_at.clone()))
+            .unwrap_or((false, None));
         let created_at = feed
             .interactables
             .iter()
@@ -288,6 +294,8 @@ fn refresh_interactables_at_path_with_policy(
             created_at,
             refreshed_at: now.clone(),
             available_at: Some(available_at.clone()),
+            silenced: prior_silence.0,
+            silenced_at: prior_silence.1,
             has_run: false,
             mode: entry.final_mode,
             owner: request.owner.clone(),
@@ -664,6 +672,8 @@ mod refresh_interactables_tests {
             created_at: "0".into(),
             refreshed_at: "0".into(),
             available_at: Some("0".into()),
+            silenced: false,
+            silenced_at: None,
             has_run: false,
             mode: Some(0o644),
             owner: None,
