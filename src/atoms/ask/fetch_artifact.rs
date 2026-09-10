@@ -610,7 +610,7 @@ pub(crate) fn inspect_release(
         };
         let digest = crate::atoms::file_sha256(&release.artifact);
         let (resolved_revision, version) =
-            release_source_revision(&release, component, release_schema_base)?;
+            release_source_revision(&release, repo, release_schema_base)?;
         let sidecar_text = String::from_utf8(release.sidecar)
             .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
         if !is_hex(&digest, 64) || sidecar_text != format!("{digest}  {asset}\n") {
@@ -681,6 +681,7 @@ pub(crate) fn download_release(
             return Ok(None);
         };
         let digest = crate::atoms::file_sha256(&release.artifact);
+        let (resolved_revision, _version) = release_source_revision(&release, repo, None)?;
         let sidecar_text = String::from_utf8(release.sidecar)
             .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
         let expected = format!("{digest}  {asset}");
@@ -690,7 +691,7 @@ pub(crate) fn download_release(
         let manifest = Manifest {
             schema: MANIFEST_SCHEMA.into(),
             component: component.into(),
-            source_sha: release.target_commitish,
+            source_sha: resolved_revision,
             target: std::env::consts::ARCH.into(),
             sha256: digest,
             built_at: tag.clone(),

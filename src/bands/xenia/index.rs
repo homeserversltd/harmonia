@@ -318,7 +318,6 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
         let id = string(&entry, "/id")?;
         let owner = string(&entry, "/install/owner")?;
         let bin = string(&entry, "/install/bin")?;
-        let release_repo = string(&entry, "/source/release_repo")?;
         let unit = unit_name(&entry, &id)?;
         let seat = format!("/var/lib/xenia/{id}");
         let bind = match debug_schema_base() {
@@ -349,9 +348,6 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 }
             }
             if child.name == "build" {
-                child
-                    .args
-                    .insert("component".into(), json!(repo_segment(&release_repo)));
                 child
                     .args
                     .insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
