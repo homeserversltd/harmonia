@@ -876,7 +876,15 @@ pub(crate) fn execute_routine_child(
                     .unwrap_or(crate::place_file::BackupPolicy::To(&default_backup)),
                 invocation: invocation,
             };
-            let placed = crate::place_file::execute(request)?;
+            let placed = if unit_render {
+                let xenia_id = args
+                    .get("xenia_id")
+                    .and_then(Value::as_str)
+                    .ok_or("xenia-unit-id-missing")?;
+                crate::place_file::execute_xenia_rendered_guest_unit(request, xenia_id)?
+            } else {
+                crate::place_file::execute(request)?
+            };
             let changed = apply && placed.movement.changed();
 
             let mut receipt = serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up}});

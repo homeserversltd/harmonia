@@ -112,10 +112,47 @@ fn execute_estate_owned_declared_sudoers_fragment_at(
     execute_with_authority(request, Authority::EstateOwnedDeclaredSudoers)
 }
 
+pub(crate) fn execute_xenia_rendered_guest_unit(
+    request: PlaceFileRequest<'_>,
+    xenia_id: &str,
+) -> Result<PlaceFileOutcome, String> {
+    let target_root = Path::new("/etc/systemd/system");
+    let unit_stem = PathBuf::from(xenia_id);
+    let expected_name = format!("{xenia_id}.service");
+    let expected_path = target_root.join(&expected_name);
+    if xenia_id.is_empty()
+        || xenia_id.contains('/')
+        || unit_stem.to_str() != Some(xenia_id)
+        || unit_stem.file_name().and_then(|name| name.to_str()) != Some(xenia_id)
+        || request.path.parent() != Some(target_root)
+        || request.path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str())
+        || request.path != expected_path.as_path()
+        || request.mode != Some(0o644)
+        || request.ownership.uid != Some(0)
+        || request.ownership.gid != Some(0)
+    {
+        return Err("xenia-rendered-guest-unit-contract-refused".into());
+    }
+    if let Ok(metadata) = fs::symlink_metadata(request.path) {
+        if metadata.file_type().is_file() {
+            let marker = format!("X-Xenia-Id={xenia_id}");
+            let bytes = fs::read(request.path)
+                .map_err(|_| "xenia-rendered-guest-unit-collision-refused".to_string())?;
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| "xenia-rendered-guest-unit-collision-refused".to_string())?;
+            if !text.lines().any(|line| line == marker) {
+                return Err("xenia-rendered-guest-unit-collision-refused".into());
+            }
+        }
+    }
+    execute_with_authority(request, Authority::XeniaRenderedGuestUnit)
+}
+
 enum Authority {
     Machine,
     OperatorHand(crate::interactables::OperatorHand),
     EstateOwnedDeclaredSudoers,
+    XeniaRenderedGuestUnit,
 }
 
 fn execute_with_authority(
