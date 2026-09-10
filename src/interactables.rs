@@ -493,6 +493,8 @@ pub(crate) fn propose_ruyi_perspective_seed(
             .unwrap_or_else(|| now.clone()),
         refreshed_at: now,
         available_at: None,
+        silenced: false,
+        silenced_at: None,
         has_run: false,
         mode: None,
         owner: None,
