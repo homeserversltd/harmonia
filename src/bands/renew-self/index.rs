@@ -150,7 +150,7 @@ fn capture_build_environment(source_sha: &str) -> Result<BuildEnvironmentIdentit
 pub(crate) struct EnginePlaneConfig {
     pub install_bin: PathBuf,
     pub enabled: bool,
-    /// Local staging/build mechanics only; source identity is certificate-owned.
+    /// Local staging/build mechanics only; source identity is appliance-config-owned.
     #[serde(default = "default_build_root")]
     pub build_root: PathBuf,
     #[serde(default = "default_remote")]
@@ -485,7 +485,7 @@ fn write_source_possession_receipt(
     candidate: &tools::git_artifact::SourceCandidate,
     apply: bool,
 ) -> Result<(), String> {
-    // Source authority is the certificate; this receipt records only the
+    // Source authority is appliance configuration; this receipt records only the
     // resulting owner-lane operation and local destination mechanics.
     write_json(
         &receipt_dir.join("source-possession.json"),
@@ -511,7 +511,7 @@ fn write_source_possession_receipt(
             "stderr": result.stderr,
             "first_missing_signal": if result.ok { "none" } else { "engine-possession-failed" },
             "apply": apply,
-            "source_authority": "device-profile-certificate-sources",
+            "source_authority": "appliance-config-sources",
             "candidate_kind": format!("{:?}", candidate.kind),
             "candidate_locator": candidate.locator,
             "destination": source_dir,
@@ -768,7 +768,7 @@ fn emit_preflight_receipt(
             "engine_config": config_path,
             "retired_engine_config_fields": retired_engine_config_fields,
             "enabled": config.enabled,
-            "source_authority": "device-profile-certificate-sources",
+            "source_authority": "appliance-config-sources",
             "compiled_component": component,
             "engine_component_ignored": engine_component_ignored,
             "build_root": config.build_root,
@@ -799,8 +799,12 @@ fn engine_source_gate_for_component(
     certificate_path: &Path,
     component: &str,
 ) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
+    let config_path = crate::bands::pull_source::appliance_config_path();
     let resolution_receipt = crate::bands::pull_source::resolve_source(
-        crate::bands::pull_source::SourceAuthority::Certificate(certificate_path),
+        crate::bands::pull_source::SourceAuthority::ApplianceConfig {
+            config_path: &config_path,
+            profile_path: certificate_path,
+        },
         component,
         "engine-plane",
         "source-acquisition",
@@ -810,7 +814,7 @@ fn engine_source_gate_for_component(
     if let Some(blocker) = resolution_receipt.blocker {
         if blocker == format!("source-component-undeclared component={component}") {
             return Err(format!(
-                "device-profile-engine-source-absent component={component}"
+                "appliance-config-source-absent component={component}"
             ));
         }
         return Err(blocker);
@@ -890,7 +894,7 @@ pub(crate) fn run_engine_preflight(
                 "first_missing_signal": signal,
                 "engine_config": config_path,
                 "retired_engine_config_fields": [],
-                "source_authority": "device-profile-certificate-sources",
+                "source_authority": "appliance-config-sources",
                 "reexec": null,
             }),
         )?;

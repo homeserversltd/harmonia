@@ -522,9 +522,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         }
         Some("resolve-source") => {
             let component = args.get(1).ok_or(
-                "resolve-source requires <component> and exactly one of --certificate <path> or --entry-file <path> --entry-id <id>",
+                "resolve-source requires <component> and exactly one source class: --certificate <profile-path> [--config <config-path>] or --entry-file <path> --entry-id <id>",
             )?;
-            let certificate = value_arg(&args, "--certificate");
+            let profile_path = value_arg(&args, "--certificate");
+            let config = value_arg(&args, "--config")
+                .unwrap_or_else(crate::bands::pull_source::appliance_config_path);
             let entry_file = value_arg(&args, "--entry-file");
             let owning_module = value_arg(&args, "--owner-module")
                 .map(|value| value.to_string_lossy().into_owned())
@@ -539,9 +541,12 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let artifact_name =
                 value_arg_string(&args, "--artifact-name").unwrap_or_else(|| component.to_string());
             let profile = value_arg_string(&args, "--profile");
-            let receipt = match (certificate.as_deref(), entry_file.as_deref()) {
+            let receipt = match (profile_path.as_deref(), entry_file.as_deref()) {
                 (Some(path), None) => crate::bands::pull_source::resolve_source_json(
-                    crate::bands::pull_source::SourceAuthority::Certificate(path),
+                    crate::bands::pull_source::SourceAuthority::ApplianceConfig {
+                        config_path: &config,
+                        profile_path: path,
+                    },
                     component,
                     &owning_module,
                     &step_id,
@@ -573,7 +578,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     )
                 }
                 _ => return Err(
-                    "resolve-source requires exactly one authority: --certificate or --entry-file"
+                    "resolve-source requires exactly one source class: --certificate or --entry-file"
                         .into(),
                 ),
             };
@@ -592,17 +597,22 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         }
         Some("acquire-source") => {
             let component = args.get(1).ok_or(
-                "acquire-source requires <component> and exactly one of --certificate <path> or --entry-file <path> --entry-id <id>",
+                "acquire-source requires <component> and exactly one source class: --certificate <profile-path> [--config <config-path>] or --entry-file <path> --entry-id <id>",
             )?;
-            let certificate = value_arg(&args, "--certificate");
+            let profile_path = value_arg(&args, "--certificate");
+            let config = value_arg(&args, "--config")
+                .unwrap_or_else(crate::bands::pull_source::appliance_config_path);
             let entry_file = value_arg(&args, "--entry-file");
             let schema_base = value_arg_string(&args, "--schema-base");
-            match (certificate.as_deref(), entry_file.as_deref()) {
-                (Some(certificate), None) => {
+            match (profile_path.as_deref(), entry_file.as_deref()) {
+                (Some(profile_path), None) => {
                     let destination = value_arg(&args, "--destination")
                         .ok_or("acquire-source --certificate requires --destination <path>")?;
                     let mut resolution = crate::bands::pull_source::resolve_source(
-                        crate::bands::pull_source::SourceAuthority::Certificate(certificate),
+                        crate::bands::pull_source::SourceAuthority::ApplianceConfig {
+                            config_path: &config,
+                            profile_path,
+                        },
                         component,
                         "engine-plane",
                         "source-acquisition",
@@ -718,7 +728,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     Ok(())
                 }
                 _ => Err(
-                    "acquire-source requires exactly one authority: --certificate or --entry-file"
+                    "acquire-source requires exactly one source class: --certificate or --entry-file"
                         .into(),
                 ),
             }
@@ -1344,8 +1354,8 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");
     println!("  harmonia uninstall-timer [--systemd-root <path>] [--dry-run]");
     println!("  harmonia validate-ladder <manifest.json>");
-    println!("  harmonia resolve-source <component> (--certificate <path> | --entry-file <path> --entry-id <id>) [--owner-module <id>] [--step-id <id>] [--artifact-name <binary>] [--profile <profile>] [--forge-base <url>] [--schema-base <url>]");
-    println!("  harmonia acquire-source <component> --certificate <path> --destination <path> [--expected-commit <sha>] [--schema-base <url>]");
+    println!("  harmonia resolve-source <component> (--certificate <profile-path> [--config <config-path>] | --entry-file <path> --entry-id <id>) [--owner-module <id>] [--step-id <id>] [--artifact-name <binary>] [--profile <profile>] [--forge-base <url>] [--schema-base <url>]");
+    println!("  harmonia acquire-source <component> --certificate <profile-path> [--config <config-path>] --destination <path> [--expected-commit <sha>] [--schema-base <url>]");
     println!("  harmonia acquire-source <component> --entry-file <path> --entry-id <id> [--artifact-name <binary>] [--profile <profile>] [--forge-base <url>] [--schema-base <url>]");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia renew-self (--plan|--apply) --receipt-dir <path> [--module-root <path>]");

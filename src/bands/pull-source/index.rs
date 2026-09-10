@@ -19,7 +19,7 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
 
 // Engine-plane source authority resolution.
 //
-// Certificate authority remains a data-only resolution path. Xenia-entry
+// Appliance configuration remains a data-only resolution path. Xenia-entry
 // authority validates its admitted release source and inspects the immutable
 // release metadata, artifact, sidecar, and optional release.flag. The caller
 // owns persistence and execution.
@@ -34,6 +34,15 @@ pub(crate) const SOURCE_PLAN_SCHEMA: &str = "harmonia.engine.source_plan.v1";
 pub(crate) const SOURCE_RECEIPT_SCHEMA: &str = "harmonia.engine.source_resolution.v1";
 pub(crate) const XENIA_SCHEMA: &str = "appliance.xenia.v1";
 pub(crate) const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
+const APPLIANCE_CONFIG_PATH: &str = "/etc/appliance/config.json";
+
+pub(crate) fn appliance_config_path() -> PathBuf {
+    #[cfg(any(test, feature = "test-facade"))]
+    if let Some(path) = std::env::var_os("HARMONIA_TEST_APPLIANCE_CONFIG_PATH") {
+        return PathBuf::from(path);
+    }
+    PathBuf::from(APPLIANCE_CONFIG_PATH)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct ArtifactHeadDivergenceCanary {
@@ -261,8 +270,14 @@ pub(crate) struct SourceResolution {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SourceAuthority<'a> {
-    Certificate(&'a Path),
-    XeniaEntry { entry_id: &'a str, entry: &'a Value },
+    ApplianceConfig {
+        config_path: &'a Path,
+        profile_path: &'a Path,
+    },
+    XeniaEntry {
+        entry_id: &'a str,
+        entry: &'a Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -275,14 +290,14 @@ pub(crate) struct XeniaReleaseProbe<'a> {
 impl SourceAuthority<'_> {
     fn name(self) -> &'static str {
         match self {
-            Self::Certificate(_) => "certificate",
+            Self::ApplianceConfig { .. } => "appliance-config",
             Self::XeniaEntry { .. } => "xenia-entry",
         }
     }
 
     fn reference(self) -> String {
         match self {
-            Self::Certificate(path) => path.display().to_string(),
+            Self::ApplianceConfig { config_path, .. } => config_path.display().to_string(),
             Self::XeniaEntry { entry_id, .. } => entry_id.to_string(),
         }
     }
@@ -551,6 +566,10 @@ struct Certificate {
     schema: String,
     #[serde(default)]
     source_policy: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplianceConfig {
     #[serde(default)]
     sources: BTreeMap<String, SourceDeclaration>,
 }
@@ -602,7 +621,9 @@ fn receipt(
         mutation: false,
         network_access: false,
         certificate_path: match authority {
-            SourceAuthority::Certificate(path) => path.display().to_string(),
+            SourceAuthority::ApplianceConfig { profile_path, .. } => {
+                profile_path.display().to_string()
+            }
             SourceAuthority::XeniaEntry { .. } => String::new(),
         },
         certificate_schema,
@@ -687,6 +708,13 @@ fn parse_certificate(path: &Path) -> Result<Certificate, String> {
     Ok(certificate)
 }
 
+fn parse_appliance_config(path: &Path) -> Result<ApplianceConfig, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|err| format!("appliance-config-read-failed {}: {err}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|err| format!("appliance-config-parse-failed {}: {err}", path.display()))
+}
+
 fn locator_is_safe(locator: &str) -> bool {
     let lower = locator.to_ascii_lowercase();
     if [
@@ -723,8 +751,8 @@ pub(crate) fn selector_is_safe(selector: &str) -> bool {
             .any(|forbidden| selector.to_ascii_lowercase().contains(forbidden))
 }
 
-/// Bridge certificate candidates into the owner-only Git acquisition lane.
-/// A certificate credential selector is validated metadata and is deliberately
+/// Bridge configured candidates into the owner-only Git acquisition lane.
+/// A configured credential selector is validated metadata and is deliberately
 /// ignored: every Git child executes as owner over SSH and no engine credential
 /// material is resolved or carried.
 pub(crate) fn bridge_acquisition_plan(
@@ -839,10 +867,14 @@ pub(crate) fn resolve_source(
         None => crate::atoms::ask::mint_seats::source_resolution(),
     };
     match authority {
-        SourceAuthority::Certificate(certificate_path) => {
-            let mut receipt = resolve_certificate_source(
+        SourceAuthority::ApplianceConfig {
+            config_path,
+            profile_path,
+        } => {
+            let mut receipt = resolve_appliance_config_source(
                 authority,
-                certificate_path,
+                config_path,
+                profile_path,
                 component,
                 owning_module,
                 step_id,
@@ -899,8 +931,9 @@ pub(crate) fn resolve_source(
     }
 }
 
-fn resolve_certificate_source(
+fn resolve_appliance_config_source(
     authority: SourceAuthority<'_>,
+    config_path: &Path,
     certificate_path: &Path,
     component: &str,
     owning_module: &str,
@@ -938,7 +971,21 @@ fn resolve_certificate_source(
             );
         }
     };
-    let Some(declaration) = certificate.sources.get(component) else {
+    let config = match parse_appliance_config(config_path) {
+        Ok(config) => config,
+        Err(blocker) => {
+            return blocker_receipt(
+                authority,
+                schema,
+                source_policy,
+                component,
+                owning_module,
+                step_id,
+                blocker,
+            );
+        }
+    };
+    let Some(declaration) = config.sources.get(component) else {
         return blocker_receipt(
             authority,
             schema,
@@ -1219,30 +1266,35 @@ fn resolve_xenia_source(
     result
 }
 
-/// Validate every declared source entry before any profile or module execution.
+/// Validate every configured source entry before any profile or module execution.
 /// An omitted `sources` object is deliberately an empty declaration set, allowing
-/// source certificates to remain valid until a later slice names consumers.
+/// appliance configuration to remain valid until a later slice names consumers.
 pub(crate) fn validate_declared_sources(
     certificate_path: &Path,
 ) -> Result<Vec<SourceResolutionReceipt>, String> {
     let certificate = parse_certificate(certificate_path)?;
     validate_source_policy(certificate.source_policy.as_deref())?;
-    let components: Vec<String> = certificate.sources.keys().cloned().collect();
+    let config_path = appliance_config_path();
+    let config = parse_appliance_config(&config_path)?;
+    let components: Vec<String> = config.sources.keys().cloned().collect();
     let mut receipts = Vec::new();
     for component in components {
         let resolution = resolve_source(
-            SourceAuthority::Certificate(certificate_path),
+            SourceAuthority::ApplianceConfig {
+                config_path: &config_path,
+                profile_path: certificate_path,
+            },
             &component,
             "engine-plane",
-            "certificate-source-validation",
+            "appliance-config-source-validation",
             None,
             None,
         );
         if let Some(blocker) = resolution.blocker.clone() {
             return Err(format!(
-                "source-validation-blocker component={} certificate={} owner_module={} step_id={} blocker={blocker}",
+                "source-validation-blocker component={} config={} owner_module={} step_id={} blocker={blocker}",
                 resolution.component,
-                resolution.certificate_path,
+                resolution.authority_ref,
                 resolution.owning_module,
                 resolution.step_id,
             ));
@@ -1365,8 +1417,12 @@ fn routine_source_plan_with_blessed_ref(
             )
         })?;
     let certificate = crate::device_profile_certificate_path();
-    let certificate_resolution = crate::bands::pull_source::resolve_source(
-        crate::bands::pull_source::SourceAuthority::Certificate(&certificate),
+    let config = appliance_config_path();
+    let config_resolution = crate::bands::pull_source::resolve_source(
+        crate::bands::pull_source::SourceAuthority::ApplianceConfig {
+            config_path: &config,
+            profile_path: &certificate,
+        },
         component,
         &manifest.id,
         &step.step_id,
@@ -1375,14 +1431,14 @@ fn routine_source_plan_with_blessed_ref(
     );
     // Carry the exact validated value from this receipt before resolution is
     // reduced to the acquisition plan. Do not re-read or infer it later.
-    let blessed_ref = certificate_resolution.blessed_ref.clone();
-    if let Some(blocker) = certificate_resolution.blocker {
+    let blessed_ref = config_resolution.blessed_ref.clone();
+    if let Some(blocker) = config_resolution.blocker {
         return Err(format!(
             "source-resolution-blocked module={} step_id={} component={} blocker={blocker}",
             manifest.id, step.step_id, component
         ));
     }
-    let resolution = certificate_resolution.resolution.ok_or_else(|| {
+    let resolution = config_resolution.resolution.ok_or_else(|| {
         format!(
             "source-resolution-blocked module={} step_id={} component={} blocker=source-resolution-plan-missing",
             manifest.id, step.step_id, component
