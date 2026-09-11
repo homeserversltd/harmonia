@@ -450,6 +450,12 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 extra: BTreeMap::new(),
             },
         );
+        for child in &mut step.steps {
+            child.args.insert("hyalos_kind".into(), json!("xenia"));
+            child
+                .args
+                .insert("hyalos_correlation_id".into(), json!(id));
+        }
     }
     Ok(())
 }

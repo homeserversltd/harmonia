@@ -574,6 +574,52 @@ fn is_managed_child_name(name: &str) -> bool {
         || name.starts_with("managed-symlink-")
 }
 
+fn routine_hyalos_intent(
+    args: &BTreeMap<String, Value>,
+    context: &BTreeMap<String, Value>,
+) -> Option<(String, String)> {
+    let kind = args
+        .get("hyalos_kind")
+        .and_then(|value| resolve_routine_value(value, context).ok())
+        .and_then(|value| value.as_str().map(str::to_owned))?;
+    let correlation_id = args
+        .get("hyalos_correlation_id")
+        .and_then(|value| resolve_routine_value(value, context).ok())
+        .and_then(|value| value.as_str().map(str::to_owned))?;
+    Some((kind, correlation_id))
+}
+
+fn emit_routine_child_outcome(
+    intent: Option<&(String, String)>,
+    child: &ProjectedRoutineChild,
+    status: &str,
+    ok: bool,
+    changed: bool,
+    detail: &Value,
+    apply: bool,
+) {
+    let Some((kind, correlation_id)) = intent else {
+        return;
+    };
+    if !apply {
+        return;
+    }
+    crate::hyalos::forward_receipt(
+        kind,
+        &format!("routine child={} outcome={status}", child.name),
+        Some(json!({
+            "child": child.name,
+            "tool": child.tool,
+            "permutation": child.permutation,
+            "state": status,
+            "changed": changed,
+            "detail": detail,
+        })),
+        Some(ok),
+        Some(correlation_id),
+    );
+}
+
 fn routine_failure_signal(
     manifest: &LadderManifest,
     source: &crate::tools::ladder::LadderStep,
@@ -659,8 +705,19 @@ pub(crate) fn execute_routine(
         }
         let child_dir = routine_dir.join(&child.name);
         crate::atoms::attest::prepare_receipt_parent(&child_dir)?;
+        let blocked_hyalos_intent = routine_hyalos_intent(&child.args, &state.context);
         if let Some(parent) = state.blocked_by.clone() {
-            let receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":parent});
+            let detail = json!({"blocked_by": parent});
+            let receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":detail["blocked_by"].clone()});
+            emit_routine_child_outcome(
+                blocked_hyalos_intent.as_ref(),
+                child,
+                "blocked",
+                false,
+                false,
+                &detail,
+                apply,
+            );
             crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
             state.children.push(receipt);
             continue;
@@ -676,6 +733,11 @@ pub(crate) fn execute_routine(
                 }
             }
         }
+        let hyalos_intent = if missing.is_none() {
+            routine_hyalos_intent(&args, &BTreeMap::new())
+        } else {
+            blocked_hyalos_intent.clone()
+        };
         let (status, child_ok, child_changed, outputs, extra) = if let Some(reference) = missing {
             let signal = routine_failure_signal(
                 manifest,
@@ -694,6 +756,8 @@ pub(crate) fn execute_routine(
                 json!({"first_missing_signal":signal}),
             )
         } else {
+            args.remove("hyalos_kind");
+            args.remove("hyalos_correlation_id");
             let child_step = ValidatedStep {
                 step_id: child.name.clone(),
                 tool: child.tool.clone(),
@@ -809,44 +873,17 @@ pub(crate) fn execute_routine(
                 obj.insert(k.clone(), v.clone());
             }
         }
+        emit_routine_child_outcome(
+            hyalos_intent.as_ref(),
+            child,
+            status,
+            child_ok,
+            child_changed,
+            &extra,
+            apply,
+        );
         crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
         state.children.push(receipt);
-    }
-    if apply
-        && manifest.id == "xenia"
-        && !state.context.contains_key("xenia.hyalos_forwarded")
-        && (state.blocked_by.is_some()
-            || state.children.iter().any(|receipt| {
-                receipt.get("name").and_then(Value::as_str) == Some("observe-stamp")
-            }))
-    {
-        let entry_id = source
-            .step_id
-            .strip_prefix("xenia-")
-            .unwrap_or(&source.step_id);
-        crate::hyalos::forward_receipt(
-            "xenia",
-            &format!(
-                "xenia outcome={} resolved_revision={}",
-                if state.ok { "converged" } else { "failed" },
-                state.context
-                    .get("pull-repo.resolved_revision")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unresolved")
-            ),
-            Some(json!({
-                "authority": state.context.get("pull-repo.authority").cloned().unwrap_or_else(|| json!("xenia-entry")),
-                "resolved_revision": state.context.get("pull-repo.resolved_revision").cloned().unwrap_or(Value::Null),
-                "digest": state.context.get("pull-repo.digest").cloned().unwrap_or(Value::Null),
-                "health": state.context.get("health-proof.health").cloned().unwrap_or(Value::Null),
-                "first_missing_signal": state.first_missing_signal,
-            })),
-            Some(state.ok),
-            Some(entry_id),
-        );
-        state
-            .context
-            .insert("xenia.hyalos_forwarded".into(), Value::Bool(true));
     }
     let canary_receipt = if let Some(pull_child) = projected_children
         .iter()
