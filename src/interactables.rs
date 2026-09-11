@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -282,7 +283,16 @@ fn interactable_set_silenced(args: &[String], silenced: bool) -> Result<(), Stri
     } else {
         None
     };
-    crate::bands::propose_edits::persist_feed(&path, &feed)
+    let item = item.clone();
+    crate::bands::propose_edits::persist_feed_with_intent(
+        &path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
+            entries: vec![item],
+            remove_ids: BTreeSet::new(),
+            sort_by_id: false,
+        },
+    )
+    .map(|_| ())
 }
 
 fn interactable_inspect(args: &[String]) -> Result<(), String> {
@@ -433,8 +443,7 @@ fn interactable_run(
     });
     receipt["has_run"] = serde_json::Value::Bool(true);
     receipt["config_state"] = serde_json::Value::String("interactable".into());
-    feed.interactables[position].has_run = true;
-    feed.receipts.push(serde_json::json!({
+    let feed_receipt = serde_json::json!({
         "schema": "harmonia.config_state.receipt.v1",
         "config_state": "interactable",
         "id": item.id,
@@ -442,9 +451,14 @@ fn interactable_run(
         "reference_id": item.reference_source_path,
         "score": item.recognition_score,
         "actuator": receipt.clone(),
-    }));
-    feed.interactables.remove(position);
-    crate::bands::propose_edits::persist_feed(&path, &feed)?;
+    });
+    crate::bands::propose_edits::persist_feed_with_intent(
+        &path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(),
+            receipts: vec![feed_receipt],
+        },
+    )?;
     println!(
         "{}",
         serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
@@ -518,7 +532,21 @@ pub(crate) fn propose_ruyi_perspective_seed(
         extra: prior.map(|item| item.extra).unwrap_or_default(),
     });
     feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
-    crate::bands::propose_edits::persist_feed(&path, &feed)
+    let entry = feed
+        .interactables
+        .iter()
+        .find(|item| item.kind == ID)
+        .cloned()
+        .ok_or_else(|| "ruyi-perspective-seed-entry-missing".to_string())?;
+    crate::bands::propose_edits::persist_feed_with_intent(
+        &path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
+            entries: vec![entry],
+            remove_ids: BTreeSet::new(),
+            sort_by_id: true,
+        },
+    )
+    .map(|_| ())
 }
 
 fn term_state(newest: Option<&str>, wears: Option<&str>) -> &'static str {
@@ -581,6 +609,12 @@ pub(crate) fn reconcile_ruyi(
         .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
         .map(|item| (item.id.clone(), item.extra.clone()))
         .collect::<std::collections::HashMap<_, _>>();
+    let remove_ids = feed
+        .interactables
+        .iter()
+        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .map(|item| item.id.clone())
+        .collect::<BTreeSet<_>>();
     feed.interactables
         .retain(|item| item.kind != "ruyi-bump" && item.kind != "dns-record");
     let module = profile
@@ -697,7 +731,20 @@ pub(crate) fn reconcile_ruyi(
         }
     }
     feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
-    crate::bands::propose_edits::persist_feed(&path, &feed)?;
+    let entries = feed
+        .interactables
+        .iter()
+        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .cloned()
+        .collect();
+    crate::bands::propose_edits::persist_feed_with_intent(
+        &path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
+            entries,
+            remove_ids,
+            sort_by_id: true,
+        },
+    )?;
     Ok(held_back_by)
 }
 
@@ -710,8 +757,8 @@ fn now_seconds() -> u64 {
 
 fn run_ruyi_bump(
     path: &Path,
-    feed: &mut InteractablesFeed,
-    position: usize,
+    _feed: &mut InteractablesFeed,
+    _position: usize,
     item: &Interactable,
 ) -> Result<(), String> {
     let Some(port) = crate::bands::stage_profile::read_device_caduceus_seat_port()? else {
@@ -746,17 +793,21 @@ fn run_ruyi_bump(
     if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start().ruyi_bump_receipt {
         seat.validate(&receipt)?;
     }
-    feed.receipts.push(receipt.clone());
-    feed.interactables.remove(position);
-    crate::bands::propose_edits::persist_feed(path, feed)?;
+    crate::bands::propose_edits::persist_feed_with_intent(
+        path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(),
+            receipts: vec![receipt.clone()],
+        },
+    )?;
     println!("{}", serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?);
     Ok(())
 }
 
 fn run_ruyi_perspective_seed(
     path: &Path,
-    feed: &mut InteractablesFeed,
-    position: usize,
+    _feed: &mut InteractablesFeed,
+    _position: usize,
     item: &Interactable,
 ) -> Result<(), String> {
     let perspective_path = crate::atoms::ask::ruyi::ruyi_path();
@@ -793,9 +844,13 @@ fn run_ruyi_perspective_seed(
     {
         seat.validate(&receipt)?;
     }
-    feed.receipts.push(receipt.clone());
-    feed.interactables.remove(position);
-    crate::bands::propose_edits::persist_feed(path, feed)?;
+    crate::bands::propose_edits::persist_feed_with_intent(
+        path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(),
+            receipts: vec![receipt.clone()],
+        },
+    )?;
     println!(
         "{}",
         serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
@@ -839,7 +894,7 @@ fn insert_dns_record(original: &[u8], record: &str) -> Result<Vec<u8>, String> {
 
 fn persist_dns_receipt(
     path: &Path,
-    feed: &mut InteractablesFeed,
+    _feed: &mut InteractablesFeed,
     receipt: &serde_json::Value,
 ) -> Result<(), String> {
     if let Ok(seat) =
@@ -847,14 +902,17 @@ fn persist_dns_receipt(
     {
         seat.validate(receipt)?;
     }
-    feed.receipts.push(receipt.clone());
-    crate::bands::propose_edits::persist_feed(path, feed)
+    crate::bands::propose_edits::persist_feed_with_intent(
+        path,
+        crate::bands::propose_edits::FeedPersistenceIntent::AppendReceipts(vec![receipt.clone()]),
+    )
+    .map(|_| ())
 }
 
 fn run_dns_record(
     path: &Path,
     feed: &mut InteractablesFeed,
-    position: usize,
+    _position: usize,
     item: &Interactable,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<(), String> {
@@ -943,9 +1001,15 @@ fn run_dns_record(
     if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start().dns_record_receipt {
         seat.validate(&receipt)?;
     }
-    feed.receipts.push(receipt.clone());
-    if reload.ok { feed.interactables.remove(position); }
-    crate::bands::propose_edits::persist_feed(path, feed)?;
+    let intent = if reload.ok {
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(),
+            receipts: vec![receipt.clone()],
+        }
+    } else {
+        crate::bands::propose_edits::FeedPersistenceIntent::AppendReceipts(vec![receipt.clone()])
+    };
+    crate::bands::propose_edits::persist_feed_with_intent(path, intent)?;
     if !reload.ok { return Err("dns-record-reload-failed".into()); }
     println!("{}", serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?);
     Ok(())

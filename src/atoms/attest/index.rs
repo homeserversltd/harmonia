@@ -52,6 +52,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -675,6 +677,62 @@ fn write_proposal_bytes(
 }
 
 pub(crate) fn refresh_proposal_projection(
+    feed_path: &Path,
+    feed_bytes: &[u8],
+    records: &[(String, Vec<u8>)],
+    policy: ProposalOwnerPolicy,
+) -> Result<usize, String> {
+    with_proposal_projection_lock(feed_path, || {
+        refresh_proposal_projection_locked(feed_path, feed_bytes, records, policy)
+    })
+}
+
+pub(crate) fn with_proposal_projection_lock<T, F>(
+    feed_path: &Path,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let parent = feed_path
+        .parent()
+        .ok_or_else(|| format!("proposal-projection-parent-missing {}", feed_path.display()))?;
+    prepare_receipt_parent(parent)?;
+    let name = feed_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("proposal-projection-name-invalid {}", feed_path.display()))?;
+    let lock_path = parent.join(format!(".{name}.lock"));
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!(
+                "proposal-projection-lock-open-failed {}: {error}",
+                lock_path.display()
+            )
+        })?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        return Err(format!(
+            "proposal-projection-lock-acquire-failed {}: {}",
+            lock_path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let result = operation();
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) } == -1 {
+        return Err(format!(
+            "proposal-projection-lock-release-failed {}: {}",
+            lock_path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    result
+}
+
+pub(crate) fn refresh_proposal_projection_locked(
     feed_path: &Path,
     feed_bytes: &[u8],
     records: &[(String, Vec<u8>)],

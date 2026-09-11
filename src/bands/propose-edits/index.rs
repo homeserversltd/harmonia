@@ -62,6 +62,84 @@ pub(crate) fn persist_feed_with_writes(
     path: &Path,
     feed: &interactables::InteractablesFeed,
 ) -> Result<usize, String> {
+    persist_feed_with_intent(path, FeedPersistenceIntent::Replace(feed.clone()))
+}
+
+pub(crate) enum FeedPersistenceIntent {
+    Replace(interactables::InteractablesFeed),
+    Upsert {
+        entries: Vec<Interactable>,
+        remove_ids: BTreeSet<String>,
+        sort_by_id: bool,
+    },
+    Remove {
+        ids: BTreeSet<String>,
+        receipts: Vec<Value>,
+    },
+    AppendReceipts(Vec<Value>),
+}
+
+fn compose_feed(
+    mut feed: interactables::InteractablesFeed,
+    intent: &FeedPersistenceIntent,
+) -> interactables::InteractablesFeed {
+    match intent {
+        FeedPersistenceIntent::Replace(replacement) => replacement.clone(),
+        FeedPersistenceIntent::Upsert {
+            entries,
+            remove_ids,
+            sort_by_id,
+        } => {
+            feed.interactables.retain(|item| !remove_ids.contains(&item.id));
+            for entry in entries {
+                if let Some(current) = feed
+                    .interactables
+                    .iter_mut()
+                    .find(|current| current.id == entry.id)
+                {
+                    let mut replacement = entry.clone();
+                    for (key, value) in &current.extra {
+                        replacement.extra.entry(key.clone()).or_insert(value.clone());
+                    }
+                    *current = replacement;
+                } else {
+                    feed.interactables.push(entry.clone());
+                }
+            }
+            if *sort_by_id {
+                feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
+            }
+            feed
+        }
+        FeedPersistenceIntent::Remove { ids, receipts } => {
+            feed.interactables.retain(|item| !ids.contains(&item.id));
+            feed.receipts.extend(receipts.iter().cloned());
+            feed
+        }
+        FeedPersistenceIntent::AppendReceipts(receipts) => {
+            feed.receipts.extend(receipts.iter().cloned());
+            feed
+        }
+    }
+}
+
+pub(crate) fn persist_feed_with_intent(
+    path: &Path,
+    intent: FeedPersistenceIntent,
+) -> Result<usize, String> {
+    crate::atoms::attest::with_proposal_projection_lock(path, || {
+        let feed = match &intent {
+            FeedPersistenceIntent::Replace(feed) => feed.clone(),
+            _ => compose_feed(interactables::load_feed(path)?, &intent),
+        };
+        persist_feed_locked(path, &feed)
+    })
+}
+
+fn persist_feed_locked(
+    path: &Path,
+    feed: &interactables::InteractablesFeed,
+) -> Result<usize, String> {
     let feed_bytes = {
         let mut bytes = serde_json::to_vec_pretty(feed)
             .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?;
@@ -77,7 +155,7 @@ pub(crate) fn persist_feed_with_writes(
             Ok((format!("{}.json", item.id), bytes))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let writes = crate::atoms::attest::refresh_proposal_projection(
+    let writes = crate::atoms::attest::refresh_proposal_projection_locked(
         path,
         &feed_bytes,
         &records,
@@ -119,8 +197,8 @@ pub(crate) fn prune_stale_interactables_at_path(
 ) -> Result<(), String> {
     let mut feed = interactables::load_feed(path)?;
     let active_modules = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
-    let mut retained = Vec::with_capacity(feed.interactables.len());
     let mut removed = Vec::new();
+    let mut removed_ids = BTreeSet::new();
 
     for entry in feed.interactables.drain(..) {
         let reason = if !active_modules.contains(&entry.module_id) {
@@ -133,6 +211,7 @@ pub(crate) fn prune_stale_interactables_at_path(
             None
         };
         if let Some(reason) = reason {
+            removed_ids.insert(entry.id.clone());
             removed.push(serde_json::json!({
                 "schema": "harmonia.interactables.prune.v1",
                 "id": entry.id,
@@ -140,15 +219,18 @@ pub(crate) fn prune_stale_interactables_at_path(
                 "target_path": entry.target_path,
                 "reason": reason,
             }));
-        } else {
-            retained.push(entry);
         }
     }
     if removed.is_empty() {
         return Ok(());
     }
-    feed.interactables = retained;
-    persist_feed(path, &feed)?;
+    persist_feed_with_intent(
+        path,
+        FeedPersistenceIntent::Remove {
+            ids: removed_ids,
+            receipts: Vec::new(),
+        },
+    )?;
     for receipt in removed {
         crate::atoms::attest::append_jsonl_to(events, &receipt)?;
     }
@@ -199,6 +281,8 @@ fn refresh_interactables_at_path_with_policy(
     }
     let mut feed = interactables::load_feed(path)?;
     let mut recognitions = Vec::new();
+    let mut remove_ids = BTreeSet::new();
+    let mut upsert_ids = BTreeSet::new();
     let now = stamp();
     let available_at = iso8601_now();
     for entry in &outcome.entries {
@@ -232,6 +316,12 @@ fn refresh_interactables_at_path_with_policy(
             .map(|e| e.created_at.clone())
             .unwrap_or_else(|| now.clone());
         // A new pair supersedes stale offers for this surface only.
+        remove_ids.extend(
+            feed.interactables
+                .iter()
+                .filter(|e| e.target_path.as_deref() == Some(entry.target.as_path()))
+                .map(|e| e.id.clone()),
+        );
         feed.interactables.retain(|e| e.target_path.as_deref() != Some(entry.target.as_path()));
         let recognized = interactables::recognize_against_known_goods(
             &live_bytes,
@@ -313,6 +403,7 @@ fn refresh_interactables_at_path_with_policy(
             evidence: serde_json::Value::Null,
             extra: serde_json::Map::new(),
         });
+        upsert_ids.insert(interactable_id.clone());
         recognitions.push(ConfigRecognition {
             config_state: state.to_string(),
             score,
@@ -325,7 +416,19 @@ fn refresh_interactables_at_path_with_policy(
         });
     }
     feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
-    persist_feed(&path, &feed)?;
+    persist_feed_with_intent(
+        &path,
+        FeedPersistenceIntent::Upsert {
+            entries: feed
+                .interactables
+                .iter()
+                .filter(|item| upsert_ids.contains(&item.id))
+                .cloned()
+                .collect(),
+            remove_ids,
+            sort_by_id: true,
+        },
+    )?;
     let log = path
         .parent()
         .unwrap_or_else(|| Path::new("."))
