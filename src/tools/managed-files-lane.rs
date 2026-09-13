@@ -143,6 +143,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const FRAGMENT_SELECTORS: &[(&str, &str, &str)] = &[
+    ("homeserver", "debian", "homeserver"),
+    ("tv", "arch", "tv"),
+    ("arch-tv", "arch", "tv"),
+    ("homeconsole", "arch", "tv"),
+    ("bigrig", "arch", "tv"),
+];
+
 /// Concatenate static fragments in deterministic order without injecting bytes.
 pub(crate) fn compile_fragments(
     source_root: &Path,
@@ -157,13 +165,17 @@ pub(crate) fn compile_fragments(
     {
         return Err("compile-fragments-appliance-invalid".into());
     }
+    let (_, platform, behavioral_pool) = FRAGMENT_SELECTORS
+        .iter()
+        .find(|(selector, _, _)| *selector == selected_appliance)
+        .copied()
+        .ok_or_else(|| format!("compile-fragments-appliance-unsupported {selected_appliance}"))?;
     let mut bytes = Vec::new();
-    let selected_pool = match selected_appliance {
-        "homeconsole" | "bigrig" => "tv",
-        other => other,
-    };
-    for pool in ["all", selected_pool] {
-        let directory = source_root.join(pool);
+    for directory in [
+        source_root.join("all"),
+        source_root.join("platform").join(platform),
+        source_root.join(behavioral_pool),
+    ] {
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
