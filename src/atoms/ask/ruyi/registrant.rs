@@ -442,14 +442,72 @@ pub(crate) fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
         })
 }
 
-pub(crate) fn self_is_gateway(perspective: &Value, gateway: Ipv4Addr, row: &Value) -> bool {
+fn local_seat_hostname_matches(port: u16, own_hostname: &str) -> bool {
+    let url = format!("http://127.0.0.1:{port}/api/v1/ruyi");
+    // This is a decision-only observation: every door or answer failure
+    // becomes false so registration can continue through its other arms.
+    let Ok(roster) = get_roster(&url) else {
+        return false;
+    };
+    if !roster.is_object()
+        || roster
+            .get("ok")
+            .is_some_and(|ok| ok.as_bool() != Some(true))
+        || roster
+            .get("schema")
+            .is_some_and(|schema| schema.as_str() != Some(ROW_SCHEMA))
+    {
+        return false;
+    }
+    roster
+        .pointer("/seat/hostname")
+        .and_then(Value::as_str)
+        .is_some_and(|seat_hostname| {
+            seat_hostname.trim().to_ascii_lowercase() == own_hostname.trim().to_ascii_lowercase()
+        })
+}
+
+pub(crate) trait RuyiSeatPort {
+    fn declared_port(self) -> Option<u16>;
+}
+
+impl RuyiSeatPort for u16 {
+    fn declared_port(self) -> Option<u16> {
+        Some(self)
+    }
+}
+
+// Preserve the existing crate caller while keeping the route address out of
+// gateway classification. Its port still comes only from the declaration.
+impl RuyiSeatPort for Ipv4Addr {
+    fn declared_port(self) -> Option<u16> {
+        let _ = self;
+        port()
+    }
+}
+
+pub(crate) fn self_is_gateway(
+    perspective: &Value,
+    declared_port: impl RuyiSeatPort,
+    row: &Value,
+) -> bool {
     let persisted_gateway_mac = perspective
         .pointer("/gateway_seat/mac")
         .and_then(Value::as_str);
-    row.get("mac")
+    if row
+        .get("mac")
         .and_then(Value::as_str)
         .is_some_and(|self_mac| Some(self_mac) == persisted_gateway_mac)
-        || gateway_is_local(gateway, row)
+    {
+        return true;
+    }
+    let Some(port) = declared_port.declared_port() else {
+        return false;
+    };
+    let Some(own_hostname) = row.get("hostname").and_then(Value::as_str) else {
+        return false;
+    };
+    local_seat_hostname_matches(port, own_hostname)
 }
 
 pub(crate) fn routed_host(row: &Value) -> Result<Ipv4Addr, String> {
@@ -516,15 +574,16 @@ fn exchange(
     else {
         return Ok(receipt("refused", row, Vec::new(), "ruyi-mac-invalid"));
     };
-    let gateway = match default_gateway() {
-        Ok(gateway) => gateway,
-        Err(error) => return Ok(receipt("gateway-unreachable", row, Vec::new(), &error)),
-    };
-    let is_gateway = self_is_gateway(&perspective, gateway, &row);
+    let is_gateway = self_is_gateway(&perspective, port, &row);
     let host = if is_gateway {
         Ipv4Addr::LOCALHOST
     } else {
-        gateway
+        match default_gateway() {
+            Ok(gateway) => gateway,
+            Err(error) => {
+                return Ok(receipt("gateway-unreachable", row, Vec::new(), &error));
+            }
+        }
     };
     let url = format!("http://{host}:{port}/api/v1/ruyi");
     perspective["self"] = row.clone();
@@ -538,7 +597,8 @@ fn exchange(
     payload["perspective"] = perspective.clone();
     let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
     // Exactly one PUT followed by exactly one roster GET, including a failed PUT.
-    // Schema-door startup loads are separate observations, not roster exchanges.
+    // Schema-door startup loads and the local-seat probe are separate observations,
+    // not additional requests in this exchange.
     let put = crate::atoms::ask::beam::put_json(&format!("{url}/{mac}"), &bytes);
     let get = get_roster(&url);
     if let Err(error) = put {
@@ -598,8 +658,8 @@ fn exchange(
     let held_back_by =
         crate::interactables::reconcile_ruyi(profile, &row, &roster, &staves, is_gateway)?;
     perspective["written_at"] = json!(now()?);
-    // Preserve the last observed seat, allowing the next event's self-seat path
-    // without adding a discovery GET ahead of the PUT.
+    // Preserve the last observed seat so the next event can take the persisted
+    // mac arm before its separate local-seat observation.
     if let Some(seat) = roster.get("seat") {
         perspective["gateway_seat"] = seat.clone();
     }
@@ -810,6 +870,63 @@ pub(crate) fn announce() -> Result<Value, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn serve_one_ruyi_response(body: Value) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            let body = serde_json::to_vec(&body).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn local_seat_hostname_match_yields_self_is_gateway_after_normalization() {
+        let (port, server) = serve_one_ruyi_response(json!({
+            "schema": ROW_SCHEMA,
+            "ok": true,
+            "seat": {"hostname": "  HOME \n", "unknown": "kept"},
+            "unknown": {"kept": true}
+        }));
+
+        assert!(self_is_gateway(
+            &json!({}),
+            port,
+            &json!({"mac": "00:11:22:33:44:55", "hostname": " home "}),
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn local_seat_hostname_mismatch_does_not_yield_self_is_gateway() {
+        let (port, server) = serve_one_ruyi_response(json!({
+            "schema": ROW_SCHEMA,
+            "ok": true,
+            "seat": {"hostname": "castle"}
+        }));
+
+        assert!(!self_is_gateway(
+            &json!({}),
+            port,
+            &json!({"mac": "00:11:22:33:44:55", "hostname": "console"}),
+        ));
+        server.join().unwrap();
+    }
 
     #[test]
     fn own_receipt_validation_refusal_is_saved_and_read_back() {
