@@ -143,32 +143,61 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FRAGMENT_SELECTORS: &[(&str, &str, &str)] = &[
-    ("homeserver", "debian", "homeserver"),
-    ("tv", "arch", "tv"),
-    ("homeconsole", "arch", "tv"),
-    ("bigrig", "arch", "tv"),
-];
+fn validate_fragment_path_component(component: &str, kind: &str) -> Result<(), String> {
+    if component.is_empty()
+        || component.contains('/')
+        || component.contains('\\')
+        || matches!(component, "." | "..")
+    {
+        return Err(format!("compile-fragments-{kind}-invalid"));
+    }
+    Ok(())
+}
+
+fn profile_fragment_selectors<'a>(
+    profile: &'a Value,
+    profile_index: &Path,
+) -> Result<(&'a str, &'a str, &'a str), String> {
+    let profile_id = profile
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "compile-fragments-profile-id-missing {}",
+                profile_index.display()
+            )
+        })?;
+    let platform = profile
+        .get("package_authority")
+        .and_then(|authority| authority.get("os_family"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "compile-fragments-profile-platform-missing {}",
+                profile_index.display()
+            )
+        })?;
+    let behavioral_pool = match profile.get("dotfile_pool") {
+        Some(value) if !value.is_null() => value.as_str().ok_or_else(|| {
+            format!(
+                "compile-fragments-profile-dotfile-pool-invalid {}",
+                profile_index.display()
+            )
+        })?,
+        _ => profile_id,
+    };
+    Ok((profile_id, platform, behavioral_pool))
+}
 
 /// Concatenate static fragments in deterministic order without injecting bytes.
 pub(crate) fn compile_fragments(
     source_root: &Path,
-    selected_appliance: &str,
+    platform: &str,
+    behavioral_pool: &str,
 ) -> Result<Vec<u8>, String> {
-    if selected_appliance == "all" {
-        return Err("compile-fragments-selected-appliance-all-rejected".into());
-    }
-    if selected_appliance.is_empty()
-        || selected_appliance.contains('/')
-        || matches!(selected_appliance, "." | "..")
-    {
-        return Err("compile-fragments-appliance-invalid".into());
-    }
-    let (_, platform, behavioral_pool) = FRAGMENT_SELECTORS
-        .iter()
-        .find(|(selector, _, _)| *selector == selected_appliance)
-        .copied()
-        .ok_or_else(|| format!("compile-fragments-appliance-unsupported {selected_appliance}"))?;
+    validate_fragment_path_component(platform, "platform")?;
+    validate_fragment_path_component(behavioral_pool, "behavioral-pool")?;
     let mut bytes = Vec::new();
     for directory in [
         source_root.join("all"),
@@ -232,16 +261,8 @@ pub(crate) fn compile_fragments_step(
                 profile_index.display()
             )
         })?;
-    let appliance = profile
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "compile-fragments-profile-id-missing {}",
-                profile_index.display()
-            )
-        })?;
+    let (appliance, platform, behavioral_pool) =
+        profile_fragment_selectors(&profile, &profile_index)?;
     let target = step
         .args
         .get("target_path")
@@ -252,7 +273,7 @@ pub(crate) fn compile_fragments_step(
     if step.args.get("backup_existing").and_then(Value::as_bool) != Some(true) {
         return Err("compile-fragments-backup-existing-required".into());
     }
-    let bytes = compile_fragments(&source_root, appliance)?;
+    let bytes = compile_fragments(&source_root, platform, behavioral_pool)?;
     if bytes.is_empty() {
         crate::write_json(
             &module_dir.join("compile-fragments.json"),
@@ -1897,13 +1918,13 @@ WantedBy=multi-user.target
 
 #[cfg(test)]
 mod compile_fragments_tests {
-    use super::{compile_fragments, compile_fragments_step};
+    use super::{compile_fragments, compile_fragments_step, profile_fragment_selectors};
     use crate::tools::ladder::{LadderManifest, OnFailure};
     use crate::tools::routine::ValidatedStep;
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn fixture(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -1915,16 +1936,64 @@ mod compile_fragments_tests {
         root
     }
 
+    fn compile_step(source_root: &Path, target: &Path) -> ValidatedStep {
+        ValidatedStep {
+            step_id: "compile-fragments-test".into(),
+            tool: "files".into(),
+            permutation: "compile-fragments".into(),
+            args: BTreeMap::from([
+                (
+                    "source_root".into(),
+                    Value::String(source_root.display().to_string()),
+                ),
+                (
+                    "target_path".into(),
+                    Value::String(target.display().to_string()),
+                ),
+                ("backup_existing".into(), Value::Bool(true)),
+            ]),
+            on_failure: OnFailure::Stop,
+        }
+    }
+
+    fn test_manifest(module_dir: &Path) -> LadderManifest {
+        LadderManifest {
+            schema: "test".into(),
+            id: "test".into(),
+            version: "1".into(),
+            description: String::new(),
+            role: None,
+            optional: false,
+            optional_warning: None,
+            category: None,
+            group: None,
+            constants: BTreeMap::new(),
+            package_pins: BTreeMap::new(),
+            package_ceilings: BTreeMap::new(),
+            caduceus_commands: Vec::new(),
+            files_root: None,
+            config_deploy: None,
+            suppress_interactable: false,
+            isolation: None,
+            module_observation: None,
+            plan_refusals: Vec::new(),
+            ladder: Vec::new(),
+            base_dir: module_dir.to_path_buf(),
+        }
+    }
     #[test]
-    fn compiles_sorted_all_then_appliance_without_separator() {
+    fn compiles_sorted_all_then_platform_then_pool_without_separator() {
         let root = fixture("normal");
         fs::create_dir_all(root.join("all")).unwrap();
+        fs::create_dir_all(root.join("platform/arch")).unwrap();
         fs::create_dir_all(root.join("tv")).unwrap();
         fs::write(root.join("all/z"), b"z").unwrap();
         fs::write(root.join("all/a"), b"a").unwrap();
-        fs::write(root.join("tv/2"), b"2").unwrap();
-        fs::write(root.join("tv/1"), b"1").unwrap();
-        assert_eq!(compile_fragments(&root, "tv").unwrap(), b"az12");
+        fs::write(root.join("platform/arch/2"), b"2").unwrap();
+        fs::write(root.join("platform/arch/1"), b"1").unwrap();
+        fs::write(root.join("tv/2"), b"4").unwrap();
+        fs::write(root.join("tv/1"), b"3").unwrap();
+        assert_eq!(compile_fragments(&root, "arch", "tv").unwrap(), b"az1234");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1933,17 +2002,103 @@ mod compile_fragments_tests {
         let root = fixture("missing-all");
         fs::create_dir_all(root.join("tv")).unwrap();
         fs::write(root.join("tv/only"), b"only").unwrap();
-        assert_eq!(compile_fragments(&root, "tv").unwrap(), b"only");
+        assert_eq!(compile_fragments(&root, "arch", "tv").unwrap(), b"only");
         fs::remove_dir_all(&root).unwrap();
 
-        let root = fixture("missing-appliance");
+        let root = fixture("missing-platform");
         fs::create_dir_all(root.join("all")).unwrap();
         fs::write(root.join("all/only"), b"only").unwrap();
-        assert_eq!(compile_fragments(&root, "homeserver").unwrap(), b"only");
+        assert_eq!(compile_fragments(&root, "arch", "tv").unwrap(), b"only");
+        fs::remove_dir_all(&root).unwrap();
+
+        let root = fixture("missing-pool");
+        fs::create_dir_all(root.join("all")).unwrap();
+        fs::create_dir_all(root.join("platform/arch")).unwrap();
+        fs::write(root.join("all/10"), b"all").unwrap();
+        fs::write(root.join("platform/arch/20"), b"platform").unwrap();
+        assert_eq!(
+            compile_fragments(&root, "arch", "tv").unwrap(),
+            b"allplatform"
+        );
         fs::remove_dir_all(&root).unwrap();
 
         let root = fixture("missing-both");
-        assert!(compile_fragments(&root, "homeconsole").unwrap().is_empty());
+        assert!(compile_fragments(&root, "arch", "tv").unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn profile_id_fallback_selects_generated_profile_pool() {
+        let root = fixture("profile-id-fallback");
+        let profile_root = root.join("profile");
+        let module_dir = profile_root.join("modules/dot-files");
+        let source_root = root.join("source");
+        let target = root.join("target.conf");
+        let profile_id = ["laptop", "02"].join("-");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(source_root.join("all")).unwrap();
+        fs::create_dir_all(source_root.join("platform/arch")).unwrap();
+        fs::create_dir_all(source_root.join(&profile_id)).unwrap();
+        let profile = serde_json::json!({
+            "id": profile_id.clone(),
+            "package_authority": {"os_family": "arch"}
+        });
+        fs::write(
+            profile_root.join("index.json"),
+            serde_json::to_vec(&profile).unwrap(),
+        )
+        .unwrap();
+        fs::write(source_root.join("all/20"), b"all").unwrap();
+        fs::write(source_root.join("platform/arch/10"), b"platform").unwrap();
+        fs::write(source_root.join(&profile_id).join("30"), b"pool").unwrap();
+
+        let step = compile_step(&source_root, &target);
+        let manifest = test_manifest(&module_dir);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome =
+            compile_fragments_step(&step, &manifest, &module_dir, true, Some(&invocation)).unwrap();
+
+        assert!(outcome.ok);
+        assert_eq!(fs::read(&target).unwrap(), b"allplatformpool");
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(module_dir.join("compile-fragments.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["selected_appliance"], profile_id);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn profile_dotfile_pool_selects_declared_pool() {
+        let root = fixture("declared-dotfile-pool");
+        let profile_root = root.join("profile");
+        let module_dir = profile_root.join("modules/dot-files");
+        let source_root = root.join("source");
+        let target = root.join("target.conf");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::create_dir_all(source_root.join("all")).unwrap();
+        fs::create_dir_all(source_root.join("platform/arch")).unwrap();
+        fs::create_dir_all(source_root.join("tv")).unwrap();
+        fs::write(
+            profile_root.join("index.json"),
+            br#"{"id":"fixture-profile","package_authority":{"os_family":"arch"},"dotfile_pool":"tv"}"#,
+        )
+        .unwrap();
+        fs::write(source_root.join("all/10"), b"all").unwrap();
+        fs::write(source_root.join("platform/arch/20"), b"platform").unwrap();
+        fs::write(source_root.join("tv/30"), b"tv").unwrap();
+
+        let step = compile_step(&source_root, &target);
+        let manifest = test_manifest(&module_dir);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome =
+            compile_fragments_step(&step, &manifest, &module_dir, true, Some(&invocation)).unwrap();
+
+        assert!(outcome.ok);
+        assert_eq!(fs::read(&target).unwrap(), b"allplatformtv");
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(module_dir.join("compile-fragments.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["selected_appliance"], "fixture-profile");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1956,7 +2111,11 @@ mod compile_fragments_tests {
         let target = root.join("target.conf");
         fs::create_dir_all(&module_dir).unwrap();
         fs::create_dir_all(&source_root).unwrap();
-        fs::write(profile_root.join("index.json"), br#"{"id":"homeconsole"}"#).unwrap();
+        fs::write(
+            profile_root.join("index.json"),
+            br#"{"id":"homeconsole","package_authority":{"os_family":"arch"}}"#,
+        )
+        .unwrap();
         fs::write(&target, b"pre-existing").unwrap();
 
         let mut args = BTreeMap::new();
@@ -2016,13 +2175,52 @@ mod compile_fragments_tests {
     }
 
     #[test]
-    fn homeconsole_and_bigrig_zshrc_compile_from_the_tv_pool() {
+    fn zshrc_compiles_from_explicit_platform_and_pool() {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("shared/modules/dot-files/files_root/zshrc");
-        let tv = compile_fragments(&source, "tv").unwrap();
-        assert!(!tv.is_empty());
-        assert_eq!(compile_fragments(&source, "homeconsole").unwrap(), tv);
-        assert_eq!(compile_fragments(&source, "bigrig").unwrap(), tv);
+        let compiled = compile_fragments(&source, "arch", "tv").unwrap();
+        assert!(!compiled.is_empty());
+    }
+
+    #[test]
+    fn tv_and_homeserver_profiles_preserve_previous_compiled_bytes() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let source_root = repo_root.join("shared/modules/dot-files/files_root");
+        let mut artifact_roots = fs::read_dir(&source_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        artifact_roots.sort();
+
+        for (profile_id, previous_platform, previous_pool) in
+            [("tv", "arch", "tv"), ("homeserver", "debian", "homeserver")]
+        {
+            let profile_index = repo_root
+                .join("profiles")
+                .join(profile_id)
+                .join("index.json");
+            let profile: Value =
+                serde_json::from_slice(&fs::read(&profile_index).unwrap()).unwrap();
+            let (selected_profile, platform, behavioral_pool) =
+                profile_fragment_selectors(&profile, &profile_index).unwrap();
+            assert_eq!(selected_profile, profile_id);
+            assert_eq!(platform, previous_platform);
+            assert_eq!(behavioral_pool, previous_pool);
+
+            for artifact_root in &artifact_roots {
+                let previous =
+                    compile_fragments(artifact_root, previous_platform, previous_pool).unwrap();
+                let declared = compile_fragments(artifact_root, platform, behavioral_pool).unwrap();
+                assert!(!previous.is_empty(), "{}", artifact_root.display());
+                assert_eq!(
+                    declared,
+                    previous,
+                    "profile {profile_id} changed compiled bytes for {}",
+                    artifact_root.display()
+                );
+            }
+        }
     }
 
     #[test]
@@ -2055,7 +2253,11 @@ mod compile_fragments_tests {
         fs::create_dir_all(source_root.join("all")).unwrap();
         fs::create_dir_all(source_root.join("tv")).unwrap();
         fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(profile_root.join("index.json"), br#"{"id":"tv"}"#).unwrap();
+        fs::write(
+            profile_root.join("index.json"),
+            br#"{"id":"tv","package_authority":{"os_family":"arch"}}"#,
+        )
+        .unwrap();
         fs::write(source_root.join("all/00"), b"all\n").unwrap();
         fs::write(source_root.join("tv/20"), b"tv\n").unwrap();
         fs::write(&target, b"divergent\n").unwrap();
@@ -2166,7 +2368,11 @@ mod compile_fragments_tests {
         fs::create_dir_all(source_root.join("all")).unwrap();
         fs::create_dir_all(source_root.join("tv")).unwrap();
         fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(profile_root.join("index.json"), br#"{"id":"tv"}"#).unwrap();
+        fs::write(
+            profile_root.join("index.json"),
+            br#"{"id":"tv","package_authority":{"os_family":"arch"}}"#,
+        )
+        .unwrap();
         fs::write(source_root.join("all/00"), b"all\n").unwrap();
         fs::write(source_root.join("tv/20"), b"tv\n").unwrap();
         fs::write(&target, b"genuinely drifting\n").unwrap();
@@ -2266,7 +2472,11 @@ mod compile_fragments_tests {
         fs::create_dir_all(source_root.join("all")).unwrap();
         fs::create_dir_all(source_root.join("tv")).unwrap();
         fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(profile_root.join("index.json"), br#"{"id":"tv"}"#).unwrap();
+        fs::write(
+            profile_root.join("index.json"),
+            br#"{"id":"tv","package_authority":{"os_family":"arch"}}"#,
+        )
+        .unwrap();
         fs::write(source_root.join("all/00"), b"all\n").unwrap();
         fs::write(source_root.join("tv/20"), b"tv\n").unwrap();
         fs::write(&target, b"genuinely drifting\n").unwrap();

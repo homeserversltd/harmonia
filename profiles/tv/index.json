@@ -6,6 +6,7 @@
     "os_family": "arch",
     "package_manager": "pacman"
   },
+  "dotfile_pool": "tv",
   "aliases": [
     "tv"
   ],

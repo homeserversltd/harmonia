@@ -5,6 +5,7 @@
     "os_family": "arch",
     "package_manager": "pacman"
   },
+  "dotfile_pool": "tv",
   "identity": "homeconsole",
   "categories_required": true,
   "description": "HomeConsole appliance profile. HomeConsole is the sole console identity.",
