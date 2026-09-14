@@ -33,6 +33,18 @@ fn port() -> Option<u16> {
         .flatten()
 }
 
+/// Read the local staff port from the port half of the existing Caduceus bind.
+/// Absence and malformed declarations remain absence; the registrant never
+/// invents the factory default.
+pub(super) fn caduceus_port() -> Option<u16> {
+    let bind = crate::bands::stage_profile::read_device_caduceus_bind()
+        .ok()
+        .flatten()?;
+    let base = crate::atoms::ask::caduceus_door::resolve_bind(&bind).ok()?;
+    let (_, port) = base.rsplit_once(':')?;
+    port.parse::<u16>().ok()
+}
+
 fn unreachable_seats() -> Seats {
     Seats {
         perspective: Err("ruyi-schema-seat-unreachable".into()),
@@ -163,6 +175,13 @@ pub(crate) fn validate_perspective(perspective: &Value) -> Result<(), String> {
 pub(crate) fn seed_perspective() -> Result<(LocalIdentity, Value), String> {
     let identity = local_identity()?;
     let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
+    seed_perspective_for(identity, profile)
+}
+
+pub(super) fn seed_perspective_for(
+    identity: LocalIdentity,
+    profile: crate::Profile,
+) -> Result<(LocalIdentity, Value), String> {
     let row = RuyiRow {
         schema: ROW_SCHEMA.into(),
         mac: identity.mac.clone(),
@@ -174,6 +193,7 @@ pub(crate) fn seed_perspective() -> Result<(LocalIdentity, Value), String> {
             .syzygy_declaration
             .as_ref()
             .and_then(|declaration| declaration.gui_face.clone()),
+        caduceus_port: caduceus_port(),
         caduceus_sha: String::new(),
         env_sha: String::new(),
         harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
@@ -242,9 +262,14 @@ fn prior_perspective() -> Result<Value, String> {
 }
 
 fn receipt(state: &str, row: Value, roster: Vec<Value>, signal: &str) -> Value {
+    let caduceus_port = row
+        .get("caduceus_port")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!("undeclared"));
     json!({"schema": REGISTER, "state": state, "self": row,
         "roster_count": roster.len(), "roster": roster, "first_missing_signal": signal,
-        "event": "new-artifact", "held_back_by": []})
+        "event": "new-artifact", "held_back_by": [], "caduceus_port": caduceus_port})
 }
 
 fn amend_update_set_held_back_by(dir: &Path, held_back_by: &Value) -> Result<(), String> {
@@ -352,12 +377,14 @@ pub(crate) fn register_promoted(
         .filter(|row| row.is_object())
         .cloned()
         .unwrap_or_else(|| json!({}));
+    let caduceus_port = caduceus_port();
     merge_fields(
         &mut row,
         json!({
             "schema": ROW_SCHEMA, "mac": identity.mac, "hostname": identity.hostname,
             "canonical_name": canonical_name(&identity.hostname), "ipv4": identity.ipv4,
             "profile": profile.id, "gui_face": transaction.gui,
+            "caduceus_port": caduceus_port,
             "caduceus_sha": if evidence.caduceus_sha.is_empty() { Value::Null } else { json!(evidence.caduceus_sha) },
             "env_sha": if evidence.env_sha.is_empty() { Value::Null } else { json!(evidence.env_sha) },
             "harmonia_sha": HARMONIA_BUILD_SHA,
@@ -366,6 +393,11 @@ pub(crate) fn register_promoted(
             "last_seen": now()?, "last_update": {"run_id": run_id, "converged": true}
         }),
     );
+    if caduceus_port.is_none() {
+        row.as_object_mut()
+            .expect("Ruyi self row is assembled as an object")
+            .remove("caduceus_port");
+    }
     prior["self"] = row.clone();
     let result = exchange(profile, row, prior, seats, port)?;
     amend_update_set_held_back_by(dir, &result["held_back_by"])?;

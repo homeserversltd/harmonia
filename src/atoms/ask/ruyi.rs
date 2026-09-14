@@ -41,6 +41,8 @@ pub(crate) struct RuyiRow {
     pub ipv4: String,
     pub profile: String,
     pub gui_face: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caduceus_port: Option<u16>,
     #[serde(default, deserialize_with = "nullable_string")]
     pub caduceus_sha: String,
     #[serde(default, deserialize_with = "nullable_string")]
@@ -115,9 +117,7 @@ pub(crate) fn validate_row(row: &RuyiRow) -> Result<(), String> {
     if !valid_name(&row.hostname) {
         return Err("ruyi-hostname-invalid".into());
     }
-    if row.canonical_name != canonical_name(&row.hostname)
-        || !valid_name(&row.canonical_name)
-    {
+    if row.canonical_name != canonical_name(&row.hostname) || !valid_name(&row.canonical_name) {
         return Err("ruyi-canonical-name-invalid".into());
     }
     if row.ipv4.parse::<Ipv4Addr>().is_err() {
@@ -133,12 +133,15 @@ pub(crate) fn validate_row(row: &RuyiRow) -> Result<(), String> {
     {
         return Err("ruyi-gui-face-invalid".into());
     }
+    if row.caduceus_port == Some(0) {
+        return Err("ruyi-caduceus-port-invalid".into());
+    }
     if (!row.caduceus_sha.is_empty() || row.syzygy_sha.is_some())
-        && !valid_hex(&row.caduceus_sha, 40) {
+        && !valid_hex(&row.caduceus_sha, 40)
+    {
         return Err("ruyi-caduceus-sha-invalid".into());
     }
-    if (!row.env_sha.is_empty() || row.syzygy_sha.is_some())
-        && !valid_hex(&row.env_sha, 64) {
+    if (!row.env_sha.is_empty() || row.syzygy_sha.is_some()) && !valid_hex(&row.env_sha, 64) {
         return Err("ruyi-env-sha-invalid".into());
     }
     if !valid_hex(&row.harmonia_sha, 40) {
@@ -434,10 +437,15 @@ pub(crate) fn write_committed_state(
         ipv4: identity.ipv4.clone(),
         profile: profile.id.clone(),
         gui_face: receipt.gui.clone(),
+        caduceus_port: registrant::caduceus_port(),
         caduceus_sha: mint.caduceus_sha.clone(),
         env_sha: mint.env_sha.clone(),
         harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
-        syzygy_sha: if mint.signal == "none" { mint.syzygy_sha.clone() } else { None },
+        syzygy_sha: if mint.signal == "none" {
+            mint.syzygy_sha.clone()
+        } else {
+            None
+        },
         last_seen,
         last_update: LastUpdate {
             run_id: run_id.into(),
@@ -447,23 +455,36 @@ pub(crate) fn write_committed_state(
     validate_row(&row)?;
     let mut value = serde_json::to_value(&row).map_err(|error| error.to_string())?;
     value["syzygy_signal"] = serde_json::json!(mint.signal);
-    if row.caduceus_sha.is_empty() { value["caduceus_sha"] = serde_json::Value::Null; }
-    if row.env_sha.is_empty() { value["env_sha"] = serde_json::Value::Null; }
+    if row.caduceus_sha.is_empty() {
+        value["caduceus_sha"] = serde_json::Value::Null;
+    }
+    if row.env_sha.is_empty() {
+        value["env_sha"] = serde_json::Value::Null;
+    }
     // Preserve additive fields in the existing raw envelope, including nested
     // last_update evidence. Old digest bytes are overwritten even on absence.
     let mut raw = match fs::read(ruyi_path()) {
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
             .map_err(|_| "ruyi-state-json-invalid".to_string())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({"schema": ROW_SCHEMA}),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            serde_json::json!({"schema": ROW_SCHEMA})
+        }
         Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
     };
     if raw.get("schema").and_then(serde_json::Value::as_str) != Some(ROW_SCHEMA) {
         return Err("ruyi-schema-invalid".into());
     }
     merge_fields(&mut raw, value);
+    if row.caduceus_port.is_none() {
+        raw.as_object_mut()
+            .expect("Ruyi state is assembled as an object")
+            .remove("caduceus_port");
+    }
     let bytes = serde_json::to_vec(&raw).map_err(|error| error.to_string())?;
     crate::atoms::projectio::write_engine_state(
-        &ruyi_path(), &bytes, crate::atoms::projectio::engine_state_witness(),
+        &ruyi_path(),
+        &bytes,
+        crate::atoms::projectio::engine_state_witness(),
     )
 }
 
@@ -504,6 +525,7 @@ mod tests {
             ipv4: "192.0.2.1".into(),
             profile: "homeconsole".into(),
             gui_face: Some("Hyprland".into()),
+            caduceus_port: Some(8787),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
             harmonia_sha: "c".repeat(40),
@@ -569,6 +591,7 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                "caduceus_port",
                 "caduceus_sha",
                 "canonical_name",
                 "env_sha",
@@ -584,9 +607,31 @@ mod tests {
                 "syzygy_sha",
             ]
         );
-        assert_eq!(object.get("schema").and_then(|value| value.as_str()), Some(ROW_SCHEMA));
-        assert_eq!(object.get("last_update").unwrap().as_object().unwrap().len(), 2);
+        assert_eq!(
+            object.get("schema").and_then(|value| value.as_str()),
+            Some(ROW_SCHEMA)
+        );
+        assert_eq!(
+            object
+                .get("last_update")
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
         assert!(serde_json::from_value::<RuyiRow>(value).is_ok());
+
+        let mut absent = row();
+        absent.caduceus_port = None;
+        let absent = serde_json::to_value(absent).unwrap();
+        assert!(absent.get("caduceus_port").is_none());
+        assert_eq!(
+            serde_json::from_value::<RuyiRow>(absent)
+                .unwrap()
+                .caduceus_port,
+            None
+        );
     }
 
     #[test]
@@ -604,11 +649,17 @@ mod tests {
     fn validation_refuses_wrong_identity_and_exact_digest_lengths() {
         let mut invalid = row();
         invalid.canonical_name = "other.home.arpa".into();
-        assert_eq!(validate_row(&invalid), Err("ruyi-canonical-name-invalid".into()));
+        assert_eq!(
+            validate_row(&invalid),
+            Err("ruyi-canonical-name-invalid".into())
+        );
 
         let mut invalid = row();
         invalid.caduceus_sha.push('a');
-        assert_eq!(validate_row(&invalid), Err("ruyi-caduceus-sha-invalid".into()));
+        assert_eq!(
+            validate_row(&invalid),
+            Err("ruyi-caduceus-sha-invalid".into())
+        );
 
         let mut invalid = row();
         invalid.env_sha = invalid.env_sha.to_ascii_uppercase();
@@ -616,7 +667,25 @@ mod tests {
 
         let mut invalid = row();
         invalid.syzygy_sha = Some("f".repeat(63));
-        assert_eq!(validate_row(&invalid), Err("ruyi-syzygy-sha-invalid".into()));
+        assert_eq!(
+            validate_row(&invalid),
+            Err("ruyi-syzygy-sha-invalid".into())
+        );
+
+        let mut invalid = row();
+        invalid.caduceus_port = Some(0);
+        assert_eq!(
+            validate_row(&invalid),
+            Err("ruyi-caduceus-port-invalid".into())
+        );
+
+        let mut valid = row();
+        valid.caduceus_port = None;
+        assert!(validate_row(&valid).is_ok());
+
+        let mut valid = row();
+        valid.caduceus_port = Some(1);
+        assert!(validate_row(&valid).is_ok());
     }
 
     #[test]
@@ -720,6 +789,8 @@ mod tests {
                     } else if request.starts_with("PUT /api/v1/ruyi/aa:bb:cc:dd:ee:ff ") {
                         puts.push(serde_json::from_slice(&body).unwrap());
                         ("200 OK", serde_json::json!({}))
+                    } else if request.starts_with("POST /api/v1/hyalos/reflect ") {
+                        ("200 OK", serde_json::json!({}))
                     } else {
                         assert!(request.starts_with("GET /api/v1/ruyi "), "{request}");
                         let mut row = puts.last().expect("PUT precedes roster GET").clone();
@@ -801,11 +872,187 @@ mod tests {
     }
 
     #[test]
+    fn seed_row_uses_bind_port_instead_of_gateway_seat_port() {
+        if !isolated_ruyi_case() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("etc/appliance/config.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            serde_json::json!({"caduceus": {
+                "bind": "0.0.0.0:8787",
+                "seat_port": 3014
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        env::set_var(
+            crate::bands::stage_profile::TEST_APPLIANCE_CONFIG_PATH_ENV,
+            &config_path,
+        );
+        let identity = LocalIdentity {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            hostname: "arcadia".into(),
+            ipv4: "192.0.2.1".into(),
+            first_missing_signal: None,
+        };
+        let profile = crate::Profile {
+            id: "homeconsole".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: Vec::new(),
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        };
+
+        let (_, perspective) = registrant::seed_perspective_for(identity, profile).unwrap();
+        let seed = perspective["self"].clone();
+
+        assert_eq!(seed["caduceus_port"], 8787);
+        assert_ne!(seed["caduceus_port"], 3014);
+        fs::write(
+            &config_path,
+            serde_json::json!({"caduceus": {
+                "bind": "0.0.0.0:0",
+                "seat_port": 3014
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(registrant::caduceus_port(), None);
+        println!(
+            "RUYI_PORT_SEED_ROW={}",
+            serde_json::to_string(&seed).unwrap()
+        );
+    }
+
+    #[test]
+    fn registrant_put_bodies_carry_declared_port_and_omit_absent_or_unparseable_bind() {
+        if !isolated_ruyi_case() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        env::set_var(
+            "HARMONIA_INTERACTABLES_PATH",
+            temp.path().join("interactables.json"),
+        );
+        let path = temp.path().join("etc/appliance/ruyi.json");
+        seed_test_perspective(&path);
+        let peer = RuyiTestPeer::start(&path);
+        let config_path = temp.path().join("etc/appliance/config.json");
+        let write_config = |bind: Option<&str>| {
+            let mut caduceus = serde_json::json!({"seat_port": peer.port()});
+            if let Some(bind) = bind {
+                caduceus["bind"] = serde_json::json!(bind);
+            }
+            fs::write(
+                &config_path,
+                serde_json::json!({"caduceus": caduceus}).to_string(),
+            )
+            .unwrap();
+        };
+        write_config(Some("0.0.0.0:8787"));
+        env::set_var(
+            crate::bands::stage_profile::TEST_APPLIANCE_CONFIG_PATH_ENV,
+            &config_path,
+        );
+        let profile = crate::Profile {
+            id: "homeconsole".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: vec!["caduceus".into()],
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        };
+        let identity = LocalIdentity {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            hostname: "arcadia".into(),
+            ipv4: "192.0.2.1".into(),
+            first_missing_signal: None,
+        };
+        let evidence = crate::atoms::attest::SyzygyEvidence {
+            mint: mint(),
+            member_flags: serde_json::json!({}),
+            observations: serde_json::json!({}),
+        };
+
+        let declared = register_promoted(
+            &profile,
+            "run-port-declared",
+            &committed_receipt(),
+            &evidence,
+            &identity,
+            &temp.path().join("receipts/declared"),
+        )
+        .unwrap();
+        write_config(None);
+        let absent = register_promoted(
+            &profile,
+            "run-port-absent",
+            &committed_receipt(),
+            &evidence,
+            &identity,
+            &temp.path().join("receipts/absent"),
+        )
+        .unwrap();
+        write_config(Some("0.0.0.0"));
+        let unparseable = register_promoted(
+            &profile,
+            "run-port-unparseable",
+            &committed_receipt(),
+            &evidence,
+            &identity,
+            &temp.path().join("receipts/unparseable"),
+        )
+        .unwrap();
+        let puts = peer.finish();
+
+        assert!(
+            labelled_test_engine(),
+            "fixture requires a labelled test binary"
+        );
+        assert_eq!(declared["state"], "self-is-gateway");
+        assert_eq!(absent["state"], "self-is-gateway");
+        assert_eq!(unparseable["state"], "self-is-gateway");
+        assert_eq!(declared["caduceus_port"], 8787);
+        assert_eq!(absent["caduceus_port"], "undeclared");
+        assert_eq!(unparseable["caduceus_port"], "undeclared");
+        assert_eq!(puts.len(), 3);
+        assert_eq!(puts[0]["caduceus_port"], 8787);
+        assert!(puts[1].get("caduceus_port").is_none());
+        assert!(puts[2].get("caduceus_port").is_none());
+        assert!(puts[1]["perspective"]["self"]
+            .get("caduceus_port")
+            .is_none());
+        assert!(puts[2]["perspective"]["self"]
+            .get("caduceus_port")
+            .is_none());
+        println!(
+            "RUYI_PORT_PUT_DECLARED={}",
+            serde_json::to_string(&puts[0]).unwrap()
+        );
+        println!(
+            "RUYI_PORT_PUT_ABSENT={}",
+            serde_json::to_string(&puts[1]).unwrap()
+        );
+        println!(
+            "RUYI_PORT_PUT_UNPARSEABLE={}",
+            serde_json::to_string(&puts[2]).unwrap()
+        );
+    }
+
+    #[test]
     fn committed_state_uses_env_sha_carried_by_mint() {
         if !isolated_ruyi_case() {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
+        env::set_var(
+            "HARMONIA_INTERACTABLES_PATH",
+            temp.path().join("interactables.json"),
+        );
         let path = temp.path().join("etc/appliance/ruyi.json");
         let before = seed_test_perspective(&path);
         let peer = RuyiTestPeer::start(&path);
@@ -829,7 +1076,7 @@ mod tests {
             id: "homeconsole".into(),
             identity: "test".into(),
             package_authority: None,
-            modules: Vec::new(),
+            modules: vec!["caduceus".into()],
             hotfixes: Vec::new(),
             syzygy_declaration: None,
         };
@@ -898,7 +1145,10 @@ mod tests {
     fn committed_state_rejects_invalid_mint_env_sha() {
         let mut invalid = mint();
         invalid.env_sha = "D".repeat(64);
-        assert_eq!(mint_error(&invalid), Some("ruyi-syzygy-mint-env-invalid".into()));
+        assert_eq!(
+            mint_error(&invalid),
+            Some("ruyi-syzygy-mint-env-invalid".into())
+        );
     }
 
     #[test]
@@ -922,6 +1172,10 @@ mod tests {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
+        env::set_var(
+            "HARMONIA_INTERACTABLES_PATH",
+            temp.path().join("interactables.json"),
+        );
         let path = temp.path().join("etc/appliance/ruyi.json");
         let before = seed_test_perspective(&path);
         let peer = RuyiTestPeer::start(&path);
@@ -947,7 +1201,7 @@ mod tests {
             id: "homeconsole".into(),
             identity: "test".into(),
             package_authority: None,
-            modules: Vec::new(),
+            modules: vec!["caduceus".into()],
             hotfixes: Vec::new(),
             syzygy_declaration: None,
         };
@@ -1050,5 +1304,4 @@ mod tests {
         env::remove_var(RUYI_PATH_ENV);
         assert_eq!(ruyi_path(), PathBuf::from("/etc/appliance/ruyi.json"));
     }
-
 }
