@@ -2,8 +2,10 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[path = "ruyi/registrant.rs"]
@@ -193,20 +195,34 @@ fn address_interfaces(stdout: &str, ipv4: Ipv4Addr) -> Vec<String> {
     interfaces
 }
 
-fn dns_local_ipv4(stdout: &str, addresses: &str) -> Result<Option<Ipv4Addr>, String> {
-    let mut answers = Vec::new();
-    for answer in stdout
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter_map(|value| value.parse::<Ipv4Addr>().ok())
-    {
-        if !answers.contains(&answer) {
-            answers.push(answer);
-        }
-    }
-    if answers.is_empty() {
+fn resolve_ipv4(canonical_name: String) -> Vec<Ipv4Addr> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let answers = (canonical_name.as_str(), 0)
+            .to_socket_addrs()
+            .map(|answers| {
+                answers
+                    .filter_map(|answer| match answer {
+                        std::net::SocketAddr::V4(address) => Some(*address.ip()),
+                        std::net::SocketAddr::V6(_) => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let _ = sender.send(answers);
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or_default()
+}
+
+fn dns_local_ipv4(dns_answers: &[Ipv4Addr], addresses: &str) -> Result<Option<Ipv4Addr>, String> {
+    if dns_answers.is_empty() {
         return Ok(None);
     }
+    let mut answers = dns_answers.to_vec();
+    answers.sort_unstable();
+    answers.dedup();
     let local = answers
         .into_iter()
         .filter(|ipv4| address_interfaces(addresses, *ipv4).len() == 1)
@@ -322,15 +338,8 @@ pub(crate) fn local_identity() -> Result<LocalIdentity, String> {
     if !addresses.ok {
         return Err("ruyi-local-ipv4-command-failed".into());
     }
-    let resolved = crate::atoms::ask::read_only_command_with_timeout(
-        "/usr/bin/getent",
-        &["ahostsv4".into(), format!("{hostname}.home.arpa")],
-        Duration::from_secs(2),
-    );
-    if !resolved.ok && resolved.code != Some(2) {
-        return Err("ruyi-local-dns-command-failed".into());
-    }
-    if let Some(ipv4) = dns_local_ipv4(&resolved.stdout, &addresses.stdout)? {
+    let dns_answers = resolve_ipv4(format!("{hostname}.home.arpa"));
+    if let Some(ipv4) = dns_local_ipv4(&dns_answers, &addresses.stdout)? {
         return identity_for_ipv4(&hostname, ipv4, &addresses.stdout, None);
     }
 
@@ -597,10 +606,9 @@ mod tests {
             "2: br-backup    inet 198.51.100.1/24 scope global br-backup\n",
             "3: lan0    inet 192.0.2.1/24 scope global lan0\n",
         );
-        let dns = "192.0.2.1 STREAM home.home.arpa\n\
-                   192.0.2.1 DGRAM home.home.arpa\n";
+        let dns = ["192.0.2.1".parse().unwrap()];
 
-        let ipv4 = dns_local_ipv4(dns, addresses).unwrap().unwrap();
+        let ipv4 = dns_local_ipv4(&dns, addresses).unwrap().unwrap();
 
         assert_eq!(ipv4, "192.0.2.1".parse::<Ipv4Addr>().unwrap());
         assert_eq!(address_interfaces(addresses, ipv4), vec!["lan0"]);
