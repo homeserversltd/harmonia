@@ -472,12 +472,7 @@ pub(crate) fn propose_ruyi_perspective_seed(
     const ID: &str = "ruyi-perspective-seed";
     let path = feed_path();
     let mut feed = load_feed(&path)?;
-    if feed.interactables.iter().any(|item| item.kind == ID)
-        || feed
-            .receipts
-            .iter()
-            .any(|receipt| receipt.get("id").and_then(serde_json::Value::as_str) == Some(ID))
-    {
+    if feed.interactables.iter().any(|item| item.kind == ID) {
         return Ok(());
     }
     let prior = feed
@@ -1069,6 +1064,116 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn ruyi_seed_item() -> Interactable {
+        Interactable {
+            id: "ruyi-perspective-seed".into(),
+            module_id: "caduceus".into(),
+            name: "Seed this staff's Ruyi perspective".into(),
+            description: "Create the absent local Ruyi perspective after a human accepts this proposal."
+                .into(),
+            kind: "ruyi-perspective-seed".into(),
+            target_path: None,
+            reference_source_path: None,
+            drift: DriftSummary {
+                content: true,
+                mode: false,
+                ownership: false,
+            },
+            created_at: "100".into(),
+            refreshed_at: "100".into(),
+            available_at: None,
+            silenced: false,
+            silenced_at: None,
+            has_run: false,
+            mode: None,
+            owner: None,
+            group: None,
+            source_sha: None,
+            target_sha: None,
+            commits_behind: None,
+            live_sha: None,
+            reference_sha: None,
+            recognition_score: None,
+            diff: None,
+            script: "harmonia interactable run ruyi-perspective-seed".into(),
+            show_only_if: String::new(),
+            completion_check: String::new(),
+            evidence: serde_json::json!({
+                "perspective_path": "/etc/appliance/ruyi.json",
+                "perspective_file_exists": false
+            }),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn ruyi_seed_reproposes_after_historical_receipt() {
+        let root = fixture("ruyi-seed-historical-receipt");
+        let feed_path = root.join("interactables.json");
+        let mut feed = make_feed(Vec::new());
+        feed.receipts.push(serde_json::json!({
+            "schema": "harmonia.ruyi.perspective.seed.receipt.v1",
+            "ok": true,
+            "id": "ruyi-perspective-seed"
+        }));
+        let old_receipts = feed.receipts.clone();
+        crate::bands::propose_edits::persist_feed(&feed_path, &feed).unwrap();
+
+        let _env_lock = INTERACTABLES_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let prior_feed = std::env::var_os("HARMONIA_INTERACTABLES_PATH");
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
+        let result = propose_ruyi_perspective_seed(None);
+        match prior_feed {
+            Some(value) => std::env::set_var("HARMONIA_INTERACTABLES_PATH", value),
+            None => std::env::remove_var("HARMONIA_INTERACTABLES_PATH"),
+        }
+        result.unwrap();
+
+        let final_feed = load_feed(&feed_path).unwrap();
+        assert_eq!(
+            final_feed
+                .interactables
+                .iter()
+                .filter(|item| item.kind == "ruyi-perspective-seed")
+                .count(),
+            1
+        );
+        assert_eq!(final_feed.receipts, old_receipts);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ruyi_seed_does_not_duplicate_live_proposal() {
+        let root = fixture("ruyi-seed-live-proposal");
+        let feed_path = root.join("interactables.json");
+        crate::bands::propose_edits::persist_feed(
+            &feed_path,
+            &make_feed(vec![ruyi_seed_item()]),
+        )
+        .unwrap();
+
+        let _env_lock = INTERACTABLES_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let prior_feed = std::env::var_os("HARMONIA_INTERACTABLES_PATH");
+        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
+        let result = propose_ruyi_perspective_seed(None);
+        match prior_feed {
+            Some(value) => std::env::set_var("HARMONIA_INTERACTABLES_PATH", value),
+            None => std::env::remove_var("HARMONIA_INTERACTABLES_PATH"),
+        }
+        result.unwrap();
+
+        let final_feed = load_feed(&feed_path).unwrap();
+        assert_eq!(final_feed.interactables.len(), 1);
+        assert_eq!(final_feed.interactables[0].id, "ruyi-perspective-seed");
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn item(root: &std::path::Path) -> Interactable {
