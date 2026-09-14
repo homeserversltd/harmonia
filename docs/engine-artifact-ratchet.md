@@ -1,11 +1,14 @@
 # Engine Artifact Ratchet
 
 The local ratchet lock is Harmonia’s trust authority for engine artifacts.
-Transport and hosting are untrusted retrieval and publication surfaces.
+Source declarations come from the appliance configuration; release and source
+acquisition use those declarations and the forge. There is no private engine
+configuration sidecar or transport table.
 
 ## Lock
 
-The kernel-owned lock lives beside `engine.json` by default:
+The ratchet lock, when present, lives under Harmonia’s owned state root at
+`/var/lib/harmonia/engine-ratchet-lock.json`:
 
 ```json
 {
@@ -24,31 +27,27 @@ The kernel-owned lock lives beside `engine.json` by default:
 A body converges only to the local blessed lock. Newer observed releases are
 receipt evidence, not local authority. A body does not self-advance this lock.
 
-## Versioned artifacts and local trust
+## Compiled engine defaults
 
-Versioned engine artifacts are subordinate to the local ratchet lock. The lock
-is the only artifact trust authority; a release, cache, or transport can supply
-an observation, but cannot change the admitted version or checksum. A missing
-or unusable artifact is receipted as a refusal, and an integrity mismatch stops
-the walk rather than changing authority.
+The engine uses compiled local defaults rather than an engine configuration
+file. It installs at `/usr/local/bin/harmonia`, acquires and builds source
+under `/var/lib/harmonia/engine-source`, stages the release below that source
+root, and derives the profile index from the owned module root. Unit activation
+is the enablement state; there is no separate `enabled` setting.
 
 ## Source authority
 
-`engine.json` contains local engine mechanics only: enablement, installation,
-build/staging, profile-index, ratchet-lock, and receipt/cache concerns. It does
-not declare source identity, source selection, or credentials.
+`/etc/appliance/config.json` is the source authority. Its `sources`
+declaration supplies candidate URLs and refs for each source, and the forge
+provides the release/source acquisition surface. The engine component identity
+is compiled into the binary from `HARMONIA_COMPONENT` (defaulting to
+`harmonia`), and renew-self resolves the matching source entry. No private
+engine file selects which engine is running.
 
-`profile.json` is the source authority. Its `sources` declaration supplies the
-candidate URLs and ref for each source. The engine component identity is
-compiled into the binary from `HARMONIA_COMPONENT` (defaulting to `harmonia`),
-and renew-self resolves the matching `sources` entry. No certificate field
-selects which engine is running. A legacy `kernel.engine_component` value, when
-present, is optional compatibility metadata and is ignored.
-
-If the compiled component has no matching `sources` entry, acquisition, build,
-and promotion are refused and the installed engine remains untouched. The same
-preservation rule applies when the selected source declaration is malformed or
-unusable.
+If the compiled component has no matching source entry, acquisition, build,
+and promotion are refused and the installed engine remains untouched. The
+same preservation rule applies when the selected source declaration is
+malformed or unusable.
 
 Credentials are selected from the candidate URL host: `git.home.arpa` uses the
 owner credential in `/etc/default/forgejo`, while foreign hosts are attempted
@@ -61,16 +60,24 @@ credentials or the owner-only acquisition lane.
 Source acquisition runs as the owner over the owner's SSH identity. That
 owner-borne SSH identity is the complete credential story for the engine source
 lane. The engine does not accept a configured alternate identity or other
-credential input, and it never writes credential material to its
-configuration, environment, receipts, or observed state.
+credential input, and it never writes credential material to its receipts or
+observed state.
+
+## Artifact trust
+
+Versioned engine artifacts are subordinate to the local ratchet lock. The lock
+is the only artifact trust authority; a release or forge can supply an
+observation, but cannot change the admitted version or checksum. A missing or
+unusable artifact is receipted as a refusal, and an integrity mismatch stops
+the walk rather than changing authority.
 
 ## Observed appliance state
 
-`ruyi.json` is engine-maintained observed appliance state. Projectio owns its
+`ruyi.json` is engine-maintained observed appliance state. Projection owns its
 readback and writes; it is not a declaration, source authority, credential
-authority, or replacement for `profile.json`. Observed state can describe what
-was seen on the appliance, but it cannot select a source or authorize an engine
-change.
+authority, or replacement for `/etc/appliance/config.json`. Observed state can
+describe what was seen on the appliance, but it cannot select a source or
+authorize an engine change.
 
 ## Product and operator boundary
 

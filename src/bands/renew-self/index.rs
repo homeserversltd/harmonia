@@ -30,7 +30,7 @@ pub(crate) fn is_stale_staged_validation_failure(execution: &ModuleExecution) ->
 }
 
 use crate::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::env;
@@ -42,10 +42,8 @@ const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
 const SELF_UPDATE_REEXEC_GENERATION: u64 = 1;
 const SELF_UPDATE_REEXEC_RUNNING_FINGERPRINT_MISSING: &str =
     "harmonia-self-update-reexec-running-fingerprint-missing";
-const ENGINE_CONFIG_ENV: &str = "HARMONIA_ENGINE_CONFIG_PATH";
-const DEFAULT_ENGINE_CONFIG: &str = "/etc/harmonia/engine.json";
-const ENGINE_RATCHET_LOCK_SCHEMA: &str = "harmonia.engine.ratchet_lock.v1";
-const DEFAULT_ENGINE_RATCHET_LOCK_NAME: &str = "engine-ratchet-lock.json";
+pub(crate) const ENGINE_INSTALL_BIN: &str = "/usr/local/bin/harmonia";
+pub(crate) const ENGINE_SOURCE_ROOT: &str = "/var/lib/harmonia/engine-source";
 const HARMONIA_BUILD_TARGET: &str = "x86_64-unknown-linux-gnu";
 const HARMONIA_BUILD_SHA_ENV: &str = "HARMONIA_BUILD_SHA";
 const HARMONIA_BUILD_ENV_SHA_ENV: &str = "HARMONIA_BUILD_ENV_SHA";
@@ -145,89 +143,6 @@ fn capture_build_environment(source_sha: &str) -> Result<BuildEnvironmentIdentit
     ))
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnginePlaneConfig {
-    pub install_bin: PathBuf,
-    pub enabled: bool,
-    /// Local staging/build mechanics only; source identity is appliance-config-owned.
-    #[serde(default = "default_build_root")]
-    pub build_root: PathBuf,
-    #[serde(default = "default_remote")]
-    pub remote: String,
-    #[serde(default)]
-    pub build_program: Option<String>,
-    #[serde(default)]
-    pub build_args: Option<Vec<String>>,
-    #[serde(default)]
-    pub staged_bin: Option<PathBuf>,
-    #[serde(default)]
-    pub profile_index: Option<PathBuf>,
-    #[serde(default)]
-    pub ratchet_lock: Option<PathBuf>,
-    #[serde(default)]
-    pub artifact_transport: Option<EngineArtifactTransport>,
-    #[serde(default)]
-    pub artifact_transports: Vec<EngineArtifactTransport>,
-}
-
-impl EnginePlaneConfig {
-    fn artifact_transport_chain(&self) -> Vec<EngineArtifactTransport> {
-        if !self.artifact_transports.is_empty() {
-            return self.artifact_transports.clone();
-        }
-        self.artifact_transport.clone().into_iter().collect()
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EngineArtifactTransport {
-    #[serde(default = "default_artifact_kind")]
-    pub kind: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    pub cache_dir: PathBuf,
-    #[serde(default = "default_remote")]
-    pub remote: String,
-}
-
-impl EngineArtifactTransport {
-    fn label(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| format!("{}:{}", self.remote, self.kind))
-    }
-}
-
-fn default_artifact_kind() -> String {
-    "git".to_string()
-}
-
-fn default_build_root() -> PathBuf {
-    PathBuf::from("/var/lib/harmonia/engine-source")
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub(crate) struct EngineRatchetLock {
-    pub schema: String,
-    pub engine_version: String,
-    pub source_head_sha: String,
-    pub artifacts: std::collections::BTreeMap<String, EngineRatchetArtifact>,
-    #[serde(default)]
-    pub observed_release: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub(crate) struct EngineRatchetArtifact {
-    pub name: String,
-    pub sha256: String,
-}
-
-fn default_remote() -> String {
-    "origin".to_string()
-}
-
 /// Canonicalize only the estate Forgejo URL forms that are allowed to reach
 /// the fixed-custody Git tool. Public HTTPS remains opaque and unchanged.
 pub(crate) fn canonicalize_git_candidate(url: &str) -> Result<String, String> {
@@ -263,125 +178,6 @@ pub(crate) fn canonicalize_git_candidate(url: &str) -> Result<String, String> {
         return Err(format!("git-candidate-estate-path-invalid {url}"));
     }
     Ok(format!("https://git.home.arpa/{path}"))
-}
-
-pub(crate) fn engine_config_path() -> PathBuf {
-    env::var_os(ENGINE_CONFIG_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ENGINE_CONFIG))
-}
-
-fn validate_declared_source_path(field: &str, path: &Path) -> Result<(), String> {
-    use std::path::Component;
-    if !path.is_absolute() {
-        return Err(format!(
-            "engine-config-{field}-not-absolute path={}",
-            path.display()
-        ));
-    }
-    if path == Path::new("/") {
-        return Err(format!("engine-config-{field}-unsafe-path-shape path=/"));
-    }
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::CurDir | Component::ParentDir | Component::Prefix(_)
-        )
-    }) {
-        return Err(format!(
-            "engine-config-{field}-unsafe-path-shape path={}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-fn validate_engine_plane_config(config: EnginePlaneConfig) -> Result<EnginePlaneConfig, String> {
-    validate_declared_source_path("install-bin", &config.install_bin)?;
-    if let Some(path) = config.staged_bin.as_deref() {
-        validate_declared_source_path("staged-bin", path)?;
-    }
-    if let Some(path) = config.profile_index.as_deref() {
-        validate_declared_source_path("profile-index", path)?;
-    }
-    if let Some(path) = config.ratchet_lock.as_deref() {
-        validate_declared_source_path("ratchet-lock", path)?;
-    }
-    for transport in config.artifact_transport_chain() {
-        validate_declared_source_path("artifact-cache-dir", &transport.cache_dir)?;
-    }
-    Ok(config)
-}
-
-const RETIRED_ENGINE_TOP_LEVEL_FIELDS: &[&str] = &[
-    "source_repo_url",
-    "branch",
-    "source_dir",
-    "local_source_checkout",
-    "git_bearer",
-    "source_components",
-    "credential_scopes",
-];
-
-fn parse_validate_engine_plane_config(
-    text: &str,
-    path: &Path,
-) -> Result<(EnginePlaneConfig, Vec<String>), String> {
-    let mut raw: Value = serde_json::from_str(text)
-        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
-    let mut retired = Vec::new();
-    if let Value::Object(object) = &mut raw {
-        for field in RETIRED_ENGINE_TOP_LEVEL_FIELDS {
-            if object.remove(*field).is_some() {
-                record_retired_engine_config_field(&mut retired, field);
-            }
-        }
-        if let Some(Value::Array(transports)) = object.get_mut("artifact_transports") {
-            for transport in transports {
-                let Value::Object(transport) = transport else {
-                    continue;
-                };
-                if transport.remove("repo_url").is_some() {
-                    record_retired_engine_config_field(
-                        &mut retired,
-                        "artifact_transports[].repo_url",
-                    );
-                }
-                if transport.remove("branch").is_some() {
-                    record_retired_engine_config_field(
-                        &mut retired,
-                        "artifact_transports[].branch",
-                    );
-                }
-            }
-        }
-    }
-    let config: EnginePlaneConfig = serde_json::from_value(raw)
-        .map_err(|e| format!("engine-config-parse-failed {}: {e}", path.display()))?;
-    let config = validate_engine_plane_config(config)?;
-    Ok((config, retired))
-}
-
-fn record_retired_engine_config_field(retired: &mut Vec<String>, field: &str) {
-    if !retired.iter().any(|existing| existing == field) {
-        retired.push(field.to_string());
-    }
-}
-
-pub(crate) fn load_engine_plane_config(path: &Path) -> Result<Option<EnginePlaneConfig>, String> {
-    load_engine_plane_config_with_debt(path).map(|config| config.map(|(config, _retired)| config))
-}
-
-pub(crate) fn load_engine_plane_config_with_debt(
-    path: &Path,
-) -> Result<Option<(EnginePlaneConfig, Vec<String>)>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("engine-config-read-failed {}: {e}", path.display()))?;
-    let config = parse_validate_engine_plane_config(&text, path)?;
-    Ok(Some(config))
 }
 
 pub(crate) fn install_bin_fingerprint(path: &Path) -> Option<String> {
@@ -543,144 +339,15 @@ fn write_bearer_command_receipt(
     )
 }
 
-fn default_build_args(_config: &EnginePlaneConfig) -> Vec<String> {
-    vec![
-        "build".into(),
-        "-p".into(),
-        "harmonia".into(),
-        "--release".into(),
-    ]
+fn staged_bin() -> PathBuf {
+    PathBuf::from(ENGINE_SOURCE_ROOT).join("target/release/harmonia")
 }
 
-fn staged_bin(config: &EnginePlaneConfig) -> PathBuf {
-    config
-        .staged_bin
-        .clone()
-        .unwrap_or_else(|| config.build_root.join("target/release/harmonia"))
-}
-
-fn profile_index_from(module_root: &Path, config: &EnginePlaneConfig) -> PathBuf {
-    config
-        .profile_index
-        .clone()
-        .or_else(|| {
-            module_root
-                .parent()
-                .map(|profile_root| profile_root.join("index.json"))
-        })
+fn profile_index_from(module_root: &Path) -> PathBuf {
+    module_root
+        .parent()
+        .map(|profile_root| profile_root.join("index.json"))
         .unwrap_or_else(|| PathBuf::from("profiles/homeconsole/index.json"))
-}
-
-fn ratchet_lock_path(config_path: &Path, config: &EnginePlaneConfig) -> PathBuf {
-    config.ratchet_lock.clone().unwrap_or_else(|| {
-        config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("/etc/harmonia"))
-            .join(DEFAULT_ENGINE_RATCHET_LOCK_NAME)
-    })
-}
-
-fn load_ratchet_lock(path: &Path) -> Result<Option<EngineRatchetLock>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("engine-ratchet-lock-read-failed {}: {e}", path.display()))?;
-    let lock: EngineRatchetLock = serde_json::from_str(&text)
-        .map_err(|e| format!("engine-ratchet-lock-parse-failed {}: {e}", path.display()))?;
-    if lock.schema != ENGINE_RATCHET_LOCK_SCHEMA {
-        return Err(format!(
-            "engine-ratchet-lock-schema-unsupported {}",
-            lock.schema
-        ));
-    }
-    Ok(Some(lock))
-}
-
-fn current_arch_key() -> String {
-    match std::env::consts::ARCH {
-        "x86_64" => "x86_64".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn compare_version(candidate: &str, running: &str) -> std::cmp::Ordering {
-    let parse = |v: &str| -> Vec<u64> {
-        v.split(|c: char| !c.is_ascii_digit())
-            .filter(|p| !p.is_empty())
-            .map(|p| p.parse::<u64>().unwrap_or(0))
-            .collect()
-    };
-    let a = parse(candidate);
-    let b = parse(running);
-    for i in 0..a.len().max(b.len()) {
-        let av = *a.get(i).unwrap_or(&0);
-        let bv = *b.get(i).unwrap_or(&0);
-        match av.cmp(&bv) {
-            std::cmp::Ordering::Equal => continue,
-            other => return other,
-        }
-    }
-    std::cmp::Ordering::Equal
-}
-
-fn copy_verified_artifact(
-    staged: &Path,
-    source: &Path,
-    expected_sha: &str,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-    receipt_dir: &Path,
-) -> Result<CmdResult, String> {
-    if !apply {
-        return Ok(CmdResult {
-            ok: true,
-            code: 0,
-            stdout: format!(
-                "planned artifact placement {} -> {}",
-                source.display(),
-                staged.display()
-            ),
-            stderr: String::new(),
-        });
-    }
-    let actual = sha256_file(source)?;
-    if !actual.eq_ignore_ascii_case(expected_sha) {
-        return Ok(CmdResult {
-            ok: false,
-            code: -1,
-            stdout: String::new(),
-            stderr: format!(
-                "engine-artifact-sha256-mismatch expected={expected_sha} actual={actual} path={}",
-                source.display()
-            ),
-        });
-    }
-    let bytes = fs::read(source)
-        .map_err(|e| format!("engine-artifact-read-failed {}: {e}", source.display()))?;
-    let placed = crate::place_file::execute(crate::place_file::PlaceFileRequest {
-        path: staged,
-        declared_bytes: &bytes,
-        mode: Some(0o755),
-        ownership: crate::place_file::DeclaredOwnership {
-            uid: None,
-            gid: None,
-        },
-        backup: crate::place_file::BackupPolicy::To(
-            &receipt_dir.join("backups/prior-artifact-stage"),
-        ),
-        invocation,
-    })?;
-    Ok(CmdResult {
-        ok: placed.receipt.ok,
-        code: if placed.receipt.ok { 0 } else { -1 },
-        stdout: format!(
-            "artifact staged {} sha256={actual} changed={}",
-            staged.display(),
-            placed.movement.changed()
-        ),
-        stderr: String::new(),
-    })
 }
 
 fn promote_staged_binary(
@@ -739,9 +406,6 @@ fn promote_staged_binary(
 
 fn emit_preflight_receipt(
     preflight_dir: &Path,
-    config_path: &Path,
-    config: &EnginePlaneConfig,
-    retired_engine_config_fields: &[String],
     component: &str,
     engine_component_ignored: Option<&str>,
     source_head: Option<&str>,
@@ -765,21 +429,17 @@ fn emit_preflight_receipt(
             "stage": if ok { "complete" } else { first_missing_signal },
             "first_missing_signal": first_missing_signal,
             "operation_count": operation_count,
-            "engine_config": config_path,
-            "retired_engine_config_fields": retired_engine_config_fields,
-            "enabled": config.enabled,
             "source_authority": "appliance-config-sources",
             "compiled_component": component,
             "engine_component_ignored": engine_component_ignored,
-            "build_root": config.build_root,
-            "install_bin": config.install_bin,
+            "build_root": ENGINE_SOURCE_ROOT,
+            "install_bin": ENGINE_INSTALL_BIN,
             "source_head": source_head.unwrap_or("unknown"),
             "staged_sha256": staged_sha,
             "installed_sha256": installed_sha,
             "staged_build_identity": staged_build_identity.and_then(|identity| identity.env_sha.as_deref().zip(source_head).map(|(env_sha, source_sha)| json!({"source_sha": source_sha, "env_sha": env_sha}))),
             "reexec": reexec,
             "git_bearer": "owner",
-            "artifact_transport_count": config.artifact_transport_chain().len(),
             "failure_mode": "honest-source-resolution",
         }),
     )
@@ -851,7 +511,6 @@ fn forward_preflight_receipt(
     first_missing_signal: &str,
     component: &str,
     engine_component_ignored: Option<&str>,
-    retired_engine_config_fields: &[String],
 ) {
     let ignored_component_line =
         match ignored_engine_component_receipt_line(engine_component_ignored) {
@@ -864,7 +523,7 @@ fn forward_preflight_receipt(
             "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}{ignored_component_line}"
         ),
         Some(
-            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "retired_engine_config_fields": retired_engine_config_fields, "attest_owner": "hyalos.forward_receipt"}),
+            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "attest_owner": "hyalos.forward_receipt"}),
         ),
         Some(ok),
             None,
@@ -879,50 +538,6 @@ pub(crate) fn run_engine_preflight(
 ) -> Result<ModuleExecution, String> {
     let preflight_dir = receipt_dir.join("engine-preflight");
     crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
-    let config_path = engine_config_path();
-    let Some((config, retired_engine_config_fields)) =
-        load_engine_plane_config_with_debt(&config_path)?
-    else {
-        let signal = "engine-self-possession-unconfigured";
-        write_json(
-            &preflight_dir.join("run.json"),
-            &json!({
-                "schema": PREFLIGHT_SCHEMA,
-                "ok": false,
-                "apply": apply,
-                "changed": false,
-                "first_missing_signal": signal,
-                "engine_config": config_path,
-                "retired_engine_config_fields": [],
-                "source_authority": "appliance-config-sources",
-                "reexec": null,
-            }),
-        )?;
-        return Ok(failed_execution(signal));
-    };
-    if !config.enabled {
-        let signal = "engine-self-possession-disabled";
-        emit_preflight_receipt(
-            &preflight_dir,
-            &config_path,
-            &config,
-            &retired_engine_config_fields,
-            "unknown",
-            None,
-            None,
-            None,
-            install_bin_fingerprint(&config.install_bin).as_deref(),
-            false,
-            apply,
-            false,
-            signal,
-            0,
-            None,
-            None,
-        )?;
-        return Ok(failed_execution(signal));
-    }
-
     let certificate_path = crate::device_profile::device_profile_certificate_path();
     let engine_component_ignored =
         ignored_engine_component(&certificate_path, crate::COMPILED_COMPONENT);
@@ -937,14 +552,11 @@ pub(crate) fn run_engine_preflight(
         Err(signal) => {
             emit_preflight_receipt(
                 &preflight_dir,
-                &config_path,
-                &config,
-                &retired_engine_config_fields,
                 &component_for_receipt,
                 engine_component_ignored.as_deref(),
                 None,
                 None,
-                install_bin_fingerprint(&config.install_bin).as_deref(),
+                install_bin_fingerprint(Path::new(ENGINE_INSTALL_BIN)).as_deref(),
                 false,
                 apply,
                 false,
@@ -964,7 +576,7 @@ pub(crate) fn run_engine_preflight(
     .then(|| resolution.requested_ref.clone());
     let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
         &resolution,
-        config.build_root.clone(),
+        PathBuf::from(ENGINE_SOURCE_ROOT),
         expected_commit,
     );
     let source = crate::bands::pull_source::execute_source(&source_plan, apply, invocation);
@@ -996,8 +608,9 @@ pub(crate) fn run_engine_preflight(
         "engine-source-acquisition-failed".to_string()
     };
     let running_before = running_binary_fingerprint();
-    let install_before = install_bin_fingerprint(&config.install_bin);
-    let staged = staged_bin(&config);
+    let install_bin = PathBuf::from(ENGINE_INSTALL_BIN);
+    let install_before = install_bin_fingerprint(&install_bin);
+    let staged = staged_bin();
     let mut staged_sha = None;
     let mut staged_build_identity = None;
     let mut build = CmdResult {
@@ -1011,9 +624,6 @@ pub(crate) fn run_engine_preflight(
             first_missing_signal = "engine-source-head-absent".to_string();
             emit_preflight_receipt(
                 &preflight_dir,
-                &config_path,
-                &config,
-                &retired_engine_config_fields,
                 &component,
                 engine_component_ignored.as_deref(),
                 None,
@@ -1031,10 +641,10 @@ pub(crate) fn run_engine_preflight(
         };
         let build_identity = capture_build_environment(source_head)?;
         let observation = crate::build_crate::run_build_with_mode(
-            &config.build_root,
+            Path::new(ENGINE_SOURCE_ROOT),
             source_head,
             install_before.as_deref(),
-            &config.install_bin,
+            &install_bin,
             &staged,
             apply,
             &build_identity.environment,
@@ -1082,7 +692,7 @@ pub(crate) fn run_engine_preflight(
                 receipt_dir: &preflight_dir,
                 staged: &staged,
                 module_root,
-                profile_index: &profile_index_from(module_root, &config),
+                profile_index: &profile_index_from(module_root),
                 apply,
             })?;
         operation_count += proof.2;
@@ -1091,13 +701,8 @@ pub(crate) fn run_engine_preflight(
                 .1
                 .unwrap_or_else(|| "engine-proof-battery-failed".to_string());
         } else {
-            promote = promote_staged_binary(
-                &staged,
-                &config.install_bin,
-                true,
-                invocation,
-                &preflight_dir,
-            )?;
+            promote =
+                promote_staged_binary(&staged, &install_bin, true, invocation, &preflight_dir)?;
             operation_count += 1;
             if !promote.ok {
                 first_missing_signal = "engine-promotion-failed".to_string();
@@ -1107,7 +712,7 @@ pub(crate) fn run_engine_preflight(
         }
     }
     write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
-    let installed_after = install_bin_fingerprint(&config.install_bin);
+    let installed_after = install_bin_fingerprint(&install_bin);
     let install_changed = promotion_changed(
         apply,
         promote.ok,
@@ -1127,9 +732,6 @@ pub(crate) fn run_engine_preflight(
     let ok = first_missing_signal == "none";
     emit_preflight_receipt(
         &preflight_dir,
-        &config_path,
-        &config,
-        &retired_engine_config_fields,
         &component,
         engine_component_ignored.as_deref(),
         source_head.as_deref(),
@@ -1154,12 +756,11 @@ pub(crate) fn run_engine_preflight(
                 signal,
                 &component,
                 engine_component_ignored.as_deref(),
-                &retired_engine_config_fields,
             );
             return Err(signal.to_string());
         };
         let plan = crate::atoms::r#do::replace_process::Plan {
-            successor: config.install_bin.clone(),
+            successor: install_bin,
             argv: env::args().skip(1).collect(),
             guard_name: SELF_UPDATE_REEXEC_ENV.to_string(),
             guard_value: "1".to_string(),
@@ -1177,7 +778,6 @@ pub(crate) fn run_engine_preflight(
                 &signal,
                 &component,
                 engine_component_ignored.as_deref(),
-                &retired_engine_config_fields,
             );
             return Err(signal);
         }
@@ -1190,7 +790,6 @@ pub(crate) fn run_engine_preflight(
         &first_missing_signal,
         &component,
         engine_component_ignored.as_deref(),
-        &retired_engine_config_fields,
     );
     Ok(ModuleExecution {
         ok,
@@ -1207,12 +806,10 @@ mod release_transport_tests {
         build_environment_for_source_head, build_environment_sha, capture_build_environment,
         emit_preflight_receipt, engine_source_gate, engine_source_gate_for_component,
         ignored_engine_component, ignored_engine_component_receipt_line, install_bin_fingerprint,
-        parse_validate_engine_plane_config, promote_staged_binary, promotion_changed,
-        self_update_reexec_guard_active, self_update_reexec_receipt, should_self_update_reexec,
-        EngineArtifactTransport, SELF_UPDATE_REEXEC_ENV,
+        promote_staged_binary, promotion_changed, self_update_reexec_guard_active,
+        self_update_reexec_receipt, should_self_update_reexec, SELF_UPDATE_REEXEC_ENV,
     };
     use serde_json::json;
-    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
     use tempfile::{tempdir, NamedTempFile};
 
@@ -1235,116 +832,6 @@ mod release_transport_tests {
                 None => std::env::remove_var(SELF_UPDATE_REEXEC_ENV),
             }
         }
-    }
-
-    #[test]
-    fn retired_engine_config_fields_are_stripped_and_reported_deterministically() {
-        let (config, retired) = parse_validate_engine_plane_config(
-            r#"{
-                "install_bin": "/usr/local/bin/harmonia",
-                "enabled": true,
-                "source_repo_url": {"nonsense": [true, 7]},
-                "branch": [null, {"not": "a-branch"}],
-                "source_dir": 42,
-                "local_source_checkout": false,
-                "git_bearer": {"token": ["not", "a", "bearer"]},
-                "source_components": {"not": "an-array"},
-                "credential_scopes": "not-an-array",
-                "artifact_transports": [
-                    {
-                        "kind": "git",
-                        "name": "cache-one",
-                        "cache_dir": "/var/cache/harmonia-one",
-                        "remote": "origin",
-                        "repo_url": {"not": "a-url"},
-                        "branch": [1, 2, 3]
-                    },
-                    {
-                        "kind": "git",
-                        "name": "cache-two",
-                        "cache_dir": "/var/cache/harmonia-two",
-                        "remote": "origin",
-                        "repo_url": ["not", "a", "url"],
-                        "branch": {"not": "a-branch"}
-                    }
-                ]
-            }"#,
-            Path::new("/etc/harmonia/engine.json"),
-        )
-        .unwrap();
-
-        assert_eq!(
-            retired,
-            vec![
-                "source_repo_url",
-                "branch",
-                "source_dir",
-                "local_source_checkout",
-                "git_bearer",
-                "source_components",
-                "credential_scopes",
-                "artifact_transports[].repo_url",
-                "artifact_transports[].branch",
-            ]
-        );
-        assert_eq!(config.install_bin, PathBuf::from("/usr/local/bin/harmonia"));
-        assert!(config.enabled);
-        assert_eq!(config.artifact_transports.len(), 2);
-        let parsed_config = serde_json::to_string(&config).unwrap();
-        for retired_value in [
-            "nonsense",
-            "a-branch",
-            "not-an-array",
-            "bearer",
-            "a-url",
-            "not",
-        ] {
-            assert!(
-                !parsed_config.contains(retired_value),
-                "retired value leaked: {retired_value}"
-            );
-        }
-    }
-
-    #[test]
-    fn genuinely_unknown_engine_config_field_still_fails_strict_parse() {
-        let error = parse_validate_engine_plane_config(
-            r#"{"install_bin":"/usr/local/bin/harmonia","enabled":true,"genuinely_unknown":"sentinel"}"#,
-            Path::new("/etc/harmonia/engine.json"),
-        )
-        .unwrap_err();
-        assert!(error.contains("engine-config-parse-failed"));
-        assert!(error.contains("genuinely_unknown"));
-    }
-
-    #[test]
-    fn current_engine_config_shape_reports_no_retired_fields() {
-        let (config, retired) = parse_validate_engine_plane_config(
-            r#"{"install_bin":"/usr/local/bin/harmonia","enabled":true}"#,
-            Path::new("/etc/harmonia/engine.json"),
-        )
-        .unwrap();
-        assert!(retired.is_empty());
-        assert_eq!(config.install_bin, PathBuf::from("/usr/local/bin/harmonia"));
-    }
-
-    #[test]
-    fn engine_config_uses_local_mechanics_and_certificate_source_authority() {
-        let config: super::EnginePlaneConfig = serde_json::from_str(
-            r#"{"install_bin":"/usr/local/bin/harmonia","enabled":true,"build_root":"/var/lib/harmonia/source","artifact_transport":{"kind":"git","name":"cache","cache_dir":"/var/cache/harmonia","remote":"origin"}}"#,
-        ).unwrap();
-        assert_eq!(config.build_root, PathBuf::from("/var/lib/harmonia/source"));
-        assert_eq!(config.artifact_transport.unwrap().remote, "origin");
-    }
-
-    #[test]
-    fn artifact_transport_has_no_source_or_credential_authority() {
-        let transport: EngineArtifactTransport = serde_json::from_str(
-            r#"{"kind":"git","name":"cache","cache_dir":"/var/cache/harmonia","remote":"origin"}"#,
-        )
-        .unwrap();
-        assert_eq!(transport.kind, "git");
-        assert_eq!(transport.cache_dir, PathBuf::from("/var/cache/harmonia"));
     }
 
     #[test]
@@ -1576,26 +1063,10 @@ mod release_transport_tests {
             installed_after.as_deref(),
         ));
 
-        let config = super::EnginePlaneConfig {
-            install_bin: installed.clone(),
-            enabled: true,
-            build_root: root.path().join("build-root"),
-            remote: "origin".into(),
-            build_program: None,
-            build_args: None,
-            staged_bin: None,
-            profile_index: None,
-            ratchet_lock: None,
-            artifact_transport: None,
-            artifact_transports: Vec::new(),
-        };
         let reexec = self_update_reexec_receipt(true, Some(from_sha.clone()), Some(to_sha.clone()))
             .expect("changed promoted successor requires reexec");
         emit_preflight_receipt(
             &preflight_dir,
-            &root.path().join("engine.json"),
-            &config,
-            &[],
             "harmonia",
             None,
             None,
@@ -1632,28 +1103,12 @@ mod release_transport_tests {
     #[test]
     fn no_promotion_receipts_null_reexec() {
         let root = tempdir().unwrap();
-        let config = super::EnginePlaneConfig {
-            install_bin: root.path().join("install-bin"),
-            enabled: true,
-            build_root: root.path().join("build-root"),
-            remote: "origin".into(),
-            build_program: None,
-            build_args: None,
-            staged_bin: None,
-            profile_index: None,
-            ratchet_lock: None,
-            artifact_transport: None,
-            artifact_transports: Vec::new(),
-        };
         let preflight_dir = root.path().join("engine-preflight");
         std::fs::create_dir_all(&preflight_dir).unwrap();
         assert!(!promotion_changed(false, false, None, None));
         assert!(!promotion_changed(true, true, Some("same"), Some("same")));
         emit_preflight_receipt(
             &preflight_dir,
-            &root.path().join("engine.json"),
-            &config,
-            &[],
             "harmonia",
             None,
             None,
