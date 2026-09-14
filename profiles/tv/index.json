@@ -7,7 +7,7 @@
     "package_manager": "pacman"
   },
   "aliases": [
-    "arch-tv"
+    "tv"
   ],
   "description": "TV appliance profile: Harmonia-owned TV configuration and maintenance spine.",
   "modules": [
@@ -31,6 +31,6 @@
     "sbin",
     "sudoers"
   ],
-  "identity": "arch-tv",
+  "identity": "tv",
   "module_spine_entered": "profiles/tv/modules"
 }

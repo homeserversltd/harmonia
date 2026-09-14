@@ -1,6 +1,6 @@
 {
   "schema": "caduceus.identity.v1",
-  "device": "arch-tv",
+  "device": "tv",
   "profile": "tv",
   "mode": "tv",
   "public_surface": true,

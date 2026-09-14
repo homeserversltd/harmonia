@@ -3,7 +3,7 @@
   "id": "install-caduceus",
   "category": "known-good",
   "config_deploy": "interactable",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "TV module installs and maintains Caduceus. It syncs source, builds and installs the binary, maintains profile, policy, and state files, and manages the Caduceus service and health checks.",
   "optional": false,
   "constants": {},

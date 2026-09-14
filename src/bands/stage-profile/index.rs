@@ -846,7 +846,7 @@ mod shared_dot_files_tests {
             "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
         )
         .unwrap();
-        fs::write(root.join("profiles/tv/index.json"), r#"{"id":"tv","identity":"arch-tv","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["dot-files"]}"#).unwrap();
+        fs::write(root.join("profiles/tv/index.json"), r#"{"id":"tv","identity":"tv","package_authority":{"os_family":"arch","package_manager":"pacman"},"modules":["dot-files"]}"#).unwrap();
         fs::write(shared.join("manifest.json"), r#"{"schema":"harmonia.module.ladder.v1","id":"dot-files","version":"1","files_root":"files_root","ladder":[]}"#).unwrap();
         fs::write(source.join("all/00"), b"all").unwrap();
         fs::write(source.join("tv/00"), b"tv").unwrap();

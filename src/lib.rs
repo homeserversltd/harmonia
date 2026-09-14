@@ -856,7 +856,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 homeserver_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
                 homeconsole_update(&profile, &module_root, &receipt_dir, mode)
-            } else if profile.id == "tv" && profile.identity == "arch-tv" {
+            } else if is_tv_update_profile(&profile) {
                 tv_update(&profile, &module_root, &receipt_dir, mode)
             } else {
                 run_profile_engine(&profile, &module_root, &receipt_dir, mode)

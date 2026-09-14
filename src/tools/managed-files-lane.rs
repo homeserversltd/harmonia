@@ -146,7 +146,6 @@ use std::path::{Path, PathBuf};
 const FRAGMENT_SELECTORS: &[(&str, &str, &str)] = &[
     ("homeserver", "debian", "homeserver"),
     ("tv", "arch", "tv"),
-    ("arch-tv", "arch", "tv"),
     ("homeconsole", "arch", "tv"),
     ("bigrig", "arch", "tv"),
 ];

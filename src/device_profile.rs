@@ -172,8 +172,25 @@ pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String
 
 #[cfg(test)]
 mod tests {
-    use super::{load_certificate_at, DeviceProfileCertificate, DEVICE_PROFILE_SCHEMA};
+    use super::{
+        is_tv_update_profile, load_certificate_at, DeviceProfileCertificate, Profile,
+        DEVICE_PROFILE_SCHEMA,
+    };
     use std::fs;
+
+    #[test]
+    fn device_profile_tv_dispatches_tv_update() {
+        let profile = Profile {
+            id: "tv".to_string(),
+            identity: "tv".to_string(),
+            package_authority: None,
+            modules: Vec::new(),
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        };
+
+        assert!(is_tv_update_profile(&profile));
+    }
 
     #[test]
     fn certificate_ignores_foreign_syzygy_field() {
@@ -464,15 +481,19 @@ pub(crate) fn homeserver_update(
     )
 }
 
+pub(crate) fn is_tv_update_profile(profile: &Profile) -> bool {
+    profile.id == "tv" && profile.identity == "tv"
+}
+
 pub(crate) fn tv_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
 ) -> Result<(), String> {
-    if profile.id != "tv" || profile.identity != "arch-tv" {
+    if !is_tv_update_profile(profile) {
         return Err(format!(
-            "tv-update requires tv/arch-tv profile, got {}/{}",
+            "tv-update requires tv/tv profile, got {}/{}",
             profile.id, profile.identity
         ));
     }
