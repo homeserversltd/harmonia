@@ -350,11 +350,19 @@ fn fetch_flag(
     Ok(status)
 }
 
-#[derive(Debug, Deserialize)]
-struct RegistryVersion {
-    name: String,
-    version: String,
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct ForgejoRelease {
+    tag_name: String,
     created_at: String,
+    assets: Vec<ForgejoAsset>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct ForgejoAsset {
+    name: String,
+    browser_download_url: String,
 }
 
 pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, SlotResolutionError> {
@@ -404,14 +412,12 @@ fn resolve_slot_with_credential_source(
     else {
         return Err(SlotResolutionError::new("beam-flag-unresolvable", "absent"));
     };
-    let api = if let Some((authority, _)) = registry_base.split_once("/api/packages/") {
-        format!("{authority}/api/v1/packages/HOMESERVERSLTD?type=generic&q={component}")
+    let authority = if let Some((authority, _)) = registry_base.split_once("/api/packages/") {
+        authority
     } else {
-        format!(
-            "{}/api/v1/packages/HOMESERVERSLTD?type=generic&q={component}",
-            registry_base.trim_end_matches('/')
-        )
+        registry_base.trim_end_matches('/')
     };
+    let api = format!("{authority}/api/v1/repos/HOMESERVERSLTD/{component}/releases");
     let dir = std::env::temp_dir().join(format!(
         "harmonia-beam-slot-{}-{}",
         std::process::id(),
@@ -423,7 +429,7 @@ fn resolve_slot_with_credential_source(
     std::fs::create_dir_all(&dir)
         .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", "absent"))?;
     let listing_path = dir.join("listing");
-    let listing_url = format!("{api}&limit=50&page=1");
+    let listing_url = format!("{api}?limit=50&page=1");
     let credential = resolve_credential(&listing_url)
         .map_err(|signal| SlotResolutionError::new(signal, "absent"))?;
     let credential_state = if credential.is_some() {
@@ -434,10 +440,10 @@ fn resolve_slot_with_credential_source(
     let token = credential
         .as_ref()
         .map(|credential| credential.token.as_str());
-    let mut versions = Vec::new();
+    let mut releases = Vec::new();
     // Forgejo listing pagination is capped at five pages.
     for page in 1..=5 {
-        let listing_url = format!("{api}&limit=50&page={page}");
+        let listing_url = format!("{api}?limit=50&page={page}");
         let status = fetch_flag(&listing_url, &listing_path, token)
             .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
         if !(200..300).contains(&status) {
@@ -447,41 +453,38 @@ fn resolve_slot_with_credential_source(
                 credential_state,
             ));
         }
-        let value: serde_json::Value =
+        let page_releases: Vec<ForgejoRelease> =
             serde_json::from_slice(&std::fs::read(&listing_path).map_err(|_| {
                 SlotResolutionError::new("beam-flag-unresolvable", credential_state)
             })?)
             .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
-        let raw_items = value
-            .as_array()
-            .ok_or_else(|| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
-        for item in raw_items {
-            let parsed: RegistryVersion = serde_json::from_value(item.clone()).map_err(|_| {
-                SlotResolutionError::new("beam-flag-unresolvable", credential_state)
-            })?;
-            if parsed.name != component.as_str() || !hex_len(&parsed.version, 40) {
+        let page_len = page_releases.len();
+        for release in page_releases {
+            if !hex_len(&release.tag_name, 40) {
                 continue;
             }
-            versions.push(parsed);
+            releases.push(release);
         }
-        if raw_items.len() < 50 {
+        if page_len < 50 {
             break;
         }
     }
-    versions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    releases.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     let mut selected = None;
     let mut malformed_flags = 0;
-    for item in versions.into_iter().take(20) {
+    for release in releases.into_iter().take(20) {
+        let Some(asset) = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == "release.flag")
+        else {
+            continue;
+        };
         let flag_path = dir.join("flag");
-        let url = format!(
-            "{}/{}/{}/release.flag",
-            registry_base.trim_end_matches('/'),
-            component,
-            item.version
-        );
-        let status = fetch_flag(&url, &flag_path, token).map_err(|signal| {
-            SlotResolutionError::with_malformed_flags(signal, credential_state, malformed_flags)
-        })?;
+        let status =
+            fetch_flag(&asset.browser_download_url, &flag_path, token).map_err(|signal| {
+                SlotResolutionError::with_malformed_flags(signal, credential_state, malformed_flags)
+            })?;
         if status == 404 {
             continue;
         }
@@ -510,7 +513,7 @@ fn resolve_slot_with_credential_source(
             })?;
         if flag.schema != "estate.release-flag.v1"
             || flag.component != component.as_str()
-            || flag.source_sha != item.version
+            || flag.source_sha != release.tag_name
             || !hex_len(&flag.env_sha, 64)
             || !hex_len(&flag.sha256, 64)
             || flag.flagged_at.trim().is_empty()
@@ -523,7 +526,7 @@ fn resolve_slot_with_credential_source(
             .as_ref()
             .is_none_or(|(_, at, _)| flag.flagged_at > *at)
         {
-            selected = Some((item.version, flag.flagged_at, flag.env_sha));
+            selected = Some((release.tag_name, flag.flagged_at, flag.env_sha));
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -592,6 +595,100 @@ mod tests {
         );
         assert!(parse_lock(&legacy).is_ok());
         assert!(parse_lock(r#"{"schema":"harmonia.beam-slot.v1","component":"caduceus","resolve":"latest-flagged-release","registry_base":"https://git.home.arpa/api/packages/HOMESERVERSLTD/generic"}"#).is_ok());
+    }
+
+    #[test]
+    fn release_listing_skips_missing_flag_asset_and_selects_flagged_release() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = format!("http://{address}");
+        let newest = "b".repeat(40);
+        let flagged = "a".repeat(40);
+        let env_sha = "c".repeat(64);
+        let asset_url = format!("{base}/assets/release.flag");
+        let listing = serde_json::to_vec(&serde_json::json!([
+            {
+                "id": 136,
+                "tag_name": newest,
+                "created_at": "2026-09-14T02:00:00Z",
+                "assets": [{
+                    "id": 2,
+                    "name": "caduceus-homeserver-x86_64",
+                    "browser_download_url": format!("{base}/assets/caduceus-homeserver-x86_64")
+                }]
+            },
+            {
+                "id": 135,
+                "tag_name": flagged,
+                "created_at": "2026-09-14T01:00:00Z",
+                "assets": [{
+                    "id": 1,
+                    "name": "release.flag",
+                    "browser_download_url": asset_url
+                }]
+            }
+        ]))
+        .unwrap();
+        let flag = serde_json::to_vec(&serde_json::json!({
+            "schema": "estate.release-flag.v1",
+            "component": "caduceus",
+            "source_sha": flagged,
+            "env_sha": env_sha,
+            "sha256": "d".repeat(64),
+            "flagged_at": "2026-09-14T01:05:00Z",
+            "pipeline_url": "https://ci.home.arpa/repos/20/pipeline/335"
+        }))
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            let responses = [
+                (
+                    "/api/v1/repos/HOMESERVERSLTD/caduceus/releases?limit=50&page=1",
+                    listing,
+                ),
+                ("/assets/release.flag", flag),
+            ];
+            let mut paths = Vec::new();
+            for (expected_path, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 8192];
+                let size = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..size]);
+                let path = request.split_whitespace().nth(1).unwrap().to_string();
+                assert_eq!(path, expected_path);
+                paths.push(path);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+            paths
+        });
+        let slot = BeamLock::Slot {
+            schema: SLOT_SCHEMA.into(),
+            component: "caduceus".into(),
+            resolve: "latest-flagged-release".into(),
+            registry_base: format!("{base}/api/packages/HOMESERVERSLTD/generic"),
+        };
+
+        let resolved = resolve_slot_with_credential_source(&slot, |listing_url| {
+            assert_eq!(
+                listing_url,
+                format!("{base}/api/v1/repos/HOMESERVERSLTD/caduceus/releases?limit=50&page=1")
+            );
+            Ok(None)
+        })
+        .unwrap();
+
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(resolved.version, flagged);
+        assert_eq!(resolved.flagged_at, "2026-09-14T01:05:00Z");
+        assert_eq!(resolved.malformed_flags, 0);
+        assert_eq!(resolved.lock.caduceus_sha(), Some(flagged.as_str()));
     }
 
     #[test]
