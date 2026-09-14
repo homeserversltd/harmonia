@@ -167,6 +167,107 @@ pub(crate) struct LocalIdentity {
     pub mac: String,
     pub hostname: String,
     pub ipv4: String,
+    pub first_missing_signal: Option<String>,
+}
+
+fn address_interfaces(stdout: &str, ipv4: Ipv4Addr) -> Vec<String> {
+    let mut interfaces = Vec::new();
+    for line in stdout.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        let Some(interface) = fields.get(1) else {
+            continue;
+        };
+        let Some(address) = fields
+            .windows(2)
+            .find_map(|pair| (pair[0] == "inet").then_some(pair[1]))
+            .and_then(|value| value.split('/').next())
+            .and_then(|value| value.parse::<Ipv4Addr>().ok())
+        else {
+            continue;
+        };
+        let interface = interface.split('@').next().unwrap_or(interface).to_owned();
+        if address == ipv4 && !interfaces.contains(&interface) {
+            interfaces.push(interface);
+        }
+    }
+    interfaces
+}
+
+fn dns_local_ipv4(stdout: &str, addresses: &str) -> Result<Option<Ipv4Addr>, String> {
+    let mut answers = Vec::new();
+    for answer in stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter_map(|value| value.parse::<Ipv4Addr>().ok())
+    {
+        if !answers.contains(&answer) {
+            answers.push(answer);
+        }
+    }
+    if answers.is_empty() {
+        return Ok(None);
+    }
+    let local = answers
+        .into_iter()
+        .filter(|ipv4| address_interfaces(addresses, *ipv4).len() == 1)
+        .collect::<Vec<_>>();
+    match local.as_slice() {
+        [ipv4] => Ok(Some(*ipv4)),
+        [] => Err("ruyi-local-dns-ipv4-not-local".into()),
+        _ => Err("ruyi-local-dns-ipv4-ambiguous".into()),
+    }
+}
+
+fn identity_for_ipv4(
+    hostname: &str,
+    ipv4: Ipv4Addr,
+    addresses: &str,
+    first_missing_signal: Option<&str>,
+) -> Result<LocalIdentity, String> {
+    let interfaces = address_interfaces(addresses, ipv4);
+    let [interface] = interfaces.as_slice() else {
+        return Err(if interfaces.is_empty() {
+            "ruyi-local-ipv4-not-local"
+        } else {
+            "ruyi-local-ipv4-ambiguous"
+        }
+        .into());
+    };
+    let mac = fs::read_to_string(Path::new("/sys/class/net").join(interface).join("address"))
+        .map_err(|_| "ruyi-local-mac-absent".to_string())?
+        .trim()
+        .to_ascii_lowercase();
+    if !valid_mac(&mac) || mac == "00:00:00:00:00:00" {
+        return Err("ruyi-local-mac-absent".into());
+    }
+    Ok(LocalIdentity {
+        mac,
+        hostname: hostname.into(),
+        ipv4: ipv4.to_string(),
+        first_missing_signal: first_missing_signal.map(str::to_owned),
+    })
+}
+
+fn route_identity(hostname: &str, route: &str, addresses: &str) -> Result<LocalIdentity, String> {
+    let fields = route.split_whitespace().collect::<Vec<_>>();
+    let interface = fields
+        .windows(2)
+        .find_map(|pair| (pair[0] == "dev").then_some(pair[1]))
+        .ok_or_else(|| "ruyi-local-route-answer-invalid".to_string())?;
+    let ipv4 = fields
+        .windows(2)
+        .find_map(|pair| (pair[0] == "src").then_some(pair[1]))
+        .and_then(|value| value.parse::<Ipv4Addr>().ok())
+        .ok_or_else(|| "ruyi-local-route-answer-invalid".to_string())?;
+    if address_interfaces(addresses, ipv4).as_slice() != [interface] {
+        return Err("ruyi-local-route-interface-mismatch".into());
+    }
+    identity_for_ipv4(
+        hostname,
+        ipv4,
+        addresses,
+        Some("ruyi-local-dns-a-absent-route-identity"),
+    )
 }
 
 fn mint_error(mint: &crate::atoms::attest::SyzygyMint) -> Option<String> {
@@ -206,62 +307,85 @@ pub(crate) fn local_identity() -> Result<LocalIdentity, String> {
         return Err("ruyi-local-hostname-invalid".into());
     }
 
-    let mut interfaces = fs::read_dir("/sys/class/net")
-        .map_err(|_| "ruyi-local-net-directory-read-failed".to_string())?
-        .flatten()
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect::<Vec<_>>();
-    interfaces.sort();
-    let (interface, mac) = interfaces
-        .into_iter()
-        .filter(|interface| interface != "lo")
-        .filter_map(|interface| {
-            let mac = fs::read_to_string(
-                Path::new("/sys/class/net").join(&interface).join("address"),
-            )
-            .ok()?
-            .trim()
-            .to_ascii_lowercase();
-            (valid_mac(&mac) && mac != "00:00:00:00:00:00").then_some((interface, mac))
-        })
-        .next()
-        .ok_or_else(|| "ruyi-local-mac-absent".to_string())?;
-
-    let observed = crate::atoms::ask::read_only_command_with_timeout(
+    let addresses = crate::atoms::ask::read_only_command_with_timeout(
         "/usr/bin/ip",
         &[
             "-4".into(),
             "-o".into(),
             "addr".into(),
             "show".into(),
-            "dev".into(),
-            interface,
             "scope".into(),
             "global".into(),
         ],
         Duration::from_secs(2),
     );
-    if !observed.ok {
+    if !addresses.ok {
         return Err("ruyi-local-ipv4-command-failed".into());
     }
-    let ipv4 = observed
-        .stdout
-        .lines()
-        .flat_map(|line| line.split_whitespace().collect::<Vec<_>>())
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find_map(|pair| {
-            (pair[0] == "inet")
-                .then(|| pair[1].split('/').next().unwrap_or_default())
-                .and_then(|value| value.parse::<Ipv4Addr>().ok())
-        })
-        .ok_or_else(|| "ruyi-local-ipv4-absent".to_string())?;
+    let resolved = crate::atoms::ask::read_only_command_with_timeout(
+        "/usr/bin/getent",
+        &["ahostsv4".into(), format!("{hostname}.home.arpa")],
+        Duration::from_secs(2),
+    );
+    if !resolved.ok && resolved.code != Some(2) {
+        return Err("ruyi-local-dns-command-failed".into());
+    }
+    if let Some(ipv4) = dns_local_ipv4(&resolved.stdout, &addresses.stdout)? {
+        return identity_for_ipv4(&hostname, ipv4, &addresses.stdout, None);
+    }
 
-    Ok(LocalIdentity {
-        mac,
-        hostname,
-        ipv4: ipv4.to_string(),
-    })
+    if let Ok(gateway) = registrant::default_gateway() {
+        let route = crate::atoms::ask::read_only_command_with_timeout(
+            "/usr/bin/ip",
+            &[
+                "-4".into(),
+                "route".into(),
+                "get".into(),
+                gateway.to_string(),
+            ],
+            Duration::from_secs(2),
+        );
+        if !route.ok {
+            return Err("ruyi-local-route-command-failed".into());
+        }
+        return route_identity(&hostname, &route.stdout, &addresses.stdout);
+    }
+
+    let base = crate::atoms::ask::caduceus_door::base_url()
+        .map_err(|_| "ruyi-local-caduceus-base-undeclared".to_string())?;
+    let seat = crate::atoms::ask::read_only_command_with_timeout(
+        "/usr/bin/curl",
+        &[
+            "-fsS".into(),
+            "--max-time".into(),
+            "3".into(),
+            format!("{}/api/v1/ruyi", base.trim_end_matches('/')),
+        ],
+        Duration::from_secs(4),
+    );
+    if !seat.ok {
+        return Err("ruyi-local-caduceus-seat-command-failed".into());
+    }
+    let seat: serde_json::Value = serde_json::from_str(&seat.stdout)
+        .map_err(|_| "ruyi-local-caduceus-seat-malformed".to_string())?;
+    if seat
+        .pointer("/seat/hostname")
+        .and_then(serde_json::Value::as_str)
+        != Some(hostname.as_str())
+    {
+        return Err("ruyi-local-caduceus-seat-hostname-mismatch".into());
+    }
+    let ipv4 = seat
+        .pointer("/seat/ipv4")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse::<Ipv4Addr>().ok())
+        .ok_or_else(|| "ruyi-local-caduceus-seat-ipv4-invalid".to_string())?;
+    identity_for_ipv4(
+        &hostname,
+        ipv4,
+        &addresses.stdout,
+        Some("ruyi-local-dns-a-default-gateway-absent-seat-identity"),
+    )
 }
 
 /// Build and persist the row created by a committed apply transaction.
@@ -465,6 +589,21 @@ mod tests {
         let mut invalid = row();
         invalid.syzygy_sha = Some("f".repeat(63));
         assert_eq!(validate_row(&invalid), Err("ruyi-syzygy-sha-invalid".into()));
+    }
+
+    #[test]
+    fn dns_address_selects_lan_interface_over_earlier_bridge_name() {
+        let addresses = concat!(
+            "2: br-backup    inet 198.51.100.1/24 scope global br-backup\n",
+            "3: lan0    inet 192.0.2.1/24 scope global lan0\n",
+        );
+        let dns = "192.0.2.1 STREAM home.home.arpa\n\
+                   192.0.2.1 DGRAM home.home.arpa\n";
+
+        let ipv4 = dns_local_ipv4(dns, addresses).unwrap().unwrap();
+
+        assert_eq!(ipv4, "192.0.2.1".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(address_interfaces(addresses, ipv4), vec!["lan0"]);
     }
 
     // These three cases use separate processes so environment overrides and the
@@ -671,6 +810,7 @@ mod tests {
             mac: "aa:bb:cc:dd:ee:ff".into(),
             hostname: "arcadia".into(),
             ipv4: "192.0.2.1".into(),
+            first_missing_signal: None,
         };
         let expected_env_sha = "d".repeat(64);
         let evidence = crate::atoms::attest::SyzygyEvidence {
@@ -788,6 +928,7 @@ mod tests {
             mac: "aa:bb:cc:dd:ee:ff".into(),
             hostname: "arcadia".into(),
             ipv4: "192.0.2.1".into(),
+            first_missing_signal: None,
         };
         let evidence = crate::atoms::attest::SyzygyEvidence {
             mint: mint(),
