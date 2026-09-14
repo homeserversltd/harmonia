@@ -1923,14 +1923,20 @@ pub(crate) fn execute_routine_child(
 mod tests {
     use super::*;
 
-    fn certificate(
+    fn appliance_config_fixture(
         discriminator: &str,
         component: &str,
         selector: Option<&str>,
-    ) -> tempfile::NamedTempFile {
-        let prefix = format!("harmonia-source-certificate-{discriminator}-");
-        let file = tempfile::Builder::new()
-            .prefix(&prefix)
+    ) -> (tempfile::NamedTempFile, tempfile::NamedTempFile) {
+        let config_prefix = format!("harmonia-appliance-config-{discriminator}-");
+        let config = tempfile::Builder::new()
+            .prefix(&config_prefix)
+            .suffix(".json")
+            .tempfile()
+            .unwrap();
+        let profile_prefix = format!("harmonia-device-profile-{discriminator}-");
+        let profile = tempfile::Builder::new()
+            .prefix(&profile_prefix)
             .suffix(".json")
             .tempfile()
             .unwrap();
@@ -1938,24 +1944,32 @@ mod tests {
             .map(|value| format!(",\"credential_selector\":\"{value}\""))
             .unwrap_or_default();
         std::fs::write(
-            file.path(),
+            config.path(),
             format!(
-                r#"{{"schema":"homeserver.device-profile.v1","source_policy":"developer","sources":{{"{component}":{{"ref":"main","candidates":[{{"kind":"git","url":"https://git.home.arpa/HOMESERVERSLTD/{component}.git"{selector}}}]}}}}}}"#
+                r#"{{"sources":{{"{component}":{{"ref":"main","candidates":[{{"kind":"git","url":"https://git.home.arpa/HOMESERVERSLTD/{component}.git"{selector}}}]}}}}}}"#
             ),
         )
         .unwrap();
-        file
+        std::fs::write(
+            profile.path(),
+            r#"{"schema":"homeserver.device-profile.v1","source_policy":"developer"}"#,
+        )
+        .unwrap();
+        (config, profile)
     }
 
     #[test]
-    fn developer_source_policy_resolves_from_supplied_profile_certificate_only() {
-        let path = certificate(
-            "developer_source_policy_resolves_from_supplied_profile_certificate_only",
+    fn developer_source_policy_resolves_from_appliance_config_and_device_profile() {
+        let (config_path, profile_path) = appliance_config_fixture(
+            "developer_source_policy_resolves_from_appliance_config_and_device_profile",
             "harmonia",
             None,
         );
         let resolution = resolve_source(
-            SourceAuthority::Certificate(path.path()),
+            SourceAuthority::ApplianceConfig {
+                config_path: config_path.path(),
+                profile_path: profile_path.path(),
+            },
             "harmonia",
             "test",
             "source",
@@ -1966,16 +1980,20 @@ mod tests {
         assert_eq!(resolution.source_policy, "developer");
         assert_eq!(
             resolution.certificate_path,
-            path.path().display().to_string()
+            profile_path.path().display().to_string()
         );
         assert_eq!(resolution.resolution.unwrap().requested_ref, "main");
     }
 
     #[test]
     fn undeclared_component_is_hard_blocked() {
-        let path = certificate("undeclared_component_is_hard_blocked", "harmonia", None);
+        let (config_path, profile_path) =
+            appliance_config_fixture("undeclared_component_is_hard_blocked", "harmonia", None);
         let resolution = resolve_source(
-            SourceAuthority::Certificate(path.path()),
+            SourceAuthority::ApplianceConfig {
+                config_path: config_path.path(),
+                profile_path: profile_path.path(),
+            },
             "sbin",
             "test",
             "source",
@@ -1989,14 +2007,17 @@ mod tests {
     }
 
     #[test]
-    fn certificate_selector_is_validated_but_not_carried_to_git() {
-        let path = certificate(
-            "certificate_selector_is_validated_but_not_carried_to_git",
+    fn valid_selector_is_carried_in_receipt_but_stripped_from_git_plan() {
+        let (config_path, profile_path) = appliance_config_fixture(
+            "valid_selector_is_carried_in_receipt_but_stripped_from_git_plan",
             "harmonia",
             Some("owner-forge-ssh"),
         );
         let resolution = resolve_source(
-            SourceAuthority::Certificate(path.path()),
+            SourceAuthority::ApplianceConfig {
+                config_path: config_path.path(),
+                profile_path: profile_path.path(),
+            },
             "harmonia",
             "test",
             "source",
@@ -2017,14 +2038,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_certificate_selector_is_blocked() {
-        let path = certificate(
-            "invalid_certificate_selector_is_blocked",
+    fn invalid_selector_is_blocked() {
+        let (config_path, profile_path) = appliance_config_fixture(
+            "invalid_selector_is_blocked",
             "harmonia",
             Some("../secret"),
         );
         let resolution = resolve_source(
-            SourceAuthority::Certificate(path.path()),
+            SourceAuthority::ApplianceConfig {
+                config_path: config_path.path(),
+                profile_path: profile_path.path(),
+            },
             "harmonia",
             "test",
             "source",
