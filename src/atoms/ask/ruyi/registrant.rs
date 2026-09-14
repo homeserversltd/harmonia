@@ -167,7 +167,7 @@ pub(crate) fn seed_perspective() -> Result<(LocalIdentity, Value), String> {
         schema: ROW_SCHEMA.into(),
         mac: identity.mac.clone(),
         hostname: identity.hostname.clone(),
-        canonical_name: format!("{}.home.arpa", identity.hostname),
+        canonical_name: canonical_name(&identity.hostname),
         ipv4: identity.ipv4.clone(),
         profile: profile.id,
         gui_face: profile
@@ -356,7 +356,7 @@ pub(crate) fn register_promoted(
         &mut row,
         json!({
             "schema": ROW_SCHEMA, "mac": identity.mac, "hostname": identity.hostname,
-            "canonical_name": format!("{}.home.arpa", identity.hostname), "ipv4": identity.ipv4,
+            "canonical_name": canonical_name(&identity.hostname), "ipv4": identity.ipv4,
             "profile": profile.id, "gui_face": transaction.gui,
             "caduceus_sha": if evidence.caduceus_sha.is_empty() { Value::Null } else { json!(evidence.caduceus_sha) },
             "env_sha": if evidence.env_sha.is_empty() { Value::Null } else { json!(evidence.env_sha) },

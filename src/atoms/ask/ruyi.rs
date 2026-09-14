@@ -18,6 +18,14 @@ pub(crate) const ROW_SCHEMA: &str = "caduceus.ruyi.v1";
 const DEFAULT_RUYI_PATH: &str = "/etc/appliance/ruyi.json";
 const RUYI_PATH_ENV: &str = "HARMONIA_RUYI_PATH";
 
+fn canonical_name(hostname: &str) -> String {
+    if hostname == "home" {
+        "home.arpa".into()
+    } else {
+        format!("{hostname}.home.arpa")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct LastUpdate {
     pub run_id: String,
@@ -107,7 +115,7 @@ pub(crate) fn validate_row(row: &RuyiRow) -> Result<(), String> {
     if !valid_name(&row.hostname) {
         return Err("ruyi-hostname-invalid".into());
     }
-    if row.canonical_name != format!("{}.home.arpa", row.hostname)
+    if row.canonical_name != canonical_name(&row.hostname)
         || !valid_name(&row.canonical_name)
     {
         return Err("ruyi-canonical-name-invalid".into());
@@ -338,7 +346,7 @@ pub(crate) fn local_identity() -> Result<LocalIdentity, String> {
     if !addresses.ok {
         return Err("ruyi-local-ipv4-command-failed".into());
     }
-    let dns_answers = resolve_ipv4(format!("{hostname}.home.arpa"));
+    let dns_answers = resolve_ipv4(canonical_name(&hostname));
     if let Some(ipv4) = dns_local_ipv4(&dns_answers, &addresses.stdout)? {
         return identity_for_ipv4(&hostname, ipv4, &addresses.stdout, None);
     }
@@ -422,7 +430,7 @@ pub(crate) fn write_committed_state(
         schema: ROW_SCHEMA.into(),
         mac: identity.mac.clone(),
         hostname: identity.hostname.clone(),
-        canonical_name: format!("{}.home.arpa", identity.hostname),
+        canonical_name: canonical_name(&identity.hostname),
         ipv4: identity.ipv4.clone(),
         profile: profile.id.clone(),
         gui_face: receipt.gui.clone(),
@@ -579,6 +587,17 @@ mod tests {
         assert_eq!(object.get("schema").and_then(|value| value.as_str()), Some(ROW_SCHEMA));
         assert_eq!(object.get("last_update").unwrap().as_object().unwrap().len(), 2);
         assert!(serde_json::from_value::<RuyiRow>(value).is_ok());
+    }
+
+    #[test]
+    fn canonical_name_uses_home_arpa_apex_exception() {
+        assert_eq!(canonical_name("home"), "home.arpa");
+        assert_eq!(canonical_name("arch-tv"), "arch-tv.home.arpa");
+
+        let mut home = row();
+        home.hostname = "home".into();
+        home.canonical_name = canonical_name(&home.hostname);
+        assert!(validate_row(&home).is_ok());
     }
 
     #[test]
