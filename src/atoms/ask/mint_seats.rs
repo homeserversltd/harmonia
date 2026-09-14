@@ -106,7 +106,18 @@ impl Seat {
     ) -> Result<(), String> {
         if let Some(required) = declaration.get("required").and_then(Value::as_array).filter(|_| strict) {
             for name in required.iter().filter_map(Value::as_str) {
-                if value.get(name).is_none_or(Value::is_null) {
+                let missing = match value.get(name) {
+                    None => true,
+                    Some(Value::Null) => declaration
+                        .get("fields")
+                        .and_then(Value::as_object)
+                        .and_then(|fields| fields.get(name))
+                        .and_then(|field| field.get("nullable"))
+                        .and_then(Value::as_bool)
+                        != Some(true),
+                    Some(_) => false,
+                };
+                if missing {
                     return Err(format!(
                         "schema-frozen-kernel-missing {} {path}.{name}",
                         self.id
@@ -138,6 +149,54 @@ impl Seat {
             }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_declaration(id: &'static str, raw: Value) -> Self {
+        Self { id, raw }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn seat(nullable: bool) -> Seat {
+        Seat {
+            id: "test.ruyi.v1",
+            raw: json!({
+                "schema": "test.ruyi.v1",
+                "required": ["self"],
+                "fields": {"self": {"nullable": nullable}}
+            }),
+        }
+    }
+
+    #[test]
+    fn strict_required_nullable_self_null_passes() {
+        let seat = seat(true);
+        assert!(seat
+            .validate(&json!({"schema": "test.ruyi.v1", "self": null}))
+            .is_ok());
+    }
+
+    #[test]
+    fn strict_required_field_absent_still_fails() {
+        let seat = seat(true);
+        let error = seat
+            .validate(&json!({"schema": "test.ruyi.v1"}))
+            .unwrap_err();
+        assert!(error.contains("schema-frozen-kernel-missing"));
+    }
+
+    #[test]
+    fn strict_foreign_schema_id_still_fails() {
+        let seat = seat(true);
+        assert_eq!(
+            seat.validate(&json!({"schema": "foreign.ruyi.v1", "self": null})),
+            Err("schema-foreign test.ruyi.v1".into())
+        );
     }
 }
 

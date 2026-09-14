@@ -260,9 +260,34 @@ fn amend_update_set_held_back_by(dir: &Path, held_back_by: &Value) -> Result<(),
     crate::atoms::attest::write_json_atomic(&path, &value)
 }
 
-fn save_receipt(dir: &Path, value: Value) -> Result<Value, String> {
+fn validate_own_receipt_with_seat(
+    value: &mut Value,
+    seat: Option<&crate::atoms::ask::mint_seats::Seat>,
+) -> bool {
+    let Some(seat) = seat else {
+        return false;
+    };
+    let Err(error) = seat.validate(value) else {
+        return false;
+    };
+    value["state"] = json!("refused");
+    value["first_missing_signal"] = json!(error);
+    true
+}
+
+fn save_receipt_with_seat(
+    dir: &Path,
+    mut value: Value,
+    seat: Option<&crate::atoms::ask::mint_seats::Seat>,
+) -> Result<Value, String> {
+    validate_own_receipt_with_seat(&mut value, seat);
     crate::atoms::attest::write_json_atomic(&dir.join("ruyi.json"), &value)?;
     Ok(value)
+}
+
+fn save_receipt(dir: &Path, value: Value) -> Result<Value, String> {
+    let seat = at_start().register.as_ref().ok();
+    save_receipt_with_seat(dir, value, seat)
 }
 
 /// Reuse the committed mint and its raw evidence; do not resolve any member again.
@@ -285,9 +310,6 @@ pub(crate) fn register_promoted(
             Vec::new(),
             "ruyi-perspective-absent",
         );
-        if let Ok(seat) = &at_start().register {
-            seat.validate(&result)?;
-        }
         return save_receipt(dir, result);
     }
     let Some(port) = port() else {
@@ -592,15 +614,8 @@ fn exchange(
         signal,
     );
     result["held_back_by"] = json!(held_back_by);
-    if let Ok(seat) = &seats.register {
-        if let Err(error) = seat.validate(&result) {
-            return Ok(receipt(
-                "refused",
-                result["self"].clone(),
-                result["roster"].as_array().cloned().unwrap_or_default(),
-                &error,
-            ));
-        }
+    if validate_own_receipt_with_seat(&mut result, seats.register.as_ref().ok()) {
+        return Ok(result);
     }
     let bytes = serde_json::to_vec(&perspective).map_err(|error| error.to_string())?;
     crate::atoms::projectio::write_engine_state(
@@ -789,4 +804,44 @@ pub(crate) fn announce() -> Result<Value, String> {
     result["staff_start_wait_ms"] = json!(wait_ms);
     amend_update_set_held_back_by(&dir, &result["held_back_by"])?;
     save_receipt(&dir, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn own_receipt_validation_refusal_is_saved_and_read_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let seat = crate::atoms::ask::mint_seats::Seat::from_test_declaration(
+            REGISTER,
+            json!({
+                "schema": REGISTER,
+                "required": ["self"],
+                "fields": {"self": {"nullable": false}}
+            }),
+        );
+        let result = save_receipt_with_seat(
+            temp.path(),
+            json!({
+                "schema": REGISTER,
+                "state": "registered",
+                "self": null,
+                "roster": [],
+                "unknown": {"kept": true}
+            }),
+            Some(&seat),
+        )
+        .unwrap();
+        let saved: Value =
+            serde_json::from_slice(&fs::read(temp.path().join("ruyi.json")).unwrap()).unwrap();
+        assert_eq!(saved, result);
+        assert_eq!(saved["state"], "refused");
+        assert_eq!(
+            saved["first_missing_signal"],
+            "schema-frozen-kernel-missing harmonia.ruyi-register.v1 harmonia.ruyi-register.v1.self"
+        );
+        assert_eq!(saved["unknown"]["kept"], true);
+    }
 }
