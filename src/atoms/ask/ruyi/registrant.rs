@@ -175,13 +175,40 @@ pub(crate) fn validate_perspective(perspective: &Value) -> Result<(), String> {
 pub(crate) fn seed_perspective() -> Result<(LocalIdentity, Value), String> {
     let identity = local_identity()?;
     let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
-    seed_perspective_for(identity, profile)
+    let beam_door = crate::atoms::ask::beam::door_url()
+        .ok()
+        .and_then(|url| crate::atoms::ask::beam::fetch_door(&url).ok());
+    seed_perspective_for(identity, profile, beam_door)
 }
 
 pub(super) fn seed_perspective_for(
     identity: LocalIdentity,
     profile: crate::Profile,
+    beam_door: Option<crate::atoms::ask::beam::BeamDoor>,
 ) -> Result<(LocalIdentity, Value), String> {
+    let profile_gui_face = profile
+        .syzygy_declaration
+        .as_ref()
+        .and_then(|declaration| declaration.gui_face.clone());
+    let (gui_face_from_door, caduceus_sha, env_sha, syzygy_sha) = match beam_door {
+        Some(door) => (
+            door.gui_face,
+            if valid_hex(&door.caduceus_sha, 40) {
+                door.caduceus_sha
+            } else {
+                String::new()
+            },
+            if valid_hex(&door.env_sha, 64) {
+                door.env_sha
+            } else {
+                String::new()
+            },
+            door.syzygy_sha.filter(|sha| valid_hex(sha, 64)),
+        ),
+        None => (None, String::new(), String::new(), None),
+    };
+    let caduceus_sha_present = valid_hex(&caduceus_sha, 40);
+    let env_sha_present = valid_hex(&env_sha, 64);
     let row = RuyiRow {
         schema: ROW_SCHEMA.into(),
         mac: identity.mac.clone(),
@@ -189,15 +216,12 @@ pub(super) fn seed_perspective_for(
         canonical_name: canonical_name(&identity.hostname),
         ipv4: identity.ipv4.clone(),
         profile: profile.id,
-        gui_face: profile
-            .syzygy_declaration
-            .as_ref()
-            .and_then(|declaration| declaration.gui_face.clone()),
+        gui_face: profile_gui_face.or(gui_face_from_door),
         caduceus_port: caduceus_port(),
-        caduceus_sha: String::new(),
-        env_sha: String::new(),
+        caduceus_sha,
+        env_sha,
         harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
-        syzygy_sha: None,
+        syzygy_sha,
         last_seen: now()?,
         last_update: LastUpdate {
             run_id: crate::run_id_from_stamp(),
@@ -206,8 +230,12 @@ pub(super) fn seed_perspective_for(
     };
     validate_row(&row)?;
     let mut self_row = serde_json::to_value(row).map_err(|error| error.to_string())?;
-    self_row["caduceus_sha"] = Value::Null;
-    self_row["env_sha"] = Value::Null;
+    if !caduceus_sha_present {
+        self_row["caduceus_sha"] = Value::Null;
+    }
+    if !env_sha_present {
+        self_row["env_sha"] = Value::Null;
+    }
     let perspective = json!({
         "schema": PERSPECTIVE,
         "self": self_row,

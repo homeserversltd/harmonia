@@ -907,7 +907,7 @@ mod tests {
             syzygy_declaration: None,
         };
 
-        let (_, perspective) = registrant::seed_perspective_for(identity, profile).unwrap();
+        let (_, perspective) = registrant::seed_perspective_for(identity, profile, None).unwrap();
         let seed = perspective["self"].clone();
 
         assert_eq!(seed["caduceus_port"], 8787);
