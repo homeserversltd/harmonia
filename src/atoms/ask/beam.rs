@@ -79,7 +79,6 @@ pub(crate) struct MintedFrom {
     pub caduceus_release_tag: String,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct BeamDoor {
     pub schema: String,
     pub ok: bool,
@@ -275,7 +274,7 @@ pub(crate) fn validate_door(door: BeamDoor) -> Result<BeamDoor, String> {
         || !hex_len(&door.caduceus_sha, 40)
         || !hex_len(&door.env_sha, 64)
         || door.profile.is_empty()
-        || door.syzygy_sha.as_deref().is_some_and(|s| !hex_len(s, 40))
+        || door.syzygy_sha.as_deref().is_some_and(|s| !hex_len(s, 64))
     {
         Err("beam-door-malformed".into())
     } else {
