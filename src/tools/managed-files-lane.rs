@@ -13,7 +13,8 @@ pub(crate) fn execute_validated_step(
             module_dir,
             software_authorization,
             invocation,
-        ),
+        )
+        .map(|execution| execution.outcome),
         "managed-directories" => managed_directories_step(step, module_dir, apply, invocation),
         "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, false, invocation),
@@ -485,6 +486,7 @@ pub(crate) fn managed_files_step(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     managed_files_step_with_authorization(step, manifest, module_dir, None, invocation)
+        .map(|execution| execution.outcome)
 }
 
 #[derive(Debug, Deserialize)]
@@ -545,13 +547,18 @@ fn materialize_profile_sources(
     Ok(files)
 }
 
+pub(crate) struct ManagedFilesExecution {
+    pub(crate) outcome: OperationOutcome,
+    pub(crate) truthful_changed: bool,
+}
+
 pub(crate) fn managed_files_step_with_authorization(
     step: &ValidatedStep,
     manifest: &LadderManifest,
     module_dir: &Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
+) -> Result<ManagedFilesExecution, String> {
     let apply = software_authorization.is_some();
     let files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
         serde_json::from_value(files_value.clone())
@@ -569,6 +576,7 @@ pub(crate) fn managed_files_step_with_authorization(
     let disposition = partition_managed_files(files);
     let hold = disposition.known_good;
     let proposals = disposition.proposals;
+    let mut truthful_changed = false;
     let mut result = crate::OperationOutcome {
         ok: true,
         changed: false,
@@ -657,6 +665,11 @@ pub(crate) fn managed_files_step_with_authorization(
         let interactable_exempt = observed.config_state
             == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt);
         result.changed |= observed.changed;
+        truthful_changed |= crate::atoms::files::convergence_truthful_changed(
+            &observed.entries,
+            false,
+            observed.config_state,
+        );
         let config_state = if interactable_exempt {
             "interactable-exempt"
         } else if recognitions
@@ -691,7 +704,10 @@ pub(crate) fn managed_files_step_with_authorization(
             &[],
         )?;
     }
-    Ok(result)
+    Ok(ManagedFilesExecution {
+        outcome: result,
+        truthful_changed,
+    })
 }
 pub(crate) fn is_configuration_path(path: &Path) -> bool {
     let path = path.to_string_lossy();

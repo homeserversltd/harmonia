@@ -332,24 +332,33 @@ fn execute_routine_tool(
             on_failure: OnFailure::Stop,
         };
         // The declared category selects whether this routine child may apply.
-        let outcome = match tools::files::managed_files_step_with_authorization(
+        let execution = match tools::files::managed_files_step_with_authorization(
             &step,
             manifest,
             receipt_dir,
             software_authorization,
             invocation,
         ) {
-            Ok(outcome) => outcome,
-            Err(error) if error == "files-act-did-not-converge" => crate::OperationOutcome {
-                ok: true,
-                changed: true,
-                skipped: true,
-                message: "files-proposal-observed".to_string(),
-                command: None,
-            },
+            Ok(execution) => execution,
+            Err(error) if error == "files-act-did-not-converge" => {
+                return Ok((
+                    crate::OperationOutcome {
+                        ok: true,
+                        changed: true,
+                        skipped: true,
+                        message: "files-proposal-observed".to_string(),
+                        command: None,
+                    },
+                    BTreeMap::from([("truthful_changed".to_string(), Value::Bool(false))]),
+                ));
+            }
             Err(error) => return Err(error),
         };
-        return Ok((outcome, BTreeMap::new()));
+        let outputs = BTreeMap::from([(
+            "truthful_changed".to_string(),
+            Value::Bool(execution.truthful_changed),
+        )]);
+        return Ok((execution.outcome, outputs));
     }
     if tool == "files" && requested_permutation == Some("compile-fragments") {
         let step = ValidatedStep {
@@ -691,6 +700,10 @@ pub(crate) fn execute_routine(
             .context
             .entry("managed-files.changed".into())
             .or_insert(Value::Bool(false));
+        state
+            .context
+            .entry("managed-files.truthful_changed".into())
+            .or_insert(Value::Bool(false));
     }
     for child in projected_children {
         if !local && child.band != band {
@@ -705,10 +718,22 @@ pub(crate) fn execute_routine(
         }
         let child_dir = routine_dir.join(&child.name);
         crate::atoms::attest::prepare_receipt_parent(&child_dir)?;
+        if child.name == "managed-files" {
+            state
+                .context
+                .entry("managed-files.truthful_changed".into())
+                .or_insert(Value::Bool(false));
+        }
         let blocked_hyalos_intent = routine_hyalos_intent(&child.args, &state.context);
         if let Some(parent) = state.blocked_by.clone() {
             let detail = json!({"blocked_by": parent});
-            let receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":detail["blocked_by"].clone()});
+            let mut receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":"blocked","ok":false,"changed":false,"outputs":{},"blocked_by":detail["blocked_by"].clone()});
+            if child.name == "managed-files" {
+                receipt
+                    .as_object_mut()
+                    .expect("routine child receipt object")
+                    .insert("truthful_changed".into(), Value::Bool(false));
+            }
             emit_routine_child_outcome(
                 blocked_hyalos_intent.as_ref(),
                 child,
@@ -849,6 +874,16 @@ pub(crate) fn execute_routine(
                     .entry(format!("{}.{}", child.name, key))
                     .or_insert(value.clone());
             }
+            if child.name == "managed-files" {
+                state.context.insert(
+                    "managed-files.truthful_changed".into(),
+                    outputs
+                        .get("truthful_changed")
+                        .and_then(Value::as_bool)
+                        .map(|changed| Value::Bool(changed))
+                        .unwrap_or(Value::Bool(false)),
+                );
+            }
             if is_managed_child_name(&child.name) {
                 let aggregate_changed = state.children.iter().any(|receipt| {
                     receipt
@@ -864,10 +899,57 @@ pub(crate) fn execute_routine(
                     "managed-files.changed".into(),
                     Value::Bool(aggregate_changed),
                 );
+                let aggregate_truthful_changed = state.children.iter().any(|receipt| {
+                    let Some(name) = receipt.get("name").and_then(Value::as_str) else {
+                        return false;
+                    };
+                    if !is_managed_child_name(name) {
+                        return false;
+                    }
+                    let truthful_changed = receipt
+                        .get("outputs")
+                        .and_then(Value::as_object)
+                        .and_then(|outputs| outputs.get("truthful_changed"))
+                        .and_then(Value::as_bool)
+                        .or_else(|| receipt.get("truthful_changed").and_then(Value::as_bool));
+                    match truthful_changed {
+                        Some(changed) => changed,
+                        None if name == "managed-files" => false,
+                        None => receipt
+                            .get("changed")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    }
+                }) || outputs
+                    .get("truthful_changed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| {
+                        if child.name == "managed-files" {
+                            false
+                        } else {
+                            child_changed
+                        }
+                    });
+                state.context.insert(
+                    "managed-files.truthful_changed".into(),
+                    Value::Bool(aggregate_truthful_changed),
+                );
             }
         }
         let receipts = collect_routine_receipts(&child_dir)?;
         let mut receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":status,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
+        if child.name == "managed-files" {
+            receipt
+                .as_object_mut()
+                .expect("routine child receipt object")
+                .insert(
+                    "truthful_changed".into(),
+                    outputs
+                        .get("truthful_changed")
+                        .cloned()
+                        .unwrap_or(Value::Bool(false)),
+                );
+        }
         if let (Some(obj), Some(extra_obj)) = (receipt.as_object_mut(), extra.as_object()) {
             for (k, v) in extra_obj {
                 obj.insert(k.clone(), v.clone());

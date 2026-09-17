@@ -1045,6 +1045,28 @@ pub(crate) fn write_partial_failure_receipt(
     write_convergence_receipt(receipt_dir, request, &outcome, apply, None)
 }
 
+pub(crate) fn convergence_entry_truthful_changed(
+    entry: &FileConvergenceEntry,
+    apply: bool,
+    config_state: Option<ConfigConvergenceState>,
+) -> bool {
+    if config_state == Some(ConfigConvergenceState::InteractableExempt) {
+        entry.changed
+    } else {
+        apply && entry.changed
+    }
+}
+
+pub(crate) fn convergence_truthful_changed(
+    entries: &[FileConvergenceEntry],
+    apply: bool,
+    config_state: Option<ConfigConvergenceState>,
+) -> bool {
+    entries
+        .iter()
+        .any(|entry| convergence_entry_truthful_changed(entry, apply, config_state))
+}
+
 fn convergence_entry_receipt(
     entry: &FileConvergenceEntry,
     apply: bool,
@@ -1092,13 +1114,11 @@ fn convergence_entry_receipt(
     object.insert("movement".into(), json!(movement));
     object.insert(
         "truthful_changed".into(),
-        json!(
-            if config_state == Some(ConfigConvergenceState::InteractableExempt) {
-                entry.changed
-            } else {
-                apply && entry.changed
-            }
-        ),
+        json!(convergence_entry_truthful_changed(
+            entry,
+            apply,
+            config_state
+        )),
     );
     object.insert(
         "ok".into(),
@@ -1128,6 +1148,17 @@ pub(crate) fn write_convergence_receipt(
     config_state: Option<ConfigConvergenceState>,
 ) -> Result<(), String> {
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+    let entries = outcome
+        .entries
+        .iter()
+        .map(|entry| convergence_entry_receipt(entry, apply, config_state))
+        .collect::<Vec<_>>();
+    let truthful_changed = entries.iter().any(|entry| {
+        entry
+            .get("truthful_changed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    });
     let receipt = json!({
         "schema": "harmonia.files.converge.v1",
         "ok": outcome.ok,
@@ -1146,7 +1177,8 @@ pub(crate) fn write_convergence_receipt(
         "missing": outcome.missing,
         "missing_target_birth_debts": outcome.missing_target_birth_debts,
         "state": if config_state == Some(ConfigConvergenceState::InteractableExempt) { "interactable-exempt" } else if config_state == Some(ConfigConvergenceState::ProposalEligible) { "proposal-eligible" } else if outcome.ok { "converged" } else { "incomplete" },
-        "entries": outcome.entries.iter().map(|entry| convergence_entry_receipt(entry, apply, config_state)).collect::<Vec<_>>(),
+        "truthful_changed": truthful_changed,
+        "entries": entries,
         "first_missing_signal": if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
     });
     let mut receipt_name = request.receipt_name.clone();

@@ -334,7 +334,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                     | "unit-authority-proof" => {
                         let mut c = args.clone();
                         let managed_files_changed = if has_managed_files {
-                            serde_json::json!({"from":"managed-files.changed"})
+                            serde_json::json!({"from":"managed-files.truthful_changed","default":false})
                         } else {
                             Value::Bool(false)
                         };
