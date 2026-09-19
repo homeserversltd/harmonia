@@ -2,13 +2,14 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "chromium",
   "category": "known-good",
-  "version": "1.2.0",
-  "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; it includes TV's Firefox policy; profiles without the chromium module remain non-tenants; it does not install browsers.",
+  "version": "2.0.0",
+  "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; profiles without the chromium module remain non-tenants; it does not install browsers.",
   "optional": false,
   "constants": {
     "retired_mandatory_policy_paths": [
       "etc/chromium/policies/managed/laptop-chromium-policy.json",
-      "etc/chromium/policies/managed/arch-tv-chromium-policy.json"
+      "etc/chromium/policies/managed/arch-tv-chromium-policy.json",
+      "home/owner/firefox/distribution/policies.json"
     ]
   },
   "files_root": "files_root",
@@ -44,22 +45,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "chromium-policy-files"
-      }
-    },
-    {
-      "step_id": "tv-firefox-policy",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "home/owner/firefox/distribution/policies.json"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "chromium-tv-firefox-policy"
       }
     },
     {
