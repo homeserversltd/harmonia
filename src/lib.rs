@@ -767,6 +767,34 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     Ok(format!("{module_id}:{seat}"))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
+            let plan = crate::atoms::r#do::transaction::derive_plan(&profile, &module_root, None)?;
+            let module_is_member = |member: &str, module_id: &str| {
+                plan.member_modules
+                    .get(member)
+                    .is_some_and(|modules| modules.iter().any(|id| id.as_str() == module_id))
+            };
+            let pinned_module_membership = profile
+                .modules
+                .iter()
+                .map(|module_id| {
+                    let classification = if module_is_member("caduceus", module_id) {
+                        "caduceus"
+                    } else if module_is_member("sbin", module_id)
+                        || module_is_member("agathodaimon", module_id)
+                    {
+                        "sbin-agathodaimon"
+                    } else if plan
+                        .gui_member
+                        .as_deref()
+                        .is_some_and(|member| module_is_member(member, module_id))
+                    {
+                        "gui-face"
+                    } else {
+                        "unpinned"
+                    };
+                    format!("{module_id}:{classification}")
+                })
+                .collect::<Vec<_>>();
             println!("schema=harmonia.profile.inspect.v1");
             hyalos::forward_receipt(
                 "schema=harmonia.profile.inspect.v1",
@@ -781,6 +809,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             println!("module_count={}", profile.modules.len());
             println!("modules={}", profile.modules.join(","));
             println!("module_seats={}", module_seats.join(","));
+            println!(
+                "pinned_module_membership={}",
+                pinned_module_membership.join(",")
+            );
             Ok(())
         }
         Some("plan-run") => {

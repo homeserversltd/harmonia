@@ -95,7 +95,7 @@ pub(crate) fn derive_plan(
         module_root,
         &BTreeSet::new(),
     )?;
-    let mut plan = projection.derive_update_plan(profile, module_root)?;
+    let mut plan = projection.derive_standing_update_plan(profile, module_root)?;
     if let Some(scratch) = projection_root {
         for target in &mut plan.targets {
             let rel = target

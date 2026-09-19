@@ -34,7 +34,15 @@ impl ProfileProjection {
         profile: &Profile,
         module_root: &Path,
     ) -> Result<UpdatePlan, String> {
-        projection_derive_plan_inner(self, profile, module_root)
+        projection_derive_plan_inner(self, profile, module_root, true)
+    }
+
+    pub(crate) fn derive_standing_update_plan(
+        &self,
+        profile: &Profile,
+        module_root: &Path,
+    ) -> Result<UpdatePlan, String> {
+        projection_derive_plan_inner(self, profile, module_root, false)
     }
 
     pub(crate) fn authorize_beam_convergence(
@@ -266,12 +274,15 @@ fn projection_add_census_target(
     out: &mut Vec<Target>,
     path: PathBuf,
     member: &str,
+    emit_diagnostics: bool,
 ) -> Result<(), String> {
     if matches!(
         crate::tools::files::classify_target(&path),
         crate::tools::files::TargetClass::Config
     ) {
-        println!("census-config-skip path={}", path.display());
+        if emit_diagnostics {
+            println!("census-config-skip path={}", path.display());
+        }
         return Ok(());
     }
     projection_add_target(out, path, member)
@@ -298,6 +309,7 @@ fn projection_derive_plan_inner(
     self_: &ProfileProjection,
     profile: &Profile,
     _module_root: &Path,
+    emit_diagnostics: bool,
 ) -> Result<UpdatePlan, String> {
     let projected: Vec<(&String, &ProjectedModule)> = profile
         .modules
@@ -374,13 +386,13 @@ fn projection_derive_plan_inner(
                 continue;
             };
             if let Some(p) = projection_text(args, "install_bin") {
-                projection_add_census_target(&mut targets, p.into(), member)?;
+                projection_add_census_target(&mut targets, p.into(), member, emit_diagnostics)?;
                 record_module(member, module_id);
             }
             if let Some(a) = args.get("managed_files").and_then(Value::as_array) {
                 for x in a {
                     if let Some(p) = projection_value_path(x, "path") {
-                        projection_add_census_target(&mut targets, p, member)?;
+                        projection_add_census_target(&mut targets, p, member, emit_diagnostics)?;
                         record_module(member, module_id);
                     }
                 }
@@ -389,7 +401,7 @@ fn projection_derive_plan_inner(
                 .get("caduceus_profile_source")
                 .and_then(|x| projection_value_path(x, "path"))
             {
-                projection_add_census_target(&mut targets, p, member)?;
+                projection_add_census_target(&mut targets, p, member, emit_diagnostics)?;
                 record_module(member, module_id);
             }
             if let Some(name) = projection_text(args, "service") {
@@ -411,7 +423,12 @@ fn projection_derive_plan_inner(
                     "agathodaimon"
                 };
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
-                    projection_add_census_target(&mut targets, p.into(), staff_member)?;
+                    projection_add_census_target(
+                        &mut targets,
+                        p.into(),
+                        staff_member,
+                        emit_diagnostics,
+                    )?;
                     record_module(staff_member, module_id);
                 }
                 if projection_text(&s.args, "launcher_pattern").is_none() {
@@ -440,7 +457,12 @@ fn projection_derive_plan_inner(
                     }
                 }
                 for n in names {
-                    projection_add_census_target(&mut targets, tr.join(n), staff_member)?;
+                    projection_add_census_target(
+                        &mut targets,
+                        tr.join(n),
+                        staff_member,
+                        emit_diagnostics,
+                    )?;
                     record_module(staff_member, module_id);
                 }
             }
@@ -455,6 +477,7 @@ fn projection_derive_plan_inner(
                             &mut targets,
                             p,
                             face.as_deref().unwrap_or(""),
+                            emit_diagnostics,
                         )?;
                         record_module(face.as_deref().unwrap_or(""), module_id);
                     }
@@ -493,7 +516,12 @@ fn projection_derive_plan_inner(
                     } else {
                         continue;
                     };
-                    projection_add_census_target(&mut targets, p, face.as_deref().unwrap_or(""))?;
+                    projection_add_census_target(
+                        &mut targets,
+                        p,
+                        face.as_deref().unwrap_or(""),
+                        emit_diagnostics,
+                    )?;
                     record_module(face.as_deref().unwrap_or(""), module_id);
                 }
             }
