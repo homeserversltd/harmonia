@@ -975,6 +975,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let module_root = default_module_root(Path::new(path));
             tv_update(&profile, &module_root, &receipt_dir, mode)
         }
+        Some("update-module") => update_module_command(&args, invocation.key()),
         Some("homeconsole-local-ai-update") => {
             let path = args
                 .get(1)
@@ -1354,9 +1355,169 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia tv-update <profiles/tv/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-local-ai-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia update-module <profiles/<id>/index.json> --module <id> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> --module <path> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-arcadia-check <profiles/homeconsole/index.json> [--repo <url>] [--branch main] [--current-sha-file <path>] [--upstream-sha-file <path>] [--insecure-tls] [--receipt-dir <path>]");
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct UpdateModuleArgs {
+    profile_path: PathBuf,
+    module_id: String,
+    receipt_dir: Option<PathBuf>,
+    apply: bool,
+}
+
+fn parse_update_module_args(args: &[String]) -> Result<UpdateModuleArgs, String> {
+    let mut profile_path = None;
+    let mut module_id = None;
+    let mut receipt_dir = None;
+    let mut apply = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--apply" => {
+                if apply {
+                    return Err("update-module rejects duplicate --apply".to_string());
+                }
+                apply = true;
+                index += 1;
+            }
+            "--module" => {
+                if module_id.is_some() {
+                    return Err("update-module rejects duplicate --module".to_string());
+                }
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                    .ok_or("update-module requires --module <id>")?;
+                module_id = Some(value.clone());
+                index += 2;
+            }
+            "--receipt-dir" => {
+                if receipt_dir.is_some() {
+                    return Err("update-module rejects duplicate --receipt-dir".to_string());
+                }
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                    .ok_or("update-module requires --receipt-dir <path>")?;
+                receipt_dir = Some(PathBuf::from(value));
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("update-module rejects unrelated flag {value}"));
+            }
+            value => {
+                if profile_path.is_some() {
+                    return Err(
+                        "update-module requires exactly one positional profile path".to_string()
+                    );
+                }
+                profile_path = Some(PathBuf::from(value));
+                index += 1;
+            }
+        }
+    }
+    Ok(UpdateModuleArgs {
+        profile_path: profile_path.ok_or("update-module requires <profile-index-json>")?,
+        module_id: module_id.ok_or("update-module requires --module <id>")?,
+        receipt_dir,
+        apply,
+    })
+}
+
+fn update_module_command(
+    args: &[String],
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
+    let parsed = parse_update_module_args(args)?;
+    let mut profile = load_profile(&parsed.profile_path).map_err(|e| e.to_string())?;
+    if !profile.modules.iter().any(|id| id == &parsed.module_id) {
+        return Err(format!("module-not-in-profile-spine-{}", parsed.module_id));
+    }
+
+    let policy = read_device_module_policy()?;
+    profile.syzygy_declaration = policy.syzygy_declaration.clone();
+    let module_root = default_module_root(&parsed.profile_path);
+    let projection =
+        load_profile_projection(&profile, &module_root, &std::collections::BTreeSet::new())?;
+    let update_plan = projection.derive_update_plan(&profile, &module_root)?;
+    if update_plan
+        .member_modules
+        .values()
+        .any(|members| members.iter().any(|member| member == &parsed.module_id))
+    {
+        return Err(format!(
+            "module-is-pinned-syzygy-member-{}",
+            parsed.module_id
+        ));
+    }
+    if policy.disabled_modules.contains(&parsed.module_id) {
+        return Err(format!("module-disabled-{}", parsed.module_id));
+    }
+
+    let loaded = load_profile_module(&module_root, &parsed.module_id)?;
+    let module_dir =
+        crate::bands::stage_profile::resolve_module_dir(&module_root, &parsed.module_id)?;
+    let module = match loaded {
+        LoadedModule::Sidecar(module) => module,
+        LoadedModule::Ladder(_) => load_module(&module_dir.join("manifest.json"))?,
+    };
+    let execution_module_root = module_dir.parent().unwrap_or(module_root.as_path());
+    let receipt_dir = parsed
+        .receipt_dir
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-module-latest"));
+    let mode = UpdateMode::from_apply_flag_with_invocation(parsed.apply, invocation);
+    let harmonia_root = harmonia_root_from_module_root(&module_root);
+    let execution = execute_profile_module(
+        &module,
+        execution_module_root,
+        &receipt_dir,
+        mode.software_authorization(),
+        &harmonia_root,
+        mode.invocation(),
+        None,
+    )?;
+    let first_missing_signal = execution.first_missing_signal.as_deref().unwrap_or("none");
+    write_json(
+        &receipt_dir.join("run.json"),
+        &json!({
+            "schema": "harmonia.update_module.v1",
+            "module_id": parsed.module_id.clone(),
+            "profile_id": profile.id.clone(),
+            "identity": profile.identity.clone(),
+            "ok": execution.ok,
+            "changed": execution.changed,
+            "operation_count": execution.operation_count,
+            "first_missing_signal": first_missing_signal,
+        }),
+    )?;
+    println!("schema=harmonia.update_module.v1");
+    hyalos::forward_receipt(
+        "schema=harmonia.update_module.v1",
+        &format!("schema=harmonia.update_module.v1 ok={}", execution.ok),
+        Some(serde_json::json!({
+            "schema": "harmonia.update_module.v1",
+            "ok": execution.ok
+        })),
+        Some(execution.ok),
+        None,
+    );
+    println!("module_id={}", parsed.module_id);
+    println!("profile_id={}", profile.id);
+    println!("identity={}", profile.identity);
+    println!("ok={}", execution.ok);
+    println!("changed={}", execution.changed);
+    println!("operation_count={}", execution.operation_count);
+    println!("first_missing_signal={}", first_missing_signal);
+    println!("receipt_dir={}", receipt_dir.display());
+    if execution.ok {
+        Ok(())
+    } else {
+        Err(first_missing_signal.to_string())
+    }
 }
 
 fn renew_self_command(args: &[String], invocation: &Invocation) -> Result<(), String> {
@@ -1402,6 +1563,56 @@ pub(crate) fn value_arg_string(args: &[String], name: &str) -> Option<String> {
 pub(crate) fn default_module_root(profile_path: &Path) -> PathBuf {
     let profile_dir = profile_path.parent().unwrap_or_else(|| Path::new("."));
     profile_dir.join("modules")
+}
+
+#[cfg(test)]
+mod update_module_tests {
+    use super::*;
+
+    #[test]
+    fn update_module_parser_requires_one_profile_and_module() {
+        let parsed = parse_update_module_args(&[
+            "update-module".into(),
+            "profiles/demo/index.json".into(),
+            "--module".into(),
+            "alpha".into(),
+            "--apply".into(),
+            "--receipt-dir".into(),
+            "receipts".into(),
+        ])
+        .expect("closed update-module arguments parse");
+        assert_eq!(
+            parsed.profile_path,
+            PathBuf::from("profiles/demo/index.json")
+        );
+        assert_eq!(parsed.module_id, "alpha");
+        assert_eq!(parsed.receipt_dir, Some(PathBuf::from("receipts")));
+        assert!(parsed.apply);
+    }
+
+    #[test]
+    fn update_module_parser_rejects_duplicates_and_unrelated_flags() {
+        let duplicate = parse_update_module_args(&[
+            "update-module".into(),
+            "profile.json".into(),
+            "--module".into(),
+            "alpha".into(),
+            "--module".into(),
+            "beta".into(),
+        ])
+        .unwrap_err();
+        assert_eq!(duplicate, "update-module rejects duplicate --module");
+
+        let unrelated = parse_update_module_args(&[
+            "update-module".into(),
+            "profile.json".into(),
+            "--module".into(),
+            "alpha".into(),
+            "--unknown".into(),
+        ])
+        .unwrap_err();
+        assert_eq!(unrelated, "update-module rejects unrelated flag --unknown");
+    }
 }
 
 #[cfg(test)]
