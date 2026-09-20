@@ -258,6 +258,70 @@ fn seed_perspective_for_with_harmonia_sha(
     Ok((identity, perspective))
 }
 
+fn refresh_self_row_from_beam_observation(
+    row: Value,
+    profile: &crate::Profile,
+    observation: Result<crate::atoms::ask::beam::BeamDoor, String>,
+    harmonia_sha: Option<&str>,
+) -> Value {
+    let Ok(door) = observation else {
+        return row;
+    };
+    let Some(mac) = row.get("mac").and_then(Value::as_str) else {
+        return row;
+    };
+    let Some(hostname) = row.get("hostname").and_then(Value::as_str) else {
+        return row;
+    };
+    let Some(ipv4) = row.get("ipv4").and_then(Value::as_str) else {
+        return row;
+    };
+    let identity = LocalIdentity {
+        mac: mac.to_owned(),
+        hostname: hostname.to_owned(),
+        ipv4: ipv4.to_owned(),
+        first_missing_signal: None,
+    };
+    let Ok((_, seeded)) =
+        seed_perspective_for_with_harmonia_sha(identity, profile.clone(), Some(door), harmonia_sha)
+    else {
+        return row;
+    };
+    let Some(observed) = seeded.get("self").and_then(Value::as_object) else {
+        return row;
+    };
+    let Some(last_seen) = observed.get("last_seen").filter(|value| !value.is_null()) else {
+        return row;
+    };
+    let mut refreshed = row;
+    for field in [
+        "caduceus_sha",
+        "env_sha",
+        "rustc_version",
+        "gui_face",
+        "syzygy_sha",
+    ] {
+        let Some(value) = observed.get(field).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        refreshed[field] = value.clone();
+    }
+    refreshed["last_seen"] = last_seen.clone();
+    refreshed
+}
+
+fn refresh_self_row_from_local_beam(
+    row: Value,
+    profile: &crate::Profile,
+    harmonia_sha: Option<&str>,
+) -> Value {
+    let observation = crate::atoms::ask::beam::door_url()
+        .ok()
+        .map(|url| crate::atoms::ask::beam::fetch_door(&url))
+        .unwrap_or_else(|| Err("beam-door-unreachable".into()));
+    refresh_self_row_from_beam_observation(row, profile, observation, harmonia_sha)
+}
+
 pub(crate) fn read_perspective() -> Result<Value, String> {
     read_perspective_with_seats(at_start())
 }
@@ -918,7 +982,7 @@ pub(crate) fn announce() -> Result<Value, String> {
     let unavailable = unreachable_seats();
     let seats = if ready { at_start() } else { &unavailable };
     let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
-    let prior = read_perspective_with_seats(seats)?;
+    let mut prior = read_perspective_with_seats(seats)?;
     let Some(row) = prior.get("self").filter(|row| row.is_object()).cloned() else {
         let mut result = receipt(
             "pre-declaration",
@@ -930,6 +994,8 @@ pub(crate) fn announce() -> Result<Value, String> {
         result["staff_start_wait_ms"] = json!(wait_ms);
         return save_receipt(&dir, result);
     };
+    let row = refresh_self_row_from_local_beam(row, &profile, HARMONIA_BUILD_SHA);
+    prior["self"] = row.clone();
     let mut result = exchange(&profile, row, prior, seats, port)?;
     result["event"] = json!("staff-start");
     result["staff_start_wait_ms"] = json!(wait_ms);
@@ -1031,6 +1097,135 @@ mod tests {
             "schema-frozen-kernel-missing harmonia.ruyi-register.v1 harmonia.ruyi-register.v1.self"
         );
         assert_eq!(saved["unknown"]["kept"], true);
+    }
+
+    fn refresh_test_profile() -> crate::Profile {
+        crate::Profile {
+            id: "homeconsole".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: vec!["caduceus".into()],
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        }
+    }
+
+    fn stored_self_row() -> Value {
+        json!({
+            "schema": ROW_SCHEMA,
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "hostname": "arcadia",
+            "canonical_name": "arcadia.home.arpa",
+            "ipv4": "192.0.2.1",
+            "profile": "homeconsole",
+            "gui_face": "Hyprland",
+            "caduceus_port": 8443,
+            "caduceus_sha": "d".repeat(40),
+            "env_sha": "e".repeat(64),
+            "harmonia_sha": "f".repeat(40),
+            "syzygy_sha": "1".repeat(64),
+            "last_seen": 7,
+            "last_update": {"run_id": "run-stored", "converged": true},
+            "lineage": ["stored-lineage"],
+            "member_flags": {"stored": true},
+            "identity": "stored-identity",
+            "custom_addition": {"kept": true}
+        })
+    }
+
+    fn live_door(rustc_version: Option<&str>) -> crate::atoms::ask::beam::BeamDoor {
+        crate::atoms::ask::beam::BeamDoor {
+            schema: crate::atoms::ask::beam::DOOR_SCHEMA.into(),
+            ok: true,
+            service: "caduceus".into(),
+            caduceus_sha: "a".repeat(40),
+            env_sha: "b".repeat(64),
+            rustc_version: rustc_version.map(str::to_owned),
+            profile: "homeconsole".into(),
+            gui_face: Some("Arcadia".into()),
+            syzygy_sha: Some("c".repeat(64)),
+        }
+    }
+
+    #[test]
+    fn live_beam_refresh_populates_door_fields_and_gateway_classifies_refreshed_row() {
+        let harmonia_sha = "1".repeat(40);
+        let refreshed = refresh_self_row_from_beam_observation(
+            stored_self_row(),
+            &refresh_test_profile(),
+            Ok(live_door(Some("1.98.0"))),
+            Some(&harmonia_sha),
+        );
+        assert!(refreshed["rustc_version"].is_string());
+        assert_eq!(refreshed["rustc_version"], "1.98.0");
+        assert_eq!(refreshed["caduceus_sha"], json!("a".repeat(40)));
+        assert_eq!(refreshed["env_sha"], json!("b".repeat(64)));
+        assert_eq!(refreshed["gui_face"], "Arcadia");
+        assert_eq!(refreshed["syzygy_sha"], json!("c".repeat(64)));
+        assert!(refreshed["last_seen"].as_u64().unwrap() > 7);
+        assert_eq!(refreshed["lineage"], json!(["stored-lineage"]));
+        assert_eq!(refreshed["last_update"]["run_id"], "run-stored");
+        assert_eq!(refreshed["member_flags"]["stored"], true);
+        assert_eq!(refreshed["harmonia_sha"], json!("f".repeat(40)));
+        assert_eq!(refreshed["identity"], "stored-identity");
+        assert_eq!(refreshed["custom_addition"]["kept"], true);
+
+        let (port, server) = serve_one_ruyi_response(json!({
+            "schema": ROW_SCHEMA,
+            "ok": true,
+            "seat": {"hostname": "arcadia"}
+        }));
+        assert!(self_is_gateway(&json!({}), port, &refreshed));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn omitted_rustc_preserves_stored_toolchain_and_non_gateway_classifies_refreshed_row() {
+        let harmonia_sha = "1".repeat(40);
+        let mut stored = stored_self_row();
+        stored["rustc_version"] = json!("1.97.0");
+        let refreshed = refresh_self_row_from_beam_observation(
+            stored.clone(),
+            &refresh_test_profile(),
+            Ok(live_door(None)),
+            Some(&harmonia_sha),
+        );
+        assert_eq!(refreshed["rustc_version"], stored["rustc_version"]);
+        assert_eq!(refreshed["caduceus_sha"], json!("a".repeat(40)));
+        assert_eq!(refreshed["env_sha"], json!("b".repeat(64)));
+        assert_eq!(refreshed["gui_face"], "Arcadia");
+        assert_eq!(refreshed["syzygy_sha"], json!("c".repeat(64)));
+        assert_eq!(refreshed["lineage"], stored["lineage"]);
+        assert_eq!(refreshed["last_update"], stored["last_update"]);
+        assert_eq!(refreshed["member_flags"], stored["member_flags"]);
+        assert_eq!(refreshed["harmonia_sha"], stored["harmonia_sha"]);
+        assert!(refreshed["last_seen"].as_u64().unwrap() > stored["last_seen"].as_u64().unwrap());
+
+        let (port, server) = serve_one_ruyi_response(json!({
+            "schema": ROW_SCHEMA,
+            "ok": true,
+            "seat": {"hostname": "castle"}
+        }));
+        assert!(!self_is_gateway(&json!({}), port, &refreshed));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn unreachable_or_malformed_beam_leaves_stored_row_exactly_unchanged() {
+        let stored = stored_self_row();
+        for observation in [
+            Err("beam-door-unreachable".to_string()),
+            Err("beam-door-malformed".to_string()),
+        ] {
+            let harmonia_sha = "1".repeat(40);
+            let refreshed = refresh_self_row_from_beam_observation(
+                stored.clone(),
+                &refresh_test_profile(),
+                observation,
+                Some(&harmonia_sha),
+            );
+            assert_eq!(refreshed, stored);
+        }
     }
 
     #[test]
