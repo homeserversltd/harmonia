@@ -344,6 +344,7 @@ fn interactable_run(
     let item = feed.interactables[position].clone();
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
+        "toolchain-ratchet" => return run_toolchain_ratchet(&path, &mut feed, position, &item),
         "ruyi-perspective-seed" => {
             return run_ruyi_perspective_seed(&path, &mut feed, position, &item)
         }
@@ -583,6 +584,22 @@ fn canonical_dns_name(value: &str) -> Option<String> {
     .then(|| format!("{name}."))
 }
 
+fn parse_toolchain_version(value: &str) -> Option<[u64; 3]> {
+    let components = value.split('.').collect::<Vec<_>>();
+    if components.len() != 3
+        || components.iter().any(|component| {
+            component.is_empty() || !component.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    Some([
+        components[0].parse().ok()?,
+        components[1].parse().ok()?,
+        components[2].parse().ok()?,
+    ])
+}
+
 pub(crate) fn reconcile_ruyi(
     profile: &crate::Profile,
     self_row: &serde_json::Value,
@@ -595,23 +612,42 @@ pub(crate) fn reconcile_ruyi(
     let created = feed
         .interactables
         .iter()
-        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .filter(|item| {
+            matches!(
+                item.kind.as_str(),
+                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
+            )
+        })
         .map(|item| (item.id.clone(), item.created_at.clone()))
         .collect::<std::collections::HashMap<_, _>>();
     let unknown = feed
         .interactables
         .iter()
-        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .filter(|item| {
+            matches!(
+                item.kind.as_str(),
+                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
+            )
+        })
         .map(|item| (item.id.clone(), item.extra.clone()))
         .collect::<std::collections::HashMap<_, _>>();
     let remove_ids = feed
         .interactables
         .iter()
-        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .filter(|item| {
+            matches!(
+                item.kind.as_str(),
+                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
+            )
+        })
         .map(|item| item.id.clone())
         .collect::<BTreeSet<_>>();
-    feed.interactables
-        .retain(|item| item.kind != "ruyi-bump" && item.kind != "dns-record");
+    feed.interactables.retain(|item| {
+        !matches!(
+            item.kind.as_str(),
+            "ruyi-bump" | "dns-record" | "toolchain-ratchet"
+        )
+    });
     let module = profile
         .caduceus_module_id()
         .ok_or_else(|| "ruyi-caduceus-module-absent".to_string())?;
@@ -687,6 +723,94 @@ pub(crate) fn reconcile_ruyi(
             extra: unknown.get(&id).cloned().unwrap_or_default(),
         });
     }
+    if let Some(self_version) = self_row
+        .get("rustc_version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(parse_toolchain_version)
+    {
+        let mut candidates = staves
+            .iter()
+            .filter_map(|peer| {
+                let mac = peer.get("mac").and_then(serde_json::Value::as_str)?;
+                if Some(mac) == self_mac {
+                    return None;
+                }
+                let version = peer
+                    .get("rustc_version")
+                    .or_else(|| peer.pointer("/perspective/self/rustc_version"))
+                    .and_then(serde_json::Value::as_str)?;
+                let parsed = parse_toolchain_version(version)?;
+                let hostname = peer
+                    .get("hostname")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                Some((
+                    parsed,
+                    version.to_owned(),
+                    mac.to_owned(),
+                    hostname.to_owned(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
+        });
+        if let Some((highest, highest_version, witness_mac, witness_hostname)) = candidates.first()
+        {
+            if *highest > self_version {
+                let id = "toolchain-ratchet".to_string();
+                feed.interactables.push(Interactable {
+                    id: id.clone(),
+                    module_id: module.to_string(),
+                    name: "Ratchet this body's Rust toolchain".into(),
+                    description: format!(
+                        "Rust toolchain ratchet: self rustc {} is behind highest observed rustc {} on {} {}.",
+                        self_row["rustc_version"].as_str().unwrap_or("unknown"),
+                        highest_version,
+                        witness_hostname,
+                        witness_mac
+                    ),
+                    kind: "toolchain-ratchet".into(),
+                    target_path: None,
+                    reference_source_path: None,
+                    drift: DriftSummary {
+                        content: true,
+                        mode: false,
+                        ownership: false,
+                    },
+                    created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
+                    refreshed_at: now.to_string(),
+                    available_at: None,
+                    silenced: false,
+                    silenced_at: None,
+                    has_run: false,
+                    mode: None,
+                    owner: None,
+                    group: None,
+                    source_sha: None,
+                    target_sha: None,
+                    commits_behind: None,
+                    live_sha: None,
+                    reference_sha: None,
+                    recognition_score: None,
+                    diff: None,
+                    script: format!("harmonia interactable run {id}"),
+                    show_only_if: String::new(),
+                    completion_check: String::new(),
+                    evidence: serde_json::json!({
+                        "self_rustc_version": self_row["rustc_version"],
+                        "highest_rustc_version": highest_version,
+                        "highest_witness": {"mac": witness_mac, "hostname": witness_hostname}
+                    }),
+                    extra: unknown.get(&id).cloned().unwrap_or_default(),
+                });
+            }
+        }
+    }
     if is_gateway {
         if let Some(unresolved) = roster.get("dns_unresolved").and_then(serde_json::Value::as_array) {
             let dns_module = profile.dns_module_id().unwrap_or(module);
@@ -729,7 +853,12 @@ pub(crate) fn reconcile_ruyi(
     let entries = feed
         .interactables
         .iter()
-        .filter(|item| matches!(item.kind.as_str(), "ruyi-bump" | "dns-record"))
+        .filter(|item| {
+            matches!(
+                item.kind.as_str(),
+                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
+            )
+        })
         .cloned()
         .collect();
     crate::bands::propose_edits::persist_feed_with_intent(
@@ -839,6 +968,41 @@ fn run_ruyi_perspective_seed(
     {
         seat.validate(&receipt)?;
     }
+    crate::bands::propose_edits::persist_feed_with_intent(
+        path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(),
+            receipts: vec![receipt.clone()],
+        },
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn run_toolchain_ratchet(
+    path: &Path,
+    _feed: &mut InteractablesFeed,
+    _position: usize,
+    item: &Interactable,
+) -> Result<(), String> {
+    let receipt = serde_json::json!({
+        "schema": "harmonia.config_state.receipt.v1",
+        "config_state": "interactable",
+        "id": item.id,
+        "target": null,
+        "reference_id": null,
+        "score": null,
+        "actuator": {
+            "has_run": true,
+            "changed": false,
+            "kind": "toolchain-ratchet",
+            "disposition": "acknowledgment-only",
+            "disposition_basis": "acknowledgment-only is implementer inference because doctrine is silent"
+        }
+    });
     crate::bands::propose_edits::persist_feed_with_intent(
         path,
         crate::bands::propose_edits::FeedPersistenceIntent::Remove {
@@ -1212,6 +1376,311 @@ mod tests {
             evidence: serde_json::Value::Null,
             extra: serde_json::Map::new(),
         }
+    }
+
+    #[test]
+    fn toolchain_version_parser_accepts_only_three_decimal_components() {
+        assert_eq!(parse_toolchain_version("1.82.0"), Some([1, 82, 0]));
+        for value in [
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "1.2.3-nightly",
+            "1..3",
+            "1.2.x",
+            "18446744073709551616.0.0",
+        ] {
+            assert_eq!(parse_toolchain_version(value), None, "{value}");
+        }
+    }
+
+    fn ratchet_profile() -> crate::Profile {
+        crate::Profile {
+            id: "homeconsole".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: vec!["caduceus".into()],
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        }
+    }
+
+    fn ratchet_row(
+        mac: &str,
+        hostname: &str,
+        rustc_version: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "mac": mac,
+            "hostname": hostname,
+            "canonical_name": format!("{hostname}.home.arpa"),
+            "caduceus_sha": "a".repeat(40),
+            "rustc_version": rustc_version,
+            "member_flags": {
+                "sbin": {"source_sha": "b".repeat(40)},
+                "face": {"source_sha": "c".repeat(40)}
+            }
+        })
+    }
+
+    fn ratchet_peer(row: serde_json::Value) -> serde_json::Value {
+        let mut peer = row.clone();
+        peer["perspective"] = serde_json::json!({"self": row});
+        peer
+    }
+
+    fn with_interactables_path<T>(path: &Path, operation: impl FnOnce() -> T) -> T {
+        let _guard = INTERACTABLES_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let prior = env::var_os("HARMONIA_INTERACTABLES_PATH");
+        env::set_var("HARMONIA_INTERACTABLES_PATH", path);
+        let result = operation();
+        match prior {
+            Some(value) => env::set_var("HARMONIA_INTERACTABLES_PATH", value),
+            None => env::remove_var("HARMONIA_INTERACTABLES_PATH"),
+        }
+        result
+    }
+
+    #[test]
+    fn reconcile_toolchain_ratchet_selects_one_highest_peer_and_preserves_sentinels() {
+        let root = fixture("toolchain-ratchet-highest");
+        let feed_path = root.join("interactables.json");
+        let mut existing = ruyi_seed_item();
+        existing.id = "toolchain-ratchet".into();
+        existing.kind = "toolchain-ratchet".into();
+        existing.created_at = "retained-created-at".into();
+        existing
+            .extra
+            .insert("future".into(), serde_json::json!(true));
+        existing.evidence = serde_json::json!({"old": true});
+        let sentinel = {
+            let mut item = ruyi_seed_item();
+            item.id = "sentinel".into();
+            item.kind = "sentinel".into();
+            item
+        };
+        crate::bands::propose_edits::persist_feed(
+            &feed_path,
+            &make_feed(vec![existing, sentinel.clone()]),
+        )
+        .unwrap();
+        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
+        let peers = vec![
+            ratchet_peer(self_row.clone()),
+            ratchet_peer(ratchet_row("cc:cc:cc:cc:cc:cc", "lower", "1.2.4".into())),
+            ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "higher", "1.10.0".into())),
+        ];
+        with_interactables_path(&feed_path, || {
+            reconcile_ruyi(
+                &ratchet_profile(),
+                &self_row,
+                &serde_json::json!({}),
+                &peers,
+                false,
+            )
+            .unwrap();
+        });
+        let feed = load_feed(&feed_path).unwrap();
+        let proposals = feed
+            .interactables
+            .iter()
+            .filter(|item| item.kind == "toolchain-ratchet")
+            .collect::<Vec<_>>();
+        assert_eq!(proposals.len(), 1);
+        let proposal = proposals[0];
+        assert_eq!(proposal.created_at, "retained-created-at");
+        assert_eq!(proposal.extra.get("future"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            proposal.evidence,
+            serde_json::json!({
+                "self_rustc_version": "1.2.3",
+                "highest_rustc_version": "1.10.0",
+                "highest_witness": {"mac": "bb:bb:bb:bb:bb:bb", "hostname": "higher"}
+            })
+        );
+        assert!(feed.interactables.iter().any(|item| item.id == sentinel.id));
+
+        let mut caught_up = self_row.clone();
+        caught_up["rustc_version"] = serde_json::json!("1.10.0");
+        with_interactables_path(&feed_path, || {
+            reconcile_ruyi(
+                &ratchet_profile(),
+                &caught_up,
+                &serde_json::json!({}),
+                &peers,
+                false,
+            )
+            .unwrap();
+        });
+        let caught_up_feed = load_feed(&feed_path).unwrap();
+        assert!(caught_up_feed
+            .interactables
+            .iter()
+            .all(|item| item.kind != "toolchain-ratchet"));
+        assert!(caught_up_feed
+            .interactables
+            .iter()
+            .any(|item| item.id == sentinel.id));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_toolchain_ratchet_has_no_proposal_for_alone_equal_or_invalid_inputs() {
+        let root = fixture("toolchain-ratchet-no-proposal");
+        let feed_path = root.join("interactables.json");
+        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
+        let equal = ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "equal", "1.2.3".into()));
+        let malformed = ratchet_peer(ratchet_row(
+            "cc:cc:cc:cc:cc:cc",
+            "malformed",
+            "1.2.3-nightly".into(),
+        ));
+        let extra = ratchet_peer(ratchet_row("dd:dd:dd:dd:dd:dd", "extra", "1.2.3.4".into()));
+        let cases = [
+            (self_row.clone(), Vec::<serde_json::Value>::new()),
+            (self_row.clone(), vec![self_row.clone()]),
+            (self_row.clone(), vec![self_row.clone(), equal]),
+            (self_row.clone(), vec![self_row.clone(), malformed, extra]),
+            (
+                ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2".into()),
+                vec![self_row],
+            ),
+        ];
+        for (self_row, peers) in cases {
+            crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(Vec::new())).unwrap();
+            with_interactables_path(&feed_path, || {
+                reconcile_ruyi(
+                    &ratchet_profile(),
+                    &self_row,
+                    &serde_json::json!({}),
+                    &peers,
+                    false,
+                )
+                .unwrap();
+            });
+            assert!(load_feed(&feed_path)
+                .unwrap()
+                .interactables
+                .iter()
+                .all(|item| item.kind != "toolchain-ratchet"));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_toolchain_ratchet_ties_use_stable_witness_order() {
+        let root = fixture("toolchain-ratchet-tie");
+        let feed_path = root.join("interactables.json");
+        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
+        let peers = vec![
+            ratchet_peer(ratchet_row("cc:cc:cc:cc:cc:cc", "zeta", "1.5.0".into())),
+            ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "alpha", "1.5.0".into())),
+            ratchet_peer(self_row.clone()),
+        ];
+        crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(Vec::new())).unwrap();
+        with_interactables_path(&feed_path, || {
+            reconcile_ruyi(
+                &ratchet_profile(),
+                &self_row,
+                &serde_json::json!({}),
+                &peers,
+                false,
+            )
+            .unwrap();
+        });
+        let feed = load_feed(&feed_path).unwrap();
+        assert_eq!(
+            feed.interactables[0].evidence["highest_witness"]["mac"],
+            "bb:bb:bb:bb:bb:bb"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn toolchain_ratchet_acknowledgment_removes_and_reproposes_without_side_effects() {
+        let root = fixture("toolchain-ratchet-ack");
+        let feed_path = root.join("interactables.json");
+        let sentinel = {
+            let mut item = ruyi_seed_item();
+            item.id = "sentinel".into();
+            item.kind = "sentinel".into();
+            item
+        };
+        crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(vec![sentinel.clone()]))
+            .unwrap();
+        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
+        let peers = vec![
+            ratchet_peer(self_row.clone()),
+            ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "higher", "1.5.0".into())),
+        ];
+        let ordinary_path = root.join("ordinary-sentinel.bin");
+        let ordinary_bytes = b"ordinary sentinel bytes\n\x00\xff".to_vec();
+        fs::write(&ordinary_path, &ordinary_bytes).unwrap();
+        with_interactables_path(&feed_path, || {
+            reconcile_ruyi(
+                &ratchet_profile(),
+                &self_row,
+                &serde_json::json!({}),
+                &peers,
+                false,
+            )
+            .unwrap();
+            interactable_run(&["toolchain-ratchet".into()], None).unwrap();
+            assert_eq!(fs::read(&ordinary_path).unwrap(), ordinary_bytes);
+        });
+        let after_run = load_feed(&feed_path).unwrap();
+        assert!(after_run
+            .interactables
+            .iter()
+            .all(|item| item.kind != "toolchain-ratchet"));
+        assert!(after_run
+            .interactables
+            .iter()
+            .any(|item| item.id == sentinel.id));
+        assert_eq!(
+            after_run.receipts.last().unwrap()["schema"],
+            "harmonia.config_state.receipt.v1"
+        );
+        assert_eq!(
+            after_run.receipts.last().unwrap()["target"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            after_run.receipts.last().unwrap()["actuator"]["has_run"],
+            true
+        );
+        assert_eq!(
+            after_run.receipts.last().unwrap()["actuator"]["changed"],
+            false
+        );
+        assert_eq!(
+            after_run.receipts.last().unwrap()["actuator"]["kind"],
+            "toolchain-ratchet"
+        );
+        assert_eq!(
+            after_run.receipts.last().unwrap()["actuator"]["disposition"],
+            "acknowledgment-only"
+        );
+        with_interactables_path(&feed_path, || {
+            reconcile_ruyi(
+                &ratchet_profile(),
+                &self_row,
+                &serde_json::json!({}),
+                &peers,
+                false,
+            )
+            .unwrap();
+        });
+        assert!(load_feed(&feed_path)
+            .unwrap()
+            .interactables
+            .iter()
+            .any(|item| item.kind == "toolchain-ratchet"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

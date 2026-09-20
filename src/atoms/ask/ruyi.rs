@@ -47,6 +47,8 @@ pub(crate) struct RuyiRow {
     pub caduceus_sha: String,
     #[serde(default, deserialize_with = "nullable_string")]
     pub env_sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rustc_version: Option<String>,
     pub harmonia_sha: String,
     pub syzygy_sha: Option<String>,
     pub last_seen: u64,
@@ -440,6 +442,7 @@ pub(crate) fn write_committed_state(
         caduceus_port: registrant::caduceus_port(),
         caduceus_sha: mint.caduceus_sha.clone(),
         env_sha: mint.env_sha.clone(),
+        rustc_version: None,
         harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
         syzygy_sha: if mint.signal == "none" {
             mint.syzygy_sha.clone()
@@ -528,6 +531,7 @@ mod tests {
             caduceus_port: Some(8787),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
+            rustc_version: Some("1.82.0".into()),
             harmonia_sha: "c".repeat(40),
             syzygy_sha: Some("d".repeat(64)),
             last_seen: 1_725_000_000,
@@ -603,6 +607,7 @@ mod tests {
                 "last_update",
                 "mac",
                 "profile",
+                "rustc_version",
                 "schema",
                 "syzygy_sha",
             ]
@@ -912,6 +917,7 @@ mod tests {
 
         assert_eq!(seed["caduceus_port"], 8787);
         assert_ne!(seed["caduceus_port"], 3014);
+        assert!(seed.get("rustc_version").is_none());
         fs::write(
             &config_path,
             serde_json::json!({"caduceus": {

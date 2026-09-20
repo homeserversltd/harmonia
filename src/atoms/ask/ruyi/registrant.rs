@@ -186,11 +186,20 @@ pub(super) fn seed_perspective_for(
     profile: crate::Profile,
     beam_door: Option<crate::atoms::ask::beam::BeamDoor>,
 ) -> Result<(LocalIdentity, Value), String> {
+    seed_perspective_for_with_harmonia_sha(identity, profile, beam_door, HARMONIA_BUILD_SHA)
+}
+
+fn seed_perspective_for_with_harmonia_sha(
+    identity: LocalIdentity,
+    profile: crate::Profile,
+    beam_door: Option<crate::atoms::ask::beam::BeamDoor>,
+    harmonia_sha: Option<&str>,
+) -> Result<(LocalIdentity, Value), String> {
     let profile_gui_face = profile
         .syzygy_declaration
         .as_ref()
         .and_then(|declaration| declaration.gui_face.clone());
-    let (gui_face_from_door, caduceus_sha, env_sha, syzygy_sha) = match beam_door {
+    let (gui_face_from_door, caduceus_sha, env_sha, rustc_version, syzygy_sha) = match beam_door {
         Some(door) => (
             door.gui_face,
             if valid_hex(&door.caduceus_sha, 40) {
@@ -203,9 +212,10 @@ pub(super) fn seed_perspective_for(
             } else {
                 String::new()
             },
+            door.rustc_version,
             door.syzygy_sha.filter(|sha| valid_hex(sha, 64)),
         ),
-        None => (None, String::new(), String::new(), None),
+        None => (None, String::new(), String::new(), None, None),
     };
     let caduceus_sha_present = valid_hex(&caduceus_sha, 40);
     let env_sha_present = valid_hex(&env_sha, 64);
@@ -220,7 +230,8 @@ pub(super) fn seed_perspective_for(
         caduceus_port: caduceus_port(),
         caduceus_sha,
         env_sha,
-        harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
+        rustc_version,
+        harmonia_sha: harmonia_sha.unwrap_or_default().to_owned(),
         syzygy_sha,
         last_seen: now()?,
         last_update: LastUpdate {
@@ -1020,5 +1031,59 @@ mod tests {
             "schema-frozen-kernel-missing harmonia.ruyi-register.v1 harmonia.ruyi-register.v1.self"
         );
         assert_eq!(saved["unknown"]["kept"], true);
+    }
+
+    #[test]
+    fn mixed_fleet_seed_preserves_optional_door_toolchain_presence() {
+        let identity = LocalIdentity {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            hostname: "arcadia".into(),
+            ipv4: "192.0.2.1".into(),
+            first_missing_signal: None,
+        };
+        let profile = crate::Profile {
+            id: "homeconsole".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: vec!["caduceus".into()],
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        };
+        let raw = json!({
+            "schema": crate::atoms::ask::beam::DOOR_SCHEMA,
+            "ok": true,
+            "service": "caduceus",
+            "caduceus_sha": "a".repeat(40),
+            "env_sha": "b".repeat(64),
+            "profile": "homeconsole",
+            "gui_face": "Arcadia",
+            "syzygy_sha": null
+        })
+        .to_string();
+        let legacy_door = crate::atoms::ask::beam::parse_door(&raw).unwrap();
+        assert_eq!(legacy_door.rustc_version, None);
+        let (_, legacy_perspective) = seed_perspective_for_with_harmonia_sha(
+            identity.clone(),
+            profile.clone(),
+            Some(legacy_door),
+            Some(&"c".repeat(40)),
+        )
+        .unwrap();
+        assert!(legacy_perspective["self"].get("rustc_version").is_none());
+
+        let mut present = serde_json::from_str::<Value>(&raw).unwrap();
+        present["rustc_version"] = json!("1.82.0");
+        let present_door = crate::atoms::ask::beam::parse_door(&present.to_string()).unwrap();
+        let (_, present_perspective) = seed_perspective_for_with_harmonia_sha(
+            identity,
+            profile,
+            Some(present_door),
+            Some(&"c".repeat(40)),
+        )
+        .unwrap();
+        assert_eq!(
+            present_perspective["self"]["rustc_version"],
+            json!("1.82.0")
+        );
     }
 }

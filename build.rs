@@ -58,6 +58,31 @@ fn compute_build_env_sha() -> Option<String> {
     Some(token.to_string())
 }
 
+fn compute_rustc_version() -> String {
+    let Some(output) = command_stdout("rustc", &["-Vv"]) else {
+        return "unset".to_string();
+    };
+    let Ok(output) = String::from_utf8(output) else {
+        return "unset".to_string();
+    };
+    let mut releases = output
+        .lines()
+        .filter_map(|line| line.strip_prefix("release:").map(str::trim));
+    let Some(version) = releases.next() else {
+        return "unset".to_string();
+    };
+    if releases.next().is_some()
+        || version.split('.').count() != 3
+        || version.split('.').any(|component| {
+            component.is_empty() || !component.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        "unset".to_string()
+    } else {
+        version.to_string()
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=HARMONIA_COMPONENT");
     let component = env::var("HARMONIA_COMPONENT").unwrap_or_else(|_| "harmonia".to_string());
@@ -80,4 +105,8 @@ fn main() {
             println!("cargo:rustc-env=HARMONIA_BUILD_ENV_SHA={value}");
         }
     }
+    println!(
+        "cargo:rustc-env=HARMONIA_BUILD_RUSTC_VERSION={}",
+        compute_rustc_version()
+    );
 }

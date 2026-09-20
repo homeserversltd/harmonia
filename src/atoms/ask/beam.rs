@@ -85,6 +85,8 @@ pub(crate) struct BeamDoor {
     pub service: String,
     pub caduceus_sha: String,
     pub env_sha: String,
+    #[serde(default)]
+    pub rustc_version: Option<String>,
     pub profile: String,
     pub gui_face: Option<String>,
     pub syzygy_sha: Option<String>,
@@ -574,11 +576,24 @@ mod tests {
             service: "caduceus".into(),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
+            rustc_version: None,
             profile: "p".into(),
             gui_face: Some("g".into()),
             syzygy_sha: None,
         }
     }
+    #[test]
+    fn legacy_door_without_rustc_version_remains_compatible() {
+        let raw = format!(
+            r#"{{"schema":"{}","ok":true,"service":"caduceus","caduceus_sha":"{}","env_sha":"{}","profile":"p","gui_face":null,"syzygy_sha":null}}"#,
+            DOOR_SCHEMA,
+            "a".repeat(40),
+            "b".repeat(64)
+        );
+        let parsed = parse_door(&raw).unwrap();
+        assert_eq!(parsed.rustc_version, None);
+    }
+
     #[test]
     fn valid_lock() {
         assert!(validate_lock(lock()).is_ok());

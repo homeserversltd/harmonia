@@ -824,6 +824,7 @@ mod beam_tests {
             service: "caduceus".into(),
             caduceus_sha: "a".repeat(40),
             env_sha: "b".repeat(64),
+            rustc_version: None,
             profile: "p".into(),
             gui_face: Some("g".into()),
             syzygy_sha: None,
