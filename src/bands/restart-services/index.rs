@@ -759,6 +759,10 @@ fn health_probe_request<'a>(
     }
 }
 
+pub(crate) fn xenia_source_sha_changed(args: &BTreeMap<String, Value>) -> bool {
+    args.contains_key("xenia_id") && args.get("running_source_sha") != args.get("source_sha")
+}
+
 pub(crate) fn execute_routine_child(
     tool: &str,
     requested_permutation: Option<&str>,
@@ -783,6 +787,9 @@ pub(crate) fn execute_routine_child(
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {
+        "check-health" if args.get("xenia_health_read").and_then(Value::as_bool) == Some(true) => {
+            crate::bands::xenia::execute_health_read(args)
+        }
         "check-health" if permutation.name == "status-door" => {
             crate::bands::xenia::execute_status_door(args)
         }
@@ -854,10 +861,12 @@ pub(crate) fn execute_routine_child(
                 binary_changed,
                 managed_files_changed,
             );
+            let xenia_running_sha_changed = permutation.name == "restart"
+                && xenia_source_sha_changed(args);
             let material_changed = if permutation.name == "daemon-reload" {
                 reload_changed
             } else {
-                restart_changed
+                restart_changed || xenia_running_sha_changed
             };
             let restart_policy = args.get("restart_policy").and_then(Value::as_str);
             let effective = if user {
@@ -1293,5 +1302,38 @@ mod profile_source_collection_tests {
         assert_eq!(collected.len(), 2);
         assert_eq!(collected["alpha_profile_source"], json!({"source": "a"}));
         assert_eq!(collected["beta_profile_source"], json!({"source": "b"}));
+    }
+}
+
+#[cfg(test)]
+mod xenia_restart_gate_tests {
+    use super::xenia_source_sha_changed;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn equal_running_sha_keeps_xenia_restart_quiet() {
+        let args = BTreeMap::from([
+            ("xenia_id".into(), json!("guest")),
+            ("running_source_sha".into(), json!("a")),
+            ("source_sha".into(), json!("a")),
+        ]);
+        assert!(!xenia_source_sha_changed(&args));
+    }
+
+    #[test]
+    fn null_or_mismatched_running_sha_requires_xenia_restart() {
+        let null = BTreeMap::from([
+            ("xenia_id".into(), json!("guest")),
+            ("running_source_sha".into(), serde_json::Value::Null),
+            ("source_sha".into(), json!("a")),
+        ]);
+        assert!(xenia_source_sha_changed(&null));
+        let mismatch = BTreeMap::from([
+            ("xenia_id".into(), json!("guest")),
+            ("running_source_sha".into(), json!("b")),
+            ("source_sha".into(), json!("a")),
+        ]);
+        assert!(xenia_source_sha_changed(&mismatch));
     }
 }

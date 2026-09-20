@@ -1,0 +1,1 @@
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run *

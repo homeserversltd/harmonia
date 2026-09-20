@@ -1165,6 +1165,53 @@ fn resolve_xenia_source(
             "source-road-deferred".into(),
         );
     }
+    if source.get("kind").and_then(Value::as_str) == Some("clone") {
+        let repo = source
+            .get("repo")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let requested_ref = source
+            .get("ref")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let (Some(repo), Some(requested_ref)) = (repo, requested_ref) else {
+            return blocker_receipt(
+                authority,
+                Some(XENIA_SCHEMA.into()),
+                "source".into(),
+                component,
+                owning_module,
+                step_id,
+                "xenia-clone-source-incomplete".into(),
+            );
+        };
+        return receipt(
+            authority,
+            Some(XENIA_SCHEMA.into()),
+            "source".into(),
+            component,
+            owning_module,
+            step_id,
+            Some(requested_ref.to_string()),
+            vec!["clone:1".into()],
+            Vec::new(),
+            None,
+            Some(SourceResolution {
+                schema: SOURCE_PLAN_SCHEMA,
+                source_policy: "source".into(),
+                component: component.to_string(),
+                requested_ref: requested_ref.to_string(),
+                candidates: vec![SourceCandidatePlan {
+                    kind: "git".into(),
+                    locator: format!("https://git.home.arpa/{repo}.git"),
+                    credential_selector: None,
+                    freshness_authority: None,
+                }],
+            }),
+        );
+    }
     let release_repo = source
         .get("release_repo")
         .and_then(Value::as_str)
@@ -1838,6 +1885,40 @@ pub(crate) fn execute_routine_child(
                     .get("artifact_name")
                     .and_then(Value::as_str)
                     .unwrap_or(entry_id);
+                if entry.pointer("/source/kind").and_then(Value::as_str) == Some("clone") {
+                    let destination = args
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .ok_or("xenia-clone-path-missing")?;
+                    let outcome = crate::pull_repo::acquire_xenia_clone(
+                        entry,
+                        PathBuf::from(destination),
+                        apply,
+                    );
+                    let resolved = outcome.receipt.resolved_commit.clone();
+                    let outputs = BTreeMap::from([
+                        ("path".into(), json!(destination)),
+                        ("resolved_commit".into(), json!(resolved)),
+                        ("source_reference".into(), json!(entry.pointer("/source/ref").and_then(Value::as_str))),
+                        ("source_remote".into(), json!(entry.pointer("/source/repo").and_then(Value::as_str))),
+                        ("source_policy".into(), json!("source")),
+                        ("changed".into(), json!(outcome.changed)),
+                        ("entry".into(), entry.clone()),
+                    ]);
+                    let result = OperationOutcome {
+                        ok: outcome.ok,
+                        changed: outcome.changed,
+                        skipped: !apply,
+                        message: outcome.receipt.promotion.clone(),
+                        command: None,
+                    };
+                    crate::write_json(
+                        &receipt_dir.join(format!("{name}.json")),
+                        &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":outcome.ok,"changed":outcome.changed,"skipped":!apply,"promotion":outcome.receipt.promotion}),
+                    )?;
+                    crate::pull_repo::attest_source(&receipt_dir.join("pull-repo.attest.jsonl"), &outcome)?;
+                    return Ok((result, outputs));
+                }
                 let resolution = resolve_source(
                     SourceAuthority::XeniaEntry { entry_id, entry },
                     entry_id,

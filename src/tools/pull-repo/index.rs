@@ -1,4 +1,7 @@
-use crate::tools::git_artifact::{self, Outcome, Request, SourceCandidateKind, SourceOutcome, SourcePlan};
+use crate::tools::git_artifact::{
+    self, source_attempt, Outcome, Request, SourceCandidate, SourceCandidateKind, SourceOutcome,
+    SourcePlan, SourceReceipt,
+};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use crate::{
@@ -32,6 +35,89 @@ pub(crate) fn apply(
         Err(error) => Outcome { ok: false, changed: false, message: error, command: CmdResult { ok: false, code: -1, stdout: String::new(), stderr: String::new() } },
     }
 }
+pub(crate) fn acquire_xenia_clone(
+    entry: &serde_json::Value,
+    destination: PathBuf,
+    apply: bool,
+) -> SourceOutcome {
+    let repo = entry
+        .pointer("/source/repo")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let reference = entry
+        .pointer("/source/ref")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let owner = entry
+        .pointer("/install/owner")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let locator = repo
+        .split_once('/')
+        .filter(|(owner, name)| {
+            !owner.is_empty()
+                && !name.is_empty()
+                && !name.contains('/')
+                && !repo.contains("://")
+        })
+        .map(|_| format!("https://git.home.arpa/{repo}.git"));
+    let candidate = SourceCandidate {
+        kind: SourceCandidateKind::Git,
+        locator: locator.clone().unwrap_or_else(|| repo.to_owned()),
+        credential_selector: None,
+    };
+    let failure = |detail: String| SourceOutcome {
+        ok: false,
+        changed: false,
+        receipt: SourceReceipt {
+            attempts: vec![source_attempt(1, &candidate, "failed", None, false, detail.clone())],
+            served_index: None,
+            resolved_commit: None,
+            promotion: detail,
+        },
+    };
+    if repo.is_empty() || reference.is_empty() || owner.is_empty() || locator.is_none() {
+        return failure("xenia-clone-source-incomplete".into());
+    }
+    if !apply {
+        let resolved = crate::atoms::ask::pull_repo::source_head(&destination, owner);
+        let resolved = resolved
+            .ok
+            .then(|| resolved.stdout.trim().to_owned())
+            .filter(|value| crate::atoms::git_artifact::is_lower_hex_sha(value));
+        return SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: SourceReceipt {
+                attempts: vec![source_attempt(1, &candidate, "planned", resolved.clone(), false, "in-place clone planned".into())],
+                served_index: None,
+                resolved_commit: resolved,
+                promotion: "xenia clone planned".into(),
+            },
+        };
+    }
+    let request = crate::atoms::git_artifact::Request::new(
+        locator,
+        destination,
+        reference.to_owned(),
+        "origin".into(),
+    )
+    .with_bearer(owner.to_owned());
+    match crate::atoms::ask::pull_repo::clone_in_place(&request, reference, owner) {
+        Ok((changed, resolved, detail)) => SourceOutcome {
+            ok: true,
+            changed,
+            receipt: SourceReceipt {
+                attempts: vec![source_attempt(1, &candidate, "served-in-place", Some(resolved.clone()), false, detail)],
+                served_index: Some(1),
+                resolved_commit: Some(resolved),
+                promotion: "xenia clone fetched and checked out in place; untracked target preserved".into(),
+            },
+        },
+        Err(error) => failure(error),
+    }
+}
+
 pub(crate) fn acquire_source(
     plan: &SourcePlan,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,

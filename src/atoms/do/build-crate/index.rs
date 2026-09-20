@@ -6,6 +6,10 @@ use std::time::Duration;
 
 pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 
+pub(crate) fn cargo_build_args() -> [&'static str; 3] {
+    ["build", "--release", "--locked"]
+}
+
 pub(crate) fn cargo_build(
     authorization: &ActionAuthorization,
     invocation: &InvocationKey,
@@ -18,9 +22,10 @@ pub(crate) fn cargo_build(
         .iter()
         .cloned()
         .collect::<std::collections::BTreeMap<_, _>>();
+    let cargo_args = cargo_build_args();
     let result = crate::atoms::command::capture_with_cwd_as_bearer_and_env_and_timeout(
         "cargo",
-        &["build", "--release"],
+        &cargo_args,
         cwd.to_str(),
         bearer,
         env,
@@ -29,7 +34,7 @@ pub(crate) fn cargo_build(
     let _ = (authorization, invocation);
     Ok(CommandObservation {
         program: "cargo".into(),
-        args: vec!["build".into(), "--release".into()],
+        args: cargo_build_args().into_iter().map(str::to_owned).collect(),
         ok: result.ok,
         code: Some(result.code),
         stdout: result.stdout,
@@ -95,4 +100,12 @@ pub(crate) fn failure(
         &log.with_file_name("service-runtime-build-failure.json"),
         &serde_json::json!({"signal":"service-runtime-act-did-not-converge","artifact":artifact,"source_build_sha":source_build_sha,"before":before.artifact_build_sha,"after":after.artifact_build_sha,"movement_ok":movement_ok}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cargo_build_is_locked_and_release_only() {
+        assert_eq!(super::cargo_build_args(), ["build", "--release", "--locked"]);
+    }
 }

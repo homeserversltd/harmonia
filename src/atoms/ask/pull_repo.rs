@@ -5,6 +5,8 @@ use super::super::git_artifact::{
 };
 use crate::atoms::comparison::DiffDecision;
 use std::path::{Path, PathBuf};
+use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PullRepoObservation {
@@ -264,6 +266,114 @@ pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::atoms::git_artifa
     git_observe(&request, &["rev-parse", "HEAD"], path.to_str())
 }
 
+fn xenia_commit(request: &git_artifact::Request, cwd: &Path, expression: &str) -> Option<String> {
+    let result = git_observe(request, &["rev-parse", &format!("{expression}^{{commit}}")], cwd.to_str());
+    result.ok.then(|| result.stdout.trim().to_owned()).filter(|value| git_artifact::is_lower_hex_sha(value))
+}
+
+fn xenia_owner_ids(owner: &str) -> Result<(u32, u32), String> {
+    #[cfg(test)]
+    if owner == "xenia" {
+        return Ok((unsafe { libc::geteuid() }, unsafe { libc::getegid() }));
+    }
+    let name = std::ffi::CString::new(owner).map_err(|_| "xenia-owner-invalid".to_string())?;
+    let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
+    if passwd.is_null() {
+        return Err(format!("xenia-owner-absent {owner}"));
+    }
+    let passwd = unsafe { &*passwd };
+    Ok((passwd.pw_uid, passwd.pw_gid))
+}
+
+fn xenia_repair_seat(path: &Path, owner: &str) -> Result<bool, String> {
+    let (uid, gid) = xenia_owner_ids(owner)?;
+    let metadata = fs::metadata(path).map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
+    let mut changed = metadata.permissions().mode() & 0o777 != 0o750;
+    if changed {
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o750);
+        fs::set_permissions(path, permissions)
+            .map_err(|error| format!("xenia-seat-mode-failed: {error}"))?;
+    }
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::ffi::OsStrExt;
+        let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| "xenia-seat-path-invalid".to_string())?;
+        let current = fs::metadata(path).map_err(|error| error.to_string())?;
+        if current.uid() != uid || current.gid() != gid {
+            if unsafe { libc::chown(path_c.as_ptr(), uid, gid) } != 0 {
+                return Err(format!("xenia-seat-owner-failed: {}", std::io::Error::last_os_error()));
+            }
+            changed = true;
+        }
+    } else if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err("xenia-seat-owner-mismatch".into());
+    }
+    Ok(changed)
+}
+
+/// In-place clone road for Xenia. Unlike generic source acquisition this never
+/// stages or promotes a replacement directory, so an untracked target/ survives.
+pub(crate) fn clone_in_place(
+    request: &git_artifact::Request,
+    reference: &str,
+    owner: &str,
+) -> Result<(bool, String, String), String> {
+    if request.path.exists() && !request.path.is_dir() {
+        return Err("xenia-clone-destination-not-directory".into());
+    }
+    fs::create_dir_all(&request.path)
+        .map_err(|error| format!("xenia-clone-seat-create-failed: {error}"))?;
+    let seat_changed_before = xenia_repair_seat(&request.path, owner)?;
+    let cwd = request.path.to_str().ok_or("xenia-clone-path-invalid")?;
+    let mut transcript = Vec::new();
+    let before = xenia_commit(request, &request.path, "HEAD");
+    if !request.path.join(".git").exists() {
+        let init = git_observe(request, &["init", "-q"], Some(cwd));
+        if !init.ok { return Err(format!("xenia-clone-init-failed: {}", init.stderr)); }
+        let add = git_observe(request, &["remote", "add", "origin", request.repo.as_deref().ok_or("xenia-clone-repo-missing")?], Some(cwd));
+        if !add.ok { return Err(format!("xenia-clone-remote-failed: {}", add.stderr)); }
+    } else if let Some(repo) = request.repo.as_deref() {
+        let configured = git_observe(request, &["remote", "get-url", "origin"], Some(cwd));
+        if !configured.ok {
+            let add = git_observe(request, &["remote", "add", "origin", repo], Some(cwd));
+            if !add.ok { return Err(format!("xenia-clone-remote-failed: {}", add.stderr)); }
+        } else if configured.stdout.trim() != repo {
+            let set = git_observe(request, &["remote", "set-url", "origin", repo], Some(cwd));
+            if !set.ok { return Err(format!("xenia-clone-remote-failed: {}", set.stderr)); }
+        }
+    }
+    let fetch = git_observe(request, &["fetch", "origin", reference], Some(cwd));
+    transcript.push(format!("fetch ref={reference} exit={} ok={}", fetch.code, fetch.ok));
+    if !fetch.ok { return Err(format!("xenia-clone-fetch-failed: {}", fetch.stderr)); }
+    let target = if git_artifact::is_lower_hex_sha(reference) {
+        xenia_commit(request, &request.path, reference)
+    } else {
+        xenia_commit(request, &request.path, "FETCH_HEAD")
+            .or_else(|| xenia_commit(request, &request.path, &format!("refs/tags/{reference}")))
+            .or_else(|| xenia_commit(request, &request.path, &format!("refs/remotes/origin/{reference}")))
+    }
+    .ok_or("xenia-clone-target-unresolved")?;
+    if let Some(previous) = before.as_deref().filter(|previous| *previous != target) {
+        let ancestor = git_observe(request, &["merge-base", "--is-ancestor", previous, &target], Some(cwd));
+        if !ancestor.ok {
+            return Err("xenia-clone-diverged".into());
+        }
+    }
+    let status = git_observe(request, &["status", "--porcelain", "--untracked-files=all"], Some(cwd));
+    if !status.ok { return Err(format!("xenia-clone-status-failed: {}", status.stderr)); }
+    let unsafe_dirty = status.stdout.lines().any(|line| {
+        let path = line.get(3..).unwrap_or_default().trim().trim_matches('"');
+        !path.is_empty() && path != "target" && !path.starts_with("target/")
+    });
+    if unsafe_dirty { return Err("xenia-clone-dirty".into()); }
+    let checkout = git_observe(request, &["checkout", "--detach", &target], Some(cwd));
+    if !checkout.ok { return Err(format!("xenia-clone-checkout-failed: {}", checkout.stderr)); }
+    let resolved = xenia_commit(request, &request.path, "HEAD").ok_or("xenia-clone-head-unresolved")?;
+    let seat_changed = xenia_repair_seat(&request.path, owner)?;
+    Ok((before.as_deref() != Some(resolved.as_str()) || seat_changed_before || seat_changed, resolved, transcript.join("\n")))
+}
+
 pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
     if plan.candidates.is_empty() {
         return RemoteHeadProbe {
@@ -501,4 +611,66 @@ pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome>
             promotion: "already-current; destination projects observed remote head; no clone, stage, or promotion".into(),
         },
     })
+}
+
+#[cfg(test)]
+mod xenia_clone_tests {
+    use super::clone_in_place;
+    use crate::atoms::git_artifact::Request;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "xenia-test")
+            .env("GIT_AUTHOR_EMAIL", "xenia-test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "xenia-test")
+            .env("GIT_COMMITTER_EMAIL", "xenia-test@example.invalid")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn local_git_clone_is_in_place_fast_forward_and_divergence_safe() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote");
+        let seat = root.path().join("seat");
+        fs::create_dir(&remote).unwrap();
+        git(&remote, &["init", "-q", "-b", "main"]);
+        fs::write(remote.join("README"), "one\n").unwrap();
+        git(&remote, &["add", "README"]);
+        git(&remote, &["commit", "-q", "-m", "one"]);
+        let first = git(&remote, &["rev-parse", "HEAD"]);
+        let request = Request::new(Some(format!("file://{}", remote.display())), seat.clone(), "main".into(), "origin".into());
+        let (_, resolved, _) = clone_in_place(&request, "main", "xenia").unwrap();
+        assert_eq!(resolved, first);
+        assert!(seat.join(".git").exists());
+        assert_eq!(fs::metadata(&seat).unwrap().permissions().mode() & 0o777, 0o750);
+        fs::create_dir_all(seat.join("target")).unwrap();
+        fs::write(seat.join("target/cache"), "keep").unwrap();
+
+        fs::write(remote.join("README"), "two\n").unwrap();
+        git(&remote, &["add", "README"]);
+        git(&remote, &["commit", "-q", "-m", "two"]);
+        let second = git(&remote, &["rev-parse", "HEAD"]);
+        let (_, resolved, _) = clone_in_place(&request, "main", "xenia").unwrap();
+        assert_eq!(resolved, second);
+        assert!(seat.join("target/cache").exists());
+
+        git(&seat, &["checkout", "-q", "-b", "diverged"]);
+        fs::write(seat.join("README"), "local\n").unwrap();
+        git(&seat, &["add", "README"]);
+        git(&seat, &["commit", "-q", "-m", "diverged"]);
+        fs::write(remote.join("README"), "three\n").unwrap();
+        git(&remote, &["add", "README"]);
+        git(&remote, &["commit", "-q", "-m", "three"]);
+        let error = clone_in_place(&request, "main", "xenia").unwrap_err();
+        assert_eq!(error, "xenia-clone-diverged");
+    }
 }

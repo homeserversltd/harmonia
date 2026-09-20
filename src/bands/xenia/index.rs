@@ -151,35 +151,121 @@ fn unit_name(entry: &Value, id: &str) -> Result<String, String> {
     }
 }
 
+pub(crate) fn xenia_root() -> PathBuf {
+    std::env::var_os("HARMONIA_XENIA_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/xenia"))
+}
+
+const CANONICAL_XENIA_ROOT: &str = "/var/lib/xenia";
+
+fn rebased_install_bin(id: &str, entry: &Value) -> Result<Option<String>, String> {
+    let Some(raw) = install_bin(entry) else {
+        return Ok(None);
+    };
+    let canonical_seat = Path::new(CANONICAL_XENIA_ROOT).join(id);
+    let path = Path::new(&raw);
+    let relative = path
+        .strip_prefix(&canonical_seat)
+        .map_err(|_| "xenia-install-bin-path-mismatch".to_string())?;
+    if relative.as_os_str().is_empty() || relative == Path::new(".") {
+        return Err("xenia-install-bin-path-mismatch".into());
+    }
+    Ok(Some(
+        xenia_root()
+            .join(id)
+            .join(relative)
+            .display()
+            .to_string(),
+    ))
+}
+
+fn discovered_endpoint(entry: &Value) -> Option<&str> {
+    entry.pointer("/discovered/endpoint").and_then(Value::as_str)
+}
+
+fn health_route(entry: &Value) -> String {
+    entry
+        .pointer("/health/route")
+        .and_then(Value::as_str)
+        .filter(|route| route.starts_with('/'))
+        .unwrap_or("/health")
+        .to_owned()
+}
+
+fn health_url(endpoint: &str, route: &str) -> String {
+    let endpoint = endpoint.trim_end_matches('/');
+    if endpoint.ends_with(route) {
+        endpoint.to_owned()
+    } else {
+        format!("{endpoint}/{}", route.trim_start_matches('/'))
+    }
+}
+
+fn source_kind(entry: &Value) -> Option<&str> {
+    entry.pointer("/source/kind").and_then(Value::as_str)
+}
+
+fn install_bin(entry: &Value) -> Option<String> {
+    entry
+        .pointer("/install/bin")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .filter(|value| !value.trim().is_empty())
+}
+
 fn declaration(id: &str, entry: &Value) -> Result<LadderStep, String> {
-    let release_repo = string(entry, "/source/release_repo")?;
-    let bin = string(entry, "/install/bin")?;
+    let clone = source_kind(entry) == Some("clone");
+    let (release_repo, requested_ref) = if clone {
+        let repo = string(entry, "/source/repo")?;
+        let reference = string(entry, "/source/ref")?;
+        (repo, Some(reference))
+    } else {
+        (string(entry, "/source/release_repo")?, None)
+    };
+    let bin = rebased_install_bin(id, entry)?;
+    if !clone && bin.is_none() {
+        return Err("xenia-install-bin-missing".into());
+    }
     let unit = unit_name(entry, id)?;
     let owner = string(entry, "/install/owner")?;
-    let binary_name = repo_segment(&release_repo).to_string();
-    let args = BTreeMap::from([
+    let binary_name = if clone {
+        bin.as_deref()
+            .and_then(|value| Path::new(value).file_name())
+            .and_then(|value| value.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| repo_segment(&release_repo).to_string())
+    } else {
+        repo_segment(&release_repo).to_string()
+    };
+    let face = bin.is_some();
+    let mut args = BTreeMap::from([
         ("module_id".into(), json!("xenia")),
         ("component".into(), json!(id)),
         ("release_repo".into(), json!(release_repo)),
+        ("release_ref".into(), json!(requested_ref)),
+        ("source_kind".into(), json!(if clone { "clone" } else { "release" })),
+        ("source_policy".into(), json!(if clone { "source" } else { "artifact" })),
+        ("face".into(), json!(face)),
         ("install_bin".into(), json!(bin)),
         ("service".into(), json!(unit)),
         ("url".into(), json!(format!("xenia://{id}"))),
-        ("binary_name".into(), json!(binary_name)),
-        (
-            "asset_name".into(),
-            json!(format!("{}-x86_64", repo_segment(&release_repo))),
-        ),
+        ("binary_name".into(), json!(binary_name.clone())),
+        ("asset_name".into(), json!(format!("{binary_name}-x86_64"))),
         ("identity".into(), json!("embedded-sha")),
-        ("source_dir".into(), json!(format!("/var/lib/xenia/{id}"))),
+        ("source_dir".into(), json!(xenia_root().join(id))),
         ("bearer".into(), json!(owner)),
         ("op_prefix".into(), json!(format!("xenia-{id}"))),
         ("run_schema".into(), json!("harmonia.xenia.run.v1")),
-        (
-            "managed_files_schema".into(),
-            json!("harmonia.xenia.files.v1"),
-        ),
+        ("managed_files_schema".into(), json!("harmonia.xenia.files.v1")),
         ("xenia_entry".into(), entry.clone()),
     ]);
+    if !clone {
+        args.remove("release_ref");
+        args.remove("source_kind");
+        args.remove("source_policy");
+        args.remove("face");
+    }
     Ok(LadderStep {
         step_id: format!("xenia-{id}"),
         tool: "service-runtime".into(),
@@ -317,14 +403,21 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
             .ok_or("xenia-lowered-entry-missing")?;
         let id = string(&entry, "/id")?;
         let owner = string(&entry, "/install/owner")?;
-        let bin = string(&entry, "/install/bin")?;
+        let rebased_bin = rebased_install_bin(&id, &entry)?;
+        let face = rebased_bin.is_some();
+        let bin = rebased_bin.unwrap_or_else(|| xenia_root().join(&id).join("__no-face__").display().to_string());
         let unit = unit_name(&entry, &id)?;
-        let seat = format!("/var/lib/xenia/{id}");
-        let bind = match debug_schema_base() {
-            Some(base) => base.to_owned(),
-            None => crate::atoms::ask::caduceus_door::base_url()
-                .map(str::to_owned)
-                .map_err(|_| "caduceus-bind-undeclared".to_string())?,
+        let seat = xenia_root().join(&id).display().to_string();
+        let clone = source_kind(&entry) == Some("clone");
+        let bind = if !face {
+            String::new()
+        } else {
+            match debug_schema_base() {
+                Some(base) => base.to_owned(),
+                None => crate::atoms::ask::caduceus_door::base_url()
+                    .map(str::to_owned)
+                    .map_err(|_| "caduceus-bind-undeclared".to_string())?,
+            }
         };
         let environment = BTreeMap::from([
             ("XENIA_ID".to_string(), id.clone()),
@@ -349,13 +442,24 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 child.args.insert("entry_id".into(), json!(id));
                 child.args.insert("entry".into(), entry.clone());
                 if let Some(repo) = entry
-                    .pointer("/source/release_repo")
+                    .pointer("/source/repo")
                     .and_then(Value::as_str)
+                    .or_else(|| entry.pointer("/source/release_repo").and_then(Value::as_str))
                 {
                     child.args.insert("release_repo".into(), json!(repo));
+                    let artifact_name = if source_kind(&entry) == Some("clone") {
+                        entry
+                            .pointer("/install/bin")
+                            .and_then(Value::as_str)
+                            .and_then(|bin| Path::new(bin).file_name())
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_else(|| repo_segment(repo))
+                    } else {
+                        repo_segment(repo)
+                    };
                     child
                         .args
-                        .insert("artifact_name".into(), json!(repo_segment(repo)));
+                        .insert("artifact_name".into(), json!(artifact_name));
                 }
             }
             if child.name == "build" {
@@ -375,6 +479,10 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                     .args
                     .insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
             }
+        }
+        if !face {
+            step.steps.retain(|child| child.name == "pull-repo");
+            continue;
         }
         let build = step
             .steps
@@ -425,7 +533,45 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
         );
         if let Some(health) = step.steps.iter_mut().find(|c| c.name == "health-proof") {
             health.permutation = Some("status-door".into());
-            health.args = BTreeMap::from([("id".into(), json!(id))]);
+            health.args = if clone {
+                BTreeMap::from([
+                    ("id".into(), json!(id.clone())),
+                    ("resolved_commit".into(), json!({"from":"pull-repo.resolved_commit"})),
+                    ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
+                    ("health_route".into(), json!(health_route(&entry))),
+                ])
+            } else {
+                BTreeMap::from([("id".into(), json!(id.clone()))])
+            };
+        }
+        if clone {
+            let endpoint = discovered_endpoint(&entry);
+            let route = health_route(&entry);
+            let restart = step
+                .steps
+                .iter()
+                .position(|child| child.name == "service-restart")
+                .ok_or("xenia-service-restart-missing")?;
+            step.steps.insert(
+                restart,
+                RoutineStep {
+                    name: "health-read".into(),
+                    tool: "check-health".into(),
+                    permutation: Some("probe".into()),
+                    args: BTreeMap::from([
+                        (
+                            "url".into(),
+                            endpoint
+                                .map(|value| Value::String(health_url(value, &route)))
+                                .unwrap_or(Value::Null),
+                        ),
+                        ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
+                    ("health_route".into(), json!(health_route(&entry))),
+                        ("xenia_health_read".into(), json!(true)),
+                    ]),
+                    extra: BTreeMap::new(),
+                },
+            );
         }
         let health = step
             .steps
@@ -442,7 +588,11 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                     ("id".into(), json!(id)),
                     (
                         "source_sha".into(),
-                        json!({"from":"pull-repo.resolved_commit"}),
+                        if clone {
+                            json!({"from":"health-proof.running_source_sha"})
+                        } else {
+                            json!({"from":"pull-repo.resolved_commit"})
+                        },
                     ),
                     ("health".into(), json!({"from":"health-proof.health"})),
                     ("version".into(), json!({"from":"pull-repo.version"})),
@@ -451,6 +601,15 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
             },
         );
         for child in &mut step.steps {
+            if clone {
+                child.args.insert("xenia_id".into(), json!(id.clone()));
+                if child.name == "service-restart" {
+                    child.args.insert(
+                        "running_source_sha".into(),
+                        json!({"from":"health-read.running_source_sha"}),
+                    );
+                }
+            }
             child.args.insert("hyalos_kind".into(), json!("xenia"));
             child
                 .args
@@ -489,7 +648,7 @@ pub(crate) fn render_unit(
             return Err(format!("xenia-unit-{name}-invalid"));
         }
     }
-    let seat = format!("/var/lib/xenia/{xenia_id}");
+    let seat = xenia_root().join(xenia_id).display().to_string();
     if unit != format!("{xenia_id}.service")
         || description != format!("Xenia guest {xenia_id}")
         || working_directory != seat
@@ -767,8 +926,62 @@ pub(crate) fn execute_refusal(
     })
 }
 
+pub(crate) fn execute_health_read(
+    args: &BTreeMap<String, Value>,
+) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
+    let endpoint = args.get("endpoint").and_then(Value::as_str);
+    let route = args
+        .get("health_route")
+        .and_then(Value::as_str)
+        .filter(|route| route.starts_with('/'))
+        .unwrap_or("/health");
+    let running_source_sha = endpoint.and_then(|endpoint| {
+        let url = health_url(endpoint, route);
+        http("GET", &url, None, Duration::from_secs(3))
+            .ok()
+            .and_then(|(status, value)| (status == 200).then_some(value))
+            .and_then(|value| {
+                value
+                    .get("running_source_sha")
+                    .or_else(|| value.get("source_sha"))
+                    .or_else(|| value.pointer("/runtime/running_source_sha"))
+                    .or_else(|| value.pointer("/runtime/source_sha"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+    });
+    Ok((
+        OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: "xenia-health-read".into(),
+            command: None,
+        },
+        BTreeMap::from([("running_source_sha".into(), json!(running_source_sha))]),
+    ))
+}
+
+fn health_source_sha(value: &Value) -> Option<String> {
+    value
+        .get("running_source_sha")
+        .or_else(|| value.get("source_sha"))
+        .or_else(|| value.pointer("/runtime/running_source_sha"))
+        .or_else(|| value.pointer("/runtime/source_sha"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 pub(crate) fn execute_status_door(
     args: &BTreeMap<String, Value>,
+) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
+    let base = base_url(None)?;
+    execute_status_door_at_base(args, &base)
+}
+
+fn execute_status_door_at_base(
+    args: &BTreeMap<String, Value>,
+    base: &str,
 ) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
     let id = args
         .get("id")
@@ -776,7 +989,6 @@ pub(crate) fn execute_status_door(
         .ok_or("xenia-id-missing")?;
     let retries = crate::atoms::health::DEFAULT_PROBE_RETRIES as u64;
     let pause = 1;
-    let base = base_url(None)?;
     for attempt in 0..retries {
         if let Ok((200, value)) = http(
             "GET",
@@ -792,8 +1004,47 @@ pub(crate) fn execute_status_door(
                     .unwrap_or(0);
                 if listeners > 0 || attempt + 1 == retries {
                     let health = if listeners > 0 { "healthy" } else { "degraded" };
+                    let route = args
+                        .get("health_route")
+                        .and_then(Value::as_str)
+                        .filter(|route| route.starts_with('/'))
+                        .unwrap_or("/health");
+                    let endpoint = args
+                        .get("endpoint")
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            value
+                                .pointer("/entry/discovered/endpoint")
+                                .and_then(Value::as_str)
+                        })
+                        .or_else(|| {
+                            value
+                                .pointer("/runtime/listeners/0/endpoint")
+                                .and_then(Value::as_str)
+                        });
+                    let mut running_source_sha = health_source_sha(&value);
+                    if let Some(endpoint) = endpoint {
+                        let url = health_url(endpoint, route);
+                        let (status, health_value) = http(
+                            "GET",
+                            &url,
+                            None,
+                            Duration::from_secs(3),
+                        )
+                        .map_err(|_| "xenia-health-unreachable".to_string())?;
+                        if status != 200 {
+                            return Err("xenia-health-unreachable".into());
+                        }
+                        running_source_sha = health_source_sha(&health_value);
+                    }
+                    if let Some(expected) = args.get("resolved_commit").and_then(Value::as_str) {
+                        if running_source_sha.as_deref() != Some(expected) {
+                            return Err("xenia-running-sha-mismatch".into());
+                        }
+                    }
                     let mut out = BTreeMap::new();
                     out.insert("health".into(), json!(health));
+                    out.insert("running_source_sha".into(), json!(running_source_sha));
                     out.insert("status".into(), value);
                     return Ok((
                         OperationOutcome {
@@ -1040,4 +1291,112 @@ pub(crate) fn execute_retire(
         message: first_failure.unwrap_or_else(|| "xenia-retire-complete".into()),
         command: None,
     })
+}
+
+#[cfg(test)]
+mod clone_road_tests {
+    use super::{declaration, execute_health_read, execute_status_door_at_base};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn clone_declaration_uses_install_basename_for_face_asset() {
+        let entry = json!({
+            "id":"guest",
+            "kind":"cartridge-process",
+            "source":{"kind":"clone","repo":"OWNER/repo","ref":"main"},
+            "install":{"bin":"/var/lib/xenia/guest/cartridge","unit":null,"owner":"owner"}
+        });
+        let step = declaration("guest", &entry).unwrap();
+        assert_eq!(step.args.get("source_policy").and_then(|v| v.as_str()), Some("source"));
+        assert_eq!(step.args.get("binary_name").and_then(|v| v.as_str()), Some("cartridge"));
+        assert_eq!(step.args.get("asset_name").and_then(|v| v.as_str()), Some("cartridge-x86_64"));
+        let mismatch = json!({
+            "id":"guest",
+            "kind":"cartridge-process",
+            "source":{"kind":"clone","repo":"OWNER/repo","ref":"main"},
+            "install":{"bin":"/var/lib/xenia/other/cartridge","unit":null,"owner":"owner"}
+        });
+        assert_eq!(declaration("guest", &mismatch).unwrap_err(), "xenia-install-bin-path-mismatch");
+    }
+
+    #[test]
+    fn release_and_clone_declarations_lower_side_by_side() {
+        let clone = json!({
+            "id":"clone-guest",
+            "kind":"cartridge-process",
+            "source":{"kind":"clone","repo":"OWNER/repo","ref":"main"},
+            "install":{"bin":"/var/lib/xenia/clone-guest/cartridge","unit":null,"owner":"owner"}
+        });
+        let release = json!({
+            "id":"release-guest",
+            "kind":"cartridge-process",
+            "source":{"release_repo":"OWNER/release","ref":"v1"},
+            "install":{"bin":"/var/lib/xenia/release-guest/cartridge","unit":null,"owner":"owner"}
+        });
+        let clone_step = declaration("clone-guest", &clone).unwrap();
+        let release_step = declaration("release-guest", &release).unwrap();
+        assert_eq!(clone_step.args["source_kind"], json!("clone"));
+        assert_eq!(clone_step.args["source_policy"], json!("source"));
+        assert_eq!(release_step.args["release_repo"], json!("OWNER/release"));
+        assert!(!release_step.args.contains_key("source_kind"));
+        assert!(!release_step.args.contains_key("release_ref"));
+    }
+
+    fn status_server(sha: &str) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let endpoint = format!("http://{address}");
+        let body = format!("{{\"runtime\":{{\"state\":\"active\",\"listeners\":[{{\"endpoint\":\"{endpoint}\"}}]}}}}");
+        let health = format!("{{\"running_source_sha\":\"{sha}\"}}");
+        let server = thread::spawn(move || {
+            for (path, response) in [("/api/v1/xenia/status/guest", body), ("/health", health)] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let size = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..size]).starts_with(&format!("GET {path} ")));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+            }
+        });
+        (format!("http://{address}"), server)
+    }
+
+    #[test]
+    fn status_listener_fallback_reads_health_and_refuses_sha_mismatch() {
+        let (base, server) = status_server("expected");
+        let args = BTreeMap::from([
+            ("id".into(), json!("guest")),
+            ("resolved_commit".into(), json!("expected")),
+        ]);
+        execute_status_door_at_base(&args, &base).unwrap();
+        server.join().unwrap();
+        let (base, server) = status_server("wrong");
+        let error = execute_status_door_at_base(&args, &base).unwrap_err();
+        assert_eq!(error, "xenia-running-sha-mismatch");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn health_read_uses_entry_route_without_endpoint_blocking() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /ready "));
+            let body = "{\"source_sha\":\"abc\"}";
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let args = BTreeMap::from([
+            ("endpoint".into(), json!(format!("http://{address}"))),
+            ("health_route".into(), json!("/ready")),
+        ]);
+        let (_, output) = execute_health_read(&args).unwrap();
+        server.join().unwrap();
+        assert_eq!(output["running_source_sha"], "abc");
+    }
 }

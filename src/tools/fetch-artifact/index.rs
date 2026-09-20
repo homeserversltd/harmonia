@@ -33,6 +33,10 @@ pub(crate) fn execute(
                 "embedded-sha"
             }
         });
+    let source_policy = args
+        .get("source_policy")
+        .and_then(Value::as_str)
+        .unwrap_or("artifact");
     let source_sha = required("source_build_sha")?;
     let beam_refetch = args
         .get("beam_refetch")
@@ -241,6 +245,10 @@ pub(crate) fn execute(
         let artifact = source_dir.join("target/release").join(artifact_name);
         let (environment, build_environment_sha) =
             crate::atoms::ask::fetch_artifact::build_environment(component, source_sha)?;
+        let mut environment = environment;
+        if source_policy == "source" {
+            environment.push(("CARTRIDGE_SOURCE_SHA".into(), source_sha.into()));
+        }
         crate::write_json(
             &receipt_dir.join("fallback.json"),
             &serde_json::json!({
@@ -308,7 +316,7 @@ pub(crate) fn execute(
         crate::atoms::ask::fetch_artifact::Download {
             manifest,
             bytes,
-            identity: "liveness-marker".into(),
+            identity: identity.into(),
         }
     } else {
         registry_download.ok_or("fetch-artifact-registry-download-missing")?
@@ -453,6 +461,16 @@ mod tests {
         root
     }
 
+    fn embedded_source_fixture() -> tempfile::TempDir {
+        let root = source_fixture();
+        fs::write(
+            root.path().join("src/main.rs"),
+            "fn main() { print!(\"caduceus.liveness.v1{}x{}y\", env!(\"CADUCEUS_BUILD_SHA\"), env!(\"CARTRIDGE_SOURCE_SHA\")); }\n",
+        )
+        .unwrap();
+        root
+    }
+
     fn release_fallback_args(
         root: &std::path::Path,
         api_root: String,
@@ -469,6 +487,7 @@ mod tests {
             ("destination", json!(destination)),
             ("installed_binary", json!(installed_binary)),
             ("bearer", json!("owner")),
+            ("identity", json!("liveness-marker")),
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), value))
@@ -521,6 +540,53 @@ mod tests {
             &destination,
             SOURCE_SHA,
             "liveness-marker",
+            "caduceus"
+        ));
+    }
+
+    #[test]
+    fn release_404_source_policy_builds_and_installs_embedded_sha_artifact() {
+        let root = embedded_source_fixture();
+        let destination = root.path().join("destination");
+        let installed_binary = root.path().join("installed");
+        let receipts = root.path().join("receipts");
+        let (api_root, server) = one_response_server(404);
+        let mut args = release_fallback_args(
+            root.path(),
+            api_root,
+            &destination,
+            &installed_binary,
+        );
+        args.insert("identity".into(), json!("embedded-sha"));
+        args.insert("source_policy".into(), json!("source"));
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = execute(&args, &receipts, true, Some(&invocation)).unwrap();
+        server.join().unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        let staged = root.path().join("target/release").join(ARTIFACT_NAME);
+        assert!(staged.is_file());
+        let bytes = fs::read(&destination).unwrap();
+        let offset = bytes
+            .windows(SOURCE_SHA.len())
+            .enumerate()
+            .find_map(|(offset, window)| {
+                (window == SOURCE_SHA.as_bytes()
+                    && offset > 0
+                    && offset + SOURCE_SHA.len() < bytes.len()
+                    && !bytes[offset - 1].is_ascii_hexdigit()
+                    && !bytes[offset + SOURCE_SHA.len()].is_ascii_hexdigit())
+                    .then_some(offset)
+            })
+            .expect("CARTRIDGE_SOURCE_SHA must be embedded at a hex boundary");
+        assert!(offset > 0);
+        assert!(!bytes[offset - 1].is_ascii_hexdigit());
+        assert!(offset + SOURCE_SHA.len() < bytes.len());
+        assert!(!bytes[offset + SOURCE_SHA.len()].is_ascii_hexdigit());
+        assert!(crate::atoms::ask::fetch_artifact::identity_matches(
+            &destination,
+            SOURCE_SHA,
+            "embedded-sha",
             "caduceus"
         ));
     }
@@ -585,7 +651,7 @@ mod tests {
             ("destination", json!(&destination)),
             ("installed_binary", json!(&installed_binary)),
             ("bearer", json!("owner")),
-            ("identity", json!("embedded-sha")),
+            ("identity", json!("liveness-marker")),
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), value))
