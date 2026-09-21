@@ -1902,6 +1902,7 @@ pub(crate) fn execute_routine_child(
                         ("source_reference".into(), json!(entry.pointer("/source/ref").and_then(Value::as_str))),
                         ("source_remote".into(), json!(entry.pointer("/source/repo").and_then(Value::as_str))),
                         ("source_policy".into(), json!("source")),
+                        ("road".into(), json!("clone")),
                         ("changed".into(), json!(outcome.changed)),
                         ("entry".into(), entry.clone()),
                     ]);
@@ -1954,6 +1955,8 @@ pub(crate) fn execute_routine_child(
                         "version".into(),
                         resolution.version.clone().unwrap_or(Value::Null),
                     ),
+                    ("road".into(), json!("artifact")),
+                    ("digest_supplier".into(), json!("release")),
                     ("authority".into(), json!("xenia-entry")),
                     ("entry_id".into(), json!(entry_id)),
                     ("entry".into(), entry.clone()),

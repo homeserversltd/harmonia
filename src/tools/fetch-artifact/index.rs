@@ -170,18 +170,41 @@ pub(crate) fn execute(
         .as_ref()
         .map(|d| d.manifest.source_sha.clone())
         .unwrap_or_else(|| source_sha.to_owned());
-    let current = crate::atoms::ask::fetch_artifact::identity_matches(
-        installed_binary,
-        &effective_source_sha,
-        identity,
-        component,
-    );
+    let release_digest = native_download
+        .as_ref()
+        .map(|download| download.manifest.sha256.clone());
+    let release_known = release_digest.is_some();
+    let road = if source_policy == "source" {
+        "clone"
+    } else {
+        "artifact"
+    };
+    let current = if let Some(expected_digest) = release_digest.as_deref() {
+        crate::known_good_ledger::sha256_file(installed_binary)
+            .is_ok_and(|installed_digest| installed_digest == expected_digest)
+    } else {
+        // Without a release digest, the embedded marker remains the only
+        // available fast-path identity observation.
+        crate::atoms::ask::fetch_artifact::identity_matches(
+            installed_binary,
+            &effective_source_sha,
+            identity,
+            component,
+        )
+    };
     if current && !beam_refetch {
+        let supplier = if release_digest.is_some() {
+            "release"
+        } else {
+            "marker-fallback"
+        };
         crate::atoms::attest::fetch_artifact::attest(
             &receipt_dir.join("harmonia-atoms.log"),
             true,
             false,
-            "state=Current; care=verified embedded source SHA; after=Current",
+            &format!(
+                "state=Current; care=bytes-true currentness; after=Current; road={road}; digest_supplier={supplier}"
+            ),
         )?;
         return Ok(crate::OperationOutcome {
             ok: true,
@@ -398,15 +421,23 @@ pub(crate) fn execute(
             })
         }
         crate::atoms::comparison::ComparisonRun::Moved { movement: (), .. } => {
+            let supplier = if release_known {
+                "release"
+            } else if source_policy == "source" {
+                "build"
+            } else {
+                "artifact"
+            };
+            let detail = if beam_refetch {
+                format!("state=Drift; care=verified digest and atomic install; after=Current; road={road}; digest_supplier={supplier}; reason=fetch-artifact-refetch-beam-env-sha")
+            } else {
+                format!("state=Drift; care=verified digest and atomic install; after=Current; road={road}; digest_supplier={supplier}")
+            };
             crate::atoms::attest::fetch_artifact::attest(
                 &receipt_dir.join("harmonia-atoms.log"),
                 true,
                 true,
-                if beam_refetch {
-                    "state=Drift; care=verified digest and atomic install; after=Current; reason=fetch-artifact-refetch-beam-env-sha"
-                } else {
-                    "state=Drift; care=verified digest and atomic install; after=Current"
-                },
+                &detail,
             )?;
             Ok(crate::OperationOutcome {
                 ok: true,
@@ -970,6 +1001,74 @@ mod tests {
             Some(&invocation),
         )
         .unwrap();
+        server.join().unwrap();
+        assert!(outcome.ok);
+        assert!(outcome.changed);
+        assert_eq!(fs::read(destination).unwrap(), artifact);
+    }
+
+    #[test]
+    fn native_release_refetches_marker_current_but_byte_drifted_install() {
+        let root = tempfile::tempdir().unwrap();
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let artifact = format!("release-bytes-{source_sha}").into_bytes();
+        let digest = crate::atoms::file_sha256(&artifact);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let release_body = json!({
+            "target_commitish": source_sha,
+            "assets": [
+                {"name":"fixture-x86_64","browser_download_url":format!("http://{address}/artifact")},
+                {"name":"fixture-x86_64.sha256","browser_download_url":format!("http://{address}/sidecar")}
+            ]
+        })
+        .to_string()
+        .into_bytes();
+        let artifact_for_server = artifact.clone();
+        let server = thread::spawn(move || {
+            for (path, body) in [
+                (
+                    format!("/api/v1/repos/OWNER/REPO/releases/tags/{source_sha}"),
+                    release_body,
+                ),
+                ("/artifact".into(), artifact_for_server),
+                (
+                    "/sidecar".into(),
+                    format!("{digest}  fixture-x86_64\n").into_bytes(),
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let installed = root.path().join("installed");
+        let destination = root.path().join("destination");
+        let receipts = root.path().join("receipts");
+        fs::write(&installed, format!("hand-restored-{source_sha}-different")).unwrap();
+        let args: BTreeMap<String, serde_json::Value> = [
+            ("component", json!("fixture")),
+            ("release_repo", json!("OWNER/REPO")),
+            ("api_root", json!(format!("http://{address}/api/v1"))),
+            ("source_build_sha", json!(source_sha)),
+            ("artifact_name", json!("fixture")),
+            ("identity", json!("embedded-sha")),
+            ("destination", json!(&destination)),
+            ("installed_binary", json!(&installed)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let outcome = execute(&args, &receipts, true, Some(&invocation)).unwrap();
         server.join().unwrap();
         assert!(outcome.ok);
         assert!(outcome.changed);

@@ -463,9 +463,17 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 }
             }
             if child.name == "build" {
-                child
-                    .args
-                    .insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
+                // Artifact roads are already stamped by pull-repo. A clone
+                // road's digest is minted by its face rung instead: release
+                // acquisition or the source fallback build.
+                if !clone {
+                    child
+                        .args
+                        .insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
+                } else {
+                    child.args.remove("expected_digest");
+                }
+                child.args.insert("road".into(), json!(if clone { "clone" } else { "artifact" }));
             }
             if child.name == "binary-install" {
                 child.args.insert("owner".into(), json!(owner));
@@ -475,9 +483,23 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 child
                     .args
                     .insert("gid".into(), json!({"from":"seat-present.gid"}));
-                child
-                    .args
-                    .insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
+                child.args.insert(
+                    "expected_digest".into(),
+                    if clone {
+                        json!({"from":"build.sha256"})
+                    } else {
+                        json!({"from":"pull-repo.digest"})
+                    },
+                );
+                child.args.insert("road".into(), json!(if clone { "clone" } else { "artifact" }));
+                child.args.insert(
+                    "digest_supplier".into(),
+                    if clone {
+                        json!({"from":"build.digest_supplier"})
+                    } else {
+                        json!("release")
+                    },
+                );
             }
         }
         if !face {
@@ -1402,6 +1424,36 @@ mod clone_road_tests {
             health.args.get("id").and_then(Value::as_str),
             Some(id)
         );
+    }
+
+    #[test]
+    fn clone_face_binds_install_to_build_digest_and_names_clone_road() {
+        let routine = lowered_routine("monad-overwatch", clone_entry(None));
+        let build = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "build")
+            .unwrap();
+        assert!(!build.args.contains_key("expected_digest"));
+        assert_eq!(build.args.get("road"), Some(&json!("clone")));
+        let install = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "binary-install")
+            .unwrap();
+        assert_eq!(
+            install.args.get("expected_digest"),
+            Some(&json!({"from":"build.sha256"}))
+        );
+        assert_eq!(
+            install.args.get("digest_supplier"),
+            Some(&json!({"from":"build.digest_supplier"}))
+        );
+        assert_eq!(install.args.get("road"), Some(&json!("clone")));
+        assert!(!serde_json::to_string(&install.args)
+            .unwrap()
+            .contains("pull-repo.digest"));
+        validate_lowered_children(&routine);
     }
 
     #[test]

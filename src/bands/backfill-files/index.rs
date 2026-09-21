@@ -820,6 +820,7 @@ pub(crate) fn execute_routine_child(
                     .collect(),
                 ));
             }
+            let prior_installed_sha = crate::known_good_ledger::sha256_file(path).ok();
             // Binary promotion is content-addressed: an identical installed
             // image is already converged, even if metadata differs.
             let binary_current = if permutation.name == "binary-promotion" {
@@ -839,7 +840,16 @@ pub(crate) fn execute_routine_child(
                 let sha256 = crate::atoms::file_sha256(&bytes);
                 crate::write_json(
                     &receipt_dir.join(format!("{name}.json")),
-                    &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":true,"changed":false,"skipped":!apply,"message":"binary-promotion-current","movement":{"bytes":false,"mode":false,"owner":false,"created":false,"backed_up":null}}),
+                    &serde_json::json!({
+                        "schema":"harmonia.routine_tool.receipt.v1",
+                        "ok":true,
+                        "changed":false,
+                        "skipped":!apply,
+                        "message":"binary-promotion-current",
+                        "prior_installed_sha256":prior_installed_sha,
+                        "new_installed_sha256":sha256,
+                        "movement":{"bytes":false,"mode":false,"owner":false,"created":false,"backed_up":null}
+                    }),
                 )?;
                 return Ok((
                     OperationOutcome {
@@ -887,7 +897,7 @@ pub(crate) fn execute_routine_child(
             };
             let changed = apply && placed.movement.changed();
 
-            let mut receipt = serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up}});
+            let mut receipt = serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up},"prior_installed_sha256":prior_installed_sha,"new_installed_sha256":crate::atoms::file_sha256(&bytes)});
             if unit_render {
                 receipt["sha256"] = serde_json::json!(crate::atoms::file_sha256(&bytes));
                 receipt["forbidden_directives"] = serde_json::json!(forbidden_directives);
@@ -909,6 +919,14 @@ pub(crate) fn execute_routine_child(
                     ("changed".into(), serde_json::json!(changed)),
                     (
                         "sha256".into(),
+                        serde_json::json!(crate::atoms::file_sha256(&bytes)),
+                    ),
+                    (
+                        "prior_installed_sha256".into(),
+                        serde_json::json!(prior_installed_sha),
+                    ),
+                    (
+                        "new_installed_sha256".into(),
                         serde_json::json!(crate::atoms::file_sha256(&bytes)),
                     ),
                 ]

@@ -463,6 +463,12 @@ pub(crate) fn execute_routine_child(
                     .collect(),
                 ));
             }
+            let installed_binary = args
+                .get("installed_binary")
+                .and_then(Value::as_str)
+                .map(Path::new);
+            let prior_installed_sha = installed_binary
+                .and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
             let outcome =
                 crate::tools::fetch_artifact::execute(args, receipt_dir, apply, invocation)?;
             let changed = outcome.changed;
@@ -474,6 +480,26 @@ pub(crate) fn execute_routine_child(
                     return Err("xenia-digest-drift".into());
                 }
             }
+            let source_policy = args
+                .get("source_policy")
+                .and_then(Value::as_str)
+                .unwrap_or("artifact");
+            let road = if source_policy == "source" {
+                "clone"
+            } else {
+                "artifact"
+            };
+            let digest_supplier = if receipt_dir.join("fallback.json").is_file() {
+                "build"
+            } else if args.get("expected_digest").and_then(Value::as_str).is_some()
+                || (source_policy == "source" && !outcome.skipped)
+            {
+                "release"
+            } else if source_policy == "source" {
+                "marker-fallback"
+            } else {
+                "artifact"
+            };
             Ok((
                 outcome,
                 [
@@ -481,6 +507,16 @@ pub(crate) fn execute_routine_child(
                     ("installed_path".into(), artifact),
                     ("sha256".into(), serde_json::json!(sha)),
                     ("changed".into(), serde_json::json!(changed)),
+                    ("road".into(), serde_json::json!(road)),
+                    ("digest_supplier".into(), serde_json::json!(digest_supplier)),
+                    (
+                        "prior_installed_sha256".into(),
+                        serde_json::json!(prior_installed_sha),
+                    ),
+                    (
+                        "new_installed_sha256".into(),
+                        serde_json::json!(sha),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -647,6 +683,9 @@ fn select_fetch_artifact_output(
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn skipped_fetch_artifact_selects_valid_staged_destination_over_stale_installed_binary() {
@@ -697,6 +736,78 @@ mod tests {
         );
         let _ = fs::remove_dir_all(root);
     }
+    #[test]
+    fn fetched_release_bytes_that_drift_from_bound_digest_refuse() {
+        let root = tempfile::tempdir().unwrap();
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let bytes = format!("fixture.liveness.v1{source_sha}-release").into_bytes();
+        let actual_digest = crate::atoms::file_sha256(&bytes);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let manifest = serde_json::json!({
+            "schema":"estate.artifact.manifest.v1",
+            "component":"fixture",
+            "source_sha":source_sha,
+            "target":"x86_64",
+            "sha256":actual_digest,
+            "built_at":"now",
+            "pipeline_url":"https://ci"
+        })
+        .to_string()
+        .into_bytes();
+        let server = thread::spawn(move || {
+            for (path, body) in [
+                (
+                    format!("/fixture/{source_sha}/manifest.json"),
+                    manifest,
+                ),
+                (format!("/fixture/{source_sha}/fixture"), bytes),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} ")));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let installed = root.path().join("installed");
+        let destination = root.path().join("destination");
+        let args = BTreeMap::from([
+            ("component".into(), Value::String("fixture".into())),
+            (
+                "registry_base".into(),
+                Value::String(format!("http://{address}")),
+            ),
+            ("source_build_sha".into(), Value::String(source_sha.into())),
+            ("artifact_name".into(), Value::String("fixture".into())),
+            ("destination".into(), Value::String(destination.to_string_lossy().into())),
+            ("installed_binary".into(), Value::String(installed.to_string_lossy().into())),
+            ("expected_digest".into(), Value::String("0".repeat(64))),
+        ]);
+        let manifest: LadderManifest = serde_json::from_str(include_str!(
+            "../../../profiles/homeconsole/modules/arcadia-gui-runtime/manifest.json"
+        ))
+        .unwrap();
+        let result = execute_routine_child(
+            "fetch-artifact",
+            Some("fetch"),
+            &args,
+            &manifest,
+            &root.path().join("receipts"),
+            true,
+            Some(&crate::atoms::r#do::InvocationKey::for_apply()),
+        );
+        server.join().unwrap();
+        assert_eq!(result.unwrap_err(), "xenia-digest-drift");
+        assert!(destination.is_file());
+    }
+
     #[test]
     fn lowered_real_manifest_build_child_resolves_pull_context_and_quiets_install() {
         let root = std::env::temp_dir().join(format!(
