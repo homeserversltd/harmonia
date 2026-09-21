@@ -609,8 +609,11 @@ pub(crate) fn inspect_release(
             return Ok(None);
         };
         let digest = crate::atoms::file_sha256(&release.artifact);
+        // A release.flag is stamped with the repository's release component
+        // segment (workflow-coronatio-xenia-add-xenos-hodos), which is distinct
+        // from the xenos id `component` names; bind the flag to the repo segment.
         let (resolved_revision, version) =
-            release_source_revision(&release, component, release_schema_base)?;
+            release_source_revision(&release, repo, release_schema_base)?;
         let sidecar_text = String::from_utf8(release.sidecar)
             .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
         if !is_hex(&digest, 64) || sidecar_text != format!("{digest}  {asset}\n") {
