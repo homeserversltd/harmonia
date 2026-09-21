@@ -545,33 +545,29 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
             };
         }
         if clone {
-            let endpoint = discovered_endpoint(&entry);
-            let route = health_route(&entry);
-            let restart = step
-                .steps
-                .iter()
-                .position(|child| child.name == "service-restart")
-                .ok_or("xenia-service-restart-missing")?;
-            step.steps.insert(
-                restart,
-                RoutineStep {
-                    name: "health-read".into(),
-                    tool: "check-health".into(),
-                    permutation: Some("probe".into()),
-                    args: BTreeMap::from([
-                        (
-                            "url".into(),
-                            endpoint
-                                .map(|value| Value::String(health_url(value, &route)))
-                                .unwrap_or(Value::Null),
-                        ),
-                        ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
-                    ("health_route".into(), json!(health_route(&entry))),
-                        ("xenia_health_read".into(), json!(true)),
-                    ]),
-                    extra: BTreeMap::new(),
-                },
-            );
+            if let Some(endpoint) = discovered_endpoint(&entry) {
+                let route = health_route(&entry);
+                let restart = step
+                    .steps
+                    .iter()
+                    .position(|child| child.name == "service-restart")
+                    .ok_or("xenia-service-restart-missing")?;
+                step.steps.insert(
+                    restart,
+                    RoutineStep {
+                        name: "health-read".into(),
+                        tool: "check-health".into(),
+                        permutation: Some("probe".into()),
+                        args: BTreeMap::from([
+                            ("url".into(), json!(health_url(endpoint, &route))),
+                            ("endpoint".into(), json!(endpoint)),
+                            ("health_route".into(), json!(route)),
+                            ("xenia_health_read".into(), json!(true)),
+                        ]),
+                        extra: BTreeMap::new(),
+                    },
+                );
+            }
         }
         let health = step
             .steps
@@ -600,10 +596,11 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 extra: BTreeMap::new(),
             },
         );
+        let has_health_read = step.steps.iter().any(|child| child.name == "health-read");
         for child in &mut step.steps {
             if clone {
                 child.args.insert("xenia_id".into(), json!(id.clone()));
-                if child.name == "service-restart" {
+                if child.name == "service-restart" && has_health_read {
                     child.args.insert(
                         "running_source_sha".into(),
                         json!({"from":"health-read.running_source_sha"}),
@@ -1295,12 +1292,193 @@ pub(crate) fn execute_retire(
 
 #[cfg(test)]
 mod clone_road_tests {
-    use super::{declaration, execute_health_read, execute_status_door_at_base};
-    use serde_json::json;
+    use super::{
+        declaration, execute_health_read, execute_status_door_at_base, reshape_routines,
+        set_debug_schema_base,
+    };
+    use crate::tools::ladder::LadderStep;
+    use crate::tools::routine::validate_args;
+    use serde_json::{json, Value};
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    fn lowered_routine(id: &str, entry: Value) -> LadderStep {
+        let _ = set_debug_schema_base("http://127.0.0.1:3013");
+        let step = declaration(id, &entry).unwrap();
+        let mut manifest: crate::tools::ladder::LadderManifest = serde_json::from_value(json!({
+            "schema": "harmonia.module.ladder.v1",
+            "id": "xenia",
+            "version": "1",
+            "isolation": "per-step",
+            "ladder": [step]
+        }))
+        .unwrap();
+        crate::bands::restart_services::lower_service_runtime_steps(&mut manifest);
+        reshape_routines(&mut manifest).unwrap();
+        assert_eq!(manifest.ladder.len(), 1);
+        manifest.ladder.remove(0)
+    }
+
+    fn clone_entry(discovered: Option<&str>) -> Value {
+        let mut entry = json!({
+            "id": "monad-overwatch",
+            "kind": "cartridge-process",
+            "enabled": true,
+            "priority": 20,
+            "source": {
+                "kind": "clone",
+                "repo": "HOMESERVERSLTD/monad-overwatch",
+                "ref": "main"
+            },
+            "install": {
+                "bin": "/var/lib/xenia/monad-overwatch/monad-overwatch",
+                "unit": null,
+                "owner": "owner"
+            },
+            "health": {"route": "/health"}
+        });
+        if let Some(endpoint) = discovered {
+            entry["discovered"] = json!({"endpoint": endpoint});
+        }
+        entry
+    }
+
+    fn release_entry(id: &str, repo: &str, binary: &str) -> Value {
+        json!({
+            "id": id,
+            "kind": "cartridge-process",
+            "enabled": true,
+            "priority": 100,
+            "source": {"release_repo": repo, "ref": "v1.0.0"},
+            "install": {
+                "bin": format!("/var/lib/xenia/{id}/{binary}"),
+                "unit": null,
+                "owner": "owner"
+            },
+            "health": {"route": "/health"}
+        })
+    }
+
+    fn validate_lowered_children(routine: &LadderStep) {
+        for child in &routine.steps {
+            let permutation_name = child.permutation.as_deref().unwrap();
+            let contract = crate::tools::get(&child.tool).unwrap();
+            let permutation = contract.permutation(permutation_name).unwrap();
+            validate_args(&routine.step_id, permutation, &child.args).unwrap();
+            for argument in permutation.args {
+                if let Some(value) = child.args.get(argument.name) {
+                    assert!(
+                        !value.is_null(),
+                        "declared argument {} on {} must not be null",
+                        argument.name,
+                        child.name
+                    );
+                }
+            }
+        }
+        crate::tools::routine::project_routine_children(routine, &BTreeMap::new()).unwrap();
+    }
+
+    fn assert_status_door_id_only(routine: &LadderStep, id: &str) {
+        let health = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "health-proof")
+            .unwrap();
+        assert_eq!(health.tool, "check-health");
+        assert_eq!(health.permutation.as_deref(), Some("status-door"));
+        let contract = crate::tools::get("check-health").unwrap();
+        let permutation = contract.permutation("status-door").unwrap();
+        let required = permutation
+            .args
+            .iter()
+            .filter(|argument| argument.required)
+            .map(|argument| argument.name)
+            .collect::<Vec<_>>();
+        assert_eq!(required, vec!["id"]);
+        assert_eq!(
+            health.args.get("id").and_then(Value::as_str),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn clone_first_convergence_without_discovered_endpoint_omits_health_read_and_restart_reference() {
+        let routine = lowered_routine("monad-overwatch", clone_entry(None));
+        assert!(routine.steps.iter().all(|child| child.name != "health-read"));
+        let restart = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "service-restart")
+            .unwrap();
+        assert!(!restart.args.contains_key("running_source_sha"));
+        assert_status_door_id_only(&routine, "monad-overwatch");
+        let health = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "health-proof")
+            .unwrap();
+        assert_eq!(health.args.get("endpoint"), Some(&Value::Null));
+        validate_lowered_children(&routine);
+    }
+
+    #[test]
+    fn clone_first_convergence_with_discovered_endpoint_keeps_health_read_and_restart_reference() {
+        let endpoint = "http://127.0.0.1:39001";
+        let routine = lowered_routine("monad-overwatch", clone_entry(Some(endpoint)));
+        let health_read = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "health-read")
+            .unwrap();
+        assert_eq!(health_read.tool, "check-health");
+        assert_eq!(health_read.permutation.as_deref(), Some("probe"));
+        assert_eq!(health_read.args.get("endpoint").and_then(Value::as_str), Some(endpoint));
+        assert!(health_read
+            .args
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| url.ends_with("/health")));
+        let restart = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "service-restart")
+            .unwrap();
+        assert_eq!(
+            restart.args.get("running_source_sha"),
+            Some(&json!({"from":"health-read.running_source_sha"}))
+        );
+        assert_status_door_id_only(&routine, "monad-overwatch");
+        validate_lowered_children(&routine);
+    }
+
+    #[test]
+    fn release_roads_hello_world_and_lan_overview_keep_status_door_id_only_shape() {
+        for (id, repo, binary) in [
+            ("hello-world", "HOMESERVERSLTD/hello-world", "hello-world"),
+            ("lan-overview", "HOMESERVERSLTD/lan-overview", "lan-overview"),
+        ] {
+            let routine = lowered_routine(id, release_entry(id, repo, binary));
+            assert!(routine.steps.iter().all(|child| child.name != "health-read"));
+            assert_status_door_id_only(&routine, id);
+            let health = routine
+                .steps
+                .iter()
+                .find(|child| child.name == "health-proof")
+                .unwrap();
+            assert!(health.args.keys().all(|key| {
+                matches!(key.as_str(), "id" | "hyalos_kind" | "hyalos_correlation_id")
+            }));
+            assert!(routine.steps.iter().all(|child| {
+                !child.args.contains_key("source_kind")
+                    && !child.args.contains_key("release_ref")
+                    && !child.args.contains_key("running_source_sha")
+            }));
+            validate_lowered_children(&routine);
+        }
+    }
 
     #[test]
     fn clone_declaration_uses_install_basename_for_face_asset() {
