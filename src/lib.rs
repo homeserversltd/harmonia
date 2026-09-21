@@ -61,7 +61,11 @@ impl Profile {
         self.modules
             .iter()
             .find(|module| module.as_str() == "caduceus")
-            .or_else(|| self.modules.iter().find(|module| module.contains("caduceus")))
+            .or_else(|| {
+                self.modules
+                    .iter()
+                    .find(|module| module.contains("caduceus"))
+            })
             .map(String::as_str)
     }
 
@@ -393,10 +397,8 @@ fn xenia_command(args: &[String]) -> Result<(), String> {
                     .map_err(str::to_owned)?,
             };
             let register_schema_base = explicit_base.as_deref().or(schema_base.as_deref());
-            let register = crate::bands::xenia::load_register(
-                &register_path,
-                register_schema_base,
-            )?;
+            let register =
+                crate::bands::xenia::load_register(&register_path, register_schema_base)?;
             if let Some(reason) = register.entry_refusals.get(&id) {
                 return Err(format!("xenia-entry-refused-{id}: {reason}"));
             }
@@ -416,10 +418,7 @@ fn xenia_command(args: &[String]) -> Result<(), String> {
             let environment = std::collections::BTreeMap::from([
                 ("XENIA_ID".to_string(), id.clone()),
                 ("XENIA_SEAT".to_string(), seat.clone()),
-                (
-                    "XENIA_SCHEMA_BASE".to_string(),
-                    bind,
-                ),
+                ("XENIA_SCHEMA_BASE".to_string(), bind),
             ]);
             let unit = crate::bands::xenia::render_unit(
                 &format!("{id}.service"),
@@ -1259,6 +1258,8 @@ pub(crate) fn explain() -> Result<(), String> {
         Some(serde_json::json!({
             "schema": "harmonia.explain.v1",
             "ok": true,
+            "version": VERSION,
+            "compiled_component": COMPILED_COMPONENT,
         })),
         Some(true),
         None,
@@ -1266,6 +1267,7 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("ok=true");
     println!("name=harmonia");
     println!("version={}", VERSION);
+    println!("compiled_component={}", COMPILED_COMPONENT);
     println!("covenant=Rust update manager and appliance-profile execution engine");
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");

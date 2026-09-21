@@ -85,7 +85,14 @@ fn compute_rustc_version() -> String {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=HARMONIA_COMPONENT");
-    let component = env::var("HARMONIA_COMPONENT").unwrap_or_else(|_| "harmonia".to_string());
+    let component = env::var("HARMONIA_COMPONENT").unwrap_or_else(|_| {
+        panic!(
+            "HARMONIA_COMPONENT is required; lawful values are exactly harmonia or harmonia-monad"
+        )
+    });
+    if component != "harmonia" && component != "harmonia-monad" {
+        panic!("HARMONIA_COMPONENT must be exactly harmonia or harmonia-monad; got {component}");
+    }
     println!("cargo:rustc-env=HARMONIA_COMPONENT={component}");
 
     println!("cargo:rerun-if-env-changed=HARMONIA_BUILD_ENV_SHA");

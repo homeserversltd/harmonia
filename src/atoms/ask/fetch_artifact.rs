@@ -610,7 +610,7 @@ pub(crate) fn inspect_release(
         };
         let digest = crate::atoms::file_sha256(&release.artifact);
         let (resolved_revision, version) =
-            release_source_revision(&release, repo, release_schema_base)?;
+            release_source_revision(&release, component, release_schema_base)?;
         let sidecar_text = String::from_utf8(release.sidecar)
             .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
         if !is_hex(&digest, 64) || sidecar_text != format!("{digest}  {asset}\n") {
@@ -629,6 +629,111 @@ pub(crate) fn inspect_release(
     match result {
         Err(error) if !credential_scope_found => {
             let metadata_url = release_metadata_url(api_root, release_repo, tag);
+            Err(normalize_auth_required_error(&error, &metadata_url).unwrap_or(error))
+        }
+        other => other,
+    }
+}
+
+/// Read the public engine release with the stricter contract used by the
+/// self-update lane. A flagless exact-SHA release is deliberately reported as
+/// absent so the caller can use its pinned source fallback; a present flag
+/// must be complete and bound to the exact admitted source SHA.
+pub(crate) fn download_engine_release(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    source_sha: &str,
+    release_schema_base: Option<&str>,
+) -> Result<Option<Download>, String> {
+    if !validate_source_sha(source_sha) {
+        return Err("fetch-artifact-engine-source-sha-invalid".into());
+    }
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let credential_scope_found = credential.is_some();
+    let request = ReleaseRequest {
+        kind: "forgejo-release".into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential,
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found,
+        cache_dir: std::env::temp_dir()
+            .join(format!("harmonia-engine-release-{}", unique_temp_suffix())),
+    };
+    let result: Result<Option<Download>, String> = (|| {
+        let Some(release) = fetch_release_assets_for_inspection(
+            &request,
+            source_sha,
+            "harmonia-x86_64",
+            "harmonia-x86_64.sha256",
+        )?
+        else {
+            return Ok(None);
+        };
+        if release.target_commitish != source_sha {
+            return Err("fetch-artifact-engine-release-target-mismatch".into());
+        }
+        let digest = crate::atoms::file_sha256(&release.artifact);
+        let (resolved_revision, _version) =
+            release_source_revision(&release, component, release_schema_base)?;
+        if resolved_revision != source_sha {
+            return Err("fetch-artifact-engine-release-source-mismatch".into());
+        }
+        if release.release_flag.is_none() {
+            return Ok(None);
+        }
+        let sidecar_text = String::from_utf8(release.sidecar)
+            .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
+        if sidecar_text != format!("{digest}  harmonia-x86_64\n") {
+            return Err("fetch-artifact-release-sidecar-mismatch".into());
+        }
+        let flag_bytes = release.release_flag.as_deref().expect("checked above");
+        let flag: Value = serde_json::from_slice(flag_bytes)
+            .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
+        if flag.get("component").and_then(Value::as_str) != Some(component)
+            || flag.get("source_sha").and_then(Value::as_str) != Some(source_sha)
+            || flag.get("sha256").and_then(Value::as_str) != Some(digest.as_str())
+            || !flag
+                .get("env_sha")
+                .and_then(Value::as_str)
+                .is_some_and(|value| is_hex(value, 64))
+            || !flag
+                .get("pipeline_url")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err("fetch-artifact-release-flag-binding-mismatch".into());
+        }
+        Ok(Some(Download {
+            manifest: Manifest {
+                schema: MANIFEST_SCHEMA.into(),
+                component: component.into(),
+                source_sha: resolved_revision,
+                target: BUILD_TARGET.into(),
+                sha256: digest,
+                built_at: source_sha.into(),
+                pipeline_url: release.metadata_url,
+                env_sha: flag
+                    .get("env_sha")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            },
+            bytes: release.artifact,
+            identity: "engine-release".into(),
+        }))
+    })();
+    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    match result {
+        Err(error) if !credential_scope_found => {
+            let metadata_url = release_metadata_url(api_root, release_repo, source_sha);
             Err(normalize_auth_required_error(&error, &metadata_url).unwrap_or(error))
         }
         other => other,
@@ -802,6 +907,166 @@ mod tests {
             assert_eq!(fs::read(&destination).unwrap(), artifact);
         }
         outcome
+    }
+
+    #[test]
+    fn engine_release_fixture_requires_full_sha_assets_sidecar_and_loaded_flag_seat() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let artifact = b"native-harmonia-engine-artifact".to_vec();
+        let digest = crate::atoms::file_sha256(&artifact);
+        let env_sha = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let flag = serde_json::json!({
+            "schema": "estate.release-flag.v1",
+            "component": "harmonia",
+            "source_sha": RELEASE_SOURCE_SHA,
+            "env_sha": env_sha,
+            "sha256": digest,
+            "flagged_at": "2026-09-21T00:00:00Z",
+            "pipeline_url": "https://ci.home.arpa/harmonia/1"
+        });
+        let schema = serde_json::json!({
+            "schema": "estate.release-flag.v1",
+            "required": [
+                "schema", "component", "source_sha", "env_sha", "sha256",
+                "flagged_at", "pipeline_url"
+            ],
+            "fields": {}
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let release_path = format!("/api/v1/repos/OWNER/REPO/releases/tags/{RELEASE_SOURCE_SHA}");
+        let responses = vec![
+            (
+                release_path,
+                serde_json::json!({
+                    "tag_name": RELEASE_SOURCE_SHA,
+                    "name": RELEASE_SOURCE_SHA,
+                    "target_commitish": RELEASE_SOURCE_SHA,
+                    "assets": [
+                        {"name": "harmonia-x86_64", "browser_download_url": format!("http://{address}/artifact")},
+                        {"name": "harmonia-x86_64.sha256", "browser_download_url": format!("http://{address}/sidecar")},
+                        {"name": "release.flag", "browser_download_url": format!("http://{address}/flag")}
+                    ]
+                }).to_string().into_bytes(),
+            ),
+            ("/flag".into(), serde_json::to_vec(&flag).unwrap()),
+            ("/artifact".into(), artifact.clone()),
+            (
+                "/sidecar".into(),
+                format!("{digest}  harmonia-x86_64\n").into_bytes(),
+            ),
+            (
+                format!("/api/v1/schema/estate.release-flag.v1"),
+                serde_json::to_vec(&schema).unwrap(),
+            ),
+        ];
+        let server = thread::spawn(move || {
+            for (path, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let length = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..length]);
+                assert!(request.starts_with(&format!("GET {path} ")));
+                assert!(!request
+                    .lines()
+                    .any(|line| line.to_ascii_lowercase().starts_with("authorization:")));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let api_root = format!("http://{address}/api/v1");
+        let download = download_engine_release(
+            "harmonia",
+            "OWNER/REPO",
+            &api_root,
+            RELEASE_SOURCE_SHA,
+            Some(&format!("http://{address}")),
+        )
+        .unwrap()
+        .expect("strict engine release fixture should be present");
+        server.join().unwrap();
+        assert_eq!(download.bytes, artifact);
+        assert_eq!(download.manifest.source_sha, RELEASE_SOURCE_SHA);
+        assert_eq!(download.manifest.sha256, digest);
+        assert_eq!(download.manifest.env_sha.as_deref(), Some(env_sha));
+    }
+
+    #[test]
+    fn flagless_exact_sha_release_selects_pinned_source_lane() {
+        let release = ReleaseAssets {
+            artifact: b"native-harmonia-engine-artifact".to_vec(),
+            sidecar: Vec::new(),
+            release_flag: None,
+            metadata_url: "https://git.home.arpa/release".into(),
+            target_commitish: RELEASE_SOURCE_SHA.into(),
+        };
+        let (resolved, flag) = release_source_revision(&release, "harmonia", None).unwrap();
+        assert_eq!(resolved, RELEASE_SOURCE_SHA);
+        assert!(flag.is_none());
+    }
+
+    #[test]
+    fn foreign_component_release_flag_is_refused_after_schema_validation() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let length = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(request.starts_with("GET /api/v1/schema/estate.release-flag.v1 "));
+            let schema = serde_json::json!({
+                "schema": "estate.release-flag.v1",
+                "required": [
+                    "schema", "component", "source_sha", "env_sha", "sha256",
+                    "flagged_at", "pipeline_url"
+                ],
+                "fields": {}
+            });
+            let body = serde_json::to_vec(&schema).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        let release = ReleaseAssets {
+            artifact: Vec::new(),
+            sidecar: Vec::new(),
+            release_flag: Some(
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": "estate.release-flag.v1",
+                    "component": "harmonia-monad",
+                    "source_sha": RELEASE_SOURCE_SHA,
+                    "env_sha": "a".repeat(64),
+                    "sha256": "b".repeat(64),
+                    "flagged_at": "2026-09-21T00:00:00Z",
+                    "pipeline_url": "https://ci.home.arpa/harmonia/1"
+                }))
+                .unwrap(),
+            ),
+            metadata_url: "https://git.home.arpa/release".into(),
+            target_commitish: RELEASE_SOURCE_SHA.into(),
+        };
+        let error =
+            release_source_revision(&release, "harmonia", Some(&format!("http://{address}")))
+                .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error, "fetch-artifact-release-flag-component-mismatch");
     }
 
     #[test]

@@ -212,16 +212,30 @@ pub(crate) fn self_update_reexec_guard_active() -> bool {
     env::var(SELF_UPDATE_REEXEC_ENV).as_deref() == Ok("1")
 }
 
+pub(crate) fn should_self_update_reexec_for_guard(
+    promotion_changed: bool,
+    running_sha: Option<&str>,
+    installed_sha: Option<&str>,
+    guard_active: bool,
+) -> bool {
+    promotion_changed
+        && !guard_active
+        && running_sha.is_some()
+        && installed_sha.is_some()
+        && running_sha != installed_sha
+}
+
 pub(crate) fn should_self_update_reexec(
     promotion_changed: bool,
     running_sha: Option<String>,
     installed_sha: Option<String>,
 ) -> bool {
-    promotion_changed
-        && !self_update_reexec_guard_active()
-        && running_sha.is_some()
-        && installed_sha.is_some()
-        && running_sha != installed_sha
+    should_self_update_reexec_for_guard(
+        promotion_changed,
+        running_sha.as_deref(),
+        installed_sha.as_deref(),
+        self_update_reexec_guard_active(),
+    )
 }
 
 fn promotion_changed(
@@ -339,7 +353,19 @@ fn write_bearer_command_receipt(
     )
 }
 
-fn staged_bin() -> PathBuf {
+pub(crate) fn engine_install_bin() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = env::var_os("HARMONIA_TEST_ENGINE_INSTALL_BIN") {
+        return PathBuf::from(path);
+    }
+    PathBuf::from(ENGINE_INSTALL_BIN)
+}
+
+pub(crate) fn staged_bin() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = env::var_os("HARMONIA_TEST_ENGINE_STAGED_BIN") {
+        return PathBuf::from(path);
+    }
     PathBuf::from(ENGINE_SOURCE_ROOT).join("target/release/harmonia")
 }
 
@@ -350,7 +376,7 @@ fn profile_index_from(module_root: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("profiles/homeconsole/index.json"))
 }
 
-fn promote_staged_binary(
+pub(crate) fn promote_staged_binary(
     staged: &Path,
     install_bin: &Path,
     apply: bool,
@@ -440,9 +466,46 @@ fn emit_preflight_receipt(
             "staged_build_identity": staged_build_identity.and_then(|identity| identity.env_sha.as_deref().zip(source_head).map(|(env_sha, source_sha)| json!({"source_sha": source_sha, "env_sha": env_sha}))),
             "reexec": reexec,
             "git_bearer": "owner",
-            "failure_mode": "honest-source-resolution",
+            "failure_mode": "honest-staleness",
+            "artifact_ratchet": "version+sha-lock",
+            "engine_lane": null,
+            "resolved_tag": null,
+            "blocked_target": null,
+            "nudge": "evidence",
+            "bless": "authority",
+            "old_engine_preserved": true,
         }),
     )
+}
+
+fn update_engine_preflight_contract(
+    preflight_dir: &Path,
+    lane: Option<&str>,
+    resolved_tag: Option<&str>,
+    blocked_target: Option<&str>,
+    waiting_for_bless: bool,
+) -> Result<(), String> {
+    let path = preflight_dir.join("run.json");
+    let mut receipt: Value = serde_json::from_str(
+        &fs::read_to_string(&path)
+            .map_err(|error| format!("engine-preflight-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-preflight-receipt-parse-failed: {error}"))?;
+    receipt["artifact_ratchet"] = json!("version+sha-lock");
+    receipt["engine_lane"] = lane.map_or(Value::Null, |value| json!(value));
+    receipt["resolved_tag"] = resolved_tag.map_or(Value::Null, |value| json!(value));
+    receipt["blocked_target"] = blocked_target.map_or(Value::Null, |value| json!(value));
+    receipt["nudge"] = json!("evidence");
+    receipt["bless"] = json!("authority");
+    receipt["old_engine_preserved"] = json!(true);
+    receipt["failure_mode"] = json!("honest-staleness");
+    if waiting_for_bless {
+        receipt["ok"] = json!(false);
+        receipt["changed"] = json!(false);
+        receipt["stage"] = json!("waiting-for-bless");
+        receipt["first_missing_signal"] = json!("engine-waiting-for-bless");
+    }
+    write_json(&path, &receipt)
 }
 
 fn failed_execution(signal: &str) -> ModuleExecution {
@@ -460,9 +523,17 @@ fn engine_source_gate_for_component(
     component: &str,
 ) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
     let config_path = crate::bands::pull_source::appliance_config_path();
+    engine_source_gate_for_component_at(&config_path, certificate_path, component)
+}
+
+fn engine_source_gate_for_component_at(
+    config_path: &Path,
+    certificate_path: &Path,
+    component: &str,
+) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
     let resolution_receipt = crate::bands::pull_source::resolve_source(
         crate::bands::pull_source::SourceAuthority::ApplianceConfig {
-            config_path: &config_path,
+            config_path,
             profile_path: certificate_path,
         },
         component,
@@ -489,6 +560,50 @@ fn engine_source_gate(
     certificate_path: &Path,
 ) -> Result<(String, crate::bands::pull_source::SourceResolution), String> {
     engine_source_gate_for_component(certificate_path, crate::COMPILED_COMPONENT)
+}
+
+fn release_identity_from_candidate(locator: &str) -> Result<(String, String), String> {
+    let canonical = canonicalize_git_candidate(locator)?;
+    let (scheme, rest) = canonical
+        .split_once("://")
+        .ok_or_else(|| format!("engine-release-candidate-url-unparseable target={locator}"))?;
+    let (authority, path) = rest
+        .split_once('/')
+        .ok_or_else(|| format!("engine-release-candidate-path-missing target={locator}"))?;
+    if scheme != "https" || authority != "git.home.arpa" {
+        return Err(format!(
+            "engine-release-candidate-unsupported-forgejo-host target={locator}"
+        ));
+    }
+    let mut parts = path.trim_matches('/').split('/');
+    let owner = parts.next().unwrap_or_default();
+    let raw_repo = parts.next().unwrap_or_default();
+    if owner.is_empty() || raw_repo.is_empty() || parts.next().is_some() {
+        return Err(format!(
+            "engine-release-candidate-repo-ambiguous target={locator}"
+        ));
+    }
+    let repo = raw_repo.strip_suffix(".git").unwrap_or(raw_repo);
+    if repo.is_empty() {
+        return Err(format!(
+            "engine-release-candidate-repo-invalid target={locator}"
+        ));
+    }
+    Ok((
+        "https://git.home.arpa/api/v1".into(),
+        format!("{owner}/{repo}"),
+    ))
+}
+
+fn source_fallback_plan(
+    resolution: &crate::bands::pull_source::SourceResolution,
+    expected_commit: &str,
+) -> crate::tools::git_artifact::SourcePlan {
+    crate::bands::pull_source::bridge_acquisition_plan(
+        resolution,
+        PathBuf::from(ENGINE_SOURCE_ROOT),
+        Some(expected_commit.to_owned()),
+    )
 }
 
 fn ignored_engine_component(certificate_path: &Path, compiled_component: &str) -> Option<String> {
@@ -556,7 +671,7 @@ pub(crate) fn run_engine_preflight(
                 engine_component_ignored.as_deref(),
                 None,
                 None,
-                install_bin_fingerprint(Path::new(ENGINE_INSTALL_BIN)).as_deref(),
+                install_bin_fingerprint(&engine_install_bin()).as_deref(),
                 false,
                 apply,
                 false,
@@ -565,50 +680,23 @@ pub(crate) fn run_engine_preflight(
                 None,
                 None,
             )?;
+            update_engine_preflight_contract(&preflight_dir, None, None, Some(&signal), false)?;
             return Ok(failed_execution(&signal));
         }
     };
-    let expected_commit = (resolution.requested_ref.len() == 40
-        && resolution
-            .requested_ref
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| resolution.requested_ref.clone());
     let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
         &resolution,
         PathBuf::from(ENGINE_SOURCE_ROOT),
-        expected_commit,
+        None,
     );
-    let source = crate::bands::pull_source::execute_source(&source_plan, apply, invocation);
-    let source_command = CmdResult {
-        ok: source.ok,
-        code: if source.ok { 0 } else { -1 },
-        stdout: source.receipt.promotion.clone(),
-        stderr: if source.ok {
-            String::new()
-        } else {
-            source.receipt.promotion.clone()
-        },
-    };
-    if let Some(candidate) = source_plan.candidates.first() {
-        write_source_possession_receipt(
-            &preflight_dir,
-            &source_command,
-            &source_plan.destination,
-            candidate,
-            apply,
-        )?;
-    }
+    let remote_probe = crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
+    let source_head = remote_probe.remote_sha.clone();
+    let mut lane: Option<String> = None;
+    let mut blocked_target: Option<String> = None;
     let mut operation_count = 1usize;
-    let source_head = source.receipt.resolved_commit.clone();
-    let mut changed = source.changed;
-    let mut first_missing_signal = if source.ok {
-        "none".to_string()
-    } else {
-        "engine-source-acquisition-failed".to_string()
-    };
-    let running_before = running_binary_fingerprint();
-    let install_bin = PathBuf::from(ENGINE_INSTALL_BIN);
+    let mut changed = false;
+    let mut first_missing_signal = "none".to_string();
+    let install_bin = engine_install_bin();
     let install_before = install_bin_fingerprint(&install_bin);
     let staged = staged_bin();
     let mut staged_sha = None;
@@ -619,23 +707,169 @@ pub(crate) fn run_engine_preflight(
         stdout: String::new(),
         stderr: "engine build skipped before source acquisition".to_string(),
     };
-    if source.ok {
+    let mut staged_from_artifact = false;
+    let resolved_sha = source_head
+        .as_deref()
+        .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha));
+    if resolved_sha.is_none() {
+        blocked_target = Some(format!(
+            "{}@{}",
+            remote_probe
+                .locator
+                .as_deref()
+                .unwrap_or("configured-source"),
+            resolution.requested_ref
+        ));
+        first_missing_signal = format!(
+            "engine-source-head-unresolved target={}",
+            blocked_target.as_deref().unwrap_or("configured-source")
+        );
+    } else if let Some(candidate) = remote_probe.locator.as_deref() {
+        let target = format!("{candidate}@{}", resolved_sha.unwrap_or_default());
+        match release_identity_from_candidate(candidate) {
+            Err(error) => {
+                blocked_target = Some(target.clone());
+                first_missing_signal = format!("engine-artifact-refused target={target}: {error}");
+            }
+            Ok((api_root, release_repo)) => {
+                match crate::atoms::ask::fetch_artifact::download_engine_release(
+                    &component,
+                    &release_repo,
+                    &api_root,
+                    resolved_sha.unwrap_or_default(),
+                    None,
+                ) {
+                    Ok(Some(download)) => {
+                        lane = Some("artifact".into());
+                        if apply {
+                            let invocation = invocation.ok_or_else(|| {
+                                "engine-artifact-stage-invocation-missing".to_string()
+                            })?;
+                            if let Some(parent) = staged.parent() {
+                                fs::create_dir_all(parent).map_err(|error| {
+                                    format!("engine-artifact-stage-parent-failed: {error}")
+                                })?;
+                            }
+                            let placed =
+                                crate::place_file::execute(crate::place_file::PlaceFileRequest {
+                                    path: &staged,
+                                    declared_bytes: &download.bytes,
+                                    mode: Some(0o755),
+                                    ownership: crate::place_file::DeclaredOwnership {
+                                        uid: None,
+                                        gid: None,
+                                    },
+                                    backup: crate::place_file::BackupPolicy::To(
+                                        &preflight_dir.join("backups/prior-staged-binary"),
+                                    ),
+                                    invocation: Some(invocation),
+                                });
+                            match placed {
+                                Ok(placed) => {
+                                    build = CmdResult {
+                                        ok: placed.receipt.ok,
+                                        code: if placed.receipt.ok { 0 } else { -1 },
+                                        stdout: format!(
+                                            "artifact placement {} bytes={} mode=0755 changed={} backed_up={}",
+                                            staged.display(),
+                                            download.bytes.len(),
+                                            placed.movement.changed(),
+                                            placed.movement.backed_up.is_some()
+                                        ),
+                                        stderr: String::new(),
+                                    };
+                                    staged_from_artifact = placed.receipt.ok;
+                                    changed = placed.movement.changed();
+                                }
+                                Err(error) => {
+                                    build = CmdResult {
+                                        ok: false,
+                                        code: -1,
+                                        stdout: String::new(),
+                                        stderr: format!(
+                                            "engine-artifact-stage-failed target={target}: {error}"
+                                        ),
+                                    };
+                                    first_missing_signal = "engine-artifact-stage-failed".into();
+                                }
+                            }
+                        } else {
+                            build = CmdResult {
+                                ok: true,
+                                code: 0,
+                                stdout: format!(
+                                    "planned artifact placement {} bytes={} mode=0755",
+                                    staged.display(),
+                                    download.bytes.len()
+                                ),
+                                stderr: String::new(),
+                            };
+                        }
+                        write_command_receipt(&preflight_dir, "staged-build", &build)?;
+                    }
+                    Ok(None) => {
+                        let pinned_plan =
+                            source_fallback_plan(&resolution, resolved_sha.unwrap_or_default());
+                        let source = crate::bands::pull_source::execute_source(
+                            &pinned_plan,
+                            apply,
+                            invocation,
+                        );
+                        let source_command = CmdResult {
+                            ok: source.ok,
+                            code: if source.ok { 0 } else { -1 },
+                            stdout: source.receipt.promotion.clone(),
+                            stderr: if source.ok {
+                                String::new()
+                            } else {
+                                source.receipt.promotion.clone()
+                            },
+                        };
+                        if let Some(candidate) = pinned_plan.candidates.first() {
+                            write_source_possession_receipt(
+                                &preflight_dir,
+                                &source_command,
+                                &pinned_plan.destination,
+                                candidate,
+                                apply,
+                            )?;
+                        }
+                        lane = Some("source".into());
+                        operation_count += 1;
+                        if !source.ok {
+                            first_missing_signal = "engine-source-acquisition-failed".into();
+                        } else if source.receipt.resolved_commit.as_deref() != resolved_sha {
+                            first_missing_signal = format!(
+                                "engine-source-commit-mismatch target={} observed={}",
+                                target,
+                                source
+                                    .receipt
+                                    .resolved_commit
+                                    .as_deref()
+                                    .unwrap_or("unknown")
+                            );
+                        } else {
+                            changed = source.changed;
+                        }
+                    }
+                    Err(error) => {
+                        blocked_target = Some(target.clone());
+                        first_missing_signal =
+                            format!("engine-artifact-refused target={target}: {error}");
+                    }
+                }
+            }
+        }
+    }
+    if lane.as_deref() == Some("source") && first_missing_signal == "none" {
         let Some(source_head) = source_head.as_deref() else {
             first_missing_signal = "engine-source-head-absent".to_string();
-            emit_preflight_receipt(
+            update_engine_preflight_contract(
                 &preflight_dir,
-                &component,
-                engine_component_ignored.as_deref(),
+                lane.as_deref(),
                 None,
-                None,
-                install_before.as_deref(),
+                blocked_target.as_deref(),
                 false,
-                apply,
-                changed,
-                &first_missing_signal,
-                operation_count,
-                None,
-                None,
             )?;
             return Ok(failed_execution(&first_missing_signal));
         };
@@ -675,6 +909,9 @@ pub(crate) fn run_engine_preflight(
         } else if let Ok(value) = sha256_file(&staged) {
             staged_sha = Some(value);
         }
+    } else if staged_from_artifact {
+        staged_sha = sha256_file(&staged).ok();
+        operation_count += 1;
     } else {
         write_command_receipt(&preflight_dir, "staged-build", &build)?;
         operation_count += 1;
@@ -700,35 +937,23 @@ pub(crate) fn run_engine_preflight(
             first_missing_signal = proof
                 .1
                 .unwrap_or_else(|| "engine-proof-battery-failed".to_string());
-        } else {
-            promote =
-                promote_staged_binary(&staged, &install_bin, true, invocation, &preflight_dir)?;
-            operation_count += 1;
-            if !promote.ok {
-                first_missing_signal = "engine-promotion-failed".to_string();
-            } else {
-                changed = true;
-            }
+        } else if staged_sha.as_deref() != install_before.as_deref() {
+            crate::interactables::propose_engine_replacement(
+                install_before.as_deref(),
+                staged_sha.as_deref().unwrap_or_default(),
+                &staged,
+                &install_bin,
+                lane.as_deref().unwrap_or("source"),
+                resolved_sha.unwrap_or_default(),
+                proof.1.as_deref(),
+            )?;
+            first_missing_signal = "engine-waiting-for-bless".into();
+            changed = false;
         }
     }
     write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
     let installed_after = install_bin_fingerprint(&install_bin);
-    let install_changed = promotion_changed(
-        apply,
-        promote.ok,
-        install_before.as_deref(),
-        installed_after.as_deref(),
-    );
-    let reexec = if first_missing_signal == "none" {
-        if install_changed && running_before.is_none() {
-            first_missing_signal = SELF_UPDATE_REEXEC_RUNNING_FINGERPRINT_MISSING.to_string();
-            None
-        } else {
-            self_update_reexec_receipt(install_changed, running_before, installed_after.clone())
-        }
-    } else {
-        None
-    };
+    let reexec = None;
     let ok = first_missing_signal == "none";
     emit_preflight_receipt(
         &preflight_dir,
@@ -745,44 +970,13 @@ pub(crate) fn run_engine_preflight(
         staged_build_identity.as_ref(),
         reexec.as_ref(),
     )?;
-    if reexec.is_some() {
-        let Some(invocation) = invocation else {
-            let signal = "harmonia-self-update-reexec-invocation-missing";
-            mark_reexec_failure(&preflight_dir, signal)?;
-            forward_preflight_receipt(
-                false,
-                apply,
-                changed,
-                signal,
-                &component,
-                engine_component_ignored.as_deref(),
-            );
-            return Err(signal.to_string());
-        };
-        let plan = crate::atoms::r#do::replace_process::Plan {
-            successor: install_bin,
-            argv: env::args().skip(1).collect(),
-            guard_name: SELF_UPDATE_REEXEC_ENV.to_string(),
-            guard_value: "1".to_string(),
-            receipt_path: preflight_dir.join("replace-process.json"),
-        };
-        if let Err(error) = crate::atoms::r#do::replace_process::replace(&plan, invocation) {
-            let signal = format!("harmonia-self-update-reexec-failed: {error}");
-            if let Err(receipt_error) = mark_reexec_failure(&preflight_dir, &signal) {
-                return Err(format!("{signal}; receipt update failed: {receipt_error}"));
-            }
-            forward_preflight_receipt(
-                false,
-                apply,
-                changed,
-                &signal,
-                &component,
-                engine_component_ignored.as_deref(),
-            );
-            return Err(signal);
-        }
-        unreachable!("replace-process::replace only returns after exec failure");
-    }
+    update_engine_preflight_contract(
+        &preflight_dir,
+        lane.as_deref(),
+        resolved_sha,
+        blocked_target.as_deref(),
+        first_missing_signal == "engine-waiting-for-bless",
+    )?;
     forward_preflight_receipt(
         ok,
         apply,
@@ -805,9 +999,11 @@ mod release_transport_tests {
     use super::{
         build_environment_for_source_head, build_environment_sha, capture_build_environment,
         emit_preflight_receipt, engine_source_gate, engine_source_gate_for_component,
-        ignored_engine_component, ignored_engine_component_receipt_line, install_bin_fingerprint,
-        promote_staged_binary, promotion_changed, self_update_reexec_guard_active,
-        self_update_reexec_receipt, should_self_update_reexec, SELF_UPDATE_REEXEC_ENV,
+        engine_source_gate_for_component_at, ignored_engine_component,
+        ignored_engine_component_receipt_line, install_bin_fingerprint, promote_staged_binary,
+        promotion_changed, release_identity_from_candidate, self_update_reexec_guard_active,
+        self_update_reexec_receipt, should_self_update_reexec, should_self_update_reexec_for_guard,
+        source_fallback_plan, update_engine_preflight_contract, SELF_UPDATE_REEXEC_ENV,
     };
     use serde_json::json;
     use std::sync::{Mutex, OnceLock};
@@ -863,6 +1059,64 @@ mod release_transport_tests {
             identity.env_sha.as_deref(),
             Some("0e5eb85d1e4bda0a9e1ab61a3e0c21fd31bb198df218061c31168969ea51d4f1")
         );
+    }
+
+    #[test]
+    fn serving_candidate_derives_release_owner_and_repo_without_guessing() {
+        assert_eq!(
+            release_identity_from_candidate("git@git.home.arpa:HOMESERVERSLTD/harmonia.git")
+                .unwrap(),
+            (
+                "https://git.home.arpa/api/v1".to_string(),
+                "HOMESERVERSLTD/harmonia".to_string()
+            )
+        );
+        assert!(release_identity_from_candidate(
+            "https://git.home.arpa/HOMESERVERSLTD/harmonia/extra.git"
+        )
+        .is_err());
+        assert_eq!(
+            release_identity_from_candidate("https://github.com/HOMESERVERSLTD/harmonia.git")
+                .unwrap_err(),
+            "engine-release-candidate-unsupported-forgejo-host target=https://github.com/HOMESERVERSLTD/harmonia.git"
+        );
+    }
+
+    #[test]
+    fn preflight_receipt_records_artifact_ratchet_lane_and_authority_fields() {
+        let root = tempdir().unwrap();
+        let preflight = root.path().join("engine-preflight");
+        std::fs::create_dir_all(&preflight).unwrap();
+        let source = "a".repeat(40);
+        let staged = "b".repeat(64);
+        let installed = "c".repeat(64);
+        emit_preflight_receipt(
+            &preflight,
+            "harmonia",
+            None,
+            Some(&source),
+            Some(&staged),
+            Some(&installed),
+            false,
+            true,
+            false,
+            "engine-waiting-for-bless",
+            3,
+            None,
+            None,
+        )
+        .unwrap();
+        update_engine_preflight_contract(&preflight, Some("artifact"), Some(&source), None, true)
+            .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(preflight.join("run.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["artifact_ratchet"], "version+sha-lock");
+        assert_eq!(receipt["engine_lane"], "artifact");
+        assert_eq!(receipt["nudge"], "evidence");
+        assert_eq!(receipt["bless"], "authority");
+        assert_eq!(receipt["old_engine_preserved"], true);
+        assert_eq!(receipt["stage"], "waiting-for-bless");
     }
 
     #[test]
@@ -959,6 +1213,30 @@ mod release_transport_tests {
     }
 
     #[test]
+    fn source_fallback_keeps_configured_ref_and_pins_resolved_release_commit() {
+        let resolved_release_tag = "0123456789abcdef0123456789abcdef01234567";
+        let resolution = crate::bands::pull_source::SourceResolution {
+            schema: "harmonia.engine.source_resolution.v1",
+            source_policy: "developer".into(),
+            component: "harmonia".into(),
+            requested_ref: "main".into(),
+            candidates: vec![crate::bands::pull_source::SourceCandidatePlan {
+                kind: "git".into(),
+                locator: "https://git.home.arpa/HOMESERVERSLTD/harmonia.git".into(),
+                credential_selector: None,
+                freshness_authority: None,
+            }],
+        };
+        let plan = source_fallback_plan(&resolution, resolved_release_tag);
+        assert_eq!(plan.reference, "main");
+        assert_eq!(plan.expected_commit.as_deref(), Some(resolved_release_tag));
+        assert_ne!(plan.reference, "HEAD");
+        assert!(plan.expected_commit.as_deref().is_some_and(
+            |value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        ));
+    }
+
+    #[test]
     fn public_source_resolves_without_legacy_engine_component() {
         let certificate = certificate_fixture(None, &["harmonia"]);
         let (component, resolution) =
@@ -994,12 +1272,19 @@ mod release_transport_tests {
         let source_destination = root.path().join("source");
         let build_destination = root.path().join("build");
 
-        let result = engine_source_gate(certificate.path());
+        let config_path = root.path().join("config.json");
+        std::fs::write(&config_path, br#"{"sources":{}}"#).unwrap();
+
+        let result = engine_source_gate_for_component_at(
+            &config_path,
+            certificate.path(),
+            crate::COMPILED_COMPONENT,
+        );
 
         assert!(matches!(
-            result,
-            Err(signal) if signal == format!(
-                "device-profile-engine-source-absent component={}",
+            &result,
+            Err(signal) if signal == &format!(
+                "appliance-config-source-absent component={}",
                 crate::COMPILED_COMPONENT
             )
         ));
@@ -1061,6 +1346,18 @@ mod release_transport_tests {
             promotion.ok,
             install_before.as_deref(),
             installed_after.as_deref(),
+        ));
+        assert!(should_self_update_reexec_for_guard(
+            true,
+            Some("old-generation"),
+            Some("new-generation"),
+            false,
+        ));
+        assert!(!should_self_update_reexec_for_guard(
+            true,
+            Some("old-generation"),
+            Some("new-generation"),
+            true,
         ));
 
         let reexec = self_update_reexec_receipt(true, Some(from_sha.clone()), Some(to_sha.clone()))
