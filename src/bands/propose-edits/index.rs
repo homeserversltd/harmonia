@@ -201,7 +201,10 @@ pub(crate) fn prune_stale_interactables_at_path(
     let mut removed_ids = BTreeSet::new();
 
     for entry in feed.interactables.drain(..) {
-        let reason = if !active_modules.contains(&entry.module_id) {
+        // The engine plane owns its own bless; no profile module claims it,
+        // so module absence never prunes a staged engine replacement.
+        let engine_plane = entry.kind == "engine-replacement";
+        let reason = if !engine_plane && !active_modules.contains(&entry.module_id) {
             Some("module-absent-from-profile")
         } else if !matches!(entry.kind.as_str(), "ruyi-bump" | "dns-record")
             && !entry.reference_source_path.as_deref().is_some_and(Path::is_file)
@@ -956,6 +959,18 @@ mod refresh_interactables_tests {
                 reference.clone(),
                 false,
             ),
+            {
+                let mut engine = prune_item(
+                    &root,
+                    "engine-replacement-entry",
+                    "harmonia",
+                    root.join("staged-engine"),
+                    reference.clone(),
+                    false,
+                );
+                engine.kind = "engine-replacement".into();
+                engine
+            },
         ];
         persist_feed(&feed_path, &interactables::make_feed(entries)).unwrap();
         let mut events = File::create(&events_path).unwrap();
@@ -978,7 +993,7 @@ mod refresh_interactables_tests {
         let retained = interactables::load_feed(&feed_path).unwrap().interactables;
         assert_eq!(
             retained.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
-            vec!["live-entry", "survivor-entry"]
+            vec!["live-entry", "survivor-entry", "engine-replacement-entry"]
         );
         assert_eq!(fs::read(&backup).unwrap(), b"preserve me\n");
 
