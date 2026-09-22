@@ -314,6 +314,19 @@ fn xenia_repair_seat(path: &Path, owner: &str) -> Result<bool, String> {
 
 /// In-place clone road for Xenia. Unlike generic source acquisition this never
 /// stages or promotes a replacement directory, so an untracked target/ survives.
+/// The seat IS the clone (workflow-coronatio-xenia-clone-road-and-staff-actuation-law):
+/// the face ladder places `install.bin` into it and the guest writes its own
+/// runtime files (`listen`) beside it, so untracked paths are the road's own
+/// residue and are preserved, exactly as `target/` already is. Unsafe dirt is a
+/// tracked path the checkout would clobber: modified, deleted, renamed, or in
+/// conflict.
+pub(crate) fn unsafe_clone_dirt(status_porcelain: &str) -> bool {
+    status_porcelain.lines().any(|line| {
+        let code = line.get(..2).unwrap_or_default();
+        !line.trim().is_empty() && code != "??" && code != "!!"
+    })
+}
+
 pub(crate) fn clone_in_place(
     request: &git_artifact::Request,
     reference: &str,
@@ -362,11 +375,7 @@ pub(crate) fn clone_in_place(
     }
     let status = git_observe(request, &["status", "--porcelain", "--untracked-files=all"], Some(cwd));
     if !status.ok { return Err(format!("xenia-clone-status-failed: {}", status.stderr)); }
-    let unsafe_dirty = status.stdout.lines().any(|line| {
-        let path = line.get(3..).unwrap_or_default().trim().trim_matches('"');
-        !path.is_empty() && path != "target" && !path.starts_with("target/")
-    });
-    if unsafe_dirty { return Err("xenia-clone-dirty".into()); }
+    if unsafe_clone_dirt(&status.stdout) { return Err("xenia-clone-dirty".into()); }
     let checkout = git_observe(request, &["checkout", "--detach", &target], Some(cwd));
     if !checkout.ok { return Err(format!("xenia-clone-checkout-failed: {}", checkout.stderr)); }
     let resolved = xenia_commit(request, &request.path, "HEAD").ok_or("xenia-clone-head-unresolved")?;
@@ -672,5 +681,25 @@ mod xenia_clone_tests {
         git(&remote, &["commit", "-q", "-m", "three"]);
         let error = clone_in_place(&request, "main", "xenia").unwrap_err();
         assert_eq!(error, "xenia-clone-diverged");
+    }
+}
+
+#[cfg(test)]
+mod clone_dirt_tests {
+    use super::unsafe_clone_dirt;
+
+    #[test]
+    fn untracked_seat_residue_is_never_unsafe_dirt() {
+        assert!(!unsafe_clone_dirt("?? cartridge-monad-overwatch\n?? listen\n?? target/\n"));
+        assert!(!unsafe_clone_dirt(""));
+        assert!(!unsafe_clone_dirt("!! target/release/\n"));
+    }
+
+    #[test]
+    fn tracked_modifications_deletions_and_conflicts_are_unsafe_dirt() {
+        assert!(unsafe_clone_dirt(" M src/main.rs\n"));
+        assert!(unsafe_clone_dirt("D  cartridge.json\n?? listen\n"));
+        assert!(unsafe_clone_dirt("UU src/fragment.rs\n"));
+        assert!(unsafe_clone_dirt("R  old.rs -> new.rs\n"));
     }
 }
