@@ -668,11 +668,17 @@ pub(crate) fn routed_host(row: &Value) -> Result<Ipv4Addr, String> {
     })
 }
 
+/// A roster carries every stave's row plus perspectives; three staves already
+/// exceed the ordinary 16 KiB command bound, which parsed as
+/// `ruyi-roster-malformed` on every announce (witnessed 2026-09-22).
+const ROSTER_READ_LIMIT: usize = 4 * 1024 * 1024;
+
 fn get_roster(url: &str) -> Result<Value, String> {
-    let observed = crate::atoms::ask::read_only_command_with_timeout(
+    let observed = crate::atoms::ask::read_only_command_with_timeout_and_limit(
         "/usr/bin/curl",
         &["-fsS".into(), "--max-time".into(), "3".into(), url.into()],
         Duration::from_secs(4),
+        ROSTER_READ_LIMIT,
     );
     if !observed.ok {
         return Err(if observed.code == Some(22) {

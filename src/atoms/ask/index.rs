@@ -159,6 +159,18 @@ pub(crate) fn read_only_command_with_timeout(
     args: &[String],
     timeout: Duration,
 ) -> CommandObservation {
+    read_only_command_with_timeout_and_limit(program, args, timeout, OUTPUT_LIMIT)
+}
+
+/// The same bounded capture with a caller-owned stdout bound, for the few
+/// observations whose honest reply is larger than a command's ordinary output
+/// (a LAN roster with perspectives). stderr keeps the ordinary bound.
+pub(crate) fn read_only_command_with_timeout_and_limit(
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+    stdout_limit: usize,
+) -> CommandObservation {
     let mut child = match Command::new(program)
         .args(args)
         .stdout(Stdio::piped())
@@ -179,8 +191,8 @@ pub(crate) fn read_only_command_with_timeout(
     };
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let out = thread::spawn(move || bounded_read(stdout));
-    let err = thread::spawn(move || bounded_read(stderr));
+    let out = thread::spawn(move || bounded_read(stdout, stdout_limit));
+    let err = thread::spawn(move || bounded_read(stderr, OUTPUT_LIMIT));
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
     let status = loop {
@@ -212,11 +224,11 @@ pub(crate) fn read_only_command_with_timeout(
     }
 }
 
-fn bounded_read<R: Read>(mut reader: R) -> String {
-    let mut bytes = Vec::with_capacity(OUTPUT_LIMIT.min(4096));
+fn bounded_read<R: Read>(mut reader: R, limit: usize) -> String {
+    let mut bytes = Vec::with_capacity(limit.min(4096));
     let mut chunk = [0u8; 4096];
-    while bytes.len() < OUTPUT_LIMIT {
-        let take = (OUTPUT_LIMIT - bytes.len()).min(chunk.len());
+    while bytes.len() < limit {
+        let take = (limit - bytes.len()).min(chunk.len());
         match reader.read(&mut chunk[..take]) {
             Ok(0) | Err(_) => break,
             Ok(n) => bytes.extend_from_slice(&chunk[..n]),
@@ -470,4 +482,37 @@ pub(crate) fn same_filesystem(a: &FsPreimage, b: &FsPreimage) -> bool {
     a.identity
         .zip(b.identity)
         .is_some_and(|(x, y)| x.device == y.device)
+}
+
+#[cfg(test)]
+mod capture_limit_tests {
+    use super::{read_only_command_with_timeout, read_only_command_with_timeout_and_limit, OUTPUT_LIMIT};
+    use std::time::Duration;
+
+    fn forty_kib_of_a() -> Vec<String> {
+        vec![
+            "-c".into(),
+            "head -c 40960 /dev/zero | tr '\\0' a".into(),
+        ]
+    }
+
+    #[test]
+    fn ordinary_capture_stops_at_the_output_limit() {
+        let observed = read_only_command_with_timeout("/bin/sh", &forty_kib_of_a(), Duration::from_secs(5));
+        assert!(observed.ok);
+        assert_eq!(observed.stdout.len(), OUTPUT_LIMIT);
+    }
+
+    #[test]
+    fn caller_owned_limit_keeps_a_reply_larger_than_the_ordinary_bound() {
+        let observed = read_only_command_with_timeout_and_limit(
+            "/bin/sh",
+            &forty_kib_of_a(),
+            Duration::from_secs(5),
+            4 * 1024 * 1024,
+        );
+        assert!(observed.ok);
+        assert_eq!(observed.stdout.len(), 40960);
+        assert!(observed.stdout.bytes().all(|b| b == b'a'));
+    }
 }
