@@ -24,6 +24,7 @@
     "sbin",
     "sudoers",
     "sunshine",
-    "retroarch-input"
+    "retroarch-input",
+    "grub-branding"
   ]
 }

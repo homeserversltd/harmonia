@@ -21,6 +21,7 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("backfill-file", include_str!("backfill-file/index.json")),
     ("build-crate", include_str!("build-crate/index.json")),
     ("fetch-artifact", include_str!("fetch-artifact/index.json")),
+    ("grub", include_str!("grub/index.json")),
     ("build-venv", include_str!("build-venv/index.json")),
     ("check-health", include_str!("check-health/index.json")),
     ("enable-unit", include_str!("enable-unit/index.json")),
@@ -255,6 +256,7 @@ pub mod git_artifact;
 #[path = "health/index.rs"]
 pub(crate) mod health;
 pub mod household_time;
+pub(crate) mod grub;
 #[path = "make-symlink.rs"]
 pub(crate) mod make_symlink;
 pub use crate::atoms::package;

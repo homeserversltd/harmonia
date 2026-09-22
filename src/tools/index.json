@@ -1096,6 +1096,23 @@
       ]
     },
     {
+      "name": "grub",
+      "description": "Validated GRUB theme installation and configuration convergence.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "apply-theme",
+          "description": "validate and apply a GRUB theme, then regenerate GRUB configuration only after material changes on a real GRUB host",
+          "args": [
+            {"name": "theme_source_dir", "kind": "string", "required": true},
+            {"name": "theme_name", "kind": "string", "required": false},
+            {"name": "target_root", "kind": "string", "required": false}
+          ],
+          "placement": "ProposeEdits"
+        }
+      ]
+    },
+    {
       "name": "health",
       "description": "Compatibility alias resolving to check-health observation.",
       "routine_summonable": false,

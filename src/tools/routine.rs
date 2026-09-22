@@ -486,6 +486,12 @@ pub(crate) fn execute_validated_step(
             tools::artifact_lock::execute_validated_step(step, module_dir)
         }
         ("health", "probe") => tools::health::execute_validated_step(step, module_dir, false),
+        ("grub", "apply-theme") => tools::grub::execute_validated_step(
+            step,
+            manifest,
+            module_dir,
+            software_authorization.is_some(),
+        ),
         ("household-time", _) => tools::household_time::execute_validated_step(
             step,
             module_dir,

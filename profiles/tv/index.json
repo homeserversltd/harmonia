@@ -30,7 +30,8 @@
     "household-time",
     "install-caduceus",
     "sbin",
-    "sudoers"
+    "sudoers",
+    "grub-branding"
   ],
   "identity": "tv",
   "module_spine_entered": "profiles/tv/modules"

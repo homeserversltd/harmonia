@@ -1,0 +1,21 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "grub-branding",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Converge the shared HOMESERVER GRUB theme on GRUB-equipped appliances; non-GRUB systems observe and skip without installing software.",
+  "optional": false,
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "grub-branding-theme",
+      "tool": "grub",
+      "permutation": "apply-theme",
+      "args": {
+        "theme_source_dir": "files_root/boot/grub/themes/homeserver",
+        "theme_name": "homeserver",
+        "target_root": "/"
+      }
+    }
+  ]
+}
