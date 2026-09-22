@@ -1827,6 +1827,11 @@
               "name": "health",
               "kind": "json",
               "required": true
+            },
+            {
+              "name": "endpoint",
+              "kind": "json",
+              "required": false
             }
           ],
           "placement": "RestartServices"

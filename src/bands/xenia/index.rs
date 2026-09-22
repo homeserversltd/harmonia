@@ -555,16 +555,12 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
         );
         if let Some(health) = step.steps.iter_mut().find(|c| c.name == "health-proof") {
             health.permutation = Some("status-door".into());
-            health.args = if clone {
-                BTreeMap::from([
-                    ("id".into(), json!(id.clone())),
-                    ("resolved_commit".into(), json!({"from":"pull-repo.resolved_commit"})),
-                    ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
-                    ("health_route".into(), json!(health_route(&entry))),
-                ])
-            } else {
-                BTreeMap::from([("id".into(), json!(id.clone()))])
-            };
+            health.args = BTreeMap::from([
+                ("id".into(), json!(id.clone())),
+                ("resolved_commit".into(), json!({"from":"pull-repo.resolved_commit"})),
+                ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
+                ("health_route".into(), json!(health_route(&entry))),
+            ]);
         }
         if clone {
             if let Some(endpoint) = discovered_endpoint(&entry) {
@@ -596,25 +592,29 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
             .iter()
             .position(|c| c.name == "health-proof")
             .ok_or("xenia-health-missing")?;
+        let mut observe_args = BTreeMap::from([
+            ("id".into(), json!(id)),
+            (
+                "source_sha".into(),
+                if clone {
+                    json!({"from":"health-proof.running_source_sha"})
+                } else {
+                    json!({"from":"pull-repo.resolved_commit"})
+                },
+            ),
+            ("health".into(), json!({"from":"health-proof.health"})),
+            ("endpoint".into(), json!({"from":"health-proof.endpoint"})),
+        ]);
+        if !clone {
+            observe_args.insert("version".into(), json!({"from":"pull-repo.version"}));
+        }
         step.steps.insert(
             health + 1,
             RoutineStep {
                 name: "observe-stamp".into(),
                 tool: "xenia-runtime".into(),
                 permutation: Some("observe-stamp".into()),
-                args: BTreeMap::from([
-                    ("id".into(), json!(id)),
-                    (
-                        "source_sha".into(),
-                        if clone {
-                            json!({"from":"health-proof.running_source_sha"})
-                        } else {
-                            json!({"from":"pull-repo.resolved_commit"})
-                        },
-                    ),
-                    ("health".into(), json!({"from":"health-proof.health"})),
-                    ("version".into(), json!({"from":"pull-repo.version"})),
-                ]),
+                args: observe_args,
                 extra: BTreeMap::new(),
             },
         );
@@ -860,35 +860,55 @@ pub(crate) fn execute_routine_child(
             let health = args.get("health").cloned().unwrap_or(Value::Null);
             let source_sha = args.get("source_sha").cloned().unwrap_or(Value::Null);
             let version = args.get("version").cloned().unwrap_or(Value::Null);
+            let endpoint = args.get("endpoint").cloned().unwrap_or(Value::Null);
             let proved_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| e.to_string())?
                 .as_secs();
-            let payload = json!({"installed":{"version":version,"source_sha":source_sha,"kit_band":null,"proved_at":proved_at,"health":health}});
             let base = base_url(None)?;
-            let (status, value) = http(
-                "POST",
-                &format!("{base}/api/v1/xenia/{id}/observe"),
-                Some(&payload),
-                Duration::from_secs(5),
-            )
-            .map_err(|_| "xenia-observe-unreachable".to_string())?;
-            if status == 503 || status >= 500 {
-                return Err("xenia-observe-unreachable".into());
-            }
-            if (400..500).contains(&status)
-                || value.get("ok").and_then(Value::as_bool) == Some(false)
-            {
-                let check = value
-                    .get("check")
-                    .or_else(|| value.get("verdict"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                return Err(format!("xenia-observe-refused {check}"));
-            }
-            if status != 200 {
-                return Err("xenia-observe-unreachable".into());
-            }
+            let post_observation = |payload: &Value| -> Result<Value, String> {
+                let (status, value) = http(
+                    "POST",
+                    &format!("{base}/api/v1/xenia/{id}/observe"),
+                    Some(payload),
+                    Duration::from_secs(5),
+                )
+                .map_err(|_| "xenia-observe-unreachable".to_string())?;
+                if status == 503 || status >= 500 {
+                    return Err("xenia-observe-unreachable".into());
+                }
+                if (400..500).contains(&status)
+                    || value.get("ok").and_then(Value::as_bool) == Some(false)
+                {
+                    let check = value
+                        .get("check")
+                        .or_else(|| value.get("verdict"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    return Err(format!("xenia-observe-refused {check}"));
+                }
+                if status != 200 {
+                    return Err("xenia-observe-unreachable".into());
+                }
+                Ok(value)
+            };
+            let value = post_observation(&json!({
+                "installed": {
+                    "version": version,
+                    "source_sha": source_sha,
+                    "kit_band": null,
+                    "proved_at": proved_at,
+                    "health": health
+                }
+            }))?;
+            post_observation(&json!({
+                "discovered": {
+                    "endpoint": endpoint,
+                    "content_kind": null,
+                    "rung": "probe",
+                    "at": proved_at
+                }
+            }))?;
             let mut out = BTreeMap::new();
             out.insert("entry".into(), value);
             Ok((
@@ -1028,18 +1048,20 @@ fn execute_status_door_at_base(
                         .and_then(Value::as_str)
                         .filter(|route| route.starts_with('/'))
                         .unwrap_or("/health");
-                    let endpoint = args
-                        .get("endpoint")
+                    let endpoint = value
+                        .pointer("/runtime/listeners/0/endpoint")
                         .and_then(Value::as_str)
+                        .filter(|endpoint| !endpoint.trim().is_empty())
+                        .or_else(|| {
+                            args.get("endpoint")
+                                .and_then(Value::as_str)
+                                .filter(|endpoint| !endpoint.trim().is_empty())
+                        })
                         .or_else(|| {
                             value
                                 .pointer("/entry/discovered/endpoint")
                                 .and_then(Value::as_str)
-                        })
-                        .or_else(|| {
-                            value
-                                .pointer("/runtime/listeners/0/endpoint")
-                                .and_then(Value::as_str)
+                                .filter(|endpoint| !endpoint.trim().is_empty())
                         });
                     let mut running_source_sha = health_source_sha(&value);
                     if let Some(endpoint) = endpoint {
@@ -1064,6 +1086,10 @@ fn execute_status_door_at_base(
                     let mut out = BTreeMap::new();
                     out.insert("health".into(), json!(health));
                     out.insert("running_source_sha".into(), json!(running_source_sha));
+                    out.insert(
+                        "endpoint".into(),
+                        endpoint.map(Value::from).unwrap_or(Value::Null),
+                    );
                     out.insert("status".into(), value);
                     return Ok((
                         OperationOutcome {
@@ -1473,6 +1499,16 @@ mod clone_road_tests {
             .find(|child| child.name == "health-proof")
             .unwrap();
         assert_eq!(health.args.get("endpoint"), Some(&Value::Null));
+        let observe = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "observe-stamp")
+            .unwrap();
+        assert_eq!(
+            observe.args.get("endpoint"),
+            Some(&json!({"from":"health-proof.endpoint"}))
+        );
+        assert!(!observe.args.contains_key("version"));
         validate_lowered_children(&routine);
     }
 
@@ -1502,6 +1538,16 @@ mod clone_road_tests {
             restart.args.get("running_source_sha"),
             Some(&json!({"from":"health-read.running_source_sha"}))
         );
+        let observe = routine
+            .steps
+            .iter()
+            .find(|child| child.name == "observe-stamp")
+            .unwrap();
+        assert_eq!(
+            observe.args.get("endpoint"),
+            Some(&json!({"from":"health-proof.endpoint"}))
+        );
+        assert!(!observe.args.contains_key("version"));
         assert_status_door_id_only(&routine, "monad-overwatch");
         validate_lowered_children(&routine);
     }
@@ -1521,8 +1567,25 @@ mod clone_road_tests {
                 .find(|child| child.name == "health-proof")
                 .unwrap();
             assert!(health.args.keys().all(|key| {
-                matches!(key.as_str(), "id" | "hyalos_kind" | "hyalos_correlation_id")
+                matches!(
+                    key.as_str(),
+                    "id" | "resolved_commit" | "endpoint" | "health_route"
+                        | "hyalos_kind" | "hyalos_correlation_id"
+                )
             }));
+            assert_eq!(
+                health.args.get("resolved_commit"),
+                Some(&json!({"from":"pull-repo.resolved_commit"}))
+            );
+            let observe = routine
+                .steps
+                .iter()
+                .find(|child| child.name == "observe-stamp")
+                .unwrap();
+            assert_eq!(
+                observe.args.get("version"),
+                Some(&json!({"from":"pull-repo.version"}))
+            );
             assert!(routine.steps.iter().all(|child| {
                 !child.args.contains_key("source_kind")
                     && !child.args.contains_key("release_ref")
@@ -1576,34 +1639,94 @@ mod clone_road_tests {
         assert!(!release_step.args.contains_key("release_ref"));
     }
 
-    fn status_server(sha: &str) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let endpoint = format!("http://{address}");
-        let body = format!("{{\"runtime\":{{\"state\":\"active\",\"listeners\":[{{\"endpoint\":\"{endpoint}\"}}]}}}}");
+    fn status_server(sha: &str, live_listener: bool) -> (String, String, thread::JoinHandle<()>) {
+        let status_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let status_address = status_listener.local_addr().unwrap();
+        let health_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let health_address = health_listener.local_addr().unwrap();
+        let endpoint = format!("http://{health_address}");
+        let body = if live_listener {
+            format!("{{\"runtime\":{{\"state\":\"active\",\"listeners\":[{{\"endpoint\":\"{endpoint}\"}}]}}}}")
+        } else {
+            "{\"runtime\":{\"state\":\"active\",\"listeners\":[]}}".into()
+        };
         let health = format!("{{\"running_source_sha\":\"{sha}\"}}");
+        let status_attempts = if live_listener {
+            1
+        } else {
+            crate::atoms::health::DEFAULT_PROBE_RETRIES
+        };
         let server = thread::spawn(move || {
-            for (path, response) in [("/api/v1/xenia/status/guest", body), ("/health", health)] {
-                let (mut stream, _) = listener.accept().unwrap();
+            for _ in 0..status_attempts {
+                let (mut stream, _) = status_listener.accept().unwrap();
                 let mut request = [0_u8; 4096];
                 let size = stream.read(&mut request).unwrap();
-                assert!(String::from_utf8_lossy(&request[..size]).starts_with(&format!("GET {path} ")));
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+                assert!(String::from_utf8_lossy(&request[..size])
+                    .starts_with("GET /api/v1/xenia/status/guest "));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
             }
+            let (mut stream, _) = health_listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /health "));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                health.len(),
+                health
+            )
+            .unwrap();
         });
-        (format!("http://{address}"), server)
+        (
+            format!("http://{status_address}"),
+            endpoint,
+            server,
+        )
     }
 
     #[test]
-    fn status_listener_fallback_reads_health_and_refuses_sha_mismatch() {
-        let (base, server) = status_server("expected");
+    fn status_door_prefers_live_listener_over_dead_recorded_endpoint() {
+        let (base, live_endpoint, server) = status_server("expected", true);
+        let args = BTreeMap::from([
+            ("id".into(), json!("guest")),
+            ("resolved_commit".into(), json!("expected")),
+            ("endpoint".into(), json!("http://127.0.0.1:1")),
+        ]);
+        let (_, output) = execute_status_door_at_base(&args, &base).unwrap();
+        server.join().unwrap();
+        assert_eq!(output["health"], "healthy");
+        assert_eq!(output["endpoint"], live_endpoint);
+        assert_eq!(output["running_source_sha"], "expected");
+    }
+
+    #[test]
+    fn status_door_falls_back_to_recorded_endpoint_without_live_listener() {
+        let (base, recorded_endpoint, server) = status_server("expected", false);
+        let args = BTreeMap::from([
+            ("id".into(), json!("guest")),
+            ("resolved_commit".into(), json!("expected")),
+            ("endpoint".into(), json!(recorded_endpoint.clone())),
+        ]);
+        let (_, output) = execute_status_door_at_base(&args, &base).unwrap();
+        server.join().unwrap();
+        assert_eq!(output["health"], "degraded");
+        assert_eq!(output["endpoint"], recorded_endpoint);
+        assert_eq!(output["running_source_sha"], "expected");
+    }
+
+    #[test]
+    fn status_door_refuses_sha_mismatch_after_http_200_health_probe() {
+        let (base, _, server) = status_server("wrong", true);
         let args = BTreeMap::from([
             ("id".into(), json!("guest")),
             ("resolved_commit".into(), json!("expected")),
         ]);
-        execute_status_door_at_base(&args, &base).unwrap();
-        server.join().unwrap();
-        let (base, server) = status_server("wrong");
         let error = execute_status_door_at_base(&args, &base).unwrap_err();
         assert_eq!(error, "xenia-running-sha-mismatch");
         server.join().unwrap();
