@@ -203,15 +203,11 @@ mod tests {
 pub(crate) const INTERACTABLE_FEED: &str = "harmonia.config_proposals.feed.v1";
 pub(crate) const RUYI_BUMP_RECEIPT: &str = "harmonia.interactables.ruyi_bump.receipt.v1";
 pub(crate) const DNS_RECORD_RECEIPT: &str = "harmonia.interactables.dns_record.receipt.v1";
-pub(crate) const RUYI_PERSPECTIVE_SEED_RECEIPT: &str =
-    "harmonia.interactables.ruyi_perspective_seed.receipt.v1";
-
 #[derive(Debug)]
 pub(crate) struct InteractableSeats {
     pub(crate) feed: Result<Seat, String>,
     pub(crate) ruyi_bump_receipt: Result<Seat, String>,
     pub(crate) dns_record_receipt: Result<Seat, String>,
-    pub(crate) ruyi_perspective_seed_receipt: Result<Seat, String>,
 }
 
 static INTERACTABLE_SEATS: OnceLock<InteractableSeats> = OnceLock::new();
@@ -222,15 +218,11 @@ pub(crate) fn interactables_at_start() -> &'static InteractableSeats {
             feed: Seat::load(INTERACTABLE_FEED, base),
             ruyi_bump_receipt: Seat::load(RUYI_BUMP_RECEIPT, base),
             dns_record_receipt: Seat::load(DNS_RECORD_RECEIPT, base),
-            ruyi_perspective_seed_receipt: Seat::load(RUYI_PERSPECTIVE_SEED_RECEIPT, base),
         },
         Err(signal) => InteractableSeats {
             feed: Err(format!("schema-seat-unreachable {INTERACTABLE_FEED}: {signal}")),
             ruyi_bump_receipt: Err(format!("schema-seat-unreachable {RUYI_BUMP_RECEIPT}: {signal}")),
             dns_record_receipt: Err(format!("schema-seat-unreachable {DNS_RECORD_RECEIPT}: {signal}")),
-            ruyi_perspective_seed_receipt: Err(format!(
-                "schema-seat-unreachable {RUYI_PERSPECTIVE_SEED_RECEIPT}: {signal}"
-            )),
         },
     })
 }
@@ -241,10 +233,6 @@ pub(crate) fn emit_interactable_seat_signals() {
         (INTERACTABLE_FEED, &seats.feed),
         (RUYI_BUMP_RECEIPT, &seats.ruyi_bump_receipt),
         (DNS_RECORD_RECEIPT, &seats.dns_record_receipt),
-        (
-            RUYI_PERSPECTIVE_SEED_RECEIPT,
-            &seats.ruyi_perspective_seed_receipt,
-        ),
     ] {
         if seat.is_err() {
             eprintln!("schema-seat-unreachable {id}");

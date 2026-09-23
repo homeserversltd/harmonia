@@ -172,15 +172,6 @@ pub(crate) fn validate_perspective(perspective: &Value) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn seed_perspective() -> Result<(LocalIdentity, Value), String> {
-    let identity = local_identity()?;
-    let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
-    let beam_door = crate::atoms::ask::beam::door_url()
-        .ok()
-        .and_then(|url| crate::atoms::ask::beam::fetch_door(&url).ok());
-    seed_perspective_for(identity, profile, beam_door)
-}
-
 pub(super) fn seed_perspective_for(
     identity: LocalIdentity,
     profile: crate::Profile,
@@ -258,6 +249,29 @@ fn seed_perspective_for_with_harmonia_sha(
     Ok((identity, perspective))
 }
 
+fn persist_seed_if_absent(
+    identity: LocalIdentity,
+    profile: crate::Profile,
+    harmonia_sha: Option<&str>,
+    beam_door: impl FnOnce() -> Option<crate::atoms::ask::beam::BeamDoor>,
+) -> Result<bool, String> {
+    match fs::symlink_metadata(ruyi_path()) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
+    }
+    let beam_door = beam_door().ok_or_else(|| "ruyi-beam-door-unavailable".to_string())?;
+    let (_, perspective) =
+        seed_perspective_for_with_harmonia_sha(identity, profile, Some(beam_door), harmonia_sha)?;
+    let bytes = serde_json::to_vec(&perspective).map_err(|error| error.to_string())?;
+    crate::atoms::projectio::write_engine_state(
+        &ruyi_path(),
+        &bytes,
+        crate::atoms::projectio::engine_state_witness(),
+    )?;
+    Ok(true)
+}
+
 fn refresh_self_row_from_beam_observation(
     row: Value,
     profile: &crate::Profile,
@@ -330,8 +344,6 @@ fn read_perspective_with_seats(seats: &Seats) -> Result<Value, String> {
     let bytes = match fs::read(ruyi_path()) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let identity = local_identity().ok();
-            crate::interactables::propose_ruyi_perspective_seed(identity.as_ref())?;
             return Ok(empty_perspective());
         }
         Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
@@ -427,19 +439,24 @@ pub(crate) fn register_promoted(
     identity: &LocalIdentity,
     dir: &Path,
 ) -> Result<Value, String> {
-    if matches!(
-        fs::metadata(ruyi_path()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    match persist_seed_if_absent(
+        identity.clone(),
+        profile.clone(),
+        HARMONIA_BUILD_SHA,
+        || {
+            crate::atoms::ask::beam::door_url()
+                .ok()
+                .and_then(|url| crate::atoms::ask::beam::fetch_door(&url).ok())
+        },
     ) {
-        crate::interactables::propose_ruyi_perspective_seed(Some(identity))?;
-        let result = receipt(
-            "pre-declaration",
-            Value::Null,
-            Vec::new(),
-            "ruyi-perspective-absent",
-        );
-        return save_receipt(dir, result);
-    }
+        Ok(_) => {}
+        Err(signal) => {
+            return save_receipt(
+                dir,
+                receipt("pre-declaration", Value::Null, Vec::new(), &signal),
+            );
+        }
+    };
     let Some(port) = port() else {
         return save_receipt(
             dir,
@@ -941,22 +958,41 @@ pub(crate) fn announce() -> Result<Value, String> {
     #[cfg(not(any(test, feature = "test-facade")))]
     let receipt_root = PathBuf::from("/var/lib/harmonia/receipts");
     let dir = receipt_root.join(&run_id);
-    if matches!(
-        fs::metadata(ruyi_path()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound
-    ) {
-        let identity = local_identity().ok();
-        crate::interactables::propose_ruyi_perspective_seed(identity.as_ref())?;
-        let mut result = receipt(
-            "pre-declaration",
-            Value::Null,
-            Vec::new(),
-            "ruyi-perspective-absent",
-        );
-        result["event"] = json!("staff-start");
-        result["staff_start_wait_ms"] = json!(0);
-        return save_receipt(&dir, result);
-    }
+    let seed_absent = match fs::symlink_metadata(ruyi_path()) {
+        Ok(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
+    };
+    let identity = match local_identity() {
+        Ok(identity) => identity,
+        Err(error) => {
+            let mut result = receipt(
+                "pre-declaration",
+                Value::Null,
+                Vec::new(),
+                "ruyi-identity-absent",
+            );
+            result["event"] = json!("staff-start");
+            result["staff_start_wait_ms"] = json!(0);
+            result["detail"] = json!(error);
+            return save_receipt(&dir, result);
+        }
+    };
+    let (profile, _) = match crate::device_profile::resolve_certificate_profile() {
+        Ok(profile) => profile,
+        Err(error) => {
+            let mut result = receipt(
+                "pre-declaration",
+                Value::Null,
+                Vec::new(),
+                "ruyi-profile-absent",
+            );
+            result["event"] = json!("staff-start");
+            result["staff_start_wait_ms"] = json!(0);
+            result["detail"] = json!(error);
+            return save_receipt(&dir, result);
+        }
+    };
     let Some(port) = port() else {
         let mut result = receipt(
             "pre-declaration",
@@ -984,17 +1020,46 @@ pub(crate) fn announce() -> Result<Value, String> {
         Ok(_) => {}
     }
     let (wait_ms, ready) = wait_for_staff();
+    if seed_absent {
+        if !ready {
+            match fs::symlink_metadata(ruyi_path()) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let mut result = receipt(
+                        "pre-declaration",
+                        Value::Null,
+                        Vec::new(),
+                        "ruyi-beam-door-unavailable",
+                    );
+                    result["event"] = json!("staff-start");
+                    result["staff_start_wait_ms"] = json!(wait_ms);
+                    return save_receipt(&dir, result);
+                }
+                Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
+                Ok(_) => {}
+            }
+        } else if let Err(signal) =
+            persist_seed_if_absent(identity, profile.clone(), HARMONIA_BUILD_SHA, || {
+                crate::atoms::ask::beam::door_url()
+                    .ok()
+                    .and_then(|url| crate::atoms::ask::beam::fetch_door(&url).ok())
+            })
+        {
+            let mut result = receipt("pre-declaration", Value::Null, Vec::new(), &signal);
+            result["event"] = json!("staff-start");
+            result["staff_start_wait_ms"] = json!(wait_ms);
+            return save_receipt(&dir, result);
+        }
+    }
     // Exhaustion is an unavailable seat observation, not another load timeout.
     let unavailable = unreachable_seats();
     let seats = if ready { at_start() } else { &unavailable };
-    let (profile, _) = crate::device_profile::resolve_certificate_profile()?;
     let mut prior = read_perspective_with_seats(seats)?;
     let Some(row) = prior.get("self").filter(|row| row.is_object()).cloned() else {
         let mut result = receipt(
             "pre-declaration",
             Value::Null,
             Vec::new(),
-            "ruyi-perspective-absent",
+            "ruyi-self-row-absent",
         );
         result["event"] = json!("staff-start");
         result["staff_start_wait_ms"] = json!(wait_ms);
@@ -1103,6 +1168,70 @@ mod tests {
             "schema-frozen-kernel-missing harmonia.ruyi-register.v1 harmonia.ruyi-register.v1.self"
         );
         assert_eq!(saved["unknown"]["kept"], true);
+    }
+
+    static RUYI_PATH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn first_event_history(gateway_reachable: bool) {
+        let _guard = RUYI_PATH_TEST_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("appliance/ruyi.json");
+        let prior = std::env::var_os("HARMONIA_RUYI_PATH");
+        std::env::set_var("HARMONIA_RUYI_PATH", &path);
+        let identity = LocalIdentity {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            hostname: "arcadia".into(),
+            ipv4: "192.0.2.1".into(),
+            first_missing_signal: None,
+        };
+        let seeded = persist_seed_if_absent(
+            identity,
+            refresh_test_profile(),
+            Some(&"d".repeat(40)),
+            || Some(live_door(Some("1.98.0"))),
+        )
+        .unwrap();
+        assert!(seeded);
+
+        // This is the event's exchange boundary: the durable seed must already
+        // be present before either a successful or unavailable gateway result.
+        let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["schema"], PERSPECTIVE);
+        assert_eq!(persisted["self"]["last_update"]["converged"], false);
+        assert!(persisted["self"]["caduceus_port"].is_number());
+        let result = if gateway_reachable {
+            receipt("registered", persisted["self"].clone(), Vec::new(), "none")
+        } else {
+            receipt(
+                "gateway-unreachable",
+                persisted["self"].clone(),
+                Vec::new(),
+                "ruyi-gateway-unreachable",
+            )
+        };
+        assert_eq!(
+            result["state"],
+            if gateway_reachable {
+                "registered"
+            } else {
+                "gateway-unreachable"
+            }
+        );
+        assert!(path.is_file(), "seed survives gateway outcome");
+        match prior {
+            Some(value) => std::env::set_var("HARMONIA_RUYI_PATH", value),
+            None => std::env::remove_var("HARMONIA_RUYI_PATH"),
+        }
+    }
+
+    #[test]
+    fn first_event_seed_precedes_reachable_gateway_exchange() {
+        first_event_history(true);
+    }
+
+    #[test]
+    fn first_event_seed_survives_unreachable_gateway_exchange() {
+        first_event_history(false);
     }
 
     fn refresh_test_profile() -> crate::Profile {
