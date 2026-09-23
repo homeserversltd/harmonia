@@ -112,6 +112,59 @@ fn invoke(action: &str, args: &[String], invocation: &InvocationKey) -> Result<(
     }
 }
 
+fn forward_cadence_receipt(receipt: &serde_json::Value) {
+    let calendar = receipt
+        .get("calendar")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let source = receipt
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let file = receipt
+        .get("file")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let movement = receipt
+        .get("movement")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    crate::hyalos::forward_receipt(
+        "harmonia.timer.cadence",
+        &format!("calendar={calendar} source={source} file={file} movement={movement}"),
+        Some(receipt.clone()),
+        receipt.get("ok").and_then(serde_json::Value::as_bool),
+        None,
+    );
+}
+
+pub(crate) fn reconcile_update_timer(apply: bool) -> Result<(), String> {
+    let (script, cwd) = installer()?;
+    let mut args = vec![
+        script.to_string_lossy().into_owned(),
+        "converge-timer".to_string(),
+    ];
+    if apply {
+        args.push("--apply".to_string());
+    }
+    let result = crate::atoms::command::command_capture_with_cwd(
+        "python3",
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        Some(cwd.to_string_lossy().as_ref()),
+    );
+    if !result.ok {
+        return Err(format!(
+            "harmonia-timer-cadence-converge-failed: {}",
+            result.stderr
+        ));
+    }
+    let receipt: serde_json::Value = serde_json::from_str(&result.stdout)
+        .map_err(|error| format!("harmonia-timer-cadence-receipt-invalid: {error}"))?;
+    forward_cadence_receipt(&receipt);
+    println!("{}", result.stdout.trim());
+    Ok(())
+}
+
 pub(crate) fn install_timer(args: &[String], invocation: &InvocationKey) -> Result<(), String> {
     invoke("install-timer", args, invocation)
 }

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -19,6 +20,8 @@ DEFAULT_STATE_DIR = Path("/var/lib/harmonia")
 DEFAULT_LOG_DIR = Path("/var/log/harmonia")
 DEFAULT_RECEIPT_DIR = DEFAULT_STATE_DIR / "receipts"
 DEFAULT_SYSTEMD_DIR = Path("/etc/systemd/system")
+DEFAULT_APPLIANCE_CONFIG = Path("/etc/appliance/config.json")
+DEFAULT_UPDATE_CALENDAR = "hourly"
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return build(args)
     if command == "install-timer":
         return install_timer(args)
+    if command == "converge-timer":
+        return converge_timer(args)
     if command == "uninstall-timer":
         return uninstall_timer(args)
     parser.print_help()
@@ -99,6 +104,12 @@ Installation contract:
     add_timer_path_args(timer_install_p)
     timer_install_p.add_argument("--apply", action="store_true", help="Actually write units and enable the timer. Omit for dry-run.")
     timer_install_p.add_argument("--dry-run", action="store_true", help="Compatibility spelling for the default non-mutating plan.")
+    timer_install_p.add_argument("--config", default=os.environ.get("HARMONIA_APPLIANCE_CONFIG", str(DEFAULT_APPLIANCE_CONFIG)))
+
+    timer_converge_p = sub.add_parser("converge-timer", help="Observe or converge Harmonia's own timer file without arming it.")
+    add_timer_path_args(timer_converge_p)
+    timer_converge_p.add_argument("--config", default=os.environ.get("HARMONIA_APPLIANCE_CONFIG", str(DEFAULT_APPLIANCE_CONFIG)))
+    timer_converge_p.add_argument("--apply", action="store_true", help="Converge the timer bytes and reload systemd; never arm it.")
 
     timer_uninstall_p = sub.add_parser("uninstall-timer", help="Disable and remove only harmonia.service/harmonia.timer.")
     add_timer_path_args(timer_uninstall_p)
@@ -121,7 +132,8 @@ def add_common_path_args(parser: argparse.ArgumentParser) -> None:
 
 def add_timer_path_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--systemd-dir", "--systemd-root", dest="systemd_dir", default=str(DEFAULT_SYSTEMD_DIR),
+        "--systemd-dir", "--systemd-root", dest="systemd_dir",
+        default=os.environ.get("HARMONIA_SYSTEMD_ROOT", str(DEFAULT_SYSTEMD_DIR)),
         help=f"Systemd unit directory (default {DEFAULT_SYSTEMD_DIR}; --systemd-root is a compatibility alias).",
     )
 
@@ -176,7 +188,11 @@ def install_timer(args: argparse.Namespace) -> int:
         print("harmonia timer apply requires root for the host systemd directory", file=sys.stderr)
         return 1
     paths = InstallPaths(DEFAULT_BIN, DEFAULT_CONFIG_DIR, DEFAULT_STATE_DIR, DEFAULT_LOG_DIR, DEFAULT_RECEIPT_DIR, root)
-    install_systemd_units(paths)
+    try:
+        install_systemd_units(paths, Path(args.config))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
     if host:
         code = run_checked(["systemctl", "daemon-reload"], cwd=SOURCE_ROOT, allow_missing=True)
         if code != 0:
@@ -281,7 +297,7 @@ def run_checked_as_source_owner(cmd: Sequence[str], cwd: Path) -> int:
     return completed.returncode
 
 
-def install_systemd_units(paths: InstallPaths) -> None:
+def install_systemd_units(paths: InstallPaths, config_path: Path = DEFAULT_APPLIANCE_CONFIG) -> None:
     receipt_latest = f"{paths.receipt_dir}/update-latest"
     run_command = f"{paths.bin_path} update --apply --receipt-dir {receipt_latest}"
     service_name = "harmonia.service"
@@ -298,13 +314,20 @@ ExecStart={run_command}
 Nice=10
 IOSchedulingClass=idle
 """
-    timer = f"""[Unit]
+    cadence, _source = read_update_calendar(config_path)
+    timer = render_timer(cadence, service_name)
+    paths.systemd_dir.mkdir(parents=True, exist_ok=True)
+    (paths.systemd_dir / service_name).write_text(service)
+    (paths.systemd_dir / timer_name).write_text(timer)
+
+
+def render_timer(cadence: str, service_name: str = "harmonia.service") -> str:
+    return f"""[Unit]
 Description=Run Harmonia selected-profile convergence on schedule
 
 [Timer]
 OnBootSec=2min
-OnCalendar=*:0/10
-OnUnitActiveSec=10min
+OnCalendar={cadence}
 AccuracySec=30s
 Persistent=true
 Unit={service_name}
@@ -312,9 +335,64 @@ Unit={service_name}
 [Install]
 WantedBy=timers.target
 """
-    paths.systemd_dir.mkdir(parents=True, exist_ok=True)
-    (paths.systemd_dir / service_name).write_text(service)
-    (paths.systemd_dir / timer_name).write_text(timer)
+
+
+def valid_calendar_shape(value: object) -> bool:
+    if not isinstance(value, str) or not value or value != value.strip() or "\n" in value or "\r" in value:
+        return False
+    if value in {"hourly", "daily", "weekly", "monthly", "quarterly", "yearly", "annually"}:
+        return True
+    fields = value.split()
+    if len(fields) == 1 and re.fullmatch(r"\*:[0-5]?\d(?:/[1-9]\d*)?", fields[0]):
+        return True
+    if len(fields) == 2 and re.fullmatch(r"[A-Za-z0-9*.,~+-]+", fields[0]) and re.fullmatch(r"[0-9*.,~+-]+-[0-9*.,~+-]+-[0-9*.,~+-]+", fields[1]):
+        return False
+    if len(fields) == 2 and re.fullmatch(r"[0-9*.,~+-]+-[0-9*.,~+-]+-[0-9*.,~+-]+", fields[0]) and re.fullmatch(r"[0-9*.,~+-]+:[0-9*.,~+-]+(?::[0-9*.,~+-]+)?", fields[1]):
+        return True
+    if len(fields) == 3 and re.fullmatch(r"[A-Za-z0-9*.,~+-]+", fields[0]) and re.fullmatch(r"[0-9*.,~+-]+-[0-9*.,~+-]+-[0-9*.,~+-]+", fields[1]) and re.fullmatch(r"[0-9*.,~+-]+:[0-9*.,~+-]+(?::[0-9*.,~+-]+)?", fields[2]):
+        return True
+    return False
+
+
+def read_update_calendar(config_path: Path = DEFAULT_APPLIANCE_CONFIG) -> tuple[str, str]:
+    if not config_path.exists():
+        return DEFAULT_UPDATE_CALENDAR, "default"
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"appliance-config-read-failed {config_path}: {error}") from error
+    harmonia = config.get("harmonia", {}) if isinstance(config, dict) else {}
+    if not isinstance(harmonia, dict) or "update_interval" not in harmonia:
+        return DEFAULT_UPDATE_CALENDAR, "default"
+    value = harmonia["update_interval"]
+    if not valid_calendar_shape(value):
+        raise ValueError("invalid-config-key harmonia.update_interval: expected a systemd calendar expression")
+    return value, "declared"
+
+
+def converge_timer(args: argparse.Namespace) -> int:
+    try:
+        cadence, source = read_update_calendar(Path(args.config))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    root = Path(args.systemd_dir)
+    timer_path = root / "harmonia.timer"
+    desired = render_timer(cadence).encode()
+    observed = timer_path.read_bytes() if timer_path.exists() else None
+    moved = observed != desired
+    if moved and args.apply:
+        root.mkdir(parents=True, exist_ok=True)
+        timer_path.write_bytes(desired)
+        if timer_path.read_bytes() != desired:
+            print(f"harmonia-timer-convergence-failed {timer_path}: post-write bytes differ", file=sys.stderr)
+            return 1
+        if root == DEFAULT_SYSTEMD_DIR:
+            code = run_checked(["systemctl", "daemon-reload"], cwd=SOURCE_ROOT, allow_missing=True)
+            if code != 0:
+                return code
+    print(json.dumps({"schema": "harmonia.timer.cadence.v1", "ok": True, "calendar": cadence, "source": source, "file": str(timer_path), "drift": moved, "movement": "written" if moved and args.apply else "none", "daemon_reload": bool(moved and args.apply and root == DEFAULT_SYSTEMD_DIR), "arming": False}, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":

@@ -38,11 +38,11 @@ pub(crate) struct GroupSelection {
 
 const APPLIANCE_CONFIG_PATH: &str = "/etc/appliance/config.json";
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-facade"))]
 pub(crate) const TEST_APPLIANCE_CONFIG_PATH_ENV: &str = "HARMONIA_TEST_APPLIANCE_CONFIG_PATH";
 
 fn appliance_config_path() -> PathBuf {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-facade"))]
     if let Some(path) = std::env::var_os(TEST_APPLIANCE_CONFIG_PATH_ENV) {
         return PathBuf::from(path);
     }
@@ -53,6 +53,112 @@ fn appliance_config_path() -> PathBuf {
 pub(crate) struct DeviceModulePolicy {
     pub(crate) disabled_modules: BTreeSet<String>,
     pub(crate) syzygy_declaration: Option<SyzygyDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeviceUpdateCadence {
+    pub(crate) calendar: String,
+    pub(crate) source: &'static str,
+}
+
+pub(crate) fn read_device_update_cadence() -> Result<DeviceUpdateCadence, String> {
+    read_device_update_cadence_at(&appliance_config_path())
+}
+
+fn read_device_update_cadence_at(path: &Path) -> Result<DeviceUpdateCadence, String> {
+    let Some(config) = read_device_config_at(path)? else {
+        return Ok(DeviceUpdateCadence {
+            calendar: "hourly".into(),
+            source: "default",
+        });
+    };
+    let Some(harmonia) = config.get("harmonia") else {
+        return Ok(DeviceUpdateCadence {
+            calendar: "hourly".into(),
+            source: "default",
+        });
+    };
+    let Some(value) = harmonia.get("update_interval") else {
+        return Ok(DeviceUpdateCadence {
+            calendar: "hourly".into(),
+            source: "default",
+        });
+    };
+    let calendar = value.as_str().ok_or_else(|| {
+        "invalid-config-key harmonia.update_interval: expected a systemd calendar expression"
+            .to_string()
+    })?;
+    let fields: Vec<&str> = calendar.split_whitespace().collect();
+    let shape_ok = matches!(
+        calendar,
+        "hourly" | "daily" | "weekly" | "monthly" | "quarterly" | "yearly" | "annually"
+    ) || valid_minute_interval(calendar)
+        || (fields.len() == 2 && valid_date(fields[0]) && valid_time(fields[1]))
+        || (fields.len() == 3
+            && valid_weekday(fields[0])
+            && valid_date(fields[1])
+            && valid_time(fields[2]));
+    if !shape_ok
+        || calendar.is_empty()
+        || calendar.trim() != calendar
+        || calendar.contains('\n')
+        || calendar.contains('\r')
+    {
+        return Err(
+            "invalid-config-key harmonia.update_interval: expected a systemd calendar expression"
+                .into(),
+        );
+    }
+    Ok(DeviceUpdateCadence {
+        calendar: calendar.to_string(),
+        source: "declared",
+    })
+}
+
+fn valid_atom(value: &str, allow_letters: bool) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_digit()
+                || (allow_letters && character.is_ascii_alphabetic())
+                || matches!(character, '*' | '.' | ',' | '~' | '+' | '-')
+        })
+}
+
+fn valid_minute_interval(value: &str) -> bool {
+    let Some(minutes) = value.strip_prefix("*:") else {
+        return false;
+    };
+    let mut parts = minutes.split('/');
+    let minute = parts.next().unwrap_or_default();
+    let divisor = parts.next();
+    if parts.next().is_some()
+        || minute.is_empty()
+        || minute.len() > 2
+        || !minute.bytes().all(|byte| byte.is_ascii_digit())
+        || minute.parse::<u8>().map_or(true, |number| number > 59)
+    {
+        return false;
+    }
+    divisor.is_none_or(|value| {
+        !value.is_empty()
+            && value.as_bytes()[0].is_ascii_digit()
+            && value.as_bytes()[0] != b'0'
+            && value.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn valid_date(value: &str) -> bool {
+    let fields: Vec<&str> = value.split('-').collect();
+    fields.len() == 3 && fields.iter().all(|field| valid_atom(field, false))
+}
+
+fn valid_time(value: &str) -> bool {
+    let fields: Vec<&str> = value.split(':').collect();
+    (fields.len() == 2 || fields.len() == 3) && fields.iter().all(|field| valid_atom(field, false))
+}
+
+fn valid_weekday(value: &str) -> bool {
+    valid_atom(value, true)
 }
 
 fn read_device_config_at(path: &Path) -> Result<Option<serde_json::Value>, String> {

@@ -448,6 +448,25 @@ fn xenia_command(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn update_apply_requested(args: &[String], invocation: &Invocation) -> bool {
+    if invocation.key().is_none() {
+        return false;
+    }
+    let mut apply = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--apply" if !apply => {
+                apply = true;
+                index += 1;
+            }
+            "--receipt-dir" if index + 1 < args.len() => index += 2,
+            _ => return false,
+        }
+    }
+    apply
+}
+
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("interactable") | Some("config-proposal") => {
@@ -466,7 +485,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .ok_or_else(|| "schedule-invocation-key-missing".to_string())?,
         ),
         Some("renew-self") => renew_self_command(&args[1..], &invocation),
-        Some("update") => update_from_certificate(&args[1..], invocation),
+        Some("update") => {
+            let apply = update_apply_requested(&args, &invocation);
+            schedule::reconcile_update_timer(apply)?;
+            update_from_certificate(&args[1..], invocation)
+        }
         Some("demo") => demo_command(&args[1..], invocation),
         Some("beam") => beam_command(&args[1..]),
         Some("ruyi") => ruyi_command(&args[1..]),
@@ -1251,6 +1274,7 @@ pub(crate) fn toolbelt() -> Result<(), String> {
 }
 
 pub(crate) fn explain() -> Result<(), String> {
+    let cadence = bands::stage_profile::read_device_update_cadence()?;
     println!("schema=harmonia.explain.v1");
     hyalos::forward_receipt(
         "schema=harmonia.explain.v1",
@@ -1260,6 +1284,8 @@ pub(crate) fn explain() -> Result<(), String> {
             "ok": true,
             "version": VERSION,
             "compiled_component": COMPILED_COMPONENT,
+            "update_interval": &cadence.calendar,
+            "update_interval_source": cadence.source,
         })),
         Some(true),
         None,
@@ -1268,6 +1294,8 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("name=harmonia");
     println!("version={}", VERSION);
     println!("compiled_component={}", COMPILED_COMPONENT);
+    println!("update_interval={}", cadence.calendar);
+    println!("update_interval_source={}", cadence.source);
     println!("covenant=Rust update manager and appliance-profile execution engine");
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");
