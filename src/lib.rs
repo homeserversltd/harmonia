@@ -487,7 +487,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("renew-self") => renew_self_command(&args[1..], &invocation),
         Some("update") => {
             let apply = update_apply_requested(&args, &invocation);
-            schedule::reconcile_update_timer(apply)?;
+            schedule::reconcile_update_timer(apply, invocation.key())?;
             update_from_certificate(&args[1..], invocation)
         }
         Some("demo") => demo_command(&args[1..], invocation),
