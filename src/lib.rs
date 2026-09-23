@@ -789,6 +789,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     Ok(format!("{module_id}:{seat}"))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
+            let extension = crate::bands::stage_profile::profile_extends(&module_root)?;
             let plan = crate::atoms::r#do::transaction::derive_plan(&profile, &module_root, None)?;
             let module_is_member = |member: &str, module_id: &str| {
                 plan.member_modules
@@ -829,6 +830,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             println!("profile_id={}", profile.id);
             println!("identity={}", profile.identity);
             println!("module_count={}", profile.modules.len());
+            if let Some(base_id) = extension.as_deref() {
+                println!("extends={base_id}");
+                println!("base_profile_id={base_id}");
+                println!("union_module_count={}", profile.modules.len());
+            }
             println!("modules={}", profile.modules.join(","));
             println!("module_seats={}", module_seats.join(","));
             println!(

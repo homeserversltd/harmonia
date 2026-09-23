@@ -190,6 +190,24 @@ pub(crate) fn capsule_pack_with_invocation(
         .join(profile_id)
         .join("index.json");
     copy_node_artifact(&profile_src, &profile_dst, key)?;
+    let extension = crate::bands::stage_profile::profile_extends(
+        &harmonia_root
+            .join("profiles")
+            .join(profile_id)
+            .join("modules"),
+    )?;
+    if let Some(base_id) = extension {
+        let mut materialized: serde_json::Value = serde_json::from_slice(
+            &fs::read(&profile_dst).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        materialized["modules"] = serde_json::json!(profile.modules);
+        if let Some(object) = materialized.as_object_mut() {
+            object.remove("extends");
+            object.insert("source_extends".to_owned(), serde_json::json!(base_id));
+        }
+        write_manifest_json_atomic(&profile_dst, &materialized, key)?;
+    }
     let mut modules = Vec::new();
     for module_id in &profile.modules {
         let source_modules_root = harmonia_root

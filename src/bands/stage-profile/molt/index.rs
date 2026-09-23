@@ -42,6 +42,12 @@ struct MoltReceipt {
     ok: bool,
     profile_id: String,
     identity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extends: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    union_module_count: Option<usize>,
     harmonia_root: String,
     output_dir: String,
     mode: &'static str,
@@ -117,6 +123,7 @@ pub(crate) fn molt_at_subscription_path_for_modules(
             profile_id, profile.id
         ));
     }
+    let extension = super::profile_extends(&harmonia_root.join("profiles").join(&profile.id).join("modules"))?;
 
     let subscription_modules = profile
         .modules
@@ -161,6 +168,33 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         mode,
         &mut artifacts,
     )?;
+    if mode == MoltMode::Copy && extension.is_some() {
+        let index_path = output_dir.join("index.json");
+        let mut materialized: serde_json::Value = serde_json::from_slice(
+            &fs::read(&index_path).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        materialized["modules"] = serde_json::json!(profile.modules);
+        // Keep source lineage as inert metadata. Runtime profile selection uses
+        // the flattened modules and must not resolve another installed profile.
+        if let Some(object) = materialized.as_object_mut() {
+            object.remove("extends");
+            object.insert("source_extends".to_owned(), serde_json::json!(extension));
+        }
+        let bytes = serde_json::to_vec_pretty(&materialized).map_err(|error| error.to_string())?;
+        crate::tools::comparison::execute(
+            "molt-materialize-profile-union-index",
+            || Ok(fs::read(&index_path).ok().as_deref() == Some(bytes.as_slice())),
+            |same| if *same { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different },
+            |authorization, _| crate::tools::files::file_write(
+                &authorization,
+                &key,
+                &index_path,
+                &bytes,
+                crate::tools::files::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None },
+            ).map(|_| ()),
+        )?;
+    }
 
     for module in &profile.modules {
         let module_root = harmonia_root
@@ -321,6 +355,9 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         ok: true,
         profile_id: profile.id.clone(),
         identity: profile.identity.clone(),
+        extends: extension.clone(),
+        base_profile_id: extension.clone(),
+        union_module_count: extension.as_ref().map(|_| profile.modules.len()),
         harmonia_root: harmonia_root.display().to_string(),
         output_dir: output_dir.display().to_string(),
         mode: mode.as_str(),
@@ -351,6 +388,11 @@ pub(crate) fn molt_at_subscription_path_for_modules(
     println!("ok=true");
     println!("profile_id={}", profile.id);
     println!("identity={}", profile.identity);
+    if let Some(base_id) = extension.as_deref() {
+        println!("extends={base_id}");
+        println!("base_profile_id={base_id}");
+        println!("union_module_count={}", profile.modules.len());
+    }
     println!("artifact_count={}", receipt.artifacts.len());
     println!("refreshed_modules={}", receipt.refreshed_modules.join(","));
     println!("untouched_modules={}", receipt.untouched_modules.join(","));

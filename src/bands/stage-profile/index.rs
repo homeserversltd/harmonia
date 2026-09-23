@@ -56,8 +56,56 @@ pub(crate) fn resolve_module_dir(
     module_root: &Path,
     module_id: &str,
 ) -> Result<std::path::PathBuf, String> {
+    // Installed and capsule trees flatten the selected union into this root;
+    // prefer that staged seat before consulting source-profile ownership.
+    if lawful_module_manifest_exists(&module_root.join(module_id)) {
+        return resolve_module_dir_in_root(module_root, module_id);
+    }
+    // Materialized staged indexes carry source lineage only for receipts. Their
+    // module union is local, so never follow that lineage into a base profile.
+    if let Some(index) = module_root.parent().map(|directory| directory.join("index.json")) {
+        let text = std::fs::read_to_string(&index)
+            .map_err(|error| format!("profile-index-read-failed {}: {error}", index.display()))?;
+        let raw: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|error| format!("profile-index-parse-failed {}: {error}", index.display()))?;
+        if raw.get("source_extends").is_some() {
+            return resolve_module_dir_in_root(module_root, module_id);
+        }
+    }
+    let mut owner_root = None;
+    if let Some(base_id) = profile_extends(module_root)? {
+        let overlay_index = module_root
+            .parent()
+            .map(|directory| directory.join("index.json"))
+            .ok_or("profile-overlay-directory-missing")?;
+        let overlay_text = std::fs::read_to_string(&overlay_index)
+            .map_err(|error| format!("profile-index-read-failed {}: {error}", overlay_index.display()))?;
+        let overlay: serde_json::Value = serde_json::from_str(&overlay_text)
+            .map_err(|error| format!("profile-index-parse-failed {}: {error}", overlay_index.display()))?;
+        let overlay_modules = overlay
+            .get("modules")
+            .and_then(serde_json::Value::as_array);
+        // Every id in the resolved union that is not declared by the selected
+        // index belongs to its one-level base. This also works in a staged
+        // installation where the base index itself is intentionally not copied.
+        if !overlay_modules.is_some_and(|modules| {
+            modules.iter().any(|id| id.as_str() == Some(module_id))
+        }) {
+            let overlay_dir = module_root.parent().ok_or("profile-overlay-directory-missing")?;
+            let profiles_root = overlay_dir.parent().ok_or("profile-extends-root-missing")?;
+            owner_root = Some(profiles_root.join(base_id).join("modules"));
+        }
+    }
+    let selected_root = owner_root.as_deref().unwrap_or(module_root);
+    resolve_module_dir_in_root(selected_root, module_id)
+}
+
+fn resolve_module_dir_in_root(
+    module_root: &Path,
+    module_id: &str,
+) -> Result<std::path::PathBuf, String> {
     let local = module_root.join(module_id);
-    if lawful_module_manifest_exists(&local) {
+    if lawful_module_manifest_exists(&local) || local.join("sidecar.json").is_file() {
         return Ok(local);
     }
     let shared = shared_module_root(module_root).map(|root| root.join(module_id));

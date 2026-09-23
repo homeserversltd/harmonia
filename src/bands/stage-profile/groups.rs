@@ -268,7 +268,7 @@ pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
 
 pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     let text = fs::read_to_string(path)?;
-    let profile: Profile = serde_json::from_str(&text).map_err(|err| {
+    let mut profile: Profile = serde_json::from_str(&text).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("profile-parse-failed {}: {err}", path.display()),
@@ -282,7 +282,82 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
             .backend()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     }
+    let raw: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("profile-parse-failed {}: {err}", path.display()))
+    })?;
+    let base_id = match raw.get("extends") {
+        None | Some(serde_json::Value::Null) => return Ok(profile),
+        Some(value) => value.as_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("profile-extends-invalid overlay={} value={value}", profile.id),
+            )
+        })?,
+    };
+    validate_profile_id(base_id).map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))?;
+    let profiles_root = path.parent().and_then(Path::parent).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-root-missing overlay={}", profile.id))
+    })?;
+    let base_path = profiles_root.join(base_id).join("index.json");
+    let base_text = fs::read_to_string(&base_path).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-read-failed overlay={} base={base_id}: {err}", profile.id))
+    })?;
+    let base_raw: serde_json::Value = serde_json::from_str(&base_text).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-parse-failed overlay={} base={base_id}: {err}", profile.id))
+    })?;
+    if let Some(declared) = base_raw.get("extends").filter(|value| !value.is_null()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "profile-extends-chain-refused overlay={} base={} base_extends={declared}",
+                profile.id, base_id
+            ),
+        ));
+    }
+    let base: Profile = serde_json::from_str(&base_text).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-parse-failed overlay={} base={base_id}: {err}", profile.id))
+    })?;
+    if let Some(package_authority) = base.package_authority.as_ref() {
+        package_authority
+            .backend()
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    }
+    if base.id != base_id {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-id-mismatch overlay={} base={} index={}", profile.id, base_id, base.id)));
+    }
+    if let Some(duplicate) = base.modules.iter().find(|id| profile.modules.contains(id)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-duplicate-module overlay={} base={} module={duplicate}", profile.id, base_id)));
+    }
+    profile.modules.splice(0..0, base.modules);
     Ok(profile)
+}
+
+fn validate_profile_id(profile_id: &str) -> Result<(), String> {
+    if profile_id.trim().is_empty() || profile_id.contains('/') || profile_id.contains('\\') || profile_id == "." || profile_id == ".." {
+        Err(format!("profile-id-invalid id={profile_id}"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Return the declared one-level base for an already selected module root.
+pub(crate) fn profile_extends(module_root: &Path) -> Result<Option<String>, String> {
+    let index = module_root.parent().map(|dir| dir.join("index.json"));
+    let Some(index) = index else { return Ok(None) };
+    let text = match fs::read_to_string(&index) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("profile-index-read-failed {}: {error}", index.display())),
+    };
+    let raw: serde_json::Value = serde_json::from_str(&text).map_err(|err| format!("profile-index-parse-failed {}: {err}", index.display()))?;
+    match raw.get("extends").or_else(|| raw.get("source_extends")) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => {
+            let id = value.as_str().ok_or_else(|| format!("profile-extends-invalid overlay={} value={value}", raw.get("id").and_then(serde_json::Value::as_str).unwrap_or("<unknown>")))?;
+            validate_profile_id(id)?;
+            Ok(Some(id.to_owned()))
+        }
+    }
 }
 
 pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {
@@ -470,6 +545,83 @@ fn write_group_selection_receipt(
             "losers": selection.losers,
         }),
     )
+}
+
+#[cfg(test)]
+mod extends_profile_tests {
+    use super::{load_profile, profile_extends};
+    use std::fs;
+
+    #[test]
+    fn one_level_extension_unions_base_first_and_resolves_each_local_seat() {
+        let root = tempfile::tempdir().unwrap();
+        let profiles = root.path().join("profiles");
+        let base = profiles.join("public");
+        let overlay = profiles.join("private");
+        fs::create_dir_all(base.join("modules/base-only")).unwrap();
+        fs::create_dir_all(overlay.join("modules/overlay-only")).unwrap();
+        fs::write(base.join("modules/base-only/sidecar.json"), r#"{"id":"base-only"}"#).unwrap();
+        fs::write(overlay.join("modules/overlay-only/sidecar.json"), r#"{"id":"overlay-only"}"#).unwrap();
+        fs::write(base.join("index.json"), r#"{"id":"public","identity":"public-device","modules":["base-only"]}"#).unwrap();
+        fs::write(overlay.join("index.json"), r#"{"id":"private","identity":"private-device","extends":"public","modules":["overlay-only"]}"#).unwrap();
+
+        let profile = load_profile(&overlay.join("index.json")).unwrap();
+        assert_eq!(profile.id, "private");
+        assert_eq!(profile.identity, "private-device");
+        assert_eq!(profile.modules, ["base-only", "overlay-only"]);
+        let module_root = overlay.join("modules");
+        assert_eq!(profile_extends(&module_root).unwrap().as_deref(), Some("public"));
+        assert_eq!(super::super::resolve_module_dir(&module_root, "base-only").unwrap(), base.join("modules/base-only"));
+        assert_eq!(super::super::resolve_module_dir(&module_root, "overlay-only").unwrap(), overlay.join("modules/overlay-only"));
+    }
+
+    #[test]
+    fn staged_union_resolves_base_module_without_installed_base_profile_index() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("profiles/overlay");
+        for id in ["base-only", "overlay-only"] {
+            let module = selected.join("modules").join(id);
+            std::fs::create_dir_all(&module).unwrap();
+            std::fs::write(module.join("manifest.json"), "{}\n").unwrap();
+        }
+        std::fs::write(
+            selected.join("index.json"),
+            r#"{"id":"overlay","identity":"overlay-device","source_extends":"base","modules":["overlay-only","base-only"]}"#,
+        )
+        .unwrap();
+        assert!(!root.path().join("profiles/base/index.json").exists());
+        assert_eq!(
+            super::profile_extends(&selected.join("modules")).unwrap().as_deref(),
+            Some("base")
+        );
+        assert_eq!(
+            super::super::resolve_module_dir(&selected.join("modules"), "base-only").unwrap(),
+            selected.join("modules/base-only")
+        );
+    }
+
+    #[test]
+    fn extension_refuses_chains_and_duplicate_ids_with_both_profile_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let profiles = root.path().join("profiles");
+        for (id, content) in [
+            ("root", r#"{"id":"root","identity":"root","modules":["same"]}"#),
+            ("chained", r#"{"id":"chained","identity":"chained","extends":"root","modules":[]}"#),
+            ("duplicate", r#"{"id":"duplicate","identity":"duplicate","extends":"root","modules":["same"]}"#),
+            ("chain-overlay", r#"{"id":"chain-overlay","identity":"overlay","extends":"chained","modules":[]}"#),
+        ] {
+            let dir = profiles.join(id);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("index.json"), content).unwrap();
+        }
+        let duplicate = load_profile(&profiles.join("duplicate/index.json")).unwrap_err().to_string();
+        assert!(duplicate.contains("overlay=duplicate base=root module=same"));
+        let chained = load_profile(&profiles.join("chain-overlay/index.json"))
+            .unwrap_err()
+            .to_string();
+        assert!(chained.contains("profile-extends-chain-refused"));
+        assert!(chained.contains("overlay=chain-overlay base=chained"));
+    }
 }
 
 #[cfg(test)]

@@ -206,6 +206,11 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps(
             "steps": module_steps.map_or_else(|| serde_json::Value::Null, |steps| json!(steps)),
         });
     receipt["config_surfaces"] = json!(collect_config_surfaces(receipt_dir));
+    if let Some(base_id) = crate::bands::stage_profile::profile_extends(module_root)? {
+        receipt["extends"] = json!(base_id);
+        receipt["base_profile_id"] = json!(base_id);
+        receipt["union_module_count"] = json!(profile.modules.len());
+    }
     write_json(&receipt_dir.join("run.json"), &receipt)
 }
 
@@ -372,6 +377,20 @@ pub(crate) fn write_plan_receipts(
     module_root: &Path,
     receipt_dir: &Path,
 ) -> io::Result<()> {
+    let extension = crate::bands::stage_profile::profile_extends(module_root)
+        .map_err(io::Error::other)?;
+    let projection = if extension.is_some() {
+        Some(
+            crate::bands::stage_profile::load_profile_projection(
+                profile,
+                module_root,
+                &std::collections::BTreeSet::new(),
+            )
+            .map_err(io::Error::other)?,
+        )
+    } else {
+        None
+    };
     let mut events = Vec::new();
     let mut ok = true;
     let mut first_missing_signal = "none".to_string();
@@ -395,25 +414,47 @@ pub(crate) fn write_plan_receipts(
         let planned = if crate::atoms::ask::exists(&manifest_path)
             && is_ladder_manifest(&manifest_path)
         {
-            load_ladder_manifest(&manifest_path).and_then(|manifest| {
+            let projected_manifest = projection
+                .as_ref()
+                .and_then(|projection| projection.modules.get(module))
+                .and_then(|projected| match &projected.loaded {
+                    crate::bands::stage_profile::LoadedModule::Ladder(manifest) => {
+                        Some(manifest.clone())
+                    }
+                    crate::bands::stage_profile::LoadedModule::Sidecar(_) => None,
+                });
+            let loaded = if let Some(manifest) = projected_manifest {
+                Ok(manifest)
+            } else {
+                load_ladder_manifest(&manifest_path)
+            };
+            loaded.and_then(|manifest| {
                 if manifest.id != *module {
                     return Err(format!(
                         "module-id-mismatch expected={module} got={}",
                         manifest.id
                     ));
                 }
+                // Projection replaces package pins on every module after its
+                // initial validation. Revalidate that effective declaration for
+                // plan-run instead of reusing the pre-projection step cache.
                 let steps = validate_ladder(&manifest).map_err(|err| err.first_missing_signal())?;
                 for step in steps {
-                    crate::atoms::attest::append_jsonl_to(
-                        &mut events,
-                        &json!({
-                            "event":"step-planned", "module":module,
-                            "step_id":step.step_id, "tool":step.tool,
-                            "permutation":step.permutation, "args":step.args,
-                            "ok":true, "mutation":false
-                        }),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    let mut planned = json!({
+                        "event":"step-planned", "module":module,
+                        "step_id":step.step_id, "tool":step.tool,
+                        "permutation":step.permutation, "args":step.args,
+                        "ok":true, "mutation":false
+                    });
+                    if extension.is_some() && step.tool == "package" {
+                        let pins = serde_json::to_value(&manifest.package_pins)
+                            .map_err(|error| error.to_string())?;
+                        let exclusion_set: Vec<&String> = manifest.package_pins.keys().collect();
+                        planned["package_pins"] = pins;
+                        planned["exclusion_set"] = json!(exclusion_set);
+                    }
+                    crate::atoms::attest::append_jsonl_to(&mut events, &planned)
+                        .map_err(|error| error.to_string())?;
                 }
                 Ok(())
             })
@@ -443,9 +484,7 @@ pub(crate) fn write_plan_receipts(
     }
     crate::atoms::attest::write_receipt_bytes_atomic(&receipt_dir.join("events.jsonl"), &events)
         .map_err(io::Error::other)?;
-    crate::atoms::attest::write_json_atomic(
-        &receipt_dir.join("run.json"),
-        &json!({
+    let mut run = json!({
             "schema": "harmonia.run.v1",
             "ok": ok,
             "mutation": false,
@@ -454,9 +493,14 @@ pub(crate) fn write_plan_receipts(
             "identity_source": run_identity_source(),
             "module_count": profile.modules.len(),
             "first_missing_signal": first_missing_signal,
-        }),
-    )
-    .map_err(io::Error::other)?;
+        });
+    if let Some(base_id) = crate::bands::stage_profile::profile_extends(module_root).map_err(io::Error::other)? {
+        run["extends"] = json!(base_id);
+        run["base_profile_id"] = json!(base_id);
+        run["union_module_count"] = json!(profile.modules.len());
+    }
+    crate::atoms::attest::write_json_atomic(&receipt_dir.join("run.json"), &run)
+        .map_err(io::Error::other)?;
     Ok(())
 }
 
