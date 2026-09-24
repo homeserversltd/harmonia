@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -165,10 +166,23 @@ pub(crate) fn make_feed(interactables: Vec<Interactable>) -> InteractablesFeed {
 }
 
 pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
+    let mut feed = load_feed_raw(path)?;
+    feed.interactables
+        .retain(|item| item.kind != "engine-replacement");
+    Ok(feed)
+}
+
+pub(crate) fn load_feed_raw(path: &Path) -> Result<InteractablesFeed, String> {
     let observed_text = crate::atoms::ask::optional_text(path)?;
     match observed_text {
         Some(text) => {
-            let feed: InteractablesFeed = serde_json::from_str(&text).map_err(|error| {
+            let raw: Value = serde_json::from_str(&text).map_err(|error| {
+                format!(
+                    "interactables-feed-parse-failed {}: {error}",
+                    path.display()
+                )
+            })?;
+            let feed: InteractablesFeed = serde_json::from_value(raw.clone()).map_err(|error| {
                 format!(
                     "interactables-feed-parse-failed {}: {error}",
                     path.display()
@@ -181,8 +195,17 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
                 ));
             }
             if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start().feed {
-                let raw = serde_json::to_value(&feed).map_err(|error| error.to_string())?;
-                seat.validate_compatible(&raw, &[LEGACY_FEED_SCHEMA])?;
+                let mut compatible = raw;
+                if let Some(rows) = compatible
+                    .get_mut("interactables")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    rows.retain(|row| {
+                        row.get("kind").and_then(serde_json::Value::as_str)
+                            != Some("engine-replacement")
+                    });
+                }
+                seat.validate_compatible(&compatible, &[LEGACY_FEED_SCHEMA])?;
             }
             Ok(InteractablesFeed {
                 schema: FEED_SCHEMA.to_string(),
@@ -343,7 +366,6 @@ fn interactable_run(
         .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
     let item = feed.interactables[position].clone();
     match item.kind.as_str() {
-        "engine-replacement" => return run_engine_replacement(&path, &item, invocation),
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
         "toolchain-ratchet" => return run_toolchain_ratchet(&path, &mut feed, position, &item),
         "dns-record" => return run_dns_record(&path, &mut feed, position, &item, invocation),
@@ -959,203 +981,6 @@ fn run_toolchain_ratchet(
     Ok(())
 }
 
-pub(crate) fn propose_engine_replacement(
-    from_sha: Option<&str>,
-    to_sha: &str,
-    staged: &Path,
-    installed: &Path,
-    lane: &str,
-    resolved_sha: &str,
-    proof_signal: Option<&str>,
-) -> Result<(), String> {
-    let path = feed_path();
-    let mut feed = load_feed(&path)?;
-    let prior = feed
-        .interactables
-        .iter()
-        .find(|item| {
-            item.kind == "engine-replacement"
-                && item
-                    .evidence
-                    .get("to_sha")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(to_sha)
-        })
-        .cloned();
-    let id = prior
-        .as_ref()
-        .map(|item| item.id.clone())
-        .unwrap_or_else(|| format!("engine-replacement-{to_sha}"));
-    let now = now_seconds().to_string();
-    let mut evidence = prior
-        .as_ref()
-        .and_then(|item| item.evidence.as_object().cloned())
-        .unwrap_or_default();
-    evidence.remove("argv");
-    for (key, value) in serde_json::json!({
-        "from_sha": from_sha,
-        "to_sha": to_sha,
-        "staged_sha": to_sha,
-        "installed_sha": from_sha,
-        "staged_path": staged,
-        "install_path": installed,
-        "lane": lane,
-        "resolved_source_sha": resolved_sha,
-        "resolved_tag": resolved_sha,
-        "proof_battery": {"ok": true, "signal": proof_signal},
-        "bless": "authority",
-        "nudge": "evidence",
-    })
-    .as_object()
-    .expect("engine replacement evidence is an object")
-    {
-        evidence.insert(key.clone(), value.clone());
-    }
-    let evidence = serde_json::Value::Object(evidence);
-    let prior_silence = prior
-        .as_ref()
-        .map(|item| (item.silenced, item.silenced_at.clone()))
-        .unwrap_or((false, None));
-    let item = Interactable {
-        id: id.clone(),
-        module_id: "harmonia".into(),
-        name: "Bless the staged Harmonia engine".into(),
-        description: "Review the proved successor, then atomically replace Harmonia.".into(),
-        kind: "engine-replacement".into(),
-        target_path: Some(staged.to_path_buf()),
-        reference_source_path: Some(installed.to_path_buf()),
-        drift: DriftSummary {
-            content: true,
-            mode: false,
-            ownership: false,
-        },
-        created_at: prior
-            .as_ref()
-            .map(|item| item.created_at.clone())
-            .unwrap_or_else(|| now.clone()),
-        refreshed_at: now.clone(),
-        available_at: Some(now),
-        silenced: prior_silence.0,
-        silenced_at: prior_silence.1,
-        has_run: false,
-        mode: None,
-        owner: None,
-        group: None,
-        source_sha: Some(resolved_sha.into()),
-        target_sha: Some(to_sha.into()),
-        commits_behind: None,
-        live_sha: from_sha.map(str::to_owned),
-        reference_sha: Some(to_sha.into()),
-        recognition_score: None,
-        diff: Some(serde_json::to_string(&evidence).map_err(|error| error.to_string())?),
-        script: format!("harmonia interactable run {id}"),
-        show_only_if: String::new(),
-        completion_check: format!("sha256 {}", to_sha),
-        evidence,
-        extra: prior.map(|item| item.extra).unwrap_or_default(),
-    };
-    let remove_ids = feed
-        .interactables
-        .iter()
-        .filter(|item| item.kind == "engine-replacement" && item.id != id)
-        .map(|item| item.id.clone())
-        .collect();
-    crate::bands::propose_edits::persist_feed_with_intent(
-        &path,
-        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
-            entries: vec![item],
-            remove_ids,
-            sort_by_id: true,
-        },
-    )?;
-    Ok(())
-}
-
-fn run_engine_replacement(
-    path: &Path,
-    item: &Interactable,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<(), String> {
-    let evidence = &item.evidence;
-    let staged = evidence
-        .get("staged_path")
-        .and_then(serde_json::Value::as_str)
-        .map(PathBuf::from)
-        .ok_or_else(|| "engine-replacement-staged-path-missing".to_string())?;
-    let installed = evidence
-        .get("install_path")
-        .and_then(serde_json::Value::as_str)
-        .map(PathBuf::from)
-        .ok_or_else(|| "engine-replacement-install-path-missing".to_string())?;
-    if staged != crate::bands::renew_self::staged_bin()
-        || installed != crate::bands::renew_self::engine_install_bin()
-    {
-        return Err("engine-replacement-fixed-seat-mismatch".into());
-    }
-    let expected_from = evidence.get("from_sha").and_then(serde_json::Value::as_str);
-    let expected_to = evidence
-        .get("to_sha")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "engine-replacement-to-sha-missing".to_string())?;
-    let current = crate::bands::renew_self::install_bin_fingerprint(&installed);
-    if current.as_deref() != expected_from {
-        return Err(format!(
-            "engine-replacement-current-digest-mismatch expected={} observed={}",
-            expected_from.unwrap_or("absent"),
-            current.as_deref().unwrap_or("absent")
-        ));
-    }
-    let staged_sha = crate::bands::renew_self::install_bin_fingerprint(&staged)
-        .ok_or_else(|| "engine-replacement-staged-missing".to_string())?;
-    if staged_sha != expected_to {
-        return Err(format!(
-            "engine-replacement-staged-digest-mismatch expected={expected_to} observed={staged_sha}"
-        ));
-    }
-    let invocation =
-        invocation.ok_or_else(|| "engine-replacement-invocation-missing".to_string())?;
-    let receipt_dir = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("engine-replacements")
-        .join(&item.id);
-    let promotion = crate::bands::renew_self::promote_staged_binary(
-        &staged,
-        &installed,
-        true,
-        Some(invocation),
-        &receipt_dir,
-    )?;
-    if !promotion.ok {
-        return Err("engine-replacement-promotion-failed".into());
-    }
-    let installed_after = crate::bands::renew_self::install_bin_fingerprint(&installed)
-        .ok_or_else(|| "engine-replacement-installed-digest-missing".to_string())?;
-    if installed_after != expected_to {
-        return Err("engine-replacement-installed-digest-mismatch".into());
-    }
-    let receipt = serde_json::json!({
-        "schema": "harmonia.engine-replacement.receipt.v1",
-        "ok": true,
-        "id": item.id,
-        "kind": "engine-replacement",
-        "from_sha": expected_from,
-        "to_sha": expected_to,
-        "staged_sha": staged_sha,
-        "installed_sha": installed_after,
-        "promotion": promotion.stdout,
-        "reexec": "not-applicable",
-    });
-    crate::bands::propose_edits::persist_feed_with_intent(
-        path,
-        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
-            ids: [item.id.clone()].into_iter().collect(),
-            receipts: vec![receipt.clone()],
-        },
-    )?;
-    Ok(())
-}
-
 fn configured_unbound_target() -> PathBuf {
     #[cfg(any(test, feature = "test-facade"))]
     if let Some(root) = env::var_os("HARMONIA_INTERACTABLE_CONFIG_ROOT") {
@@ -1548,126 +1373,6 @@ mod tests {
             None => env::remove_var("HARMONIA_INTERACTABLES_PATH"),
         }
         result
-    }
-
-    #[test]
-    fn engine_replacement_refreshes_one_entry_and_promotes_and_removes_it_without_reexec() {
-        let root = fixture("engine-replacement");
-        let feed_path = root.join("interactables.json");
-        let staged = root.join("staged/harmonia");
-        let installed = root.join("installed/harmonia");
-        fs::create_dir_all(staged.parent().unwrap()).unwrap();
-        fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        fs::write(&staged, b"staged-engine").unwrap();
-        fs::write(&installed, b"old-engine").unwrap();
-        let prior_stage = env::var_os("HARMONIA_TEST_ENGINE_STAGED_BIN");
-        let prior_install = env::var_os("HARMONIA_TEST_ENGINE_INSTALL_BIN");
-        let prior_guard = env::var_os("HARMONIA_SELF_UPDATE_REEXEC");
-        env::set_var("HARMONIA_TEST_ENGINE_STAGED_BIN", &staged);
-        env::set_var("HARMONIA_TEST_ENGINE_INSTALL_BIN", &installed);
-        env::set_var("HARMONIA_SELF_UPDATE_REEXEC", "1");
-        with_interactables_path(&feed_path, || {
-            crate::bands::propose_edits::persist_feed(
-                &feed_path,
-                &make_feed(vec![sentinel_interactable()]),
-            )
-            .unwrap();
-            let from_sha = crate::bands::renew_self::install_bin_fingerprint(&installed).unwrap();
-            let to_sha = crate::bands::renew_self::install_bin_fingerprint(&staged).unwrap();
-            propose_engine_replacement(
-                Some(&from_sha),
-                &to_sha,
-                &staged,
-                &installed,
-                "artifact",
-                &"a".repeat(40),
-                None,
-            )
-            .unwrap();
-            propose_engine_replacement(
-                Some(&from_sha),
-                &to_sha,
-                &staged,
-                &installed,
-                "artifact",
-                &"a".repeat(40),
-                None,
-            )
-            .unwrap();
-            let mut prior_feed = load_feed(&feed_path).unwrap();
-            let prior = prior_feed
-                .interactables
-                .iter_mut()
-                .find(|item| item.kind == "engine-replacement")
-                .unwrap();
-            prior.evidence["prior_unknown"] = serde_json::json!({"keep": true});
-            prior.evidence["argv"] = serde_json::json!(["legacy", "argv"]);
-            prior
-                .extra
-                .insert("top_extra".into(), serde_json::json!("keep-top"));
-            prior.silenced = true;
-            prior.silenced_at = Some("silenced-at".into());
-            crate::bands::propose_edits::persist_feed(&feed_path, &prior_feed).unwrap();
-            propose_engine_replacement(
-                Some(&from_sha),
-                &to_sha,
-                &staged,
-                &installed,
-                "artifact",
-                &"a".repeat(40),
-                None,
-            )
-            .unwrap();
-            let refreshed = load_feed(&feed_path)
-                .unwrap()
-                .interactables
-                .into_iter()
-                .find(|item| item.kind == "engine-replacement")
-                .unwrap();
-            assert_eq!(refreshed.evidence["prior_unknown"]["keep"], true);
-            assert_eq!(refreshed.extra["top_extra"], "keep-top");
-            assert!(refreshed.silenced);
-            assert_eq!(refreshed.silenced_at.as_deref(), Some("silenced-at"));
-            assert!(refreshed.evidence.get("top_extra").is_none());
-            assert!(refreshed.evidence.get("argv").is_none());
-            assert_eq!(
-                refreshed.description,
-                "Review the proved successor, then atomically replace Harmonia."
-            );
-            let id = refreshed.id.clone();
-            interactable_command(
-                &["run".into(), id.clone()],
-                Some(&crate::atoms::r#do::InvocationKey::for_apply()),
-            )
-            .unwrap();
-            assert_eq!(fs::read(&installed).unwrap(), b"staged-engine");
-            let final_feed = load_feed(&feed_path).unwrap();
-            assert!(final_feed
-                .interactables
-                .iter()
-                .all(|item| item.kind != "engine-replacement"));
-            assert_eq!(final_feed.receipts.len(), 1);
-            assert_eq!(final_feed.receipts[0]["reexec"], "not-applicable");
-            assert!(final_feed.receipts[0].get("argv").is_none());
-            assert!(!root
-                .join("engine-replacements")
-                .join(&id)
-                .join("replace-process.json")
-                .exists());
-        });
-        match prior_stage {
-            Some(value) => env::set_var("HARMONIA_TEST_ENGINE_STAGED_BIN", value),
-            None => env::remove_var("HARMONIA_TEST_ENGINE_STAGED_BIN"),
-        }
-        match prior_install {
-            Some(value) => env::set_var("HARMONIA_TEST_ENGINE_INSTALL_BIN", value),
-            None => env::remove_var("HARMONIA_TEST_ENGINE_INSTALL_BIN"),
-        }
-        match prior_guard {
-            Some(value) => env::set_var("HARMONIA_SELF_UPDATE_REEXEC", value),
-            None => env::remove_var("HARMONIA_SELF_UPDATE_REEXEC"),
-        }
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

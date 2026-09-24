@@ -31,11 +31,12 @@ pub(crate) fn is_stale_staged_validation_failure(execution: &ModuleExecution) ->
 
 use crate::*;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
 
 pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
@@ -185,10 +186,15 @@ pub(crate) fn install_bin_fingerprint(path: &Path) -> Option<String> {
 }
 
 fn running_binary_fingerprint() -> Option<String> {
-    let running_path = fs::read_link("/proc/self/exe")
-        .ok()
-        .or_else(|| env::current_exe().ok())?;
-    install_bin_fingerprint(&running_path)
+    #[cfg(test)]
+    if let Ok(fingerprint) = env::var("HARMONIA_TEST_ENGINE_RUNNING_SHA") {
+        return Some(fingerprint);
+    }
+    let proc_exe = Path::new("/proc/self/exe");
+    if fs::metadata(proc_exe).is_ok() {
+        return install_bin_fingerprint(proc_exe);
+    }
+    install_bin_fingerprint(&env::current_exe().ok()?)
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -279,9 +285,25 @@ fn mark_reexec_failure(preflight_dir: &Path, signal: &str) -> Result<(), String>
     )
     .map_err(|error| format!("engine-reexec-receipt-parse-failed: {error}"))?;
     receipt["ok"] = json!(false);
+    receipt["changed"] = json!(false);
+    receipt["installed_sha256"] = json!(install_bin_fingerprint(&engine_install_bin()));
     receipt["stage"] = json!(signal);
     receipt["first_missing_signal"] = json!(signal);
+    if signal.contains("replace-process-rollback-failed") {
+        receipt["old_engine_preserved"] = json!(false);
+    }
     write_json(&path, &receipt)
+}
+
+fn read_install_preimage(path: &Path) -> Result<(Option<Vec<u8>>, Option<u32>), String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((None, None)),
+        Err(error) => return Err(format!("engine-install-preimage-metadata-failed: {error}")),
+    };
+    let bytes =
+        fs::read(path).map_err(|error| format!("engine-install-preimage-read-failed: {error}"))?;
+    Ok((Some(bytes), Some(metadata.permissions().mode())))
 }
 
 fn stage_signal(stage: &str) -> String {
@@ -359,6 +381,23 @@ pub(crate) fn engine_install_bin() -> PathBuf {
         return PathBuf::from(path);
     }
     PathBuf::from(ENGINE_INSTALL_BIN)
+}
+
+fn rollback_process_plan(
+    installed: &Path,
+    receipt_path: &Path,
+    bytes: Option<Vec<u8>>,
+    mode: Option<u32>,
+) -> crate::atoms::r#do::replace_process::Plan {
+    crate::atoms::r#do::replace_process::Plan {
+        successor: installed.to_path_buf(),
+        argv: Vec::new(),
+        guard_name: SELF_UPDATE_REEXEC_ENV.into(),
+        guard_value: "1".into(),
+        receipt_path: receipt_path.to_path_buf(),
+        rollback_bytes: bytes,
+        rollback_mode: mode,
+    }
 }
 
 pub(crate) fn staged_bin() -> PathBuf {
@@ -445,6 +484,13 @@ fn emit_preflight_receipt(
     staged_build_identity: Option<&BuildEnvironmentIdentity>,
     reexec: Option<&SelfUpdateReexec>,
 ) -> Result<(), String> {
+    let previous_preservation = fs::read_to_string(preflight_dir.join("run.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|receipt| receipt.get("old_engine_preserved").and_then(Value::as_bool))
+        .unwrap_or(true);
+    let rollback_failed = first_missing_signal.contains("engine-rollback-failed")
+        || first_missing_signal.contains("replace-process-rollback-failed");
     write_json(
         &preflight_dir.join("run.json"),
         &json!({
@@ -472,8 +518,8 @@ fn emit_preflight_receipt(
             "resolved_tag": null,
             "blocked_target": null,
             "nudge": "evidence",
-            "bless": "authority",
-            "old_engine_preserved": true,
+            "bless": "the-apply-press",
+            "old_engine_preserved": previous_preservation && !rollback_failed,
         }),
     )
 }
@@ -483,7 +529,6 @@ fn update_engine_preflight_contract(
     lane: Option<&str>,
     resolved_tag: Option<&str>,
     blocked_target: Option<&str>,
-    waiting_for_bless: bool,
 ) -> Result<(), String> {
     let path = preflight_dir.join("run.json");
     let mut receipt: Value = serde_json::from_str(
@@ -496,15 +541,8 @@ fn update_engine_preflight_contract(
     receipt["resolved_tag"] = resolved_tag.map_or(Value::Null, |value| json!(value));
     receipt["blocked_target"] = blocked_target.map_or(Value::Null, |value| json!(value));
     receipt["nudge"] = json!("evidence");
-    receipt["bless"] = json!("authority");
-    receipt["old_engine_preserved"] = json!(true);
+    receipt["bless"] = json!("the-apply-press");
     receipt["failure_mode"] = json!("honest-staleness");
-    if waiting_for_bless {
-        receipt["ok"] = json!(false);
-        receipt["changed"] = json!(false);
-        receipt["stage"] = json!("waiting-for-bless");
-        receipt["first_missing_signal"] = json!("engine-waiting-for-bless");
-    }
     write_json(&path, &receipt)
 }
 
@@ -641,8 +679,36 @@ fn forward_preflight_receipt(
             json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "attest_owner": "hyalos.forward_receipt"}),
         ),
         Some(ok),
-            None,
-);
+        None,
+    );
+}
+
+fn rollback_after_install(
+    plan: &crate::atoms::r#do::replace_process::Plan,
+    preflight_dir: &Path,
+    signal: &str,
+) -> String {
+    let rollback = crate::atoms::r#do::replace_process::rollback_installed(plan);
+    let preserved = rollback.is_ok();
+    let mut reported = match rollback {
+        Ok(()) => signal.to_string(),
+        Err(error) => format!("{signal}; engine-rollback-failed: {error}"),
+    };
+    if let Err(error) = mark_reexec_failure(preflight_dir, &reported) {
+        reported = format!("{reported}; engine-red-receipt-failed: {error}");
+    }
+    if !preserved {
+        let path = preflight_dir.join("run.json");
+        if let Ok(mut receipt) = fs::read_to_string(&path)
+            .and_then(|text| serde_json::from_str::<Value>(&text).map_err(std::io::Error::other))
+        {
+            receipt["old_engine_preserved"] = json!(false);
+            if let Err(error) = write_json(&path, &receipt) {
+                reported = format!("{reported}; engine-rollback-red-receipt-failed: {error}");
+            }
+        }
+    }
+    reported
 }
 
 pub(crate) fn run_engine_preflight(
@@ -680,7 +746,7 @@ pub(crate) fn run_engine_preflight(
                 None,
                 None,
             )?;
-            update_engine_preflight_contract(&preflight_dir, None, None, Some(&signal), false)?;
+            update_engine_preflight_contract(&preflight_dir, None, None, Some(&signal))?;
             return Ok(failed_execution(&signal));
         }
     };
@@ -869,7 +935,6 @@ pub(crate) fn run_engine_preflight(
                 lane.as_deref(),
                 None,
                 blocked_target.as_deref(),
-                false,
             )?;
             return Ok(failed_execution(&first_missing_signal));
         };
@@ -917,43 +982,279 @@ pub(crate) fn run_engine_preflight(
         operation_count += 1;
     }
 
+    post_stage_preflight(
+        module_root,
+        &preflight_dir,
+        &install_bin,
+        &staged,
+        install_before,
+        component,
+        engine_component_ignored,
+        source_head.clone(),
+        apply,
+        invocation,
+        lane,
+        resolved_sha,
+        blocked_target,
+        operation_count,
+        changed,
+        first_missing_signal,
+        staged_sha,
+        staged_build_identity,
+        |plan, invocation| crate::atoms::r#do::replace_process::replace(plan, invocation),
+    )
+}
+
+fn post_stage_preflight(
+    module_root: &Path,
+    preflight_dir: &Path,
+    install_bin: &Path,
+    staged: &Path,
+    install_before: Option<String>,
+    component: String,
+    engine_component_ignored: Option<String>,
+    source_head: Option<String>,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    lane: Option<String>,
+    resolved_sha: Option<&str>,
+    blocked_target: Option<String>,
+    mut operation_count: usize,
+    mut changed: bool,
+    mut first_missing_signal: String,
+    mut staged_sha: Option<String>,
+    staged_build_identity: Option<BuildEnvironmentIdentity>,
+    mut exec: impl FnMut(
+        &crate::atoms::r#do::replace_process::Plan,
+        &crate::atoms::r#do::InvocationKey,
+    ) -> Result<(), String>,
+) -> Result<ModuleExecution, String> {
     let mut promote = CmdResult {
         ok: true,
         code: 0,
         stdout: "promotion skipped before successful proof".into(),
         stderr: String::new(),
     };
-    if first_missing_signal == "none" && apply && staged_sha.is_some() {
-        let proof =
-            crate::check_health::proof_battery(&crate::check_health::ProofBatteryRequest {
-                receipt_dir: &preflight_dir,
-                staged: &staged,
-                module_root,
-                profile_index: &profile_index_from(module_root),
-                apply,
-            })?;
-        operation_count += proof.2;
-        if !proof.0 {
-            first_missing_signal = proof
-                .1
-                .unwrap_or_else(|| "engine-proof-battery-failed".to_string());
-        } else if staged_sha.as_deref() != install_before.as_deref() {
-            crate::interactables::propose_engine_replacement(
-                install_before.as_deref(),
-                staged_sha.as_deref().unwrap_or_default(),
-                &staged,
-                &install_bin,
-                lane.as_deref().unwrap_or("source"),
-                resolved_sha.unwrap_or_default(),
-                proof.1.as_deref(),
-            )?;
-            first_missing_signal = "engine-waiting-for-bless".into();
-            changed = false;
+    let mut reexec = None;
+    if first_missing_signal == "none" && apply {
+        let staged_digest = match staged_sha.as_deref() {
+            Some(digest) => Some(digest.to_string()),
+            None => match sha256_file(&staged) {
+                Ok(digest) => {
+                    staged_sha = Some(digest.clone());
+                    Some(digest)
+                }
+                Err(error) => {
+                    first_missing_signal = format!("engine-staged-digest-failed: {error}");
+                    None
+                }
+            },
+        };
+        if let Some(staged_digest) = staged_digest {
+            let proof =
+                crate::check_health::proof_battery(&crate::check_health::ProofBatteryRequest {
+                    receipt_dir: &preflight_dir,
+                    staged: &staged,
+                    module_root,
+                    profile_index: &profile_index_from(module_root),
+                    apply,
+                })?;
+            operation_count += proof.2;
+            if !proof.0 {
+                first_missing_signal = proof
+                    .1
+                    .unwrap_or_else(|| "engine-proof-battery-failed".to_string());
+            } else {
+                let (rollback_bytes, rollback_mode) = match read_install_preimage(&install_bin) {
+                    Ok(preimage) => preimage,
+                    Err(error) => {
+                        first_missing_signal = error;
+                        (None, None)
+                    }
+                };
+                if first_missing_signal == "none"
+                    && self_update_reexec_guard_active()
+                    && install_before.as_deref() != Some(staged_digest.as_str())
+                {
+                    first_missing_signal = "engine-reexec-guard-installed-digest-mismatch".into();
+                }
+                if first_missing_signal == "none" {
+                    let rollback_plan = rollback_process_plan(
+                        &install_bin,
+                        &preflight_dir.join("replace-process.json"),
+                        rollback_bytes.clone(),
+                        rollback_mode,
+                    );
+                    let mut rollback_done = false;
+                    promote = match promote_staged_binary(
+                        &staged,
+                        &install_bin,
+                        true,
+                        invocation,
+                        &preflight_dir,
+                    ) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            rollback_done = true;
+                            first_missing_signal = rollback_after_install(
+                                &rollback_plan,
+                                &preflight_dir,
+                                &format!("engine-promotion-failed: {error}"),
+                            );
+                            CmdResult {
+                                ok: false,
+                                code: -1,
+                                stdout: String::new(),
+                                stderr: error,
+                            }
+                        }
+                    };
+                    operation_count += 1;
+                    if !promote.ok {
+                        if !rollback_done {
+                            first_missing_signal = rollback_after_install(
+                                &rollback_plan,
+                                &preflight_dir,
+                                &format!("engine-promotion-failed: {}", promote.stderr),
+                            );
+                        }
+                        changed = false;
+                    } else {
+                        let installed_digest = install_bin_fingerprint(&install_bin);
+                        if installed_digest.as_deref() != Some(staged_digest.as_str()) {
+                            first_missing_signal = rollback_after_install(
+                                &rollback_plan,
+                                &preflight_dir,
+                                "engine-installed-digest-mismatch",
+                            );
+                            changed = false;
+                        } else {
+                            let changed_now =
+                                install_before.as_deref() != installed_digest.as_deref();
+                            changed |= changed_now;
+                            let running_digest = running_binary_fingerprint();
+                            let guard_active = self_update_reexec_guard_active();
+                            if guard_active
+                                && running_digest.as_deref() != installed_digest.as_deref()
+                            {
+                                first_missing_signal =
+                                    "engine-reexec-guard-running-digest-mismatch".into();
+                            } else if running_digest.is_none() {
+                                first_missing_signal = rollback_after_install(
+                                    &rollback_plan,
+                                    &preflight_dir,
+                                    SELF_UPDATE_REEXEC_RUNNING_FINGERPRINT_MISSING,
+                                );
+                            } else if should_self_update_reexec(
+                                changed_now
+                                    || running_digest.as_deref() != installed_digest.as_deref(),
+                                running_digest.clone(),
+                                installed_digest.clone(),
+                            ) {
+                                let from_sha = running_digest.unwrap_or_default();
+                                let to_sha = installed_digest.clone().unwrap_or_default();
+                                let proof = self_update_reexec_receipt(
+                                    true,
+                                    Some(from_sha.clone()),
+                                    Some(to_sha.clone()),
+                                );
+                                reexec = proof;
+                                if let Err(error) = write_command_receipt(
+                                    &preflight_dir,
+                                    "promote-successor",
+                                    &promote,
+                                ) {
+                                    first_missing_signal = rollback_after_install(
+                                        &rollback_plan,
+                                        &preflight_dir,
+                                        &format!("engine-promote-receipt-failed: {error}"),
+                                    );
+                                    reexec = None;
+                                } else if let Err(error) = emit_preflight_receipt(
+                                    &preflight_dir,
+                                    &component,
+                                    engine_component_ignored.as_deref(),
+                                    source_head.as_deref(),
+                                    Some(&staged_digest),
+                                    Some(&to_sha),
+                                    true,
+                                    apply,
+                                    true,
+                                    "none",
+                                    operation_count,
+                                    staged_build_identity.as_ref(),
+                                    reexec.as_ref(),
+                                ) {
+                                    first_missing_signal = rollback_after_install(
+                                        &rollback_plan,
+                                        &preflight_dir,
+                                        &format!("engine-preflight-receipt-failed: {error}"),
+                                    );
+                                    reexec = None;
+                                } else if let Err(error) = update_engine_preflight_contract(
+                                    &preflight_dir,
+                                    lane.as_deref(),
+                                    resolved_sha,
+                                    blocked_target.as_deref(),
+                                ) {
+                                    first_missing_signal = rollback_after_install(
+                                        &rollback_plan,
+                                        &preflight_dir,
+                                        &format!("engine-preflight-contract-failed: {error}"),
+                                    );
+                                    reexec = None;
+                                } else if let Some(invocation) = invocation {
+                                    let mut plan = rollback_process_plan(
+                                        &install_bin,
+                                        &preflight_dir.join("replace-process.json"),
+                                        rollback_bytes,
+                                        rollback_mode,
+                                    );
+                                    plan.argv = env::args().skip(1).collect();
+                                    match exec(&plan, invocation) {
+                                        Ok(()) => {
+                                            // A returning success means the successor owns the next
+                                            // run receipt; never finalize this pre-exec snapshot.
+                                            return Ok(ModuleExecution {
+                                                ok: true,
+                                                changed: true,
+                                                operation_count,
+                                                first_missing_signal: None,
+                                                placements: Vec::new(),
+                                            });
+                                        }
+                                        Err(error) => {
+                                            changed = false;
+                                            first_missing_signal =
+                                                format!("engine-reexec-failed: {error}");
+                                            if let Err(receipt_error) = mark_reexec_failure(
+                                                &preflight_dir,
+                                                &first_missing_signal,
+                                            ) {
+                                                first_missing_signal = format!(
+                                                    "{first_missing_signal}; engine-reexec-red-receipt-failed: {receipt_error}"
+                                                );
+                                            }
+                                            reexec = None;
+                                        }
+                                    }
+                                } else {
+                                    first_missing_signal = rollback_after_install(
+                                        &rollback_plan,
+                                        &preflight_dir,
+                                        "engine-reexec-invocation-missing",
+                                    );
+                                    reexec = None;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
     let installed_after = install_bin_fingerprint(&install_bin);
-    let reexec = None;
     let ok = first_missing_signal == "none";
     emit_preflight_receipt(
         &preflight_dir,
@@ -975,7 +1276,6 @@ pub(crate) fn run_engine_preflight(
         lane.as_deref(),
         resolved_sha,
         blocked_target.as_deref(),
-        first_missing_signal == "engine-waiting-for-bless",
     )?;
     forward_preflight_receipt(
         ok,
@@ -997,17 +1297,18 @@ pub(crate) fn run_engine_preflight(
 #[cfg(test)]
 mod release_transport_tests {
     use super::{
-        build_environment_for_source_head, build_environment_sha, capture_build_environment,
-        emit_preflight_receipt, engine_source_gate, engine_source_gate_for_component,
-        engine_source_gate_for_component_at, ignored_engine_component,
-        ignored_engine_component_receipt_line, install_bin_fingerprint, promote_staged_binary,
-        promotion_changed, release_identity_from_candidate, self_update_reexec_guard_active,
-        self_update_reexec_receipt, should_self_update_reexec, should_self_update_reexec_for_guard,
-        source_fallback_plan, update_engine_preflight_contract, SELF_UPDATE_REEXEC_ENV,
+        SELF_UPDATE_REEXEC_ENV, build_environment_for_source_head, build_environment_sha,
+        capture_build_environment, emit_preflight_receipt, engine_source_gate,
+        engine_source_gate_for_component, engine_source_gate_for_component_at,
+        ignored_engine_component, ignored_engine_component_receipt_line, install_bin_fingerprint,
+        promote_staged_binary, promotion_changed, release_identity_from_candidate,
+        rollback_process_plan, self_update_reexec_guard_active, self_update_reexec_receipt,
+        should_self_update_reexec, should_self_update_reexec_for_guard, source_fallback_plan,
+        update_engine_preflight_contract,
     };
     use serde_json::json;
     use std::sync::{Mutex, OnceLock};
-    use tempfile::{tempdir, NamedTempFile};
+    use tempfile::{NamedTempFile, tempdir};
 
     static REEXEC_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -1028,6 +1329,114 @@ mod release_transport_tests {
                 None => std::env::remove_var(SELF_UPDATE_REEXEC_ENV),
             }
         }
+    }
+
+    #[test]
+    fn running_fingerprint_reads_deleted_proc_executable_magic_link() {
+        const CHILD_MARKER: &str = "HARMONIA_TEST_DELETED_EXE_CHILD";
+        const EXPECTED_SHA: &str = "HARMONIA_TEST_DELETED_EXE_SHA";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            std::env::remove_var("HARMONIA_TEST_ENGINE_RUNNING_SHA");
+            let executable = std::env::current_exe().unwrap();
+            let expected = std::env::var(EXPECTED_SHA).unwrap();
+            std::fs::remove_file(&executable).unwrap();
+            let target = std::fs::read_link("/proc/self/exe").unwrap();
+            assert!(
+                target.to_string_lossy().ends_with(" (deleted)"),
+                "{target:?}"
+            );
+            assert!(!executable.exists());
+            assert_eq!(
+                super::running_binary_fingerprint().as_deref(),
+                Some(expected.as_str())
+            );
+            return;
+        }
+
+        let root = tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let expected = install_bin_fingerprint(&executable).unwrap();
+        let copied_executable = root.path().join("deleted-executable-test");
+        std::fs::copy(&executable, &copied_executable).unwrap();
+        let test_name = std::thread::current().name().unwrap().to_string();
+        let output = std::process::Command::new(&copied_executable)
+            .args(["--exact", &test_name, "--nocapture"])
+            .env(CHILD_MARKER, "1")
+            .env(EXPECTED_SHA, expected)
+            .env_remove("HARMONIA_TEST_ENGINE_RUNNING_SHA")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child test failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn preimage_requires_metadata_and_retains_executable_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let path = root.path().join("engine");
+        std::fs::write(&path, b"old engine").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
+        let (bytes, mode) = super::read_install_preimage(&path).unwrap();
+        assert_eq!(bytes.as_deref(), Some(&b"old engine"[..]));
+        assert_eq!(mode.map(|mode| mode & 0o7777), Some(0o751));
+        let missing = super::read_install_preimage(&root.path().join("absent")).unwrap();
+        assert_eq!(missing, (None, None));
+    }
+
+    #[test]
+    fn failed_rollback_marks_old_engine_not_preserved() {
+        let root = tempdir().unwrap();
+        let preflight = root.path().join("preflight");
+        std::fs::create_dir_all(&preflight).unwrap();
+        super::write_json(
+            &preflight.join("run.json"),
+            &serde_json::json!({"old_engine_preserved": true}),
+        )
+        .unwrap();
+        let plan = rollback_process_plan(
+            &root.path().join("missing-parent/engine"),
+            &preflight.join("replace-process.json"),
+            Some(b"old engine".to_vec()),
+            Some(0o755),
+        );
+        let signal = super::rollback_after_install(&plan, &preflight, "engine-test-failure");
+        assert!(signal.contains("engine-rollback-failed"));
+        super::emit_preflight_receipt(
+            &preflight, "harmonia", None, None, None, None, false, true, false, &signal, 1, None,
+            None,
+        )
+        .unwrap();
+        super::update_engine_preflight_contract(&preflight, None, None, None).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preflight.join("run.json")).unwrap()).unwrap();
+        assert_eq!(receipt["old_engine_preserved"], false, "signal={signal}");
+        assert_eq!(receipt["ok"], false);
+    }
+
+    #[test]
+    fn rollback_failure_signal_marks_engine_unpreserved_without_prior_receipt() {
+        let root = tempdir().unwrap();
+        let preflight = root.path().join("preflight");
+        std::fs::create_dir_all(&preflight).unwrap();
+        let signal = "engine-promotion-failed; engine-rollback-failed: restore refused";
+        emit_preflight_receipt(
+            &preflight, "harmonia", None, None, None, None, false, true, false, signal, 1, None,
+            None,
+        )
+        .unwrap();
+        update_engine_preflight_contract(&preflight, None, None, None).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preflight.join("run.json")).unwrap()).unwrap();
+        assert_eq!(receipt["old_engine_preserved"], false);
+        assert_eq!(receipt["first_missing_signal"], signal);
+        assert_eq!(receipt["ok"], false);
     }
 
     #[test]
@@ -1071,10 +1480,12 @@ mod release_transport_tests {
                 "HOMESERVERSLTD/harmonia".to_string()
             )
         );
-        assert!(release_identity_from_candidate(
-            "https://git.home.arpa/HOMESERVERSLTD/harmonia/extra.git"
-        )
-        .is_err());
+        assert!(
+            release_identity_from_candidate(
+                "https://git.home.arpa/HOMESERVERSLTD/harmonia/extra.git"
+            )
+            .is_err()
+        );
         assert_eq!(
             release_identity_from_candidate("https://github.com/HOMESERVERSLTD/harmonia.git")
                 .unwrap_err(),
@@ -1083,30 +1494,29 @@ mod release_transport_tests {
     }
 
     #[test]
-    fn preflight_receipt_records_artifact_ratchet_lane_and_authority_fields() {
+    fn preflight_receipt_records_lane_and_never_waits_for_bless() {
         let root = tempdir().unwrap();
         let preflight = root.path().join("engine-preflight");
         std::fs::create_dir_all(&preflight).unwrap();
         let source = "a".repeat(40);
         let staged = "b".repeat(64);
-        let installed = "c".repeat(64);
         emit_preflight_receipt(
             &preflight,
             "harmonia",
             None,
             Some(&source),
             Some(&staged),
-            Some(&installed),
-            false,
+            Some(&staged),
             true,
-            false,
-            "engine-waiting-for-bless",
+            true,
+            true,
+            "none",
             3,
             None,
             None,
         )
         .unwrap();
-        update_engine_preflight_contract(&preflight, Some("artifact"), Some(&source), None, true)
+        update_engine_preflight_contract(&preflight, Some("artifact"), Some(&source), None)
             .unwrap();
         let receipt: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(preflight.join("run.json")).unwrap())
@@ -1114,9 +1524,9 @@ mod release_transport_tests {
         assert_eq!(receipt["artifact_ratchet"], "version+sha-lock");
         assert_eq!(receipt["engine_lane"], "artifact");
         assert_eq!(receipt["nudge"], "evidence");
-        assert_eq!(receipt["bless"], "authority");
-        assert_eq!(receipt["old_engine_preserved"], true);
-        assert_eq!(receipt["stage"], "waiting-for-bless");
+        assert_eq!(receipt["bless"], "the-apply-press");
+        assert_eq!(receipt["stage"], "complete");
+        assert!(receipt.get("waiting_for_bless").is_none());
     }
 
     #[test]
@@ -1354,6 +1764,12 @@ mod release_transport_tests {
             false,
         ));
         assert!(!should_self_update_reexec_for_guard(
+            false,
+            Some("current-generation"),
+            Some("current-generation"),
+            true,
+        ));
+        assert!(!should_self_update_reexec_for_guard(
             true,
             Some("old-generation"),
             Some("new-generation"),
@@ -1394,6 +1810,387 @@ mod release_transport_tests {
         ));
         assert!(
             self_update_reexec_receipt(true, Some("old".into()), Some("new".into()),).is_none()
+        );
+    }
+
+    #[test]
+    fn proof_passing_successor_runs_real_post_stage_branch_and_receipts_before_exec() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env_lock = REEXEC_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = tempdir().unwrap();
+        let installed = root.path().join("installed/harmonia");
+        let staged = root.path().join("staged/harmonia");
+        let module_root = root.path().join("profile/modules");
+        let profile_index = root.path().join("profile/index.json");
+        let preflight = root.path().join("engine-preflight");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(module_root.join("sample")).unwrap();
+        std::fs::create_dir_all(&preflight).unwrap();
+        std::fs::write(&installed, b"old installed engine").unwrap();
+        std::fs::write(&staged, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(module_root.join("sample/manifest.json"), b"{}\n").unwrap();
+        std::fs::write(&profile_index, b"{}\n").unwrap();
+        let installed_before = install_bin_fingerprint(&installed).unwrap();
+        let from_sha = super::running_binary_fingerprint().unwrap();
+        let to_sha = install_bin_fingerprint(&staged).unwrap();
+        assert_ne!(from_sha, to_sha);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+
+        let execution = super::post_stage_preflight(
+            &module_root,
+            &preflight,
+            &installed,
+            &staged,
+            Some(installed_before),
+            "harmonia".into(),
+            None,
+            None,
+            true,
+            Some(&invocation),
+            Some("source".into()),
+            None,
+            None,
+            1,
+            false,
+            "none".into(),
+            Some(to_sha.clone()),
+            None,
+            |plan, _| {
+                let receipt: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(preflight.join("run.json")).unwrap())
+                        .unwrap();
+                assert_eq!(receipt["ok"], true);
+                assert_eq!(receipt["installed_sha256"], to_sha);
+                assert_eq!(receipt["reexec"]["from_sha"], from_sha);
+                assert_eq!(receipt["reexec"]["to_sha"], to_sha);
+                assert_eq!(plan.successor, installed);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(execution.ok, "{:?}", execution.first_missing_signal);
+        assert_eq!(
+            install_bin_fingerprint(&installed).as_deref(),
+            Some(to_sha.as_str())
+        );
+    }
+
+    #[test]
+    fn installed_candidate_equal_but_running_old_still_reexecs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env_lock = REEXEC_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = tempdir().unwrap();
+        let installed = root.path().join("installed/harmonia");
+        let staged = root.path().join("staged/harmonia");
+        let module_root = root.path().join("profile/modules");
+        let preflight = root.path().join("engine-preflight");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(module_root.join("sample")).unwrap();
+        std::fs::create_dir_all(&preflight).unwrap();
+        std::fs::write(&staged, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::copy(&staged, &installed).unwrap();
+        std::fs::write(module_root.join("sample/manifest.json"), b"{}\n").unwrap();
+        std::fs::write(root.path().join("profile/index.json"), b"{}\n").unwrap();
+        let digest = install_bin_fingerprint(&installed).unwrap();
+        let running = super::running_binary_fingerprint().unwrap();
+        assert_ne!(running, digest);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let execution = super::post_stage_preflight(
+            &module_root,
+            &preflight,
+            &installed,
+            &staged,
+            Some(digest.clone()),
+            "harmonia".into(),
+            None,
+            None,
+            true,
+            Some(&invocation),
+            Some("source".into()),
+            None,
+            None,
+            1,
+            false,
+            "none".into(),
+            Some(digest.clone()),
+            None,
+            |plan, _| {
+                let receipt: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(preflight.join("run.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(receipt["ok"], true);
+                assert_eq!(receipt["reexec"]["from_sha"], running);
+                assert_eq!(receipt["reexec"]["to_sha"], digest);
+                assert_eq!(plan.successor, installed);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(execution.ok, "{:?}", execution.first_missing_signal);
+    }
+
+    #[test]
+    fn guarded_stale_running_digest_fails_closed_without_second_exec() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env_lock = REEXEC_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env_guard = ReexecEnvGuard::activate();
+        let root = tempdir().unwrap();
+        let installed = root.path().join("installed/harmonia");
+        let staged = root.path().join("staged/harmonia");
+        let module_root = root.path().join("profile/modules");
+        let preflight = root.path().join("engine-preflight");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(module_root.join("sample")).unwrap();
+        std::fs::create_dir_all(&preflight).unwrap();
+        std::fs::write(&staged, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::copy(&staged, &installed).unwrap();
+        std::fs::write(module_root.join("sample/manifest.json"), b"{}\n").unwrap();
+        std::fs::write(root.path().join("profile/index.json"), b"{}\n").unwrap();
+        let digest = install_bin_fingerprint(&installed).unwrap();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+
+        let execution = super::post_stage_preflight(
+            &module_root,
+            &preflight,
+            &installed,
+            &staged,
+            Some(digest.clone()),
+            "harmonia".into(),
+            None,
+            None,
+            true,
+            Some(&invocation),
+            Some("source".into()),
+            None,
+            None,
+            1,
+            false,
+            "none".into(),
+            Some(digest.clone()),
+            None,
+            |_, _| panic!("guarded stale engine must not attempt a second exec"),
+        )
+        .unwrap();
+        assert!(!execution.ok);
+        assert_eq!(
+            execution.first_missing_signal.as_deref(),
+            Some("engine-reexec-guard-running-digest-mismatch")
+        );
+        assert_eq!(install_bin_fingerprint(&installed).as_deref(), Some(digest.as_str()));
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preflight.join("run.json")).unwrap()).unwrap();
+        assert_eq!(receipt["old_engine_preserved"], true);
+        assert_eq!(receipt["first_missing_signal"], "engine-reexec-guard-running-digest-mismatch");
+    }
+
+    #[test]
+    fn guarded_current_engine_proceeds_without_unnecessary_exec() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env_lock = REEXEC_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env_guard = ReexecEnvGuard::activate();
+        let root = tempdir().unwrap();
+        let installed = root.path().join("installed/harmonia");
+        let staged = root.path().join("staged/harmonia");
+        let module_root = root.path().join("profile/modules");
+        let preflight = root.path().join("engine-preflight");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(module_root.join("sample")).unwrap();
+        std::fs::create_dir_all(&preflight).unwrap();
+        std::fs::write(&staged, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&installed, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(module_root.join("sample/manifest.json"), b"{}\n").unwrap();
+        std::fs::write(root.path().join("profile/index.json"), b"{}\n").unwrap();
+        let digest = install_bin_fingerprint(&installed).unwrap();
+        std::env::set_var("HARMONIA_TEST_ENGINE_RUNNING_SHA", &digest);
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+
+        let execution = super::post_stage_preflight(
+            &module_root,
+            &preflight,
+            &installed,
+            &staged,
+            Some(digest.clone()),
+            "harmonia".into(),
+            None,
+            None,
+            true,
+            Some(&invocation),
+            Some("source".into()),
+            None,
+            None,
+            1,
+            false,
+            "none".into(),
+            Some(digest.clone()),
+            None,
+            |_, _| panic!("matching guarded engine must not re-exec"),
+        )
+        .unwrap();
+        std::env::remove_var("HARMONIA_TEST_ENGINE_RUNNING_SHA");
+        assert!(execution.ok, "{:?}", execution.first_missing_signal);
+        assert_eq!(install_bin_fingerprint(&installed).as_deref(), Some(digest.as_str()));
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preflight.join("run.json")).unwrap()).unwrap();
+        assert_eq!(receipt["ok"], true);
+        assert_eq!(receipt["old_engine_preserved"], true);
+        assert_eq!(receipt["reexec"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn failed_successor_proof_runs_real_post_stage_branch_and_keeps_installed_preimage() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let installed = root.path().join("installed/harmonia");
+        let staged = root.path().join("staged/harmonia");
+        let module_root = root.path().join("profile/modules-empty");
+        let profile_index = root.path().join("profile/index.json");
+        let preflight = root.path().join("engine-preflight");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&module_root).unwrap();
+        std::fs::create_dir_all(&preflight).unwrap();
+        std::fs::write(&installed, b"installed old engine").unwrap();
+        std::fs::write(&staged, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&profile_index, b"{}\n").unwrap();
+        let installed_sha = install_bin_fingerprint(&installed).unwrap();
+        let staged_sha = install_bin_fingerprint(&staged).unwrap();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+
+        let execution = super::post_stage_preflight(
+            &module_root,
+            &preflight,
+            &installed,
+            &staged,
+            Some(installed_sha.clone()),
+            "harmonia".into(),
+            None,
+            None,
+            true,
+            Some(&invocation),
+            Some("source".into()),
+            None,
+            None,
+            1,
+            false,
+            "none".into(),
+            Some(staged_sha.clone()),
+            None,
+            |_plan, _invocation| panic!("proof failure must never attempt process replacement"),
+        )
+        .unwrap();
+        assert!(!execution.ok);
+        assert_eq!(
+            execution.first_missing_signal.as_deref(),
+            Some("engine-proof-validate-ladder-failed")
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preflight.join("run.json")).unwrap()).unwrap();
+        assert_eq!(receipt["ok"], false);
+        assert_eq!(receipt["stage"], "engine-proof-validate-ladder-failed");
+        assert_eq!(receipt["installed_sha256"], installed_sha);
+        assert_eq!(receipt["staged_sha256"], staged_sha);
+        assert_eq!(std::fs::read(installed).unwrap(), b"installed old engine");
+    }
+
+    #[test]
+    fn reexec_rollback_failure_remains_red_and_marks_old_engine_not_preserved() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env_lock = REEXEC_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = tempdir().unwrap();
+        let installed = root.path().join("installed/harmonia");
+        let staged = root.path().join("staged/harmonia");
+        let module_root = root.path().join("profile/modules");
+        let profile_index = root.path().join("profile/index.json");
+        let preflight = root.path().join("engine-preflight");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(module_root.join("sample")).unwrap();
+        std::fs::create_dir_all(&preflight).unwrap();
+        std::fs::write(&installed, b"old installed engine").unwrap();
+        std::fs::write(&staged, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(module_root.join("sample/manifest.json"), b"{}\n").unwrap();
+        std::fs::write(&profile_index, b"{}\n").unwrap();
+        let staged_sha = install_bin_fingerprint(&staged).unwrap();
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+
+        let execution = super::post_stage_preflight(
+            &module_root,
+            &preflight,
+            &installed,
+            &staged,
+            None,
+            "harmonia".into(),
+            None,
+            None,
+            true,
+            Some(&invocation),
+            Some("source".into()),
+            None,
+            None,
+            1,
+            false,
+            "none".into(),
+            Some(staged_sha),
+            None,
+            |_, _| {
+                std::fs::remove_file(&installed).unwrap();
+                std::fs::create_dir(&installed).unwrap();
+                std::fs::write(installed.join("blocks-restore"), b"not empty").unwrap();
+                Err("replace-process-rollback-failed: fixture restore refusal".into())
+            },
+        )
+        .unwrap();
+        assert!(!execution.ok);
+        assert!(
+            execution
+                .first_missing_signal
+                .as_deref()
+                .unwrap()
+                .contains("replace-process-rollback-failed")
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preflight.join("run.json")).unwrap()).unwrap();
+        assert_eq!(receipt["ok"], false);
+        assert_eq!(receipt["old_engine_preserved"], false);
+        assert_eq!(receipt["reexec"], serde_json::Value::Null);
+        assert!(
+            receipt["stage"]
+                .as_str()
+                .unwrap()
+                .contains("replace-process-rollback-failed")
         );
     }
 

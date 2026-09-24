@@ -90,7 +90,8 @@ fn compose_feed(
             remove_ids,
             sort_by_id,
         } => {
-            feed.interactables.retain(|item| !remove_ids.contains(&item.id));
+            feed.interactables
+                .retain(|item| !remove_ids.contains(&item.id));
             for entry in entries {
                 if let Some(current) = feed
                     .interactables
@@ -99,7 +100,10 @@ fn compose_feed(
                 {
                     let mut replacement = entry.clone();
                     for (key, value) in &current.extra {
-                        replacement.extra.entry(key.clone()).or_insert(value.clone());
+                        replacement
+                            .extra
+                            .entry(key.clone())
+                            .or_insert(value.clone());
                     }
                     *current = replacement;
                 } else {
@@ -195,19 +199,21 @@ pub(crate) fn prune_stale_interactables_at_path(
     profile: &Profile,
     events: &mut File,
 ) -> Result<(), String> {
-    let mut feed = interactables::load_feed(path)?;
+    let mut feed = interactables::load_feed_raw(path)?;
     let active_modules = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
     let mut removed = Vec::new();
     let mut removed_ids = BTreeSet::new();
 
     for entry in feed.interactables.drain(..) {
-        // The engine plane owns its own bless; no profile module claims it,
-        // so module absence never prunes a staged engine replacement.
-        let engine_plane = entry.kind == "engine-replacement";
-        let reason = if !engine_plane && !active_modules.contains(&entry.module_id) {
+        let reason = if entry.kind == "engine-replacement" {
+            Some("retired-kind")
+        } else if !active_modules.contains(&entry.module_id) {
             Some("module-absent-from-profile")
         } else if !matches!(entry.kind.as_str(), "ruyi-bump" | "dns-record")
-            && !entry.reference_source_path.as_deref().is_some_and(Path::is_file)
+            && !entry
+                .reference_source_path
+                .as_deref()
+                .is_some_and(Path::is_file)
         {
             Some("reference-absent")
         } else {
@@ -325,7 +331,8 @@ fn refresh_interactables_at_path_with_policy(
                 .filter(|e| e.target_path.as_deref() == Some(entry.target.as_path()))
                 .map(|e| e.id.clone()),
         );
-        feed.interactables.retain(|e| e.target_path.as_deref() != Some(entry.target.as_path()));
+        feed.interactables
+            .retain(|e| e.target_path.as_deref() != Some(entry.target.as_path()));
         let recognized = interactables::recognize_against_known_goods(
             &live_bytes,
             &[interactables::RecognitionCandidate {
@@ -536,7 +543,12 @@ pub(crate) fn execute_manifest_band(
                 );
                 result.first_missing_signal.get_or_insert(signal);
                 if manifest.isolation.as_deref() == Some("per-step") {
-                    crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::ProposeEdits);
+                    crate::bands::halt_step(
+                        halted_steps,
+                        &manifest.id,
+                        &step.step_id,
+                        crate::bands::Band::ProposeEdits,
+                    );
                     continue;
                 }
                 break;
@@ -600,7 +612,12 @@ pub(crate) fn execute_manifest_band(
                 format!("step_id={} defect={}", step.step_id, outcome.message)
             });
             if manifest.isolation.as_deref() == Some("per-step") {
-                crate::bands::halt_step(halted_steps, &manifest.id, &step.step_id, crate::bands::Band::ProposeEdits);
+                crate::bands::halt_step(
+                    halted_steps,
+                    &manifest.id,
+                    &step.step_id,
+                    crate::bands::Band::ProposeEdits,
+                );
             }
             if step.on_failure == crate::tools::ladder::OnFailure::Stop
                 && manifest.isolation.as_deref() != Some("per-step")
@@ -702,8 +719,8 @@ pub(crate) fn execute_manifest_modules(
                         .or(part.first_missing_signal);
                     *ok = false;
                     if !per_step_isolation {
-                halted.insert(module_id.clone());
-            }
+                        halted.insert(module_id.clone());
+                    }
                     if *first_missing_signal == "none" {
                         *first_missing_signal = state
                             .first_missing_signal
@@ -725,8 +742,8 @@ pub(crate) fn execute_manifest_modules(
                 state.ok = false;
                 state.first_missing_signal.get_or_insert(err.clone());
                 if !per_step_isolation {
-                halted.insert(module_id.clone());
-            }
+                    halted.insert(module_id.clone());
+                }
                 *ok = false;
                 if *first_missing_signal == "none" {
                     *first_missing_signal = err.clone();
@@ -898,7 +915,7 @@ mod refresh_interactables_tests {
     }
 
     #[test]
-    fn prune_stale_interactables_keeps_live_rows_and_receipts_ghosts() {
+    fn prune_stale_interactables_hides_and_removes_retired_engine_rows_only() {
         let root = std::env::temp_dir().join(format!(
             "harmonia-prune-interactables-{}",
             std::process::id()
@@ -973,6 +990,16 @@ mod refresh_interactables_tests {
             },
         ];
         persist_feed(&feed_path, &interactables::make_feed(entries)).unwrap();
+        let visible_before_prune = interactables::load_feed(&feed_path).unwrap();
+        assert!(visible_before_prune
+            .interactables
+            .iter()
+            .all(|item| item.kind != "engine-replacement"));
+        assert!(interactables::load_feed_raw(&feed_path)
+            .unwrap()
+            .interactables
+            .iter()
+            .any(|item| item.kind == "engine-replacement"));
         let mut events = File::create(&events_path).unwrap();
         let profile = Profile {
             id: "fixture-profile".into(),
@@ -992,8 +1019,11 @@ mod refresh_interactables_tests {
 
         let retained = interactables::load_feed(&feed_path).unwrap().interactables;
         assert_eq!(
-            retained.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
-            vec!["live-entry", "survivor-entry", "engine-replacement-entry"]
+            retained
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["live-entry", "survivor-entry"]
         );
         assert_eq!(fs::read(&backup).unwrap(), b"preserve me\n");
 
@@ -1026,13 +1056,18 @@ mod refresh_interactables_tests {
                     "target_path": shared_target,
                     "reason": "module-absent-from-profile",
                 }),
+                serde_json::json!({
+                    "schema": "harmonia.interactables.prune.v1",
+                    "id": "engine-replacement-entry",
+                    "module_id": "harmonia",
+                    "target_path": root.join("staged-engine"),
+                    "reason": "retired-kind",
+                }),
             ]
         );
-        assert!(receipts.iter().all(|receipt| {
-            receipt
-                .as_object()
-                .is_some_and(|fields| fields.len() == 5)
-        }));
+        assert!(receipts
+            .iter()
+            .all(|receipt| { receipt.as_object().is_some_and(|fields| fields.len() == 5) }));
         println!(
             "prune_receipt={}",
             serde_json::to_string(&receipts[0]).unwrap()

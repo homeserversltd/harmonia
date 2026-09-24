@@ -12,6 +12,8 @@ pub(crate) struct Plan {
     pub guard_name: String,
     pub guard_value: String,
     pub receipt_path: PathBuf,
+    pub rollback_bytes: Option<Vec<u8>>,
+    pub rollback_mode: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Receipt {
@@ -115,11 +117,111 @@ pub(crate) fn compatibility_exec(
 pub(crate) fn proof(p: &Plan, _i: &InvocationKey) -> Result<Receipt, String> {
     write_receipt(p, true)
 }
-pub(crate) fn replace(p: &Plan, _i: &InvocationKey) -> Result<(), String> {
-    let _ = write_receipt(p, false)?;
+pub(crate) fn replace(p: &Plan, invocation: &InvocationKey) -> Result<(), String> {
+    replace_with_exec(p, invocation, || {
+        let mut command = Command::new(&p.successor);
+        command.args(&p.argv);
+        let error = std::os::unix::process::CommandExt::exec(&mut command);
+        Err(format!("replace-process-exec-failed: {error}"))
+    })
+}
+
+pub(crate) fn replace_with_exec(
+    p: &Plan,
+    _invocation: &InvocationKey,
+    exec: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = write_receipt(p, false) {
+        return match rollback_installed(p) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{error}; replace-process-rollback-failed: {rollback_error}"
+            )),
+        };
+    }
     std::env::set_var(&p.guard_name, &p.guard_value);
-    let mut c = Command::new(&p.successor);
-    c.args(&p.argv);
-    let e = std::os::unix::process::CommandExt::exec(&mut c);
-    Err(format!("replace-process-exec-failed: {e}"))
+    let result = exec();
+    std::env::remove_var(&p.guard_name);
+    if let Err(error) = result {
+        if let Err(rollback_error) = rollback_installed(p) {
+            return Err(format!(
+                "{error}; replace-process-rollback-failed: {rollback_error}"
+            ));
+        }
+        return Err(error);
+    }
+    std::env::remove_var(&p.guard_name);
+    Ok(())
+}
+
+pub(crate) fn rollback_installed(p: &Plan) -> Result<(), String> {
+    if let Some(bytes) = &p.rollback_bytes {
+        let parent = p
+            .successor
+            .parent()
+            .ok_or("replace-process-rollback-parent")?;
+        let temp = parent.join(format!(".harmonia-rollback-{}.tmp", std::process::id()));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+                .map_err(|e| e.to_string())?;
+            file.write_all(bytes).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            #[cfg(unix)]
+            if let Some(mode) = p.rollback_mode {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&temp, fs::Permissions::from_mode(mode))
+                    .map_err(|e| e.to_string())?;
+            }
+            fs::rename(&temp, &p.successor).map_err(|e| e.to_string())?;
+            OpenOptions::new()
+                .read(true)
+                .open(parent)
+                .map_err(|e| e.to_string())?
+                .sync_all()
+                .map_err(|e| e.to_string())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result
+    } else {
+        match fs::remove_file(&p.successor) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("replace-process-rollback-remove-failed: {error}")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{replace, Plan};
+    use std::fs;
+
+    #[test]
+    fn failed_exec_restores_old_bytes_and_clears_reexec_guard() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("harmonia");
+        let receipts = root.path().join("receipts/replace.json");
+        let old = b"old installed engine".to_vec();
+        fs::write(&installed, b"not an executable").unwrap();
+        let guard = format!("HARMONIA_TEST_REPLACE_GUARD_{}", std::process::id());
+        std::env::remove_var(&guard);
+        let plan = Plan {
+            successor: installed.clone(),
+            argv: vec!["test".into()],
+            guard_name: guard.clone(),
+            guard_value: "1".into(),
+            receipt_path: receipts,
+            rollback_bytes: Some(old.clone()),
+            rollback_mode: Some(0o755),
+        };
+        let error = replace(&plan, &crate::atoms::r#do::InvocationKey::for_apply()).unwrap_err();
+        assert!(error.contains("replace-process-exec-failed"));
+        assert_eq!(fs::read(installed).unwrap(), old);
+        assert!(std::env::var_os(guard).is_none());
+    }
 }
