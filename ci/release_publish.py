@@ -22,6 +22,9 @@ def component_from_repo_name(name):
         raise ValueError("CI_REPO_NAME must be exactly harmonia or harmonia-monad")
     return name
 
+def release_tag_for_sha(sha):
+    return f"sha-{sha}"
+
 def ci_repository_from_env():
     owner = os.environ.get("CI_REPO_OWNER", "")
     if not owner: fail("CI_REPO_OWNER is required")
@@ -74,8 +77,8 @@ def download(asset, token, name):
     if status != 200: conflict(f"download of {name} returned HTTP {status}")
     return raw
 
-def verify(release, token, sha, release_name, component, digest, sidecar, env_sha):
-    if release.get("tag_name") != sha or release.get("name") != release_name or release.get("target_commitish") != sha:
+def verify(release, token, sha, tag, release_name, component, digest, sidecar, env_sha):
+    if release.get("tag_name") != tag or release.get("name") != release_name or release.get("target_commitish") != sha or ("target_commit" in release and release["target_commit"] != sha):
         conflict("existing release identity conflicts with CI_COMMIT_SHA")
     assets = assets_of(release)
     if set(assets) != set(EXPECTED_ASSETS): conflict("existing release assets do not exactly match the expected names")
@@ -100,7 +103,8 @@ def main():
     if not token: fail("FORGEJO_TOKEN is required")
     sha = os.environ.get("CI_COMMIT_SHA", "")
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha): fail("CI_COMMIT_SHA must be exactly 40 lowercase hexadecimal characters")
-    FACTS.update(component=component, tag=sha, name=f"{component} {sha[:8]}", assets=list(EXPECTED_ASSETS))
+    tag = release_tag_for_sha(sha)
+    FACTS.update(component=component, tag=tag, name=f"{component} {sha[:8]}", assets=list(EXPECTED_ASSETS))
     if "HARMONIA_BUILD_ENV_SHA" in os.environ:
         env_sha = os.environ["HARMONIA_BUILD_ENV_SHA"]
     else:
@@ -127,15 +131,15 @@ def main():
     manifest = (json.dumps(manifest_obj, indent=2) + "\n").encode("utf-8")
     release_flag_obj = {"schema":"estate.release-flag.v1", "component":component, "source_sha":sha, "env_sha":env_sha, "sha256":digest, "flagged_at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "pipeline_url":pipeline_url}
     release_flag = (json.dumps(release_flag_obj, indent=2) + "\n").encode("utf-8")
-    tag_url = f"{releases}/tags/{urllib.parse.quote(sha, safe='')}"; status, raw = request("GET", tag_url, token)
+    tag_url = f"{releases}/tags/{urllib.parse.quote(tag, safe='')}"; status, raw = request("GET", tag_url, token)
     if status == 200:
-        verify(decode(raw, "existing release"), token, sha, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
+        verify(decode(raw, "existing release"), token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
     if status != 404: fail(f"GET release tag returned HTTP {status}")
-    payload = {"tag_name": sha, "name": FACTS["name"], "target_commitish": sha, "draft": False, "prerelease": False}; status, raw = request("POST", releases, token, payload)
+    payload = {"tag_name": tag, "name": FACTS["name"], "target_commitish": sha, "draft": False, "prerelease": False}; status, raw = request("POST", releases, token, payload)
     if status == 409:
         status, raw = request("GET", tag_url, token)
         if status != 200: fail(f"release collision reread returned HTTP {status}")
-        verify(decode(raw, "existing release"), token, sha, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
+        verify(decode(raw, "existing release"), token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
     if status not in (200, 201): fail(f"release creation returned HTTP {status}")
     release = decode(raw, "release creation"); release_id = release.get("id")
     if not isinstance(release_id, int): fail("created release has no numeric id")
@@ -146,6 +150,6 @@ def main():
         if status not in (200, 201): fail(f"upload of {name} returned HTTP {status}")
     status, raw = request("GET", tag_url, token)
     if status != 200: fail(f"reread of release returned HTTP {status}")
-    verify(decode(raw, "release reread"), token, sha, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "published"; emit()
+    verify(decode(raw, "release reread"), token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "published"; emit()
 
 if __name__ == "__main__": main()
