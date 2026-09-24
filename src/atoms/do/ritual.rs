@@ -360,20 +360,7 @@ pub(crate) fn validate_exact_root(path: &Path, member: &str) -> Result<(), Strin
 }
 pub(crate) fn validate_exact_root_at(path: &Path, member: &str, root: &Path) -> Result<(), String> {
     validate_member_scoped_target(path, member)?;
-    if !root.is_absolute() || !path.starts_with(root) {
-        return Err(format!("update-set-root-outside {}", path.display()));
-    }
-    let mut cur = root.to_path_buf();
-    let relative = path.strip_prefix(root).map_err(|_| "update-set-root-outside")?;
-    for component in relative.components() {
-        cur.push(component.as_os_str());
-        if let Ok(metadata) = fs::symlink_metadata(&cur) {
-            if metadata.file_type().is_symlink() {
-                return Err(format!("update-set-root-symlink {}", cur.display()));
-            }
-        }
-    }
-    Ok(())
+    crate::atoms::files::ensure_resolved_containment(root, path)
 }
 pub(crate) fn seal_projection(
     plan: &UpdatePlan,
@@ -575,6 +562,32 @@ pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
         _ => "failed",
     };
     json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"syzygy_signal":r.syzygy_signal,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
+}
+
+#[cfg(test)]
+mod update_set_root_containment_tests {
+    use super::validate_exact_root_at;
+    use std::{fs, os::unix::fs::symlink, path::Path};
+
+    #[test]
+    fn fake_root_target_resolves_and_escaping_parent_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(root.join("usr/local/bin")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink("bin", root.join("usr/local/alias")).unwrap();
+        assert!(
+            validate_exact_root_at(&root.join("usr/local/alias/target"), "caduceus", &root).is_ok()
+        );
+        symlink(&outside, root.join("usr/local/sbin")).unwrap();
+        assert!(validate_exact_root_at(
+            &root.join("usr/local/sbin/target"),
+            "sbin",
+            &root
+        ).is_err());
+    }
 }
 
 #[cfg(test)]

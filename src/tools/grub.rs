@@ -72,15 +72,13 @@ fn apply_theme(
     let fake_root = root != Path::new("/");
     ensure_safe_root(root)?;
     let defaults = root.join("etc/default/grub");
+    let theme_dir = root.join("boot/grub/themes").join(name);
+    crate::atoms::files::ensure_resolved_containment(root, &defaults)?;
+    crate::atoms::files::ensure_resolved_containment(root, &theme_dir)?;
     let update_grub = root.join("usr/bin/update-grub");
     let update_grub_sbin = root.join("usr/sbin/update-grub");
     let mkconfig = root.join("usr/sbin/grub-mkconfig");
     let mkconfig_bin = root.join("usr/bin/grub-mkconfig");
-    // Only managed targets earn the symlink-ancestor guard. The four
-    // update-grub/grub-mkconfig paths are existence probes this step never
-    // writes, and on a usrmerge distribution /usr/sbin is itself a symlink to
-    // bin, so guarding them refused the whole step on every such body.
-    ensure_no_symlink_ancestors(root, &defaults)?;
     let grub_installed = defaults.is_file()
         || update_grub.is_file()
         || update_grub_sbin.is_file()
@@ -119,7 +117,6 @@ fn apply_theme(
             .to_string_lossy()
             .to_string())
         .collect::<Vec<_>>());
-    let theme_dir = root.join("boot/grub/themes").join(name);
     let theme_path = PathBuf::from("/boot/grub/themes")
         .join(name)
         .join("theme.txt");
@@ -174,8 +171,8 @@ fn apply_theme(
     }
 
     receipt["attempt"] = json!("apply-material-change");
-    ensure_no_symlink_ancestors(root, &theme_dir)?;
-    ensure_no_symlink_ancestors(root, &defaults)?;
+    crate::atoms::files::ensure_resolved_containment(root, &theme_dir)?;
+    crate::atoms::files::ensure_resolved_containment(root, &defaults)?;
     if theme_changed {
         atomic_copy_tree(source, &theme_dir, name)?;
         receipt["changed"] = json!(true);
@@ -479,25 +476,6 @@ fn ensure_safe_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_no_symlink_ancestors(root: &Path, target: &Path) -> Result<(), String> {
-    let relative = target
-        .strip_prefix(root)
-        .map_err(|_| "grub-target-escapes-root")?;
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        current.push(component);
-        match fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err("grub-target-symlink-forbidden".into())
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("grub-target-stat-failed:{error}")),
-        }
-    }
-    Ok(())
-}
-
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -590,4 +568,68 @@ fn string_arg<'a>(step: &'a ValidatedStep, key: &str) -> &'a str {
 }
 fn optional_string_arg<'a>(step: &'a ValidatedStep, key: &str) -> Option<&'a str> {
     step.args.get(key).and_then(Value::as_str)
+}
+
+#[cfg(test)]
+mod containment_tests {
+    use super::apply_theme;
+    use serde_json::json;
+    use std::{fs, os::unix::fs::symlink};
+
+    fn fixture() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        fs::create_dir_all(source.path()).unwrap();
+        fs::write(
+            source.path().join("theme.txt"),
+            "desktop-image=background.png\n",
+        )
+        .unwrap();
+        fs::write(
+            source.path().join("background.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("etc/default")).unwrap();
+        fs::write(root.path().join("etc/default/grub"), "GRUB_TIMEOUT=5\n").unwrap();
+        fs::create_dir_all(root.path().join("usr/bin")).unwrap();
+        fs::create_dir_all(root.path().join("usr/share")).unwrap();
+        fs::create_dir_all(root.path().join("bin")).unwrap();
+        fs::write(root.path().join("usr/bin/update-grub"), b"probe only\n").unwrap();
+        symlink("bin", root.path().join("usr/sbin")).unwrap();
+        let root_path = root.path().to_path_buf();
+        (root, source, root_path)
+    }
+
+    #[test]
+    fn fake_root_usrmerge_probes_do_not_block_managed_convergence() {
+        let (_temp, source, root) = fixture();
+        let mut receipt = json!({});
+        let result = apply_theme(source.path(), "homeserver", &root, true, &mut receipt).unwrap();
+        assert!(result.ok && result.changed);
+        assert_eq!(receipt["observed"]["grub_install_present"], true);
+        assert_eq!(
+            fs::read(root.join("usr/bin/update-grub")).unwrap(),
+            b"probe only\n"
+        );
+        assert_eq!(fs::read(root.join("etc/default/grub")).unwrap(), b"GRUB_TIMEOUT=5\nGRUB_THEME=\"/boot/grub/themes/homeserver/theme.txt\"\nGRUB_GFXMODE=auto\n");
+        assert!(root.join("boot/grub/themes/homeserver/theme.txt").is_file());
+    }
+
+    #[test]
+    fn fake_root_managed_symlink_escape_is_refused_before_write() {
+        let (_temp, source, root) = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.join("boot/grub")).unwrap();
+        symlink(outside.path(), root.join("boot/grub/themes")).unwrap();
+        let mut receipt = json!({});
+        let error =
+            apply_theme(source.path(), "homeserver", &root, true, &mut receipt).unwrap_err();
+        assert!(error.contains("managed-target-root-escape"));
+        assert!(!outside.path().join("homeserver").exists());
+        assert_eq!(
+            fs::read(root.join("etc/default/grub")).unwrap(),
+            b"GRUB_TIMEOUT=5\n"
+        );
+    }
 }

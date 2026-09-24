@@ -360,28 +360,8 @@ fn validate_launcher_pattern(pattern: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn reject_symlink_components(path: &Path) -> Result<(), String> {
-    let mut cursor = PathBuf::new();
-    for component in path.components() {
-        cursor.push(component.as_os_str());
-        match fs::symlink_metadata(&cursor) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "source-shelf-sweep-target-symlink-component-rejected {}",
-                    cursor.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => {
-                return Err(format!(
-                    "source-shelf-sweep-target-component-metadata-failed {}: {error}",
-                    cursor.display()
-                ));
-            }
-        }
-    }
-    Ok(())
+fn sweep_target_root(target_root: Option<&Path>) -> &Path {
+    target_root.unwrap_or(Path::new("/"))
 }
 
 fn basename_pattern_matches(pattern: &str, value: &str) -> bool {
@@ -1451,12 +1431,27 @@ pub fn source_shelf_sweep(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<SourceShelfSweepOutcome, String> {
+    source_shelf_sweep_at(request, receipt_dir, apply, invocation, None)
+}
+
+pub(crate) fn source_shelf_sweep_at(
+    request: &SourceShelfSweepRequest,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    target_root: Option<&Path>,
+) -> Result<SourceShelfSweepOutcome, String> {
     if apply && invocation.is_none() {
         return Err("source-shelf-sweep-invocation-key-missing".into());
     }
     if request.owned_recursive {
-        let shelf_outcome =
-            source_shelf_owned_recursive_sweep(request, receipt_dir, apply, invocation)?;
+        let shelf_outcome = source_shelf_owned_recursive_sweep(
+            request,
+            receipt_dir,
+            apply,
+            invocation,
+            target_root,
+        )?;
         if request.launcher_pattern == ".harmonia-no-flat-launchers" {
             return Ok(shelf_outcome);
         }
@@ -1476,6 +1471,7 @@ pub fn source_shelf_sweep(
             apply,
             SourceShelfSweepFault::default(),
             invocation,
+            target_root,
         )?;
         let mut outcome = SourceShelfSweepOutcome {
             ok: shelf_outcome.ok && launcher_outcome.ok,
@@ -1542,6 +1538,7 @@ pub fn source_shelf_sweep(
         apply,
         SourceShelfSweepFault::default(),
         invocation,
+        target_root,
     ) {
         Ok(outcome) => Ok(outcome),
         Err(blocker) => {
@@ -1595,6 +1592,7 @@ fn source_shelf_owned_recursive_sweep(
     receipt_dir: &Path,
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    target_root: Option<&Path>,
 ) -> Result<SourceShelfSweepOutcome, String> {
     if apply && invocation.is_none() {
         return Err("source-shelf-sweep-invocation-key-missing".into());
@@ -1606,13 +1604,20 @@ fn source_shelf_owned_recursive_sweep(
         .provenance_state
         .as_ref()
         .ok_or_else(|| "source-shelf-sweep-owned-recursive-provenance-required".to_string())?;
+    crate::atoms::files::ensure_resolved_containment(
+        sweep_target_root(target_root),
+        &request.target_shelf,
+    )?;
+    crate::atoms::files::ensure_resolved_containment(
+        sweep_target_root(target_root),
+        &request.launcher_target_root,
+    )?;
     if !request.target_shelf.is_absolute() || !request.target_shelf.is_dir() {
         return Err("source-shelf-sweep-owned-recursive-target-root-invalid".into());
     }
     validate_mode("shelf-directory", request.shelf_directory_mode)?;
     validate_mode("shelf-file", request.shelf_file_mode)?;
     reject_ssh_path(&request.target_shelf)?;
-    reject_symlink_components(&request.target_shelf)?;
     let source_root = request.source_root.canonicalize().map_err(|error| {
         format!(
             "source-shelf-sweep-source-root-invalid {}: {error}",
@@ -2204,6 +2209,7 @@ fn source_shelf_sweep_with_fault(
     apply: bool,
     fault: SourceShelfSweepFault,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    target_root: Option<&Path>,
 ) -> Result<SourceShelfSweepOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
     validate_source_shelf_relative_path(&request.shelf_source)?;
@@ -2217,6 +2223,14 @@ fn source_shelf_sweep_with_fault(
     if !request.target_shelf.is_absolute() || !request.launcher_target_root.is_absolute() {
         return Err("source-shelf-sweep-target-path-must-be-absolute".into());
     }
+    crate::atoms::files::ensure_resolved_containment(
+        sweep_target_root(target_root),
+        &request.target_shelf,
+    )?;
+    crate::atoms::files::ensure_resolved_containment(
+        sweep_target_root(target_root),
+        &request.launcher_target_root,
+    )?;
     let declared_shelf_parent = request
         .target_shelf
         .parent()
@@ -2233,8 +2247,6 @@ fn source_shelf_sweep_with_fault(
             request.launcher_target_root.display()
         ));
     }
-    reject_symlink_components(declared_shelf_parent)?;
-    reject_symlink_components(&request.launcher_target_root)?;
     let source_root = request.source_root.canonicalize().map_err(|error| {
         format!(
             "source-shelf-sweep-source-root-invalid {}: {error}",
@@ -3187,7 +3199,7 @@ mod tests {
         let receipts = root.join("receipts");
         let invocation = InvocationKey::for_apply();
         let outcome =
-            source_shelf_owned_recursive_sweep(&request, &receipts, true, Some(&invocation))
+            source_shelf_owned_recursive_sweep(&request, &receipts, true, Some(&invocation), None)
                 .unwrap();
         assert!(outcome.removed_count >= 4);
         let receipt: serde_json::Value =
@@ -3199,11 +3211,92 @@ mod tests {
     }
 
     #[test]
+    fn fake_root_in_root_parent_symlink_applies_and_reads_back_resolved_bytes() {
+        use std::os::unix::fs::symlink;
+
+        let (root, mut request) = fixture("fake-root-alias");
+        let physical_shelf = request.target_shelf.clone();
+        fs::write(
+            request.source_root.join("nested/shelf/managed.txt"),
+            b"managed source bytes",
+        )
+        .unwrap();
+        symlink("target", root.join("target-alias")).unwrap();
+        request.target_shelf = root.join("target-alias/nested/shelf");
+        request.launcher_target_root = root.join("target-alias");
+        let provenance_path = request.provenance_state.as_ref().unwrap();
+        let mut provenance = load_sweep_provenance(provenance_path).unwrap();
+        provenance.paths = provenance
+            .paths
+            .into_iter()
+            .map(|path| {
+                path.replace(
+                    &physical_shelf.display().to_string(),
+                    &request.target_shelf.display().to_string(),
+                )
+            })
+            .collect();
+        write_sweep_provenance(provenance_path, &provenance).unwrap();
+        let invocation = InvocationKey::for_apply();
+        let outcome = source_shelf_sweep_at(
+            &request,
+            &root.join("receipts"),
+            true,
+            Some(&invocation),
+            Some(&root),
+        )
+        .unwrap();
+        assert!(outcome.ok && outcome.changed);
+        assert_eq!(
+            fs::read(physical_shelf.join("managed.txt")).unwrap(),
+            b"managed source bytes"
+        );
+        assert_eq!(
+            fs::read(request.target_shelf.join("managed.txt")).unwrap(),
+            b"managed source bytes"
+        );
+        assert_clean(&root, &request, &outcome);
+    }
+
+    #[test]
+    fn fake_root_parent_symlink_escape_is_refused() {
+        use std::os::unix::fs::symlink;
+
+        let (root, request) = fixture("fake-root-escape");
+        let outside = root
+            .parent()
+            .unwrap()
+            .join(format!("outside-{}", sweep_nonce()));
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"outside bytes").unwrap();
+        fs::remove_dir_all(root.join("target")).unwrap();
+        symlink(&outside, root.join("target")).unwrap();
+        let invocation = InvocationKey::for_apply();
+        let error = source_shelf_sweep_at(
+            &request,
+            &root.join("receipts"),
+            true,
+            Some(&invocation),
+            Some(&root),
+        )
+        .unwrap_err();
+        assert!(error.contains("managed-target-root-escape"));
+        assert!(error.contains(&root.display().to_string()));
+        assert!(error.contains(&outside.display().to_string()));
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"outside bytes");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+        fs::remove_dir_all(outside).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn source_shelf_sweep_wrapper_cleans_successful_quarantine() {
         let (root, request) = fixture("wrapper");
         let receipts = root.join("receipts");
         let invocation = InvocationKey::for_apply();
-        let outcome = source_shelf_sweep(&request, &receipts, true, Some(&invocation)).unwrap();
+        let outcome =
+            source_shelf_sweep_at(&request, &receipts, true, Some(&invocation), Some(&root))
+                .unwrap();
         assert_clean(&root, &request, &outcome);
     }
 }
