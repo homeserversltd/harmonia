@@ -97,6 +97,23 @@ def verify(release, token, sha, tag, release_name, component, digest, sidecar, e
     if any((flag_obj["schema"] != "estate.release-flag.v1", flag_obj["component"] != component, flag_obj["source_sha"] != sha, flag_obj["env_sha"] != env_sha, flag_obj["sha256"] != digest, flag_obj["pipeline_url"] != manifest_obj["pipeline_url"])): conflict("release.flag has conflicting contents")
     if not isinstance(flag_obj["flagged_at"], str) or not flag_obj["flagged_at"]: conflict("release.flag has invalid flag metadata")
 
+def run_retention(component, release):
+    # The private monad publisher keeps its historical contract unchanged.
+    if component != "harmonia":
+        return
+    release_id = release.get("id") if isinstance(release, dict) else None
+    if not isinstance(release_id, int):
+        fail("verified release has no numeric id for retention")
+    try:
+        try:
+            from .release_retention import retain_current_release
+        except ImportError:
+            from release_retention import retain_current_release
+        retain_current_release(component, release_id)
+    except Exception as exc:
+        fail(f"release is published and verified, but retention failed: {exc}")
+
+
 def main():
     releases, component = ci_repository_from_env()
     token = os.environ.get("FORGEJO_TOKEN", "")
@@ -133,13 +150,13 @@ def main():
     release_flag = (json.dumps(release_flag_obj, indent=2) + "\n").encode("utf-8")
     tag_url = f"{releases}/tags/{urllib.parse.quote(tag, safe='')}"; status, raw = request("GET", tag_url, token)
     if status == 200:
-        verify(decode(raw, "existing release"), token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
+        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
     if status != 404: fail(f"GET release tag returned HTTP {status}")
     payload = {"tag_name": tag, "name": FACTS["name"], "target_commitish": sha, "draft": False, "prerelease": False}; status, raw = request("POST", releases, token, payload)
     if status == 409:
         status, raw = request("GET", tag_url, token)
         if status != 200: fail(f"release collision reread returned HTTP {status}")
-        verify(decode(raw, "existing release"), token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); return
+        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
     if status not in (200, 201): fail(f"release creation returned HTTP {status}")
     release = decode(raw, "release creation"); release_id = release.get("id")
     if not isinstance(release_id, int): fail("created release has no numeric id")
@@ -150,6 +167,11 @@ def main():
         if status not in (200, 201): fail(f"upload of {name} returned HTTP {status}")
     status, raw = request("GET", tag_url, token)
     if status != 200: fail(f"reread of release returned HTTP {status}")
-    verify(decode(raw, "release reread"), token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "published"; emit()
+    verified_release = decode(raw, "release reread")
+    verify(verified_release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha)
+    verified_id = verified_release.get("id") if isinstance(verified_release, dict) else None
+    if not isinstance(verified_id, int) or isinstance(verified_id, bool) or verified_id != release_id:
+        fail("release reread id conflicts with created release id")
+    FACTS["status"] = "published"; emit(); run_retention(component, verified_release)
 
 if __name__ == "__main__": main()
