@@ -982,56 +982,78 @@ pub(crate) fn run_engine_preflight(
                 ) {
                     Ok(Some(download)) => {
                         lane = Some("artifact".into());
+                        let content_seat = observe_or_acquire_content_seat(
+                            &resolution,
+                            resolved_sha.unwrap_or_default(),
+                            apply,
+                            invocation,
+                            &preflight_dir,
+                        )?;
+                        operation_count += 1;
+                        if !content_seat.move_ok {
+                            first_missing_signal = "engine-content-seat-move-failed".into();
+                        } else if !content_seat.matches {
+                            first_missing_signal = "engine-content-seat-head-mismatch".into();
+                        }
                         if apply {
-                            let invocation = invocation.ok_or_else(|| {
-                                "engine-artifact-stage-invocation-missing".to_string()
-                            })?;
-                            if let Some(parent) = staged.parent() {
-                                fs::create_dir_all(parent).map_err(|error| {
-                                    format!("engine-artifact-stage-parent-failed: {error}")
+                            if first_missing_signal != "none" {
+                                build = CmdResult {
+                                    ok: false,
+                                    code: -1,
+                                    stdout: String::new(),
+                                    stderr: format!("engine-artifact-stage-skipped: {first_missing_signal}"),
+                                };
+                            } else {
+                                let invocation = invocation.ok_or_else(|| {
+                                    "engine-artifact-stage-invocation-missing".to_string()
                                 })?;
-                            }
-                            let placed =
-                                crate::place_file::execute(crate::place_file::PlaceFileRequest {
-                                    path: &staged,
-                                    declared_bytes: &download.bytes,
-                                    mode: Some(0o755),
-                                    ownership: crate::place_file::DeclaredOwnership {
-                                        uid: None,
-                                        gid: None,
-                                    },
-                                    backup: crate::place_file::BackupPolicy::To(
-                                        &preflight_dir.join("backups/prior-staged-binary"),
-                                    ),
-                                    invocation: Some(invocation),
-                                });
-                            match placed {
-                                Ok(placed) => {
-                                    build = CmdResult {
-                                        ok: placed.receipt.ok,
-                                        code: if placed.receipt.ok { 0 } else { -1 },
-                                        stdout: format!(
-                                            "artifact placement {} bytes={} mode=0755 changed={} backed_up={}",
-                                            staged.display(),
-                                            download.bytes.len(),
-                                            placed.movement.changed(),
-                                            placed.movement.backed_up.is_some()
-                                        ),
-                                        stderr: String::new(),
-                                    };
-                                    staged_from_artifact = placed.receipt.ok;
-                                    changed = placed.movement.changed();
+                                if let Some(parent) = staged.parent() {
+                                    fs::create_dir_all(parent).map_err(|error| {
+                                        format!("engine-artifact-stage-parent-failed: {error}")
+                                    })?;
                                 }
-                                Err(error) => {
-                                    build = CmdResult {
-                                        ok: false,
-                                        code: -1,
-                                        stdout: String::new(),
-                                        stderr: format!(
-                                            "engine-artifact-stage-failed target={target}: {error}"
+                                let placed =
+                                    crate::place_file::execute(crate::place_file::PlaceFileRequest {
+                                        path: &staged,
+                                        declared_bytes: &download.bytes,
+                                        mode: Some(0o755),
+                                        ownership: crate::place_file::DeclaredOwnership {
+                                            uid: None,
+                                            gid: None,
+                                        },
+                                        backup: crate::place_file::BackupPolicy::To(
+                                            &preflight_dir.join("backups/prior-staged-binary"),
                                         ),
-                                    };
-                                    first_missing_signal = "engine-artifact-stage-failed".into();
+                                        invocation: Some(invocation),
+                                    });
+                                match placed {
+                                    Ok(placed) => {
+                                        build = CmdResult {
+                                            ok: placed.receipt.ok,
+                                            code: if placed.receipt.ok { 0 } else { -1 },
+                                            stdout: format!(
+                                                "artifact placement {} bytes={} mode=0755 changed={} backed_up={}",
+                                                staged.display(),
+                                                download.bytes.len(),
+                                                placed.movement.changed(),
+                                                placed.movement.backed_up.is_some()
+                                            ),
+                                            stderr: String::new(),
+                                        };
+                                        staged_from_artifact = placed.receipt.ok;
+                                        changed = placed.movement.changed();
+                                    }
+                                    Err(error) => {
+                                        build = CmdResult {
+                                            ok: false,
+                                            code: -1,
+                                            stdout: String::new(),
+                                            stderr: format!(
+                                                "engine-artifact-stage-failed target={target}: {error}"
+                                            ),
+                                        };
+                                        first_missing_signal = "engine-artifact-stage-failed".into();
+                                    }
                                 }
                             }
                         } else {
@@ -1047,21 +1069,6 @@ pub(crate) fn run_engine_preflight(
                             };
                         }
                         write_command_receipt(&preflight_dir, "staged-build", &build)?;
-                        if build.ok && first_missing_signal == "none" {
-                            let content_seat = observe_or_acquire_content_seat(
-                                &resolution,
-                                resolved_sha.unwrap_or_default(),
-                                apply,
-                                invocation,
-                                &preflight_dir,
-                            )?;
-                            operation_count += 1;
-                            if !content_seat.move_ok {
-                                first_missing_signal = "engine-content-seat-move-failed".into();
-                            } else if !content_seat.matches {
-                                first_missing_signal = "engine-content-seat-head-mismatch".into();
-                            }
-                        }
                     }
                     Ok(None) => {
                         let pinned_plan =

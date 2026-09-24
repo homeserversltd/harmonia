@@ -546,6 +546,7 @@ pub(crate) fn rolling_update_from_certificate_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     #[test]
     fn content_seat_failure_stops_only_apply_before_profile_molt() {
@@ -575,6 +576,15 @@ mod tests {
             let previous = values.iter().map(|(key, value)| {
                 let old = std::env::var_os(key);
                 std::env::set_var(key, value);
+                (*key, old)
+            }).collect();
+            Self(previous)
+        }
+
+        fn clear(keys: &[&'static str]) -> Self {
+            let previous = keys.iter().map(|key| {
+                let old = std::env::var_os(key);
+                std::env::remove_var(key);
                 (*key, old)
             }).collect();
             Self(previous)
@@ -639,6 +649,15 @@ mod tests {
 
     #[test]
     fn transaction_apply_acquires_artifact_pair_then_molts_new_profile_tree() {
+        transaction_apply_acquires_artifact_pair_fixture(true);
+    }
+
+    #[test]
+    fn transaction_apply_uses_real_layout_staging_then_molts_new_profile_tree() {
+        transaction_apply_acquires_artifact_pair_fixture(false);
+    }
+
+    fn transaction_apply_acquires_artifact_pair_fixture(use_staged_override: bool) {
         use std::os::unix::fs::PermissionsExt;
         let _env_lock = ENGINE_TRANSACTION_ENV_LOCK.lock().unwrap();
         let root = tempfile::tempdir().expect("transaction fixture");
@@ -672,12 +691,14 @@ mod tests {
         fixture_profile_source(&root.path().join("installed"), "old-module", b"old profile module\n");
         fs::create_dir_all(&module_root).unwrap();
         let installed_binary = root.path().join("installed-engine");
-        let staged_binary = root.path().join("staged-engine");
-        let script = b"#!/bin/sh\nexit 0\n";
-        fs::write(&installed_binary, script).unwrap();
-        fs::write(&staged_binary, script).unwrap();
+        let staged_override = root.path().join("staged-engine");
+        let artifact_bytes = b"#!/bin/sh\n# validated fixture release artifact\nexit 0\n";
+        fs::write(&installed_binary, artifact_bytes).unwrap();
+        if use_staged_override {
+            fs::write(&staged_override, artifact_bytes).unwrap();
+            fs::set_permissions(&staged_override, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         fs::set_permissions(&installed_binary, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&staged_binary, fs::Permissions::from_mode(0o755)).unwrap();
         let running_sha = crate::bands::renew_self::install_bin_fingerprint(&installed_binary).unwrap();
         let appliance_config = root.path().join("appliance-config.json");
         let certificate = root.path().join("device-profile.json");
@@ -691,23 +712,27 @@ mod tests {
         }).to_string()).unwrap();
         let subscription = root.path().join("subscription.json");
         let interactables = root.path().join("interactables.json");
-        let _test_env = EngineTransactionEnvGuard::set(&[
+        let _clear_staged_override = EngineTransactionEnvGuard::clear(&["HARMONIA_TEST_ENGINE_STAGED_BIN"]);
+        let mut test_env = vec![
             ("HARMONIA_TEST_APPLIANCE_CONFIG_PATH", appliance_config.as_os_str().to_owned()),
             ("HARMONIA_INTERACTABLES_PATH", interactables.as_os_str().to_owned()),
             ("HARMONIA_DEVICE_PROFILE_PATH", certificate.as_os_str().to_owned()),
             ("HARMONIA_SUBSCRIPTION_PATH", subscription.as_os_str().to_owned()),
             ("HARMONIA_TEST_ENGINE_INSTALL_BIN", installed_binary.as_os_str().to_owned()),
-            ("HARMONIA_TEST_ENGINE_STAGED_BIN", staged_binary.as_os_str().to_owned()),
             ("HARMONIA_TEST_ENGINE_RUNNING_SHA", running_sha.into()),
-        ]);
+        ];
+        if use_staged_override {
+            test_env.push(("HARMONIA_TEST_ENGINE_STAGED_BIN", staged_override.as_os_str().to_owned()));
+        }
+        let _test_env = EngineTransactionEnvGuard::set(&test_env);
         let artifact = crate::atoms::ask::fetch_artifact::Download {
             manifest: crate::atoms::ask::fetch_artifact::Manifest {
                 schema: "harmonia.engine_artifact.v1".into(), component: "harmonia".into(),
                 source_sha: new_head.clone(), target: "x86_64-unknown-linux-gnu".into(),
                 sha256: String::new(), built_at: "fixture".into(), pipeline_url: "fixture".into(), env_sha: None,
-            }, bytes: script.to_vec(), identity: "fixture".into(),
+            }, bytes: artifact_bytes.to_vec(), identity: "fixture".into(),
         };
-        let _seam = crate::bands::renew_self::install_engine_test_seam(engine_source, Some(artifact));
+        let _seam = crate::bands::renew_self::install_engine_test_seam(engine_source.clone(), Some(artifact));
         let profile = Profile { id: "demo".into(), identity: "fixture".into(), package_authority: None,
             modules: vec!["old-module".into()], hotfixes: Vec::new(), syzygy_declaration: None };
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
@@ -729,6 +754,34 @@ mod tests {
         assert_eq!(preflight["source_head"], new_head);
         assert_eq!(preflight["content_head_observed"], new_head);
         assert_eq!(preflight["content_head_matches"], true);
+        let staged = if use_staged_override {
+            staged_override
+        } else {
+            engine_source.join("target/release/harmonia")
+        };
+        if !use_staged_override {
+            assert!(std::env::var_os("HARMONIA_TEST_ENGINE_STAGED_BIN").is_none());
+        }
+        assert_eq!(fs::read(&staged).unwrap(), artifact_bytes);
+        assert_eq!(
+            preflight["staged_sha256"],
+            format!("{:x}", sha2::Sha256::digest(artifact_bytes))
+        );
+        assert_eq!(fs::read(installed_binary).unwrap(), artifact_bytes);
+        let seat: serde_json::Value = serde_json::from_slice(
+            &fs::read(receipt.join("engine-preflight/content-seat.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(seat["attempt"], "acquire-exact-source-head");
+        assert_eq!(seat["matches"], true);
+        let preflight_dir = receipt.join("engine-preflight");
+        let proof_receipts = fs::read_dir(&preflight_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("proof-"))
+            .count();
+        assert_eq!(proof_receipts, 3, "one proof battery should emit its three receipts");
+        assert!(preflight_dir.join("staged-build.json").is_file());
     }
 
     #[test]
