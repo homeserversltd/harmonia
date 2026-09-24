@@ -34,6 +34,9 @@ fn release_api_root(api_root: &str) -> String {
 
 pub(crate) fn release_metadata_url(api_root: &str, release_repo: &str, tag: &str) -> String {
     let (owner, repo) = release_repo.split_once('/').unwrap_or((release_repo, ""));
+    let tag = crate::tools::git_artifact::source_sha_from_release_tag(tag)
+        .and_then(crate::tools::git_artifact::release_tag_for_source_sha)
+        .unwrap_or_else(|| tag.to_owned());
     format!(
         "{}/repos/{owner}/{repo}/releases/tags/{tag}",
         release_api_root(api_root)
@@ -802,7 +805,9 @@ pub(crate) fn download_release(
             source_sha: resolved_revision,
             target: std::env::consts::ARCH.into(),
             sha256: digest,
-            built_at: tag.clone(),
+            built_at: crate::tools::git_artifact::source_sha_from_release_tag(&tag)
+                .unwrap_or(&tag)
+                .to_owned(),
             pipeline_url: release.metadata_url,
             env_sha: None,
         };
@@ -856,7 +861,7 @@ mod tests {
         let served_artifact = artifact.clone();
         let server = thread::spawn(move || {
             let release_path =
-                format!("/api/v1/repos/OWNER/REPO/releases/tags/{RELEASE_SOURCE_SHA}");
+                format!("/api/v1/repos/OWNER/REPO/releases/tags/sha-{RELEASE_SOURCE_SHA}");
             for (path, body) in [
                 (release_path, release_body),
                 ("/artifact".into(), served_artifact.clone()),
@@ -940,12 +945,12 @@ mod tests {
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let release_path = format!("/api/v1/repos/OWNER/REPO/releases/tags/{RELEASE_SOURCE_SHA}");
+        let release_path = format!("/api/v1/repos/OWNER/REPO/releases/tags/sha-{RELEASE_SOURCE_SHA}");
         let responses = vec![
             (
                 release_path,
                 serde_json::json!({
-                    "tag_name": RELEASE_SOURCE_SHA,
+                    "tag_name": format!("sha-{RELEASE_SOURCE_SHA}"),
                     "name": RELEASE_SOURCE_SHA,
                     "target_commitish": RELEASE_SOURCE_SHA,
                     "assets": [

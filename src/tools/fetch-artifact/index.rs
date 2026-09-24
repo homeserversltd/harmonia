@@ -532,9 +532,10 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0; 4096];
             let length = stream.read(&mut request).unwrap();
-            assert!(String::from_utf8_lossy(&request[..length]).starts_with(
-                "GET /api/v1/repos/OWNER/REPO/releases/tags/0123456789abcdef0123456789abcdef01234567 "
-            ));
+            let expected = format!(
+                "GET /api/v1/repos/OWNER/REPO/releases/tags/sha-{SOURCE_SHA} "
+            );
+            assert!(String::from_utf8_lossy(&request[..length]).starts_with(&expected));
             let reason = match status {
                 401 => "Unauthorized",
                 404 => "Not Found",
@@ -546,6 +547,19 @@ mod tests {
                 "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
+            if status == 404 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let length = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..length]).starts_with(&format!(
+                    "GET /api/v1/repos/OWNER/REPO/releases/tags/{SOURCE_SHA} "
+                )));
+                write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
         });
         (format!("http://{address}/api/v1"), server)
     }
@@ -632,7 +646,7 @@ mod tests {
         let receipts = root.path().join("receipts");
         let (api_root, server) = one_response_server(401);
         let expected_artifact_url =
-            format!("{api_root}/repos/OWNER/REPO/releases/tags/{SOURCE_SHA}");
+            format!("{api_root}/repos/OWNER/REPO/releases/tags/sha-{SOURCE_SHA}");
         let args = release_fallback_args(root.path(), api_root, &destination, &installed_binary);
         let invocation = crate::atoms::r#do::InvocationKey::for_apply();
         let outcome = execute(&args, &receipts, true, Some(&invocation)).unwrap();
@@ -952,7 +966,7 @@ mod tests {
         let server = thread::spawn(move || {
             for (path, body) in [
                 (
-                    format!("/api/v1/repos/OWNER/REPO/releases/tags/{source_sha}"),
+                    format!("/api/v1/repos/OWNER/REPO/releases/tags/sha-{source_sha}"),
                     release_body,
                 ),
                 ("/artifact".into(), artifact_for_server),
@@ -1028,7 +1042,7 @@ mod tests {
         let server = thread::spawn(move || {
             for (path, body) in [
                 (
-                    format!("/api/v1/repos/OWNER/REPO/releases/tags/{source_sha}"),
+                    format!("/api/v1/repos/OWNER/REPO/releases/tags/sha-{source_sha}"),
                     release_body,
                 ),
                 ("/artifact".into(), artifact_for_server),

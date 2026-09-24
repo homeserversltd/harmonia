@@ -1678,13 +1678,12 @@ pub(crate) fn execute_manifest_band(
 }
 
 fn expected_commit_for_resolution(resolution: &SourceResolution) -> Option<String> {
-    (resolution.source_policy == "artifact"
-        && resolution.requested_ref.len() == 40
-        && resolution
-            .requested_ref
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| resolution.requested_ref.clone())
+    if resolution.source_policy == "artifact" {
+        crate::tools::git_artifact::source_sha_from_release_tag(&resolution.requested_ref)
+            .map(str::to_owned)
+    } else {
+        None
+    }
 }
 
 use crate::receipts::event;
@@ -2142,6 +2141,35 @@ mod tests {
         assert_eq!(
             resolution.blocker.as_deref(),
             Some("source-credential-selector-invalid component-candidate=1")
+        );
+    }
+
+    #[test]
+    fn expected_commit_accepts_sha_prefixed_and_bare_artifact_refs_only() {
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let resolution = |source_policy: &str, requested_ref: String| SourceResolution {
+            schema: SOURCE_RECEIPT_SCHEMA,
+            source_policy: source_policy.to_string(),
+            component: "harmonia".to_string(),
+            requested_ref,
+            candidates: vec![],
+        };
+
+        assert_eq!(
+            expected_commit_for_resolution(&resolution("artifact", format!("sha-{source_sha}"))),
+            Some(source_sha.to_string())
+        );
+        assert_eq!(
+            expected_commit_for_resolution(&resolution("artifact", source_sha.to_string())),
+            Some(source_sha.to_string())
+        );
+        assert_eq!(
+            expected_commit_for_resolution(&resolution("artifact", "sha-not-a-commit".into())),
+            None
+        );
+        assert_eq!(
+            expected_commit_for_resolution(&resolution("developer", format!("sha-{source_sha}"))),
+            None
         );
     }
 }

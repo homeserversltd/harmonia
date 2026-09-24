@@ -76,6 +76,21 @@ fn lookup_release_metadata_inner(
     tag: &str,
     inspection_bounds: bool,
 ) -> Result<Option<ReleaseMetadata>, String> {
+    if let Some(source_sha) = source_sha_from_release_tag(tag) {
+        let sha_tag = release_tag_for_source_sha(source_sha).expect("validated source SHA");
+        if let Some(release) = lookup_release_metadata_single(r, &sha_tag, inspection_bounds)? {
+            return Ok(Some(release));
+        }
+        return lookup_release_metadata_single(r, source_sha, inspection_bounds);
+    }
+    lookup_release_metadata_single(r, tag, inspection_bounds)
+}
+
+fn lookup_release_metadata_single(
+    r: &ReleaseRequest,
+    tag: &str,
+    inspection_bounds: bool,
+) -> Result<Option<ReleaseMetadata>, String> {
     let url = release_metadata_url(&release_api(r), &r.owner, &r.repo, tag);
     fs::create_dir_all(&r.cache_dir).map_err(|e| format!("release-cache-create-failed: {e}"))?;
     let path = r
@@ -223,7 +238,12 @@ fn fetch_release_assets_inner(
     let Some(m) = lookup_release_metadata_inner(r, tag, inspect_release_flag)? else {
         return Ok(None);
     };
-    if require_tag_commitish_match && m.target_commitish != tag {
+    let expected_commit = source_sha_from_release_tag(tag);
+    if expected_commit.is_some_and(|source_sha| m.target_commitish != source_sha)
+        || (require_tag_commitish_match
+            && expected_commit.is_none()
+            && m.target_commitish != tag)
+    {
         return Err("fetch-artifact-release-commit-mismatch".into());
     }
     let au = release_asset_url(&m, tag, asset_name)?;
@@ -270,7 +290,7 @@ pub(crate) fn fetch_release_asset(
     }) else {
         return Ok(miss(format!("release-absent tag={tag}")));
     };
-    if metadata.target_commitish != tag {
+    if metadata.target_commitish != source_sha_from_release_tag(tag).unwrap_or(tag) {
         return Ok(miss("fetch-artifact-release-commit-mismatch"));
     }
     let url = match release_asset_url(&metadata, tag, asset_name) {
@@ -298,6 +318,23 @@ pub(crate) fn fetch_release_asset(
 }
 fn release_metadata_url(api: &str, owner: &str, repo: &str, tag: &str) -> String {
     format!("{api}/repos/{owner}/{repo}/releases/tags/{tag}")
+}
+
+pub(crate) fn release_tag_for_source_sha(source_sha: &str) -> Option<String> {
+    (source_sha.len() == 40
+        && source_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| format!("sha-{source_sha}"))
+}
+
+pub(crate) fn source_sha_from_release_tag(tag: &str) -> Option<&str> {
+    let source_sha = tag.strip_prefix("sha-").unwrap_or(tag);
+    (source_sha.len() == 40
+        && source_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(source_sha)
 }
 
 fn curl_args(url: &str, output: &str) -> Vec<String> {
@@ -438,6 +475,59 @@ mod tests {
         assert!(metadata.is_some());
         server.join().unwrap();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sha_release_lookup_falls_back_to_bare_source_tag_after_404() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let source_sha = "0123456789abcdef0123456789abcdef01234567";
+        let server = thread::spawn(move || {
+            for (expected, status, body) in [
+                (
+                    format!("GET /api/v1/repos/OWNER/REPO/releases/tags/sha-{source_sha} "),
+                    404,
+                    String::new(),
+                ),
+                (
+                    format!("GET /api/v1/repos/OWNER/REPO/releases/tags/{source_sha} "),
+                    200,
+                    format!(r#"{{"target_commitish":"{source_sha}","assets":[]}}"#),
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let length = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..length]).starts_with(&expected));
+                let reason = if status == 404 { "Not Found" } else { "OK" };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let root = std::env::temp_dir().join(format!("harmonia-release-fallback-{}", std::process::id()));
+        let request = super::ReleaseRequest {
+            kind: "forgejo-release".into(),
+            base_url: format!("http://{address}/api/v1"),
+            owner: "OWNER".into(),
+            repo: "REPO".into(),
+            credential: None,
+            credential_host: None,
+            credential_scope_found: false,
+            cache_dir: root,
+        };
+        let metadata = super::lookup_release_metadata(&request, &format!("sha-{source_sha}"))
+            .unwrap()
+            .expect("bare-tag fallback should resolve");
+        server.join().unwrap();
+        assert_eq!(metadata.target_commitish, source_sha);
     }
 
     #[test]

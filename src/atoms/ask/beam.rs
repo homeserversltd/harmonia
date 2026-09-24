@@ -355,6 +355,8 @@ fn fetch_flag(
 #[serde(rename_all = "snake_case")]
 struct ForgejoRelease {
     tag_name: String,
+    #[serde(default)]
+    target_commitish: Option<String>,
     created_at: String,
     assets: Vec<ForgejoAsset>,
 }
@@ -461,7 +463,10 @@ fn resolve_slot_with_credential_source(
             .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
         let page_len = page_releases.len();
         for release in page_releases {
-            if !hex_len(&release.tag_name, 40) {
+            let Some(source_sha) = crate::tools::git_artifact::source_sha_from_release_tag(&release.tag_name) else {
+                continue;
+            };
+            if release.target_commitish.as_deref() != Some(source_sha) {
                 continue;
             }
             releases.push(release);
@@ -512,9 +517,11 @@ fn resolve_slot_with_credential_source(
                     malformed_flags,
                 )
             })?;
+        let source_sha = crate::tools::git_artifact::source_sha_from_release_tag(&release.tag_name)
+            .expect("release tags were filtered above");
         if flag.schema != "estate.release-flag.v1"
             || flag.component != component.as_str()
-            || flag.source_sha != release.tag_name
+            || flag.source_sha != source_sha
             || !hex_len(&flag.env_sha, 64)
             || !hex_len(&flag.sha256, 64)
             || flag.flagged_at.trim().is_empty()
@@ -527,7 +534,7 @@ fn resolve_slot_with_credential_source(
             .as_ref()
             .is_none_or(|(_, at, _)| flag.flagged_at > *at)
         {
-            selected = Some((release.tag_name, flag.flagged_at, flag.env_sha));
+            selected = Some((source_sha.to_owned(), flag.flagged_at, flag.env_sha));
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -626,7 +633,8 @@ mod tests {
         let listing = serde_json::to_vec(&serde_json::json!([
             {
                 "id": 136,
-                "tag_name": newest,
+                "tag_name": format!("sha-{newest}"),
+                "target_commitish": newest,
                 "created_at": "2026-09-14T02:00:00Z",
                 "assets": [{
                     "id": 2,
@@ -636,7 +644,8 @@ mod tests {
             },
             {
                 "id": 135,
-                "tag_name": flagged,
+                "tag_name": format!("sha-{flagged}"),
+                "target_commitish": flagged,
                 "created_at": "2026-09-14T01:00:00Z",
                 "assets": [{
                     "id": 1,
@@ -703,6 +712,11 @@ mod tests {
         assert_eq!(resolved.flagged_at, "2026-09-14T01:05:00Z");
         assert_eq!(resolved.malformed_flags, 0);
         assert_eq!(resolved.lock.caduceus_sha(), Some(flagged.as_str()));
+        assert_eq!(
+            serde_json::to_value(&resolved.lock).unwrap()["minted_from"]["caduceus_release_tag"],
+            flagged
+        );
+        assert!(validate_lock(resolved.lock.clone()).is_ok());
     }
 
     #[test]
