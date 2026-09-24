@@ -76,15 +76,11 @@ fn apply_theme(
     let update_grub_sbin = root.join("usr/sbin/update-grub");
     let mkconfig = root.join("usr/sbin/grub-mkconfig");
     let mkconfig_bin = root.join("usr/bin/grub-mkconfig");
-    for path in [
-        &defaults,
-        &update_grub,
-        &update_grub_sbin,
-        &mkconfig,
-        &mkconfig_bin,
-    ] {
-        ensure_no_symlink_ancestors(root, path)?;
-    }
+    // Only managed targets earn the symlink-ancestor guard. The four
+    // update-grub/grub-mkconfig paths are existence probes this step never
+    // writes, and on a usrmerge distribution /usr/sbin is itself a symlink to
+    // bin, so guarding them refused the whole step on every such body.
+    ensure_no_symlink_ancestors(root, &defaults)?;
     let grub_installed = defaults.is_file()
         || update_grub.is_file()
         || update_grub_sbin.is_file()
