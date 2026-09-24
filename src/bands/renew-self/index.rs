@@ -20,6 +20,13 @@ pub(crate) fn run(
     run_engine_preflight(module_root, receipt_dir, apply, invocation)
 }
 
+pub(crate) fn is_content_seat_failure(signal: &str) -> bool {
+    matches!(
+        signal,
+        "engine-content-seat-move-failed" | "engine-content-seat-head-mismatch"
+    )
+}
+
 /// Only this proof result is safe to defer until StageProfile has molted the
 /// installed module root. All other preflight failures retain normal semantics.
 pub(crate) fn is_stale_staged_validation_failure(execution: &ModuleExecution) -> bool {
@@ -45,6 +52,67 @@ const SELF_UPDATE_REEXEC_RUNNING_FINGERPRINT_MISSING: &str =
     "harmonia-self-update-reexec-running-fingerprint-missing";
 pub(crate) const ENGINE_INSTALL_BIN: &str = "/usr/local/bin/harmonia";
 pub(crate) const ENGINE_SOURCE_ROOT: &str = "/var/lib/harmonia/engine-source";
+
+#[cfg(test)]
+#[derive(Clone)]
+struct EngineTestSeam {
+    source_root: PathBuf,
+    artifact_release: Option<crate::atoms::ask::fetch_artifact::Download>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENGINE_TEST_SEAM: std::cell::RefCell<Option<EngineTestSeam>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Scoped, thread-local inputs for end-to-end engine artifact-lane fixtures.
+/// The real preflight, source acquisition, and StageProfile molt still execute.
+#[cfg(test)]
+pub(crate) struct EngineTestSeamGuard(Option<EngineTestSeam>);
+
+#[cfg(test)]
+impl Drop for EngineTestSeamGuard {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        ENGINE_TEST_SEAM.with(|seam| *seam.borrow_mut() = previous);
+    }
+}
+
+/// Install fixture-local source and already-validated release inputs for the
+/// current test thread. `None` release means a flagless/absent release.
+#[cfg(test)]
+pub(crate) fn install_engine_test_seam(
+    source_root: PathBuf,
+    artifact_release: Option<crate::atoms::ask::fetch_artifact::Download>,
+) -> EngineTestSeamGuard {
+    let seam = EngineTestSeam {
+        source_root,
+        artifact_release,
+    };
+    let previous = ENGINE_TEST_SEAM.with(|current| current.replace(Some(seam)));
+    EngineTestSeamGuard(previous)
+}
+
+pub(crate) fn engine_source_root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = ENGINE_TEST_SEAM.with(|seam| {
+        seam.borrow()
+            .as_ref()
+            .map(|value| value.source_root.clone())
+    }) {
+        return path;
+    }
+    PathBuf::from(ENGINE_SOURCE_ROOT)
+}
+
+#[cfg(test)]
+fn injected_engine_release() -> Option<Option<crate::atoms::ask::fetch_artifact::Download>> {
+    ENGINE_TEST_SEAM.with(|seam| {
+        seam.borrow()
+            .as_ref()
+            .map(|value| value.artifact_release.clone())
+    })
+}
 const HARMONIA_BUILD_TARGET: &str = "x86_64-unknown-linux-gnu";
 const HARMONIA_BUILD_SHA_ENV: &str = "HARMONIA_BUILD_SHA";
 const HARMONIA_BUILD_ENV_SHA_ENV: &str = "HARMONIA_BUILD_ENV_SHA";
@@ -405,7 +473,7 @@ pub(crate) fn staged_bin() -> PathBuf {
     if let Some(path) = env::var_os("HARMONIA_TEST_ENGINE_STAGED_BIN") {
         return PathBuf::from(path);
     }
-    PathBuf::from(ENGINE_SOURCE_ROOT).join("target/release/harmonia")
+    engine_source_root().join("target/release/harmonia")
 }
 
 fn profile_index_from(module_root: &Path) -> PathBuf {
@@ -484,6 +552,9 @@ fn emit_preflight_receipt(
     staged_build_identity: Option<&BuildEnvironmentIdentity>,
     reexec: Option<&SelfUpdateReexec>,
 ) -> Result<(), String> {
+    let content_seat = fs::read_to_string(preflight_dir.join("content-seat.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
     let previous_preservation = fs::read_to_string(preflight_dir.join("run.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -507,6 +578,21 @@ fn emit_preflight_receipt(
             "build_root": ENGINE_SOURCE_ROOT,
             "install_bin": ENGINE_INSTALL_BIN,
             "source_head": source_head.unwrap_or("unknown"),
+            "content_head_observed": content_seat
+                .as_ref()
+                .and_then(|seat| seat.get("observed_head"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "content_head_matches": content_seat
+                .as_ref()
+                .and_then(|seat| seat.get("matches"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "content_seat_failure": content_seat
+                .as_ref()
+                .and_then(|seat| seat.get("first_missing_signal"))
+                .cloned()
+                .unwrap_or(Value::Null),
             "staged_sha256": staged_sha,
             "installed_sha256": installed_sha,
             "staged_build_identity": staged_build_identity.and_then(|identity| identity.env_sha.as_deref().zip(source_head).map(|(env_sha, source_sha)| json!({"source_sha": source_sha, "env_sha": env_sha}))),
@@ -633,15 +719,108 @@ fn release_identity_from_candidate(locator: &str) -> Result<(String, String), St
     ))
 }
 
+fn release_identity_for_preflight(locator: &str) -> Result<(String, String), String> {
+    #[cfg(test)]
+    if injected_engine_release().is_some() {
+        return Ok((
+            "https://fixture.invalid/api/v1".into(),
+            "fixture/engine".into(),
+        ));
+    }
+    release_identity_from_candidate(locator)
+}
+
 fn source_fallback_plan(
     resolution: &crate::bands::pull_source::SourceResolution,
     expected_commit: &str,
 ) -> crate::tools::git_artifact::SourcePlan {
     crate::bands::pull_source::bridge_acquisition_plan(
         resolution,
-        PathBuf::from(ENGINE_SOURCE_ROOT),
+        engine_source_root(),
         Some(expected_commit.to_owned()),
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContentSeatObservation {
+    observed_head: Option<String>,
+    matches: bool,
+    move_ok: bool,
+}
+
+fn write_content_seat_observation(
+    plan: &crate::tools::git_artifact::SourcePlan,
+    expected_head: &str,
+    apply: bool,
+    outcome: &crate::tools::git_artifact::SourceOutcome,
+    preflight_dir: &Path,
+) -> Result<ContentSeatObservation, String> {
+    let local = crate::atoms::ask::pull_repo::source_head(&plan.destination, &plan.bearer);
+    let observed_head = local
+        .ok
+        .then(|| local.stdout.trim().to_owned())
+        .filter(|head| crate::atoms::git_artifact::is_lower_hex_sha(head));
+    let matches = outcome.ok && observed_head.as_deref() == Some(expected_head);
+    let signal = if !outcome.ok {
+        Some("engine-content-seat-move-failed")
+    } else if !matches {
+        Some("engine-content-seat-head-mismatch")
+    } else {
+        None
+    };
+    write_json(
+        &preflight_dir.join("content-seat.json"),
+        &json!({
+            "schema": "harmonia.engine.content_seat.v1",
+            "expected_head": expected_head,
+            "observed_head": observed_head,
+            "matches": matches,
+            "observed": true,
+            "could_change": apply,
+            "attempt": if apply { "acquire-exact-source-head" } else { "observe-only" },
+            "final": if matches { "paired" } else { "mismatch" },
+            "first_missing_signal": signal,
+            "promotion_allowed": signal.is_none(),
+            "source_mutation": apply && outcome.changed,
+            "promotion": outcome.receipt.promotion,
+        }),
+    )?;
+    Ok(ContentSeatObservation {
+        observed_head,
+        matches,
+        move_ok: outcome.ok,
+    })
+}
+
+fn download_engine_release_for_preflight(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    source_sha: &str,
+) -> Result<Option<crate::atoms::ask::fetch_artifact::Download>, String> {
+    #[cfg(test)]
+    if let Some(injected) = injected_engine_release() {
+        return Ok(injected);
+    }
+    crate::atoms::ask::fetch_artifact::download_engine_release(
+        component,
+        release_repo,
+        api_root,
+        source_sha,
+        None,
+    )
+}
+
+fn observe_or_acquire_content_seat(
+    resolution: &crate::bands::pull_source::SourceResolution,
+    expected_head: &str,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    preflight_dir: &Path,
+) -> Result<ContentSeatObservation, String> {
+    let plan = source_fallback_plan(resolution, expected_head);
+    let outcome = crate::bands::pull_source::execute_source(&plan, apply, invocation);
+    write_content_seat_observation(&plan, expected_head, apply, &outcome, preflight_dir)
 }
 
 fn ignored_engine_component(certificate_path: &Path, compiled_component: &str) -> Option<String> {
@@ -750,11 +929,8 @@ pub(crate) fn run_engine_preflight(
             return Ok(failed_execution(&signal));
         }
     };
-    let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
-        &resolution,
-        PathBuf::from(ENGINE_SOURCE_ROOT),
-        None,
-    );
+    let source_plan =
+        crate::bands::pull_source::bridge_acquisition_plan(&resolution, engine_source_root(), None);
     let remote_probe = crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
     let source_head = remote_probe.remote_sha.clone();
     let mut lane: Option<String> = None;
@@ -792,18 +968,17 @@ pub(crate) fn run_engine_preflight(
         );
     } else if let Some(candidate) = remote_probe.locator.as_deref() {
         let target = format!("{candidate}@{}", resolved_sha.unwrap_or_default());
-        match release_identity_from_candidate(candidate) {
+        match release_identity_for_preflight(candidate) {
             Err(error) => {
                 blocked_target = Some(target.clone());
                 first_missing_signal = format!("engine-artifact-refused target={target}: {error}");
             }
             Ok((api_root, release_repo)) => {
-                match crate::atoms::ask::fetch_artifact::download_engine_release(
+                match download_engine_release_for_preflight(
                     &component,
                     &release_repo,
                     &api_root,
                     resolved_sha.unwrap_or_default(),
-                    None,
                 ) {
                     Ok(Some(download)) => {
                         lane = Some("artifact".into());
@@ -872,6 +1047,21 @@ pub(crate) fn run_engine_preflight(
                             };
                         }
                         write_command_receipt(&preflight_dir, "staged-build", &build)?;
+                        if build.ok && first_missing_signal == "none" {
+                            let content_seat = observe_or_acquire_content_seat(
+                                &resolution,
+                                resolved_sha.unwrap_or_default(),
+                                apply,
+                                invocation,
+                                &preflight_dir,
+                            )?;
+                            operation_count += 1;
+                            if !content_seat.move_ok {
+                                first_missing_signal = "engine-content-seat-move-failed".into();
+                            } else if !content_seat.matches {
+                                first_missing_signal = "engine-content-seat-head-mismatch".into();
+                            }
+                        }
                     }
                     Ok(None) => {
                         let pinned_plan =
@@ -891,6 +1081,13 @@ pub(crate) fn run_engine_preflight(
                                 source.receipt.promotion.clone()
                             },
                         };
+                        let content_seat = write_content_seat_observation(
+                            &pinned_plan,
+                            resolved_sha.unwrap_or_default(),
+                            apply,
+                            &source,
+                            &preflight_dir,
+                        )?;
                         if let Some(candidate) = pinned_plan.candidates.first() {
                             write_source_possession_receipt(
                                 &preflight_dir,
@@ -903,17 +1100,13 @@ pub(crate) fn run_engine_preflight(
                         lane = Some("source".into());
                         operation_count += 1;
                         if !source.ok {
-                            first_missing_signal = "engine-source-acquisition-failed".into();
-                        } else if source.receipt.resolved_commit.as_deref() != resolved_sha {
-                            first_missing_signal = format!(
-                                "engine-source-commit-mismatch target={} observed={}",
-                                target,
-                                source
-                                    .receipt
-                                    .resolved_commit
-                                    .as_deref()
-                                    .unwrap_or("unknown")
-                            );
+                            first_missing_signal = "engine-content-seat-move-failed".into();
+                        } else if !content_seat.matches {
+                            first_missing_signal = if content_seat.observed_head.is_none() {
+                                "engine-content-seat-move-failed".into()
+                            } else {
+                                "engine-content-seat-head-mismatch".into()
+                            };
                         } else {
                             changed = source.changed;
                         }
@@ -940,7 +1133,7 @@ pub(crate) fn run_engine_preflight(
         };
         let build_identity = capture_build_environment(source_head)?;
         let observation = crate::build_crate::run_build_with_mode(
-            Path::new(ENGINE_SOURCE_ROOT),
+            &engine_source_root(),
             source_head,
             install_before.as_deref(),
             &install_bin,
@@ -1373,6 +1566,154 @@ mod release_transport_tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn content_seat_receipt_reports_exact_pair_and_report_only_mismatch_without_mutation() {
+        use super::write_content_seat_observation;
+        use crate::tools::git_artifact::{SourcePlan, SourceReceipt};
+
+        let root = tempdir().unwrap();
+        let receipt_dir = root.path().join("receipts");
+        std::fs::create_dir_all(&receipt_dir).unwrap();
+        let content = root.path().join("content");
+        std::fs::create_dir_all(&content).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&content)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Harmonia Test"]);
+        git(&["config", "user.email", "harmonia-test@example.invalid"]);
+        std::fs::write(content.join("module.txt"), "first\n").unwrap();
+        git(&["add", "module.txt"]);
+        git(&["commit", "-qm", "first"]);
+        let expected = crate::atoms::ask::pull_repo::source_head(&content, "owner")
+            .stdout
+            .trim()
+            .to_string();
+        let plan = SourcePlan {
+            candidates: Vec::new(),
+            reference: expected.clone(),
+            source_policy: "artifact".into(),
+            destination: content.clone(),
+            expected_commit: Some(expected.clone()),
+            bearer: "owner".into(),
+        };
+        let outcome = |observed: &str| crate::tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: SourceReceipt {
+                attempts: Vec::new(),
+                served_index: Some(0),
+                resolved_commit: Some(observed.into()),
+                promotion: "observed source head".into(),
+            },
+        };
+
+        let paired = write_content_seat_observation(
+            &plan,
+            &expected,
+            true,
+            &outcome(&expected),
+            &receipt_dir,
+        )
+        .unwrap();
+        assert!(paired.matches);
+        let receipt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(receipt_dir.join("content-seat.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["expected_head"], expected);
+        assert_eq!(receipt["observed_head"], expected);
+        assert_eq!(receipt["matches"], true);
+        assert_eq!(receipt["attempt"], "acquire-exact-source-head");
+        assert_eq!(receipt["could_change"], true);
+        assert_eq!(receipt["source_mutation"], false);
+        assert_eq!(receipt["promotion_allowed"], true);
+
+        std::fs::write(content.join("module.txt"), "second\n").unwrap();
+        git(&["add", "module.txt"]);
+        git(&["commit", "-qm", "second"]);
+        let drift = crate::atoms::ask::pull_repo::source_head(&content, "owner")
+            .stdout
+            .trim()
+            .to_string();
+        let mismatched = write_content_seat_observation(
+            &plan,
+            &expected,
+            false,
+            &outcome(&expected),
+            &receipt_dir,
+        )
+        .unwrap();
+        assert!(!mismatched.matches);
+        let receipt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(receipt_dir.join("content-seat.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["observed_head"], drift);
+        assert_eq!(receipt["matches"], false);
+        assert_eq!(receipt["first_missing_signal"], "engine-content-seat-head-mismatch");
+        assert_eq!(receipt["attempt"], "observe-only");
+        assert_eq!(receipt["source_mutation"], false);
+        assert_eq!(receipt["promotion_allowed"], false);
+    }
+
+    #[test]
+    fn content_seat_move_failure_keeps_installed_engine_unpromoted() {
+        use super::post_stage_preflight;
+
+        let root = tempdir().unwrap();
+        let preflight = root.path().join("engine-preflight");
+        let installed = root.path().join("installed-harmonia");
+        let staged = root.path().join("staged-harmonia");
+        let module_root = root.path().join("profiles/demo/modules");
+        std::fs::create_dir_all(&preflight).unwrap();
+        std::fs::create_dir_all(&module_root).unwrap();
+        std::fs::write(&installed, b"old engine").unwrap();
+        std::fs::write(&staged, b"candidate engine").unwrap();
+        let old_digest = install_bin_fingerprint(&installed).unwrap();
+        let staged_digest = install_bin_fingerprint(&staged).unwrap();
+        let target = "0123456789abcdef0123456789abcdef01234567";
+
+        let execution = post_stage_preflight(
+            &module_root,
+            &preflight,
+            &installed,
+            &staged,
+            Some(old_digest),
+            "harmonia".into(),
+            None,
+            Some(target.into()),
+            true,
+            None,
+            Some("artifact".into()),
+            Some(target),
+            None,
+            1,
+            false,
+            "engine-content-seat-move-failed".into(),
+            Some(staged_digest),
+            None,
+            |_, _| panic!("content-seat failure must skip process replacement"),
+        )
+        .unwrap();
+
+        assert!(!execution.ok);
+        assert_eq!(execution.first_missing_signal.as_deref(), Some("engine-content-seat-move-failed"));
+        assert_eq!(std::fs::read(&installed).unwrap(), b"old engine");
+        let receipt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(preflight.join("run.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["ok"], false);
+        assert_eq!(receipt["stage"], "engine-content-seat-move-failed");
+        assert_eq!(receipt["old_engine_preserved"], true);
     }
 
     #[test]

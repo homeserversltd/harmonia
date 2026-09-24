@@ -368,7 +368,7 @@ pub(crate) fn run_profile_engine_with_projection(
             crate::bands::Band::StageProfile => {
                 if apply && materialize_on_stage {
                     let refreshed = crate::bands::stage_profile::materialize(
-                        Path::new(crate::bands::renew_self::ENGINE_SOURCE_ROOT),
+                        &crate::bands::renew_self::engine_source_root(),
                         &active_profile.id,
                         module_root,
                         receipt_dir,

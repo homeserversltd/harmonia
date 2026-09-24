@@ -35,6 +35,28 @@ under `/var/lib/harmonia/engine-source`, stages the release below that source
 root, and derives the profile index from the owned module root. Unit activation
 is the enablement state; there is no separate `enabled` setting.
 
+The local ratchet lock's `source_head_sha` binds the engine release to the exact
+admitted source head. Every Apply press first resolves that head, then seats the
+Harmonia content tree at the same commit before any engine promotion or
+StageProfile molt. This is true when the binary arrives from the artifact lane
+as well as when the source-build fallback provides it. The artifact lane stages
+and verifies the binary but does not compile it; the source tree is acquired
+only as the paired content seat.
+
+The `engine-preflight/content-seat.json` receipt records the expected head, the
+observed content head, whether they match, whether source mutation was possible,
+and the final paired/mismatch state. `engine-preflight/run.json` repeats the
+observed head and match/failure fields. A failed source move or head mismatch is
+a red engine-preflight stage: the staged binary is not promoted and the Apply
+transaction stops before profile molt or downstream convergence, preserving the
+previous binary and profile projection. Report-only records the observed source
+head and drift without mutating the source seat.
+
+An already-current binary does not waive the content-seat check: Apply still
+pairs the content tree to the resolved SHA, then runs the usual profile molt and
+convergence. Quiet source acquisition may leave the tree unchanged, but its
+observed head is still receipted.
+
 ## Source authority
 
 `/etc/appliance/config.json` is the source authority. Its `sources`

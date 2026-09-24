@@ -142,6 +142,13 @@ pub(crate) use super::ritual::{
     SealedProjection, Snapshot, TransactionReceipt, TransactionState,
 };
 
+fn content_seat_apply_failure(preflight: &ModuleExecution, apply: bool) -> Option<&str> {
+    (apply)
+        .then(|| preflight.first_missing_signal.as_deref())
+        .flatten()
+        .filter(|signal| crate::bands::renew_self::is_content_seat_failure(signal))
+}
+
 pub(crate) fn rolling_update_run(
     profile: &Profile,
     module_root: &Path,
@@ -167,14 +174,6 @@ pub(crate) fn rolling_update_run(
                 ))
             });
         carrier.borrow_mut().rung_promoted.clear();
-        crate::bands::stage_profile::reconcile_legacy_module_seats(
-            profile,
-            module_root,
-            &effective_receipt_dir,
-            &mode,
-        )?;
-        let projection = load_profile_projection(profile, module_root, &BTreeSet::new())?;
-        let execution_projection = projection.clone();
         let preflight = crate::bands::renew_self::run(
             module_root,
             &effective_receipt_dir,
@@ -182,6 +181,14 @@ pub(crate) fn rolling_update_run(
             mode.invocation(),
         )?;
         if !apply {
+            crate::bands::stage_profile::reconcile_legacy_module_seats(
+                profile,
+                module_root,
+                &effective_receipt_dir,
+                &mode,
+            )?;
+            let projection = load_profile_projection(profile, module_root, &BTreeSet::new())?;
+            let execution_projection = projection.clone();
             return run_profile_engine_with_projection(
                 profile,
                 module_root,
@@ -196,6 +203,26 @@ pub(crate) fn rolling_update_run(
                 false,
             );
         }
+        if let Some(signal) = content_seat_apply_failure(&preflight, apply) {
+            write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                signal,
+                None,
+                preflight.changed,
+                preflight.operation_count,
+            )?;
+            return Err(signal.to_string());
+        }
+        crate::bands::stage_profile::reconcile_legacy_module_seats(
+            profile,
+            module_root,
+            &effective_receipt_dir,
+            &mode,
+        )?;
+        let projection = load_profile_projection(profile, module_root, &BTreeSet::new())?;
+        let execution_projection = projection.clone();
         let transaction = run_profile_engine_with_projection(
             profile,
             module_root,
@@ -519,6 +546,266 @@ pub(crate) fn rolling_update_from_certificate_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_seat_failure_stops_only_apply_before_profile_molt() {
+        let failed = ModuleExecution {
+            ok: false,
+            changed: false,
+            operation_count: 1,
+            first_missing_signal: Some("engine-content-seat-move-failed".into()),
+            placements: Vec::new(),
+        };
+        assert_eq!(content_seat_apply_failure(&failed, true), Some("engine-content-seat-move-failed"));
+        assert_eq!(content_seat_apply_failure(&failed, false), None);
+
+        let unrelated = ModuleExecution {
+            first_missing_signal: Some("engine-proof-validate-ladder-failed".into()),
+            ..failed
+        };
+        assert_eq!(content_seat_apply_failure(&unrelated, true), None);
+    }
+
+    static ENGINE_TRANSACTION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EngineTransactionEnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EngineTransactionEnvGuard {
+        fn set(values: &[(&'static str, std::ffi::OsString)]) -> Self {
+            let previous = values.iter().map(|(key, value)| {
+                let old = std::env::var_os(key);
+                std::env::set_var(key, value);
+                (*key, old)
+            }).collect();
+            Self(previous)
+        }
+    }
+
+    impl Drop for EngineTransactionEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn fixture_git(root: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("run fixture git");
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    fn fixture_tree_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(root: &Path, path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(path).expect("read fixture tree") {
+                let entry = entry.expect("fixture entry");
+                let path = entry.path();
+                if entry.file_type().expect("fixture type").is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.insert(path.strip_prefix(root).unwrap().to_path_buf(), fs::read(path).expect("fixture bytes"));
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        if root.exists() {
+            visit(root, root, &mut files);
+        }
+        files
+    }
+
+    fn fixture_materialize_receipt_dir(path: &Path, _run_id: &str) -> Result<PathBuf, String> {
+        Ok(path.to_path_buf())
+    }
+
+    fn fixture_profile_source(source: &Path, module_id: &str, module_bytes: &[u8]) {
+        let module = source.join("profiles/demo/modules").join(module_id);
+        fs::create_dir_all(&module).expect("module fixture directory");
+        fs::write(source.join("profiles/demo/index.json"), serde_json::json!({
+            "id": "demo", "identity": "fixture", "modules": [module_id]
+        }).to_string()).expect("profile index");
+        fs::write(module.join("manifest.json"), serde_json::json!({
+            "schema": "harmonia.module.ladder.v1", "id": module_id,
+            "version": "1", "ladder": []
+        }).to_string()).expect("module manifest");
+        fs::write(module.join("payload.bin"), module_bytes).expect("module payload");
+    }
+
+    #[test]
+    fn transaction_apply_acquires_artifact_pair_then_molts_new_profile_tree() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env_lock = ENGINE_TRANSACTION_ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().expect("transaction fixture");
+        let source = root.path().join("source-repository");
+        fs::create_dir_all(&source).unwrap();
+        fixture_git(&source, &["init", "-q"]);
+        fixture_git(&source, &["config", "user.name", "Harmonia Fixture"]);
+        fixture_git(&source, &["config", "user.email", "fixture@example.invalid"]);
+        fs::write(source.join("Cargo.toml"), "[package]\nname = \"harmonia-fixture\"\nversion = \"0.1.0\"\n").unwrap();
+        fs::create_dir_all(source.join("src/tools")).unwrap();
+        fs::write(source.join("src/tools/.keep"), b"fixture tool directory\n").unwrap();
+        fixture_profile_source(&source, "old-module", b"old profile module\n");
+        fixture_git(&source, &["add", "."]);
+        fixture_git(&source, &["commit", "-qm", "old profile"]);
+        let old_head = crate::atoms::ask::pull_repo::source_head(&source, "owner").stdout.trim().to_string();
+        let engine_source = root.path().join("engine-source");
+        fixture_git(root.path(), &["clone", "--shared", source.to_str().unwrap(), engine_source.to_str().unwrap()]);
+        fixture_git(&engine_source, &["checkout", "-q", &old_head]);
+        assert_eq!(crate::atoms::ask::pull_repo::source_head(&engine_source, "owner").stdout.trim(), old_head);
+        fs::remove_dir_all(source.join("profiles/demo/modules/old-module")).unwrap();
+        fixture_profile_source(&source, "new-module", b"new-only profile module bytes\n");
+        fs::write(source.join("profiles/demo/index.json"), serde_json::json!({
+            "id": "demo", "identity": "fixture", "modules": ["new-module"]
+        }).to_string()).unwrap();
+        fixture_git(&source, &["add", "."]);
+        fixture_git(&source, &["commit", "-qm", "new profile"]);
+        let new_head = crate::atoms::ask::pull_repo::source_head(&source, "owner").stdout.trim().to_string();
+
+        let installed_profile = root.path().join("installed/profiles/demo");
+        let module_root = installed_profile.join("modules");
+        fixture_profile_source(&root.path().join("installed"), "old-module", b"old profile module\n");
+        fs::create_dir_all(&module_root).unwrap();
+        let installed_binary = root.path().join("installed-engine");
+        let staged_binary = root.path().join("staged-engine");
+        let script = b"#!/bin/sh\nexit 0\n";
+        fs::write(&installed_binary, script).unwrap();
+        fs::write(&staged_binary, script).unwrap();
+        fs::set_permissions(&installed_binary, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&staged_binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let running_sha = crate::bands::renew_self::install_bin_fingerprint(&installed_binary).unwrap();
+        let appliance_config = root.path().join("appliance-config.json");
+        let certificate = root.path().join("device-profile.json");
+        fs::write(&appliance_config, serde_json::json!({
+            "schema": "appliance.config.v1", "source_policy": "developer",
+            "sources": {"harmonia": {"ref": "main", "candidates": [{"kind": "local-checkout", "path": source}]}}
+        }).to_string()).unwrap();
+        fs::write(&certificate, serde_json::json!({
+            "schema": "homeserver.device-profile.v1", "kernel": {"profile": "demo"},
+            "source_policy": "developer", "sources": {}
+        }).to_string()).unwrap();
+        let subscription = root.path().join("subscription.json");
+        let interactables = root.path().join("interactables.json");
+        let _test_env = EngineTransactionEnvGuard::set(&[
+            ("HARMONIA_TEST_APPLIANCE_CONFIG_PATH", appliance_config.as_os_str().to_owned()),
+            ("HARMONIA_INTERACTABLES_PATH", interactables.as_os_str().to_owned()),
+            ("HARMONIA_DEVICE_PROFILE_PATH", certificate.as_os_str().to_owned()),
+            ("HARMONIA_SUBSCRIPTION_PATH", subscription.as_os_str().to_owned()),
+            ("HARMONIA_TEST_ENGINE_INSTALL_BIN", installed_binary.as_os_str().to_owned()),
+            ("HARMONIA_TEST_ENGINE_STAGED_BIN", staged_binary.as_os_str().to_owned()),
+            ("HARMONIA_TEST_ENGINE_RUNNING_SHA", running_sha.into()),
+        ]);
+        let artifact = crate::atoms::ask::fetch_artifact::Download {
+            manifest: crate::atoms::ask::fetch_artifact::Manifest {
+                schema: "harmonia.engine_artifact.v1".into(), component: "harmonia".into(),
+                source_sha: new_head.clone(), target: "x86_64-unknown-linux-gnu".into(),
+                sha256: String::new(), built_at: "fixture".into(), pipeline_url: "fixture".into(), env_sha: None,
+            }, bytes: script.to_vec(), identity: "fixture".into(),
+        };
+        let _seam = crate::bands::renew_self::install_engine_test_seam(engine_source, Some(artifact));
+        let profile = Profile { id: "demo".into(), identity: "fixture".into(), package_authority: None,
+            modules: vec!["old-module".into()], hotfixes: Vec::new(), syzygy_declaration: None };
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+        let receipt = root.path().join("receipt");
+        let result = rolling_update_run(&profile, &module_root, &receipt, mode, None, None,
+            root.path().join("lock"), fixture_materialize_receipt_dir,
+            crate::atoms::r#do::convergence_lock::try_acquire_homeconsole_update_lock);
+        assert!(result.is_ok(), "transaction apply failed: {result:?}");
+        let acquired = root.path().join("engine-source");
+        assert_eq!(crate::atoms::ask::pull_repo::source_head(&acquired, "owner").stdout.trim(), new_head);
+        assert!(installed_profile.join("index.json").is_file());
+        assert_eq!(fixture_tree_bytes(&module_root).get(Path::new("new-module/payload.bin")).unwrap(), b"new-only profile module bytes\n");
+        assert!(!module_root.join("old-module").exists());
+        let run: serde_json::Value = serde_json::from_slice(&fs::read(receipt.join("run.json")).unwrap()).unwrap();
+        assert_eq!(run["ok"].as_bool(), Some(true));
+        let preflight: serde_json::Value = serde_json::from_slice(&fs::read(receipt.join("engine-preflight/run.json")).unwrap()).unwrap();
+        assert_eq!(preflight["engine_lane"], "artifact");
+        assert_eq!(preflight["source_head"], new_head);
+        assert_eq!(preflight["content_head_observed"], new_head);
+        assert_eq!(preflight["content_head_matches"], true);
+    }
+
+    #[test]
+    fn content_seat_move_failure_preserves_engine_and_prior_profile_tree() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env_lock = ENGINE_TRANSACTION_ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().expect("transaction fixture");
+        let source = root.path().join("source-repository");
+        fs::create_dir_all(&source).unwrap();
+        fixture_git(&source, &["init", "-q"]);
+        fixture_git(&source, &["config", "user.name", "Harmonia Fixture"]);
+        fixture_git(&source, &["config", "user.email", "fixture@example.invalid"]);
+        fixture_profile_source(&source, "new-module", b"new profile bytes\n");
+        fixture_git(&source, &["add", "."]);
+        fixture_git(&source, &["commit", "-qm", "new profile"]);
+        let new_head = crate::atoms::ask::pull_repo::source_head(&source, "owner").stdout.trim().to_string();
+        let installed_profile = root.path().join("installed/profiles/demo");
+        let module_root = installed_profile.join("modules");
+        fixture_profile_source(&root.path().join("installed"), "old-module", b"previous bytes\n");
+        let previous_tree = fixture_tree_bytes(&installed_profile);
+        let installed_binary = root.path().join("installed-engine");
+        let staged_binary = root.path().join("staged-engine");
+        let script = b"#!/bin/sh\nexit 0\n";
+        fs::write(&installed_binary, script).unwrap();
+        fs::write(&staged_binary, script).unwrap();
+        fs::set_permissions(&installed_binary, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&staged_binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let binary_before = fs::read(&installed_binary).unwrap();
+        let running_sha = crate::bands::renew_self::install_bin_fingerprint(&installed_binary).unwrap();
+        let appliance_config = root.path().join("appliance-config.json");
+        let certificate = root.path().join("device-profile.json");
+        fs::write(&appliance_config, serde_json::json!({
+            "schema": "appliance.config.v1", "source_policy": "developer",
+            "sources": {"harmonia": {"ref": "main", "candidates": [{"kind": "local-checkout", "path": source}]}}
+        }).to_string()).unwrap();
+        fs::write(&certificate, serde_json::json!({
+            "schema": "homeserver.device-profile.v1", "kernel": {"profile": "demo"},
+            "source_policy": "developer", "sources": {}
+        }).to_string()).unwrap();
+        let subscription = root.path().join("subscription.json");
+        let interactables = root.path().join("interactables.json");
+        let _test_env = EngineTransactionEnvGuard::set(&[
+            ("HARMONIA_TEST_APPLIANCE_CONFIG_PATH", appliance_config.as_os_str().to_owned()),
+            ("HARMONIA_INTERACTABLES_PATH", interactables.as_os_str().to_owned()),
+            ("HARMONIA_DEVICE_PROFILE_PATH", certificate.as_os_str().to_owned()),
+            ("HARMONIA_SUBSCRIPTION_PATH", subscription.as_os_str().to_owned()),
+            ("HARMONIA_TEST_ENGINE_INSTALL_BIN", installed_binary.as_os_str().to_owned()),
+            ("HARMONIA_TEST_ENGINE_STAGED_BIN", staged_binary.as_os_str().to_owned()),
+            ("HARMONIA_TEST_ENGINE_RUNNING_SHA", running_sha.into()),
+        ]);
+        let artifact = crate::atoms::ask::fetch_artifact::Download {
+            manifest: crate::atoms::ask::fetch_artifact::Manifest {
+                schema: "harmonia.engine_artifact.v1".into(), component: "harmonia".into(),
+                source_sha: new_head, target: "x86_64-unknown-linux-gnu".into(),
+                sha256: String::new(), built_at: "fixture".into(), pipeline_url: "fixture".into(), env_sha: None,
+            }, bytes: script.to_vec(), identity: "fixture".into(),
+        };
+        let blocked_destination = root.path().join("engine-source-blocked");
+        fs::write(&blocked_destination, b"not a directory").unwrap();
+        let _seam = crate::bands::renew_self::install_engine_test_seam(blocked_destination, Some(artifact));
+        let profile = Profile { id: "demo".into(), identity: "fixture".into(), package_authority: None,
+            modules: vec!["old-module".into()], hotfixes: Vec::new(), syzygy_declaration: None };
+        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
+        let mode = UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
+        let receipt = root.path().join("receipt");
+        let result = rolling_update_run(&profile, &module_root, &receipt, mode, None, None,
+            root.path().join("lock"), fixture_materialize_receipt_dir,
+            crate::atoms::r#do::convergence_lock::try_acquire_homeconsole_update_lock);
+        assert_eq!(result.as_ref().map_err(String::as_str), Err("engine-content-seat-move-failed"));
+        assert_eq!(fs::read(&installed_binary).unwrap(), binary_before);
+        assert_eq!(fixture_tree_bytes(&installed_profile), previous_tree);
+        let run: serde_json::Value = serde_json::from_slice(&fs::read(receipt.join("run.json")).unwrap()).unwrap();
+        assert_eq!(run["first_missing_signal"], "engine-content-seat-move-failed");
+        let preflight: serde_json::Value = serde_json::from_slice(&fs::read(receipt.join("engine-preflight/run.json")).unwrap()).unwrap();
+        assert_eq!(preflight["first_missing_signal"], "engine-content-seat-move-failed");
+        assert_eq!(preflight["engine_lane"], "artifact");
+    }
 
     #[test]
     fn band_walk_preserves_failed_module_a_aggregate_after_module_b_changes() {
