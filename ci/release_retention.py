@@ -12,7 +12,7 @@ import urllib.request
 
 API_ROOT = "https://git.home.arpa/api/v1"
 OWNER = "HOMESERVERSLTD"
-REPO = "harmonia"
+SUPPORTED_REPOS = ("harmonia", "harmonia-monad")
 KEEP_COUNT = 20
 PAGE_SIZE = 50
 TAG_PATTERN = re.compile(r"^sha-([0-9a-fA-F]{40})$")
@@ -20,6 +20,12 @@ TAG_PATTERN = re.compile(r"^sha-([0-9a-fA-F]{40})$")
 
 class RetentionError(RuntimeError):
     pass
+
+
+def validated_repo(repo):
+    if repo not in SUPPORTED_REPOS:
+        raise RetentionError("publisher retention is restricted to harmonia or harmonia-monad")
+    return repo
 
 
 def request(method, url, token, body=None):
@@ -37,11 +43,11 @@ def request(method, url, token, body=None):
         raise RetentionError(f"{method} request transport failed: {exc}") from exc
 
 
-def fetch_releases(token):
+def fetch_releases(token, repo):
     releases = []
     page = 1
     while True:
-        url = f"{API_ROOT}/repos/{OWNER}/{REPO}/releases?limit={PAGE_SIZE}&page={page}"
+        url = f"{API_ROOT}/repos/{OWNER}/{repo}/releases?limit={PAGE_SIZE}&page={page}"
         status, raw = request("GET", url, token)
         if status != 200:
             raise RetentionError(f"release-list page {page} returned HTTP {status}")
@@ -81,8 +87,9 @@ def eligible_releases(releases):
     return sorted(eligible, key=lambda item: (item["timestamp"], item["id"]), reverse=True)
 
 
-def plan(token, protect_id=None):
-    ordered = eligible_releases(fetch_releases(token))
+def plan(token, repo, protect_id=None):
+    repo = validated_repo(repo)
+    ordered = eligible_releases(fetch_releases(token, repo))
     keep = ordered[:KEEP_COUNT]
     if protect_id is not None:
         protected = next((item for item in ordered if item["id"] == protect_id), None)
@@ -97,12 +104,12 @@ def plan(token, protect_id=None):
     if len(ordered) > KEEP_COUNT:
         cutoff = ordered[KEEP_COUNT - 1]["timestamp"]
         boundary_ties = [item["id"] for item in ordered if item["timestamp"] == cutoff]
-    return {"repo": REPO, "kept_count": len(keep), "keep": keep, "delete": delete,
+    return {"repo": repo, "kept_count": len(keep), "keep": keep, "delete": delete,
             "boundary_ties_at_rank_20": boundary_ties}
 
 
-def observe_tag_ref(tag, token):
-    url = f"{API_ROOT}/repos/{OWNER}/{REPO}/git/refs/tags/{urllib.parse.quote(tag, safe='')}"
+def observe_tag_ref(tag, token, repo):
+    url = f"{API_ROOT}/repos/{OWNER}/{repo}/git/refs/tags/{urllib.parse.quote(tag, safe='')}"
     try:
         status, _ = request("GET", url, token)
     except RetentionError as exc:
@@ -114,15 +121,16 @@ def observe_tag_ref(tag, token):
     return "failed", f"tag-ref observation returned HTTP {status}"
 
 
-def apply(token, protect_id=None):
-    result = plan(token, protect_id)
+def apply(token, repo, protect_id=None):
+    repo = validated_repo(repo)
+    result = plan(token, repo, protect_id)
     deleted_releases = []
     deleted_tags = []
     remaining_tag_refs = []
     failures = []
     for candidate in result["delete"]:
         rid, tag = candidate["id"], candidate["tag"]
-        url = f"{API_ROOT}/repos/{OWNER}/{REPO}/releases/{rid}"
+        url = f"{API_ROOT}/repos/{OWNER}/{repo}/releases/{rid}"
         try:
             status, _ = request("DELETE", url, token)
         except RetentionError as exc:
@@ -132,7 +140,7 @@ def apply(token, protect_id=None):
             failures.append({"release_id": rid, "tag": tag, "step": "release-delete", "http_status": status})
             continue
         deleted_releases.append(rid)
-        tag_url = f"{API_ROOT}/repos/{OWNER}/{REPO}/tags/{urllib.parse.quote(tag, safe='')}"
+        tag_url = f"{API_ROOT}/repos/{OWNER}/{repo}/tags/{urllib.parse.quote(tag, safe='')}"
         tag_delete_succeeded = False
         try:
             tag_status, _ = request("DELETE", tag_url, token)
@@ -143,14 +151,14 @@ def apply(token, protect_id=None):
                 tag_delete_succeeded = True
             elif tag_status != 404:
                 failures.append({"release_id": rid, "tag": tag, "step": "tag-delete", "http_status": tag_status})
-        ref_state, ref_error = observe_tag_ref(tag, token)
+        ref_state, ref_error = observe_tag_ref(tag, token, repo)
         if ref_state == "present":
             remaining_tag_refs.append(tag)
         elif ref_state == "failed":
             failures.append({"release_id": rid, "tag": tag, "step": "tag-ref-observation", "error": ref_error})
         if tag_delete_succeeded:
             deleted_tags.append(tag)
-    receipt = {"repo": REPO, "kept_count": result["kept_count"],
+    receipt = {"repo": repo, "kept_count": result["kept_count"],
                "deleted_release_ids": deleted_releases, "deleted_tags": deleted_tags,
                "remaining_tag_refs": remaining_tag_refs,
                "failures": failures, "status": "partial-failure" if failures else "complete"}
@@ -174,25 +182,29 @@ def main():
     parser.add_argument("--plan", action="store_true", required=True,
                         help="GET-only ordered retention plan (required)")
     args = parser.parse_args()
+    try:
+        repo = validated_repo(os.environ.get("CI_REPO_NAME"))
+    except RetentionError as exc:
+        print(f"release_retention: {exc}", file=sys.stderr)
+        raise SystemExit(1)
     token = os.environ.get("FORGEJO_TOKEN", "")
     if not token:
         raise SystemExit("FORGEJO_TOKEN is required")
     try:
-        print_plan(plan(token))
+        print_plan(plan(token, repo))
     except RetentionError as exc:
         print(f"release_retention: {exc}", file=sys.stderr)
         raise SystemExit(1)
 
 
 def retain_current_release(repo, release_id):
-    if repo != REPO:
-        raise RetentionError("publisher retention is restricted to harmonia")
+    repo = validated_repo(repo)
     if not isinstance(release_id, int) or isinstance(release_id, bool):
         raise RetentionError("verified release id must be an integer")
     token = os.environ.get("FORGEJO_TOKEN", "")
     if not token:
         raise RetentionError("FORGEJO_TOKEN is required")
-    return apply(token, release_id)
+    return apply(token, repo, release_id)
 
 
 if __name__ == "__main__":

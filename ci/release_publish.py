@@ -98,9 +98,6 @@ def verify(release, token, sha, tag, release_name, component, digest, sidecar, e
     if not isinstance(flag_obj["flagged_at"], str) or not flag_obj["flagged_at"]: conflict("release.flag has invalid flag metadata")
 
 def run_retention(component, release):
-    # The private monad publisher keeps its historical contract unchanged.
-    if component != "harmonia":
-        return
     release_id = release.get("id") if isinstance(release, dict) else None
     if not isinstance(release_id, int):
         fail("verified release has no numeric id for retention")
