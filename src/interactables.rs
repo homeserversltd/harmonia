@@ -502,13 +502,13 @@ fn member_source<'a>(row: &'a serde_json::Value, name: &str) -> Option<&'a str> 
         .and_then(serde_json::Value::as_str)
 }
 
-fn face_source(row: &serde_json::Value) -> Option<&str> {
-    member_source(row, "face").or_else(|| {
-        row.get("gui_face")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_ascii_lowercase)
-            .and_then(|name| member_source(row, &name))
-    })
+fn has_member_flag(row: &serde_json::Value, name: &str) -> bool {
+    row.pointer(&format!("/member_flags/{name}"))
+        .is_some_and(|flag| flag.is_object() || flag.is_string())
+}
+
+fn face_source<'a>(row: &'a serde_json::Value, member: &str) -> Option<&'a str> {
+    member_source(row, member)
 }
 
 fn canonical_dns_name(value: &str) -> Option<String> {
@@ -577,12 +577,28 @@ pub(crate) fn reconcile_ruyi(
         .caduceus_module_id()
         .ok_or_else(|| "ruyi-caduceus-module-absent".to_string())?;
     let self_mac = self_row.get("mac").and_then(serde_json::Value::as_str);
+    let declaration = profile.syzygy_declaration.as_ref();
+    let compare_sbin = declaration
+        .is_some_and(|declaration| declaration.members.iter().any(|member| member == "sbin"));
+    let face_name = declaration
+        .and_then(|declaration| {
+            let face = declaration.gui_face.as_deref()?;
+            let member = face.to_ascii_lowercase();
+            declaration
+                .members
+                .iter()
+                .any(|declared| declared == &member)
+                .then_some(member)
+        })
+        .filter(|face| matches!(face.as_str(), "arcadia" | "coronatio"));
     let newest = [
         self_row
             .get("caduceus_sha")
             .and_then(serde_json::Value::as_str),
         member_source(self_row, "sbin"),
-        face_source(self_row),
+        face_name
+            .as_deref()
+            .and_then(|member| face_source(self_row, member)),
     ];
     let now = now_seconds();
     let mut held_back_by = Vec::new();
@@ -596,17 +612,50 @@ pub(crate) fn reconcile_ruyi(
         let peer_view = peer
             .pointer("/perspective/self")
             .or_else(|| roster.pointer(&format!("/perspectives/{mac}/self")));
+        let peer_caduceus = peer.get("caduceus_sha").and_then(serde_json::Value::as_str);
+        let compare_peer_sbin =
+            compare_sbin && peer_view.is_some_and(|row| has_member_flag(row, "sbin"));
+        let peer_face_name = peer_view
+            .and_then(|row| row.get("gui_face"))
+            .and_then(serde_json::Value::as_str);
+        let compare_peer_face = face_name.as_deref().is_some_and(|member| {
+            peer_face_name.is_some_and(|peer_face| {
+                peer_face.eq_ignore_ascii_case(member)
+                    && peer_view.is_some_and(|row| has_member_flag(row, member))
+            })
+        });
         let wears = [
-            peer.get("caduceus_sha").and_then(serde_json::Value::as_str),
-            peer_view.and_then(|row| member_source(row, "sbin")),
-            peer_view.and_then(face_source),
+            peer_caduceus,
+            compare_peer_sbin
+                .then(|| peer_view.and_then(|row| member_source(row, "sbin")))
+                .flatten(),
+            compare_peer_face
+                .then(|| {
+                    peer_view.and_then(|row| {
+                        face_name
+                            .as_deref()
+                            .and_then(|member| face_source(row, member))
+                    })
+                })
+                .flatten(),
         ];
         let terms = [
             term_state(newest[0], wears[0]),
-            term_state(newest[1], wears[1]),
-            term_state(newest[2], wears[2]),
+            if compare_peer_sbin {
+                term_state(newest[1], wears[1])
+            } else {
+                "not-compared"
+            },
+            if compare_peer_face {
+                term_state(newest[2], wears[2])
+            } else {
+                "not-compared"
+            },
         ];
-        if terms.iter().all(|term| *term == "same") {
+        if terms
+            .iter()
+            .all(|term| *term == "same" || *term == "not-compared")
+        {
             continue;
         }
         let hostname = peer
@@ -623,13 +672,13 @@ pub(crate) fn reconcile_ruyi(
             .map(|age| format!("{age}s"))
             .unwrap_or_else(|| "unknown".to_string());
         let description = format!(
-            "For {hostname} {mac}, the worn triple is (caduceus={}, sbin={}, face={}), the newest triple is (caduceus={}, sbin={}, face={}), the term triple is (caduceus={}, sbin={}, face={}), and the last-event age is {last_event_age}.",
+            "For {hostname} {mac}, the worn terms are (caduceus={}, sbin={}, face={}), the newest terms are (caduceus={}, sbin={}, face={}), the compared-term states are (caduceus={}, sbin={}, face={}), and the last-event age is {last_event_age}.",
             wears[0].unwrap_or("unknown"),
-            wears[1].unwrap_or("unknown"),
-            wears[2].unwrap_or("unknown"),
+            wears[1].unwrap_or("not-compared"),
+            wears[2].unwrap_or("not-compared"),
             newest[0].unwrap_or("unknown"),
-            newest[1].unwrap_or("unknown"),
-            newest[2].unwrap_or("unknown"),
+            if compare_peer_sbin { newest[1].unwrap_or("unknown") } else { "not-compared" },
+            if compare_peer_face { newest[2].unwrap_or("unknown") } else { "not-compared" },
             terms[0],
             terms[1],
             terms[2],
@@ -1340,6 +1389,47 @@ mod tests {
         peer
     }
 
+    fn ruyi_profile(members: &[&str], gui_face: Option<&str>) -> crate::Profile {
+        crate::Profile {
+            id: "homeconsole".into(),
+            identity: "test".into(),
+            package_authority: None,
+            modules: vec!["caduceus".into()],
+            hotfixes: Vec::new(),
+            syzygy_declaration: Some(crate::SyzygyDeclaration {
+                schema: "test".into(),
+                members: members.iter().map(|member| (*member).into()).collect(),
+                gui_face: gui_face.map(str::to_string),
+            }),
+        }
+    }
+
+    fn ruyi_row(mac: &str, hostname: &str, caduceus: &str) -> serde_json::Value {
+        serde_json::json!({
+            "mac": mac,
+            "hostname": hostname,
+            "caduceus_sha": caduceus,
+        })
+    }
+
+    fn reconcile_ruyi_case(
+        label: &str,
+        profile: &crate::Profile,
+        self_row: &serde_json::Value,
+        peer: &serde_json::Value,
+        roster: &serde_json::Value,
+    ) -> (Vec<String>, Vec<Interactable>) {
+        let root = fixture(label);
+        let path = root.join("interactables.json");
+        crate::bands::propose_edits::persist_feed(&path, &make_feed(Vec::new())).unwrap();
+        let held_back = with_interactables_path(&path, || {
+            reconcile_ruyi(profile, self_row, roster, &[peer.clone()], false).unwrap()
+        });
+        let feed = load_feed(&path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        (held_back, feed.interactables)
+    }
+
     fn with_interactables_path<T>(path: &Path, operation: impl FnOnce() -> T) -> T {
         let _guard = INTERACTABLES_ENV_LOCK
             .get_or_init(|| Mutex::new(()))
@@ -1353,6 +1443,183 @@ mod tests {
             None => env::remove_var("HARMONIA_INTERACTABLES_PATH"),
         }
         result
+    }
+
+    #[test]
+    fn reconcile_ruyi_compares_only_declared_terms_visible_in_peer_perspective() {
+        let mac = "bb:bb:bb:bb:bb:bb";
+        let self_mac = "aa:aa:aa:aa:aa:aa";
+        let caduceus = "a".repeat(40);
+        let arcadia_profile = ruyi_profile(
+            &["harmonia", "caduceus", "sbin", "arcadia"],
+            Some("Arcadia"),
+        );
+
+        // Canonical Arcadia declarations and flag keys compare a concrete equal face.
+        let mut self_row = ruyi_row(self_mac, "self", &caduceus);
+        self_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-equal"},
+            "arcadia": {"source_sha": "arcadia-equal"}
+        });
+        let mut peer_row = ruyi_row(mac, "arcadia-peer", &caduceus);
+        peer_row["gui_face"] = serde_json::json!("Arcadia");
+        peer_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-equal"},
+            "arcadia": {"source_sha": "arcadia-equal"}
+        });
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-arcadia-face-equal",
+            &arcadia_profile,
+            &self_row,
+            &ratchet_peer(peer_row),
+            &serde_json::json!({}),
+        );
+        assert!(held.is_empty());
+        assert!(entries.is_empty());
+
+        // Coronatio uses its own named declaration member and flag key too.
+        let coronatio_profile = ruyi_profile(
+            &["harmonia", "caduceus", "sbin", "coronatio"],
+            Some("Coronatio"),
+        );
+        let mut self_row = ruyi_row(self_mac, "self", &caduceus);
+        self_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-equal"},
+            "coronatio": {"source_sha": "coronatio-equal"}
+        });
+        let mut peer_row = ruyi_row(mac, "coronatio-peer", &caduceus);
+        peer_row["gui_face"] = serde_json::json!("Coronatio");
+        peer_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-equal"},
+            "coronatio": {"source_sha": "coronatio-equal"}
+        });
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-coronatio-face-equal",
+            &coronatio_profile,
+            &self_row,
+            &ratchet_peer(peer_row),
+            &serde_json::json!({}),
+        );
+        assert!(held.is_empty());
+        assert!(entries.is_empty());
+
+        // The real member_flags.arcadia signal establishes comparability but no SHA.
+        let mut self_row = ruyi_row(self_mac, "self", &caduceus);
+        self_row["member_flags"] = serde_json::json!({
+            "arcadia": {"source_sha": "arcadia-new"}
+        });
+        let mut peer_row = ruyi_row(mac, "arcadia-signal", &caduceus);
+        peer_row["gui_face"] = serde_json::json!("Arcadia");
+        peer_row["member_flags"] = serde_json::json!({
+            "arcadia": "syzygy-flag-absent arcadia",
+            "face": {"source_sha": "stale-generic-face"}
+        });
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-arcadia-face-unknown",
+            &arcadia_profile,
+            &self_row,
+            &ratchet_peer(peer_row),
+            &serde_json::json!({}),
+        );
+        assert_eq!(held, vec![mac]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].evidence["terms"]["face"], "unknown");
+
+        // A different peer face is not comparable; the older sbin still explains the bump.
+        let mut self_row = ruyi_row(self_mac, "self", &caduceus);
+        self_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-new"},
+            "arcadia": {"source_sha": "arcadia-new"}
+        });
+        let mut peer_row = ruyi_row(mac, "coronatio-peer", &caduceus);
+        peer_row["gui_face"] = serde_json::json!("Coronatio");
+        peer_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-old"},
+            "coronatio": {"source_sha": "coronatio-face"}
+        });
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-coronatio-peer-face",
+            &arcadia_profile,
+            &self_row,
+            &ratchet_peer(peer_row),
+            &serde_json::json!({}),
+        );
+        assert_eq!(held, vec![mac]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].evidence["terms"]["sbin"], "older");
+        assert_eq!(entries[0].evidence["terms"]["face"], "not-compared");
+
+        // Hyprland declares no GUI-face member; its face-like metadata is ignored.
+        let hyprland_profile = ruyi_profile(&["harmonia", "caduceus", "sbin"], Some("Hyprland"));
+        let mut self_row = ruyi_row(self_mac, "self", &caduceus);
+        self_row["member_flags"] = serde_json::json!({"sbin": {"source_sha": "sbin-same"}});
+        let mut peer_row = ruyi_row(mac, "hyprland-peer", &caduceus);
+        peer_row["gui_face"] = serde_json::json!("Hyprland");
+        peer_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-same"}
+        });
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-hyprland-equal",
+            &hyprland_profile,
+            &self_row,
+            &ratchet_peer(peer_row),
+            &serde_json::json!({}),
+        );
+        assert!(held.is_empty());
+        assert!(entries.is_empty());
+
+        // A peer without a perspective is a probe: only equal Caduceus is compared.
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-probe-equal",
+            &arcadia_profile,
+            &ruyi_row(self_mac, "self", &caduceus),
+            &ruyi_row(mac, "probe", &caduceus),
+            &serde_json::json!({}),
+        );
+        assert!(held.is_empty());
+        assert!(entries.is_empty());
+
+        // Older sbin remains actionable while the peer's face is explicitly not compared.
+        let sbin_profile = ruyi_profile(
+            &["harmonia", "caduceus", "sbin", "arcadia"],
+            Some("Arcadia"),
+        );
+        let mut self_row = ruyi_row(self_mac, "self", &caduceus);
+        self_row["member_flags"] = serde_json::json!({
+            "sbin": {"source_sha": "sbin-new"},
+            "arcadia": {"source_sha": "arcadia-new"}
+        });
+        let mut peer_row = ruyi_row(mac, "older-sbin", &caduceus);
+        peer_row["gui_face"] = serde_json::json!("Coronatio");
+        peer_row["member_flags"] = serde_json::json!({"sbin": {"source_sha": "sbin-old"}});
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-older-sbin-face-not-compared",
+            &sbin_profile,
+            &self_row,
+            &ratchet_peer(peer_row),
+            &serde_json::json!({}),
+        );
+        assert_eq!(held, vec![mac]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].evidence["terms"]["sbin"], "older");
+        assert_eq!(entries[0].evidence["terms"]["face"], "not-compared");
+
+        // A declared sbin signal without source_sha is unknown rather than not-compared.
+        let mut self_row = ruyi_row(self_mac, "self", &caduceus);
+        self_row["member_flags"] = serde_json::json!({"sbin": "present"});
+        let mut peer_row = ruyi_row(mac, "sbin-signal", &caduceus);
+        peer_row["member_flags"] = serde_json::json!({"sbin": "present"});
+        let (held, entries) = reconcile_ruyi_case(
+            "ruyi-sbin-signal-unknown",
+            &ruyi_profile(&["harmonia", "caduceus", "sbin"], None),
+            &self_row,
+            &ratchet_peer(peer_row),
+            &serde_json::json!({}),
+        );
+        assert_eq!(held, vec![mac]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].evidence["terms"]["sbin"], "unknown");
+        assert_eq!(entries[0].evidence["terms"]["face"], "not-compared");
     }
 
     #[test]
