@@ -36,7 +36,7 @@ def ci_repository_from_env():
         fail(str(exc))
     return f"{API_ROOT}/repos/{owner}/{name}/releases", component
 
-def request(method, url, token, body=None, content_type=None, accept=None, conflict_on_transport=False):
+def request(method, url, token, body=None, content_type=None, accept=None, conflict_on_transport=False, description=None):
     headers = {"Authorization": f"token {token}", "User-Agent": "harmonia-woodpecker-release"}
     if content_type: headers["Content-Type"] = content_type
     if accept: headers["Accept"] = accept
@@ -47,8 +47,37 @@ def request(method, url, token, body=None, content_type=None, accept=None, confl
         with urllib.request.urlopen(req, timeout=180) as response: return response.status, response.read()
     except urllib.error.HTTPError as exc: return exc.code, exc.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        if conflict_on_transport: conflict(f"{method} {url} transport failure: {exc}")
-        fail(f"{method} {url} transport failure: {exc}")
+        context = description or f"{method} {url}"
+        if conflict_on_transport: conflict(f"{context} transport failure: {exc}")
+        fail(f"{context} transport failure: {exc}")
+
+def load_schema(token, schema_id):
+    url = f"https://git.home.arpa/HOMESERVERSLTD/caduceus/raw/branch/main/schema/{schema_id}.json"
+    status, raw = request("GET", url, token, accept="application/json", conflict_on_transport=True, description=f"schema seat {schema_id}")
+    if status != 200: conflict(f"schema seat {schema_id} returned HTTP {status}")
+    value = None
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        conflict(f"schema seat {schema_id} returned invalid JSON")
+    if not isinstance(value, dict):
+        conflict(f"schema seat {schema_id} is not a JSON object")
+        return {}
+    schema = value
+    if schema.get("schema") != schema_id: conflict(f"schema seat {schema_id} declares a foreign id")
+    required = schema.get("required")
+    if not isinstance(required, list) or any(not isinstance(field, str) or not field for field in required):
+        conflict(f"schema seat {schema_id} has an invalid required-field list")
+    return schema
+
+def load_schemas(token):
+    return {
+        "estate.release-flag.v1": load_schema(token, "estate.release-flag.v1"),
+        "estate.artifact.manifest.v1": load_schema(token, "estate.artifact.manifest.v1"),
+    }
+
+def has_required_fields(payload, schema):
+    return all(field in payload and payload[field] not in (None, "", [], {}) for field in schema["required"])
 
 def decode(raw, description):
     try: return json.loads(raw)
@@ -77,7 +106,7 @@ def download(asset, token, name):
     if status != 200: conflict(f"download of {name} returned HTTP {status}")
     return raw
 
-def verify(release, token, sha, tag, release_name, component, digest, sidecar, env_sha):
+def verify(release, token, sha, tag, release_name, component, digest, sidecar, env_sha, schemas):
     if release.get("tag_name") != tag or release.get("name") != release_name or release.get("target_commitish") != sha or ("target_commit" in release and release["target_commit"] != sha):
         conflict("existing release identity conflicts with CI_COMMIT_SHA")
     assets = assets_of(release)
@@ -87,15 +116,24 @@ def verify(release, token, sha, tag, release_name, component, digest, sidecar, e
     if download(assets[EXPECTED_ASSETS[1]], token, EXPECTED_ASSETS[1]) != sidecar:
         conflict(f"downloaded {EXPECTED_ASSETS[1]} has conflicting contents")
     manifest_obj = decode(download(assets[EXPECTED_ASSETS[2]], token, EXPECTED_ASSETS[2]), "manifest.json")
-    expected_keys = {"schema", "component", "source_sha", "env_sha", "target", "sha256", "built_at", "pipeline_url"}
-    if not isinstance(manifest_obj, dict) or set(manifest_obj) != expected_keys: conflict("manifest.json has an invalid key set")
+    manifest_schema = schemas["estate.artifact.manifest.v1"]
+    if not isinstance(manifest_obj, dict):
+        conflict("manifest.json is not an object")
+        return
+    if not has_required_fields(manifest_obj, manifest_schema): conflict("manifest.json is missing required seat fields or has invalid contents")
     if any((manifest_obj["schema"] != "estate.artifact.manifest.v1", manifest_obj["component"] != component, manifest_obj["source_sha"] != sha, manifest_obj["env_sha"] != env_sha, manifest_obj["target"] != "x86_64-unknown-linux-gnu", manifest_obj["sha256"] != digest)): conflict("manifest.json has conflicting contents")
     if not isinstance(manifest_obj["built_at"], str) or not manifest_obj["built_at"] or not isinstance(manifest_obj["pipeline_url"], str) or not manifest_obj["pipeline_url"]: conflict("manifest.json has invalid build metadata")
     flag_obj = decode(download(assets[EXPECTED_ASSETS[3]], token, EXPECTED_ASSETS[3]), "release.flag")
-    expected_flag_keys = {"schema", "component", "source_sha", "env_sha", "sha256", "flagged_at", "pipeline_url"}
-    if not isinstance(flag_obj, dict) or set(flag_obj) != expected_flag_keys: conflict("release.flag has an invalid key set")
-    if any((flag_obj["schema"] != "estate.release-flag.v1", flag_obj["component"] != component, flag_obj["source_sha"] != sha, flag_obj["env_sha"] != env_sha, flag_obj["sha256"] != digest, flag_obj["pipeline_url"] != manifest_obj["pipeline_url"])): conflict("release.flag has conflicting contents")
+    flag_schema = schemas["estate.release-flag.v1"]
+    if not isinstance(flag_obj, dict):
+        conflict("release.flag is not an object")
+        return
+    if not has_required_fields(flag_obj, flag_schema): conflict("release.flag is missing required seat fields or has invalid contents")
+    if any((flag_obj["schema"] != "estate.release-flag.v1", flag_obj["component"] != component, flag_obj["source_sha"] != sha)): conflict("release.flag has conflicting contents")
+    if "env_sha" in flag_obj and flag_obj["env_sha"] != env_sha: conflict("release.flag has a conflicting env_sha")
+    if "sha256" in flag_obj and flag_obj["sha256"] != digest: conflict("release.flag has a conflicting sha256")
     if not isinstance(flag_obj["flagged_at"], str) or not flag_obj["flagged_at"]: conflict("release.flag has invalid flag metadata")
+    if "pipeline_url" in flag_obj and flag_obj["pipeline_url"] != manifest_obj["pipeline_url"]: conflict("release.flag pipeline_url conflicts with manifest.json")
 
 def run_retention(component, release):
     release_id = release.get("id") if isinstance(release, dict) else None
@@ -115,6 +153,7 @@ def main():
     releases, component = ci_repository_from_env()
     token = os.environ.get("FORGEJO_TOKEN", "")
     if not token: fail("FORGEJO_TOKEN is required")
+    schemas = load_schemas(token)
     sha = os.environ.get("CI_COMMIT_SHA", "")
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha): fail("CI_COMMIT_SHA must be exactly 40 lowercase hexadecimal characters")
     tag = release_tag_for_sha(sha)
@@ -147,13 +186,13 @@ def main():
     release_flag = (json.dumps(release_flag_obj, indent=2) + "\n").encode("utf-8")
     tag_url = f"{releases}/tags/{urllib.parse.quote(tag, safe='')}"; status, raw = request("GET", tag_url, token)
     if status == 200:
-        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
+        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, schemas); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
     if status != 404: fail(f"GET release tag returned HTTP {status}")
     payload = {"tag_name": tag, "name": FACTS["name"], "target_commitish": sha, "draft": False, "prerelease": False}; status, raw = request("POST", releases, token, payload)
     if status == 409:
         status, raw = request("GET", tag_url, token)
         if status != 200: fail(f"release collision reread returned HTTP {status}")
-        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
+        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, schemas); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
     if status not in (200, 201): fail(f"release creation returned HTTP {status}")
     release = decode(raw, "release creation"); release_id = release.get("id")
     if not isinstance(release_id, int): fail("created release has no numeric id")
@@ -165,7 +204,7 @@ def main():
     status, raw = request("GET", tag_url, token)
     if status != 200: fail(f"reread of release returned HTTP {status}")
     verified_release = decode(raw, "release reread")
-    verify(verified_release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha)
+    verify(verified_release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, schemas)
     verified_id = verified_release.get("id") if isinstance(verified_release, dict) else None
     if not isinstance(verified_id, int) or isinstance(verified_id, bool) or verified_id != release_id:
         fail("release reread id conflicts with created release id")
