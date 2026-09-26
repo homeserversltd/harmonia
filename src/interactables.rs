@@ -11,6 +11,10 @@ pub(crate) const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 pub(crate) const LEGACY_FEED_SCHEMA: &str = "harmonia.interactables.feed.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
+pub(crate) fn is_ruyi_born_kind(kind: &str) -> bool {
+    matches!(kind, "ruyi-bump" | "dns-record" | "toolchain-ratchet")
+}
+
 pub(crate) struct OperatorHand(());
 
 fn operator_hand() -> OperatorHand {
@@ -552,42 +556,23 @@ pub(crate) fn reconcile_ruyi(
     let created = feed
         .interactables
         .iter()
-        .filter(|item| {
-            matches!(
-                item.kind.as_str(),
-                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
-            )
-        })
+        .filter(|item| is_ruyi_born_kind(&item.kind))
         .map(|item| (item.id.clone(), item.created_at.clone()))
         .collect::<std::collections::HashMap<_, _>>();
     let unknown = feed
         .interactables
         .iter()
-        .filter(|item| {
-            matches!(
-                item.kind.as_str(),
-                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
-            )
-        })
+        .filter(|item| is_ruyi_born_kind(&item.kind))
         .map(|item| (item.id.clone(), item.extra.clone()))
         .collect::<std::collections::HashMap<_, _>>();
     let remove_ids = feed
         .interactables
         .iter()
-        .filter(|item| {
-            matches!(
-                item.kind.as_str(),
-                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
-            )
-        })
+        .filter(|item| is_ruyi_born_kind(&item.kind))
         .map(|item| item.id.clone())
         .collect::<BTreeSet<_>>();
-    feed.interactables.retain(|item| {
-        !matches!(
-            item.kind.as_str(),
-            "ruyi-bump" | "dns-record" | "toolchain-ratchet"
-        )
-    });
+    feed.interactables
+        .retain(|item| !is_ruyi_born_kind(&item.kind));
     let module = profile
         .caduceus_module_id()
         .ok_or_else(|| "ruyi-caduceus-module-absent".to_string())?;
@@ -860,12 +845,7 @@ pub(crate) fn reconcile_ruyi(
     let entries = feed
         .interactables
         .iter()
-        .filter(|item| {
-            matches!(
-                item.kind.as_str(),
-                "ruyi-bump" | "dns-record" | "toolchain-ratchet"
-            )
-        })
+        .filter(|item| is_ruyi_born_kind(&item.kind))
         .cloned()
         .collect();
     crate::bands::propose_edits::persist_feed_with_intent(

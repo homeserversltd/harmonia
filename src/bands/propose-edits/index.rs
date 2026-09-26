@@ -209,7 +209,7 @@ pub(crate) fn prune_stale_interactables_at_path(
             Some("retired-kind")
         } else if !active_modules.contains(&entry.module_id) {
             Some("module-absent-from-profile")
-        } else if !matches!(entry.kind.as_str(), "ruyi-bump" | "dns-record")
+        } else if !interactables::is_ruyi_born_kind(&entry.kind)
             && !entry
                 .reference_source_path
                 .as_deref()
@@ -1071,6 +1071,120 @@ mod refresh_interactables_tests {
         println!(
             "prune_receipt={}",
             serde_json::to_string(&receipts[0]).unwrap()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prune_stale_interactables_keeps_ruyi_born_rows_without_references() {
+        let root =
+            std::env::temp_dir().join(format!("harmonia-prune-ruyi-born-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let feed_path = root.join("interactables.json");
+        let events_path = root.join("events.jsonl");
+        let present_reference = root.join("known-good.conf");
+        fs::write(&present_reference, b"known-good\n").unwrap();
+
+        let present_hard_stamp = prune_item(
+            &root,
+            "present-hard-stamp",
+            "active-module",
+            root.join("present.conf"),
+            present_reference,
+            false,
+        );
+        let absent_hard_stamp = prune_item(
+            &root,
+            "absent-hard-stamp",
+            "active-module",
+            root.join("absent.conf"),
+            root.join("missing-reference.conf"),
+            false,
+        );
+        let mut toolchain_ratchet = prune_item(
+            &root,
+            "toolchain-ratchet",
+            "active-module",
+            root.join("toolchain"),
+            root.join("unused-reference.conf"),
+            false,
+        );
+        toolchain_ratchet.kind = "toolchain-ratchet".into();
+        toolchain_ratchet.reference_source_path = None;
+        toolchain_ratchet.extra.insert(
+            "preserve-me".into(),
+            serde_json::Value::String("serialized intact".into()),
+        );
+        let mut ruyi_bump = prune_item(
+            &root,
+            "ruyi-bump",
+            "active-module",
+            root.join("ruyi"),
+            root.join("unused-reference.conf"),
+            false,
+        );
+        ruyi_bump.kind = "ruyi-bump".into();
+        ruyi_bump.reference_source_path = None;
+
+        let ratchet_bytes_before = serde_json::to_vec(&toolchain_ratchet).unwrap();
+        persist_feed(
+            &feed_path,
+            &interactables::make_feed(vec![
+                present_hard_stamp,
+                absent_hard_stamp,
+                toolchain_ratchet,
+                ruyi_bump,
+            ]),
+        )
+        .unwrap();
+        let mut events = File::create(&events_path).unwrap();
+        let profile = Profile {
+            id: "fixture-profile".into(),
+            identity: "fixture-identity".into(),
+            package_authority: None,
+            modules: vec!["active-module".into()],
+            hotfixes: Vec::new(),
+            syzygy_declaration: None,
+        };
+
+        prune_stale_interactables_at_path(&feed_path, &profile, &mut events).unwrap();
+        drop(events);
+
+        let retained = interactables::load_feed_raw(&feed_path)
+            .unwrap()
+            .interactables;
+        assert_eq!(
+            retained
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["present-hard-stamp", "toolchain-ratchet", "ruyi-bump"]
+        );
+        let ratchet_after = retained
+            .iter()
+            .find(|item| item.id == "toolchain-ratchet")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_vec(ratchet_after).unwrap(),
+            ratchet_bytes_before
+        );
+
+        let receipts = fs::read_to_string(&events_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            receipts,
+            vec![serde_json::json!({
+                "schema": "harmonia.interactables.prune.v1",
+                "id": "absent-hard-stamp",
+                "module_id": "active-module",
+                "target_path": root.join("absent.conf"),
+                "reason": "reference-absent",
+            })]
         );
 
         fs::remove_dir_all(root).unwrap();
