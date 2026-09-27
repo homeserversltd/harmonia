@@ -2,14 +2,15 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::net::{Ipv4Addr, ToSocketAddrs};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[path = "ruyi/dns.rs"]
+mod dns;
 #[path = "ruyi/registrant.rs"]
 pub(crate) mod registrant;
+use dns::{resolve_ipv4, DnsLookup};
 pub(crate) use registrant::{announce, read_perspective, register_promoted};
 
 // Identity of this running engine, not a checkout, receipt, or release lookup.
@@ -208,27 +209,6 @@ fn address_interfaces(stdout: &str, ipv4: Ipv4Addr) -> Vec<String> {
     interfaces
 }
 
-fn resolve_ipv4(canonical_name: String) -> Vec<Ipv4Addr> {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let answers = (canonical_name.as_str(), 0)
-            .to_socket_addrs()
-            .map(|answers| {
-                answers
-                    .filter_map(|answer| match answer {
-                        std::net::SocketAddr::V4(address) => Some(*address.ip()),
-                        std::net::SocketAddr::V6(_) => None,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let _ = sender.send(answers);
-    });
-    receiver
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap_or_default()
-}
-
 fn dns_local_ipv4(dns_answers: &[Ipv4Addr], addresses: &str) -> Result<Option<Ipv4Addr>, String> {
     if dns_answers.is_empty() {
         return Ok(None);
@@ -351,7 +331,10 @@ pub(crate) fn local_identity() -> Result<LocalIdentity, String> {
     if !addresses.ok {
         return Err("ruyi-local-ipv4-command-failed".into());
     }
-    let dns_answers = resolve_ipv4(canonical_name(&hostname));
+    let dns_answers = match resolve_ipv4(canonical_name(&hostname))? {
+        DnsLookup::Absent => Vec::new(),
+        DnsLookup::Answers(answers) => answers,
+    };
     if let Some(ipv4) = dns_local_ipv4(&dns_answers, &addresses.stdout)? {
         return identity_for_ipv4(&hostname, ipv4, &addresses.stdout, None);
     }
