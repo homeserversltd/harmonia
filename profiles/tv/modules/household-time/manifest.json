@@ -35,8 +35,7 @@
       "permutation": "restart",
       "args": {
         "service": "systemd-timesyncd.service",
-        "timeout_secs": 15,
-        "restart_policy": "always"
+        "timeout_secs": 15
       },
       "on_failure": "stop"
     }

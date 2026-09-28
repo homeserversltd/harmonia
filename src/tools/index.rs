@@ -24,7 +24,6 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("grub", include_str!("grub/index.json")),
     ("build-venv", include_str!("build-venv/index.json")),
     ("check-health", include_str!("check-health/index.json")),
-    ("enable-unit", include_str!("enable-unit/index.json")),
     (
         "install-package",
         include_str!("install-package/index.json"),
@@ -37,7 +36,6 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
         include_str!("ratchet-aur-package/index.json"),
     ),
     ("remove-file", include_str!("remove-file/index.json")),
-    ("remove-unit", include_str!("remove-unit/index.json")),
     (
         "service-runtime",
         include_str!("service-runtime/index.json"),

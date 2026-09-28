@@ -105,7 +105,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             ("binary-install", "place-file", "binary-promotion"),
             ("managed-files", "files", "managed-files"),
             ("service-daemon-reload", "systemd", "daemon-reload"),
-            ("service-enable", "enable-unit", "enable"),
+            ("service-enable", "systemd", "enable"),
             ("service-restart", "systemd", "restart"),
             ("service-active", "systemd", "is-active-probe"),
             ("unit-authority-proof", "systemd", "show-assert"),
@@ -359,9 +359,6 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                             "user".into(),
                             args.get("user").cloned().unwrap_or(Value::Bool(false)),
                         );
-                        if let Some(policy) = args.get("restart_policy") {
-                            c.insert("restart_policy".into(), policy.clone());
-                        }
                         c
                     }
                     "source-sha-record" => {
@@ -868,14 +865,13 @@ pub(crate) fn execute_routine_child(
             } else {
                 restart_changed || xenia_running_sha_changed
             };
-            let restart_policy = args.get("restart_policy").and_then(Value::as_str);
             let effective = if user {
                 format!("user-{}", permutation.name)
             } else {
                 permutation.name.to_string()
             };
             let observation_only = matches!(permutation.name, "is-active-probe");
-            let o = crate::tools::systemd::run_permutation_with_policy(
+            let o = crate::tools::systemd::run_permutation_with_material_gate(
                 receipt_dir,
                 &name,
                 &effective,
@@ -885,7 +881,6 @@ pub(crate) fn execute_routine_child(
                 timeout,
                 if observation_only { false } else { apply },
                 material_changed,
-                restart_policy,
                 invocation,
             )?;
 
@@ -894,40 +889,6 @@ pub(crate) fn execute_routine_child(
                 [("service".into(), serde_json::json!(service.unwrap_or("")))]
                     .into_iter()
                     .collect(),
-            ))
-        }
-        "enable-unit" => {
-            let service = args
-                .get("service")
-                .and_then(Value::as_str)
-                .ok_or("enable-unit-service-missing")?;
-            let user = args.get("user").and_then(Value::as_bool).unwrap_or(false);
-            let target = args.get("target_user").and_then(Value::as_str);
-            let timeout = args
-                .get("timeout_secs")
-                .and_then(Value::as_u64)
-                .unwrap_or(30);
-            let o = crate::tools::systemd::run_action(
-                receipt_dir,
-                &name,
-                "enable",
-                Some(service),
-                user,
-                target,
-                timeout,
-                apply,
-                false,
-                invocation,
-            )?;
-
-            Ok((
-                o,
-                [
-                    ("service".into(), serde_json::json!(service)),
-                    ("enabled".into(), serde_json::json!(true)),
-                ]
-                .into_iter()
-                .collect(),
             ))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),

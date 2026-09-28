@@ -159,12 +159,10 @@ pub struct Declaration {
     pub restoration: Restoration,
     pub permutations: &'static [DeclarationPermutation],
 }
-const SEATS: [&str; 14] = [
+const SEATS: [&str; 12] = [
     "place-file",
     "remove-file",
     "make-symlink",
-    "enable-unit",
-    "remove-unit",
     "backfill-file",
     "build-venv",
     "build-crate",
@@ -299,7 +297,7 @@ fn build(root: RawDeclarations) -> Result<Vec<Declaration>, String> {
     {
         return Err("invalid-declaration-schema".into());
     }
-    if root.records.len() != 14 {
+    if root.records.len() != SEATS.len() {
         return Err("wrong-declaration-seat-count".into());
     }
     let mut seen = BTreeSet::new();
@@ -388,7 +386,7 @@ fn build(root: RawDeclarations) -> Result<Vec<Declaration>, String> {
             permutations: ps,
         });
     }
-    if seen.len() != 14 || SEATS.iter().any(|s| !seen.contains(*s)) {
+    if seen.len() != SEATS.len() || SEATS.iter().any(|s| !seen.contains(*s)) {
         return Err("declaration-seat-set-mismatch".into());
     }
     Ok(out)

@@ -1,12 +1,11 @@
 //! Authorized mutation atom index.
 #![allow(dead_code, unused_imports)]
-#[path = "enable_unit.rs"]
-pub(crate) mod enable_unit;
-#[path = "remove_unit.rs"]
-pub(crate) mod remove_unit;
 
 #[path = "backfill_file.rs"]
 pub(crate) mod backfill_file;
+#[path = "remove_unit.rs"]
+pub(crate) mod remove_unit;
+
 #[path = "make_symlink.rs"]
 pub(crate) mod make_symlink;
 #[path = "place_file.rs"]

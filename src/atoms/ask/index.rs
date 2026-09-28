@@ -238,10 +238,11 @@ fn bounded_read<R: Read>(mut reader: R, limit: usize) -> String {
 }
 
 pub(crate) fn unit_state(unit: &str) -> UnitObservation {
-    let active = read_only_command("/usr/bin/systemctl", &["is-active".into(), unit.into()]);
-    let enabled = read_only_command("/usr/bin/systemctl", &["is-enabled".into(), unit.into()]);
+    let systemctl = systemctl_program();
+    let active = read_only_command(&systemctl, &["is-active".into(), unit.into()]);
+    let enabled = read_only_command(&systemctl, &["is-enabled".into(), unit.into()]);
     let show = read_only_command(
-        "/usr/bin/systemctl",
+        &systemctl,
         &["show".into(), unit.into(), "-p".into(), "SubState".into()],
     );
     let state = format!(
@@ -283,6 +284,16 @@ pub(crate) fn http_probe(url: &str) -> HttpObservation {
     }
 }
 
+#[cfg(any(test, feature = "test-facade"))]
+fn systemctl_program() -> String {
+    std::env::var("HARMONIA_SYSTEMCTL").unwrap_or_else(|_| "/usr/bin/systemctl".into())
+}
+
+#[cfg(not(any(test, feature = "test-facade")))]
+fn systemctl_program() -> String {
+    "/usr/bin/systemctl".into()
+}
+
 pub(crate) fn systemd_state_query(
     kind: &str,
     unit: &str,
@@ -314,7 +325,7 @@ pub(crate) fn systemd_state_query(
         }
         _ => {
             return CommandObservation {
-                program: "/usr/bin/systemctl".into(),
+                program: systemctl_program(),
                 args,
                 ok: false,
                 code: None,
@@ -324,7 +335,7 @@ pub(crate) fn systemd_state_query(
         }
     }
     let result = read_only_command_with_timeout(
-        "/usr/bin/systemctl",
+        &systemctl_program(),
         &args,
         Duration::from_secs(timeout_secs),
     );

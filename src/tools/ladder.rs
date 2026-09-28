@@ -98,6 +98,26 @@ pub(crate) struct RoutineStep {
     pub extra: BTreeMap<String, Value>,
 }
 
+fn reject_restart_policy(value: &Value, path: &Path) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            if object.contains_key("restart_policy") {
+                return Err(format!("ladder-manifest-retired-field {} restart_policy", path.display()));
+            }
+            for child in object.values() {
+                reject_restart_policy(child, path)?;
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                reject_restart_policy(child, path)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -152,6 +172,7 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
         .map_err(|e| format!("ladder-manifest-read-failed {}: {e}", path.display()))?;
     let mut raw = serde_json::from_str::<Value>(&text)
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))?;
+    reject_restart_policy(&raw, path)?;
     let module_category = raw
         .get("category")
         .and_then(Value::as_str)
@@ -365,7 +386,7 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
         ("binary-install", "place-file", "binary-promotion"),
         ("managed-files", "files", "managed-files"),
         ("service-daemon-reload", "systemd", "daemon-reload"),
-        ("service-enable", "enable-unit", "enable"),
+        ("service-enable", "systemd", "enable"),
         ("service-restart", "systemd", "restart"),
         ("service-active", "systemd", "is-active-probe"),
         ("unit-authority-proof", "systemd", "show-assert"),
@@ -502,7 +523,7 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
         step.steps.get(2),
         step.steps.iter().find(|child| {
             child.name == "service-enable"
-                && child.tool == "enable-unit"
+                && child.tool == "systemd"
                 && child.permutation.as_deref() == Some("enable")
         }),
     ) else {
@@ -591,6 +612,16 @@ pub(crate) fn is_ladder_manifest(path: &Path) -> bool {
 pub(crate) fn validate_ladder(
     manifest: &LadderManifest,
 ) -> Result<Vec<ValidatedStep>, LadderValidationError> {
+    let serialized = serde_json::to_value(manifest).map_err(|error| LadderValidationError {
+        step_id: "manifest".into(),
+        defect: format!("manifest-serialization-failed-{error}"),
+    })?;
+    reject_restart_policy(&serialized, Path::new("<manifest>")).map_err(|error| {
+        LadderValidationError {
+            step_id: "manifest".into(),
+            defect: error,
+        }
+    })?;
     crate::tools::declaration::all().map_err(|defect| LadderValidationError {
         step_id: "declaration-validation".into(),
         defect,

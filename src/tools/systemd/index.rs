@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(crate) use crate::atoms::systemd::{
-    execute_validated_step, run_action, run_permutation_with_policy, validate_candidate_units,
+    execute_validated_step, run_action, run_permutation_with_material_gate, validate_candidate_units,
 };
 
 /// Observe systemd unit properties and assert exact key/value equality.

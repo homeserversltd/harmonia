@@ -410,7 +410,7 @@ fn execute_routine_tool(
             apply,
             invocation.filter(|_| apply),
         ),
-        "check-health" | "systemd" | "enable-unit" => {
+        "check-health" | "systemd" => {
             crate::bands::restart_services::execute_routine_child(
                 tool,
                 requested_permutation,
@@ -506,7 +506,7 @@ pub(crate) fn execute_validated_step(
         ("systemd", _) => tools::systemd::execute_validated_step(
             step,
             module_dir,
-            software_authorization.is_some() && step.permutation.ends_with("restart"),
+            software_authorization.is_some(),
             module_changed_before_step,
             invocation,
         ),

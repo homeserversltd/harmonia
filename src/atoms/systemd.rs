@@ -22,10 +22,8 @@ pub(crate) fn decide_restart(service_material_changed: bool) -> RestartDecision 
 pub(crate) fn decide_restart_for_observation(
     observation: &change_unit::Observation,
     material: bool,
-    policy: Option<&str>,
 ) -> RestartDecision {
     match observation.active.as_deref() {
-        Some("active") if policy == Some("always") => RestartDecision { execute: true, reason: "restart-policy-always" },
         Some("active") if material => RestartDecision { execute: true, reason: "service-material-changed" },
         Some("active") => RestartDecision { execute: false, reason: "service-material-unchanged" },
         Some("inactive") | Some("failed") | Some("not-found") => RestartDecision { execute: true, reason: "unit-not-active" },
@@ -44,14 +42,13 @@ fn decide_action(
     action: &str,
     observation: &change_unit::Observation,
     service_material_changed: bool,
-    restart_policy: Option<&str>,
 ) -> DiffDecision {
     let unit_absent = observation.load_state.as_deref() == Some("not-found")
         || observation.unit_file_state.as_deref() == Some("not-found");
     let different = match action {
         "unit-present" | "is-active-probe" => false,
         "daemon-reload" => service_material_changed,
-        "restart" => decide_restart_for_observation(observation, service_material_changed, restart_policy).execute,
+        "restart" => decide_restart_for_observation(observation, service_material_changed).execute,
         "stop" => service_material_changed && !unit_absent,
         "enable" => observation.enabled.as_deref() != Some("enabled"),
         "enable-now" => observation.enabled.as_deref() != Some("enabled") || observation.active.as_deref() != Some("active"),
@@ -97,7 +94,7 @@ pub(crate) fn run_permutation(
     module_changed_before_step: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    run_permutation_with_policy(
+    run_permutation_with_material_gate(
         receipt_dir,
         name,
         permutation,
@@ -107,13 +104,12 @@ pub(crate) fn run_permutation(
         timeout_secs,
         apply,
         module_changed_before_step,
-        None,
         invocation,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_permutation_with_policy(
+pub(crate) fn run_permutation_with_material_gate(
     receipt_dir: &Path,
     name: &str,
     permutation: &str,
@@ -123,14 +119,17 @@ pub(crate) fn run_permutation_with_policy(
     timeout_secs: u64,
     apply: bool,
     module_changed_before_step: bool,
-    restart_policy: Option<&str>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    if permutation == "mask" {
+    let user = permutation.starts_with("user-");
+    let action = permutation.strip_prefix("user-").unwrap_or(permutation);
+    if action == "mask" {
         return run_mask(
             receipt_dir,
             name,
             service.unwrap_or(""),
+            user,
+            target_user,
             timeout_secs,
             apply,
             invocation,
@@ -146,8 +145,6 @@ pub(crate) fn run_permutation_with_policy(
             invocation,
         );
     }
-    let user = permutation.starts_with("user-");
-    let action = permutation.strip_prefix("user-").unwrap_or(permutation);
     if let Some(selected) = service {
         let valid = if matches!(action, "disable-stop" | "disable-stop-remove") {
             is_removable_unit_basename(selected)
@@ -155,7 +152,32 @@ pub(crate) fn run_permutation_with_policy(
             is_removable_unit_basename(selected)
         };
         if !valid {
-            return Err(format!("systemd-unit-name-invalid-{selected}"));
+            let error = format!("systemd-unit-name-invalid-{selected}");
+            let command = CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: error.clone(),
+            };
+            attest_change_unit::write_systemd_receipt(
+                receipt_dir,
+                name,
+                action,
+                selected,
+                user,
+                apply,
+                &command,
+                None,
+                None,
+                None,
+                None,
+                false,
+                target_user,
+                None,
+                module_changed_before_step,
+            )?;
+            attest_change_unit::attest_change_unit(receipt_dir, action, selected, &command)?;
+            return Err(error);
         }
     }
     if action == "restart" {
@@ -168,8 +190,7 @@ pub(crate) fn run_permutation_with_policy(
             timeout_secs,
             apply,
             module_changed_before_step,
-            restart_policy,
-            invocation,
+                invocation,
         );
     }
     run_action(
@@ -190,11 +211,13 @@ fn run_mask(
     receipt_dir: &Path,
     name: &str,
     service: &str,
+    user: bool,
+    target_user: Option<&str>,
     timeout_secs: u64,
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    let before = change_unit::state("is-enabled", service, false, None, timeout_secs);
+    let before = change_unit::state("is-enabled", service, user, target_user, timeout_secs);
     let Some(before) = before else {
         let command = CmdResult {
             ok: false,
@@ -202,29 +225,32 @@ fn run_mask(
             stdout: String::new(),
             stderr: "systemd-mask-state-read-failed".into(),
         };
-        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
-            None, None, None, None, false, None, None, false)?;
+        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, apply, &command,
+            None, None, None, None, false, target_user, None, false)?;
+        attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
         return Ok(OperationOutcome { ok: false, changed: false, skipped: true,
             message: "systemd-mask-state-read-failed".into(), command: Some(command) });
     };
     if before == "masked" {
         let command = CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() };
-        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, apply, &command,
-            Some(&before), None, Some(&before), None, false, None, None, false)?;
+        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, apply, &command,
+            Some(&before), None, Some(&before), None, false, target_user, None, false)?;
+        attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
         return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
             message: "converged-quiet".into(), command: Some(command) });
     }
     if !apply {
         let command = CmdResult { ok: true, code: 0,
             stdout: format!("planned systemd mask {service}"), stderr: String::new() };
-        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, false, &command,
-            Some(&before), None, Some(&before), None, false, None, None, false)?;
+        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, false, &command,
+            Some(&before), None, Some(&before), None, false, target_user, None, false)?;
+        attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
         return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
             message: format!("planned systemd mask {service}"), command: Some(command) });
     }
-    let run = comparison::execute_with_failure_receipt(
+    let run = match comparison::execute_with_failure_receipt(
         "systemd-mask",
-        || change_unit::state("is-enabled", service, false, None, timeout_secs)
+        || change_unit::state("is-enabled", service, user, target_user, timeout_secs)
             .ok_or_else(|| "systemd-mask-state-read-failed".to_string()),
         |observed| if observed == "masked" { DiffDecision::Empty } else { DiffDecision::Different },
         |authorization, _observed| {
@@ -233,21 +259,51 @@ fn run_mask(
                 invocation.ok_or("invocation-key-missing")?,
                 service,
                 crate::atoms::r#do::change_unit::UnitVerb::Mask,
-                false,
-                None,
+                user,
+                target_user,
                 timeout_secs,
             )?;
             Ok(CmdResult { ok: result.ok, code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
                 stdout: result.stdout, stderr: result.stderr })
         },
         |_before, _movement, _after| Ok(()),
-    )?;
+    ) {
+        Ok(run) => run,
+        Err(error) => {
+            let command = CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: error.clone(),
+            };
+            attest_change_unit::write_systemd_receipt(
+                receipt_dir,
+                name,
+                "mask",
+                service,
+                user,
+                true,
+                &command,
+                Some(&before),
+                None,
+                None,
+                None,
+                false,
+                target_user,
+                None,
+                false,
+            )?;
+            attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
+            return Err(error);
+        }
+    };
     let command = match run {
         comparison::ComparisonRun::Current { .. } => CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() },
         comparison::ComparisonRun::Moved { movement, .. } => movement,
     };
-    attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, false, true, &command,
-        Some(&before), None, Some("masked"), None, command.ok && before != "masked", None, None, false)?;
+        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, true, &command,
+        Some(&before), None, Some("masked"), None, command.ok && before != "masked", target_user, None, false)?;
+    attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
     Ok(OperationOutcome { ok: command.ok, changed: command.ok && before != "masked", skipped: false,
         message: if command.ok { format!("systemd mask {service}") } else { "systemd-mask-command-failed".into() },
         command: Some(command) })
@@ -356,10 +412,9 @@ fn run_restart(
     timeout_secs: u64,
     apply: bool,
     service_material_changed: bool,
-    restart_policy: Option<&str>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    run_action_with_policy(
+    run_action_with_material_gate(
         receipt_dir,
         name,
         "restart",
@@ -369,7 +424,6 @@ fn run_restart(
         timeout_secs,
         apply,
         service_material_changed,
-        restart_policy,
         invocation,
     )
 }
@@ -387,7 +441,7 @@ pub(crate) fn run_action(
     service_material_changed: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    run_action_with_policy(
+    run_action_with_material_gate(
         receipt_dir,
         name,
         action,
@@ -397,13 +451,12 @@ pub(crate) fn run_action(
         timeout_secs,
         apply,
         service_material_changed,
-        None,
         invocation,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_action_with_policy(
+fn run_action_with_material_gate(
     receipt_dir: &Path,
     name: &str,
     action: &str,
@@ -413,14 +466,13 @@ fn run_action_with_policy(
     timeout_secs: u64,
     apply: bool,
     service_material_changed: bool,
-    restart_policy: Option<&str>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     // Edge-trigger actions are consumed only within this comparison run.
     let edge_triggered = matches!(action, "daemon-reload" | "restart");
     let acted = Cell::new(false);
-    let run = comparison::execute(
+    let run = match comparison::execute(
         "systemd",
         || {
             Ok::<_, String>(change_unit::observe_systemd_state(
@@ -439,7 +491,6 @@ fn run_action_with_policy(
                     action,
                     observation,
                     service_material_changed,
-                    restart_policy,
                 )
             }
         },
@@ -523,7 +574,7 @@ fn run_action_with_policy(
             let result = result?;
             let after = change_unit::observe_systemd_state(action, service, user, target_user, timeout_secs);
             let restart_decision =
-                decide_restart_for_observation(before, service_material_changed, restart_policy);
+                decide_restart_for_observation(before, service_material_changed);
             let changed = apply
                 && result.ok
                 && (before.enabled != after.enabled
@@ -534,7 +585,6 @@ fn run_action_with_policy(
                     || (action == "restart"
                         && restart_decision.execute
                         && (service_material_changed
-                            || restart_policy == Some("always")
                             || restart_decision.reason == "unit-not-active")));
             Ok(SystemdMovement {
                 outcome: OperationOutcome {
@@ -555,7 +605,36 @@ fn run_action_with_policy(
                 after,
             })
         },
-    )?;
+    ) {
+        Ok(run) => run,
+        Err(error) => {
+            let command = CmdResult {
+                ok: false,
+                code: -1,
+                stdout: String::new(),
+                stderr: error.clone(),
+            };
+            attest_change_unit::write_systemd_receipt(
+                receipt_dir,
+                name,
+                action,
+                service,
+                user,
+                apply,
+                &command,
+                None,
+                None,
+                None,
+                None,
+                false,
+                target_user,
+                None,
+                service_material_changed,
+            )?;
+            attest_change_unit::attest_change_unit(receipt_dir, action, service, &command)?;
+            return Err(error);
+        }
+    };
     let observation = run.observation().clone();
     let decision = run.decision();
     let (outcome, before, after, movement) = match run {
@@ -599,7 +678,7 @@ fn run_action_with_policy(
         }
     };
     let restart_decision = (action == "restart")
-        .then(|| decide_restart_for_observation(&before, service_material_changed, restart_policy));
+        .then(|| decide_restart_for_observation(&before, service_material_changed));
     let command = outcome.command.clone().unwrap_or(CmdResult {
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { -1 },

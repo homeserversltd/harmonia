@@ -121,7 +121,7 @@ pub(crate) fn attest_change_unit(
     service: &str,
     command: &CmdResult,
 ) -> Result<(), String> {
-    if matches!(action, "enable-now" | "disable-stop" | "disable-stop-remove") {
+    if matches!(action, "enable-now" | "disable-stop" | "disable-stop-remove" | "daemon-reload" | "restart" | "stop" | "enable" | "mask") {
         crate::atoms::attest::attest(
             &receipt_dir.join("harmonia-atoms.log"),
             &crate::atoms::Receipt {

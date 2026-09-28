@@ -590,7 +590,6 @@ fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, 
                                 | "build-crate"
                                 | "place-file"
                                 | "service-runtime"
-                                | "enable-unit"
                                 | "systemd"
                                 | "check-health"
                         )

@@ -1250,7 +1250,7 @@ pub(crate) fn execute_retire(
                 invocation,
             )
         } else {
-            crate::tools::systemd::run_permutation_with_policy(
+            crate::tools::systemd::run_permutation_with_material_gate(
                 receipt_dir,
                 &format!("xenia-retire-{id}"),
                 action,
@@ -1260,7 +1260,6 @@ pub(crate) fn execute_retire(
                 30,
                 apply,
                 false,
-                None,
                 invocation,
             )
         };

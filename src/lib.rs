@@ -8,8 +8,6 @@ pub(crate) mod build_venv;
 #[path = "tools/check-health/index.rs"]
 pub(crate) mod check_health;
 mod demo_registry;
-#[path = "tools/enable-unit/index.rs"]
-pub(crate) mod enable_unit;
 #[cfg(feature = "test-facade")]
 pub mod filesystem;
 pub(crate) mod known_good_ledger;
@@ -24,8 +22,6 @@ pub(crate) mod pull_repo;
 pub(crate) mod ratchet_aur_package;
 #[path = "tools/remove-file/index.rs"]
 mod remove_file;
-#[path = "tools/remove-unit/index.rs"]
-pub(crate) mod remove_unit;
 #[path = "tools/set-clock/index.rs"]
 pub(crate) mod set_clock;
 #[path = "tools/index.rs"]

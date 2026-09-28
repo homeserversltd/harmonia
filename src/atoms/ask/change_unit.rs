@@ -144,7 +144,7 @@ pub(crate) fn systemctl(
         }
     }
     let result = super::read_only_command_with_timeout(
-        "/usr/bin/systemctl",
+        &super::systemctl_program(),
         &args,
         std::time::Duration::from_secs(timeout_secs),
     );
@@ -218,7 +218,7 @@ pub(crate) fn show_properties(
     }
     argv.push("--no-pager".to_string());
     let result = super::read_only_command_with_timeout(
-        "/usr/bin/systemctl",
+        &super::systemctl_program(),
         &argv,
         std::time::Duration::from_secs(30),
     );

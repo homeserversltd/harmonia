@@ -271,40 +271,6 @@
       ]
     },
     {
-      "name": "enable-unit",
-      "description": "Tool composition seat for systemd enable work.",
-      "routine_summonable": true,
-      "permutations": [
-        {
-          "name": "enable",
-          "description": "enable unit",
-          "args": [
-            {
-              "name": "service",
-              "kind": "string",
-              "required": true
-            },
-            {
-              "name": "user",
-              "kind": "bool",
-              "required": false
-            },
-            {
-              "name": "target_user",
-              "kind": "string",
-              "required": false
-            },
-            {
-              "name": "timeout_secs",
-              "kind": "integer",
-              "required": false
-            }
-          ],
-          "placement": "RestartServices"
-        }
-      ]
-    },
-    {
       "name": "backfill-file",
       "description": "Tool composition seat for declared-file backfill.",
       "routine_summonable": true,
@@ -1318,8 +1284,8 @@
           "placement": "RestartServices"
         },
         {
-          "name": "service-epilogue",
-          "description": "reload, enable, conditionally restart, and prove active service state",
+          "name": "enable",
+          "description": "enable a system unit",
           "args": [
             {
               "name": "service",
@@ -1327,9 +1293,9 @@
               "required": true
             },
             {
-              "name": "service_material_changed",
-              "kind": "bool",
-              "required": true
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
             },
             {
               "name": "user",
@@ -1339,11 +1305,6 @@
             {
               "name": "target_user",
               "kind": "string",
-              "required": false
-            },
-            {
-              "name": "timeout_secs",
-              "kind": "integer",
               "required": false
             }
           ],
