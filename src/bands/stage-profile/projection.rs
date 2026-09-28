@@ -260,15 +260,22 @@ fn projection_gui_member(face: &str) -> String {
     }
 }
 fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> Result<(), String> {
-    match crate::tools::files::classify_target(&path) {
-        crate::tools::files::TargetClass::Software => {}
-        crate::tools::files::TargetClass::Config => {
-            return Err(format!(
-                "configuration-actuator-authority-refused {}",
-                path.display()
-            ))
+    // The validated sudoers lane is the sole configuration exception here;
+    // its member-scoped validator admits exactly one direct sudoers.d child.
+    let sudoers_fragment = member == "sudoers"
+        && path.parent() == Some(Path::new("/etc/sudoers.d"))
+        && path.file_name().is_some_and(|name| !name.is_empty());
+    if !sudoers_fragment {
+        match crate::tools::files::classify_target(&path) {
+            crate::tools::files::TargetClass::Software => {}
+            crate::tools::files::TargetClass::Config => {
+                return Err(format!(
+                    "configuration-actuator-authority-refused {}",
+                    path.display()
+                ))
+            }
+            crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
         }
-        crate::tools::files::TargetClass::Refused(reason) => return Err(reason),
     }
     crate::atoms::r#do::transaction::validate_member_scoped_target(&path, member)?;
     out.push(Target {
@@ -380,6 +387,30 @@ fn projection_derive_plan_inner(
         };
         let module_id = module_key.as_str();
         let steps = &projected.steps;
+        // Census declarations independently of module placement: a sudoers
+        // fragment is owned by the sudoers member, not by its declaring module.
+        for step in steps.iter().filter(|step| {
+            step.tool == "files" && step.permutation == "validated-sudoers-converge"
+        }) {
+            record_module("sudoers", module_id);
+            let files = match step.args.get("files") {
+                Some(Value::Array(files)) => files
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        value.as_str().ok_or_else(|| {
+                            format!("sudoers-fragment-name-invalid module={module_id} index={index}")
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                Some(Value::String(name)) => vec![name.as_str()],
+                _ => return Err(format!("sudoers-fragments-invalid module={module_id}")),
+            };
+            for name in files {
+                let path = Path::new("/etc/sudoers.d").join(name);
+                projection_add_target(&mut targets, path, "sudoers")?;
+            }
+        }
         let is_gui = face
             .as_deref()
             .is_some_and(|face| projected_gui_module(projected, face));

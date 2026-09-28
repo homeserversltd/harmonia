@@ -32,7 +32,7 @@ struct Node {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Snapshot {
-    roots: Vec<Target>,
+    pub(crate) roots: Vec<Target>,
     nodes: Vec<Node>,
 }
 pub(crate) fn validate_member_scoped_target(path: &Path, member: &str) -> Result<(), String> {
@@ -42,6 +42,24 @@ pub(crate) fn validate_member_scoped_target(path: &Path, member: &str) -> Result
             .any(|c| matches!(c, std::path::Component::ParentDir))
     {
         return Err(format!("update-set-target-invalid {}", path.display()));
+    }
+    if member == "sudoers" {
+        let text = path
+            .to_str()
+            .ok_or_else(|| format!("update-set-target-invalid {}", path.display()))?;
+        let segments = text.split('/').collect::<Vec<_>>();
+        let valid = segments.len() == 4
+            && segments[0].is_empty()
+            && segments[1] == "etc"
+            && segments[2] == "sudoers.d"
+            && !segments[3].is_empty()
+            && segments[3] != "."
+            && segments[3] != ".."
+            && path.file_name().and_then(|name| name.to_str()) == Some(segments[3]);
+        if !valid {
+            return Err(format!("update-set-sudoers-target-invalid {}", path.display()));
+        }
+        return crate::atoms::files::ensure_resolved_containment(Path::new("/etc/sudoers.d"), path);
     }
     if member == "sbin" && path == Path::new("/usr/local/sbin") {
         return Ok(());
@@ -327,6 +345,7 @@ pub(crate) struct SealedProjection {
     pub gui_member: Option<String>,
     pub caduceus_count: usize,
     pub member_modules: BTreeMap<String, Vec<String>>,
+    pub sudoers_fragments: BTreeMap<String, Vec<String>>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct ProjectionTransaction {
@@ -360,7 +379,12 @@ pub(crate) fn validate_exact_root(path: &Path, member: &str) -> Result<(), Strin
 }
 pub(crate) fn validate_exact_root_at(path: &Path, member: &str, root: &Path) -> Result<(), String> {
     validate_member_scoped_target(path, member)?;
-    crate::atoms::files::ensure_resolved_containment(root, path)
+    let containment_root = if member == "sudoers" {
+        Path::new("/etc/sudoers.d")
+    } else {
+        root
+    };
+    crate::atoms::files::ensure_resolved_containment(containment_root, path)
 }
 pub(crate) fn seal_projection(
     plan: &UpdatePlan,
@@ -431,6 +455,14 @@ pub(crate) fn seal_projection(
             gui_member: plan.gui_member.clone(),
             caduceus_count: plan.caduceus_count,
             member_modules: plan.member_modules.clone(),
+            sudoers_fragments: BTreeMap::from([(
+                "sudoers".to_owned(),
+                plan.targets
+                    .iter()
+                    .filter(|target| target.member == "sudoers")
+                    .filter_map(|target| target.path.file_name()?.to_str().map(str::to_owned))
+                    .collect(),
+            )]),
         },
         state: TransactionState::Open,
         applied_children: BTreeSet::new(),

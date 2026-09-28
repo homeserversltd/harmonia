@@ -161,6 +161,13 @@ pub(crate) fn rolling_update_run(
     try_acquire_lock: fn(&Path) -> Result<ConvergenceLockGuard, ConvergenceLockBusy>,
 ) -> Result<(), String> {
     let _mint_seats = crate::atoms::ask::mint_seats::at_start();
+    let mut effective_profile = profile.clone();
+    if let Some(declaration) =
+        crate::bands::stage_profile::groups::read_device_module_policy()?.syzygy_declaration
+    {
+        effective_profile.syzygy_declaration = Some(declaration);
+    }
+    let profile = &effective_profile;
     let apply = mode.is_software_apply();
     let run_id = run_id_from_stamp();
     let effective_receipt_dir = materialize_receipt(receipt_dir, &run_id)?;
@@ -269,8 +276,12 @@ pub(crate) fn rolling_update_run(
                 if let Ok(receipt) =
                     crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
                 {
-                    let mint =
-                        crate::atoms::attest::committed_syzygy_mint(&effective_receipt_dir, &receipt);
+                    let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
+                        &effective_receipt_dir,
+                        &receipt,
+                        &txn.sealed.sudoers_fragments,
+                        &txn.sealed.snapshot.roots,
+                    );
                     let _ = crate::atoms::attest::write_transaction_receipt(
                         &effective_receipt_dir,
                         &receipt,
@@ -311,9 +322,11 @@ pub(crate) fn rolling_update_run(
                     if let Ok(receipt) =
                         crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
                     {
-                        let mint = crate::atoms::attest::committed_syzygy_mint(
+                        let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
                             &effective_receipt_dir,
                             &receipt,
+                            &txn.sealed.sudoers_fragments,
+                            &txn.sealed.snapshot.roots,
                         );
                         let _ = crate::atoms::attest::write_transaction_receipt(
                             &effective_receipt_dir,
@@ -353,15 +366,18 @@ pub(crate) fn rolling_update_run(
                 return Err(error);
             }
         };
-        let mint = crate::atoms::attest::committed_syzygy_mint(&effective_receipt_dir, &receipt);
-        if let Err(error) =
-            crate::atoms::attest::write_transaction_receipt(
-                &effective_receipt_dir,
-                &receipt,
-                &mint,
-                None,
-            )
-        {
+        let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
+            &effective_receipt_dir,
+            &receipt,
+            &txn.sealed.sudoers_fragments,
+            &txn.sealed.snapshot.roots,
+        );
+        if let Err(error) = crate::atoms::attest::write_transaction_receipt(
+            &effective_receipt_dir,
+            &receipt,
+            &mint,
+            None,
+        ) {
             write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
                 profile,

@@ -1030,7 +1030,13 @@ where
         return Err("validated-sudoers-contract-refused".into());
     }
     if files.is_empty() {
-        return Err("validated-sudoers-files-empty".into());
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: false,
+            message: "sudoers-fragments-absent".into(),
+            command: None,
+        });
     }
 
     for name in &files {

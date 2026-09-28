@@ -45,7 +45,7 @@ pub(crate) mod set_clock;
 #[path = "write_file.rs"]
 pub(crate) mod write_file;
 use super::Receipt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -56,6 +56,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use sha2::{Digest, Sha256};
 
 static JSON_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PROPOSAL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -157,6 +158,15 @@ pub(crate) fn committed_syzygy_mint(
     dir: &Path,
     receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
 ) -> SyzygyEvidence {
+    committed_syzygy_mint_with_sudoers(dir, receipt, &BTreeMap::new(), &[])
+}
+
+pub(crate) fn committed_syzygy_mint_with_sudoers(
+    dir: &Path,
+    receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+    declared_fragments: &BTreeMap<String, Vec<String>>,
+    committed_targets: &[crate::atoms::r#do::transaction::Target],
+) -> SyzygyEvidence {
     use serde_json::{json, Value};
     let mut evidence = SyzygyEvidence {
         mint: SyzygyMint::failed("none".into()),
@@ -178,6 +188,7 @@ pub(crate) fn committed_syzygy_mint(
     let mut signals = Vec::<String>::new();
     if let Some(signal) = seats.signal() { signals.push(signal.to_owned()); }
     let members = receipt.children.iter().map(|child| child.member.as_str()).collect::<BTreeSet<_>>();
+    evidence.member_flags["harmonia"] = json!({"source_sha": receipt.source_head});
     match committed_beam(dir) {
         Ok(beam) => {
             evidence.observations["caduceus"] = beam.clone();
@@ -300,6 +311,57 @@ pub(crate) fn committed_syzygy_mint(
                 Err(signal) => {
                     evidence.member_flags[member] = json!(signal);
                 }
+            }
+        }
+    }
+    if members.contains("sudoers") {
+        let mut fragments = declared_fragments
+            .values()
+            .flat_map(|names| names.iter().cloned())
+            .collect::<Vec<_>>();
+        fragments.sort();
+        fragments.dedup();
+        if !receipt.member_modules.contains_key("sudoers") {
+            let signal = "sudoers-module-absent";
+            evidence.member_flags["sudoers"] = json!(signal);
+        } else if fragments.is_empty() {
+            let signal = "sudoers-fragments-absent";
+            evidence.member_flags["sudoers"] = json!(signal);
+        } else {
+            let mut digest = Sha256::new();
+            let mut failure = None;
+            for name in &fragments {
+                let target = committed_targets.iter().find(|target| {
+                    target.member == "sudoers"
+                        && target.path.parent() == Some(Path::new("/etc/sudoers.d"))
+                        && target.path.file_name().and_then(|value| value.to_str())
+                            == Some(name.as_str())
+                });
+                let Some(target) = target else {
+                    failure = Some(format!("sudoers-fragment-target-absent {name}"));
+                    break;
+                };
+                let bytes = match fs::read(&target.path) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        failure = Some(format!("sudoers-fragment-target-unreadable {name}"));
+                        break;
+                    }
+                };
+                digest.update(name.as_bytes());
+                digest.update([0]);
+                digest.update(&bytes);
+                digest.update([0]);
+            }
+            if let Some(signal) = failure {
+                evidence.member_flags["sudoers"] = json!(signal);
+            } else {
+                evidence.member_flags["sudoers"] = json!({
+                    "source_sha": receipt.source_head,
+                    "pinned_by": receipt.source_head,
+                    "fragments": fragments,
+                    "fragments_sha256": format!("{:x}", digest.finalize())
+                });
             }
         }
     }
