@@ -1256,9 +1256,7 @@ fn run_toolchain_ratchet(
         };
         receipt["shim_convergence"] = serde_json::to_value(&outcome).unwrap_or(Value::Null);
         if !outcome.ok {
-            let missing = if !outcome.missing_target_birth_debts.is_empty() {
-                "missing-target-birth-debt".to_string()
-            } else if !outcome.missing.is_empty() {
+            let missing = if !outcome.missing.is_empty() {
                 "missing-target-file".to_string()
             } else {
                 outcome.message.clone()
