@@ -195,7 +195,14 @@ fn read_only_command(program: &str, args: &[Value]) -> bool {
     let name = Path::new(program).file_name().and_then(|v| v.to_str()).unwrap_or("");
     match name {
         "test" => argv.len() == 2 && matches!(argv[0], "-e" | "-x" | "-s" | "-d" | "-f" | "-r" | "-w"),
-        "systemd-analyze" => argv.len() == 2 && argv[0] == "verify",
+        "systemd-analyze" => {
+            (argv.len() == 2 && argv[0] == "verify")
+                || (argv.len() == 3
+                    && argv[0] == "--root=/"
+                    && argv[1] == "verify"
+                    && Path::new(argv[2]).is_absolute()
+                    && Path::new(argv[2]).extension().and_then(|v| v.to_str()) == Some("service"))
+        },
         "testparm" => argv == ["-s"],
         "python3" => (argv.len() == 3 && argv[0] == "-m" && argv[1] == "json.tool")
             || (argv.len() == 2
