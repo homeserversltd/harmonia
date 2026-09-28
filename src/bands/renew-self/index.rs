@@ -550,6 +550,7 @@ fn emit_preflight_receipt(
     first_missing_signal: &str,
     operation_count: usize,
     staged_build_identity: Option<&BuildEnvironmentIdentity>,
+    proof_battery_observed: bool,
     reexec: Option<&SelfUpdateReexec>,
 ) -> Result<(), String> {
     let content_seat = fs::read_to_string(preflight_dir.join("content-seat.json"))
@@ -562,6 +563,95 @@ fn emit_preflight_receipt(
         .unwrap_or(true);
     let rollback_failed = first_missing_signal.contains("engine-rollback-failed")
         || first_missing_signal.contains("replace-process-rollback-failed");
+    let old_engine_preserved = previous_preservation && installed_sha.is_some() && !rollback_failed;
+    let content_seat_is_fresh = source_head.is_some()
+        && content_seat.as_ref().is_some_and(|seat| {
+            seat.get("observed").and_then(Value::as_bool) == Some(true)
+                && seat.get("expected_head").and_then(Value::as_str) == source_head
+        });
+    let fresh_content_signal = content_seat.as_ref().and_then(|seat| {
+        if !content_seat_is_fresh {
+            return None;
+        }
+        seat.get("first_missing_signal")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                (seat.get("matches").and_then(Value::as_bool) == Some(true)
+                    && seat.get("observed_head").and_then(Value::as_str) == source_head)
+                    .then(|| "paired".to_string())
+            })
+    });
+    // This observation is passed from post_stage_preflight only after the
+    // current invocation's proof battery and successor promotion both succeed.
+    let promotion = fs::read_to_string(preflight_dir.join("promote-successor.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let promotion_observed = promotion.as_ref().is_some_and(|receipt| {
+        receipt.get("ok").and_then(Value::as_bool) == Some(true)
+            && receipt.get("stdout").and_then(Value::as_str).is_some_and(|stdout| {
+                stdout.contains("atomic placement")
+            })
+    });
+    let promotion_changed = promotion.as_ref().and_then(|receipt| {
+        receipt.get("stdout").and_then(Value::as_str).and_then(|stdout| {
+            if stdout.contains("changed=true") {
+                Some(true)
+            } else if stdout.contains("changed=false") {
+                Some(false)
+            } else {
+                None
+            }
+        })
+    });
+    let reexec_observed = reexec.is_some_and(|receipt| {
+        !receipt.from_sha.is_empty()
+            && !receipt.to_sha.is_empty()
+            && receipt.from_sha != receipt.to_sha
+            && receipt.generation == SELF_UPDATE_REEXEC_GENERATION
+    });
+    let proven_engine_change = ok
+        && apply
+        && proof_battery_observed
+        && promotion_observed
+        && promotion_changed == Some(true)
+        && staged_sha.is_some()
+        && staged_sha == installed_sha
+        && reexec_observed;
+    let proven_no_engine_change = ok
+        && apply
+        && proof_battery_observed
+        && promotion_observed
+        && promotion_changed == Some(false)
+        && staged_sha.is_some()
+        && staged_sha == installed_sha;
+    let successor_promotion = if proven_engine_change {
+        "explain+validate-ladder+plan-run"
+    } else if proven_no_engine_change {
+        "no-engine-change"
+    } else {
+        "not-proven"
+    };
+    let content_head = match fresh_content_signal.as_deref() {
+        Some("paired") => "paired",
+        Some(signal) => signal,
+        None => "unobserved",
+    };
+    let presses_per_engine_change = if proven_engine_change {
+        json!(1)
+    } else if proven_no_engine_change {
+        json!(0)
+    } else {
+        Value::Null
+    };
+    let profile_runtime_module = "not-observed";
+    let pre_sync_source_build = if staged_build_identity.is_some() && apply {
+        "present"
+    } else if staged_sha.is_some() && staged_build_identity.is_none() {
+        "absent"
+    } else {
+        "not-observed"
+    };
     write_json(
         &preflight_dir.join("run.json"),
         &json!({
@@ -569,7 +659,13 @@ fn emit_preflight_receipt(
             "ok": ok,
             "apply": apply,
             "changed": changed,
-            "stage": if ok { "complete" } else { first_missing_signal },
+            "stage": if ok && apply {
+                "complete"
+            } else if ok {
+                "planned"
+            } else {
+                first_missing_signal
+            },
             "first_missing_signal": first_missing_signal,
             "operation_count": operation_count,
             "source_authority": "appliance-config-sources",
@@ -578,34 +674,58 @@ fn emit_preflight_receipt(
             "build_root": ENGINE_SOURCE_ROOT,
             "install_bin": ENGINE_INSTALL_BIN,
             "source_head": source_head.unwrap_or("unknown"),
-            "content_head_observed": content_seat
-                .as_ref()
-                .and_then(|seat| seat.get("observed_head"))
-                .cloned()
-                .unwrap_or(Value::Null),
-            "content_head_matches": content_seat
-                .as_ref()
-                .and_then(|seat| seat.get("matches"))
-                .cloned()
-                .unwrap_or(Value::Null),
-            "content_seat_failure": content_seat
-                .as_ref()
-                .and_then(|seat| seat.get("first_missing_signal"))
-                .cloned()
-                .unwrap_or(Value::Null),
+            "content_head_observed": if content_seat_is_fresh {
+                content_seat
+                    .as_ref()
+                    .and_then(|seat| seat.get("observed_head"))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            },
+            "content_head_matches": if content_seat_is_fresh {
+                content_seat
+                    .as_ref()
+                    .and_then(|seat| seat.get("matches"))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            },
+            "content_seat_failure": if content_seat_is_fresh {
+                content_seat
+                    .as_ref()
+                    .and_then(|seat| seat.get("first_missing_signal"))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            },
             "staged_sha256": staged_sha,
             "installed_sha256": installed_sha,
             "staged_build_identity": staged_build_identity.and_then(|identity| identity.env_sha.as_deref().zip(source_head).map(|(env_sha, source_sha)| json!({"source_sha": source_sha, "env_sha": env_sha}))),
             "reexec": reexec,
             "git_bearer": "owner",
-            "failure_mode": "honest-staleness",
+            "failure_mode": if old_engine_preserved {
+                "honest-staleness"
+            } else {
+                "old-engine-not-preserved"
+            },
             "artifact_ratchet": "version+sha-lock",
             "engine_lane": null,
             "resolved_tag": null,
             "blocked_target": null,
-            "nudge": "evidence",
-            "bless": "the-apply-press",
-            "old_engine_preserved": previous_preservation && !rollback_failed,
+            "nudge": if operation_count > 0 { "evidence" } else { "not-observed" },
+            "bless": if apply { "the-apply-press" } else { "not-pressed" },
+            "bootstrap_order": if ok && apply { "unproven" } else { "incomplete" },
+            "pre_sync_source_build": pre_sync_source_build,
+            "successor_promoted_only_after": successor_promotion,
+            "engine_interactable": "not-observed",
+            "presses_per_engine_change": presses_per_engine_change,
+            "engine_content_head": content_head,
+            "retired_sidecar_gate": "not-observed",
+            "profile_runtime_module": profile_runtime_module,
+            "old_engine_preserved": old_engine_preserved,
         }),
     )
 }
@@ -622,13 +742,9 @@ fn update_engine_preflight_contract(
             .map_err(|error| format!("engine-preflight-receipt-read-failed: {error}"))?,
     )
     .map_err(|error| format!("engine-preflight-receipt-parse-failed: {error}"))?;
-    receipt["artifact_ratchet"] = json!("version+sha-lock");
     receipt["engine_lane"] = lane.map_or(Value::Null, |value| json!(value));
     receipt["resolved_tag"] = resolved_tag.map_or(Value::Null, |value| json!(value));
     receipt["blocked_target"] = blocked_target.map_or(Value::Null, |value| json!(value));
-    receipt["nudge"] = json!("evidence");
-    receipt["bless"] = json!("the-apply-press");
-    receipt["failure_mode"] = json!("honest-staleness");
     write_json(&path, &receipt)
 }
 
@@ -923,6 +1039,7 @@ pub(crate) fn run_engine_preflight(
                 &signal,
                 0,
                 None,
+                false,
                 None,
             )?;
             update_engine_preflight_contract(&preflight_dir, None, None, Some(&signal))?;
@@ -1236,6 +1353,7 @@ fn post_stage_preflight(
         stderr: String::new(),
     };
     let mut reexec = None;
+    let mut proof_battery_observed = false;
     if first_missing_signal == "none" && apply {
         let staged_digest = match staged_sha.as_deref() {
             Some(digest) => Some(digest.to_string()),
@@ -1329,6 +1447,7 @@ fn post_stage_preflight(
                             );
                             changed = false;
                         } else {
+                            proof_battery_observed = true;
                             let changed_now =
                                 install_before.as_deref() != installed_digest.as_deref();
                             changed |= changed_now;
@@ -1383,6 +1502,7 @@ fn post_stage_preflight(
                                     "none",
                                     operation_count,
                                     staged_build_identity.as_ref(),
+                                    proof_battery_observed,
                                     reexec.as_ref(),
                                 ) {
                                     first_missing_signal = rollback_after_install(
@@ -1469,6 +1589,7 @@ fn post_stage_preflight(
         &first_missing_signal,
         operation_count,
         staged_build_identity.as_ref(),
+        proof_battery_observed,
         reexec.as_ref(),
     )?;
     update_engine_preflight_contract(

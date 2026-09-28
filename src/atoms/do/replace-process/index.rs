@@ -55,7 +55,6 @@ fn write_receipt(p: &Plan, proof: bool) -> Result<Receipt, String> {
         .receipt_path
         .parent()
         .ok_or("replace-process-receipt-parent")?;
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let receipt = Receipt {
         schema: "harmonia.replace-process.v1".into(),
         successor: p.successor.display().to_string(),
@@ -69,49 +68,13 @@ fn write_receipt(p: &Plan, proof: bool) -> Result<Receipt, String> {
         synced: true,
         proof,
     };
-    let bytes = crate::atoms::attest::replace_process::serialize_receipt(&receipt)?;
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("replace-process-temp-time: {e}"))?
-        .as_nanos();
-    let temp = parent.join(format!(".receipt-{}-{}.tmp", std::process::id(), timestamp));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        fs::rename(&temp, &p.receipt_path).map_err(|e| e.to_string())?;
-        OpenOptions::new()
-            .read(true)
-            .open(parent)
-            .map_err(|e| e.to_string())?
-            .sync_all()
-            .map_err(|e| e.to_string())?;
-        let persisted = fs::read(&p.receipt_path).map_err(|e| e.to_string())?;
-        if persisted != bytes {
-            return Err("replace-process-receipt-bytes-changed".into());
-        }
-        serde_json::from_slice(&persisted)
-            .map_err(|e| format!("replace-process-receipt-parse: {e}"))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
-
-pub(crate) fn compatibility_exec(
-    _program: &std::path::Path,
-    _args: &[String],
-    _guard_name: &str,
-    _guard_value: &str,
-    invocation: Option<&InvocationKey>,
-) -> Result<(), String> {
-    let _ = invocation.ok_or("replace-process-explicit-invocation-required")?;
-    Err("replace-process-durable-receipt-path-required".into())
+    let persisted = crate::atoms::attest::replace_process::attest(
+        &p.receipt_path,
+        &parent.join("harmonia-atoms.log"),
+        &receipt,
+    )?;
+    serde_json::from_slice(&persisted)
+        .map_err(|e| format!("replace-process-receipt-parse: {e}"))
 }
 
 pub(crate) fn proof(p: &Plan, _i: &InvocationKey) -> Result<Receipt, String> {
