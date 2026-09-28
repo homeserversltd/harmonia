@@ -36,23 +36,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "coronatio-product-config",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "etc/appliance/config.factory"
-        ],
-        "backup_existing": true,
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "coronatio-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "coronatio-factory-config-valid",
       "tool": "command",
       "permutation": "capture",
