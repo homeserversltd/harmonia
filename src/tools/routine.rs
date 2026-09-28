@@ -164,18 +164,22 @@ fn shell_command(program: &str, args: &[Value]) -> bool {
             Some("sh" | "bash" | "dash" | "ash" | "zsh" | "ksh")
         )
     }
-    if shell_name(program) {
-        return true;
+    fn command_option(value: &str) -> bool {
+        value == "--command"
+            || value.strip_prefix('-').is_some_and(|letters| {
+                !letters.is_empty()
+                    && letters.bytes().all(|byte| byte.is_ascii_alphabetic())
+                    && letters.as_bytes().contains(&b'c')
+            })
     }
-    let values = args.iter().filter_map(Value::as_str).collect::<Vec<_>>();
-    let mut tokens = Vec::new();
-    for value in &values {
-        tokens.extend(value.split_whitespace());
-    }
-    let env_program = Path::new(program).file_name().and_then(|name| name.to_str()) == Some("env");
-    let shell_in_args = tokens.iter().any(|value| shell_name(value));
-    let shell_flag = tokens.iter().any(|value| matches!(*value, "-c" | "-lc" | "-cl" | "--command"));
-    shell_in_args || (env_program && shell_flag)
+
+    let tokens = args
+        .iter()
+        .filter_map(Value::as_str)
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>();
+    let has_shell = shell_name(program) || tokens.iter().any(|token| shell_name(token));
+    has_shell && tokens.iter().any(|token| command_option(token))
 }
 fn inline_payload(program: &str, args: &[Value]) -> bool {
     let base = Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or("");
