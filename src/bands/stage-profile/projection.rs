@@ -252,6 +252,13 @@ fn projection_component_face(component: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+fn projection_gui_member(face: &str) -> String {
+    if face == "Hyprland" {
+        face.to_owned()
+    } else {
+        face.to_ascii_lowercase()
+    }
+}
 fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> Result<(), String> {
     match crate::tools::files::classify_target(&path) {
         crate::tools::files::TargetClass::Software => {}
@@ -355,6 +362,7 @@ fn projection_derive_plan_inner(
         };
         (face, None)
     };
+    let gui_member = face.as_deref().map(projection_gui_member);
     let mut targets = Vec::new();
     let mut services = Vec::new();
     let mut caduceus_count = 0;
@@ -381,7 +389,7 @@ fn projection_derive_plan_inner(
                 caduceus_count += 1;
                 "caduceus"
             } else if face.as_deref() == projection_component_face(component) {
-                face.as_deref().unwrap()
+                gui_member.as_deref().unwrap()
             } else {
                 continue;
             };
@@ -417,11 +425,7 @@ fn projection_derive_plan_inner(
                         args.get("component").and_then(Value::as_str) == Some("caduceus")
                     }))
             {
-                let staff_member = if module_id == "sbin" {
-                    "sbin"
-                } else {
-                    "agathodaimon"
-                };
+                let staff_member = "sbin";
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
                     projection_add_census_target(
                         &mut targets,
@@ -476,10 +480,10 @@ fn projection_derive_plan_inner(
                         projection_add_census_target(
                             &mut targets,
                             p,
-                            face.as_deref().unwrap_or(""),
+                            gui_member.as_deref().unwrap_or(""),
                             emit_diagnostics,
                         )?;
-                        record_module(face.as_deref().unwrap_or(""), module_id);
+                        record_module(gui_member.as_deref().unwrap_or(""), module_id);
                     }
                 }
             }
@@ -492,9 +496,9 @@ fn projection_derive_plan_inner(
                         name,
                         user,
                         target_user,
-                        face.as_deref().unwrap_or(""),
+                        gui_member.as_deref().unwrap_or(""),
                     );
-                    record_module(face.as_deref().unwrap_or(""), module_id);
+                    record_module(gui_member.as_deref().unwrap_or(""), module_id);
                 }
             }
         }
@@ -519,10 +523,10 @@ fn projection_derive_plan_inner(
                     projection_add_census_target(
                         &mut targets,
                         p,
-                        face.as_deref().unwrap_or(""),
+                        gui_member.as_deref().unwrap_or(""),
                         emit_diagnostics,
                     )?;
-                    record_module(face.as_deref().unwrap_or(""), module_id);
+                    record_module(gui_member.as_deref().unwrap_or(""), module_id);
                 }
             }
         }
@@ -553,7 +557,7 @@ fn projection_derive_plan_inner(
         targets,
         services,
         gui_face: face.clone(),
-        gui_member: face,
+        gui_member,
         caduceus_count,
         pinned_members,
         member_modules,

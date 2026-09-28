@@ -387,7 +387,7 @@ pub(crate) fn seal_projection(
         }
         for m in [
             (plan.caduceus_count > 0).then_some("caduceus"),
-            Some("agathodaimon"),
+            Some("sbin"),
             plan.gui_member.as_deref(),
         ] {
             if let Some(m) = m {

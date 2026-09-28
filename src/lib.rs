@@ -845,10 +845,8 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .map(|module_id| {
                     let classification = if module_is_member("caduceus", module_id) {
                         "caduceus"
-                    } else if module_is_member("sbin", module_id)
-                        || module_is_member("agathodaimon", module_id)
-                    {
-                        "sbin-agathodaimon"
+                    } else if module_is_member("sbin", module_id) {
+                        "sbin"
                     } else if plan
                         .gui_member
                         .as_deref()

@@ -91,20 +91,6 @@ pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     { let _ = (path, mode); Ok(()) }
 }
 
-pub(crate) fn update_set_receipt(
-    dir: &Path,
-    face: &str,
-    verdict: &str,
-    failed: Option<&str>,
-    failed_step: Option<&str>,
-) -> Result<(), String> {
-    let ms = ["caduceus", "agathodaimon", face].into_iter().map(|m| serde_json::json!({"member":m,"status":if verdict=="ok"{"ok"}else if failed==Some(m){"failed"}else{"rolled-back"}})).collect::<Vec<_>>();
-    let mut value = serde_json::json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","gui":face,"set_verdict":verdict,"members":ms});
-    if let Some(step) = failed_step {
-        value["failed_step"] = serde_json::json!(step);
-    }
-    write_json_atomic(&dir.join("update-set.json"), &value)
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SyzygyMint {
@@ -247,8 +233,6 @@ pub(crate) fn committed_syzygy_mint(
                 evidence.member_flags["sbin"] = json!(signal);
             }
         }
-    } else if members.contains("agathodaimon") {
-        signals.push("syzygy-flag-absent agathodaimon".into());
     } else {
         signals.push("syzygy-required-partner-missing".into());
     }
