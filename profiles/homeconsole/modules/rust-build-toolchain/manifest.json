@@ -6,21 +6,11 @@
   "description": "HomeConsole Rust build toolchain ladder using package install and maintained wrappers.",
   "optional": false,
   "constants": {
-    "packages": ["rust"]
+    "packages": [
+      "rust"
+    ]
   },
   "ladder": [
-    {
-      "step_id": "rust-toolchain-directories",
-      "tool": "files",
-      "permutation": "managed-directories",
-      "args": {
-        "directories": [
-          {"path": "/opt/rustup", "mode": 493, "owner": "owner", "group": "owner"},
-          {"path": "/opt/cargo", "mode": 493, "owner": "owner", "group": "owner"}
-        ]
-      },
-      "on_failure": "stop"
-    },
     {
       "step_id": "rust-wrapper-shims",
       "tool": "files",

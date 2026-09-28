@@ -566,18 +566,6 @@
           "placement": "BackfillFiles"
         },
         {
-          "name": "managed-directories",
-          "description": "converge managed directory declarations with mode and ownership readback",
-          "args": [
-            {
-              "name": "directories",
-              "kind": "json",
-              "required": true
-            }
-          ],
-          "placement": "BackfillFiles"
-        },
-        {
           "name": "converge",
           "description": "converge a source file tree into a target root",
           "args": [
@@ -609,43 +597,6 @@
             {
               "name": "summary_receipt",
               "kind": "json",
-              "required": false
-            },
-            {
-              "name": "owner",
-              "kind": "string",
-              "required": false
-            },
-            {
-              "name": "group",
-              "kind": "string",
-              "required": false
-            }
-          ],
-          "placement": "BackfillFiles"
-        },
-        {
-          "name": "ensure-present",
-          "description": "create declared seed files only when absent; preserve existing regular-file bytes and ownership",
-          "args": [
-            {
-              "name": "source_root",
-              "kind": "string",
-              "required": true
-            },
-            {
-              "name": "target_root",
-              "kind": "string",
-              "required": true
-            },
-            {
-              "name": "files",
-              "kind": "string_array",
-              "required": true
-            },
-            {
-              "name": "receipt_name",
-              "kind": "string",
               "required": false
             },
             {

@@ -239,193 +239,10 @@ mod receipt {
     }
 }
 
-use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::path::Component;
-
 use crate::atoms::files::{
-    classify_target, ownership_equal, target_mode, ManagedDirectorySpec, ManagedFilesRequest,
-    TargetClass,
+    classify_target, ownership_equal, target_mode, ManagedFilesRequest, TargetClass,
 };
-pub(crate) fn converge_managed_directories(
-    directories: &[ManagedDirectorySpec],
-    receipt_dir: &Path,
-    receipt_name: &str,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<crate::OperationOutcome, String> {
-    validate_receipt_name(receipt_name)?;
-    if directories.is_empty() {
-        return Err("managed-directories-empty-request".to_string());
-    }
-    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
-    let mut changed = false;
-    let mut entries: Vec<serde_json::Value> = Vec::new();
-    for directory in directories {
-        let path = PathBuf::from(&directory.path);
-        if !path.is_absolute()
-            || path
-                .components()
-                .any(|part| matches!(part, Component::ParentDir))
-            || directory.mode > 0o777
-        {
-            return Err(format!(
-                "managed-directory-declaration-invalid {}",
-                directory.path
-            ));
-        }
-        reject_ssh_path(&path)?;
-        let desired_uid = resolve_uid(&directory.owner)?;
-        let desired_gid = resolve_gid(&directory.group)?;
-        let run = crate::atoms::comparison::execute(
-            "files",
-            || {
-                let directory_observation = crate::atoms::ask::make_dir::probe(
-                    &path,
-                    Some(directory.mode),
-                    Some(desired_uid),
-                    Some(desired_gid),
-                )?;
-                let final_observation = directory_observation
-                    .components
-                    .last()
-                    .ok_or_else(|| format!("managed-directory-observe-empty {}", path.display()))?;
-                if final_observation.present
-                    && final_observation.kind != Some(crate::atoms::ask::FsKind::Directory)
-                {
-                    return Err(format!(
-                        "managed-directory-not-directory {}",
-                        path.display()
-                    ));
-                }
-                let existed_before = final_observation.present;
-                let mode_equal_before = existed_before
-                    && crate::atoms::ask::change_mode::probe(&path, directory.mode)?
-                        .prior_mode == Some(directory.mode);
-                let owner_observation = crate::atoms::ask::change_owner::probe(
-                    &path,
-                    Some(desired_uid),
-                    Some(desired_gid),
-                )?;
-                let owner_equal_before =
-                    existed_before && owner_observation.prior_uid == Some(desired_uid);
-                let group_equal_before =
-                    existed_before && owner_observation.prior_gid == Some(desired_gid);
-                Ok::<_, String>((
-                    existed_before,
-                    mode_equal_before,
-                    owner_equal_before,
-                    group_equal_before,
-                ))
-            },
-            |observation| {
-                if observation.0 && observation.1 && observation.2 && observation.3 {
-                    crate::atoms::comparison::DiffDecision::Empty
-                } else {
-                    crate::atoms::comparison::DiffDecision::Different
-                }
-            },
-            |authorization, _| {
-                let authorization = &authorization;
-                if !apply {
-                    return Ok(false);
-                }
-                let key = invocation.ok_or("managed-directory-invocation-missing")?;
-                crate::atoms::r#do::make_dir::create_dir_all(authorization, key, &path).map_err(
-                    |e| format!("managed-directory-create-failed {}: {e}", path.display()),
-                )?;
-                crate::atoms::r#do::change_mode::change(
-                    authorization,
-                    key,
-                    &crate::atoms::r#do::change_mode::Plan {
-                        path: path.clone(),
-                        mode: Some(directory.mode),
-                        no_follow: true,
-                    },
-                )
-                .map_err(|e| {
-                    format!("managed-directory-mode-set-failed {}: {e}", path.display())
-                })?;
-                crate::atoms::r#do::change_owner::change(
-                    authorization,
-                    key,
-                    &crate::atoms::r#do::change_owner::Plan {
-                        path: path.clone(),
-                        uid: Some(desired_uid),
-                        gid: Some(desired_gid),
-                        no_follow: true,
-                    },
-                )
-                .map_err(|e| {
-                    format!("managed-directory-owner-set-failed {}: {e}", path.display())
-                })?;
-                if target_mode(&path)? != Some(directory.mode) {
-                    return Err(format!(
-                        "managed-directory-mode-readback-failed {}",
-                        path.display()
-                    ));
-                }
-                let (owner_equal_after, group_equal_after) =
-                    ownership_equal(&path, Some(desired_uid), Some(desired_gid))?;
-                if !owner_equal_after || !group_equal_after {
-                    return Err(format!(
-                        "managed-directory-owner-readback-failed {}",
-                        path.display()
-                    ));
-                }
-                Ok(true)
-            },
-        )?;
-        let observation = run.observation();
-        let diff_decision = match run.decision() {
-            crate::atoms::comparison::DiffDecision::Empty => "empty",
-            crate::atoms::comparison::DiffDecision::Different => "different",
-        };
-        let (movement, truthful_changed) = match &run {
-            crate::atoms::comparison::ComparisonRun::Current { .. } => ("none", false),
-            crate::atoms::comparison::ComparisonRun::Moved { movement, .. } if *movement => {
-                ("mkdir-chmod-chown", true)
-            }
-            crate::atoms::comparison::ComparisonRun::Moved { .. } => ("report-only", false),
-        };
-        changed |= truthful_changed;
-        entries.push(json!({
-            "path": directory.path,
-            "mode": directory.mode,
-            "owner": directory.owner,
-            "group": directory.group,
-            "existed_before": observation.0,
-            "mode_equal_before": observation.1,
-            "owner_equal_before": observation.2,
-            "group_equal_before": observation.3,
-            "changed": truthful_changed,
-            "applied": truthful_changed,
-            "observed_state": {"exists": observation.0, "mode_equal": observation.1, "owner_equal": observation.2, "group_equal": observation.3},
-            "desired_state": {"mode": directory.mode, "uid": desired_uid, "gid": desired_gid},
-            "diff_decision": diff_decision,
-            "movement": movement,
-            "truthful_changed": truthful_changed,
-        }));
-    }
-    crate::atoms::attest::write_json_atomic(
-        &receipt_dir.join(format!("{receipt_name}.json")),
-        &json!({
-            "schema": "harmonia.files.managed_directories.v1",
-            "ok": true,
-            "apply": apply,
-            "changed": changed,
-            "entries": entries,
-            "first_missing_signal": "none",
-        }),
-    )?;
-    Ok(crate::OperationOutcome {
-        ok: true,
-        changed,
-        skipped: !apply,
-        message: format!("{} managed directories checked", directories.len()),
-        command: None,
-    })
-}
+use sha2::{Digest, Sha256};
 
 use crate::atoms::ask::write_file::ManagedFileObservation;
 
@@ -473,7 +290,6 @@ pub(crate) fn converge_managed_files(
     }
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut drift = Vec::new();
-    let mut missing_target_birth_debts = Vec::new();
     let mut written = Vec::new();
     let mut changed = false;
     let mut entries: Vec<crate::atoms::attest::write_file::ManagedFileEntry> = Vec::new();
@@ -503,7 +319,7 @@ pub(crate) fn converge_managed_files(
             },
             |authorization, observation| {
                 let authorization = &authorization;
-                if !apply {
+                if !apply || !observation.target_exists_before {
                     return Ok(ManagedFileMovement::ReportOnly);
                 }
                 let key = invocation.ok_or("managed-file-invocation-missing")?;
@@ -584,7 +400,7 @@ pub(crate) fn converge_managed_files(
         };
         let observation = run.observation();
         let file_changed = observation.file_changed();
-        let missing_target_debt = observation.missing_target_debt;
+        let target_absent = !observation.target_exists_before;
         let target_exists_before = observation.target_exists_before;
         let mode = observation.mode;
         let content_equal = observation.content_equal;
@@ -599,7 +415,7 @@ pub(crate) fn converge_managed_files(
             crate::atoms::comparison::ComparisonRun::Current { .. } => "none",
             crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement.as_str(),
         };
-        let report_only_drift = file_changed && !missing_target_debt && !apply;
+        let report_only_drift = file_changed && !target_absent && !apply;
         let truthful_changed = matches!(
             &run,
             crate::atoms::comparison::ComparisonRun::Moved {
@@ -608,9 +424,7 @@ pub(crate) fn converge_managed_files(
                 ..
             }
         );
-        if missing_target_debt {
-            missing_target_birth_debts.push(file.path.clone());
-        } else if file_changed && truthful_changed {
+        if file_changed && truthful_changed {
             written.push(file.path.clone());
             changed = true;
         } else if file_changed {
@@ -619,7 +433,7 @@ pub(crate) fn converge_managed_files(
         entries.push(crate::atoms::attest::write_file::ManagedFileEntry {
             path: file.path.clone(),
             target_exists_before,
-            state: if missing_target_debt { "missing-target-birth-debt" } else { "observed" }.into(),
+            state: "observed".into(),
             mode,
             content_equal_before: content_equal,
             mode_equal_before: mode_equal,
@@ -628,9 +442,9 @@ pub(crate) fn converge_managed_files(
             owner_equal_before: owner_equal,
             group_equal_before: group_equal,
             changed: truthful_changed,
-            drift_detected: file_changed && !missing_target_debt,
+            drift_detected: file_changed,
             written: truthful_changed,
-            observed_state: crate::atoms::attest::write_file::observed_state(target_exists_before, missing_target_debt, content_equal, mode_equal, owner_equal, group_equal),
+            observed_state: crate::atoms::attest::write_file::observed_state(target_exists_before, content_equal, mode_equal, owner_equal, group_equal),
             desired_state: json!({"content_sha256": format!("{:x}", Sha256::digest(desired)), "mode": mode, "uid": desired_uid, "gid": desired_gid}),
             diff_decision: diff_decision.into(),
             movement: movement.into(),
@@ -669,16 +483,14 @@ pub(crate) fn converge_managed_files(
                     group_equal_before: group_equal,
                     apply,
                     target_exists_before,
-                    state: if missing_target_debt {
-                        "missing-target-birth-debt"
-                    } else if report_only_drift {
+                    state: if report_only_drift {
                         "drift-reported"
                     } else {
                         "observed"
                     }
                     .into(),
                     changed: truthful_changed,
-                    drift_detected: file_changed && !missing_target_debt,
+                    drift_detected: file_changed,
                     written: truthful_changed,
                     desired_content_sha256: format!("{:x}", Sha256::digest(desired)),
                     desired_uid,
@@ -686,8 +498,8 @@ pub(crate) fn converge_managed_files(
                     diff_decision: diff_decision.into(),
                     movement: movement.into(),
                     truthful_changed,
-                    first_missing_signal: if missing_target_debt {
-                        "missing-target-birth-debt"
+                    first_missing_signal: if target_absent {
+                        file.path.as_str()
                     } else if report_only_drift {
                         request.first_missing_signal
                     } else {
@@ -697,7 +509,6 @@ pub(crate) fn converge_managed_files(
                 },
                 crate::atoms::attest::write_file::observed_state(
                     target_exists_before,
-                    missing_target_debt,
                     content_equal,
                     mode_equal,
                     owner_equal,
@@ -706,18 +517,22 @@ pub(crate) fn converge_managed_files(
             )?;
         }
     }
-    let ok = missing_target_birth_debts.is_empty() || !apply;
+    let absent_target = entries
+        .iter()
+        .find(|entry| !entry.target_exists_before)
+        .map(|entry| entry.path.as_str());
+    let ok = absent_target.is_none();
     let receipt = receipt_dir.join(if request.receipt_name.ends_with(".json") {
         request.receipt_name.to_string()
     } else {
         format!("{}.json", request.receipt_name)
     });
-    let aggregate_signal = if !missing_target_birth_debts.is_empty() {
-        "missing-target-birth-debt"
+    let aggregate_signal = if let Some(path) = absent_target {
+        path.to_string()
     } else if !drift.is_empty() {
-        request.first_missing_signal
+        request.first_missing_signal.to_string()
     } else {
-        "none"
+        "none".to_string()
     };
     crate::atoms::attest::write_file::write_managed_files(
         receipt_dir,
@@ -725,15 +540,15 @@ pub(crate) fn converge_managed_files(
         crate::atoms::attest::write_file::ManagedFiles {
             schema: request.schema.to_string(),
             module: request.module_id.to_string(),
+            ok,
             drift,
-            missing_target_birth_debts,
             written,
             owner: request.owner.map(str::to_string),
             group: request.group.map(str::to_string),
             apply,
             changed,
             entries,
-            first_missing_signal: aggregate_signal.into(),
+            first_missing_signal: aggregate_signal,
         },
     )?;
     Ok(crate::OperationOutcome {
@@ -743,164 +558,4 @@ pub(crate) fn converge_managed_files(
         message: format!("{} managed files checked", request.files.len()),
         command: None,
     })
-}
-
-// Seed-file creation ownership lives with the backfill-file do seat.
-/// Seed files are a one-way ownership boundary: the declared source is used
-/// only to create an absent regular file. Later bytes, mode, and ownership
-/// belong to the external writer and are deliberately not reconverged.
-#[cfg(not(test))]
-pub fn ensure_files_present(
-    request: &FileConvergenceRequest,
-    receipt_dir: &Path,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<FileConvergenceOutcome, String> {
-    ensure_files_present_with_invocation(request, receipt_dir, apply, invocation)
-}
-
-pub(crate) fn ensure_files_present_with_invocation(
-    request: &FileConvergenceRequest,
-    receipt_dir: &Path,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<FileConvergenceOutcome, String> {
-    if request.files.is_empty() {
-        return Err("files-ensure-present-empty-request".to_string());
-    }
-    validate_receipt_name(&request.receipt_name)?;
-    validate_specs(&request.files)?;
-    let desired_uid = request.owner.as_deref().map(resolve_uid).transpose()?;
-    let desired_gid = request.group.as_deref().map(resolve_gid).transpose()?;
-    let mut comparisons = Vec::new();
-    let mut written = 0usize;
-    for spec in &request.files {
-        let source = request.source_root.join(&spec.relative_path);
-        if !source.is_file() {
-            return Err(format!(
-                "files-ensure-present-source-missing {}",
-                source.display()
-            ));
-        }
-        let target = request.target_root.join(&spec.relative_path);
-        reject_ssh_path(&target)?;
-        let run = crate::atoms::comparison::execute(
-            "files",
-            || match fs::symlink_metadata(&target) {
-                Ok(metadata) if metadata.file_type().is_file() => Ok(true),
-                Ok(_) => Err(format!(
-                    "files-ensure-present-target-not-regular-file {}",
-                    target.display()
-                )),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                Err(error) => Err(format!(
-                    "files-ensure-present-target-metadata-failed {}: {error}",
-                    target.display()
-                )),
-            },
-            |present| {
-                if *present {
-                    crate::atoms::comparison::DiffDecision::Empty
-                } else {
-                    crate::atoms::comparison::DiffDecision::Different
-                }
-            },
-            |authorization, _| {
-                let authorization = &authorization;
-                if !apply {
-                    return Ok(false);
-                }
-                let parent = target
-                    .parent()
-                    .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
-                let key = invocation.ok_or("files-ensure-present-invocation-missing")?;
-                crate::atoms::r#do::make_dir::create_dir_all(authorization, key, parent).map_err(
-                    |e| {
-                        format!(
-                            "files-ensure-present-parent-create-failed {}: {e}",
-                            parent.display()
-                        )
-                    },
-                )?;
-                let bytes = fs::read(&source)
-                    .map_err(|e| format!("files-source-read-failed {}: {e}", source.display()))?;
-                crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(
-                    authorization,
-                    key,
-                    &target,
-                    &bytes,
-                    spec.mode.or_else(|| source_mode(&source).ok()),
-                    desired_uid,
-                    desired_gid,
-                )?;
-                if !fs::symlink_metadata(&target)
-                    .map(|m| m.file_type().is_file())
-                    .unwrap_or(false)
-                {
-                    return Err(format!(
-                        "files-ensure-present-readback-failed {}",
-                        target.display()
-                    ));
-                }
-                Ok(true)
-            },
-        )?;
-        let present = *run.observation();
-        let decision = match run.decision() {
-            crate::atoms::comparison::DiffDecision::Empty => "empty",
-            crate::atoms::comparison::DiffDecision::Different => "different",
-        };
-        let changed = matches!(
-            &run,
-            crate::atoms::comparison::ComparisonRun::Moved { movement: true, .. }
-        );
-        written += usize::from(changed);
-        comparisons.push(json!({
-            "relative_path": spec.relative_path,
-            "source": source, "target": target,
-            "observed_state": {"target_kind": if present { "regular-file" } else { "absent" }},
-            "desired_state": {"target_kind": "regular-file", "mode": spec.mode, "uid": desired_uid, "gid": desired_gid},
-            "diff_decision": decision,
-            "movement": if changed { "create-seed" } else if decision == "different" { "report-only" } else { "none" },
-            "truthful_changed": changed,
-        }));
-    }
-    let changed = written > 0;
-    let outcome = FileConvergenceOutcome {
-        ok: true,
-        changed,
-        ownership_changed: false,
-        config_state: None,
-        checked: request.files.len(),
-        written,
-        backed_up: 0,
-        missing: Vec::new(),
-        missing_target_birth_debts: Vec::new(),
-        entries: Vec::new(),
-        message: format!(
-            "{} seed files {}",
-            request.files.len(),
-            if changed {
-                "created"
-            } else {
-                "already present or planned"
-            }
-        ),
-    };
-    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
-    let receipt_name = if request.receipt_name.ends_with(".json") {
-        request.receipt_name.clone()
-    } else {
-        format!("{}.json", request.receipt_name)
-    };
-    crate::atoms::attest::write_json_atomic(
-        &receipt_dir.join(receipt_name),
-        &json!({
-            "schema": "harmonia.files.ensure_present.v1", "ok": true, "apply": apply,
-            "source_root": request.source_root, "target_root": request.target_root,
-            "checked": outcome.checked, "written": outcome.written, "changed": outcome.changed,
-            "entries": comparisons, "first_missing_signal": "none",
-        }),
-    )?;
-    Ok(outcome)
 }

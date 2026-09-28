@@ -18,9 +18,6 @@ pub(crate) fn remove_dir(
 ) -> Result<RemoveDirImage, String> {
     crate::atoms::r#do::remove_dir::operate(authorization, invocation, path, None)
 }
-pub(crate) use crate::atoms::r#do::backfill_file::{
-    converge_managed_directories,
-};
 pub(crate) use crate::atoms::r#do::remove_dir::remove_authorized as remove_dir_authorized;
 pub(crate) use crate::atoms::r#do::remove_dir::replace_authorized as remove_dir_replace;
 pub(crate) use crate::atoms::r#do::remove_file::remove_file;
@@ -33,7 +30,7 @@ pub(crate) fn remove_dir_exact(left: &RemoveDirImage, right: &RemoveDirImage) ->
     crate::atoms::r#do::remove_dir::exact(left, right)
 }
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use similar::TextDiff;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,23 +42,11 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(unix)]
 use std::path::{Component, Path, PathBuf};
 
-const NAME: &str = "files";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub action: String,
     pub target: String,
     pub args: Vec<String>,
-}
-
-impl Request {
-    pub fn new(action: impl Into<String>) -> Self {
-        Self {
-            action: action.into(),
-            target: NAME.to_string(),
-            args: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,50 +146,6 @@ pub(crate) fn classify_request(
         .collect()
 }
 
-fn validate_hotfix_target(target: &Path) -> Result<(), String> {
-    let home_dotfile = target.starts_with("/home")
-        && target.components().any(|part| {
-            matches!(part, Component::Normal(value) if value.to_string_lossy().starts_with('.'))
-        });
-    let file_name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    let key_material = file_name.starts_with("id_")
-        || file_name.ends_with(".key")
-        || file_name.ends_with(".pem")
-        || file_name.ends_with(".p12")
-        || file_name.ends_with(".pfx")
-        || target.components().any(|part| {
-            matches!(part, Component::Normal(value) if matches!(value.to_str(), Some("key") | Some("keys") | Some("private") | Some("credentials") | Some("secrets")))
-        });
-    let account_or_operator_setting = matches!(
-        target.to_str(),
-        Some("/etc/passwd" | "/etc/shadow" | "/etc/group" | "/etc/gshadow" | "/etc/sudoers")
-    );
-    let homeserver_configuration = matches!(
-        target.to_str(),
-        Some("/etc/homeserver/config.json" | "/etc/homeserver.json")
-    ) || target.starts_with("/var/www/homeserver");
-    if !target.is_absolute()
-        || target
-            .components()
-            .any(|part| matches!(part, Component::ParentDir))
-        || target.starts_with("/root")
-        || home_dotfile
-        || file_name == "authorized_keys"
-        || key_material
-        || account_or_operator_setting
-        || homeserver_configuration
-    {
-        return Err(format!(
-            "hotfix-target-identity-or-config-wall {}",
-            target.display()
-        ));
-    }
-    reject_ssh_path(target)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileConvergenceEntry {
     pub relative_path: String,
@@ -245,7 +186,6 @@ pub struct FileConvergenceOutcome {
     pub written: usize,
     pub backed_up: usize,
     pub missing: Vec<String>,
-    pub missing_target_birth_debts: Vec<String>,
     pub entries: Vec<FileConvergenceEntry>,
     pub message: String,
 }
@@ -552,26 +492,6 @@ pub struct ExecutablePresentOutcome {
     pub message: String,
 }
 
-pub fn files_request(action: impl Into<String>) -> Request {
-    Request::new(action)
-}
-
-pub fn atomic_promote(target: impl Into<String>) -> Request {
-    Request {
-        action: "atomic-promote".to_string(),
-        target: target.into(),
-        args: Vec::new(),
-    }
-}
-
-pub fn plan(request: &Request) -> Outcome {
-    Outcome {
-        ok: true,
-        changed: false,
-        message: format!("{} {} planned for {}", NAME, request.action, request.target),
-    }
-}
-
 pub(crate) struct ManagedFilesRequest<'a> {
     pub module_id: &'a str,
     pub files: &'a [crate::ManagedFileManifest],
@@ -580,14 +500,6 @@ pub(crate) struct ManagedFilesRequest<'a> {
     pub receipt_name: &'a str,
     pub schema: &'a str,
     pub first_missing_signal: &'a str,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ManagedDirectorySpec {
-    pub path: String,
-    pub mode: u32,
-    pub owner: String,
-    pub group: String,
 }
 
 pub(crate) fn resolve_uid(value: &str) -> Result<u32, String> {
@@ -651,7 +563,6 @@ pub(crate) fn ownership_equal(
     Ok((true, true))
 }
 
-pub(crate) use crate::atoms::r#do::backfill_file::ensure_files_present_with_invocation;
 pub(crate) use crate::atoms::r#do::place_file::converge_files_authorized_with_interactable_policy;
 
 fn validate_executable_name(executable: &str) -> Result<(), String> {
@@ -929,8 +840,6 @@ pub(crate) fn validate_interactable_target(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) use crate::atoms::r#do::place_file::hard_stamp_interactable;
-
 pub(crate) fn validate_specs(specs: &[FileSpec]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     for spec in specs {
@@ -1038,7 +947,6 @@ pub(crate) fn write_partial_failure_receipt(
         written,
         backed_up,
         missing: missing.to_vec(),
-        missing_target_birth_debts: Vec::new(),
         entries: entries.to_vec(),
         message: signal.to_string(),
     };
@@ -1175,11 +1083,10 @@ pub(crate) fn write_convergence_receipt(
         "ownership_changed": if config_state == Some(ConfigConvergenceState::InteractableExempt) { outcome.ownership_changed } else { apply && outcome.ownership_changed },
         "config_state": config_state,
         "missing": outcome.missing,
-        "missing_target_birth_debts": outcome.missing_target_birth_debts,
         "state": if config_state == Some(ConfigConvergenceState::InteractableExempt) { "interactable-exempt" } else if config_state == Some(ConfigConvergenceState::ProposalEligible) { "proposal-eligible" } else if outcome.ok { "converged" } else { "incomplete" },
         "truthful_changed": truthful_changed,
         "entries": entries,
-        "first_missing_signal": if outcome.ok { "none" } else if !outcome.missing_target_birth_debts.is_empty() { "missing-target-birth-debt" } else if outcome.missing.is_empty() { outcome.message.as_str() } else { "files-convergence-source-incomplete" },
+        "first_missing_signal": if outcome.ok { "none" } else if let Some(path) = outcome.missing.first() { path.as_str() } else { outcome.message.as_str() },
     });
     let mut receipt_name = request.receipt_name.clone();
     if receipt_name.is_empty() {

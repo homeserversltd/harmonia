@@ -15,7 +15,6 @@ pub(crate) fn execute_validated_step(
             invocation,
         )
         .map(|execution| execution.outcome),
-        "managed-directories" => managed_directories_step(step, module_dir, apply, invocation),
         "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, false, invocation),
         "validated-file-symlink" => {
@@ -33,9 +32,6 @@ pub(crate) fn execute_validated_step(
             software_authorization,
             invocation,
         ),
-        "ensure-present" => {
-            files_ensure_present_step(step, manifest, module_dir, false, invocation)
-        }
         "compile-fragments" => {
             compile_fragments_step(step, manifest, module_dir, apply, invocation)
         }
@@ -104,12 +100,9 @@ pub(crate) fn structural_file_blocker(
         }
     }
     for target in targets {
-        let managed_directory_under_home =
-            step.permutation == "managed-directories" && target.starts_with("/home/");
         match crate::atoms::files::classify_target(&target) {
             crate::atoms::files::TargetClass::Config
-                if !managed_directory_under_home
-                    && !matches!(
+                if !matches!(
                         step.permutation.as_str(),
                         "managed-files"
                             | "converge"
@@ -577,6 +570,7 @@ pub(crate) fn managed_files_step_with_authorization(
     let hold = disposition.known_good;
     let proposals = disposition.proposals;
     let mut truthful_changed = false;
+    let mut first_missing_signal: Option<String> = None;
     let mut result = crate::OperationOutcome {
         ok: true,
         changed: false,
@@ -588,23 +582,34 @@ pub(crate) fn managed_files_step_with_authorization(
     for file in hold {
         let path = Path::new(&file.path);
         crate::atoms::ask::backfill_file::validate_target(path)?;
+        let target_exists = path.exists();
         let actual = fs::read(path)
             .ok()
             .map(|bytes| crate::atoms::file_sha256(&bytes));
         let expected = crate::atoms::file_sha256(file.content.as_bytes());
+        let missing_signal = format!("managed-file-target-absent:{}", path.display());
+        result.ok &= target_exists;
+        if !target_exists {
+            first_missing_signal.get_or_insert(missing_signal.clone());
+        }
         atoms::attest::attest(
             &attest_log,
             &crate::atoms::Receipt {
                 atom: "managed-files".into(),
-                ok: true,
+                ok: target_exists,
                 drift: crate::atoms::Drift::File {
                     expected_sha256: expected,
                     actual_sha256: actual,
                 },
                 message: format!(
-                    "state=known-good path={} target_exists={} apply=false{}",
+                    "state=known-good path={} target_exists={} apply=false{}{}",
                     path.display(),
-                    path.exists(),
+                    target_exists,
+                    if target_exists {
+                        String::new()
+                    } else {
+                        format!(" first_missing_signal={missing_signal}")
+                    },
                     file.legacy_transition_note
                         .as_deref()
                         .map(|note| format!(" {note}"))
@@ -659,6 +664,13 @@ pub(crate) fn managed_files_step_with_authorization(
             invocation,
             interactable_policy(manifest),
         )?;
+        let target_exists = target.exists();
+        let file_ok = observed.ok && target_exists;
+        let missing_signal = format!("managed-file-target-absent:{}", target.display());
+        result.ok &= file_ok;
+        if !target_exists {
+            first_missing_signal.get_or_insert(missing_signal.clone());
+        }
         let recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence(
             manifest, &request, &observed,
         )?;
@@ -687,10 +699,10 @@ pub(crate) fn managed_files_step_with_authorization(
             &attest_log,
             &crate::atoms::Receipt {
                 atom: "managed-files".into(),
-                ok: observed.ok,
+                ok: file_ok,
                 drift: crate::atoms::Drift::Current,
                 message: format!(
-                    "state={} path={} proposal_count={} target_write=false changed={} ownership_changed={}",
+                    "state={} path={} proposal_count={} target_write=false changed={} ownership_changed={}{}",
                     config_state,
                     target.display(),
                     recognitions
@@ -699,48 +711,25 @@ pub(crate) fn managed_files_step_with_authorization(
                         .count(),
                     observed.changed,
                     observed.ownership_changed,
+                    if target_exists {
+                        String::new()
+                    } else {
+                        format!(" first_missing_signal={missing_signal}")
+                    },
                 ),
             },
             &[],
         )?;
+    }
+    if let Some(signal) = first_missing_signal {
+        result.message = signal;
     }
     Ok(ManagedFilesExecution {
         outcome: result,
         truthful_changed,
     })
 }
-pub(crate) fn is_configuration_path(path: &Path) -> bool {
-    let path = path.to_string_lossy();
-    path == "/etc"
-        || path.starts_with("/etc/")
-        || path == "/home"
-        || path.starts_with("/home/")
-        || path == "/root"
-        || path.starts_with("/root/")
-        || path == "$HOME"
-        || path.starts_with("$HOME/")
-}
-pub(crate) fn managed_directories_step(
-    step: &ValidatedStep,
-    module_dir: &Path,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
-    let directories: Vec<atoms::files::ManagedDirectorySpec> = serde_json::from_value(
-        step.args
-            .get("directories")
-            .cloned()
-            .ok_or("managed-directories-args-missing")?,
-    )
-    .map_err(|e| format!("managed-directories-args-invalid: {e}"))?;
-    atoms::files::converge_managed_directories(
-        &directories,
-        module_dir,
-        &step.step_id,
-        apply,
-        invocation,
-    )
-}
+
 fn managed_files_from_files_root(
     root: &Path,
     module_category: Option<&str>,
@@ -1262,7 +1251,6 @@ pub(crate) fn files_converge_step(
             written: 0,
             backed_up: 0,
             missing: Vec::new(),
-            missing_target_birth_debts: Vec::new(),
             entries: Vec::new(),
             message: "software files absent".to_string(),
         });
@@ -1297,7 +1285,6 @@ pub(crate) fn files_converge_step(
             written: 0,
             backed_up: 0,
             missing: Vec::new(),
-            missing_target_birth_debts: Vec::new(),
             entries: Vec::new(),
             message: "config files absent".to_string(),
         });
@@ -1382,44 +1369,7 @@ pub(crate) fn files_converge_step(
         command: None,
     })
 }
-pub(crate) fn files_ensure_present_step(
-    step: &ValidatedStep,
-    manifest: &LadderManifest,
-    module_dir: &Path,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
-    let files = string_array_arg(&step.args, "files")
-        .into_iter()
-        .map(|relative_path| crate::atoms::files::FileSpec {
-            mode: Some(0o644),
-            relative_path: PathBuf::from(relative_path),
-        })
-        .collect();
-    let outcome = crate::atoms::files::ensure_files_present_with_invocation(
-        &crate::atoms::files::FileConvergenceRequest {
-            source_root: resolve_ladder_path(manifest, string_arg(&step.args, "source_root")),
-            target_root: PathBuf::from(string_arg(&step.args, "target_root")),
-            files,
-            backup_existing: false,
-            receipt_name: optional_string_arg(&step.args, "receipt_name")
-                .unwrap_or(&step.step_id)
-                .to_string(),
-            owner: optional_string_arg(&step.args, "owner").map(ToString::to_string),
-            group: optional_string_arg(&step.args, "group").map(ToString::to_string),
-        },
-        module_dir,
-        apply,
-        invocation,
-    )?;
-    Ok(OperationOutcome {
-        ok: outcome.ok,
-        changed: outcome.changed,
-        skipped: !apply,
-        message: outcome.message,
-        command: None,
-    })
-}
+
 fn files_under_root(root: &Path) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     fn walk(root: &Path, path: &Path, out: &mut Vec<String>) -> Result<(), String> {

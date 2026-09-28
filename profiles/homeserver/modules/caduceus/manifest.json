@@ -11,21 +11,6 @@
   },
   "ladder": [
     {
-      "step_id": "caduceus-household-time-state-directory",
-      "tool": "files",
-      "permutation": "managed-directories",
-      "args": {
-        "directories": [
-          {
-            "path": "/var/lib/caduceus/household-time",
-            "mode": 493,
-            "owner": "owner",
-            "group": "owner"
-          }
-        ]
-      }
-    },
-    {
       "step_id": "caduceus-staff-module-path",
       "tool": "command",
       "permutation": "capture",

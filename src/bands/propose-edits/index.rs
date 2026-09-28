@@ -757,26 +757,12 @@ pub(crate) fn execute_manifest_modules(
 
 #[cfg(test)]
 mod refresh_interactables_tests {
-    use super::{persist_feed, prune_stale_interactables_at_path, refresh_interactables_at_path};
+    use super::{persist_feed, prune_stale_interactables_at_path};
     use crate::interactables::{self, DriftSummary, Interactable};
-    use crate::tools::files::{
-        FileConvergenceEntry, FileConvergenceOutcome, FileConvergenceRequest, FileSpec,
-    };
-    use crate::tools::ladder::LadderManifest;
     use crate::Profile;
-    use std::collections::BTreeMap;
-    use std::fs::{self, File};
-    use std::path::{Path, PathBuf};
+    use std::fs;
+    use std::path::Path;
 
-    fn scratch() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-refresh-interactables-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
 
     fn unrelated_item(root: &Path) -> Interactable {
         Interactable {
@@ -816,86 +802,7 @@ mod refresh_interactables_tests {
         }
     }
 
-    fn manifest() -> LadderManifest {
-        LadderManifest {
-            schema: "harmonia.module.ladder.v1".into(),
-            id: "fixture-module".into(),
-            version: "1".into(),
-            description: "fixture description".into(),
-            role: None,
-            optional: false,
-            optional_warning: None,
-            category: None,
-            group: None,
-            constants: BTreeMap::new(),
-            package_pins: BTreeMap::new(),
-            package_ceilings: BTreeMap::new(),
-            caduceus_commands: Vec::new(),
-            files_root: None,
-            config_deploy: Some("interactable".into()),
-            suppress_interactable: false,
-            isolation: None,
-            module_observation: None,
-            plan_refusals: Vec::new(),
-            ladder: Vec::new(),
-            base_dir: PathBuf::new(),
-        }
-    }
 
-    fn request(root: &Path) -> FileConvergenceRequest {
-        FileConvergenceRequest {
-            source_root: root.join("source-root"),
-            target_root: root.join("config_deploy:interactable"),
-            files: vec![FileSpec {
-                relative_path: "target.conf".into(),
-                mode: Some(0o644),
-            }],
-            backup_existing: true,
-            receipt_name: "fixture-refresh".into(),
-            owner: Some("owner".into()),
-            group: Some("group".into()),
-        }
-    }
-
-    fn outcome(source: &Path, target: &Path) -> FileConvergenceOutcome {
-        FileConvergenceOutcome {
-            ok: true,
-            changed: true,
-            ownership_changed: false,
-            config_state: Some(crate::atoms::files::ConfigConvergenceState::ProposalEligible),
-            checked: 1,
-            written: 1,
-            backed_up: 1,
-            missing: Vec::new(),
-            missing_target_birth_debts: Vec::new(),
-            entries: vec![FileConvergenceEntry {
-                relative_path: "target.conf".into(),
-                source: source.to_path_buf(),
-                target: target.to_path_buf(),
-                source_exists: true,
-                target_exists_before: true,
-                content_equal_before: false,
-                mode_equal_before: true,
-                target_exists_after: true,
-                content_equal_after: true,
-                mode_equal_after: true,
-                changed: true,
-                backed_up_to: None,
-                final_mode: Some(0o644),
-                ownership_source: "request".into(),
-                observed_uid_before: None,
-                observed_gid_before: None,
-                observed_uid_after: None,
-                observed_gid_after: None,
-                ownership_changed: false,
-                observed_uid: None,
-                observed_gid: None,
-                diff: None,
-                diff_omitted: None,
-            }],
-            message: "fixture".into(),
-        }
-    }
 
     fn prune_item(
         root: &Path,
@@ -1190,109 +1097,4 @@ mod refresh_interactables_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn refresh_interactables_at_path_refreshes_dedupes_and_refuses_below_wall() {
-        let root = scratch();
-        let feed_path = root.join("interactables.json");
-        let source = root.join("known-good.conf");
-        let target = root.join("config_deploy:interactable/target.conf");
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(
-            &source,
-            include_bytes!("../../../tests/fixtures/harmonia/known-good.conf"),
-        )
-        .unwrap();
-        fs::write(
-            &target,
-            include_bytes!("../../../tests/fixtures/harmonia/live-above-wall.conf"),
-        )
-        .unwrap();
-        super::persist_feed(
-            &feed_path,
-            &interactables::make_feed(vec![unrelated_item(&root)]),
-        )
-        .unwrap();
-
-        let manifest = manifest();
-        let request = request(&root);
-        let first = refresh_interactables_at_path(
-            &feed_path,
-            &manifest,
-            &request,
-            &outcome(&source, &target),
-        )
-        .unwrap();
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].config_state, "interactable");
-        assert!(first[0].score >= 0.33);
-        assert!(first[0]
-            .reference_id
-            .as_ref()
-            .is_some_and(|value| !value.is_empty()));
-        assert!(first[0].nearest_reference.is_some());
-        assert!(first[0]
-            .interactable_id
-            .as_ref()
-            .is_some_and(|value| !value.is_empty()));
-        assert_eq!(
-            fs::read(&target).unwrap(),
-            include_bytes!("../../../tests/fixtures/harmonia/live-above-wall.conf").as_slice()
-        );
-        let first_feed = interactables::load_feed(&feed_path).unwrap();
-        assert_eq!(first_feed.interactables.len(), 2);
-        let proposal = first_feed
-            .interactables
-            .iter()
-            .find(|item| item.target_path.as_deref() == Some(target.as_path()))
-            .unwrap();
-        assert!(!proposal.name.is_empty());
-        assert!(!proposal.description.is_empty());
-        assert!(proposal
-            .available_at
-            .as_ref()
-            .is_some_and(|value| !value.is_empty()));
-        assert!(!proposal.script.is_empty());
-        assert!(!proposal.show_only_if.is_empty());
-        assert!(!proposal.completion_check.is_empty());
-
-        let second = refresh_interactables_at_path(
-            &feed_path,
-            &manifest,
-            &request,
-            &outcome(&source, &target),
-        )
-        .unwrap();
-        assert_eq!(second.len(), 1);
-        assert_eq!(
-            interactables::load_feed(&feed_path)
-                .unwrap()
-                .interactables
-                .len(),
-            2
-        );
-
-        fs::write(
-            &target,
-            include_bytes!("../../../tests/fixtures/harmonia/live-below-wall.conf"),
-        )
-        .unwrap();
-        let refused = refresh_interactables_at_path(
-            &feed_path,
-            &manifest,
-            &request,
-            &outcome(&source, &target),
-        )
-        .unwrap();
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0].config_state, "refused-unrecognized");
-        assert!(refused[0].score < 0.33);
-        let final_feed = interactables::load_feed(&feed_path).unwrap();
-        assert_eq!(final_feed.interactables.len(), 1);
-        assert_eq!(final_feed.interactables[0].id, "unrelated-proposal");
-        assert_eq!(
-            fs::read(&target).unwrap(),
-            include_bytes!("../../../tests/fixtures/harmonia/live-below-wall.conf").as_slice()
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
 }

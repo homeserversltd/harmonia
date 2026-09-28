@@ -17,7 +17,6 @@ pub(crate) struct Observation {
 pub(crate) struct ManagedFileObservation {
     pub path: PathBuf,
     pub target_exists_before: bool,
-    pub missing_target_debt: bool,
     pub parent_is_dir: bool,
     pub mode: u32,
     pub content_equal: bool,
@@ -69,7 +68,6 @@ pub(crate) fn managed(
     Ok(ManagedFileObservation {
         path: path.to_path_buf(),
         target_exists_before,
-        missing_target_debt: !target_exists_before,
         parent_is_dir,
         mode,
         content_equal: regular && preimage.bytes.as_deref() == Some(desired),

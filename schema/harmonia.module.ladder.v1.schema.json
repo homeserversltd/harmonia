@@ -347,20 +347,6 @@
               "const": "files"
             },
             "permutation": {
-              "const": "managed-directories"
-            }
-          },
-          "required": [
-            "tool",
-            "permutation"
-          ]
-        },
-        {
-          "properties": {
-            "tool": {
-              "const": "files"
-            },
-            "permutation": {
               "const": "managed-files"
             }
           },
@@ -856,32 +842,6 @@
             "properties": {
               "args": {
                 "$ref": "#/definitions/ladderArgs_files_executable_present"
-              }
-            },
-            "required": [
-              "args"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "tool": {
-                "const": "files"
-              },
-              "permutation": {
-                "const": "managed-directories"
-              }
-            },
-            "required": [
-              "tool",
-              "permutation"
-            ]
-          },
-          "then": {
-            "properties": {
-              "args": {
-                "$ref": "#/definitions/ladderArgs_files_managed_directories"
               }
             },
             "required": [
@@ -1927,29 +1887,6 @@
       },
       "required": [
         "executable"
-      ]
-    },
-    "ladderArgs_files_managed_directories": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "directories": {
-          "anyOf": [
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/directory"
-              }
-            },
-            {
-              "type": "string",
-              "pattern": "^\\$constants\\.[A-Za-z0-9_.-]+$"
-            }
-          ]
-        }
-      },
-      "required": [
-        "directories"
       ]
     },
     "ladderArgs_files_managed_files": {

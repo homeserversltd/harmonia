@@ -1,6 +1,4 @@
 //! One single-act tool that brings one file to its declared bytes and metadata.
-#![allow(dead_code)]
-
 use crate::atoms::files::{
     classify_request, observed_ownership, reject_ssh_path, resolve_gid, resolve_uid,
     same_file_bytes, source_mode, target_mode, unified_file_diff, validate_receipt_name,
@@ -649,29 +647,6 @@ mod authority_tests {
 }
 
 // Managed-file convergence ownership lives with the place-file do seat.
-pub fn converge_files(
-    request: &FileConvergenceRequest,
-    receipt_dir: &Path,
-    apply: bool,
-) -> Result<FileConvergenceOutcome, String> {
-    if apply {
-        return Err("software-authorization-required".into());
-    }
-    converge_files_authorized(request, receipt_dir, None, None)
-}
-
-pub(crate) fn converge_files_with_invocation(
-    request: &FileConvergenceRequest,
-    receipt_dir: &Path,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<FileConvergenceOutcome, String> {
-    if apply {
-        return Err("software-authorization-required".into());
-    }
-    converge_files_authorized(request, receipt_dir, None, invocation)
-}
-
 pub(crate) fn converge_files_authorized(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
@@ -817,7 +792,6 @@ fn converge_files_authorized_with_policy(
 
     let mut entries = Vec::new();
     let mut missing = Vec::new();
-    let mut missing_target_birth_debts = Vec::new();
     let mut written = 0usize;
     let mut backed_up = 0usize;
 
@@ -860,7 +834,7 @@ fn converge_files_authorized_with_policy(
         if !target_exists_before
             && !matches!(&policy, ConvergencePolicy::EstateOwnedDeclaredSudoers(_))
         {
-            missing_target_birth_debts.push(relative_path.clone());
+            missing.push(target.display().to_string());
             let file_diff = unified_file_diff(&source, &target)?;
             if let Some(diff) = file_diff.text.as_deref() {
                 write_unified_diff_receipt(
@@ -1125,7 +1099,7 @@ fn converge_files_authorized_with_policy(
         });
     }
 
-    let ok = missing.is_empty() && missing_target_birth_debts.is_empty();
+    let ok = missing.is_empty();
     let changed = entries.iter().any(|entry| entry.changed);
     let ownership_changed = entries.iter().any(|entry| entry.ownership_changed);
     let outcome = FileConvergenceOutcome {
@@ -1137,7 +1111,6 @@ fn converge_files_authorized_with_policy(
         written,
         backed_up,
         missing,
-        missing_target_birth_debts,
         entries,
         message: if ok {
             format!(
@@ -1330,7 +1303,7 @@ pub(crate) fn hard_stamp_interactable(
     }
     let metadata = fs::symlink_metadata(target).map_err(|error| {
         format!(
-            "interactable-target-birth-debt {}: {error}",
+            "interactable-target-inspection-failed {}: {error}",
             target.display()
         )
     })?;

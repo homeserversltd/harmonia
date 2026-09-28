@@ -59,8 +59,8 @@ pub(crate) struct ManagedFile {
 pub(crate) struct ManagedFiles {
     pub schema: String,
     pub module: String,
+    pub ok: bool,
     pub drift: Vec<String>,
-    pub missing_target_birth_debts: Vec<String>,
     pub written: Vec<String>,
     pub owner: Option<String>,
     pub group: Option<String>,
@@ -99,13 +99,12 @@ pub(crate) fn write_managed_error(dir: &Path, path: &Path, r: ManagedError) -> R
 }
 pub(crate) fn observed_state(
     target_exists: bool,
-    missing_debt: bool,
     content: bool,
     mode: bool,
     owner: bool,
     group: bool,
 ) -> serde_json::Value {
-    serde_json::json!({"target_exists":target_exists,"state":if missing_debt { "missing-target-birth-debt" } else { "observed" },"content_equal":content,"mode_equal":mode,"owner_equal":owner,"group_equal":group})
+    serde_json::json!({"target_exists":target_exists,"state":"observed","content_equal":content,"mode_equal":mode,"owner_equal":owner,"group_equal":group})
 }
 
 pub(crate) fn write_managed_file(
@@ -114,13 +113,13 @@ pub(crate) fn write_managed_file(
     r: ManagedFile,
     observed: serde_json::Value,
 ) -> Result<(), String> {
-    let ok = r.state != "missing-target-birth-debt";
+    let ok = r.target_exists_before;
     let v = serde_json::json!({"schema":"harmonia.files.managed_file.v1","ok":ok,"module":r.module,"path":r.path,"mode":r.mode,"owner":r.owner,"group":r.group,"owner_equal_before":r.owner_equal_before,"group_equal_before":r.group_equal_before,"apply":r.apply,"target_exists_before":r.target_exists_before,"state":r.state,"changed":r.changed,"drift_detected":r.drift_detected,"written":r.written,"observed_state":observed,"desired_state":{"content_sha256":r.desired_content_sha256,"mode":r.mode,"uid":r.desired_uid,"gid":r.desired_gid},"diff_decision":r.diff_decision,"movement":r.movement,"truthful_changed":r.truthful_changed,"first_missing_signal":r.first_missing_signal});
     write(dir, path, &v, ok, "managed-file")
 }
 pub(crate) fn write_managed_files(dir: &Path, path: &Path, r: ManagedFiles) -> Result<(), String> {
-    let ok = r.missing_target_birth_debts.is_empty() || !r.apply;
-    let v = serde_json::json!({"schema":r.schema,"ok":ok,"module":r.module,"drift":r.drift,"missing_target_birth_debts":r.missing_target_birth_debts,"written":r.written,"owner":r.owner,"group":r.group,"apply":r.apply,"changed":r.changed,"entries":r.entries,"first_missing_signal":r.first_missing_signal});
+    let ok = r.ok;
+    let v = serde_json::json!({"schema":r.schema,"ok":ok,"module":r.module,"drift":r.drift,"written":r.written,"owner":r.owner,"group":r.group,"apply":r.apply,"changed":r.changed,"entries":r.entries,"first_missing_signal":r.first_missing_signal});
     write(dir, path, &v, ok, "managed-files")
 }
 fn write(
