@@ -475,6 +475,7 @@ pub(crate) struct ConfigRecognition {
 pub(crate) fn execute_manifest_band(
     manifest: &LadderManifest,
     module_dir: &Path,
+    source_module_dir: &Path,
     auth: Option<&SoftwareApplyAuthorization>,
     pa: Option<&PackageAuthority>,
     key: Option<&crate::atoms::r#do::InvocationKey>,
@@ -484,6 +485,7 @@ pub(crate) fn execute_manifest_band(
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
     halted_steps: &mut crate::bands::HaltedSteps,
     active_lane: Option<&str>,
+    module_changed_before_band: bool,
 ) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
@@ -572,13 +574,14 @@ pub(crate) fn execute_manifest_band(
                     .unwrap_or(&[]),
             )?
         } else {
-            crate::tools::routine::execute_validated_step(
+            crate::tools::routine::execute_validated_step_with_source(
                 step,
                 manifest,
                 module_dir,
+                source_module_dir,
                 auth,
                 pa,
-                false,
+                module_changed_before_band || result.changed,
                 key,
                 active_lane,
             )?
@@ -632,6 +635,7 @@ pub(crate) fn execute_manifest_band(
 use crate::receipts::event;
 pub(crate) fn execute_manifest_modules(
     profile: &Profile,
+    module_root: &Path,
     receipt_dir: &Path,
     mode: &UpdateMode,
     mode_apply: bool,
@@ -685,6 +689,7 @@ pub(crate) fn execute_manifest_modules(
             LoadedModule::Ladder(manifest) => execute_manifest_band(
                 manifest,
                 &receipt_dir.join("modules").join(module_id),
+                &crate::bands::stage_profile::resolve_module_dir(module_root, module_id)?,
                 mode.software_authorization(),
                 profile.package_authority.as_ref(),
                 mode.invocation(),
@@ -694,6 +699,7 @@ pub(crate) fn execute_manifest_modules(
                 &projected.routines,
                 halted_steps,
                 active_lane,
+                states.get(module_id).is_some_and(|state| state.changed),
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };

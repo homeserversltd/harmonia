@@ -102,31 +102,164 @@ pub(crate) fn validate_command_precondition(
     permutation: &str,
     args: &BTreeMap<String, Value>,
 ) -> Result<(), LadderValidationError> {
-    let Some(precondition) =
-        command_precondition(args).map_err(|defect| LadderValidationError {
-            step_id: step_id.into(),
-            defect,
-        })?
-    else {
-        return Ok(());
+    if tool != "command" { return Ok(()); }
+    let program = args.get("program").and_then(Value::as_str).unwrap_or("");
+    let argv = args.get("args").and_then(Value::as_array).cloned().unwrap_or_default();
+    let path_values = std::iter::once(program).chain(argv.iter().filter_map(Value::as_str)).chain(args.get("cwd").and_then(Value::as_str));
+    if path_values.clone().any(|value| value.contains("${module_dir}") && !value.starts_with("${module_dir}/")) {
+        return Err(LadderValidationError { step_id: step_id.into(), defect: "command-module-dir-token-invalid".into() });
+    }
+    if shell_command(program, &argv) || inline_payload(program, &argv) {
+        return Err(LadderValidationError { step_id: step_id.into(), defect: "command-shell-string-refused".into() });
+    }
+    if permutation == "capture" && !read_only_command(program, &argv) {
+        return Err(LadderValidationError { step_id: step_id.into(), defect: "command-capture-not-proven-read-only".into() });
+    }
+    if permutation == "act" && !command_mutates(program, &argv) {
+        return Err(LadderValidationError { step_id: step_id.into(), defect: "command-act-program-not-approved-mutator".into() });
+    }
+    if permutation == "act" {
+        let Some(observation) = args.get("observation").and_then(Value::as_object) else {
+            return Err(LadderValidationError { step_id: step_id.into(), defect: "command-act-observation-missing".into() });
+        };
+        let program_probe = observation.contains_key("program");
+        let module_signal = observation.get("kind").and_then(Value::as_str) == Some("module_changed_before_step");
+        if program_probe == module_signal {
+            return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-must-select-one-kind".into() });
+        }
+        if module_signal {
+            if observation.len() != 1 { return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-invalid-module-signal".into() }); }
+        } else {
+            let observe_program = observation.get("program").and_then(Value::as_str).unwrap_or("");
+            let observe_args = observation.get("args").and_then(Value::as_array).cloned().unwrap_or_default();
+            let mut values = std::iter::once(observe_program).chain(observe_args.iter().filter_map(Value::as_str)).chain(observation.get("cwd").and_then(Value::as_str));
+            if values.any(|value| value.contains("${module_dir}") && !value.starts_with("${module_dir}/")) {
+                return Err(LadderValidationError { step_id: step_id.into(), defect: "command-module-dir-token-invalid".into() });
+            }
+            if shell_command(observe_program, &observe_args) || inline_payload(observe_program, &observe_args) {
+                return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-shell-string-refused".into() });
+            }
+            if observe_program.trim().is_empty() || !read_only_command(observe_program, &observe_args) {
+                return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-not-proven-read-only".into() });
+            }
+            let allowed = ["program", "args", "cwd", "expected_exit_code", "expected_stdout"];
+            if observation.keys().any(|key| !allowed.contains(&key.as_str()))
+                || observation.get("args").is_some_and(|value| !value.as_array().is_some_and(|items| items.iter().all(Value::is_string)))
+                || observation.get("cwd").is_some_and(|value| !value.is_string())
+                || observation.get("expected_stdout").is_some_and(|value| !value.is_string())
+                || observation.get("expected_exit_code").and_then(Value::as_i64).is_none()
+            {
+                return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-invalid-field-or-type".into() });
+            }
+        }
+    }
+    if let Some(value) = args.get("precondition") {
+        let precondition = serde_json::from_value::<CommandPrecondition>(value.clone())
+            .map_err(|error| LadderValidationError { step_id: step_id.into(), defect: format!("precondition-invalid: {error}") })?;
+        if permutation != "capture" { return Err(LadderValidationError { step_id: step_id.into(), defect: "precondition-requires-command-capture".into() }); }
+        if precondition.program.trim().is_empty() { return Err(LadderValidationError { step_id: step_id.into(), defect: "precondition-program-empty".into() }); }
+        if precondition.timeout_secs == Some(0) { return Err(LadderValidationError { step_id: step_id.into(), defect: "precondition-timeout-secs-zero".into() }); }
+    }
+    Ok(())
+}
+
+fn shell_command(program: &str, args: &[Value]) -> bool {
+    fn shell_name(value: &str) -> bool {
+        matches!(
+            Path::new(value).file_name().and_then(|name| name.to_str()),
+            Some("sh" | "bash" | "dash" | "ash" | "zsh" | "ksh")
+        )
+    }
+    if shell_name(program) {
+        return true;
+    }
+    let values = args.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    for value in &values {
+        tokens.extend(value.split_whitespace());
+    }
+    let env_program = Path::new(program).file_name().and_then(|name| name.to_str()) == Some("env");
+    let shell_in_args = tokens.iter().any(|value| shell_name(value));
+    let shell_flag = tokens.iter().any(|value| matches!(*value, "-c" | "-lc" | "-cl" | "--command"));
+    shell_in_args || (env_program && shell_flag)
+}
+fn inline_payload(program: &str, args: &[Value]) -> bool {
+    let base = Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let interpreter = matches!(base, "python"|"python2"|"python3"|"perl"|"ruby"|"node"|"php");
+    interpreter && args.iter().filter_map(Value::as_str).any(|arg| matches!(arg, "-c"|"-e"|"--eval"))
+}
+fn read_only_command(program: &str, args: &[Value]) -> bool {
+    let Some(argv) = args.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
+        return false;
     };
-    if tool != "command" || permutation != "capture" {
-        return Err(LadderValidationError {
-            step_id: step_id.into(),
-            defect: "precondition-requires-command-capture".into(),
-        });
+    let name = Path::new(program).file_name().and_then(|v| v.to_str()).unwrap_or("");
+    match name {
+        "test" => argv.len() == 2 && matches!(argv[0], "-e" | "-x" | "-s" | "-d" | "-f" | "-r" | "-w"),
+        "systemd-analyze" => argv.len() == 2 && argv[0] == "verify",
+        "testparm" => argv == ["-s"],
+        "python3" => (argv.len() == 3 && argv[0] == "-m" && argv[1] == "json.tool")
+            || (argv.len() == 2
+                && argv[0].starts_with("${module_dir}/")
+                && Path::new(argv[0].trim_start_matches("${module_dir}/"))
+                    .components()
+                    .count()
+                    == 1
+                && matches!(
+                    (Path::new(argv[0].trim_start_matches("${module_dir}/")).file_name().and_then(|name| name.to_str()), argv[1]),
+                    (Some("launcher-cache.py"), "--check") | (Some("caduceus-staff-path.py"), "--check")
+                )),
+        "stat" => argv.len() >= 3 && argv[0] == "-c" && matches!(argv[1], "%U:%G" | "%a"),
+        _ => false,
     }
-    if precondition.program.trim().is_empty() {
-        return Err(LadderValidationError {
-            step_id: step_id.into(),
-            defect: "precondition-program-empty".into(),
-        });
+}
+
+fn command_mutates(program: &str, args: &[Value]) -> bool {
+    let base = Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let Some(argv) = args.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else { return false; };
+    let module_script = base == "python3" && argv.first().is_some_and(|script| {
+        script.starts_with("${module_dir}/") && script.ends_with(".py")
+            && Path::new(script.trim_start_matches("${module_dir}/")).components().count() == 1
+    }) && !argv.iter().any(|arg| matches!(*arg, "-c" | "-e" | "--eval"));
+    let synapse_staff_command = program == "/usr/bin/python3"
+        && argv == ["/usr/local/sbin/agathodaimon/cli.py", "matrix", "matrix-converge"];
+    module_script || synapse_staff_command
+}
+
+
+fn validate_files_metadata_args(
+    step_id: &str,
+    args: &BTreeMap<String, Value>,
+) -> Result<(), LadderValidationError> {
+    let invalid = |defect: &str| LadderValidationError {
+        step_id: step_id.into(),
+        defect: defect.into(),
+    };
+    let Some(items) = args.get("files").and_then(Value::as_array) else {
+        return Err(invalid("files-metadata-files-missing"));
+    };
+    if items.is_empty() {
+        return Err(invalid("files-metadata-files-empty"));
     }
-    if precondition.timeout_secs == Some(0) {
-        return Err(LadderValidationError {
-            step_id: step_id.into(),
-            defect: "precondition-timeout-secs-zero".into(),
-        });
+    let mut seen = std::collections::BTreeSet::new();
+    for item in items {
+        let Some(spec) = item.as_object() else {
+            return Err(invalid("files-metadata-entry-not-object"));
+        };
+        if spec.keys().any(|key| !["path", "owner", "group", "mode"].contains(&key.as_str())) {
+            return Err(invalid("files-metadata-entry-unknown-field"));
+        }
+        let path = spec.get("path").and_then(Value::as_str).unwrap_or("");
+        if !Path::new(path).is_absolute() || !seen.insert(path) {
+            return Err(invalid("files-metadata-path-invalid-or-duplicate"));
+        }
+        for key in ["owner", "group"] {
+            if !spec.get(key).and_then(Value::as_str).is_some_and(|value| !value.trim().is_empty()) {
+                return Err(invalid(if key == "owner" { "files-metadata-owner-missing" } else { "files-metadata-group-missing" }));
+            }
+        }
+        if !spec.get("mode").and_then(Value::as_u64).is_some_and(|mode| mode <= 0o7777) {
+            return Err(invalid("files-metadata-mode-invalid"));
+        }
     }
     Ok(())
 }
@@ -164,6 +297,7 @@ pub(crate) fn validate_tool_semantics(
                 }
             })
         }
+        ("files", "metadata") => validate_files_metadata_args(step_id, args),
         ("files", "executable-present") => tools::files::validate_executable_present_args(args)
             .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -441,6 +575,23 @@ pub(crate) fn execute_validated_step(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     active_lane: Option<&str>,
 ) -> Result<OperationOutcome, String> {
+    execute_validated_step_with_source(
+        step, manifest, module_dir, module_dir, software_authorization,
+        package_authority, module_changed_before_step, invocation, active_lane,
+    )
+}
+
+pub(crate) fn execute_validated_step_with_source(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    source_module_dir: &Path,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    package_authority: Option<&crate::PackageAuthority>,
+    module_changed_before_step: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    active_lane: Option<&str>,
+) -> Result<OperationOutcome, String> {
     if let Some(blocker) = structural_file_blocker(step, manifest) {
         return Err(blocker);
     }
@@ -457,9 +608,11 @@ pub(crate) fn execute_validated_step(
                 | ("files", "converge")
                 | ("files", "directory-sync")
                 | ("files", "compile-fragments")
+                | ("files", "metadata")
                 | ("venv", "converge")
                 | ("aur", "build-pinned")
                 | ("command", "capture")
+                | ("command", "act")
                 | ("xenia-runtime", "refusal")
                 | ("xenia-runtime", "retire")
         );
@@ -477,8 +630,16 @@ pub(crate) fn execute_validated_step(
             )
         }
         ("ask", "path-exists") => tools::ask::execute_validated_step(step, module_dir),
-        ("command", "capture") => {
-            tools::command::execute_validated_step(step, module_dir, software_apply, active_lane)
+        ("command", "capture") | ("command", "act") => {
+            tools::command::execute_validated_step(
+                step,
+                module_dir,
+                source_module_dir,
+                software_apply,
+                active_lane,
+                module_changed_before_step,
+                invocation,
+            )
         }
         ("artifact-lock", "verify") => {
             tools::artifact_lock::execute_validated_step(step, module_dir)

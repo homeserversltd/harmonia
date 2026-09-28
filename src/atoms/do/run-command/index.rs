@@ -52,17 +52,44 @@ pub(crate) fn command_with_timeout(
     timeout: Duration,
 ) -> Result<CommandObservation, String> {
     let preimage = crate::atoms::ask::run_command::observe(program, args, None);
-    let result = run_with_timeout(program, args, timeout);
+    let result = run_with_timeout_in_dir_env(program, args, None, &[], timeout);
     let _ = (authorization, invocation);
     let outcome = CommandObservation {
-        program: program.into(),
-        args: args.to_vec(),
-        ok: result.ok,
-        code: result.code,
-        stdout: result.stdout,
-        stderr: result.stderr,
+        program: program.into(), args: args.to_vec(), ok: result.ok,
+        code: result.code, stdout: result.stdout, stderr: result.stderr,
     };
     let _attestation = crate::atoms::attest::run_command::value(&preimage, &outcome)?;
+    Ok(outcome)
+}
+
+/// The public command ceremony's sole action entry: preserve legacy callers
+/// above while this bounded route seals its one action to the run log.
+pub(crate) fn command_with_timeout_attested(
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    timeout: Duration,
+    attest_log: &Path,
+) -> Result<CommandObservation, String> {
+    let cwd = cwd.map(Path::new);
+    let result = run_with_timeout_in_dir_env(program, args, cwd, &[], timeout);
+    let _ = (authorization, invocation);
+    let outcome = CommandObservation {
+        program: program.into(), args: args.to_vec(), ok: result.ok,
+        code: result.code, stdout: result.stdout, stderr: result.stderr,
+    };
+    crate::atoms::attest::attest(
+        attest_log,
+        &Receipt {
+            atom: "run-command".into(), ok: outcome.ok, drift: Drift::Current,
+            // Never place command output, argv, or environment in the shared
+            // attestation log; these can carry credentials or private data.
+            message: format!("bounded command action completed={}", outcome.ok),
+        },
+        &[],
+    )?;
     Ok(outcome)
 }
 pub(crate) fn mutating_command(

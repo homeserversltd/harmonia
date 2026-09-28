@@ -15,6 +15,7 @@ pub(crate) fn execute_validated_step(
             invocation,
         )
         .map(|execution| execution.outcome),
+        "metadata" => files_metadata_step(step, module_dir, software_authorization, invocation),
         "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, false, invocation),
         "validated-file-symlink" => {
@@ -1402,6 +1403,201 @@ pub(crate) fn resolve_ladder_path(manifest: &LadderManifest, path: &str) -> Path
     } else {
         manifest.base_dir.join(p)
     }
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct MetadataStateSpec {
+    path: String,
+    owner: String,
+    group: String,
+    mode: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct MetadataState {
+    path: String,
+    exists: bool,
+    kind: Option<&'static str>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    mode: Option<u32>,
+    desired_owner: String,
+    desired_group: String,
+    desired_uid: u32,
+    desired_gid: u32,
+    desired_mode: u32,
+    owner_diff: bool,
+    group_diff: bool,
+    mode_diff: bool,
+}
+
+fn observe_metadata_state(spec: &MetadataStateSpec) -> Result<MetadataState, String> {
+    use std::os::unix::fs::MetadataExt;
+    let path = PathBuf::from(&spec.path);
+    if !path.is_absolute() {
+        return Err(format!("files-metadata-path-must-be-absolute {}", path.display()));
+    }
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("files-metadata-target-absent {}", path.display()));
+        }
+        Err(error) => return Err(format!("files-metadata-observation-failed {}: {error}", path.display())),
+    };
+    let desired_uid = crate::tools::files::resolve_uid(&spec.owner)?;
+    let desired_gid = crate::tools::files::resolve_gid(&spec.group)?;
+    let kind = metadata.file_type();
+    if kind.is_symlink() {
+        return Err(format!("files-metadata-symlink-refused {}", path.display()));
+    }
+    if !kind.is_file() && !kind.is_dir() {
+        return Err(format!("files-metadata-target-kind-refused {}", path.display()));
+    }
+    let uid = metadata.uid();
+    let gid = metadata.gid();
+    let mode = metadata.mode() & 0o7777;
+    Ok(MetadataState {
+        path: spec.path.clone(), exists: true,
+        kind: Some(if kind.is_dir() { "directory" } else { "file" }),
+        uid: Some(uid), gid: Some(gid), mode: Some(mode),
+        desired_owner: spec.owner.clone(), desired_group: spec.group.clone(),
+        desired_uid, desired_gid, desired_mode: spec.mode,
+        owner_diff: uid != desired_uid, group_diff: gid != desired_gid,
+        mode_diff: mode != spec.mode,
+    })
+}
+
+fn files_metadata_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    use std::os::unix::fs::MetadataExt;
+    let apply = software_authorization.is_some();
+    let specs = step.args.get("files").and_then(Value::as_array)
+        .ok_or("files-metadata-files-missing")?
+        .iter()
+        .cloned()
+        .map(serde_json::from_value::<MetadataStateSpec>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("files-metadata-spec-invalid: {error}"))?;
+    if specs.is_empty() { return Err("files-metadata-files-empty".into()); }
+
+    let observed = specs.iter().map(observe_metadata_state).collect::<Result<Vec<_>, _>>();
+    let observed = match observed {
+        Ok(observed) => observed,
+        Err(blocker) => {
+            crate::write_json(&module_dir.join(format!("{}.json", step.step_id)), &serde_json::json!({
+                "schema":"harmonia.files.metadata.v1", "ok":false, "changed":false,
+                "observed_state":specs.iter().map(|spec| {
+                    let path = Path::new(&spec.path);
+                    match fs::symlink_metadata(path) {
+                        Ok(metadata) => serde_json::json!({"path":spec.path,"exists":true,"uid":metadata.uid(),"gid":metadata.gid(),"mode":metadata.mode() & 0o7777}),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({"path":spec.path,"exists":false}),
+                        Err(error) => serde_json::json!({"path":spec.path,"exists":null,"observation_error":error.to_string()}),
+                    }
+                }).collect::<Vec<_>>(),
+                "desired_state":specs,
+                "diff_decision":"blocked", "diff":null, "movement":"none",
+                "proof":"target-observation-failed", "blocker":blocker,
+            }))?;
+            return Ok(OperationOutcome { ok:false, changed:false, skipped:true, message:blocker, command:None });
+        }
+    };
+    let different = observed.iter().any(|state| state.owner_diff || state.group_diff || state.mode_diff);
+    let desired = observed.iter().map(|state| serde_json::json!({
+        "path":state.path, "owner":state.desired_owner, "group":state.desired_group,
+        "uid":state.desired_uid, "gid":state.desired_gid, "mode":state.desired_mode,
+    })).collect::<Vec<_>>();
+    let mut movement = "none";
+    let mut blocker = "none".to_string();
+    let mut final_state = observed.clone();
+    let mut changed = false;
+    let mut ok = true;
+
+    if apply && different {
+        let key = invocation.ok_or("files-metadata-invocation-key-missing")?;
+        let run = crate::atoms::comparison::execute_once(
+            "files-metadata",
+            || Ok::<_, String>(observed.clone()),
+            |states| if states.iter().any(|state| state.owner_diff || state.group_diff || state.mode_diff) {
+                crate::atoms::comparison::DiffDecision::Different
+            } else { crate::atoms::comparison::DiffDecision::Empty },
+            |authorization, states| {
+                movement = "attempted";
+                let mut action = (|| -> Result<(), String> {
+                    for state in states {
+                        let path = Path::new(&state.path);
+                        if state.owner_diff || state.group_diff {
+                            crate::tools::files::change_owner(&authorization, key, &crate::tools::files::ChangeOwnerPlan {
+                                path: path.to_path_buf(), uid: Some(state.desired_uid), gid: Some(state.desired_gid), no_follow: true,
+                            })?;
+                        }
+                        if state.mode_diff {
+                            crate::tools::files::change_mode(&authorization, key, &crate::tools::files::ChangeModePlan {
+                                path: path.to_path_buf(), mode: Some(state.desired_mode), no_follow: true,
+                            })?;
+                        }
+                    }
+                    Ok(())
+                })();
+                let after = states.iter().map(|state| observe_metadata_state(&MetadataStateSpec {
+                    path: state.path.clone(), owner: state.desired_owner.clone(), group: state.desired_group.clone(), mode: state.desired_mode,
+                })).collect::<Result<Vec<_>, _>>();
+                match after {
+                    Ok(after) => {
+                        changed = after.iter().zip(states).any(|(after, before)| {
+                            after.uid != before.uid || after.gid != before.gid || after.mode != before.mode
+                        });
+                        let remains_different = after.iter().any(|state| {
+                            state.owner_diff || state.group_diff || state.mode_diff
+                        });
+                        final_state = after;
+                        if action.is_ok() && remains_different {
+                            action = Err("files-metadata-act-did-not-converge".into());
+                        }
+                    }
+                    Err(error) => action = Err(error),
+                }
+                blocker = action.as_ref().err().cloned().unwrap_or_else(|| "none".into());
+                let attest_result = crate::atoms::attest::attest(
+                    &module_dir.join("atoms.jsonl"),
+                    &crate::atoms::Receipt {
+                        atom:"files-metadata".into(), ok:action.is_ok(), drift:crate::atoms::Drift::Current,
+                        message:format!("targets={} changed={} blocker={}", states.len(), changed, blocker),
+                    }, &[],
+                );
+                attest_result?;
+                Ok(action)
+            },
+        );
+        match run {
+            Ok(run) => match run {
+                crate::atoms::comparison::ComparisonRun::Current { .. } => movement = "none",
+                crate::atoms::comparison::ComparisonRun::Moved { movement: action, .. } => {
+                    movement = "attempted";
+                    if let Err(error) = action { ok = false; blocker = error; }
+                }
+            },
+            Err(error) => {
+                movement = "attempted";
+                ok = false;
+                blocker = error;
+            }
+        }
+    }
+    let diff_decision = if different { "Different" } else { "Empty" };
+    if different && !apply { movement = "none"; }
+    let proof = if !ok { "metadata-action-failed" } else if different && !apply { "report-only" } else if different { "metadata-readback" } else { "current" };
+    crate::write_json(&module_dir.join(format!("{}.json", step.step_id)), &serde_json::json!({
+        "schema":"harmonia.files.metadata.v1", "ok":ok, "changed":changed,
+        "observed_state":observed, "desired_state":desired, "diff_decision":diff_decision,
+        "diff":observed.iter().map(|state| serde_json::json!({"path":state.path,"owner":state.owner_diff,"group":state.group_diff,"mode":state.mode_diff})).collect::<Vec<_>>(),
+        "movement":movement, "final_state":final_state, "proof":proof, "blocker":blocker,
+    }))?;
+    Ok(OperationOutcome { ok, changed, skipped:!apply || !different, message:format!("files metadata diff={diff_decision} movement={movement}"), command:None })
 }
 
 fn string_arg<'a>(

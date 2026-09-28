@@ -248,8 +248,18 @@ pub(crate) fn write_artifact_receipt(
 fn command_first_missing_signal(result: &CmdResult) -> &'static str {
     if result.ok {
         "none"
+    } else if result.stderr.contains("act-did-not-converge") {
+        "act-did-not-converge"
     } else if result.stderr.contains("command-timeout-after-") {
         "command-timeout"
+    } else if result.stderr.contains("command-spawn-failed") {
+        "command-spawn-failed"
+    } else if result.stderr.contains("command-wait-failed") {
+        "command-wait-failed"
+    } else if result.stderr.contains("command-act-observation-failed") {
+        "command-act-observation-failed"
+    } else if result.stderr.to_ascii_lowercase().contains("birth-debt") || result.stderr.to_ascii_lowercase().contains("birth debt") {
+        "birth-debt"
     } else if result.stderr.contains("conflicting files")
         || result.stderr.contains("exists in filesystem")
     {
@@ -299,6 +309,35 @@ pub(crate) fn write_command_receipt_with_request(
         true,
         false,
     )
+}
+
+pub(crate) fn write_command_comparison_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    observed_state: &serde_json::Value,
+    desired_state: &serde_json::Value,
+    diff_decision: &str,
+    executed: bool,
+    changed: bool,
+    final_observed_state: &serde_json::Value,
+    result: Option<&CmdResult>,
+) -> Result<(), String> {
+    let mut receipt = json!({
+        "schema":"harmonia.command_receipt.v1", "name":name,
+        "observed_state":observed_state, "desired_state":desired_state,
+        "diff_decision":diff_decision, "movement":if executed { "attempted" } else { "none" },
+        "changed":changed, "comparison_changed":diff_decision == "Different", "movement_attempted":executed,
+        "proof":if diff_decision == "Blocked" { "blocked" } else if executed && result.is_some_and(|r| r.ok) { "command-completed" } else if executed && result.is_some_and(|r| r.stderr.contains("act-did-not-converge")) { "act-did-not-converge" } else if executed { "command-failed" } else if diff_decision == "Different" { "report-only" } else if diff_decision == "Empty" { "current" } else { "not-applicable" },
+        "final_observed_state":final_observed_state,
+        "blocker":if diff_decision == "Blocked" { result.map(command_first_missing_signal).unwrap_or("command-act-observation-failed") } else if executed && result.is_some_and(|r| !r.ok) { command_first_missing_signal(result.expect("checked result")) } else { "none" },
+        "ok":result.is_none_or(|r| r.ok),
+    });
+    if let Some(result) = result {
+        receipt["stdout_bytes"] = json!(result.stdout.len());
+        receipt["stderr_bytes"] = json!(result.stderr.len());
+        if diff_decision != "Empty" || executed { receipt["exit_code"] = json!(result.code); }
+    }
+    write_json(&receipt_dir.join(format!("{}.json", name)), &receipt)
 }
 
 pub(crate) fn write_command_receipt_with_policy(

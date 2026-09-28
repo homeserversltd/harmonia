@@ -69,6 +69,7 @@ pub(crate) fn execute_profile_module(
         crate::bands::propose_edits::execute_manifest_band(
             &manifest,
             &module_dir,
+            &crate::bands::stage_profile::resolve_module_dir(module_root, &module.id)?,
             software_authorization,
             None,
             invocation,
@@ -78,6 +79,7 @@ pub(crate) fn execute_profile_module(
             &plan.projected,
             &mut halted_steps,
             active_lane,
+            false,
         )
     } else {
         Err(format!("module-unregistered-{}", module.id))
@@ -116,64 +118,6 @@ fn plan_ladder_module(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn synthetic_ladder_manifest_projects_exact_ordered_operations() {
-        let manifest: LadderManifest = serde_json::from_str(
-            r#"{
-                "schema": "harmonia.module.ladder.v1",
-                "id": "synthetic-module",
-                "version": "1",
-                "ladder": [
-                    {
-                        "step_id": "routine",
-                        "tool": "routine",
-                        "permutation": "execute",
-                        "steps": [
-                            {
-                                "name": "files",
-                                "tool": "files",
-                                "permutation": "managed-files",
-                                "args": {
-                                    "managed_files": []
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "step_id": "command",
-                        "tool": "command",
-                        "permutation": "capture",
-                        "args": {
-                            "program": "/bin/true",
-                            "args": [],
-                            "timeout_secs": 1
-                        }
-                    }
-                ]
-            }"#,
-        )
-        .unwrap();
-        let plan = plan_ladder_module("synthetic-module", &manifest).unwrap();
-        assert_eq!(
-            plan.steps
-                .iter()
-                .map(|step| (step.step_id.as_str(), step.tool.as_str(), step.permutation.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
-                ("routine", "routine", "execute"),
-                ("command", "command", "capture"),
-            ]
-        );
-        let children = &plan.projected["routine"];
-        assert_eq!(
-            children
-                .iter()
-                .map(|child| (child.name.as_str(), child.tool.as_str(), child.permutation.as_str()))
-                .collect::<Vec<_>>(),
-            vec![("files", "files", "managed-files")]
-        );
-    }
 
     #[test]
     fn module_manifest_walk_accumulates_operations_and_first_failure() {

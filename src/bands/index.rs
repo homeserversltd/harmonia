@@ -560,6 +560,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 let propose_result =
                     crate::bands::propose_edits::execute_manifest_modules(
                         &active_profile,
+                        module_root,
                         receipt_dir,
                         mode,
                         apply,

@@ -532,6 +532,18 @@
           "placement": "BackfillFiles"
         },
         {
+          "name": "metadata",
+          "description": "compare desired owner, group, and mode against existing targets and change metadata only when different; absent targets fail without creation",
+          "args": [
+            {
+              "name": "files",
+              "kind": "json",
+              "required": true
+            }
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
           "name": "converge",
           "description": "converge a source file tree into a target root",
           "args": [

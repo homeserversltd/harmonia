@@ -29,24 +29,14 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "forgejo-sshd-safe-ownership",
-      "tool": "command",
-      "permutation": "capture",
+      "step_id": "forgejo-sshd-safe-metadata",
+      "tool": "files",
+      "permutation": "metadata",
       "args": {
-        "program": "/usr/bin/chown",
-        "args": ["root:root", "/opt/forgejo", "/opt/forgejo/forgejo"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-sshd-safe-mode",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/chmod",
-        "args": ["0755", "/opt/forgejo", "/opt/forgejo/forgejo"],
-        "timeout_secs": 30
+        "files": [
+          {"path":"/opt/forgejo", "owner":"root", "group":"root", "mode":493},
+          {"path":"/opt/forgejo/forgejo", "owner":"root", "group":"root", "mode":493}
+        ]
       },
       "on_failure": "stop"
     },

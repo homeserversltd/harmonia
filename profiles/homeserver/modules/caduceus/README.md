@@ -10,7 +10,7 @@ Caduceus provides the controlled local actuator for HOMESERVER status and update
 
 ## Harmonia maintenance contract
 
-This module owns the public service concern for the actuator: installed command, policy files, service unit, writable state surfaces, receipt locations, and the unified staff Python environment. Each convergence writes the venv import-path declaration for the source-derived `/usr/local/sbin/agathodaimon` shelf. Harmonia uses the module to keep the actuator aligned with the selected HOMESERVER profile.
+This module owns the public service concern for the actuator: installed command, policy files, service unit, writable state surfaces, receipt locations, and the unified staff Python environment. The staff import-path declaration for `/usr/local/sbin` is compared before actuation and rewritten only when its existing file differs; an absent `.pth` is birth debt and remains untouched. Harmonia uses the module to keep the actuator aligned with the selected HOMESERVER profile.
 
 ## Public boundary
 

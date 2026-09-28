@@ -13,7 +13,7 @@
   "files_root": "files_root",
   "ladder": [
     {"step_id": "synapse-managed-files", "tool": "files", "permutation": "managed-files", "args": {}},
-    {"step_id": "synapse-substrate-converge", "tool": "command", "permutation": "capture", "args": {"program": "/usr/bin/python3", "args": ["/usr/local/sbin/agathodaimon/cli.py", "matrix", "matrix-converge"], "timeout_secs": 1800}},
+    {"step_id": "synapse-substrate-converge", "tool": "command", "permutation": "act", "args": {"program": "/usr/bin/python3", "args": ["/usr/local/sbin/agathodaimon/cli.py", "matrix", "matrix-converge"], "observation": {"kind": "module_changed_before_step"}, "timeout_secs": 1800}},
     {"step_id": "synapse-systemd-reload", "tool": "systemd", "permutation": "daemon-reload", "args": {}}
   ]
 }

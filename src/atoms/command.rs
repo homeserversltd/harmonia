@@ -210,9 +210,11 @@ pub(crate) fn authorized_capture(
     invocation: &crate::atoms::r#do::InvocationKey,
     program: &str,
     args: &[String],
+    cwd: Option<&str>,
     timeout: Duration,
+    attest_log: &Path,
 ) -> Result<crate::atoms::CommandObservation, String> {
-    crate::atoms::r#do::run_command::command_with_timeout(authorization, invocation, program, args, timeout)
+    crate::atoms::r#do::run_command::command_with_timeout_attested(authorization, invocation, program, args, cwd, timeout, attest_log)
 }
 
 pub fn plan(request: &Request) -> Outcome {
@@ -575,79 +577,157 @@ fn redact(text: &str, redactions: &BTreeSet<String>) -> String {
 pub(crate) fn execute_validated_step(
     step: &crate::tools::ladder::ValidatedStep,
     module_dir: &std::path::Path,
+    source_module_dir: &std::path::Path,
     apply: bool,
     active_lane: Option<&str>,
+    module_changed_before_step: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
-    let program = step
-        .args
-        .get("program")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let argv: Vec<String> = step
-        .args
-        .get("args")
-        .and_then(serde_json::Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(ToString::to_string)
-                .collect()
-        })
+    let program = step.args.get("program").and_then(serde_json::Value::as_str).unwrap_or("");
+    let argv: Vec<String> = step.args.get("args").and_then(serde_json::Value::as_array)
+        .map(|items| items.iter().filter_map(serde_json::Value::as_str).map(ToString::to_string).collect())
         .unwrap_or_default();
-    let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let requested_lane = step.args.get("lane").and_then(serde_json::Value::as_str);
     let lane_matches = requested_lane.is_none() || requested_lane == active_lane;
-    let executed = apply && lane_matches;
-    let skipped = !executed;
-    let result = if executed {
-        capture_with_options(
-            program,
-            &argv_refs,
-            CaptureOptions::new()
-                .cwd(step.args.get("cwd").and_then(serde_json::Value::as_str))
-                .timeout_secs(
-                    step.args
-                        .get("timeout_secs")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(DEFAULT_TIMEOUT_SECS),
-                ),
-        )
-    } else {
-        crate::CmdResult {
-            ok: true,
-            code: 0,
-            stdout: format!("planned command {}", program),
-            stderr: String::new(),
-        }
-    };
-    let advisory = step.args.get("advisory").and_then(serde_json::Value::as_bool).unwrap_or(false);
-    crate::write_command_receipt_with_policy(
-        module_dir,
-        &step.step_id,
-        program,
-        &argv,
-        step.args.get("cwd").and_then(serde_json::Value::as_str),
-        &result,
-        advisory,
-        requested_lane,
-        active_lane,
-        executed,
-        skipped,
-    )?;
-    Ok(crate::OperationOutcome {
-        ok: result.ok || advisory || skipped,
-        changed: false,
-        skipped: !apply || skipped,
-        message: if !apply {
-            format!("command planned/report-only {}", program)
-        } else if !lane_matches {
-            format!("command skipped lane mismatch requested={requested_lane:?} active={active_lane:?}")
+    let timeout = step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let cwd = step.args.get("cwd").and_then(serde_json::Value::as_str).map(|value| expand_module_dir(value, source_module_dir));
+    let program = expand_module_dir(program, source_module_dir);
+    let argv = argv.iter().map(|value| expand_module_dir(value, source_module_dir)).collect::<Vec<_>>();
+    let is_act = step.permutation == "act";
+    let mut decision = "not-applicable";
+    let mut observed_state = serde_json::Value::Null;
+    let mut final_observed_state = serde_json::Value::Null;
+    let mut desired_state = serde_json::Value::Null;
+    let mut result = if is_act {
+        let observation = step.args.get("observation").ok_or("observation-missing")?;
+        let mut observation_failure = None;
+        let same = if observation.get("kind").and_then(serde_json::Value::as_str) == Some("module_changed_before_step") {
+            observed_state = serde_json::json!({"kind":"module_changed_before_step","value":module_changed_before_step});
+            desired_state = serde_json::json!({"kind":"module_changed_before_step","value":false});
+            !module_changed_before_step
         } else {
-            format!("command capture {}", program)
-        },
-        command: Some(result),
+        let observation_program = observation.get("program").and_then(serde_json::Value::as_str).ok_or("observation-program-missing")?;
+        let observation_program = expand_module_dir(observation_program, source_module_dir);
+        let observation_args: Vec<String> = observation.get("args").and_then(serde_json::Value::as_array)
+            .map(|items| items.iter().filter_map(serde_json::Value::as_str).map(|value| expand_module_dir(value, source_module_dir)).collect()).unwrap_or_default();
+        let expected_code = observation.get("expected_exit_code").and_then(serde_json::Value::as_i64).ok_or("observation-expected-exit-code-missing")? as i32;
+        let expected_stdout = observation.get("expected_stdout").and_then(serde_json::Value::as_str);
+        let observation_cwd = observation.get("cwd").and_then(serde_json::Value::as_str).map(|value| expand_module_dir(value, source_module_dir));
+        let probe = capture_with_options(&observation_program, &observation_args.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(observation_cwd.as_deref()).timeout_secs(timeout));
+        observed_state = serde_json::json!({"program":observation_program,"args":observation_args,"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
+        desired_state = serde_json::json!({"exit_code":expected_code,"stdout":expected_stdout});
+        if probe.code < 0 { observation_failure = Some(format!("command-act-observation-failed: {}", probe.stderr)); }
+        probe.code >= 0 && probe.code == expected_code
+            && expected_stdout.map_or(true, |expected| probe.stdout == expected)
+        };
+        decision = if observation_failure.is_some() {
+            "Blocked"
+        } else if same {
+            "Empty"
+        } else {
+            "Different"
+        };
+        let do_apply = apply && lane_matches;
+        if let Some(failure) = observation_failure {
+            (Some(crate::CmdResult {ok:false, code:-1, stdout:String::new(), stderr:failure}), false)
+        } else if do_apply {
+            let outcome = crate::atoms::comparison::execute_once(
+                "run-command",
+                || Ok::<_, String>(same),
+                |current| if *current { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
+                |authorization, _| {
+                    let invocation = invocation.ok_or("invocation-key-missing")?;
+                    authorized_capture(&authorization, invocation, &program, &argv, cwd.as_deref(), Duration::from_secs(timeout), &module_dir.join("harmonia-atoms.log"))
+                },
+            )?;
+            match outcome {
+                crate::atoms::comparison::ComparisonRun::Current { .. } => (None, false),
+                crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => {
+                    let mut moved = crate::CmdResult {
+                        ok: movement.ok,
+                        code: movement.code.unwrap_or(-1),
+                        stdout: movement.stdout,
+                        stderr: movement.stderr,
+                    };
+                    if moved.ok {
+                        if let Some((final_state, converged)) = observe_after_command(observation, source_module_dir, timeout)? {
+                            final_observed_state = final_state.clone();
+                            if !converged {
+                                moved.ok = false;
+                                if final_state.get("exit_code").and_then(serde_json::Value::as_i64).is_some_and(|code| code < 0) {
+                                    moved.stderr = final_state.get("stderr").and_then(serde_json::Value::as_str).unwrap_or("command-act-observation-failed").to_string();
+                                } else {
+                                    moved.stderr = format!("act-did-not-converge: final observation differs after command; {}", moved.stderr);
+                                }
+                            }
+                        }
+                    }
+                    (Some(moved), true)
+                },
+            }
+        } else {
+            (None, false)
+        }
+    } else {
+        let probe = capture_with_options(&program, &argv.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(cwd.as_deref()).timeout_secs(timeout));
+        decision = "observation";
+        observed_state = serde_json::json!({"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
+        (Some(probe), true)
+    };
+    let command_result = result.0;
+    let executed = result.1;
+    let skipped = !executed;
+    let advisory = !is_act && step.args.get("advisory").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    // A command invocation is movement attempted, not proof that the
+    // commanded world changed. Do not promote an exit status to a change.
+    let comparison_changed = is_act && decision == "Different";
+    let changed = is_act
+        && executed
+        && comparison_changed
+        && command_result.as_ref().is_some_and(|result| result.ok);
+    if is_act {
+        crate::receipts::write_command_comparison_receipt(
+            module_dir,
+            &step.step_id,
+            &observed_state,
+            &desired_state,
+            decision,
+            executed,
+            changed,
+            &final_observed_state,
+            command_result.as_ref(),
+        )?;
+    } else {
+        crate::write_command_receipt_with_policy(
+            module_dir, &step.step_id, &program, &argv, cwd.as_deref(), command_result.as_ref().ok_or("command-result-missing")?,
+            advisory, requested_lane, active_lane, executed, skipped,
+        )?;
+    }
+    Ok(crate::OperationOutcome {
+        ok: command_result.as_ref().is_none_or(|result| result.ok || (!is_act && (advisory || skipped))),
+        changed,
+        skipped,
+        message: if is_act { format!("command act diff={decision} executed={executed}") } else if !apply { format!("command report-only probe {program}") } else { format!("command capture {program}") },
+        command: command_result,
     })
+}
+
+
+fn observe_after_command(observation: &serde_json::Value, module_dir: &Path, timeout: u64) -> Result<Option<(serde_json::Value, bool)>, String> {
+    if observation.get("kind").and_then(serde_json::Value::as_str) == Some("module_changed_before_step") { return Ok(None); }
+    let program = observation.get("program").and_then(serde_json::Value::as_str).ok_or("observation-program-missing")?;
+    let program = expand_module_dir(program, module_dir);
+    let args = observation.get("args").and_then(serde_json::Value::as_array).map(|items| items.iter().filter_map(serde_json::Value::as_str).map(|value| expand_module_dir(value, module_dir)).collect::<Vec<_>>()).unwrap_or_default();
+    let cwd = observation.get("cwd").and_then(serde_json::Value::as_str).map(|value| expand_module_dir(value, module_dir));
+    let expected_code = observation.get("expected_exit_code").and_then(serde_json::Value::as_i64).ok_or("observation-expected-exit-code-missing")? as i32;
+    let expected_stdout = observation.get("expected_stdout").and_then(serde_json::Value::as_str);
+    let probe = capture_with_options(&program, &args.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(cwd.as_deref()).timeout_secs(timeout));
+    let converged = probe.code >= 0 && probe.code == expected_code && expected_stdout.map_or(true, |expected| probe.stdout == expected);
+    Ok(Some((serde_json::json!({"program":program,"args":args,"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr}), converged)))
+}
+
+fn expand_module_dir(value: &str, module_dir: &Path) -> String {
+    value.replace("${module_dir}", &module_dir.display().to_string())
 }
 
 pub(crate) fn command_capture(program: &str, args: &[&str]) -> CmdResult {

@@ -13,13 +13,16 @@
     {
       "step_id": "caduceus-staff-module-path",
       "tool": "command",
-      "permutation": "capture",
+      "permutation": "act",
       "args": {
         "program": "/var/lib/caduceus/venv/bin/python3",
-        "args": [
-          "-c",
-          "import pathlib, site; roots = [pathlib.Path(path) for path in site.getsitepackages() if path.endswith('/site-packages')]; assert len(roots) == 1 and roots[0].is_dir(); roots[0].joinpath('caduceus-staff.pth').write_text('/usr/local/sbin\\n', encoding='utf-8')"
-        ]
+        "args": ["${module_dir}/caduceus-staff-path.py", "--apply"],
+        "observation": {
+          "program": "/var/lib/caduceus/venv/bin/python3",
+          "args": ["${module_dir}/caduceus-staff-path.py", "--check"],
+          "expected_exit_code": 0,
+          "expected_stdout": "/usr/local/sbin"
+        }
       }
     },
     {

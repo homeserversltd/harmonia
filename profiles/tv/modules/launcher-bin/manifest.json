@@ -61,14 +61,16 @@
     {
       "step_id": "launcher-cache-refresh",
       "tool": "command",
-      "permutation": "capture",
+      "permutation": "act",
       "args": {
-        "program": "/usr/bin/env",
-        "args": [
-          "sh",
-          "-c",
-          "[ ! -x /usr/bin/su ] || su - owner -c \"sh /home/owner/bin/refresh-launcher-cache.sh\""
-        ],
+        "program": "/usr/bin/python3",
+        "args": ["${module_dir}/launcher-cache.py", "--refresh"],
+        "observation": {
+          "program": "/usr/bin/python3",
+          "args": ["${module_dir}/launcher-cache.py", "--check"],
+          "expected_exit_code": 0,
+          "expected_stdout": "Empty"
+        },
         "timeout_secs": 120
       }
     }
