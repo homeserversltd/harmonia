@@ -62,7 +62,6 @@ impl SlotResolutionError {
     }
 }
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ReleaseFlag {
     schema: String,
     component: String,
@@ -71,6 +70,8 @@ struct ReleaseFlag {
     sha256: String,
     flagged_at: String,
     pipeline_url: String,
+    #[serde(default)]
+    rustc_version: Option<String>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

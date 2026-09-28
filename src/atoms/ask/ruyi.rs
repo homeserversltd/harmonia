@@ -15,6 +15,7 @@ pub(crate) use registrant::{announce, read_perspective, register_promoted};
 
 // Identity of this running engine, not a checkout, receipt, or release lookup.
 const HARMONIA_BUILD_SHA: Option<&str> = option_env!("HARMONIA_BUILD_SHA");
+const HARMONIA_BUILD_RUSTC_VERSION: Option<&str> = option_env!("HARMONIA_BUILD_RUSTC_VERSION");
 pub(crate) const ROW_SCHEMA: &str = "caduceus.ruyi.v1";
 const DEFAULT_RUYI_PATH: &str = "/etc/appliance/ruyi.json";
 const RUYI_PATH_ENV: &str = "HARMONIA_RUYI_PATH";
@@ -50,6 +51,10 @@ pub(crate) struct RuyiRow {
     pub env_sha: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rustc_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harmonia_rustc_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rustc_installed: Option<String>,
     pub harmonia_sha: String,
     pub syzygy_sha: Option<String>,
     pub last_seen: u64,
@@ -66,6 +71,25 @@ pub(crate) fn ruyi_path() -> PathBuf {
 
 fn nullable_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn compiled_rustc_version() -> Option<String> {
+    HARMONIA_BUILD_RUSTC_VERSION
+        .filter(|version| *version != "unset")
+        .map(str::to_owned)
+}
+
+fn installed_rustc_version() -> Option<String> {
+    let rustc = crate::atoms::command::capture("rustc", &["-Vv"]);
+    if !rustc.ok {
+        return None;
+    }
+    rustc.stdout.lines().find_map(|line| {
+        line.strip_prefix("release:")
+            .map(str::trim)
+            .filter(|release| !release.is_empty())
+            .map(str::to_owned)
+    })
 }
 
 fn valid_name(value: &str) -> bool {
@@ -426,6 +450,8 @@ pub(crate) fn write_committed_state(
         caduceus_sha: mint.caduceus_sha.clone(),
         env_sha: mint.env_sha.clone(),
         rustc_version: None,
+        harmonia_rustc_version: None,
+        rustc_installed: None,
         harmonia_sha: HARMONIA_BUILD_SHA.unwrap_or_default().to_owned(),
         syzygy_sha: if mint.signal == "none" {
             mint.syzygy_sha.clone()

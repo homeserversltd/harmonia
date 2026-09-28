@@ -357,6 +357,7 @@ pub(crate) fn execute(
             built_at: "fallback".into(),
             pipeline_url: artifact_url,
             env_sha: Some(build_environment_sha),
+            rustc_version: None,
         };
         crate::atoms::ask::fetch_artifact::Download {
             manifest,

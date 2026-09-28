@@ -276,7 +276,6 @@ pub(crate) fn identity_matches(
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct Manifest {
     pub schema: String,
     pub component: String,
@@ -290,6 +289,8 @@ pub(crate) struct Manifest {
     /// published before 2026-09-02 still parse; when present it SHALL be 64-hex.
     #[serde(default)]
     pub env_sha: Option<String>,
+    #[serde(default)]
+    pub rustc_version: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Download {
@@ -754,6 +755,10 @@ pub(crate) fn download_engine_release(
                     .get("env_sha")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                rustc_version: flag
+                    .get("rustc_version")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
             },
             bytes: release.artifact,
             identity: "engine-release".into(),
@@ -833,6 +838,7 @@ pub(crate) fn download_release(
                 .to_owned(),
             pipeline_url: release.metadata_url,
             env_sha: None,
+            rustc_version: None,
         };
         Ok(Some(Download {
             manifest,

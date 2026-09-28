@@ -222,6 +222,8 @@ fn seed_perspective_for_with_harmonia_sha(
         caduceus_sha,
         env_sha,
         rustc_version,
+        harmonia_rustc_version: compiled_rustc_version(),
+        rustc_installed: installed_rustc_version(),
         harmonia_sha: harmonia_sha.unwrap_or_default().to_owned(),
         syzygy_sha,
         last_seen: now()?,
@@ -278,6 +280,20 @@ fn refresh_self_row_from_beam_observation(
     observation: Result<crate::atoms::ask::beam::BeamDoor, String>,
     harmonia_sha: Option<&str>,
 ) -> Value {
+    let mut row = row;
+    for (field, value) in [
+        ("harmonia_rustc_version", compiled_rustc_version()),
+        ("rustc_installed", installed_rustc_version()),
+    ] {
+        match value {
+            Some(value) => row[field] = Value::String(value),
+            None => {
+                row.as_object_mut()
+                    .expect("Ruyi self row is an object")
+                    .remove(field);
+            }
+        }
+    }
     let Ok(door) = observation else {
         return row;
     };
@@ -319,6 +335,17 @@ fn refresh_self_row_from_beam_observation(
             continue;
         };
         refreshed[field] = value.clone();
+    }
+    for field in ["harmonia_rustc_version", "rustc_installed"] {
+        match observed.get(field).filter(|value| !value.is_null()) {
+            Some(value) => refreshed[field] = value.clone(),
+            None => {
+                refreshed
+                    .as_object_mut()
+                    .expect("Ruyi self row is an object")
+                    .remove(field);
+            }
+        }
     }
     refreshed["last_seen"] = last_seen.clone();
     refreshed
@@ -508,6 +535,8 @@ pub(crate) fn register_promoted(
             "caduceus_sha": if evidence.caduceus_sha.is_empty() { Value::Null } else { json!(evidence.caduceus_sha) },
             "env_sha": if evidence.env_sha.is_empty() { Value::Null } else { json!(evidence.env_sha) },
             "harmonia_sha": HARMONIA_BUILD_SHA,
+            "harmonia_rustc_version": compiled_rustc_version(),
+            "rustc_installed": installed_rustc_version(),
             "syzygy_sha": evidence.syzygy_sha, "syzygy_signal": evidence.signal,
             "member_flags": evidence.member_flags,
             "last_seen": now()?, "last_update": {"run_id": run_id, "converged": true}
@@ -517,6 +546,13 @@ pub(crate) fn register_promoted(
         row.as_object_mut()
             .expect("Ruyi self row is assembled as an object")
             .remove("caduceus_port");
+    }
+    for field in ["harmonia_rustc_version", "rustc_installed"] {
+        if row.get(field).is_some_and(Value::is_null) {
+            row.as_object_mut()
+                .expect("Ruyi self row is assembled as an object")
+                .remove(field);
+        }
     }
     prior["self"] = row.clone();
     let result = exchange(profile, row, prior, seats, port)?;
