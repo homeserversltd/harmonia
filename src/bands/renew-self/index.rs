@@ -537,7 +537,32 @@ pub(crate) fn promote_staged_binary(
     })
 }
 
+fn observe_engine_interactable() -> &'static str {
+    let path = env::var_os("HARMONIA_INTERACTABLES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    match crate::interactables::load_feed_raw(&path) {
+        Ok(feed) if feed
+            .interactables
+            .iter()
+            .any(|item| item.kind == "engine-replacement") => "present",
+        Ok(_) => "absent",
+        Err(_) => "not-observed",
+    }
+}
+
+fn observe_profile_runtime_module(module_root: &Path) -> &'static str {
+    match crate::bands::stage_profile::load_profile(&profile_index_from(module_root)) {
+        Ok(profile) if profile.modules.iter().any(|module| module == "harmonia-runtime") => {
+            "present"
+        }
+        Ok(_) => "absent",
+        Err(_) => "not-observed",
+    }
+}
+
 fn emit_preflight_receipt(
+    module_root: &Path,
     preflight_dir: &Path,
     component: &str,
     engine_component_ignored: Option<&str>,
@@ -644,7 +669,8 @@ fn emit_preflight_receipt(
     } else {
         Value::Null
     };
-    let profile_runtime_module = "not-observed";
+    let profile_runtime_module = observe_profile_runtime_module(module_root);
+    let engine_interactable = observe_engine_interactable();
     let pre_sync_source_build = if staged_build_identity.is_some() && apply {
         "present"
     } else if staged_sha.is_some() && staged_build_identity.is_none() {
@@ -720,10 +746,11 @@ fn emit_preflight_receipt(
             "bootstrap_order": if ok && apply { "unproven" } else { "incomplete" },
             "pre_sync_source_build": pre_sync_source_build,
             "successor_promoted_only_after": successor_promotion,
-            "engine_interactable": "not-observed",
+            "engine_interactable": engine_interactable,
             "presses_per_engine_change": presses_per_engine_change,
             "engine_content_head": content_head,
-            "retired_sidecar_gate": "not-observed",
+            // Public 95d60bc removed the sidecar gate structurally; no gate remains to observe.
+            "retired_sidecar_gate": "absent",
             "profile_runtime_module": profile_runtime_module,
             "old_engine_preserved": old_engine_preserved,
         }),
@@ -1027,6 +1054,7 @@ pub(crate) fn run_engine_preflight(
         Ok(resolved) => resolved,
         Err(signal) => {
             emit_preflight_receipt(
+                module_root,
                 &preflight_dir,
                 &component_for_receipt,
                 engine_component_ignored.as_deref(),
@@ -1490,6 +1518,7 @@ fn post_stage_preflight(
                                     );
                                     reexec = None;
                                 } else if let Err(error) = emit_preflight_receipt(
+                                    module_root,
                                     &preflight_dir,
                                     &component,
                                     engine_component_ignored.as_deref(),
@@ -1577,6 +1606,7 @@ fn post_stage_preflight(
     let installed_after = install_bin_fingerprint(&install_bin);
     let ok = first_missing_signal == "none";
     emit_preflight_receipt(
+        module_root,
         &preflight_dir,
         &component,
         engine_component_ignored.as_deref(),
@@ -1878,6 +1908,7 @@ mod release_transport_tests {
         let signal = super::rollback_after_install(&plan, &preflight, "engine-test-failure");
         assert!(signal.contains("engine-rollback-failed"));
         super::emit_preflight_receipt(
+            &root.path().join("profile/modules"),
             &preflight, "harmonia", None, None, None, None, false, true, false, &signal, 1, None,
             None,
         )
@@ -1896,6 +1927,7 @@ mod release_transport_tests {
         std::fs::create_dir_all(&preflight).unwrap();
         let signal = "engine-promotion-failed; engine-rollback-failed: restore refused";
         emit_preflight_receipt(
+            &root.path().join("profile/modules"),
             &preflight, "harmonia", None, None, None, None, false, true, false, signal, 1, None,
             None,
         )
@@ -1970,6 +2002,7 @@ mod release_transport_tests {
         let source = "a".repeat(40);
         let staged = "b".repeat(64);
         emit_preflight_receipt(
+            &root.path().join("profile/modules"),
             &preflight,
             "harmonia",
             None,
@@ -2248,6 +2281,7 @@ mod release_transport_tests {
         let reexec = self_update_reexec_receipt(true, Some(from_sha.clone()), Some(to_sha.clone()))
             .expect("changed promoted successor requires reexec");
         emit_preflight_receipt(
+            &root.path().join("profile/modules"),
             &preflight_dir,
             "harmonia",
             None,
@@ -2671,6 +2705,7 @@ mod release_transport_tests {
         assert!(!promotion_changed(false, false, None, None));
         assert!(!promotion_changed(true, true, Some("same"), Some("same")));
         emit_preflight_receipt(
+            &root.path().join("profile/modules"),
             &preflight_dir,
             "harmonia",
             None,
