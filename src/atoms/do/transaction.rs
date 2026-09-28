@@ -376,10 +376,25 @@ pub(crate) fn rolling_update_run(
         // The marker belongs to this carrier/run, not an older ledger pointer.
         // Commit and its durable transaction receipt must precede any exchange.
         if !carrier.borrow().rung_promoted.is_empty() {
-            let identity = crate::atoms::ask::ruyi::local_identity()?;
-            crate::atoms::ask::ruyi::register_promoted(
-                profile, &run_id, &receipt, &mint, &identity, &effective_receipt_dir,
-            )?;
+            match crate::atoms::ask::ruyi::local_identity() {
+                Ok(identity) => {
+                    if let Err(error) = crate::atoms::ask::ruyi::register_promoted(
+                        profile, &run_id, &receipt, &mint, &identity, &effective_receipt_dir,
+                    ) {
+                        crate::atoms::ask::ruyi::registrant::save_registration_failure(
+                            &effective_receipt_dir,
+                            &error,
+                        )?;
+                    }
+                }
+                Err(error) => {
+                    crate::atoms::ask::ruyi::registrant::save_identity_absent(
+                        &effective_receipt_dir,
+                        "new-artifact",
+                        &error,
+                    )?;
+                }
+            }
         }
         let Some(summary) = carrier.borrow_mut().deferred_terminal_summary.take() else {
             write_transaction_failure_run_receipt(

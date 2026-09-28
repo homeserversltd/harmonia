@@ -457,6 +457,33 @@ fn save_receipt(dir: &Path, value: Value) -> Result<Value, String> {
     save_receipt_with_seat(dir, value, seat)
 }
 
+pub(crate) fn save_identity_absent(dir: &Path, event: &str, detail: &str) -> Result<Value, String> {
+    let mut result = receipt(
+        "pre-declaration",
+        Value::Null,
+        Vec::new(),
+        "ruyi-identity-absent",
+    );
+    result["event"] = json!(event);
+    if event == "staff-start" {
+        result["staff_start_wait_ms"] = json!(0);
+    }
+    result["detail"] = json!(detail);
+    save_receipt(dir, result)
+}
+
+pub(crate) fn save_registration_failure(dir: &Path, detail: &str) -> Result<Value, String> {
+    let mut result = receipt(
+        "pre-declaration",
+        Value::Null,
+        Vec::new(),
+        "ruyi-registration-failed",
+    );
+    result["event"] = json!("new-artifact");
+    result["detail"] = json!(detail);
+    save_receipt(dir, result)
+}
+
 /// Reuse the committed mint and its raw evidence; do not resolve any member again.
 pub(crate) fn register_promoted(
     profile: &crate::Profile,
@@ -1001,18 +1028,7 @@ pub(crate) fn announce() -> Result<Value, String> {
     };
     let identity = match local_identity() {
         Ok(identity) => identity,
-        Err(error) => {
-            let mut result = receipt(
-                "pre-declaration",
-                Value::Null,
-                Vec::new(),
-                "ruyi-identity-absent",
-            );
-            result["event"] = json!("staff-start");
-            result["staff_start_wait_ms"] = json!(0);
-            result["detail"] = json!(error);
-            return save_receipt(&dir, result);
-        }
+        Err(error) => return save_identity_absent(&dir, "staff-start", &error),
     };
     let (profile, _) = match crate::device_profile::resolve_certificate_profile() {
         Ok(profile) => profile,
