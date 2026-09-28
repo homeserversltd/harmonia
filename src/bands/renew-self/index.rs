@@ -86,11 +86,21 @@ fn run_ground_fixture_preflight(
             return Err(format!("renew-self-fixture-{label}-path-outside-ground"));
         }
     }
+    crate::atoms::attest::prepare_receipt_parent(&receipt)?;
+    let run_dir = receipt.join(format!("update-{}", crate::run_id_from_stamp()));
+    fs::create_dir(&run_dir)
+        .map_err(|error| format!("renew-self-fixture-run-dir-create-failed: {error}"))?;
     let staged_sha = sha256_file(&staged)
         .map_err(|error| format!("renew-self-fixture-staged-digest-failed: {error}"))?;
     let install_before = install_bin_fingerprint(&install_bin);
-    let preflight_dir = receipt_dir.join("engine-preflight");
+    let preflight_dir = run_dir.join("engine-preflight");
     crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
+    if !self_update_reexec_guard_active()
+        && env::var("HARMONIA_RENEW_SELF_FIXTURE_HANDOFF_COLLISION").as_deref() == Ok("1")
+    {
+        fs::create_dir(preflight_dir.join("self-update-reexec.generation-1.json"))
+            .map_err(|error| format!("renew-self-fixture-handoff-collision-create-failed: {error}"))?;
+    }
     post_stage_preflight(
         module_root,
         &preflight_dir,
@@ -737,6 +747,11 @@ fn compose_self_update_reexec_receipt(
     receipt["successor_promoted_only_after"] = json!("explain+validate-ladder+plan-run");
     receipt["presses_per_engine_change"] = json!(1);
     receipt["old_engine_preserved"] = json!(handoff.old_engine_preserved);
+    receipt["failure_mode"] = json!(if handoff.old_engine_preserved {
+        "honest-staleness"
+    } else {
+        "old-engine-not-preserved"
+    });
     receipt["bootstrap_order"] = json!(handoff.bootstrap_order);
     receipt["pre_sync_source_build"] = json!(handoff.pre_sync_source_build);
     write_json(&path, &receipt)
@@ -2008,6 +2023,7 @@ fn post_stage_preflight(
                                                 &preflight_dir,
                                                 &format!("engine-reexec-handoff-failed: {error}"),
                                             );
+                                            changed = false;
                                             reexec = None;
                                             PathBuf::new()
                                         }
