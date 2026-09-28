@@ -64,25 +64,37 @@ pub(crate) fn execute(
     } else {
         None
     };
-    let (release_asset_name, release_sidecar_name) = match profile.as_deref() {
-        Some(profile) => {
-            let (asset, sidecar) = crate::atoms::ask::fetch_artifact::profile_release_names(
-                artifact_name,
-                profile,
-                args.get("asset_name").and_then(Value::as_str),
-                args.get("sidecar_name").and_then(Value::as_str),
-            )?;
-            (Some(asset), Some(sidecar))
-        }
-        None => (
-            args.get("asset_name")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            args.get("sidecar_name")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        ),
-    };
+    let (release_asset_name, release_sidecar_name, resolved_profile_segment) =
+        match profile.as_deref() {
+            Some(profile) => {
+                let resolved_segment =
+                    crate::atoms::ask::fetch_artifact::resolved_profile_segment(profile)?;
+                let (asset, sidecar) =
+                    crate::atoms::ask::fetch_artifact::profile_release_names_for_segment(
+                        artifact_name,
+                        &resolved_segment,
+                        args.get("asset_name").and_then(Value::as_str),
+                        args.get("sidecar_name").and_then(Value::as_str),
+                    )?;
+                (Some(asset), Some(sidecar), Some(resolved_segment))
+            }
+            None => (
+                args.get("asset_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                args.get("sidecar_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                None,
+            ),
+        };
+    let profile_receipt_fields = profile
+        .as_deref()
+        .zip(resolved_profile_segment.as_deref())
+        .map(|(declared, resolved)| {
+            format!("; declared_profile={declared}; resolved_profile_segment={resolved}")
+        })
+        .unwrap_or_default();
 
     let source_dir = args
         .get("source_dir")
@@ -203,7 +215,7 @@ pub(crate) fn execute(
             true,
             false,
             &format!(
-                "state=Current; care=bytes-true currentness; after=Current; road={road}; digest_supplier={supplier}"
+                "state=Current; care=bytes-true currentness; after=Current; road={road}; digest_supplier={supplier}{profile_receipt_fields}"
             ),
         )?;
         return Ok(crate::OperationOutcome {
@@ -219,7 +231,7 @@ pub(crate) fn execute(
             &receipt_dir.join("harmonia-atoms.log"),
             true,
             false,
-            "state=Drift; care=beam env SHA divergence requires artifact refetch; after=Drift; reason=fetch-artifact-refetch-beam-env-sha",
+            &format!("state=Drift; care=beam env SHA divergence requires artifact refetch; after=Drift; reason=fetch-artifact-refetch-beam-env-sha{profile_receipt_fields}"),
         )?;
     }
     let registry_download = if native_download.is_none() && release_fallback.is_none() {
@@ -272,24 +284,34 @@ pub(crate) fn execute(
         if source_policy == "source" {
             environment.push(("CARTRIDGE_SOURCE_SHA".into(), source_sha.into()));
         }
-        crate::write_json(
-            &receipt_dir.join("fallback.json"),
-            &serde_json::json!({
-                "schema": "harmonia.fetch-artifact.fallback.v1",
-                "fallback_reason": fallback_reason,
-                "artifact_url": artifact_url,
-                "credential": credential_state,
-                "source_build_sha": source_sha,
-                "source_dir": source_dir_text,
-                "build_environment_sha": build_environment_sha,
-            }),
-        )?;
+        let mut fallback_receipt = serde_json::json!({
+            "schema": "harmonia.fetch-artifact.fallback.v1",
+            "fallback_reason": fallback_reason,
+            "artifact_url": artifact_url,
+            "credential": credential_state,
+            "source_build_sha": source_sha,
+            "source_dir": source_dir_text,
+            "build_environment_sha": build_environment_sha,
+        });
+        if let (Some(declared), Some(resolved)) =
+            (profile.as_deref(), resolved_profile_segment.as_deref())
+        {
+            let fields = fallback_receipt
+                .as_object_mut()
+                .ok_or("fetch-artifact-fallback-receipt-invalid")?;
+            fields.insert("declared_profile".into(), Value::String(declared.into()));
+            fields.insert(
+                "resolved_profile_segment".into(),
+                Value::String(resolved.into()),
+            );
+        }
+        crate::write_json(&receipt_dir.join("fallback.json"), &fallback_receipt)?;
         if !apply {
             crate::atoms::attest::fetch_artifact::attest(
                 &receipt_dir.join("harmonia-atoms.log"),
                 true,
                 false,
-                "state=Drift; care=release miss requires source build; after=Drift (planned)",
+                &format!("state=Drift; care=release miss requires source build; after=Drift (planned){profile_receipt_fields}"),
             )?;
             return Ok(crate::OperationOutcome {
                 ok: true,
@@ -349,7 +371,7 @@ pub(crate) fn execute(
             &receipt_dir.join("harmonia-atoms.log"),
             true,
             false,
-            "state=Drift; care=manifest and digest verified; after=Drift (planned)",
+            &format!("state=Drift; care=manifest and digest verified; after=Drift (planned){profile_receipt_fields}"),
         )?;
         return Ok(crate::OperationOutcome {
             ok: true,
@@ -410,7 +432,7 @@ pub(crate) fn execute(
                 &receipt_dir.join("harmonia-atoms.log"),
                 true,
                 false,
-                "state=Current; care=verified embedded source SHA; after=Current",
+                &format!("state=Current; care=verified embedded source SHA; after=Current{profile_receipt_fields}"),
             )?;
             Ok(crate::OperationOutcome {
                 ok: true,
@@ -433,6 +455,7 @@ pub(crate) fn execute(
             } else {
                 format!("state=Drift; care=verified digest and atomic install; after=Current; road={road}; digest_supplier={supplier}")
             };
+            let detail = format!("{detail}{profile_receipt_fields}");
             crate::atoms::attest::fetch_artifact::attest(
                 &receipt_dir.join("harmonia-atoms.log"),
                 true,

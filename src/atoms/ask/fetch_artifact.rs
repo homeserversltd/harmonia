@@ -180,6 +180,20 @@ pub(crate) fn read_profile_source(path: &Path) -> Result<String, String> {
     Ok(profile.to_owned())
 }
 
+pub(crate) fn resolved_profile_segment(profile: &str) -> Result<String, String> {
+    validate_segment(profile, "profile")?;
+    Ok(
+        if ["homeserver", "homeconsole", "tv"]
+            .iter()
+            .any(|sold_profile| profile.eq_ignore_ascii_case(sold_profile))
+        {
+            profile.to_ascii_lowercase()
+        } else {
+            "probe".to_owned()
+        },
+    )
+}
+
 pub(crate) fn profile_release_names(
     artifact_name: &str,
     profile: &str,
@@ -187,7 +201,16 @@ pub(crate) fn profile_release_names(
     sidecar_name: Option<&str>,
 ) -> Result<(String, String), String> {
     validate_segment(profile, "profile")?;
-    let expected_asset = format!("{artifact_name}-{profile}-x86_64");
+    profile_release_names_for_segment(artifact_name, profile, asset_name, sidecar_name)
+}
+
+pub(crate) fn profile_release_names_for_segment(
+    artifact_name: &str,
+    resolved_profile_segment: &str,
+    asset_name: Option<&str>,
+    sidecar_name: Option<&str>,
+) -> Result<(String, String), String> {
+    let expected_asset = format!("{artifact_name}-{resolved_profile_segment}-x86_64");
     let expected_sidecar = format!("{expected_asset}.sha256");
     if asset_name.is_some_and(|name| name != expected_asset.as_str()) {
         return Err("fetch-artifact-profile-asset-name-mismatch".into());
