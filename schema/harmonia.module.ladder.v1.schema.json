@@ -3135,17 +3135,6 @@
               "pattern": "^\\$constants\\.[A-Za-z0-9_.-]+$"
             }
           ]
-        },
-        "restart_policy": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "string",
-              "pattern": "^\\$constants\\.[A-Za-z0-9_.-]+$"
-            }
-          ]
         }
       },
       "required": [
