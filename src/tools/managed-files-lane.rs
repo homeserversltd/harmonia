@@ -1476,6 +1476,14 @@ fn files_metadata_step(
 ) -> Result<OperationOutcome, String> {
     use std::os::unix::fs::MetadataExt;
     let apply = software_authorization.is_some();
+    let attest_step = |ok: bool, message: String| {
+        crate::atoms::attest::attest(
+            &module_dir.join("atoms.jsonl"),
+            &crate::atoms::Receipt {
+                atom:"files-metadata".into(), ok, drift:crate::atoms::Drift::Current, message,
+            }, &[],
+        )
+    };
     let specs = step.args.get("files").and_then(Value::as_array)
         .ok_or("files-metadata-files-missing")?
         .iter()
@@ -1503,6 +1511,10 @@ fn files_metadata_step(
                 "diff_decision":"blocked", "diff":null, "movement":"none",
                 "proof":"target-observation-failed", "blocker":blocker,
             }))?;
+            attest_step(
+                false,
+                format!("targets={} changed=false blocker={} state=blocked-observation", specs.len(), blocker),
+            )?;
             return Ok(OperationOutcome { ok:false, changed:false, skipped:true, message:blocker, command:None });
         }
     };
@@ -1562,20 +1574,27 @@ fn files_metadata_step(
                     Err(error) => action = Err(error),
                 }
                 blocker = action.as_ref().err().cloned().unwrap_or_else(|| "none".into());
-                let attest_result = crate::atoms::attest::attest(
-                    &module_dir.join("atoms.jsonl"),
-                    &crate::atoms::Receipt {
-                        atom:"files-metadata".into(), ok:action.is_ok(), drift:crate::atoms::Drift::Current,
-                        message:format!("targets={} changed={} blocker={}", states.len(), changed, blocker),
-                    }, &[],
-                );
-                attest_result?;
+                attest_step(
+                    action.is_ok(),
+                    format!("targets={} changed={} blocker={}", states.len(), changed, blocker),
+                )?;
                 Ok(action)
             },
         );
         match run {
             Ok(run) => match run {
-                crate::atoms::comparison::ComparisonRun::Current { .. } => movement = "none",
+                crate::atoms::comparison::ComparisonRun::Current { .. } => {
+                    movement = "none";
+                    attest_step(
+                        ok,
+                        format!(
+                            "targets={} changed={} blocker={} state=current",
+                            observed.len(),
+                            changed,
+                            blocker
+                        ),
+                    )?;
+                }
                 crate::atoms::comparison::ComparisonRun::Moved { movement: action, .. } => {
                     movement = "attempted";
                     if let Err(error) = action { ok = false; blocker = error; }
@@ -1587,6 +1606,18 @@ fn files_metadata_step(
                 blocker = error;
             }
         }
+    }
+    if !(apply && different) {
+        let state = if different { "held-report-only" } else { "held-current" };
+        attest_step(
+            ok,
+            format!(
+                "targets={} changed={} blocker={} state={state}",
+                observed.len(),
+                changed,
+                blocker
+            ),
+        )?;
     }
     let diff_decision = if different { "Different" } else { "Empty" };
     if different && !apply { movement = "none"; }

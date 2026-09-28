@@ -669,10 +669,15 @@ pub(crate) fn execute_validated_step(
             (None, false)
         }
     } else {
-        let probe = capture_with_options(&program, &argv.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(cwd.as_deref()).timeout_secs(timeout));
         decision = "observation";
-        observed_state = serde_json::json!({"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
-        (Some(probe), true)
+        if apply {
+            let probe = capture_with_options(&program, &argv.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(cwd.as_deref()).timeout_secs(timeout));
+            observed_state = serde_json::json!({"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
+            (Some(probe), true)
+        } else {
+            // Temporary report-only capture gate; lift under contract-harmonia-monad-command-steps-enter-the-ceremony.
+            (Some(crate::CmdResult { ok: true, code: 0, stdout: format!("planned command {}", program), stderr: String::new() }), false)
+        }
     };
     let command_result = result.0;
     let executed = result.1;
