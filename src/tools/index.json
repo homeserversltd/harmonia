@@ -491,6 +491,43 @@
             }
           ],
           "placement": "ProposeEdits"
+        },
+        {
+          "name": "act",
+          "description": "execute one command only after a declared cheap observation differs from its desired state",
+          "args": [
+            {
+              "name": "program",
+              "kind": "string",
+              "required": true
+            },
+            {
+              "name": "args",
+              "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "cwd",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "timeout_secs",
+              "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "observation",
+              "kind": "json",
+              "required": true
+            },
+            {
+              "name": "lane",
+              "kind": "string",
+              "required": false
+            }
+          ],
+          "placement": "ProposeEdits"
         }
       ]
     },

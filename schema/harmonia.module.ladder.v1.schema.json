@@ -704,6 +704,20 @@
             "tool",
             "permutation"
           ]
+        },
+        {
+          "properties": {
+            "tool": {
+              "const": "command"
+            },
+            "permutation": {
+              "const": "act"
+            }
+          },
+          "required": [
+            "tool",
+            "permutation"
+          ]
         }
       ],
       "allOf": [
@@ -1529,6 +1543,32 @@
             "properties": {
               "args": {
                 "$ref": "#/definitions/ladderArgs_ai_coding_harness_reconcile"
+              }
+            },
+            "required": [
+              "args"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "command"
+              },
+              "permutation": {
+                "const": "act"
+              }
+            },
+            "required": [
+              "tool",
+              "permutation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/definitions/ladderArgs_command_act"
               }
             },
             "required": [
@@ -3517,6 +3557,121 @@
       },
       "required": [
         "files"
+      ]
+    },
+    "ladderArgs_command_act": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "program": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$constants\\.[A-Za-z0-9_.-]+$"
+            }
+          ]
+        },
+        "args": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$constants\\.[A-Za-z0-9_.-]+$"
+            },
+            {
+              "type": "string",
+              "description": "Observed compatibility: string-valued constant used where string_array is declared."
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$constants\\.[A-Za-z0-9_.-]+$"
+            }
+          ]
+        },
+        "timeout_secs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$constants\\.[A-Za-z0-9_.-]+$"
+            }
+          ]
+        },
+        "lane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/definitions/constantRef"
+            }
+          ]
+        },
+        "observation": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "program": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "cwd": {
+                  "type": "string"
+                },
+                "expected_exit_code": {
+                  "type": "integer"
+                },
+                "expected_stdout": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "program",
+                "expected_exit_code"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "module_changed_before_step"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "program",
+        "observation"
       ]
     }
   },
