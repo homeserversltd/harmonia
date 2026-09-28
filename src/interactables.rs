@@ -253,7 +253,7 @@ pub(crate) fn pending_config_proposal_count() -> usize {
 
 pub(crate) fn interactable_command(
     args: &[String],
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::Invocation>,
 ) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
@@ -376,7 +376,7 @@ fn interactable_inspect(args: &[String]) -> Result<(), String> {
 
 fn interactable_run(
     args: &[String],
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    invocation: Option<&crate::Invocation>,
 ) -> Result<(), String> {
     if args.len() != 1 {
         return Err("config-proposal accept requires exactly one <id>".to_string());
@@ -391,8 +391,18 @@ fn interactable_run(
     let item = feed.interactables[position].clone();
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
-        "toolchain-ratchet" => return run_toolchain_ratchet(&path, &mut feed, position, &item),
-        "dns-record" => return run_dns_record(&path, &mut feed, position, &item, invocation),
+        "toolchain-ratchet" => {
+            return run_toolchain_ratchet(&path, &mut feed, position, &item, invocation)
+        }
+        "dns-record" => {
+            return run_dns_record(
+                &path,
+                &mut feed,
+                position,
+                &item,
+                invocation.and_then(crate::Invocation::key),
+            )
+        }
         "hard-stamp" => {}
         _ => return Err(format!("interactable-kind-unsupported {}", item.kind)),
     }
@@ -562,6 +572,30 @@ fn parse_toolchain_version(value: &str) -> Option<[u64; 3]> {
         components[1].parse().ok()?,
         components[2].parse().ok()?,
     ])
+}
+
+fn rustup_list_flags(line: &str) -> Option<(&str, Vec<&str>)> {
+    let (toolchain, flags) = line.trim().split_once('(')?;
+    let flags = flags.strip_suffix(')')?;
+    let toolchain = toolchain.trim();
+    if toolchain.is_empty() {
+        return None;
+    }
+    Some((
+        toolchain,
+        flags
+            .split(',')
+            .map(str::trim)
+            .filter(|flag| !flag.is_empty())
+            .collect(),
+    ))
+}
+
+fn rustup_toolchain_matches_watermark(toolchain: &str, watermark: &str) -> bool {
+    toolchain == watermark
+        || toolchain
+            .strip_prefix(watermark)
+            .is_some_and(|suffix| suffix.starts_with('-'))
 }
 
 pub(crate) fn reconcile_ruyi(
@@ -748,88 +782,94 @@ pub(crate) fn reconcile_ruyi(
             extra: unknown.get(&id).cloned().unwrap_or_default(),
         });
     }
-    if let Some(self_version) = self_row
-        .get("rustc_version")
-        .and_then(serde_json::Value::as_str)
-        .and_then(parse_toolchain_version)
-    {
-        let mut candidates = staves
-            .iter()
-            .filter_map(|peer| {
-                let mac = peer.get("mac").and_then(serde_json::Value::as_str)?;
-                if Some(mac) == self_mac {
-                    return None;
-                }
-                let version = peer
-                    .get("rustc_version")
-                    .or_else(|| peer.pointer("/perspective/self/rustc_version"))
-                    .and_then(serde_json::Value::as_str)?;
-                let parsed = parse_toolchain_version(version)?;
-                let hostname = peer
-                    .get("hostname")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown");
-                Some((
-                    parsed,
-                    version.to_owned(),
-                    mac.to_owned(),
-                    hostname.to_owned(),
-                ))
+    let installed = crate::atoms::command::capture("rustc", &["-Vv"]);
+    let installed_version = installed
+        .ok
+        .then(|| {
+            installed.stdout.lines().find_map(|line| {
+                line.strip_prefix("release:")
+                    .map(str::trim)
+                    .map(str::to_owned)
             })
-            .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            right
-                .0
-                .cmp(&left.0)
-                .then_with(|| left.2.cmp(&right.2))
-                .then_with(|| left.3.cmp(&right.3))
-        });
-        if let Some((highest, highest_version, witness_mac, witness_hostname)) = candidates.first()
-        {
-            if *highest > self_version {
+        })
+        .flatten();
+    let rustup_lane = profile
+        .modules
+        .iter()
+        .any(|module| module == "rust-build-toolchain")
+        && Path::new("/opt/rustup").is_dir();
+    let lane = if profile
+        .package_authority
+        .as_ref()
+        .is_some_and(|authority| authority.package_manager == "pacman")
+    {
+        "pacman"
+    } else if rustup_lane {
+        "rustup"
+    } else {
+        "none"
+    };
+    let flag_watermark = self_row
+        .get("member_flags")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|flags| flags.iter())
+        .filter_map(|(component, flag)| {
+            let source_sha = flag.get("source_sha")?.as_str()?;
+            // Release flags are nested in the mint's member_flags projection;
+            // never infer the watermark from a peer's or member's worn build.
+            let version = flag.pointer("/release_flag/rustc_version")?.as_str()?;
+            let parsed = parse_toolchain_version(version)?;
+            Some((
+                parsed,
+                version.to_owned(),
+                component.clone(),
+                source_sha.to_owned(),
+            ))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.2.cmp(&left.2)));
+    if let (Some((watermark, watermark_version, component, source_sha)), Some(installed_version)) =
+        (flag_watermark, installed_version)
+    {
+        if let Some(installed_parsed) = parse_toolchain_version(&installed_version) {
+            if installed_parsed < watermark && lane != "none" {
                 let id = "toolchain-ratchet".to_string();
+                let plan = if lane == "rustup" {
+                    "rustup-climb"
+                } else {
+                    "pacman-evidence"
+                };
+                let witness = serde_json::json!({
+                    "component": component,
+                    "source_sha": source_sha,
+                    "mac": self_mac,
+                });
                 feed.interactables.push(Interactable {
                     id: id.clone(),
-                    module_id: module.to_string(),
+                    module_id: if lane == "rustup" {
+                        "rust-build-toolchain".to_string()
+                    } else {
+                        module.to_string()
+                    },
                     name: "Ratchet this body's Rust toolchain".into(),
-                    description: format!(
-                        "Rust toolchain ratchet: self rustc {} is behind highest observed rustc {} on {} {}.",
-                        self_row["rustc_version"].as_str().unwrap_or("unknown"),
-                        highest_version,
-                        witness_hostname,
-                        witness_mac
-                    ),
+                    description: format!("Installed rustc {installed_version} is below release watermark {watermark_version} ({component} {source_sha})."),
                     kind: "toolchain-ratchet".into(),
                     target_path: None,
                     reference_source_path: None,
-                    drift: DriftSummary {
-                        content: true,
-                        mode: false,
-                        ownership: false,
-                    },
+                    drift: DriftSummary { content: true, mode: false, ownership: false },
                     created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
-                    refreshed_at: now.to_string(),
-                    available_at: None,
-                    silenced: false,
-                    silenced_at: None,
-                    has_run: false,
-                    mode: None,
-                    owner: None,
-                    group: None,
-                    source_sha: None,
-                    target_sha: None,
-                    commits_behind: None,
-                    live_sha: None,
-                    reference_sha: None,
-                    recognition_score: None,
-                    diff: None,
+                    refreshed_at: now.to_string(), available_at: None, silenced: false,
+                    silenced_at: None, has_run: false, mode: None, owner: None, group: None,
+                    source_sha: None, target_sha: None, commits_behind: None,
+                    live_sha: None, reference_sha: None, recognition_score: None, diff: None,
                     script: format!("harmonia interactable run {id}"),
-                    show_only_if: String::new(),
-                    completion_check: String::new(),
+                    show_only_if: String::new(), completion_check: String::new(),
                     evidence: serde_json::json!({
-                        "self_rustc_version": self_row["rustc_version"],
-                        "highest_rustc_version": highest_version,
-                        "highest_witness": {"mac": witness_mac, "hostname": witness_hostname}
+                        "installed": installed_version,
+                        "watermark": watermark_version,
+                        "witness": witness,
+                        "lane": lane,
+                        "plan": plan,
                     }),
                     extra: unknown.get(&id).cloned().unwrap_or_default(),
                 });
@@ -1000,34 +1040,552 @@ fn run_toolchain_ratchet(
     _feed: &mut InteractablesFeed,
     _position: usize,
     item: &Interactable,
+    invocation: Option<&crate::Invocation>,
 ) -> Result<(), String> {
-    let receipt = serde_json::json!({
-        "schema": "harmonia.config_state.receipt.v1",
-        "config_state": "interactable",
-        "id": item.id,
-        "target": null,
-        "reference_id": null,
-        "score": null,
-        "actuator": {
-            "has_run": true,
-            "changed": false,
-            "kind": "toolchain-ratchet",
-            "disposition": "acknowledgment-only",
-            "disposition_basis": "acknowledgment-only is implementer inference because doctrine is silent"
-        }
+    let key = invocation
+        .and_then(crate::Invocation::key)
+        .ok_or_else(|| "toolchain-ratchet-invocation-key-missing".to_string())?;
+    let evidence = &item.evidence;
+    let installed_before = evidence
+        .get("installed")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "toolchain-ratchet-installed-version-absent".to_string())?;
+    // This is the lane-independent comparator: pacman bodies need not have
+    // /usr/local/bin/rustc. A failed observation is a hard no-mutation stop.
+    let comparator = crate::atoms::command::capture("rustc", &["-Vv"]);
+    if !comparator.ok {
+        return Err("toolchain-ratchet-installed-comparator-failed".to_string());
+    }
+    let installed_verbose = comparator.stdout;
+    let installed_now = installed_verbose
+        .lines()
+        .find_map(|line| line.strip_prefix("release:").map(str::trim))
+        .ok_or_else(|| "toolchain-ratchet-installed-readback-absent".to_string())?;
+    let current_readback = serde_json::json!({
+        "path": "rustc",
+        "release": installed_now,
+        "verbose": installed_verbose,
     });
-    crate::bands::propose_edits::persist_feed_with_intent(
-        path,
-        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
-            ids: [item.id.clone()].into_iter().collect(),
-            receipts: vec![receipt.clone()],
+    if installed_now != installed_before {
+        return Err(format!("toolchain-ratchet-feed-stale expected={installed_before} actual={installed_now}"));
+    }
+    let watermark = evidence
+        .get("watermark")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "toolchain-ratchet-watermark-absent".to_string())?;
+    let installed_parsed = parse_toolchain_version(installed_now)
+        .ok_or_else(|| "toolchain-ratchet-installed-version-invalid".to_string())?;
+    let watermark_parsed = parse_toolchain_version(watermark)
+        .ok_or_else(|| "toolchain-ratchet-watermark-invalid".to_string())?;
+    if installed_parsed >= watermark_parsed {
+        return Err(format!("toolchain-ratchet-watermark-stale installed={installed_now} watermark={watermark}"));
+    }
+    if evidence.pointer("/witness/component").and_then(Value::as_str).is_none()
+        || evidence.pointer("/witness/source_sha").and_then(Value::as_str).is_none()
+    {
+        return Err("toolchain-ratchet-witness-provenance-absent".to_string());
+    }
+    let lane = evidence
+        .get("lane")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "toolchain-ratchet-lane-absent".to_string())?;
+    let witness = evidence.get("witness").cloned().unwrap_or(Value::Null);
+    let (profile, profile_path) = crate::resolve_certificate_profile()?;
+    let actual_lane = if profile
+        .package_authority
+        .as_ref()
+        .is_some_and(|authority| authority.package_manager == "pacman")
+    {
+        "pacman"
+    } else if profile
+        .modules
+        .iter()
+        .any(|module| module == "rust-build-toolchain")
+        && Path::new("/opt/rustup").is_dir()
+    {
+        "rustup"
+    } else {
+        "none"
+    };
+    if actual_lane != lane {
+        return Err(format!("toolchain-ratchet-lane-stale expected={actual_lane} actual={lane}"));
+    }
+    if lane == "pacman" {
+        let receipt = serde_json::json!({
+            "schema": "harmonia.config_state.receipt.v1",
+            "config_state": "interactable",
+            "id": item.id,
+            "target": null,
+            "reference_id": null,
+            "score": null,
+            "actuator": {
+                "has_run": true,
+                "changed": false,
+                "kind": "toolchain-ratchet",
+                "observed": {"installed": installed_now, "watermark": watermark},
+                "could-change": "pacman package authority is outside this interactable's mutation lane",
+                "attempt": [],
+                "final-state": {"release": installed_now, "converged": false}
+            },
+            "kind": "toolchain-ratchet",
+            "before": installed_now,
+            "after": installed_now,
+            "watermark": watermark,
+            "witness": witness,
+            "lane": lane,
+            "distro_evidence": format!("installed rustc release {installed_now}; watermark {watermark}"),
+            "commands": [],
+            "readback": current_readback,
+            "apply": Value::Null,
+            "ok": false,
+            "first_missing_signal": "pacman-toolchain-not-applied"
+        });
+        crate::bands::propose_edits::persist_feed_with_intent(
+            path,
+            crate::bands::propose_edits::FeedPersistenceIntent::AppendReceipts(vec![receipt.clone()]),
+        )?;
+        println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
+        return Err("pacman-toolchain-evidence-recorded-item-retained".into());
+    }
+    let module_id = match lane {
+        "rustup" => "rust-build-toolchain",
+        "pacman" => return Err("pacman-toolchain-evidence-recorded-item-retained".into()),
+        _ => return Err(format!("toolchain-ratchet-lane-invalid {lane}")),
+    };
+    if !profile.modules.iter().any(|module| module == module_id) {
+        return Err(format!("toolchain-ratchet-module-not-declared {module_id}"));
+    }
+    let module_root = crate::default_module_root(&profile_path);
+    let module_dir = crate::bands::stage_profile::resolve_module_dir(&module_root, module_id)?;
+    let manifest_path = module_dir.join("manifest.json");
+    let manifest = crate::load_ladder_manifest(&manifest_path)?;
+    if manifest.id != module_id {
+        return Err(format!("toolchain-ratchet-module-id-mismatch {module_id} {}", manifest.id));
+    }
+    let files_root_rel = manifest.files_root.as_deref()
+        .ok_or_else(|| "toolchain-ratchet-files-root-undeclared".to_string())?;
+    let files_root_path = Path::new(files_root_rel);
+    if files_root_path.is_absolute() || files_root_path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Err("toolchain-ratchet-files-root-invalid".into());
+    }
+    let files_root = module_dir.join(files_root_path);
+    if !files_root.is_dir() {
+        return Err(format!("toolchain-ratchet-files-root-missing {}", files_root.display()));
+    }
+    for name in ["rustc", "cargo", "rustup"] {
+        let source = files_root.join("usr/local/bin").join(name);
+        if !source.is_file() {
+            return Err(format!("toolchain-ratchet-shim-source-missing {}", source.display()));
+        }
+    }
+    if parse_toolchain_version(watermark).is_none() {
+        return Err("toolchain-ratchet-watermark-invalid".into());
+    }
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos()).unwrap_or(0);
+    let mut receipt = serde_json::json!({
+        "schema": "harmonia.config_state.receipt.v1", "config_state": "interactable",
+        "id": item.id, "target": null, "reference_id": null, "score": null,
+        "actuator": {
+            "has_run": true, "changed": false, "kind": "toolchain-ratchet",
+            "observed": {"installed": installed_before, "watermark": watermark},
+            "could-change": "install the declared release watermark with the rustup-owned module shims",
+            "attempt": [], "final-state": {"release": installed_before, "converged": false}
         },
-    )?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+        "before": installed_before, "after": Value::Null, "watermark": watermark, "witness": witness, "lane": lane,
+        "commands": [], "readback": Value::Null, "apply": Value::Null,
+        "ok": false, "first_missing_signal": "toolchain-ratchet-not-completed"
+    });
+    let mut commands = Vec::<Value>::new();
+    let mut remove_item = false;
+    let result: Result<(), String> = (|| {
+        if lane != "rustup" || module_id != "rust-build-toolchain" {
+            return Err("toolchain-ratchet-lane-module-mismatch".into());
+        }
+        if unsafe { libc::geteuid() } != 0 {
+            return Err("toolchain-ratchet-requires-root".into());
+        }
+        let (mode, invocation_key) = match crate::UpdateMode::from_apply_flag_with_invocation(true, Some(key)) {
+            crate::UpdateMode::ApplySoftware(auth, key) => (auth, key),
+            crate::UpdateMode::Observe => return Err("toolchain-ratchet-apply-authorization-missing".into()),
+        };
+        let toolchains = run_logged("/opt/cargo/bin/rustup", &["toolchain", "list"], &mut commands)?
+            .get("stdout")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let prior_toolchain = toolchains
+            .lines()
+            .find_map(|line| {
+                let (toolchain, flags) = rustup_list_flags(line)?;
+                flags
+                    .iter()
+                    .any(|flag| *flag == "default")
+                    .then(|| toolchain.to_owned())
+            })
+            .ok_or_else(|| "rustup-default-toolchain-unreadable".to_string())?;
+        let existed = toolchains.lines().any(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|toolchain| rustup_toolchain_matches_watermark(toolchain, watermark))
+        });
+        let files = ["rustc", "cargo", "rustup"]
+            .into_iter()
+            .map(|name| crate::tools::files::FileSpec {
+                relative_path: PathBuf::from(format!("usr/local/bin/{name}")),
+                mode: None,
+            })
+            .collect();
+        let request = crate::tools::files::FileConvergenceRequest {
+            source_root: files_root,
+            target_root: PathBuf::from("/"),
+            files,
+            backup_existing: true,
+            receipt_name: format!("toolchain-ratchet-{timestamp}"),
+            owner: Some("root".into()),
+            group: Some("root".into()),
+        };
+        let file_receipt_dir = PathBuf::from(format!(
+            "/var/lib/harmonia/receipts/toolchain-ratchet-files-{timestamp}"
+        ));
+        let outcome = match crate::atoms::r#do::place_file::converge_files_authorized(
+            &request,
+            &file_receipt_dir,
+            Some(&mode),
+            invocation_key,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                receipt["shim_convergence"] = serde_json::json!({
+                    "ok": false,
+                    "first_missing_signal": error,
+                });
+                let rollback = restore_rustup_default(
+                    &prior_toolchain,
+                    installed_before,
+                    watermark,
+                    existed,
+                    &mut commands,
+                    &mut receipt,
+                );
+                if let Err(failure) = rollback {
+                    receipt["rollback_failure"] = serde_json::json!(failure);
+                }
+                return Err(error);
+            }
+        };
+        receipt["shim_convergence"] = serde_json::to_value(&outcome).unwrap_or(Value::Null);
+        if !outcome.ok {
+            let missing = if !outcome.missing_target_birth_debts.is_empty() {
+                "missing-target-birth-debt".to_string()
+            } else if !outcome.missing.is_empty() {
+                "missing-target-file".to_string()
+            } else {
+                outcome.message.clone()
+            };
+            receipt["shim_convergence"]["first_missing_signal"] =
+                serde_json::json!(missing);
+            receipt["first_missing_signal"] = serde_json::json!(missing);
+            let rollback = restore_rustup_default(
+                &prior_toolchain,
+                installed_before,
+                watermark,
+                existed,
+                &mut commands,
+                &mut receipt,
+            );
+            if let Err(failure) = rollback {
+                receipt["rollback_failure"] = serde_json::json!(failure);
+            }
+            return Err(missing);
+        }
+
+        if let Err(error) = run_logged_env("/usr/local/bin/rustup", &["toolchain", "install", watermark, "--profile", "minimal"], &mut commands) {
+            receipt["first_missing_signal"] = original_tool_sentence(&commands, &error);
+            let rollback = restore_rustup_default(&prior_toolchain, installed_before, watermark, existed, &mut commands, &mut receipt);
+            if let Err(failure) = rollback {
+                receipt["rollback_failure"] = serde_json::json!(failure);
+            }
+            return Err(error);
+        }
+        if let Err(error) = run_logged("/usr/local/bin/rustup", &["default", watermark], &mut commands) {
+            receipt["first_missing_signal"] = original_tool_sentence(&commands, &error);
+            let rollback = restore_rustup_default(&prior_toolchain, installed_before, watermark, existed, &mut commands, &mut receipt);
+            if let Err(failure) = rollback {
+                receipt["rollback_failure"] = serde_json::json!(failure);
+            }
+            return Err(error);
+        }
+        let readback = match run_rustc_readback(&mut commands) {
+            Ok(readback) => readback,
+            Err(error) => {
+                receipt["first_missing_signal"] = serde_json::json!(error);
+                let rollback = restore_rustup_default(&prior_toolchain, installed_before, watermark, existed, &mut commands, &mut receipt);
+                if let Err(failure) = rollback {
+                    receipt["rollback_failure"] = serde_json::json!(failure);
+                }
+                return Err(error);
+            }
+        };
+        receipt["readback"] = readback.clone();
+        receipt["after"] = readback.get("release").cloned().unwrap_or(Value::Null);
+        let readback_version = readback.get("release").and_then(Value::as_str).unwrap_or("");
+        if readback_version != watermark {
+            let error = format!("toolchain-ratchet-readback-mismatch expected={watermark} actual={readback_version}");
+            receipt["first_missing_signal"] = serde_json::json!(error);
+            let rollback = restore_rustup_default(&prior_toolchain, installed_before, watermark, existed, &mut commands, &mut receipt);
+            if let Err(failure) = rollback {
+                receipt["rollback_failure"] = serde_json::json!(failure);
+            }
+            return Err(error);
+        }
+
+        let receipt_dir = PathBuf::from(format!(
+            "/var/lib/harmonia/receipts/toolchain-ratchet-{timestamp}"
+        ));
+        if let Err(error) = fs::create_dir_all(&receipt_dir) {
+            let failure = format!("toolchain-ratchet-receipt-dir-failed: {error}");
+            receipt["first_missing_signal"] = serde_json::json!(failure);
+            let rollback = restore_rustup_default(
+                &prior_toolchain,
+                installed_before,
+                watermark,
+                existed,
+                &mut commands,
+                &mut receipt,
+            );
+            if let Err(rollback_failure) = rollback {
+                receipt["rollback_failure"] = serde_json::json!(rollback_failure);
+            }
+            return Err(failure);
+        }
+        let executable = match std::env::current_exe() {
+            Ok(executable) => executable,
+            Err(error) => {
+                let failure = format!("toolchain-ratchet-current-exe-failed: {error}");
+                receipt["first_missing_signal"] = serde_json::json!(failure);
+                let rollback = restore_rustup_default(
+                    &prior_toolchain,
+                    installed_before,
+                    watermark,
+                    existed,
+                    &mut commands,
+                    &mut receipt,
+                );
+                if let Err(rollback_failure) = rollback {
+                    receipt["rollback_failure"] = serde_json::json!(rollback_failure);
+                }
+                return Err(failure);
+            }
+        };
+        let mut command = std::process::Command::new(executable);
+        command.arg("update")
+            .arg("--apply")
+            .arg("--receipt-dir")
+            .arg(&receipt_dir)
+            .env("RUSTUP_HOME", "/opt/rustup")
+            .env("CARGO_HOME", "/opt/cargo")
+            .env("HARMONIA_TOOLCHAIN_RATCHET_HANDOFF", "1");
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(error) => {
+                let failure = format!("toolchain-ratchet-apply-spawn-failed: {error}");
+                receipt["first_missing_signal"] = serde_json::json!(failure);
+                let rollback = restore_rustup_default(
+                    &prior_toolchain,
+                    installed_before,
+                    watermark,
+                    existed,
+                    &mut commands,
+                    &mut receipt,
+                );
+                if let Err(rollback_failure) = rollback {
+                    receipt["rollback_failure"] = serde_json::json!(rollback_failure);
+                }
+                return Err(failure);
+            }
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let run_path = receipt_dir.join("run.json");
+        let run: Value = fs::read_to_string(&run_path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(Value::Null);
+        receipt["apply"] = serde_json::json!({
+            "command": "harmonia update --apply",
+            "exit_code": output.status.code(),
+            "stdout": stdout,
+            "stderr": stderr,
+            "run_id": run.get("run_id"),
+            "ok": run.get("ok"),
+            "first_missing_signal": run.get("first_missing_signal"),
+            "receipt_path": run_path,
+        });
+        if !output.status.success() || run.get("ok").and_then(Value::as_bool) != Some(true) {
+            receipt["first_missing_signal"] = run
+                .get("first_missing_signal")
+                .cloned()
+                .or_else(|| (!stderr.trim().is_empty()).then(|| serde_json::json!(stderr.trim())))
+                .unwrap_or_else(|| serde_json::json!("toolchain-ratchet-apply-failed"));
+            let rollback = restore_rustup_default(
+                &prior_toolchain,
+                installed_before,
+                watermark,
+                existed,
+                &mut commands,
+                &mut receipt,
+            );
+            if let Err(rollback_failure) = rollback {
+                receipt["rollback_failure"] = serde_json::json!(rollback_failure);
+            }
+            return Err("toolchain-ratchet-apply-failed".into());
+        }
+        receipt["ok"] = Value::Bool(true);
+        receipt["first_missing_signal"] = serde_json::json!("none");
+        remove_item = true;
+        Ok(())
+    })();
+    if let Err(reason) = &result {
+        if receipt["first_missing_signal"] == "toolchain-ratchet-not-completed" {
+            receipt["first_missing_signal"] = serde_json::json!(reason);
+        }
+    }
+    receipt["commands"] = Value::Array(commands.clone());
+    let after = receipt.get("after").cloned().unwrap_or(Value::Null);
+    receipt["actuator"] = serde_json::json!({
+        "has_run": true,
+        "changed": after.as_str().is_some_and(|release| release != installed_before),
+        "kind": "toolchain-ratchet",
+        "observed": {
+            "installed_before": installed_before,
+            "watermark": watermark,
+            "readback": receipt.get("readback").cloned().unwrap_or(Value::Null),
+        },
+        "could-change": "install and select the declared Rust release, then converge software",
+        "attempt": commands,
+        "final-state": {"release": after, "converged": receipt["ok"] == Value::Bool(true)},
+    });
+    let intent = if remove_item {
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(), receipts: vec![receipt.clone()],
+        }
+    } else {
+        crate::bands::propose_edits::FeedPersistenceIntent::AppendReceipts(vec![receipt.clone()])
+    };
+    crate::bands::propose_edits::persist_feed_with_intent(path, intent)?;
+    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
+    result
+}
+
+fn restore_rustup_default(
+    prior_toolchain: &str,
+    installed_before: &str,
+    watermark: &str,
+    existed: bool,
+    commands: &mut Vec<Value>,
+    receipt: &mut Value,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    let default_result = run_logged(
+        "/usr/local/bin/rustup",
+        &["default", prior_toolchain],
+        commands,
     );
-    Ok(())
+    if let Err(error) = &default_result {
+        failures.push(format!("rollback-default-failed: {error}"));
+    }
+    let uninstall_result = if existed {
+        None
+    } else {
+        let result = run_logged(
+            "/usr/local/bin/rustup",
+            &["toolchain", "uninstall", watermark],
+            commands,
+        );
+        if let Err(error) = &result {
+            failures.push(format!("rollback-uninstall-failed: {error}"));
+        }
+        Some(result)
+    };
+    let readback_result = run_rustc_readback(commands);
+    match &readback_result {
+        Ok(readback) => {
+            let actual = readback
+                .get("release")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if actual != installed_before {
+                failures.push(format!(
+                    "rollback-readback-mismatch expected={installed_before} actual={actual}"
+                ));
+            }
+            receipt["readback"] = readback.clone();
+            receipt["after"] = readback.get("release").cloned().unwrap_or(Value::Null);
+        }
+        Err(error) => {
+            receipt["readback"] = serde_json::json!({"path":"/usr/local/bin/rustc", "error":error});
+            receipt["after"] = Value::Null;
+            failures.push(format!("rollback-readback-failed: {error}"));
+        }
+    }
+    receipt["rollback"] = serde_json::json!({
+        "default": default_result.is_ok(),
+        "uninstall": uninstall_result.as_ref().map(Result::is_ok),
+        "readback": readback_result.as_ref().ok(),
+        "errors": failures.clone(),
+    });
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn original_tool_sentence(commands: &[Value], error: &str) -> Value {
+    commands
+        .last()
+        .and_then(|row| {
+            (row.get("exit_code").and_then(Value::as_i64) != Some(0))
+                .then(|| row.get("stderr"))
+                .flatten()
+        })
+        .and_then(Value::as_str)
+        .filter(|stderr| !stderr.is_empty())
+        .map(|stderr| serde_json::json!(stderr))
+        .unwrap_or_else(|| serde_json::json!(error))
+}
+
+fn run_logged(program: &str, args: &[&str], commands: &mut Vec<Value>) -> Result<Value, String> {
+    run_logged_env(program, args, commands)
+}
+
+fn run_logged_env(program: &str, args: &[&str], commands: &mut Vec<Value>) -> Result<Value, String> {
+    let output = std::process::Command::new(program).args(args)
+        .env("RUSTUP_HOME", "/opt/rustup").env("CARGO_HOME", "/opt/cargo")
+        .output().map_err(|error| format!("{program}-spawn-failed: {error}"))?;
+    let row = serde_json::json!({"program": program, "args": args, "exit_code": output.status.code(),
+        "stdout": String::from_utf8_lossy(&output.stdout), "stderr": String::from_utf8_lossy(&output.stderr)});
+    commands.push(row.clone());
+    if output.status.success() { Ok(row) } else {
+        Err(format!("{program}-failed exit={:?}: {}", output.status.code(), String::from_utf8_lossy(&output.stderr).trim()))
+    }
+}
+
+fn run_rustc_readback(commands: &mut Vec<Value>) -> Result<Value, String> {
+    let output = std::process::Command::new("/usr/local/bin/rustc").arg("-Vv")
+        .env("RUSTUP_HOME", "/opt/rustup").env("CARGO_HOME", "/opt/cargo")
+        .output().map_err(|error| format!("rustc-readback-spawn-failed: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    commands.push(serde_json::json!({"program":"/usr/local/bin/rustc", "args":["-Vv"],
+        "exit_code":output.status.code(), "stdout":stdout, "stderr":String::from_utf8_lossy(&output.stderr)}));
+    if !output.status.success() { return Err("rustc-readback-failed".into()); }
+    let release = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("release:").map(str::trim))
+        .filter(|release| !release.is_empty())
+        .ok_or_else(|| "rustc-readback-release-absent".to_string())?;
+    Ok(serde_json::json!({"path":"/usr/local/bin/rustc", "release":release, "verbose":stdout}))
 }
 
 fn configured_unbound_target() -> PathBuf {
@@ -1372,294 +1930,6 @@ mod tests {
         ] {
             assert_eq!(parse_toolchain_version(value), None, "{value}");
         }
-    }
-
-    fn ratchet_profile() -> crate::Profile {
-        crate::Profile {
-            id: "homeconsole".into(),
-            identity: "test".into(),
-            package_authority: None,
-            modules: vec!["caduceus".into()],
-            hotfixes: Vec::new(),
-            syzygy_declaration: None,
-        }
-    }
-
-    fn ratchet_row(
-        mac: &str,
-        hostname: &str,
-        rustc_version: serde_json::Value,
-    ) -> serde_json::Value {
-        serde_json::json!({
-            "mac": mac,
-            "hostname": hostname,
-            "canonical_name": format!("{hostname}.home.arpa"),
-            "caduceus_sha": "a".repeat(40),
-            "rustc_version": rustc_version,
-            "member_flags": {
-                "sbin": {"source_sha": "b".repeat(40)},
-                "face": {"source_sha": "c".repeat(40)}
-            }
-        })
-    }
-
-    fn ratchet_peer(row: serde_json::Value) -> serde_json::Value {
-        let mut peer = row.clone();
-        peer["perspective"] = serde_json::json!({"self": row});
-        peer
-    }
-
-    fn with_interactables_path<T>(path: &Path, operation: impl FnOnce() -> T) -> T {
-        let _guard = INTERACTABLES_ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap();
-        let prior = env::var_os("HARMONIA_INTERACTABLES_PATH");
-        env::set_var("HARMONIA_INTERACTABLES_PATH", path);
-        let result = operation();
-        match prior {
-            Some(value) => env::set_var("HARMONIA_INTERACTABLES_PATH", value),
-            None => env::remove_var("HARMONIA_INTERACTABLES_PATH"),
-        }
-        result
-    }
-
-    #[test]
-    fn reconcile_toolchain_ratchet_selects_one_highest_peer_and_preserves_sentinels() {
-        let root = fixture("toolchain-ratchet-highest");
-        let feed_path = root.join("interactables.json");
-        let mut existing = sentinel_interactable();
-        existing.id = "toolchain-ratchet".into();
-        existing.kind = "toolchain-ratchet".into();
-        existing.created_at = "retained-created-at".into();
-        existing
-            .extra
-            .insert("future".into(), serde_json::json!(true));
-        existing.evidence = serde_json::json!({"old": true});
-        let sentinel = {
-            let mut item = sentinel_interactable();
-            item.id = "sentinel".into();
-            item.kind = "sentinel".into();
-            item
-        };
-        crate::bands::propose_edits::persist_feed(
-            &feed_path,
-            &make_feed(vec![existing, sentinel.clone()]),
-        )
-        .unwrap();
-        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
-        let peers = vec![
-            ratchet_peer(self_row.clone()),
-            ratchet_peer(ratchet_row("cc:cc:cc:cc:cc:cc", "lower", "1.2.4".into())),
-            ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "higher", "1.10.0".into())),
-        ];
-        with_interactables_path(&feed_path, || {
-            reconcile_ruyi(
-                &ratchet_profile(),
-                &self_row,
-                &serde_json::json!({}),
-                &peers,
-                false,
-            )
-            .unwrap();
-        });
-        let feed = load_feed(&feed_path).unwrap();
-        let proposals = feed
-            .interactables
-            .iter()
-            .filter(|item| item.kind == "toolchain-ratchet")
-            .collect::<Vec<_>>();
-        assert_eq!(proposals.len(), 1);
-        let proposal = proposals[0];
-        assert_eq!(proposal.created_at, "retained-created-at");
-        assert_eq!(proposal.extra.get("future"), Some(&serde_json::json!(true)));
-        assert_eq!(
-            proposal.evidence,
-            serde_json::json!({
-                "self_rustc_version": "1.2.3",
-                "highest_rustc_version": "1.10.0",
-                "highest_witness": {"mac": "bb:bb:bb:bb:bb:bb", "hostname": "higher"}
-            })
-        );
-        assert!(feed.interactables.iter().any(|item| item.id == sentinel.id));
-
-        let mut caught_up = self_row.clone();
-        caught_up["rustc_version"] = serde_json::json!("1.10.0");
-        with_interactables_path(&feed_path, || {
-            reconcile_ruyi(
-                &ratchet_profile(),
-                &caught_up,
-                &serde_json::json!({}),
-                &peers,
-                false,
-            )
-            .unwrap();
-        });
-        let caught_up_feed = load_feed(&feed_path).unwrap();
-        assert!(caught_up_feed
-            .interactables
-            .iter()
-            .all(|item| item.kind != "toolchain-ratchet"));
-        assert!(caught_up_feed
-            .interactables
-            .iter()
-            .any(|item| item.id == sentinel.id));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reconcile_toolchain_ratchet_has_no_proposal_for_alone_equal_or_invalid_inputs() {
-        let root = fixture("toolchain-ratchet-no-proposal");
-        let feed_path = root.join("interactables.json");
-        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
-        let equal = ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "equal", "1.2.3".into()));
-        let malformed = ratchet_peer(ratchet_row(
-            "cc:cc:cc:cc:cc:cc",
-            "malformed",
-            "1.2.3-nightly".into(),
-        ));
-        let extra = ratchet_peer(ratchet_row("dd:dd:dd:dd:dd:dd", "extra", "1.2.3.4".into()));
-        let cases = [
-            (self_row.clone(), Vec::<serde_json::Value>::new()),
-            (self_row.clone(), vec![self_row.clone()]),
-            (self_row.clone(), vec![self_row.clone(), equal]),
-            (self_row.clone(), vec![self_row.clone(), malformed, extra]),
-            (
-                ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2".into()),
-                vec![self_row],
-            ),
-        ];
-        for (self_row, peers) in cases {
-            crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(Vec::new())).unwrap();
-            with_interactables_path(&feed_path, || {
-                reconcile_ruyi(
-                    &ratchet_profile(),
-                    &self_row,
-                    &serde_json::json!({}),
-                    &peers,
-                    false,
-                )
-                .unwrap();
-            });
-            assert!(load_feed(&feed_path)
-                .unwrap()
-                .interactables
-                .iter()
-                .all(|item| item.kind != "toolchain-ratchet"));
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reconcile_toolchain_ratchet_ties_use_stable_witness_order() {
-        let root = fixture("toolchain-ratchet-tie");
-        let feed_path = root.join("interactables.json");
-        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
-        let peers = vec![
-            ratchet_peer(ratchet_row("cc:cc:cc:cc:cc:cc", "zeta", "1.5.0".into())),
-            ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "alpha", "1.5.0".into())),
-            ratchet_peer(self_row.clone()),
-        ];
-        crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(Vec::new())).unwrap();
-        with_interactables_path(&feed_path, || {
-            reconcile_ruyi(
-                &ratchet_profile(),
-                &self_row,
-                &serde_json::json!({}),
-                &peers,
-                false,
-            )
-            .unwrap();
-        });
-        let feed = load_feed(&feed_path).unwrap();
-        assert_eq!(
-            feed.interactables[0].evidence["highest_witness"]["mac"],
-            "bb:bb:bb:bb:bb:bb"
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn toolchain_ratchet_acknowledgment_removes_and_reproposes_without_side_effects() {
-        let root = fixture("toolchain-ratchet-ack");
-        let feed_path = root.join("interactables.json");
-        let sentinel = {
-            let mut item = sentinel_interactable();
-            item.id = "sentinel".into();
-            item.kind = "sentinel".into();
-            item
-        };
-        crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(vec![sentinel.clone()]))
-            .unwrap();
-        let self_row = ratchet_row("aa:aa:aa:aa:aa:aa", "self", "1.2.3".into());
-        let peers = vec![
-            ratchet_peer(self_row.clone()),
-            ratchet_peer(ratchet_row("bb:bb:bb:bb:bb:bb", "higher", "1.5.0".into())),
-        ];
-        let ordinary_path = root.join("ordinary-sentinel.bin");
-        let ordinary_bytes = b"ordinary sentinel bytes\n\x00\xff".to_vec();
-        fs::write(&ordinary_path, &ordinary_bytes).unwrap();
-        with_interactables_path(&feed_path, || {
-            reconcile_ruyi(
-                &ratchet_profile(),
-                &self_row,
-                &serde_json::json!({}),
-                &peers,
-                false,
-            )
-            .unwrap();
-            interactable_run(&["toolchain-ratchet".into()], None).unwrap();
-            assert_eq!(fs::read(&ordinary_path).unwrap(), ordinary_bytes);
-        });
-        let after_run = load_feed(&feed_path).unwrap();
-        assert!(after_run
-            .interactables
-            .iter()
-            .all(|item| item.kind != "toolchain-ratchet"));
-        assert!(after_run
-            .interactables
-            .iter()
-            .any(|item| item.id == sentinel.id));
-        assert_eq!(
-            after_run.receipts.last().unwrap()["schema"],
-            "harmonia.config_state.receipt.v1"
-        );
-        assert_eq!(
-            after_run.receipts.last().unwrap()["target"],
-            serde_json::Value::Null
-        );
-        assert_eq!(
-            after_run.receipts.last().unwrap()["actuator"]["has_run"],
-            true
-        );
-        assert_eq!(
-            after_run.receipts.last().unwrap()["actuator"]["changed"],
-            false
-        );
-        assert_eq!(
-            after_run.receipts.last().unwrap()["actuator"]["kind"],
-            "toolchain-ratchet"
-        );
-        assert_eq!(
-            after_run.receipts.last().unwrap()["actuator"]["disposition"],
-            "acknowledgment-only"
-        );
-        with_interactables_path(&feed_path, || {
-            reconcile_ruyi(
-                &ratchet_profile(),
-                &self_row,
-                &serde_json::json!({}),
-                &peers,
-                false,
-            )
-            .unwrap();
-        });
-        assert!(load_feed(&feed_path)
-            .unwrap()
-            .interactables
-            .iter()
-            .any(|item| item.kind == "toolchain-ratchet"));
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

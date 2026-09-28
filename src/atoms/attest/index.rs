@@ -199,6 +199,21 @@ pub(crate) fn committed_syzygy_mint(
                     "flagged_at": beam.pointer("/resolved_from/flagged_at"),
                     "malformed_flags": beam.get("malformed_flags").and_then(Value::as_u64).unwrap_or(0)
                 });
+                // Preserve the selected public release flag beside the caduceus
+                // beam identity so consumers can use its rustc_version watermark.
+                if members.contains("caduceus") {
+                    if let Ok(seat) = &seats.release_flag {
+                        let observed = crate::atoms::ask::member_flag::resolve_component("caduceus", seat);
+                        evidence.observations["caduceus_release_flag"] = observed.evidence();
+                        if observed.signal == "none" {
+                            if let Some(flag) = observed.selected {
+                                if flag.get("source_sha").and_then(Value::as_str) == Some(evidence.mint.caduceus_sha.as_str()) {
+                                    evidence.member_flags["caduceus"]["release_flag"] = flag;
+                                }
+                            }
+                        }
+                    }
+                }
             } else {
                 evidence.member_flags["caduceus"] = json!(signals.last());
             }
