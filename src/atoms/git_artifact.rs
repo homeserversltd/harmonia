@@ -6,6 +6,39 @@ use std::process::Command;
 
 pub type CommandReceipt = crate::CmdResult;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReleaseRequest {
+    pub kind: String,
+    pub base_url: String,
+    pub owner: String,
+    pub repo: String,
+    pub credential: Option<crate::atoms::forge_credential::Credential>,
+    pub credential_host: Option<String>,
+    pub credential_scope_found: bool,
+    pub cache_dir: PathBuf,
+}
+
+impl ReleaseRequest {
+    pub(crate) fn credential_for_url<'a>(
+        &'a self,
+        url: &str,
+    ) -> Option<&'a crate::atoms::forge_credential::Credential> {
+        let host = crate::atoms::forge_credential::url_host(url)?;
+        (self.credential_host.as_deref() == Some(host.as_str()))
+            .then_some(self.credential.as_ref())
+            .flatten()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseAssets {
+    pub artifact: Vec<u8>,
+    pub sidecar: Vec<u8>,
+    pub release_flag: Option<Vec<u8>>,
+    pub metadata_url: String,
+    pub target_commitish: String,
+}
+
 const DEFAULT_BEARER: &str = "owner";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,14 +232,6 @@ fn git_ssh_env(path: Option<&Path>) -> Result<BTreeMap<String, String>, String> 
         "GIT_SSH_COMMAND".to_string(),
         format!("ssh -i {quoted} -o IdentitiesOnly=yes"),
     )]))
-}
-
-pub fn plan(request: &Request) -> Outcome {
-    crate::pull_repo::plan(request)
-}
-
-pub fn stdout_changed(stdout: &str) -> bool {
-    stdout.lines().any(|line| line.trim() == "changed=true")
 }
 
 /// A resolved source plan.  This intentionally contains candidates, not policy

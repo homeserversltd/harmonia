@@ -1428,11 +1428,8 @@ pub(crate) fn execute_git_artifact_step(
             command: Some(command.clone()),
         },
     )?;
-    crate::atoms::attest::pull_repo::write_receipts(
-        module_dir,
-        &step.step_id,
-        &outcome.receipt,
-        &command,
+    crate::atoms::attest::pull_repo::write_receipts_with_truth(
+        module_dir, &step.step_id, &outcome.receipt, &command, outcome.ok, outcome.changed,
     )?;
     Ok(OperationOutcome {
         ok: outcome.ok,
@@ -1836,7 +1833,7 @@ fn routine_source_outputs(
     out
 }
 
-fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
+pub(crate) fn source_outcome_command(outcome: &tools::git_artifact::SourceOutcome) -> CmdResult {
     CmdResult {
         ok: outcome.ok,
         code: if outcome.ok { 0 } else { 1 },

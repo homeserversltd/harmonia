@@ -104,87 +104,27 @@ pub(crate) fn execute(
     let native_release = !release_repo.trim().is_empty();
     let mut release_fallback: Option<(String, String)> = None;
     let mut credential_state = "absent";
-    let native_download = if native_release {
-        let release_source_dir = source_dir.unwrap_or(Path::new(""));
-        let tag = args
-            .get("release_tag")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| source_sha.to_owned());
-        let api_root = args
-            .get("api_root")
-            .and_then(Value::as_str)
-            .unwrap_or("https://git.home.arpa/api/v1");
+    let mut release_digest = None;
+    let effective_source_sha = source_sha.to_owned();
+    if native_release {
+        let tag = args.get("release_tag").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| source_sha.to_owned());
+        let api_root = args.get("api_root").and_then(Value::as_str).unwrap_or("https://git.home.arpa/api/v1");
         credential_state = crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
-        match crate::atoms::ask::fetch_artifact::download_release(
-            component,
-            artifact_name,
-            release_source_dir,
-            release_repo,
-            (!tag.is_empty()).then_some(tag.as_str()),
-            api_root,
-            release_asset_name.as_deref(),
-            release_sidecar_name.as_deref(),
-            identity,
-            source_sha,
+        match crate::atoms::ask::fetch_artifact::probe_release_digest(
+            artifact_name, release_repo, &tag, api_root, release_asset_name.as_deref(),
+            release_sidecar_name.as_deref(), source_sha,
         ) {
-            Ok(Some(download)) => Some(download),
-            Ok(None) => {
-                release_fallback = Some((
-                    "release-miss".into(),
-                    crate::atoms::ask::fetch_artifact::release_metadata_url(
-                        api_root,
-                        release_repo,
-                        &tag,
-                    ),
-                ));
-                None
-            }
+            Ok(digest) => release_digest = digest,
             Err(error) if crate::atoms::ask::fetch_artifact::is_http_status(&error, "404") => {
-                release_fallback = Some((
-                    "release-miss".into(),
-                    crate::atoms::ask::fetch_artifact::release_metadata_url(
-                        api_root,
-                        release_repo,
-                        &tag,
-                    ),
-                ));
-                None
+                release_fallback = Some(("release-miss".into(), crate::atoms::ask::fetch_artifact::release_metadata_url(api_root, release_repo, &tag)));
             }
-            Err(error) => {
-                let metadata_url = crate::atoms::ask::fetch_artifact::release_metadata_url(
-                    api_root,
-                    release_repo,
-                    &tag,
-                );
-                if let Some(artifact_url) =
-                    crate::atoms::ask::fetch_artifact::auth_required_url(&error, &metadata_url)
-                {
-                    release_fallback = Some(("auth-required".into(), artifact_url));
-                    None
-                } else {
-                    let _ = crate::atoms::attest::fetch_artifact::attest(
-                        &receipt_dir.join("harmonia-atoms.log"),
-                        false,
-                        false,
-                        &format!(
-                            "state=Drift; care=artifact acquisition refused; after=Drift; error={error}"
-                        ),
-                    );
-                    return Err(error);
-                }
+            Err(error) if crate::atoms::ask::fetch_artifact::auth_required_url(&error, &crate::atoms::ask::fetch_artifact::release_metadata_url(api_root, release_repo, &tag)).is_some() => {
+                let url = crate::atoms::ask::fetch_artifact::release_metadata_url(api_root, release_repo, &tag);
+                release_fallback = Some(("auth-required".into(), crate::atoms::ask::fetch_artifact::auth_required_url(&error, &url).unwrap_or(url)));
             }
+            Err(error) => return Err(error),
         }
-    } else {
-        None
-    };
-    let effective_source_sha = native_download
-        .as_ref()
-        .map(|d| d.manifest.source_sha.clone())
-        .unwrap_or_else(|| source_sha.to_owned());
-    let release_digest = native_download
-        .as_ref()
-        .map(|download| download.manifest.sha256.clone());
+    }
     let release_known = release_digest.is_some();
     let road = if source_policy == "source" {
         "clone"
@@ -204,6 +144,13 @@ pub(crate) fn execute(
             component,
         )
     };
+    let observed_identity = if release_digest.is_some() {
+        crate::known_good_ledger::sha256_file(installed_binary).ok().unwrap_or_else(|| "unreadable-or-absent".into())
+    } else if crate::atoms::ask::fetch_artifact::identity_matches(installed_binary, &effective_source_sha, identity, component) {
+        effective_source_sha.clone()
+    } else {
+        "marker-mismatch-or-absent".into()
+    };
     if current && !beam_refetch {
         let supplier = if release_digest.is_some() {
             "release"
@@ -215,7 +162,9 @@ pub(crate) fn execute(
             true,
             false,
             &format!(
-                "state=Current; care=bytes-true currentness; after=Current; road={road}; digest_supplier={supplier}{profile_receipt_fields}"
+                "state=Current; care=bytes-true currentness; after=Current; road={road}; digest_supplier={supplier}; observed={}; desired={}; diff=empty; movement=none{profile_receipt_fields}",
+                observed_identity,
+                release_digest.as_deref().unwrap_or(&effective_source_sha)
             ),
         )?;
         return Ok(crate::OperationOutcome {
@@ -226,13 +175,39 @@ pub(crate) fn execute(
             command: None,
         });
     }
-    if current && beam_refetch {
+    if current && beam_refetch && apply {
         crate::atoms::attest::fetch_artifact::attest(
             &receipt_dir.join("harmonia-atoms.log"),
             true,
             false,
-            &format!("state=Drift; care=beam env SHA divergence requires artifact refetch; after=Drift; reason=fetch-artifact-refetch-beam-env-sha{profile_receipt_fields}"),
+            &format!("state=Drift; care=beam env SHA divergence requires artifact refetch; after=Drift; reason=fetch-artifact-refetch-beam-env-sha; observed={}; desired={}; diff=nonempty; movement=authorized{profile_receipt_fields}", observed_identity, release_digest.as_deref().unwrap_or(&effective_source_sha)),
         )?;
+    }
+    if !apply {
+        let desired_identity = release_digest.as_deref().unwrap_or(&effective_source_sha);
+        crate::atoms::attest::fetch_artifact::attest(
+            &receipt_dir.join("harmonia-atoms.log"), true, false,
+            &format!("state=Drift; care=release digest/marker comparison only; after=Drift (planned); observed={observed_identity}; desired={desired_identity}; diff=nonempty; movement=none{profile_receipt_fields}"),
+        )?;
+        return Ok(crate::OperationOutcome { ok: true, changed: false, skipped: true, message: "fetch-artifact-planned".into(), command: None });
+    }
+    let mut native_download = None;
+    if native_release && release_fallback.is_none() {
+        let tag = args.get("release_tag").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| source_sha.to_owned());
+        let api_root = args.get("api_root").and_then(Value::as_str).unwrap_or("https://git.home.arpa/api/v1");
+        native_download = crate::atoms::ask::fetch_artifact::download_release(
+            component, artifact_name, source_dir.unwrap_or(Path::new("")), release_repo,
+            (!tag.is_empty()).then_some(tag.as_str()), api_root, release_asset_name.as_deref(),
+            release_sidecar_name.as_deref(), identity, source_sha,
+        )?;
+        if let (Some(expected), Some(download)) = (release_digest.as_deref(), native_download.as_ref()) {
+            if download.manifest.sha256 != expected {
+                return Err("fetch-artifact-release-digest-changed-after-observation".into());
+            }
+        }
+        if native_download.is_none() {
+            release_fallback = Some(("release-miss".into(), crate::atoms::ask::fetch_artifact::release_metadata_url(api_root, release_repo, &tag)));
+        }
     }
     let registry_download = if native_download.is_none() && release_fallback.is_none() {
         let registry_artifact_name = release_asset_name.as_deref().unwrap_or(artifact_name);
@@ -391,12 +366,11 @@ pub(crate) fn execute(
             if std::mem::take(&mut force_stage_pre_act) {
                 Ok(false)
             } else {
-                Ok(crate::atoms::ask::fetch_artifact::identity_matches(
-                    destination,
-                    &effective_source_sha,
-                    &download.identity,
-                    component,
-                ))
+                Ok(crate::known_good_ledger::sha256_file(destination)
+                    .is_ok_and(|digest| digest == download.manifest.sha256)
+                    || crate::atoms::ask::fetch_artifact::identity_matches(
+                        destination, &effective_source_sha, &download.identity, component,
+                    ))
             }
         },
         |seen| {
@@ -452,9 +426,9 @@ pub(crate) fn execute(
                 "artifact"
             };
             let detail = if beam_refetch {
-                format!("state=Drift; care=verified digest and atomic install; after=Current; road={road}; digest_supplier={supplier}; reason=fetch-artifact-refetch-beam-env-sha")
+                format!("state=Drift; care=verified digest and atomic install; after=Current; road={road}; digest_supplier={supplier}; reason=fetch-artifact-refetch-beam-env-sha; observed={}; desired={}; diff=nonempty; movement=completed", observed_identity, download.manifest.sha256)
             } else {
-                format!("state=Drift; care=verified digest and atomic install; after=Current; road={road}; digest_supplier={supplier}")
+                format!("state=Drift; care=verified digest and atomic install; after=Current; road={road}; digest_supplier={supplier}; observed={}; desired={}; diff=nonempty; movement=completed", observed_identity, download.manifest.sha256)
             };
             let detail = format!("{detail}{profile_receipt_fields}");
             crate::atoms::attest::fetch_artifact::attest(

@@ -114,10 +114,15 @@ pub(crate) fn observe_source_candidate(plan: &SourcePlan, candidate: &git_artifa
         (head.clone(), head, true)
     } else {
         let local = observe_head(&request, cwd);
-        let reference = format!("refs/heads/{}", plan.reference);
-        let remote = git_observe(&request, &["ls-remote", "--refs", &candidate.locator, &reference], None);
-        let remote_head = remote.ok.then(|| git_artifact::parse_declared_remote_head(&remote.stdout, &reference)).flatten();
-        (local, remote_head, remote.ok)
+        let (remote_head, remote_url_matches) = if git_artifact::is_lower_hex_sha(&plan.reference) {
+            (Some(plan.reference.clone()), true)
+        } else {
+            let reference = format!("refs/heads/{}", plan.reference);
+            let remote = git_observe(&request, &["ls-remote", "--refs", &candidate.locator, &reference], None);
+            let remote_head = remote.ok.then(|| git_artifact::parse_declared_remote_head(&remote.stdout, &reference)).flatten();
+            (remote_head, remote.ok)
+        };
+        (local, remote_head, remote_url_matches)
     };
     let destination_status = git_observe(&request, &["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).worktrees"], cwd);
     let dirty_paths = if destination_status.ok { dirty_paths(&destination_status.stdout) } else { Vec::new() };
@@ -266,121 +271,14 @@ pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::atoms::git_artifa
     git_observe(&request, &["rev-parse", "HEAD"], path.to_str())
 }
 
-fn xenia_commit(request: &git_artifact::Request, cwd: &Path, expression: &str) -> Option<String> {
-    let result = git_observe(request, &["rev-parse", &format!("{expression}^{{commit}}")], cwd.to_str());
-    result.ok.then(|| result.stdout.trim().to_owned()).filter(|value| git_artifact::is_lower_hex_sha(value))
-}
-
-fn xenia_owner_ids(owner: &str) -> Result<(u32, u32), String> {
-    #[cfg(test)]
-    if owner == "xenia" {
-        return Ok((unsafe { libc::geteuid() }, unsafe { libc::getegid() }));
-    }
-    let name = std::ffi::CString::new(owner).map_err(|_| "xenia-owner-invalid".to_string())?;
-    let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
-    if passwd.is_null() {
-        return Err(format!("xenia-owner-absent {owner}"));
-    }
-    let passwd = unsafe { &*passwd };
-    Ok((passwd.pw_uid, passwd.pw_gid))
-}
-
-fn xenia_repair_seat(path: &Path, owner: &str) -> Result<bool, String> {
-    let (uid, gid) = xenia_owner_ids(owner)?;
-    let metadata = fs::metadata(path).map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
-    let mut changed = metadata.permissions().mode() & 0o777 != 0o750;
-    if changed {
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o750);
-        fs::set_permissions(path, permissions)
-            .map_err(|error| format!("xenia-seat-mode-failed: {error}"))?;
-    }
-    if unsafe { libc::geteuid() } == 0 {
-        use std::os::unix::ffi::OsStrExt;
-        let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| "xenia-seat-path-invalid".to_string())?;
-        let current = fs::metadata(path).map_err(|error| error.to_string())?;
-        if current.uid() != uid || current.gid() != gid {
-            if unsafe { libc::chown(path_c.as_ptr(), uid, gid) } != 0 {
-                return Err(format!("xenia-seat-owner-failed: {}", std::io::Error::last_os_error()));
-            }
-            changed = true;
-        }
-    } else if metadata.uid() != unsafe { libc::geteuid() } {
-        return Err("xenia-seat-owner-mismatch".into());
-    }
-    Ok(changed)
-}
-
-/// In-place clone road for Xenia. Unlike generic source acquisition this never
-/// stages or promotes a replacement directory, so an untracked target/ survives.
-/// The seat IS the clone (workflow-coronatio-xenia-clone-road-and-staff-actuation-law):
-/// the face ladder places `install.bin` into it and the guest writes its own
-/// runtime files (`listen`) beside it, so untracked paths are the road's own
-/// residue and are preserved, exactly as `target/` already is. Unsafe dirt is a
-/// tracked path the checkout would clobber: modified, deleted, renamed, or in
-/// conflict.
 pub(crate) fn unsafe_clone_dirt(status_porcelain: &str) -> bool {
-    status_porcelain.lines().any(|line| {
-        let code = line.get(..2).unwrap_or_default();
-        !line.trim().is_empty() && code != "??" && code != "!!"
-    })
+    crate::atoms::r#do::pull_repo::unsafe_clone_dirt(status_porcelain)
 }
 
 pub(crate) fn clone_in_place(
-    request: &git_artifact::Request,
-    reference: &str,
-    owner: &str,
+    request: &git_artifact::Request, reference: &str, owner: &str,
 ) -> Result<(bool, String, String), String> {
-    if request.path.exists() && !request.path.is_dir() {
-        return Err("xenia-clone-destination-not-directory".into());
-    }
-    fs::create_dir_all(&request.path)
-        .map_err(|error| format!("xenia-clone-seat-create-failed: {error}"))?;
-    let seat_changed_before = xenia_repair_seat(&request.path, owner)?;
-    let cwd = request.path.to_str().ok_or("xenia-clone-path-invalid")?;
-    let mut transcript = Vec::new();
-    let before = xenia_commit(request, &request.path, "HEAD");
-    if !request.path.join(".git").exists() {
-        let init = git_observe(request, &["init", "-q"], Some(cwd));
-        if !init.ok { return Err(format!("xenia-clone-init-failed: {}", init.stderr)); }
-        let add = git_observe(request, &["remote", "add", "origin", request.repo.as_deref().ok_or("xenia-clone-repo-missing")?], Some(cwd));
-        if !add.ok { return Err(format!("xenia-clone-remote-failed: {}", add.stderr)); }
-    } else if let Some(repo) = request.repo.as_deref() {
-        let configured = git_observe(request, &["remote", "get-url", "origin"], Some(cwd));
-        if !configured.ok {
-            let add = git_observe(request, &["remote", "add", "origin", repo], Some(cwd));
-            if !add.ok { return Err(format!("xenia-clone-remote-failed: {}", add.stderr)); }
-        } else if configured.stdout.trim() != repo {
-            let set = git_observe(request, &["remote", "set-url", "origin", repo], Some(cwd));
-            if !set.ok { return Err(format!("xenia-clone-remote-failed: {}", set.stderr)); }
-        }
-    }
-    let fetch = git_observe(request, &["fetch", "origin", reference], Some(cwd));
-    transcript.push(format!("fetch ref={reference} exit={} ok={}", fetch.code, fetch.ok));
-    if !fetch.ok { return Err(format!("xenia-clone-fetch-failed: {}", fetch.stderr)); }
-    let target = if git_artifact::is_lower_hex_sha(reference) {
-        xenia_commit(request, &request.path, reference)
-    } else {
-        xenia_commit(request, &request.path, "FETCH_HEAD")
-            .or_else(|| xenia_commit(request, &request.path, &format!("refs/tags/{reference}")))
-            .or_else(|| xenia_commit(request, &request.path, &format!("refs/remotes/origin/{reference}")))
-    }
-    .ok_or("xenia-clone-target-unresolved")?;
-    if let Some(previous) = before.as_deref().filter(|previous| *previous != target) {
-        let ancestor = git_observe(request, &["merge-base", "--is-ancestor", previous, &target], Some(cwd));
-        if !ancestor.ok {
-            return Err("xenia-clone-diverged".into());
-        }
-    }
-    let status = git_observe(request, &["status", "--porcelain", "--untracked-files=all"], Some(cwd));
-    if !status.ok { return Err(format!("xenia-clone-status-failed: {}", status.stderr)); }
-    if unsafe_clone_dirt(&status.stdout) { return Err("xenia-clone-dirty".into()); }
-    let checkout = git_observe(request, &["checkout", "--detach", &target], Some(cwd));
-    if !checkout.ok { return Err(format!("xenia-clone-checkout-failed: {}", checkout.stderr)); }
-    let resolved = xenia_commit(request, &request.path, "HEAD").ok_or("xenia-clone-head-unresolved")?;
-    let seat_changed = xenia_repair_seat(&request.path, owner)?;
-    Ok((before.as_deref() != Some(resolved.as_str()) || seat_changed_before || seat_changed, resolved, transcript.join("\n")))
+    crate::atoms::r#do::pull_repo::clone_in_place(request, reference, owner)
 }
 
 pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
@@ -511,17 +409,16 @@ pub(crate) fn observe_staged_candidate(
     let request = scoped_request(plan, candidate, stage.to_path_buf());
     let local_head = observe_head(&request, stage.to_str());
     let reference = format!("refs/heads/{}", plan.reference);
-    let remote = if candidate.kind == SourceCandidateKind::LocalCheckout {
+    let (remote_head, remote_url_matches) = if candidate.kind == SourceCandidateKind::LocalCheckout {
         let source_request = scoped_request(plan, candidate, PathBuf::from(&candidate.locator));
-        git_observe(&source_request, &["rev-parse", "HEAD^{commit}"], Some(&candidate.locator))
+        let remote = git_observe(&source_request, &["rev-parse", "HEAD^{commit}"], Some(&candidate.locator));
+        (remote.ok.then(|| remote.stdout.trim().to_string())
+            .filter(|value| git_artifact::is_lower_hex_sha(value)), remote.ok)
+    } else if git_artifact::is_lower_hex_sha(&plan.reference) {
+        (Some(plan.reference.clone()), true)
     } else {
-        git_observe(&request, &["ls-remote", "--refs", &candidate.locator, &reference], None)
-    };
-    let remote_head = if candidate.kind == SourceCandidateKind::LocalCheckout {
-        remote.ok.then(|| remote.stdout.trim().to_string())
-            .filter(|v| git_artifact::is_lower_hex_sha(v))
-    } else {
-        remote.ok.then(|| git_artifact::parse_declared_remote_head(&remote.stdout, &reference)).flatten()
+        let remote = git_observe(&request, &["ls-remote", "--refs", &candidate.locator, &reference], None);
+        (remote.ok.then(|| git_artifact::parse_declared_remote_head(&remote.stdout, &reference)).flatten(), remote.ok)
     };
     let destination_status = git_observe(
         &request,
@@ -533,7 +430,7 @@ pub(crate) fn observe_staged_candidate(
         dirty: !destination_status.ok || !paths.is_empty(),
         local_head,
         remote_head: remote_head.clone(),
-        remote_url_matches: remote.ok,
+        remote_url_matches,
         destination_status,
         destination_is_git_checkout: stage.join(".git").exists(),
         dirty_paths: paths,

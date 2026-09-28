@@ -24,29 +24,27 @@ pub(crate) fn write_source_receipt(path: &Path, receipt: &SourceReceipt) -> Resu
     atoms::attest::write_json_atomic(path, &value)
 }
 
-pub(crate) fn write_receipts(
-    receipt_dir: &Path,
-    name: &str,
-    source: &SourceReceipt,
-    command: &CommandReceipt,
+pub(crate) fn write_receipts_with_truth(
+    receipt_dir: &Path, name: &str, source: &SourceReceipt, command: &CommandReceipt, ok: bool, changed: bool,
 ) -> Result<(), String> {
-    // The typed source receipt is the primary pull-repo receipt. Keep the
-    // command and attempt receipts as the typed bundle's supporting records.
     write_source_receipt(&receipt_dir.join(format!("{name}.json")), source)?;
     write_command_receipt(&receipt_dir.join(format!("{name}.command.json")), command)?;
     for attempt in &source.attempts {
-        write_source_attempt_receipt(
-            &receipt_dir.join(format!("{name}.attempt-{}.json", attempt.index)),
-            attempt,
-        )?;
+        write_source_attempt_receipt(&receipt_dir.join(format!("{name}.attempt-{}.json", attempt.index)), attempt)?;
     }
+    write_bundle_attest(receipt_dir, name, ok, changed)
+}
+
+pub(crate) fn write_bundle_attest(
+    receipt_dir: &Path, name: &str, ok: bool, changed: bool,
+) -> Result<(), String> {
     atoms::attest::attest(
         &receipt_dir.join(format!("{name}.attest.jsonl")),
         &Receipt {
             atom: "pull-repo".into(),
-            ok: source.served_index.is_some(),
-            drift: Drift::Current,
-            message: format!("pull-repo receipt={name}"),
+            ok,
+            drift: if ok { Drift::Current } else { Drift::File { expected_sha256: "successful-acquisition".into(), actual_sha256: None } },
+            message: format!("pull-repo receipt={name}; changed={changed}"),
         },
         &[],
     )

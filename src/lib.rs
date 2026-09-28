@@ -628,8 +628,14 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let schema_base = value_arg_string(&args, "--schema-base");
             match (profile_path.as_deref(), entry_file.as_deref()) {
                 (Some(profile_path), None) => {
-                    let destination = value_arg(&args, "--destination")
-                        .ok_or("acquire-source --certificate requires --destination <path>")?;
+                    let destination = match value_arg(&args, "--destination") {
+                        Some(destination) => destination,
+                        None => {
+                            let error = "acquire-source --certificate requires --destination <path>";
+                            attest_acquire_source_pre_outcome_failure(&args, component, error)?;
+                            return Err(error.into());
+                        }
+                    };
                     let mut resolution = crate::bands::pull_source::resolve_source(
                         crate::bands::pull_source::SourceAuthority::ApplianceConfig {
                             config_path: &config,
@@ -642,6 +648,12 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         None,
                     );
                     if let Some(ref blocker) = resolution.blocker {
+                        let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| PathBuf::from("target/harmonia-receipts"));
+                        let receipt_name = acquire_source_receipt_name(component);
+                        let source = crate::atoms::git_artifact::SourceReceipt { attempts: Vec::new(), served_index: None, resolved_commit: None, promotion: format!("source-resolution-failed: {blocker}") };
+                        let command = crate::bands::pull_source::source_outcome_command(&crate::atoms::git_artifact::SourceOutcome { ok: false, changed: false, receipt: source.clone() });
+                        crate::atoms::attest::prepare_receipt_parent(&receipt_dir).map_err(|error| format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed=false; {error}"))?;
+                        crate::atoms::attest::pull_repo::write_receipts_with_truth(&receipt_dir, &receipt_name, &source, &command, false, false).map_err(|error| format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed=false; {error}"))?;
                         println!(
                             "{}",
                             serde_json::to_string_pretty(&resolution)
@@ -649,10 +661,19 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         );
                         return Err(blocker.clone());
                     }
-                    let plan = resolution
-                        .resolution
-                        .clone()
-                        .ok_or("source-acquisition-plan-missing")?;
+                    let Some(plan) = resolution.resolution.clone() else {
+                        let blocker = "source-acquisition-plan-missing";
+                        resolution.ok = false; resolution.blocker = Some(blocker.into());
+                        resolution.revalidate();
+                        let dir = receipt_dir_arg(&args).unwrap_or_else(|| PathBuf::from("target/harmonia-receipts"));
+                        let name = acquire_source_receipt_name(component);
+                        let source = crate::atoms::git_artifact::SourceReceipt { attempts: Vec::new(), served_index: None, resolved_commit: None, promotion: blocker.into() };
+                        let command = crate::bands::pull_source::source_outcome_command(&crate::atoms::git_artifact::SourceOutcome { ok: false, changed: false, receipt: source.clone() });
+                        crate::atoms::attest::prepare_receipt_parent(&dir).map_err(|error| format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed=false; {error}"))?;
+                        crate::atoms::attest::pull_repo::write_receipts_with_truth(&dir, &name, &source, &command, false, false).map_err(|error| format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed=false; {error}"))?;
+                        println!("{}", serde_json::to_string_pretty(&resolution).map_err(|err| format!("source-receipt-serialize-failed: {err}"))?);
+                        return Err(blocker.into());
+                    };
                     let expected_commit = value_arg_string(&args, "--expected-commit");
                     let acquisition = crate::bands::pull_source::bridge_acquisition_plan(
                         &plan,
@@ -660,7 +681,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         expected_commit,
                     );
                     let outcome =
-                        tools::git_artifact::acquire_source(&acquisition, invocation.key());
+                        crate::atoms::r#do::pull_repo::source_orchestration::acquire_source(&acquisition, invocation.key());
                     resolution.network_access = true;
                     resolution.ok = outcome.ok;
                     if !outcome.ok {
@@ -674,6 +695,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                             Some("acquisition-resolved-commit-unavailable".to_string());
                     }
                     resolution.revalidate();
+                    let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(|| PathBuf::from("target/harmonia-receipts"));
+                    let receipt_name = acquire_source_receipt_name(component);
+                    let command_receipt = crate::bands::pull_source::source_outcome_command(&outcome);
+                    crate::atoms::attest::prepare_receipt_parent(&receipt_dir).map_err(|error| format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed={}; {error}", outcome.changed))?;
+                    crate::atoms::attest::pull_repo::write_receipts_with_truth(&receipt_dir, &receipt_name, &outcome.receipt, &command_receipt, outcome.ok, outcome.changed).map_err(|error| format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed={}; {error}", outcome.changed))?;
                     let resolution_ok = resolution.ok;
                     let resolution_blocker = resolution.blocker.clone();
                     println!(
@@ -711,13 +737,30 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                     Ok(())
                 }
                 (None, Some(entry_file)) => {
-                    let entry_id = value_arg_string(&args, "--entry-id")
-                        .ok_or("acquire-source --entry-file requires --entry-id <id>")?;
-                    let entry: serde_json::Value =
-                        serde_json::from_slice(&std::fs::read(entry_file).map_err(|error| {
-                            format!("xenia-entry-read-failed {}: {error}", entry_file.display())
-                        })?)
-                        .map_err(|error| format!("xenia-entry-malformed: {error}"))?;
+                    let entry_id = match value_arg_string(&args, "--entry-id") {
+                        Some(entry_id) => entry_id,
+                        None => {
+                            let error = "acquire-source --entry-file requires --entry-id <id>";
+                            attest_acquire_source_pre_outcome_failure(&args, component, error)?;
+                            return Err(error.into());
+                        }
+                    };
+                    let entry_bytes = match std::fs::read(entry_file) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            let message = format!("xenia-entry-read-failed {}: {error}", entry_file.display());
+                            attest_acquire_source_pre_outcome_failure(&args, component, &message)?;
+                            return Err(message);
+                        }
+                    };
+                    let entry: serde_json::Value = match serde_json::from_slice(&entry_bytes) {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            let message = format!("xenia-entry-malformed: {error}");
+                            attest_acquire_source_pre_outcome_failure(&args, component, &message)?;
+                            return Err(message);
+                        }
+                    };
                     let forge_base = value_arg_string(&args, "--forge-base").unwrap_or_else(|| {
                         crate::atoms::ask::fetch_artifact::DEFAULT_FORGE_API_ROOT.to_string()
                     });
@@ -745,14 +788,18 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                             .map_err(|err| format!("source-receipt-serialize-failed: {err}"))?
                     );
                     if let Some(blocker) = receipt.blocker {
+                        attest_acquire_source_pre_outcome_failure(&args, component, &blocker)?;
                         return Err(blocker);
                     }
+                    // Entry-file mode resolves the Xenia declaration only. It does not
+                    // acquire or install a source, so no pull-repo success is attested.
                     Ok(())
                 }
-                _ => Err(
-                    "acquire-source requires exactly one source class: --certificate or --entry-file"
-                        .into(),
-                ),
+                _ => {
+                    let error = "acquire-source requires exactly one source class: --certificate or --entry-file";
+                    attest_acquire_source_pre_outcome_failure(&args, component, error)?;
+                    Err(error.into())
+                }
             }
         }
         Some("inspect-profile") => {
@@ -1610,6 +1657,47 @@ fn renew_self_command(args: &[String], invocation: &Invocation) -> Result<(), St
             .first_missing_signal
             .unwrap_or_else(|| "engine-preflight-failed".into()))
     }
+}
+
+fn acquire_source_receipt_name(component: &str) -> String {
+    let safe = component.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect::<String>();
+    format!("acquire-source-{safe}")
+}
+
+fn attest_acquire_source_pre_outcome_failure(
+    args: &[String],
+    component: &str,
+    detail: &str,
+) -> Result<(), String> {
+    let receipt_dir = receipt_dir_arg(args).unwrap_or_else(|| PathBuf::from("target/harmonia-receipts"));
+    let receipt_name = acquire_source_receipt_name(component);
+    let source = crate::atoms::git_artifact::SourceReceipt {
+        attempts: Vec::new(),
+        served_index: None,
+        resolved_commit: None,
+        promotion: format!("source-acquisition-pre-outcome-failed: {detail}"),
+    };
+    let command = crate::bands::pull_source::source_outcome_command(
+        &crate::atoms::git_artifact::SourceOutcome {
+            ok: false,
+            changed: false,
+            receipt: source.clone(),
+        },
+    );
+    crate::atoms::attest::prepare_receipt_parent(&receipt_dir).map_err(|error| {
+        format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed=false; {error}")
+    })?;
+    crate::atoms::attest::pull_repo::write_receipts_with_truth(
+        &receipt_dir,
+        &receipt_name,
+        &source,
+        &command,
+        false,
+        false,
+    )
+    .map_err(|error| {
+        format!("source-acquisition-receipt-persist-failed; acquisition_may_have_changed=false; {error}")
+    })
 }
 
 pub(crate) fn receipt_dir_arg(args: &[String]) -> Option<PathBuf> {

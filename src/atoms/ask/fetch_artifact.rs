@@ -1,15 +1,394 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
-use crate::tools::git_artifact::{
-    fetch_release_assets, fetch_release_assets_for_inspection, unique_temp_suffix, ReleaseAssets,
-    ReleaseRequest,
-};
+use crate::atoms::git_artifact::{ReleaseAssets, ReleaseRequest};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::process::{Command, Stdio};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command as ReleaseCommand, Stdio as ReleaseStdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const INSPECTION_MAX_BODY_BYTES: &str = "67108864";
+const INSPECTION_OVERSIZE_BLOCKER: &str = "release-inspection-fetch-oversize max_bytes=67108864";
+
+pub(crate) fn unique_temp_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+struct ReleaseMetadata {
+    url: String,
+    target_commitish: String,
+    assets: serde_json::Value,
+}
+fn release_api(r: &ReleaseRequest) -> String {
+    let b = r.base_url.trim_end_matches('/');
+    if r.kind == "forgejo-release" && !b.ends_with("/api/v1") {
+        format!("{b}/api/v1")
+    } else {
+        b.to_string()
+    }
+}
+fn lookup_release_metadata(
+    r: &ReleaseRequest,
+    tag: &str,
+) -> Result<Option<ReleaseMetadata>, String> {
+    lookup_release_metadata_inner(r, tag, false)
+}
+fn lookup_release_metadata_inner(
+    r: &ReleaseRequest,
+    tag: &str,
+    inspection_bounds: bool,
+) -> Result<Option<ReleaseMetadata>, String> {
+    if let Some(source_sha) = source_sha_from_release_tag(tag) {
+        let sha_tag = release_tag_for_source_sha(source_sha).expect("validated source SHA");
+        if let Some(release) = lookup_release_metadata_single(r, &sha_tag, inspection_bounds)? {
+            return Ok(Some(release));
+        }
+        return lookup_release_metadata_single(r, source_sha, inspection_bounds);
+    }
+    lookup_release_metadata_single(r, tag, inspection_bounds)
+}
+
+fn lookup_release_metadata_single(
+    r: &ReleaseRequest,
+    tag: &str,
+    inspection_bounds: bool,
+) -> Result<Option<ReleaseMetadata>, String> {
+    let url = release_metadata_url_for_request(&release_api(r), &r.owner, &r.repo, tag);
+    fs::create_dir_all(&r.cache_dir).map_err(|e| format!("release-cache-create-failed: {e}"))?;
+    let path = r
+        .cache_dir
+        .join(format!(".metadata-{}", unique_temp_suffix()));
+    let mut args = if inspection_bounds {
+        inspection_curl_args(&url, &path.to_string_lossy())
+    } else {
+        curl_args(&url, &path.to_string_lossy())
+    };
+    args.extend(["-w".into(), "%{http_code}".into()]);
+    let result = run_curl(&args, r.credential_for_url(&url))?;
+    if result.stdout.trim() == "404" {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    }
+    if inspection_bounds && result.code == 63 {
+        let _ = fs::remove_file(&path);
+        return Err(INSPECTION_OVERSIZE_BLOCKER.into());
+    }
+    if !result.ok {
+        let _ = fs::remove_file(&path);
+        let error = format!("release-metadata-fetch-failed: {}", result.stderr);
+        let error_with_status = format!("{error} http_status={}", result.stdout.trim());
+        return Err(if r.credential_for_url(&url).is_none() {
+            crate::atoms::ask::fetch_artifact::normalize_auth_required_error(
+                &error_with_status,
+                &url,
+            )
+            .unwrap_or(error)
+        } else {
+            error
+        });
+    }
+    let text =
+        fs::read_to_string(&path).map_err(|e| format!("release-metadata-read-failed: {e}"))?;
+    let _ = fs::remove_file(&path);
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("release-metadata-malformed: {e}"))?;
+    let target_commitish = value
+        .get("target_commitish")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let assets = value
+        .get("assets")
+        .cloned()
+        .ok_or_else(|| "release-assets-missing".to_string())?;
+    Ok(Some(ReleaseMetadata {
+        url,
+        target_commitish,
+        assets,
+    }))
+}
+fn release_asset_url(m: &ReleaseMetadata, tag: &str, name: &str) -> Result<String, String> {
+    m.assets
+        .as_array()
+        .and_then(|a| {
+            a.iter()
+                .find(|x| x.get("name").and_then(serde_json::Value::as_str) == Some(name))
+        })
+        .and_then(|x| x.get("browser_download_url").or_else(|| x.get("url")))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("release-asset-missing tag={tag} asset={name}"))
+}
+fn optional_release_asset_url(m: &ReleaseMetadata, name: &str) -> Option<String> {
+    let asset = m
+        .assets
+        .as_array()?
+        .iter()
+        .find(|asset| asset.get("name").and_then(serde_json::Value::as_str) == Some(name))?;
+    asset
+        .get("browser_download_url")
+        .or_else(|| asset.get("url"))?
+        .as_str()
+        .map(str::to_owned)
+}
+fn download_release_asset(
+    r: &ReleaseRequest,
+    url: &str,
+    name: &str,
+    inspection_bounds: bool,
+) -> Result<Vec<u8>, String> {
+    let p = r
+        .cache_dir
+        .join(format!(".{name}-{}", unique_temp_suffix()));
+    let args = if inspection_bounds {
+        inspection_curl_args(url, &p.to_string_lossy())
+    } else {
+        curl_args(url, &p.to_string_lossy())
+    };
+    let x = run_curl(&args, r.credential_for_url(url))?;
+    if inspection_bounds && x.code == 63 {
+        let _ = fs::remove_file(&p);
+        return Err(INSPECTION_OVERSIZE_BLOCKER.into());
+    }
+    if !x.ok {
+        let _ = fs::remove_file(&p);
+        let error = format!("release-asset-fetch-failed: {}", x.stderr);
+        return Err(if r.credential_for_url(&url).is_none() {
+            crate::atoms::ask::fetch_artifact::normalize_auth_required_error(&error, url)
+                .unwrap_or(error)
+        } else {
+            error
+        });
+    }
+    let b = fs::read(&p).map_err(|e| format!("release-asset-read-failed: {e}"))?;
+    let _ = fs::remove_file(&p);
+    Ok(b)
+}
+pub(crate) fn fetch_release_assets(
+    r: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+) -> Result<Option<ReleaseAssets>, String> {
+    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, false, true)
+}
+pub(crate) fn fetch_release_assets_for_inspection(
+    r: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+) -> Result<Option<ReleaseAssets>, String> {
+    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, true, false)
+}
+fn fetch_release_assets_inner(
+    r: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    inspect_release_flag: bool,
+    require_tag_commitish_match: bool,
+) -> Result<Option<ReleaseAssets>, String> {
+    if r.kind != "forgejo-release"
+        || !safe_release_segment(tag)
+        || !safe_release_segment(&r.owner)
+        || !safe_release_segment(&r.repo)
+        || !safe_asset_name(asset_name)
+        || !safe_asset_name(sidecar_name)
+    {
+        return Err("release-declaration-incomplete".into());
+    }
+    let Some(m) = lookup_release_metadata_inner(r, tag, inspect_release_flag)? else {
+        return Ok(None);
+    };
+    let expected_commit = source_sha_from_release_tag(tag);
+    if expected_commit.is_some_and(|source_sha| m.target_commitish != source_sha)
+        || (require_tag_commitish_match
+            && expected_commit.is_none()
+            && m.target_commitish != tag)
+    {
+        return Err("fetch-artifact-release-commit-mismatch".into());
+    }
+    let au = release_asset_url(&m, tag, asset_name)?;
+    let su = release_asset_url(&m, tag, sidecar_name)?;
+    let release_flag = inspect_release_flag
+        .then(|| optional_release_asset_url(&m, "release.flag"))
+        .flatten()
+        .map(|url| download_release_asset(r, &url, "release.flag", inspect_release_flag))
+        .transpose()?;
+    Ok(Some(ReleaseAssets {
+        artifact: download_release_asset(r, &au, asset_name, inspect_release_flag)?,
+        sidecar: download_release_asset(r, &su, sidecar_name, inspect_release_flag)?,
+        release_flag,
+        metadata_url: m.url,
+        target_commitish: m.target_commitish,
+    }))
+}
+
+pub(crate) fn fetch_release_asset(
+    request: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    apply: bool,
+) -> Result<crate::CmdResult, String> {
+    if !matches!(request.kind.as_str(), "forgejo-release" | "github-release")
+        || !safe_release_segment(tag)
+        || !safe_release_segment(&request.owner)
+        || !safe_release_segment(&request.repo)
+        || !safe_asset_name(asset_name)
+    {
+        return Ok(miss("release-declaration-incomplete"));
+    }
+    if !apply {
+        return Ok(crate::CmdResult {
+            ok: true,
+            code: 0,
+            stdout: format!("release-asset-planned tag={tag} asset={asset_name}"),
+            stderr: String::new(),
+        });
+    }
+    let Some(metadata) = (match lookup_release_metadata(request, tag) {
+        Ok(v) => v,
+        Err(e) => return Ok(miss(e)),
+    }) else {
+        return Ok(miss(format!("release-absent tag={tag}")));
+    };
+    if metadata.target_commitish != source_sha_from_release_tag(tag).unwrap_or(tag) {
+        return Ok(miss("fetch-artifact-release-commit-mismatch"));
+    }
+    let url = match release_asset_url(&metadata, tag, asset_name) {
+        Ok(v) => v,
+        Err(e) => return Ok(miss(e)),
+    };
+    let destination = request.cache_dir.join(asset_name);
+    let temp = request
+        .cache_dir
+        .join(format!(".{asset_name}.download-{}", unique_temp_suffix()));
+    let bytes = match download_release_asset(request, &url, asset_name, false) {
+        Ok(v) => v,
+        Err(e) => return Ok(miss(e)),
+    };
+    if let Err(e) = fs::write(&temp, bytes).and_then(|_| fs::rename(&temp, &destination)) {
+        let _ = fs::remove_file(&temp);
+        return Ok(miss(format!("release-asset-promote-failed: {e}")));
+    }
+    Ok(crate::CmdResult {
+        ok: true,
+        code: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+    })
+}
+fn release_metadata_url_for_request(api: &str, owner: &str, repo: &str, tag: &str) -> String {
+    format!("{api}/repos/{owner}/{repo}/releases/tags/{tag}")
+}
+
+pub(crate) fn release_tag_for_source_sha(source_sha: &str) -> Option<String> {
+    (source_sha.len() == 40
+        && source_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| format!("sha-{source_sha}"))
+}
+
+pub(crate) fn source_sha_from_release_tag(tag: &str) -> Option<&str> {
+    let source_sha = tag.strip_prefix("sha-").unwrap_or(tag);
+    (source_sha.len() == 40
+        && source_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(source_sha)
+}
+
+fn curl_args(url: &str, output: &str) -> Vec<String> {
+    vec![
+        "-fsSL".into(),
+        "--max-time".into(),
+        "120".into(),
+        "-o".into(),
+        output.into(),
+        url.into(),
+    ]
+}
+fn inspection_curl_args(url: &str, output: &str) -> Vec<String> {
+    vec![
+        "-fsSL".into(),
+        "--connect-timeout".into(),
+        "5".into(),
+        "--max-time".into(),
+        "120".into(),
+        "--max-filesize".into(),
+        INSPECTION_MAX_BODY_BYTES.into(),
+        "-o".into(),
+        output.into(),
+        url.into(),
+    ]
+}
+fn miss(message: impl Into<String>) -> crate::CmdResult {
+    crate::CmdResult {
+        ok: false,
+        code: 22,
+        stdout: String::new(),
+        stderr: message.into(),
+    }
+}
+
+fn safe_release_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|character| !character.is_control() && character != '/' && character != '\\')
+}
+
+fn safe_asset_name(value: &str) -> bool {
+    safe_release_segment(value) && !value.contains('/') && !value.contains('\\')
+}
+
+fn run_curl(
+    args: &[String],
+    credential: Option<&crate::atoms::forge_credential::Credential>,
+) -> Result<crate::CmdResult, String> {
+    let header = credential.map(|credential| {
+        format!("Authorization: token {}\n", credential.token)
+    });
+    let mut command = ReleaseCommand::new("/usr/bin/curl");
+    command.args(args);
+    if header.is_some() {
+        command.args(["-H", "@-"]);
+        command.stdin(ReleaseStdio::piped());
+    }
+    command.stdout(ReleaseStdio::piped()).stderr(ReleaseStdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("release-curl-start-failed: {e}"))?;
+    if let Some(header) = header {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "release-curl-stdin-unavailable".to_string())?;
+        stdin
+            .write_all(header.as_bytes())
+            .map_err(|e| format!("release-token-delivery-failed: {e}"))?;
+    }
+    let o = child
+        .wait_with_output()
+        .map_err(|e| format!("release-curl-wait-failed: {e}"))?;
+    Ok(crate::CmdResult {
+        ok: o.status.success(),
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 
 pub(crate) const MANIFEST_SCHEMA: &str = "estate.artifact.manifest.v1";
 pub(crate) const DEFAULT_FORGE_API_ROOT: &str = "https://git.home.arpa/api/v1";
@@ -34,8 +413,8 @@ fn release_api_root(api_root: &str) -> String {
 
 pub(crate) fn release_metadata_url(api_root: &str, release_repo: &str, tag: &str) -> String {
     let (owner, repo) = release_repo.split_once('/').unwrap_or((release_repo, ""));
-    let tag = crate::tools::git_artifact::source_sha_from_release_tag(tag)
-        .and_then(crate::tools::git_artifact::release_tag_for_source_sha)
+    let tag = crate::atoms::ask::fetch_artifact::source_sha_from_release_tag(tag)
+        .and_then(crate::atoms::ask::fetch_artifact::release_tag_for_source_sha)
         .unwrap_or_else(|| tag.to_owned());
     format!(
         "{}/repos/{owner}/{repo}/releases/tags/{tag}",
@@ -774,6 +1153,56 @@ pub(crate) fn download_engine_release(
     }
 }
 
+/// Observe a release's digest without acquiring the artifact bytes. The release
+/// metadata and checksum sidecar are the bounded currentness witness; binary
+/// acquisition remains unreachable until the caller compares this digest.
+pub(crate) fn probe_release_digest(
+    binary_name: &str,
+    release_repo: &str,
+    tag: &str,
+    api_root: &str,
+    asset_name: Option<&str>,
+    sidecar_name: Option<&str>,
+    source_build_sha: &str,
+) -> Result<Option<String>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    let asset = asset_name.map(str::to_owned).unwrap_or_else(|| format!("{binary_name}-x86_64"));
+    let sidecar = sidecar_name.map(str::to_owned).unwrap_or_else(|| format!("{asset}.sha256"));
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let request = ReleaseRequest {
+        kind: "forgejo-release".into(), base_url: api_root.into(), owner: owner.into(), repo: repo.into(),
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found: credential.is_some(), credential,
+        cache_dir: std::env::temp_dir().join(format!("harmonia-release-probe-{}", unique_temp_suffix())),
+    };
+    let result = (|| {
+        let Some(metadata) = lookup_release_metadata(&request, tag)? else { return Ok(None); };
+        let expected_commit = source_sha_from_release_tag(tag).unwrap_or(source_build_sha);
+        if metadata.target_commitish != expected_commit {
+            return Err("fetch-artifact-release-commit-mismatch".into());
+        }
+        let url = release_asset_url(&metadata, tag, &sidecar)?;
+        let bytes = download_release_asset(&request, &url, &sidecar, true)?;
+        let text = String::from_utf8(bytes).map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
+        let line = text.trim_end_matches(['\r', '\n']);
+        if line.contains('\n') || line.contains('\r') {
+            return Err("fetch-artifact-release-sidecar-malformed".into());
+        }
+        let (digest, named_asset) = line.split_once("  ").ok_or_else(|| "fetch-artifact-release-sidecar-malformed".to_string())?;
+        if !is_hex(digest, 64) || named_asset != asset {
+            return Err("fetch-artifact-release-sidecar-malformed".into());
+        }
+        Ok(Some(digest.to_owned()))
+    })();
+    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    result
+}
+
 pub(crate) fn download_release(
     component: &str,
     binary_name: &str,
@@ -833,7 +1262,7 @@ pub(crate) fn download_release(
             source_sha: resolved_revision,
             target: std::env::consts::ARCH.into(),
             sha256: digest,
-            built_at: crate::tools::git_artifact::source_sha_from_release_tag(&tag)
+            built_at: crate::atoms::ask::fetch_artifact::source_sha_from_release_tag(&tag)
                 .unwrap_or(&tag)
                 .to_owned(),
             pipeline_url: release.metadata_url,
