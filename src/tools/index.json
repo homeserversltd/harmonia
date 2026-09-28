@@ -419,23 +419,6 @@
       "routine_summonable": false,
       "permutations": [
         {
-          "name": "install",
-          "description": "build and install the current AUR package without a pin or upstream check cycle",
-          "args": [
-            {
-              "name": "package",
-              "kind": "string",
-              "required": true
-            },
-            {
-              "name": "timeout_secs",
-              "kind": "integer",
-              "required": false
-            }
-          ],
-          "placement": "InstallPackages"
-        },
-        {
           "name": "check",
           "description": "compare a ratchet lock pin against observed AUR upstream state without mutation",
           "args": [
@@ -1241,33 +1224,6 @@
             {
               "name": "packages",
               "kind": "string_array",
-              "required": false
-            }
-          ],
-          "placement": "InstallPackages"
-        },
-        {
-          "name": "install",
-          "description": "install declared packages using pacman --needed semantics",
-          "args": [
-            {
-              "name": "packages",
-              "kind": "string_array",
-              "required": true
-            },
-            {
-              "name": "conflict_policy",
-              "kind": "string",
-              "required": false
-            },
-            {
-              "name": "conflict_paths",
-              "kind": "string_array",
-              "required": false
-            },
-            {
-              "name": "timeout_secs",
-              "kind": "integer",
               "required": false
             }
           ],

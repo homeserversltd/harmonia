@@ -22,7 +22,13 @@ pub(crate) fn check(
     write_build_receipt_json(&receipt_path, &serde_json::to_value(&receipt).map_err(|e| e.to_string())?)?;
     augment_comparison_receipt(&receipt_path, serde_json::json!({"pinned_version": observation.lock.pinned_version, "pinned_pkgbuild_sha": observation.lock.pkgbuild_sha, "available_version": observation.upstream.available_version, "available_pkgbuild_sha": observation.upstream.pkgbuild_sha, "upstream_source": observation.upstream.observed_source}), serde_json::json!({"ratchet_lock_matches_upstream": !newer_available}), DiffDecision::Empty, None, false)?;
     let outcome=OperationOutcome { ok:true, changed:false, skipped:false, message:format!("aur check {package}"), command:None };
-    crate::atoms::attest::build_aur_pinned::report(&receipt_dir.join(format!("{receipt_name}.attest.jsonl")), observation.verdict.as_str(), outcome.ok, outcome.message.clone())?;
+    crate::atoms::attest::build_aur_pinned::report(
+        &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+        &receipt_path,
+        observation.verdict.as_str(),
+        outcome.ok,
+        outcome.message.clone(),
+    )?;
     Ok(outcome)
 }
 
@@ -157,6 +163,112 @@ pub(crate) fn build_pinned(
     } else {
         "current-user".to_string()
     };
+    let install_observation = if install {
+        Some(crate::atoms::ask::build_aur_pinned::probe::observe_installed_package(package))
+    } else {
+        None
+    };
+    if let Some(crate::atoms::ask::build_aur_pinned::probe::InstalledPackageObservation::ProbeFailed(blocker)) = &install_observation {
+        let receipt_path = receipt_dir.join(format!("{receipt_name}.json"));
+            let outcome = OperationOutcome {
+                ok: false,
+                changed: false,
+                skipped: false,
+                message: blocker.clone(),
+                command: None,
+            };
+            let receipt = AurBuildReceipt {
+                schema: "harmonia.aur.build_pinned.v1",
+                package: package.to_string(),
+                pinned_version: lock.pinned_version.clone(),
+                pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
+                build_dir: build_dir.clone(),
+                produced_package_path: None,
+                artifact_sha256: None,
+                installed_version_before: None,
+                install_requested: true,
+                installed_converged: false,
+                first_blocker: Some(blocker.clone()),
+                pkgver_neutralized: false,
+                timeout_policy: format!("bounded-timeout-seconds={timeout_secs}"),
+                safety_posture: "installed-package-probe-required-before-build-or-install".into(),
+                unprivileged_builder: builder.clone(),
+                ok: false,
+                changed: false,
+                command: None,
+                install_command: None,
+                install_verify_command: None,
+            };
+            write_build_receipt(receipt_dir, receipt_name, &receipt)?;
+            augment_comparison_receipt(
+                &receipt_path,
+                serde_json::json!({"installed_package_probe": "failed"}),
+                serde_json::json!({"installed_version": lock.pinned_version}),
+                DiffDecision::Different,
+                Some(&outcome),
+                false,
+            )?;
+            crate::atoms::attest::build_aur_pinned::report(
+                &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+                &receipt_path,
+                "installed-package-probe-failed",
+                outcome.ok,
+                outcome.message.clone(),
+            )?;
+            return Ok(outcome);
+    }
+    if matches!(
+        install_observation,
+        Some(crate::atoms::ask::build_aur_pinned::probe::InstalledPackageObservation::Absent)
+    ) {
+        let receipt_path = receipt_dir.join(format!("{receipt_name}.json"));
+        let receipt = AurBuildReceipt {
+            schema: "harmonia.aur.build_pinned.v1",
+            package: package.to_string(),
+            pinned_version: lock.pinned_version.clone(),
+            pinned_pkgbuild_sha: lock.pkgbuild_sha.clone(),
+            build_dir: build_dir.clone(),
+            produced_package_path: None,
+            artifact_sha256: None,
+            installed_version_before: None,
+            install_requested: true,
+            installed_converged: false,
+            first_blocker: Some(format!("absent-package-{package}")),
+            pkgver_neutralized: false,
+            timeout_policy: format!("bounded-timeout-seconds={timeout_secs}"),
+            safety_posture: "absent-package-refused-before-build-or-acquisition".into(),
+            unprivileged_builder: builder,
+            ok: false,
+            changed: false,
+            command: None,
+            install_command: None,
+            install_verify_command: None,
+        };
+        write_build_receipt(receipt_dir, receipt_name, &receipt)?;
+        let outcome = OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: false,
+            message: format!("aur build-pinned refused absent package {package}"),
+            command: None,
+        };
+        augment_comparison_receipt(
+            &receipt_path,
+            serde_json::json!({"installed_version": null, "package_present": false}),
+            serde_json::json!({"installed_version": lock.pinned_version, "package_present": true}),
+            DiffDecision::Different,
+            Some(&outcome),
+            false,
+        )?;
+        crate::atoms::attest::build_aur_pinned::report(
+            &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+            &receipt_path,
+            "behind-pin",
+            outcome.ok,
+            outcome.message.clone(),
+        )?;
+        return Ok(outcome);
+    }
     let run = aur_ops::build_pinned(
         receipt_dir,
         receipt_name,
@@ -220,6 +332,7 @@ pub(crate) fn build_pinned(
     )?;
     crate::atoms::attest::build_aur_pinned::report(
         &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+        &receipt_dir.join(format!("{receipt_name}.json")),
         run.observation().verdict.as_str(),
         outcome.ok,
         outcome.message.clone(),

@@ -53,12 +53,3 @@ pub(crate) fn install_observation(
     let observed_state = if result.ok { result.stdout.clone() } else { format!("probe-failed:{}", result.code) };
     PackageObservation { observed_state, desired_state: format!("packages-present:{}", packages.join(",")), current: Some(result) }
 }
-
-pub(crate) fn package_differs(action: &str, packages: &[String], observation: &PackageObservation) -> bool {
-    let Some(result) = observation.current.as_ref() else { return true; };
-    match action {
-        "install" => packages.iter().any(|package| !result.stdout.lines().any(|line| line.split_whitespace().next() == Some(package))),
-        "check" | "upgrade" | "update" => !pacman_update_query_is_empty(result),
-        _ => true,
-    }
-}

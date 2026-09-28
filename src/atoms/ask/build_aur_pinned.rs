@@ -58,7 +58,11 @@ pub(crate) mod probe {
             return Err("aur-pkgbuild-sha-not-hex40".into());
         }
         let upstream = aur::read_upstream_state(upstream_state, package)?;
-        let installed_version = installed_version(package);
+        let installed_version = match observe_installed_package(package) {
+            InstalledPackageObservation::Installed(version) => Some(version),
+            InstalledPackageObservation::Absent => None,
+            InstalledPackageObservation::ProbeFailed(error) => return Err(error),
+        };
         let upstream_moved = upstream.pkgbuild_sha != lock.pkgbuild_sha
             || upstream.available_version != lock.pinned_version;
         let verdict = if upstream_moved {
@@ -78,10 +82,17 @@ pub(crate) mod probe {
         })
     }
 
-    pub(crate) fn installed_version(package: &str) -> Option<String> {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum InstalledPackageObservation {
+        Installed(String),
+        Absent,
+        ProbeFailed(String),
+    }
+
+    pub(crate) fn observe_installed_package(package: &str) -> InstalledPackageObservation {
         let program = crate::atoms::package::pacman_program();
         if !Path::new(&program).exists() {
-            return None;
+            return InstalledPackageObservation::ProbeFailed(format!("aur-installed-package-probe-pacman-not-found {program}"));
         }
         let result = crate::atoms::ask::read_only_command_with_timeout(
             &program,
@@ -89,11 +100,37 @@ pub(crate) mod probe {
             std::time::Duration::from_secs(30),
         );
         if !result.ok {
-            return None;
+            let stderr = result.stderr.to_lowercase();
+            if result.code == Some(1)
+                && stderr.contains(package)
+                && (stderr.contains("was not found") || stderr.contains("not found"))
+            {
+                return InstalledPackageObservation::Absent;
+            }
+            return InstalledPackageObservation::ProbeFailed(format!(
+                "aur-installed-package-probe-failed package={package} code={:?} stderr={}",
+                result.code,
+                result.stderr.trim()
+            ));
         }
         let mut fields = result.stdout.split_whitespace();
-        let _name = fields.next()?;
-        fields.next().map(ToString::to_string)
+        let Some(name) = fields.next() else {
+            return InstalledPackageObservation::ProbeFailed(format!("aur-installed-package-probe-invalid-output package={package}"));
+        };
+        let Some(version) = fields.next() else {
+            return InstalledPackageObservation::ProbeFailed(format!("aur-installed-package-probe-invalid-output package={package}"));
+        };
+        if name != package {
+            return InstalledPackageObservation::ProbeFailed(format!("aur-installed-package-probe-name-mismatch package={package} observed={name}"));
+        }
+        InstalledPackageObservation::Installed(version.to_string())
+    }
+
+    pub(crate) fn installed_version(package: &str) -> Option<String> {
+        match observe_installed_package(package) {
+            InstalledPackageObservation::Installed(version) => Some(version),
+            InstalledPackageObservation::Absent | InstalledPackageObservation::ProbeFailed(_) => None,
+        }
     }
 
     #[derive(Debug, Clone)]

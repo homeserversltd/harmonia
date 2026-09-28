@@ -39,9 +39,6 @@ pub(crate) fn run_with_ignores(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     ignored: &[String],
 ) -> Result<OperationOutcome, String> {
-    if !crate::tools::package::pacman_available(program) {
-        return crate::atoms::r#do::install_package::non_arch_install(receipt_dir, name, packages);
-    }
     let observe_package = || {
         let current = crate::atoms::ask::install_package::pacman(program, timeout_secs);
         Ok::<_, String>(crate::tools::package::PackageObservation {
@@ -62,7 +59,7 @@ pub(crate) fn run_with_ignores(
     let observation = observe_package()?;
     let run = crate::tools::declaration::execute_with_failure_receipt(
         "install-package",
-        "install-package",
+        "update-installed-packages",
         observe_package,
         |current| {
             if packages.iter().any(|package| {
@@ -78,7 +75,28 @@ pub(crate) fn run_with_ignores(
                 DiffDecision::Empty
             }
         },
-        |authorization, _| {
+        |authorization, current| {
+            let Some(result) = current.current.as_ref() else {
+                return Ok(OperationOutcome {
+                    ok: false,
+                    changed: false,
+                    skipped: false,
+                    message: "first_missing_signal=package-observation-unavailable".into(),
+                    command: None,
+                });
+            };
+            if !result.ok {
+                return Ok(OperationOutcome {
+                    ok: false,
+                    changed: false,
+                    skipped: false,
+                    message: format!(
+                        "first_missing_signal=package-observation-failed code={} stderr={}",
+                        result.code, result.stderr
+                    ),
+                    command: Some(result.clone()),
+                });
+            }
             if apply {
                 let invocation = invocation
                     .ok_or_else(|| "package-install-invocation-key-missing".to_string())?;
@@ -103,7 +121,7 @@ pub(crate) fn run_with_ignores(
                     changed: cmd.ok
                         && crate::tools::package::pacman_stdout_indicates_change(&cmd.stdout),
                     skipped: false,
-                    message: "package install".into(),
+                    message: "update installed packages".into(),
                     command: Some(cmd),
                 })
             } else {
@@ -111,7 +129,7 @@ pub(crate) fn run_with_ignores(
                     ok: true,
                     changed: false,
                     skipped: false,
-                    message: "package install".into(),
+                    message: "update installed packages".into(),
                     command: observation.current.clone(),
                 })
             }
@@ -133,13 +151,27 @@ pub(crate) fn run_with_ignores(
             decision, movement, ..
         } => (decision, Some(movement)),
     };
-    let outcome = movement.clone().unwrap_or(OperationOutcome {
+    let mut outcome = movement.clone().unwrap_or(OperationOutcome {
         ok: true,
         changed: false,
         skipped: true,
-        message: "package install already current".into(),
+        message: "installed packages already current".into(),
         command: observation.current.clone(),
     });
+    let missing = packages.iter().find(|spec| {
+        let package = spec.split_once('=').map_or(spec.as_str(), |(name, _)| name);
+        final_observation.current.as_ref().is_some_and(|current| {
+            current.ok
+                && !current
+                    .stdout
+                    .lines()
+                    .any(|line| line.split_whitespace().next() == Some(package))
+        })
+    });
+    if let Some(package) = missing {
+        outcome.ok = false;
+        outcome.message = format!("first_missing_signal=package-absent:{package}");
+    }
     crate::atoms::attest::install_package::write_receipts(
         receipt_dir,
         name,

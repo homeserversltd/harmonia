@@ -449,8 +449,7 @@ pub(crate) fn execute_validated_step(
     let software_apply = software_authorization.is_some()
         && matches!(
             (step.tool.as_str(), step.permutation.as_str()),
-            ("package", "install")
-                | ("package", "upgrade")
+            ("package", "upgrade")
                 | ("package", "keyring-repair")
                 | ("git-artifact", "sync")
                 | ("files", "source-shelf-sweep")
@@ -459,7 +458,6 @@ pub(crate) fn execute_validated_step(
                 | ("files", "directory-sync")
                 | ("files", "compile-fragments")
                 | ("venv", "converge")
-                | ("aur", "install")
                 | ("aur", "build-pinned")
                 | ("command", "capture")
                 | ("xenia-runtime", "refusal")

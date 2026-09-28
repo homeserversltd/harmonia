@@ -5,42 +5,6 @@ use crate::atoms::comparison::{self, DiffDecision};
 use crate::{OperationOutcome, Profile};
 use std::collections::BTreeMap;
 use std::path::Path;
-pub(crate) fn install(
-    receipt_dir: &Path,
-    receipt_name: &str,
-    package: &str,
-    timeout_secs: u64,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-    pins: &BTreeMap<String, String>,
-) -> Result<comparison::ComparisonRun<Option<String>, OperationOutcome>, String> {
-    crate::atoms::declaration::execute(
-        "ratchet-aur-package",
-        "ratchet-aur-package",
-        || Ok(crate::atoms::ask::install_aur::installed_version(package)),
-        |installed| {
-            if apply && installed.is_none() {
-                DiffDecision::Different
-            } else {
-                DiffDecision::Empty
-            }
-        },
-        |authorization, _| {
-            let invocation = invocation
-                .ok_or_else(|| "ratchet-aur-package-install-invocation-key-missing".to_string())?;
-            mutation::install(
-                &authorization,
-                invocation,
-                receipt_dir,
-                receipt_name,
-                package,
-                timeout_secs,
-                apply,
-                pins,
-            )
-        },
-    )
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pinned(
@@ -96,8 +60,17 @@ pub(crate) fn report(
     verdict: Verdict,
     outcome: &OperationOutcome,
 ) -> Result<(), String> {
+    let name = log
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "aur-attest-log-name-invalid".to_string())?;
+    let receipt_name = name
+        .strip_suffix(".attest.jsonl")
+        .ok_or_else(|| "aur-attest-log-suffix-invalid".to_string())?;
+    let receipt_path = log.with_file_name(format!("{receipt_name}.json"));
     crate::atoms::attest::build_aur_pinned::report(
         log,
+        &receipt_path,
         verdict.as_str(),
         outcome.ok,
         outcome.message.clone(),
@@ -264,28 +237,6 @@ mod mutation {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn install(
-        authorization: &ActionAuthorization,
-        invocation: &atoms::r#do::InvocationKey,
-        receipt_dir: &Path,
-        receipt_name: &str,
-        package: &str,
-        timeout_secs: u64,
-        apply: bool,
-        pins: &BTreeMap<String, String>,
-    ) -> Result<OperationOutcome, String> {
-        atoms::r#do::install_aur::aur_install(authorization, Some(invocation), || {
-            atoms::r#do::install_aur::aur_install_action(
-                receipt_dir,
-                receipt_name,
-                package,
-                timeout_secs,
-                apply,
-                pins,
-            )
-        })
-    }
 
     pub(super) fn write_pinned_lock(
         lock_path: &Path,

@@ -427,7 +427,7 @@
         "tool": "install-package",
         "permutations": [
           {
-            "name": "install",
+            "name": "update-installed-packages",
             "deed": "install-package",
             "inputs": [
               {

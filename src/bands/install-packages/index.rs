@@ -54,10 +54,8 @@ pub(crate) fn execute_step(
     let apply = auth.is_some()
         && matches!(
             (s.tool.as_str(), s.permutation.as_str()),
-            ("package", "install")
-                | ("package", "upgrade")
+            ("package", "upgrade")
                 | ("package", "keyring-repair")
-                | ("aur", "install")
                 | ("aur", "build-pinned")
                 | ("venv", "converge")
         );
@@ -90,20 +88,6 @@ fn package_step(
     match p {
         "check" => crate::tools::package::package_tool_for_backend(
             d, &s.step_id, "check", &packages, apply, backend, key,
-        ),
-        "install" if !m.package_ceilings.is_empty() => crate::tools::package::package_tool_with_policy_for_backend_and_ceilings(
-            d,
-            &s.step_id,
-            "install",
-            &packages,
-            apply,
-            optional_string_arg(&s.args, "conflict_policy"),
-            &string_array_arg(&s.args, "conflict_paths"),
-            timeout,
-            backend,
-            key,
-            &m.package_pins,
-            &m.package_ceilings,
         ),
         "upgrade" if !m.package_ceilings.is_empty() => crate::tools::package::package_tool_with_policy_for_backend_and_ceilings(
             d, &s.step_id, "upgrade", &[], apply, None, &[], timeout, backend, key,
@@ -147,41 +131,59 @@ fn aur_step(
 ) -> Result<OperationOutcome, String> {
     let package = string_arg(&s.args, "package");
     match p {
-        "install" => crate::tools::aur::install(
-            d,
-            &s.step_id,
-            package,
-            integer_arg(&s.args, "timeout_secs", 3600),
-            apply,
-            key,
-            &m.package_pins,
-        ),
-        "check" => crate::tools::aur::check(
-            d,
-            &s.step_id,
-            package,
-            &resolve_path(m, string_arg(&s.args, "lock")),
-            optional_string_arg(&s.args, "upstream_state"),
-        ),
-        "build-pinned" => crate::tools::aur::build_pinned(
-            d,
-            &s.step_id,
-            package,
-            &resolve_path(m, string_arg(&s.args, "lock")),
-            &PathBuf::from(string_arg(&s.args, "build_root")),
-            optional_string_arg(&s.args, "source_dir"),
-            optional_string_arg(&s.args, "builder_user"),
-            integer_arg(&s.args, "timeout_secs", 3600),
-            s.args
-                .get("install")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            apply,
-            key,
-            &m.package_pins,
-        ),
+        "check" => {
+            let result = crate::tools::aur::check(
+                d,
+                &s.step_id,
+                package,
+                &resolve_path(m, string_arg(&s.args, "lock")),
+                optional_string_arg(&s.args, "upstream_state"),
+            );
+            close_aur_attest_error(&result, d, &s.step_id, "check", package)?;
+            result
+        }
+        "build-pinned" => {
+            let result = crate::tools::aur::build_pinned(
+                d,
+                &s.step_id,
+                package,
+                &resolve_path(m, string_arg(&s.args, "lock")),
+                &PathBuf::from(string_arg(&s.args, "build_root")),
+                optional_string_arg(&s.args, "source_dir"),
+                optional_string_arg(&s.args, "builder_user"),
+                integer_arg(&s.args, "timeout_secs", 3600),
+                s.args
+                    .get("install")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                apply,
+                key,
+                &m.package_pins,
+            );
+            close_aur_attest_error(&result, d, &s.step_id, "build-pinned", package)?;
+            result
+        }
         other => Err(format!("aur-permutation-unsupported-{other}")),
     }
+}
+
+fn close_aur_attest_error(
+    result: &Result<OperationOutcome, String>,
+    receipt_dir: &Path,
+    receipt_name: &str,
+    operation: &str,
+    package: &str,
+) -> Result<(), String> {
+    if let Err(error) = result {
+        crate::atoms::attest::install_aur::report_failure(
+            receipt_dir,
+            receipt_name,
+            operation,
+            package,
+            error,
+        )?;
+    }
+    Ok(())
 }
 
 /// Execute the complete InstallPackages band lifecycle for one projected module.

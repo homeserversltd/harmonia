@@ -1,9 +1,15 @@
 use crate::atoms::command;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::CommandObservation;
-use crate::atoms::package::{pacman_available, pacman_key_program, pacman_program, pacman_stdout_indicates_change, CeilingCommandEvidence, CeilingEntry, CurrentnessWitness, DeclaredCeiling, IdentityChange, PACKAGE_PIN_SCOPE_LIMITATION};
-use crate::atoms::ask::install_package::{package_differs, pacman_observed_state, pacman_update_query_is_empty, PackageObservation};
-use crate::atoms::attest::install_package::{package_receipt_fields, write_install_package_guard_receipt, write_keyring_receipt, write_package_receipt, write_package_receipt_with_backend};
+use crate::atoms::package::{
+    pacman_available, pacman_key_program, pacman_program, CeilingCommandEvidence, CeilingEntry,
+    CurrentnessWitness, DeclaredCeiling, IdentityChange, PACKAGE_PIN_SCOPE_LIMITATION,
+};
+use crate::atoms::ask::install_package::PackageObservation;
+use crate::atoms::attest::install_package::{
+    package_receipt_fields, write_keyring_receipt, write_package_receipt,
+    write_package_receipt_with_backend,
+};
 use crate::write_json;
 use crate::CmdResult;
 
@@ -334,6 +340,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_PACKAGE_TIMEOUT_SECS: u64 = 1800;
 
+fn attest_package_result(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    result: &Result<OperationOutcome, String>,
+) -> Result<(), String> {
+    match result {
+        Ok(outcome) => crate::atoms::attest::install_package::attest_step(
+            receipt_dir,
+            name,
+            action,
+            Ok(outcome),
+        ),
+        Err(error) => crate::atoms::attest::install_package::attest_step(
+            receipt_dir,
+            name,
+            action,
+            Err(error.as_str()),
+        ),
+    }
+}
+
 pub(crate) fn package_tool_for_backend(
     receipt_dir: &Path,
     name: &str,
@@ -393,34 +421,47 @@ pub(crate) fn package_tool_with_policy_for_backend_and_ceilings(
     pins: &std::collections::BTreeMap<String, String>,
     ceilings: &std::collections::BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
+    let result = package_tool_with_policy_for_backend_and_ceilings_inner(
+        receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths,
+        timeout_secs, backend, invocation, pins, ceilings,
+    );
+    attest_package_result(receipt_dir, name, action, &result)?;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn package_tool_with_policy_for_backend_and_ceilings_inner(
+    receipt_dir: &Path, name: &str, action: &str, packages: &[String], apply: bool,
+    conflict_policy: Option<&str>, conflict_paths: &[String], timeout_secs: u64,
+    backend: PackageBackend, invocation: Option<&InvocationKey>,
+    pins: &std::collections::BTreeMap<String, String>,
+    ceilings: &std::collections::BTreeMap<String, String>,
+) -> Result<OperationOutcome, String> {
     if ceilings.is_empty() {
-        return package_tool_with_policy_for_backend_and_pins(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
+        return package_tool_with_policy_for_backend_and_pins_inner(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
     }
     let timeout = std::time::Duration::from_secs(timeout_secs.min(12));
-    let relevant: Vec<String> = if action == "install" {
-        packages.iter().filter_map(|spec| spec.split_once('=').map(|(p, _)| p.to_string()).or_else(|| ceilings.contains_key(spec).then(|| spec.clone()))).filter(|p| ceilings.contains_key(p)).collect()
-    } else {
-        ceilings.keys().cloned().collect()
-    };
+    let relevant: Vec<String> = ceilings.keys().cloned().collect();
     if relevant.is_empty() {
-        return package_tool_with_policy_for_backend_and_pins(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
+        return package_tool_with_policy_for_backend_and_pins_inner(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
     }
     if backend != PackageBackend::Apt {
         let receipt = serde_json::json!({"schema":"harmonia.package_ceiling.v1","module_seat":"pins/pins","entries":[],"first_blocker":"ceiling-backend-unsupported","posture":"preserved"});
         write_json(&receipt_dir.join(format!("{name}.ceiling.json")), &receipt)?;
         return Err("package-ceiling-backend-unsupported".into());
     }
-    if !matches!(action, "install" | "upgrade" | "update") {
+    if !matches!(action, "upgrade" | "update") {
         let receipt = serde_json::json!({"schema":"harmonia.package_ceiling.v1","module_seat":"pins/pins","entries":[],"first_blocker":"ceiling-action-unsupported","posture":"preserved"});
         write_json(&receipt_dir.join(format!("{name}.ceiling.json")), &receipt)?;
-        return Err("package-ceiling-action-unsupported".into());
+        let error = "package-ceiling-action-unsupported";
+        return Err(error.into());
     }
     let mut runner = |program: &str, args: &[String], duration: std::time::Duration| -> Result<CommandObservation, String> {
         Ok(crate::atoms::ask::read_only_command_with_timeout(program, args, duration))
     };
     let (entries, first_blocker) = evaluate_package_ceiling(action, packages, ceilings, timeout, &mut runner);
     if entries.is_empty() {
-        return package_tool_with_policy_for_backend_and_pins(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
+        return package_tool_with_policy_for_backend_and_pins_inner(receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths, timeout_secs, backend, invocation, pins);
     }
     let comparison = aggregate_ceiling_comparison(&entries);
     let posture = if first_blocker.is_some() { "preserved" } else { "authorized" };
@@ -431,11 +472,18 @@ pub(crate) fn package_tool_with_policy_for_backend_and_ceilings(
         || Ok::<_, String>(()),
         |_| comparison,
         |_action_authorization, ceiling_authorization, _| {
-            if matches!(action, "upgrade" | "update") {
-                package_update_tool(receipt_dir, name, action, packages, apply, timeout_secs, PackageBackend::Apt, pins, invocation, Some(&ceiling_authorization))
-            } else {
-                apt_package_tool(receipt_dir, name, action, packages, apply, timeout_secs, pins, invocation, Some(&ceiling_authorization))
-            }
+            package_update_tool(
+                receipt_dir,
+                name,
+                action,
+                packages,
+                apply,
+                timeout_secs,
+                PackageBackend::Apt,
+                pins,
+                invocation,
+                Some(&ceiling_authorization),
+            )
         },
     )?;
     match run {
@@ -483,7 +531,7 @@ fn command_evidence(o: &CommandObservation, timeout: std::time::Duration) -> Cei
 fn evaluate_package_ceiling<F>(action: &str, packages: &[String], ceilings: &std::collections::BTreeMap<String, String>, timeout: std::time::Duration, runner: &mut F) -> (Vec<CeilingEntry>, Option<String>)
 where F: FnMut(&str, &[String], std::time::Duration) -> Result<CommandObservation, String> {
     let mut entries = Vec::new();
-    for package in if action == "install" { packages.iter().filter_map(|spec| spec.split_once('=').map(|(p, _)| p.to_string()).or_else(|| ceilings.contains_key(spec).then(|| spec.clone()))).filter(|p| ceilings.contains_key(p)).collect::<Vec<_>>() } else { ceilings.keys().cloned().collect() } {
+    for package in ceilings.keys().cloned().collect::<Vec<_>>() {
         let mut declared = DeclaredCeiling { package: package.clone(), desired: String::new(), ceiling: ceilings[&package].clone() };
         let ceiling = declared.ceiling.clone();
         let spec = packages.iter().find(|s| s.split_once('=').map(|(p, _)| p == package).unwrap_or(s.as_str() == package)).cloned();
@@ -529,6 +577,28 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     pins: &std::collections::BTreeMap<String, String>,
 ) -> Result<OperationOutcome, String> {
+    let result = package_tool_with_policy_for_backend_and_pins_inner(
+        receipt_dir, name, action, packages, apply, conflict_policy, conflict_paths,
+        timeout_secs, backend, invocation, pins,
+    );
+    attest_package_result(receipt_dir, name, action, &result)?;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn package_tool_with_policy_for_backend_and_pins_inner(
+    receipt_dir: &Path,
+    name: &str,
+    action: &str,
+    packages: &[String],
+    apply: bool,
+    conflict_policy: Option<&str>,
+    conflict_paths: &[String],
+    timeout_secs: u64,
+    backend: PackageBackend,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    pins: &std::collections::BTreeMap<String, String>,
+) -> Result<OperationOutcome, String> {
     if !pins.is_empty() {
         write_pin_witness(receipt_dir, name, pins, backend)?;
         let witness_path = receipt_dir.join(format!("{name}.pin-witness.json"));
@@ -537,22 +607,6 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
                 .map_err(|e| e.to_string())?;
     }
     match backend {
-        PackageBackend::Pacman if action == "install" => crate::install_package::run_with_ignores(
-            receipt_dir,
-            name,
-            &packages
-                .iter()
-                .filter(|package| !pins.contains_key(*package))
-                .cloned()
-                .collect::<Vec<_>>(),
-            apply,
-            conflict_policy,
-            conflict_paths,
-            timeout_secs,
-            &pacman_program(),
-            invocation,
-            &pins.keys().cloned().collect::<Vec<_>>(),
-        ),
         PackageBackend::Pacman if matches!(action, "check" | "upgrade" | "update") => {
             package_update_tool(
                 receipt_dir,
@@ -567,17 +621,7 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
                 None,
             )
         }
-        PackageBackend::Pacman => package_tool_with_policy(
-            receipt_dir,
-            name,
-            action,
-            packages,
-            apply,
-            conflict_policy,
-            conflict_paths,
-            timeout_secs,
-            invocation,
-        ),
+        PackageBackend::Pacman => Err(format!("unsupported package action {action}")),
         PackageBackend::Apt if matches!(action, "check" | "upgrade" | "update") => {
             package_update_tool(
                 receipt_dir,
@@ -592,17 +636,7 @@ pub(crate) fn package_tool_with_policy_for_backend_and_pins(
                 None,
             )
         }
-        PackageBackend::Apt => apt_package_tool(
-            receipt_dir,
-            name,
-            action,
-            packages,
-            apply,
-            timeout_secs,
-            pins,
-            invocation,
-            None,
-        ),
+        PackageBackend::Apt => Err(format!("unsupported package action {action}")),
     }
 }
 
@@ -611,158 +645,6 @@ fn apt_program() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "/usr/bin/apt-get".to_string())
-}
-
-fn apt_package_tool(
-    receipt_dir: &Path,
-    name: &str,
-    action: &str,
-    packages: &[String],
-    apply: bool,
-    timeout_secs: u64,
-    pins: &std::collections::BTreeMap<String, String>,
-    invocation: Option<&InvocationKey>,
-    ceiling_authorization: Option<&CeilingAuthorization>,
-) -> Result<OperationOutcome, String> {
-    let program = apt_program();
-    let mut observe_args = match action {
-        "check" => vec!["-s".to_string(), "upgrade".to_string()],
-        "install" => vec!["-s".to_string(), "install".to_string()],
-        "upgrade" | "update" => vec!["-s".to_string(), "full-upgrade".to_string()],
-        other => return Err(format!("apt-package-action-unsupported-{other}")),
-    };
-    if action == "install" {
-        observe_args.extend(packages.iter().cloned());
-    }
-    let observation = PackageObservation {
-        observed_state: "apt-current-state-observed".to_string(),
-        desired_state: format!("apt-{action}-declared"),
-        current: Some(run_apt_command(
-            receipt_dir,
-            name,
-            &program,
-            observe_args.clone(),
-            timeout_secs,
-            pins,
-        )),
-    };
-    let run = comparison::execute_with_failure_receipt(
-        "package",
-        || {
-            let current = run_apt_command(
-                receipt_dir,
-                name,
-                &program,
-                observe_args.clone(),
-                timeout_secs,
-                pins,
-            );
-            Ok(PackageObservation {
-                observed_state: "apt-current-state-observed".to_string(),
-                desired_state: format!("apt-{action}-declared"),
-                current: Some(current),
-            })
-        },
-        |current| {
-            if current
-                .current
-                .as_ref()
-                .is_some_and(|result| !result.ok || apt_stdout_indicates_change(&result.stdout))
-            {
-                DiffDecision::Different
-            } else {
-                DiffDecision::Empty
-            }
-        },
-        |authorization, _| {
-            let authorization = &authorization;
-            let mut args: Vec<String> = match (action, apply) {
-                ("check", _) => vec!["-s".into(), "upgrade".into()],
-                ("install", true) => vec!["install".into(), "--yes".into(), "--no-remove".into()],
-                ("install", false) => vec!["-s".into(), "install".into()],
-                ("upgrade" | "update", true) => {
-                    vec!["full-upgrade".into(), "--yes".into(), "--no-remove".into()]
-                }
-                ("upgrade" | "update", false) => vec!["-s".into(), "full-upgrade".into()],
-                (other, _) => return Err(format!("apt-package-action-unsupported-{other}")),
-            };
-            args.extend(packages.iter().cloned());
-            let result = if apply {
-                let invocation = invocation
-                    .ok_or_else(|| "package-mutation-invocation-missing".to_string())?;
-                if let Some(ceiling) = ceiling_authorization {
-                    run_apt_command_authorized_with_ceiling(
-                        authorization, ceiling, invocation, receipt_dir, name, &program, args, timeout_secs, pins,
-                    )
-                } else {
-                    run_apt_command_authorized(
-                        authorization, invocation, receipt_dir, name, &program, args, timeout_secs, pins,
-                    )
-                }
-            } else {
-                run_apt_command(receipt_dir, name, &program, args, timeout_secs, pins)
-            };
-            Ok(OperationOutcome {
-                ok: result.ok,
-                changed: apply && result.ok && apt_stdout_indicates_change(&result.stdout),
-                skipped: false,
-                message: format!("apt package {action}"),
-                command: Some(result),
-            })
-        },
-        |before, movement, after| {
-            let mut _receipt = package_receipt_fields(
-                before,
-                DiffDecision::Different,
-                Some(movement),
-                movement.changed,
-            );
-            if let Some(fields) = _receipt.as_object_mut() {
-                fields.insert(
-                    "observed_before".into(),
-                    serde_json::to_value(before).map_err(|e| e.to_string())?,
-                );
-                fields.insert(
-                    "act".into(),
-                    serde_json::json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command}),
-                );
-                fields.insert(
-                    "observed_after".into(),
-                    serde_json::to_value(after).map_err(|e| e.to_string())?,
-                );
-            }
-            crate::atoms::attest::install_package::write_guard_receipts(receipt_dir, name, before, movement, after)
-        },
-    )?;
-    let (decision, movement) = match run {
-        comparison::ComparisonRun::Current { decision, .. } => (decision, None),
-        comparison::ComparisonRun::Moved {
-            decision, movement, ..
-        } => (decision, Some(movement)),
-    };
-    let outcome = movement.clone().unwrap_or(OperationOutcome {
-        ok: true,
-        changed: false,
-        skipped: true,
-        message: format!("apt package {action} already current"),
-        command: observation.current.clone(),
-    });
-    let mut comparison =
-        package_receipt_fields(&observation, decision, movement.as_ref(), outcome.changed);
-    if let Ok(bytes) = fs::read(receipt_dir.join(format!("{name}.pin-witness.json"))) {
-        if let Ok(witness) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if let Some(fields) = comparison.as_object_mut() {
-                fields.insert("exclusion_set".into(), witness["exclusion_set"].clone());
-                fields.insert("pin_witness".into(), witness);
-            }
-        }
-    }
-    write_json(
-        &receipt_dir.join(format!("{name}.comparison.json")),
-        &comparison,
-    )?;
-    write_package_receipt_with_backend(receipt_dir, name, action, &outcome, PackageBackend::Apt)?;
-    Ok(outcome)
 }
 
 fn run_apt_command_authorized_with_ceiling(
@@ -1315,6 +1197,21 @@ fn package_update_tool(
     r: &Path,
     n: &str,
     a: &str,
+    packages: &[String],
+    apply: bool,
+    t: u64,
+    b: PackageBackend,
+    pins: &std::collections::BTreeMap<String, String>,
+    invocation: Option<&InvocationKey>,
+    ceiling_authorization: Option<&CeilingAuthorization>,
+) -> Result<OperationOutcome, String> {
+    package_update_tool_inner(r, n, a, packages, apply, t, b, pins, invocation, ceiling_authorization)
+}
+
+fn package_update_tool_inner(
+    r: &Path,
+    n: &str,
+    a: &str,
     _pkgs: &[String],
     apply: bool,
     t: u64,
@@ -1332,9 +1229,13 @@ fn package_update_tool(
     };
     let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":pre.observed_state.clone(),"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"ignored_upgrades":pre.ignored_upgrades,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":pre.probe_ok && pre.pending_count == 0,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
     out["first_missing_signal"] = serde_json::json!(if !pre.probe_ok {
-        "package-probe-unavailable"
+        if b == PackageBackend::Pacman {
+            "pacman-update-probe-unavailable"
+        } else {
+            "apt-update-probe-unavailable"
+        }
     } else if pre.pending_count > 0 {
-        "pending-package-updates-report-only"
+        if !apply { "pending-package-updates-report-only" } else { "pending-package-updates-not-converged" }
     } else {
         "none"
     });
@@ -1506,261 +1407,25 @@ fn apt_stdout_indicates_change(stdout: &str) -> bool {
     lower.contains("the following packages will be") || lower.contains("setting up ")
 }
 
-pub(crate) fn non_arch_install(
+pub(crate) fn keyring_repair_tool(
     receipt_dir: &Path,
     name: &str,
-    packages: &[String],
-) -> Result<OperationOutcome, String> {
-    let outcome = OperationOutcome {
-        ok: true,
-        changed: false,
-        skipped: true,
-        message: "non-Arch bootstrap not applicable".into(),
-        command: None,
-    };
-    let observation = PackageObservation {
-        observed_state: "package-manager-unavailable".into(),
-        desired_state: format!("install-declared:{}", packages.join(",")),
-        current: None,
-    };
-    write_json(
-        &receipt_dir.join(format!("{name}.comparison.json")),
-        &package_receipt_fields(&observation, DiffDecision::Empty, None, false),
-    )?;
-    write_package_receipt(receipt_dir, name, "install", &outcome)?;
-    Ok(outcome)
-}
-
-pub(crate) fn package_tool(
-    receipt_dir: &Path,
-    name: &str,
-    action: &str,
-    packages: &[String],
+    package_name: &str,
     apply: bool,
-) -> Result<OperationOutcome, String> {
-    package_tool_with_policy(
-        receipt_dir,
-        name,
-        action,
-        packages,
-        apply,
-        None,
-        &[],
-        DEFAULT_PACKAGE_TIMEOUT_SECS,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn package_tool_with_policy(
-    receipt_dir: &Path,
-    name: &str,
-    action: &str,
-    packages: &[String],
-    apply: bool,
-    conflict_policy: Option<&str>,
-    conflict_paths: &[String],
     timeout_secs: u64,
+    pins: &std::collections::BTreeMap<String, String>,
     invocation: Option<&InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    let pacman = pacman_program();
-    if !pacman_available(&pacman) {
-        let outcome = OperationOutcome {
-            ok: false,
-            changed: false,
-            skipped: true,
-            message: "package-manager-unavailable".to_string(),
-            command: None,
-        };
-        let observation = PackageObservation {
-            observed_state: "package-manager-unavailable".into(),
-            desired_state: format!("{action}-declared"),
-            current: None,
-        };
-        let mut comparison = package_receipt_fields(&observation, DiffDecision::Empty, None, false);
-        if let Some(fields) = comparison.as_object_mut() {
-            fields.insert("converged".into(), serde_json::Value::Bool(false));
-            fields.insert(
-                "first_missing_signal".into(),
-                serde_json::Value::String("package-manager-unavailable".into()),
-            );
-        }
-        write_json(
-            &receipt_dir.join(format!("{name}.comparison.json")),
-            &comparison,
-        )?;
-        write_package_receipt(receipt_dir, name, action, &outcome)?;
-        return Ok(outcome);
-    }
-    let observe_result = match action {
-        "install" => command::capture(&pacman, &["-Q"]),
-        _ => command::capture(&pacman, &["-Qu"]),
+    let result = keyring_repair_tool_inner(receipt_dir, name, package_name, apply, timeout_secs, pins, invocation);
+    let attested = match &result {
+        Ok(outcome) => crate::atoms::attest::install_package::attest_step(receipt_dir, name, "keyring-repair", Ok(outcome)),
+        Err(error) => crate::atoms::attest::install_package::attest_step(receipt_dir, name, "keyring-repair", Err(error.as_str())),
     };
-    let observed_state = if matches!(action, "check" | "upgrade" | "update") {
-        pacman_observed_state(&observe_result)
-    } else if observe_result.ok {
-        observe_result.stdout.clone()
-    } else {
-        format!("probe-failed:{}", observe_result.code)
-    };
-    let desired_state = match action {
-        "install" => format!("packages-present:{}", packages.join(",")),
-        "check" | "upgrade" | "update" => "no-pending-updates".into(),
-        other => format!("{other}-declared"),
-    };
-    let observation = PackageObservation {
-        observed_state,
-        desired_state: desired_state.clone(),
-        current: Some(observe_result),
-    };
-    let run = comparison::execute_with_failure_receipt(
-        if action == "install" {
-            "install-package"
-        } else {
-            "package"
-        },
-        || {
-            let result = match action {
-                "install" => command::capture(&pacman, &["-Q"]),
-                _ => command::capture(&pacman, &["-Qu"]),
-            };
-            let observed_state = if matches!(action, "check" | "upgrade" | "update") {
-                pacman_observed_state(&result)
-            } else if result.ok {
-                result.stdout.clone()
-            } else {
-                format!("probe-failed:{}", result.code)
-            };
-            Ok(PackageObservation {
-                observed_state,
-                desired_state: desired_state.clone(),
-                current: Some(result),
-            })
-        },
-        |current| {
-            if package_differs(action, packages, current) {
-                DiffDecision::Different
-            } else {
-                DiffDecision::Empty
-            }
-        },
-        |authorization, _| {
-            let authorization = &authorization;
-            let result = match action {
-                "upgrade" | "update" if apply => {
-                    let invocation = invocation.ok_or_else(|| "package-mutation-invocation-missing".to_string())?;
-                    reclaim_pacman_database_lock(authorization, invocation, receipt_dir, &pacman, true)?;
-                    command::capture_with_timeout(&pacman, &["-Syu", "--noconfirm"], timeout_secs)
-                }
-                "upgrade" | "update" | "check" => {
-                    command::capture(&pacman, &["-Qu"])
-                }
-                "install" if apply => {
-                    let invocation = invocation.ok_or_else(|| "package-mutation-invocation-missing".to_string())?;
-                    pacman_mutate_packages_with_options(
-                        authorization,
-                        invocation,
-                        receipt_dir,
-                        false,
-                        packages,
-                        conflict_policy,
-                        conflict_paths,
-                        timeout_secs,
-                    )?
-                }
-                "install" => {
-                    command::capture(&pacman, &["-Q"])
-                }
-                other => return Err(format!("unsupported package action {other}")),
-            };
-            let ok = match action {
-                "check" | "upgrade" | "update" if !apply => {
-                    result.ok || (result.code == 1 && pacman_update_query_is_empty(&result))
-                }
-                _ => result.ok,
-            };
-            Ok(OperationOutcome {
-                ok,
-                changed: matches!(action, "upgrade" | "update" | "install")
-                    && apply
-                    && result.ok
-                    && pacman_stdout_indicates_change(&result.stdout),
-                skipped: false,
-                message: format!("package {action}"),
-                command: Some(result),
-            })
-        },
-        |before, movement, after| {
-            let mut _receipt = package_receipt_fields(
-                before,
-                DiffDecision::Different,
-                Some(movement),
-                movement.changed,
-            );
-            if let Some(fields) = _receipt.as_object_mut() {
-                fields.insert(
-                    "observed_before".into(),
-                    serde_json::to_value(before).map_err(|e| e.to_string())?,
-                );
-                fields.insert(
-                    "act".into(),
-                    serde_json::json!({"ok": movement.ok, "changed": movement.changed, "skipped": movement.skipped, "message": movement.message, "command": movement.command}),
-                );
-                fields.insert(
-                    "observed_after".into(),
-                    serde_json::to_value(after).map_err(|e| e.to_string())?,
-                );
-            }
-            crate::atoms::attest::install_package::write_guard_receipts(receipt_dir, name, before, movement, after)
-        },
-    )?;
-    let final_observation = run.observation().clone();
-    let (decision, movement) = match run {
-        comparison::ComparisonRun::Current { decision, .. } => (decision, None),
-        comparison::ComparisonRun::Moved {
-            decision, movement, ..
-        } => (decision, Some(movement)),
-    };
-    let outcome = movement.clone().unwrap_or(OperationOutcome {
-        ok: true,
-        changed: false,
-        skipped: true,
-        message: format!("package {action} already current"),
-        command: observation.current.clone(),
-    });
-    let mut comparison = package_receipt_fields(
-        &final_observation,
-        decision,
-        movement.as_ref(),
-        outcome.changed,
-    );
-    if let Some(fields) = comparison.as_object_mut() {
-        fields.insert(
-            "observed_before".into(),
-            serde_json::to_value(&observation).map_err(|e| e.to_string())?,
-        );
-        fields.insert("act".into(), serde_json::json!({"ok": outcome.ok, "changed": outcome.changed, "skipped": outcome.skipped, "message": outcome.message, "command": outcome.command}));
-        fields.insert(
-            "observed_after".into(),
-            serde_json::to_value(&final_observation).map_err(|e| e.to_string())?,
-        );
-        let witness_path = receipt_dir.join(format!("{name}.pin-witness.json"));
-        if let Ok(bytes) = fs::read(witness_path) {
-            if let Ok(witness) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                fields.insert("exclusion_set".into(), witness["exclusion_set"].clone());
-                fields.insert("pin_witness".into(), witness);
-            }
-        }
-    }
-    write_json(
-        &receipt_dir.join(format!("{name}.comparison.json")),
-        &comparison,
-    )?;
-    write_package_receipt(receipt_dir, name, action, &outcome)?;
-    Ok(outcome)
+    attested?;
+    result
 }
 
-pub(crate) fn keyring_repair_tool(
+fn keyring_repair_tool_inner(
     receipt_dir: &Path,
     name: &str,
     package_name: &str,
@@ -1850,10 +1515,24 @@ pub(crate) fn keyring_repair_tool(
         message: "package keyring-repair already current".into(),
         command: observation.current.clone(),
     });
-    write_json(
-        &receipt_dir.join(format!("{name}.comparison.json")),
-        &package_receipt_fields(&observation, decision, movement.as_ref(), outcome.changed),
-    )?;
+    let comparison_path = receipt_dir.join(format!("{name}.comparison.json"));
+    let previous = fs::read(&comparison_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let mut comparison = package_receipt_fields(&observation, decision, movement.as_ref(), outcome.changed);
+    if let (Some(fields), Some(previous)) = (comparison.as_object_mut(), previous) {
+        for field in ["observed_before", "act", "observed_after"] {
+            if let Some(value) = previous.get(field) {
+                fields.insert(field.into(), value.clone());
+            }
+        }
+    }
+    write_json(&comparison_path, &comparison)?;
+    let operation_count = fs::read(receipt_dir.join(format!("{name}.json")))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|receipt| receipt.get("operation_count").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0) as usize;
     write_keyring_receipt(
         receipt_dir,
         name,
@@ -1861,7 +1540,7 @@ pub(crate) fn keyring_repair_tool(
         apply,
         pacman_present,
         pacman_key_present,
-        0,
+        operation_count,
         &outcome,
     )?;
     Ok(outcome)
@@ -1883,10 +1562,14 @@ fn keyring_repair_action(
     let pacman_key_present = pacman_available(&pacman_key);
     if !pacman_present || !pacman_key_present {
         let outcome = OperationOutcome {
-            ok: true,
+            ok: false,
             changed: false,
             skipped: true,
-            message: "non-Arch bootstrap not applicable".to_string(),
+            message: if !pacman_present {
+                "pacman probe unavailable; keyring repair cannot run".to_string()
+            } else {
+                "pacman-key probe unavailable; keyring repair cannot run".to_string()
+            },
             command: None,
         };
         write_keyring_receipt(

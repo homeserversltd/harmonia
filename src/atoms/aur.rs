@@ -12,9 +12,8 @@ pub(crate) const DEFAULT_AUR_BASE_URL: &str = "https://aur.archlinux.org";
 pub(crate) const DEFAULT_BUILD_ROOT: &str = "/var/tmp/harmonia/aur";
 const HARMONIA_AUR_UPSTREAM_STATE_ENV: &str = "HARMONIA_AUR_UPSTREAM_STATE";
 
-// Compatibility names remain seated here while actuation is owned by do-atoms.
+// Pinned build/check actuation is owned by do-atoms.
 pub(crate) use crate::atoms::r#do::build_aur_pinned::build_pinned;
-pub(crate) use crate::atoms::r#do::install_aur::install;
 pub(crate) use crate::atoms::r#do::build_aur_pinned::check;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
