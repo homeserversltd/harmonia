@@ -18,7 +18,6 @@
     "arcadia-gui-runtime",
     "local-ai-runtime",
     "homeconsole-update-runtime",
-    "homeconsole-sync-runtime",
     "household-time",
     "install-caduceus",
     "sbin",

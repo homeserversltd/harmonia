@@ -1,7 +1,7 @@
-use crate::{write_json, CmdResult, OperationOutcome};
 use crate::atoms::ask::change_unit::Observation;
-use crate::atoms::systemd::RestartDecision;
 use crate::atoms::comparison::DiffDecision;
+use crate::atoms::systemd::RestartDecision;
+use crate::{write_json, CmdResult, OperationOutcome};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -22,7 +22,11 @@ pub(crate) fn comparison_fields(
     })
 }
 
-pub(crate) fn augment_comparison_receipt(receipt_dir: &Path, name: &str, fields: Value) -> Result<(), String> {
+pub(crate) fn augment_comparison_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    fields: Value,
+) -> Result<(), String> {
     let path = receipt_dir.join(format!("{name}.json"));
     let mut receipt: Value =
         serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
@@ -68,6 +72,7 @@ pub(crate) fn write_systemd_receipt(
     target_user: Option<&str>,
     restart_decision: Option<RestartDecision>,
     service_material_changed: bool,
+    attempted: bool,
 ) -> Result<(), String> {
     write_json(
         &receipt_dir.join(format!("{}.json", name)),
@@ -90,12 +95,45 @@ pub(crate) fn write_systemd_receipt(
             "active_after": active_after,
             "changed": changed,
             "service_material_changed": service_material_changed,
+            "decision": if apply && attempted { "executed" } else { "held" },
+            "reason": if !result.ok && !attempted {
+                if result.stderr.starts_with("systemd-unit-name-invalid-") {
+                    "invalid-unit"
+                } else if result.stderr.contains("state-read-failed")
+                    || result.stderr.contains("observation")
+                {
+                    "observation-failed"
+                } else {
+                    "observation-or-validation-failed"
+                }
+            } else if !apply {
+                "plan-only"
+            } else if attempted {
+                restart_decision
+                    .map(|decision| {
+                        if result.ok {
+                            decision.reason
+                        } else {
+                            match decision.reason {
+                                "service-material-changed" => "service-material-changed-command-failed",
+                                "service-material-unchanged" => "service-material-unchanged-command-failed",
+                                "unit-not-active" => "unit-not-active-command-failed",
+                                "service-state-unknown" => "service-state-unknown-command-failed",
+                                _ => "restart-command-failed",
+                            }
+                        }
+                    })
+                    .unwrap_or(if result.ok { "state-change-attempted" } else { "systemd-command-failed" })
+            } else {
+                restart_decision
+                    .map(|decision| decision.reason)
+                    .unwrap_or("already-current")
+            },
             "restart_decision": restart_decision.map(|decision| if decision.execute { "restarted" } else { "skipped" }),
             "restart_reason": restart_decision.map(|decision| decision.reason),
         }),
     )
 }
-
 
 pub(crate) fn annotate_candidate_selection(
     receipt_dir: &Path,
@@ -117,25 +155,49 @@ pub(crate) fn annotate_candidate_selection(
 
 pub(crate) fn attest_change_unit(
     receipt_dir: &Path,
+    name: &str,
     action: &str,
     service: &str,
     command: &CmdResult,
 ) -> Result<(), String> {
-    if matches!(action, "enable-now" | "disable-stop" | "disable-stop-remove" | "daemon-reload" | "restart" | "stop" | "enable" | "mask") {
+    if matches!(
+        action,
+        "enable-now"
+            | "disable-stop"
+            | "disable-stop-remove"
+            | "daemon-reload"
+            | "restart"
+            | "stop"
+            | "enable"
+            | "mask"
+    ) {
+        let path = receipt_dir.join(format!("{name}.json"));
+        let receipt: Value = serde_json::from_str(
+            &fs::read_to_string(&path)
+                .map_err(|error| format!("systemd-attest-receipt-read-failed: {error}"))?,
+        )
+        .map_err(|error| format!("systemd-attest-receipt-parse-failed: {error}"))?;
+        let decision = receipt
+            .get("decision")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "systemd-attest-decision-missing".to_string())?;
+        let reason = receipt
+            .get("reason")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "systemd-attest-reason-missing".to_string())?;
         crate::atoms::attest::attest(
             &receipt_dir.join("harmonia-atoms.log"),
             &crate::atoms::Receipt {
                 atom: "systemd".into(),
                 ok: command.ok,
                 drift: crate::atoms::Drift::Current,
-                message: format!("service={service}; action={action}; code={}", command.code),
+                message: format!("service={service}; action={action}; decision={decision}; reason={reason}; code={}", command.code),
             },
             &[],
         )?;
     }
     Ok(())
 }
-
 
 pub(crate) fn write_show_assert_receipt(
     receipt_dir: &Path,

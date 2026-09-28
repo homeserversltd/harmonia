@@ -3,7 +3,7 @@
   "id": "bluetooth-audio",
   "category": "interactable",
   "version": "1.0.0",
-  "description": "TV profile module declaration retaining bluetooth-audio identity and constants; the empty ladder declares no convergence steps.",
+  "description": "Converges the TV Bluetooth service to enabled and active state through the systemd kernel primitive.",
   "optional": false,
   "constants": {
     "services": [
@@ -13,5 +13,15 @@
     "receipt_schema": "harmonia.tv.bluetooth_audio.v1",
     "meaning": "TV Bluetooth audio service declaration"
   },
-  "ladder": []
+  "ladder": [
+    {
+      "step_id": "bluetooth-service-enable-now",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "bluetooth.service",
+        "timeout_secs": 30
+      }
+    }
+  ]
 }

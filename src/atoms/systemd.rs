@@ -13,9 +13,15 @@ pub(crate) struct RestartDecision {
 
 pub(crate) fn decide_restart(service_material_changed: bool) -> RestartDecision {
     if service_material_changed {
-        RestartDecision { execute: true, reason: "service-material-changed" }
+        RestartDecision {
+            execute: true,
+            reason: "service-material-changed",
+        }
     } else {
-        RestartDecision { execute: false, reason: "service-material-unchanged" }
+        RestartDecision {
+            execute: false,
+            reason: "service-material-unchanged",
+        }
     }
 }
 
@@ -24,10 +30,22 @@ pub(crate) fn decide_restart_for_observation(
     material: bool,
 ) -> RestartDecision {
     match observation.active.as_deref() {
-        Some("active") if material => RestartDecision { execute: true, reason: "service-material-changed" },
-        Some("active") => RestartDecision { execute: false, reason: "service-material-unchanged" },
-        Some("inactive") | Some("failed") | Some("not-found") => RestartDecision { execute: true, reason: "unit-not-active" },
-        _ => RestartDecision { execute: false, reason: "service-state-unknown" },
+        Some("active") if material => RestartDecision {
+            execute: true,
+            reason: "service-material-changed",
+        },
+        Some("active") => RestartDecision {
+            execute: false,
+            reason: "service-material-unchanged",
+        },
+        Some("inactive") | Some("failed") | Some("not-found") => RestartDecision {
+            execute: true,
+            reason: "unit-not-active",
+        },
+        _ => RestartDecision {
+            execute: false,
+            reason: "service-state-unknown",
+        },
     }
 }
 
@@ -51,12 +69,23 @@ fn decide_action(
         "restart" => decide_restart_for_observation(observation, service_material_changed).execute,
         "stop" => service_material_changed && !unit_absent,
         "enable" => observation.enabled.as_deref() != Some("enabled"),
-        "enable-now" => observation.enabled.as_deref() != Some("enabled") || observation.active.as_deref() != Some("active"),
-        "disable-stop" => !unit_absent && (observation.enabled.as_deref() != Some("disabled") || observation.active.as_deref() == Some("active")),
+        "enable-now" => {
+            observation.enabled.as_deref() != Some("enabled")
+                || observation.active.as_deref() != Some("active")
+        }
+        "disable-stop" => {
+            !unit_absent
+                && (observation.enabled.as_deref() != Some("disabled")
+                    || observation.active.as_deref() == Some("active"))
+        }
         "disable-stop-remove" => observation.unit_file_exists && !unit_absent,
         _ => true,
     };
-    if different { DiffDecision::Different } else { DiffDecision::Empty }
+    if different {
+        DiffDecision::Different
+    } else {
+        DiffDecision::Empty
+    }
 }
 
 pub(crate) fn validate_candidate_units(
@@ -175,8 +204,9 @@ pub(crate) fn run_permutation_with_material_gate(
                 target_user,
                 None,
                 module_changed_before_step,
+                false,
             )?;
-            attest_change_unit::attest_change_unit(receipt_dir, action, selected, &command)?;
+            attest_change_unit::attest_change_unit(receipt_dir, name, action, selected, &command)?;
             return Err(error);
         }
     }
@@ -190,7 +220,7 @@ pub(crate) fn run_permutation_with_material_gate(
             timeout_secs,
             apply,
             module_changed_before_step,
-                invocation,
+            invocation,
         );
     }
     run_action(
@@ -225,34 +255,114 @@ fn run_mask(
             stdout: String::new(),
             stderr: "systemd-mask-state-read-failed".into(),
         };
-        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, apply, &command,
-            None, None, None, None, false, target_user, None, false)?;
-        attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
-        return Ok(OperationOutcome { ok: false, changed: false, skipped: true,
-            message: "systemd-mask-state-read-failed".into(), command: Some(command) });
+        attest_change_unit::write_systemd_receipt(
+            receipt_dir,
+            name,
+            "mask",
+            service,
+            user,
+            apply,
+            &command,
+            None,
+            None,
+            None,
+            None,
+            false,
+            target_user,
+            None,
+            false,
+            false,
+        )?;
+        attest_change_unit::attest_change_unit(receipt_dir, name, "mask", service, &command)?;
+        return Ok(OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: true,
+            message: "systemd-mask-state-read-failed".into(),
+            command: Some(command),
+        });
     };
     if before == "masked" {
-        let command = CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() };
-        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, apply, &command,
-            Some(&before), None, Some(&before), None, false, target_user, None, false)?;
-        attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
-        return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
-            message: "converged-quiet".into(), command: Some(command) });
+        let command = CmdResult {
+            ok: true,
+            code: 0,
+            stdout: "masked".into(),
+            stderr: String::new(),
+        };
+        attest_change_unit::write_systemd_receipt(
+            receipt_dir,
+            name,
+            "mask",
+            service,
+            user,
+            apply,
+            &command,
+            Some(&before),
+            None,
+            Some(&before),
+            None,
+            false,
+            target_user,
+            None,
+            false,
+            false,
+        )?;
+        attest_change_unit::attest_change_unit(receipt_dir, name, "mask", service, &command)?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: "converged-quiet".into(),
+            command: Some(command),
+        });
     }
     if !apply {
-        let command = CmdResult { ok: true, code: 0,
-            stdout: format!("planned systemd mask {service}"), stderr: String::new() };
-        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, false, &command,
-            Some(&before), None, Some(&before), None, false, target_user, None, false)?;
-        attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
-        return Ok(OperationOutcome { ok: true, changed: false, skipped: true,
-            message: format!("planned systemd mask {service}"), command: Some(command) });
+        let command = CmdResult {
+            ok: true,
+            code: 0,
+            stdout: format!("planned systemd mask {service}"),
+            stderr: String::new(),
+        };
+        attest_change_unit::write_systemd_receipt(
+            receipt_dir,
+            name,
+            "mask",
+            service,
+            user,
+            false,
+            &command,
+            Some(&before),
+            None,
+            Some(&before),
+            None,
+            false,
+            target_user,
+            None,
+            false,
+            false,
+        )?;
+        attest_change_unit::attest_change_unit(receipt_dir, name, "mask", service, &command)?;
+        return Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: format!("planned systemd mask {service}"),
+            command: Some(command),
+        });
     }
     let run = match comparison::execute_with_failure_receipt(
         "systemd-mask",
-        || change_unit::state("is-enabled", service, user, target_user, timeout_secs)
-            .ok_or_else(|| "systemd-mask-state-read-failed".to_string()),
-        |observed| if observed == "masked" { DiffDecision::Empty } else { DiffDecision::Different },
+        || {
+            change_unit::state("is-enabled", service, user, target_user, timeout_secs)
+                .ok_or_else(|| "systemd-mask-state-read-failed".to_string())
+        },
+        |observed| {
+            if observed == "masked" {
+                DiffDecision::Empty
+            } else {
+                DiffDecision::Different
+            }
+        },
         |authorization, _observed| {
             let result = crate::atoms::r#do::change_unit::unit_change_scoped(
                 &authorization,
@@ -263,8 +373,12 @@ fn run_mask(
                 target_user,
                 timeout_secs,
             )?;
-            Ok(CmdResult { ok: result.ok, code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
-                stdout: result.stdout, stderr: result.stderr })
+            Ok(CmdResult {
+                ok: result.ok,
+                code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+                stdout: result.stdout,
+                stderr: result.stderr,
+            })
         },
         |_before, _movement, _after| Ok(()),
     ) {
@@ -292,21 +406,54 @@ fn run_mask(
                 target_user,
                 None,
                 false,
+                false,
             )?;
-            attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
+            attest_change_unit::attest_change_unit(receipt_dir, name, "mask", service, &command)?;
             return Err(error);
         }
     };
-    let command = match run {
-        comparison::ComparisonRun::Current { .. } => CmdResult { ok: true, code: 0, stdout: "masked".into(), stderr: String::new() },
-        comparison::ComparisonRun::Moved { movement, .. } => movement,
+    let (command, attempted) = match run {
+        comparison::ComparisonRun::Current { .. } => (
+            CmdResult {
+                ok: true,
+                code: 0,
+                stdout: "masked".into(),
+                stderr: String::new(),
+            },
+            false,
+        ),
+        comparison::ComparisonRun::Moved { movement, .. } => (movement, true),
     };
-        attest_change_unit::write_systemd_receipt(receipt_dir, name, "mask", service, user, true, &command,
-        Some(&before), None, Some("masked"), None, command.ok && before != "masked", target_user, None, false)?;
-    attest_change_unit::attest_change_unit(receipt_dir, "mask", service, &command)?;
-    Ok(OperationOutcome { ok: command.ok, changed: command.ok && before != "masked", skipped: false,
-        message: if command.ok { format!("systemd mask {service}") } else { "systemd-mask-command-failed".into() },
-        command: Some(command) })
+    attest_change_unit::write_systemd_receipt(
+        receipt_dir,
+        name,
+        "mask",
+        service,
+        user,
+        true,
+        &command,
+        Some(&before),
+        None,
+        Some("masked"),
+        None,
+        command.ok && before != "masked",
+        target_user,
+        None,
+        false,
+        attempted,
+    )?;
+    attest_change_unit::attest_change_unit(receipt_dir, name, "mask", service, &command)?;
+    Ok(OperationOutcome {
+        ok: command.ok,
+        changed: command.ok && before != "masked",
+        skipped: false,
+        message: if command.ok {
+            format!("systemd mask {service}")
+        } else {
+            "systemd-mask-command-failed".into()
+        },
+        command: Some(command),
+    })
 }
 
 fn run_enable_first_present_now(
@@ -401,7 +548,6 @@ fn is_syntactic_unit_basename(unit: &str) -> bool {
         && !unit.chars().any(char::is_whitespace)
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn run_restart(
     receipt_dir: &Path,
@@ -487,11 +633,7 @@ fn run_action_with_material_gate(
             if edge_triggered && acted.get() {
                 DiffDecision::Empty
             } else {
-                decide_action(
-                    action,
-                    observation,
-                    service_material_changed,
-                )
+                decide_action(action, observation, service_material_changed)
             }
         },
         |authorization, before| {
@@ -572,9 +714,14 @@ fn run_action_with_material_gate(
                 })
             };
             let result = result?;
-            let after = change_unit::observe_systemd_state(action, service, user, target_user, timeout_secs);
-            let restart_decision =
-                decide_restart_for_observation(before, service_material_changed);
+            let after = change_unit::observe_systemd_state(
+                action,
+                service,
+                user,
+                target_user,
+                timeout_secs,
+            );
+            let restart_decision = decide_restart_for_observation(before, service_material_changed);
             let changed = apply
                 && result.ok
                 && (before.enabled != after.enabled
@@ -630,8 +777,9 @@ fn run_action_with_material_gate(
                 target_user,
                 None,
                 service_material_changed,
+                false,
             )?;
-            attest_change_unit::attest_change_unit(receipt_dir, action, service, &command)?;
+            attest_change_unit::attest_change_unit(receipt_dir, name, action, service, &command)?;
             return Err(error);
         }
     };
@@ -701,6 +849,7 @@ fn run_action_with_material_gate(
         target_user,
         restart_decision,
         service_material_changed,
+        apply && movement.is_some(),
     )?;
     attest_change_unit::augment_comparison_receipt(
         receipt_dir,
@@ -713,10 +862,15 @@ fn run_action_with_material_gate(
             outcome.changed,
         ),
     )?;
-    crate::atoms::attest::change_unit::attest_change_unit(receipt_dir, action, service, &command)?;
+    crate::atoms::attest::change_unit::attest_change_unit(
+        receipt_dir,
+        name,
+        action,
+        service,
+        &command,
+    )?;
     Ok(outcome)
 }
-
 
 pub(crate) fn execute_validated_step(
     step: &crate::tools::ladder::ValidatedStep,
