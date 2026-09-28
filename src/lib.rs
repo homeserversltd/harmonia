@@ -466,7 +466,7 @@ fn update_apply_requested(args: &[String], invocation: &Invocation) -> bool {
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("interactable") | Some("config-proposal") => {
-            interactable_command(&args[1..], invocation.key())
+            interactable_command(&args[1..], Some(&invocation))
         }
         Some("install-timer") => bands::renew_self::schedule::install_timer(
             &args[1..],
@@ -483,7 +483,9 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("renew-self") => renew_self_command(&args[1..], &invocation),
         Some("update") => {
             let apply = update_apply_requested(&args, &invocation);
-            schedule::reconcile_update_timer(apply, invocation.key())?;
+            if env::var("HARMONIA_TOOLCHAIN_RATCHET_HANDOFF").ok().as_deref() != Some("1") {
+                schedule::reconcile_update_timer(apply, invocation.key())?;
+            }
             update_from_certificate(&args[1..], invocation)
         }
         Some("demo") => demo_command(&args[1..], invocation),

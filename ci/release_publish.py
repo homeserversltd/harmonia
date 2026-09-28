@@ -106,7 +106,7 @@ def download(asset, token, name):
     if status != 200: conflict(f"download of {name} returned HTTP {status}")
     return raw
 
-def verify(release, token, sha, tag, release_name, component, digest, sidecar, env_sha, schemas):
+def verify(release, token, sha, tag, release_name, component, digest, sidecar, env_sha, rustc_version, schemas):
     if release.get("tag_name") != tag or release.get("name") != release_name or release.get("target_commitish") != sha or ("target_commit" in release and release["target_commit"] != sha):
         conflict("existing release identity conflicts with CI_COMMIT_SHA")
     assets = assets_of(release)
@@ -122,6 +122,7 @@ def verify(release, token, sha, tag, release_name, component, digest, sidecar, e
         return
     if not has_required_fields(manifest_obj, manifest_schema): conflict("manifest.json is missing required seat fields or has invalid contents")
     if any((manifest_obj["schema"] != "estate.artifact.manifest.v1", manifest_obj["component"] != component, manifest_obj["source_sha"] != sha, manifest_obj["env_sha"] != env_sha, manifest_obj["target"] != "x86_64-unknown-linux-gnu", manifest_obj["sha256"] != digest)): conflict("manifest.json has conflicting contents")
+    if "rustc_version" in manifest_obj and rustc_version is not None and manifest_obj["rustc_version"] != rustc_version: conflict("manifest.json has a conflicting rustc_version")
     if not isinstance(manifest_obj["built_at"], str) or not manifest_obj["built_at"] or not isinstance(manifest_obj["pipeline_url"], str) or not manifest_obj["pipeline_url"]: conflict("manifest.json has invalid build metadata")
     flag_obj = decode(download(assets[EXPECTED_ASSETS[3]], token, EXPECTED_ASSETS[3]), "release.flag")
     flag_schema = schemas["estate.release-flag.v1"]
@@ -134,6 +135,7 @@ def verify(release, token, sha, tag, release_name, component, digest, sidecar, e
     if "sha256" in flag_obj and flag_obj["sha256"] != digest: conflict("release.flag has a conflicting sha256")
     if not isinstance(flag_obj["flagged_at"], str) or not flag_obj["flagged_at"]: conflict("release.flag has invalid flag metadata")
     if "pipeline_url" in flag_obj and flag_obj["pipeline_url"] != manifest_obj["pipeline_url"]: conflict("release.flag pipeline_url conflicts with manifest.json")
+    if "rustc_version" in flag_obj and rustc_version is not None and flag_obj["rustc_version"] != rustc_version: conflict("release.flag has a conflicting rustc_version")
 
 def run_retention(component, release):
     release_id = release.get("id") if isinstance(release, dict) else None
@@ -168,6 +170,16 @@ def main():
     pipeline_url = os.environ.get("CI_PIPELINE_URL", "")
     if not pipeline_url: fail("CI_PIPELINE_URL is required")
     FACTS["env_sha"] = env_sha
+    rustc_version = None
+    try:
+        with open(".release/rustc-version", "r", encoding="utf-8") as rustc_file:
+            rustc_version = rustc_file.read().strip()
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"cannot read .release/rustc-version: {exc}")
+    if rustc_version is not None and (len(rustc_version.split(".")) != 3 or any(not part.isascii() or not part.isdigit() for part in rustc_version.split("."))):
+        fail(".release/rustc-version must contain exactly X.Y.Z")
     try:
         with open("Cargo.toml", "rb") as cargo_file: package = tomllib.load(cargo_file).get("package", {})
     except (OSError, tomllib.TOMLDecodeError) as exc: fail(f"cannot read Cargo.toml: {exc}")
@@ -181,18 +193,20 @@ def main():
     digest = hashlib.sha256(binary).hexdigest(); FACTS["sha256"] = digest
     sidecar = f"{digest}  harmonia-x86_64\n".encode("ascii")
     manifest_obj = {"schema":"estate.artifact.manifest.v1", "component":component, "source_sha":sha, "env_sha":env_sha, "target":"x86_64-unknown-linux-gnu", "sha256":digest, "built_at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "pipeline_url":pipeline_url}
+    if rustc_version is not None: manifest_obj["rustc_version"] = rustc_version
     manifest = (json.dumps(manifest_obj, indent=2) + "\n").encode("utf-8")
     release_flag_obj = {"schema":"estate.release-flag.v1", "component":component, "source_sha":sha, "env_sha":env_sha, "sha256":digest, "flagged_at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "pipeline_url":pipeline_url}
+    if rustc_version is not None: release_flag_obj["rustc_version"] = rustc_version
     release_flag = (json.dumps(release_flag_obj, indent=2) + "\n").encode("utf-8")
     tag_url = f"{releases}/tags/{urllib.parse.quote(tag, safe='')}"; status, raw = request("GET", tag_url, token)
     if status == 200:
-        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, schemas); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
+        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, rustc_version, schemas); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
     if status != 404: fail(f"GET release tag returned HTTP {status}")
     payload = {"tag_name": tag, "name": FACTS["name"], "target_commitish": sha, "draft": False, "prerelease": False}; status, raw = request("POST", releases, token, payload)
     if status == 409:
         status, raw = request("GET", tag_url, token)
         if status != 200: fail(f"release collision reread returned HTTP {status}")
-        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, schemas); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
+        release = decode(raw, "existing release"); verify(release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, rustc_version, schemas); FACTS["status"] = "no-op"; emit(); run_retention(component, release); return
     if status not in (200, 201): fail(f"release creation returned HTTP {status}")
     release = decode(raw, "release creation"); release_id = release.get("id")
     if not isinstance(release_id, int): fail("created release has no numeric id")
@@ -204,7 +218,7 @@ def main():
     status, raw = request("GET", tag_url, token)
     if status != 200: fail(f"reread of release returned HTTP {status}")
     verified_release = decode(raw, "release reread")
-    verify(verified_release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, schemas)
+    verify(verified_release, token, sha, tag, FACTS["name"], component, digest, sidecar, env_sha, rustc_version, schemas)
     verified_id = verified_release.get("id") if isinstance(verified_release, dict) else None
     if not isinstance(verified_id, int) or isinstance(verified_id, bool) or verified_id != release_id:
         fail("release reread id conflicts with created release id")
