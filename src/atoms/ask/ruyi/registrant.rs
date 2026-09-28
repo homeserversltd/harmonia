@@ -809,28 +809,9 @@ fn exchange(
     let url = format!("http://{host}:{port}/api/v1/ruyi");
     perspective["self"] = row.clone();
     perspective["written_at"] = json!(now()?);
-    if let Ok(seat) = &seats.perspective {
-        if let Err(error) = seat.validate_ruyi(&perspective) {
-            return Ok(receipt("refused", row, Vec::new(), &error));
-        }
-    }
-    let mut payload = row.clone();
-    payload["perspective"] = perspective.clone();
-    let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
-    // Exactly one PUT followed by exactly one roster GET, including a failed PUT.
-    // Schema-door startup loads and the local-seat probe are separate observations,
-    // not additional requests in this exchange.
-    let put = crate::atoms::ask::beam::put_json(&format!("{url}/{mac}"), &bytes);
-    let get = get_roster(&url);
-    if let Err(error) = put {
-        let state = if error == "ruyi-gateway-unreachable" {
-            "gateway-unreachable"
-        } else {
-            "refused"
-        };
-        return Ok(receipt(state, row, Vec::new(), &error));
-    }
-    let roster = match get {
+    // Observe the roster before changing the feed: an unavailable gateway leaves
+    // both the persisted perspective and the interactables feed untouched.
+    let roster = match get_roster(&url) {
         Ok(roster) => roster,
         Err(error) => {
             let state = if error == "ruyi-gateway-unreachable" {
@@ -878,12 +859,27 @@ fn exchange(
     }
     let held_back_by =
         crate::interactables::reconcile_ruyi(profile, &row, &roster, &staves, is_gateway)?;
+    perspective["why"] = json!({
+        "computed_at": now()?,
+        "held_back_by": held_back_by,
+        "proposals": crate::interactables::ruyi_born_proposals()?
+    });
     perspective["written_at"] = json!(now()?);
     // Preserve the last observed seat so the next event can take the persisted
     // mac arm before its separate local-seat observation.
     if let Some(seat) = roster.get("seat") {
         perspective["gateway_seat"] = seat.clone();
     }
+    if let Ok(seat) = &seats.perspective {
+        if let Err(error) = seat.validate_ruyi(&perspective) {
+            return Ok(receipt("refused", row, staves, &error));
+        }
+    }
+    let mut payload = row.clone();
+    payload["perspective"] = perspective.clone();
+    let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+    // The row and its finalized perspective travel in the single post-reconcile PUT.
+    let put = crate::atoms::ask::beam::put_json(&format!("{url}/{mac}"), &bytes);
     let mut result = receipt(
         if is_gateway {
             "self-is-gateway"
@@ -895,6 +891,14 @@ fn exchange(
         signal,
     );
     result["held_back_by"] = json!(held_back_by);
+    if let Err(error) = put {
+        result["state"] = json!(if error == "ruyi-gateway-unreachable" {
+            "gateway-unreachable"
+        } else {
+            "refused"
+        });
+        result["first_missing_signal"] = json!(error);
+    }
     if validate_own_receipt_with_seat(&mut result, seats.register.as_ref().ok()) {
         return Ok(result);
     }

@@ -176,6 +176,26 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
     Ok(feed)
 }
 
+pub(crate) fn ruyi_born_proposals() -> Result<Vec<Value>, String> {
+    let feed = load_feed(&feed_path())?;
+    Ok(feed
+        .interactables
+        .iter()
+        .filter(|item| is_ruyi_born_kind(&item.kind))
+        .map(|item| {
+            serde_json::json!({
+                "id": item.id.clone(),
+                "kind": item.kind.clone(),
+                "name": item.name.clone(),
+                "description": item.description.clone(),
+                "evidence": item.evidence.clone(),
+                "refreshed_at": item.refreshed_at.clone(),
+                "silenced": item.silenced
+            })
+        })
+        .collect())
+}
+
 pub(crate) fn load_feed_raw(path: &Path) -> Result<InteractablesFeed, String> {
     let observed_text = crate::atoms::ask::optional_text(path)?;
     match observed_text {
