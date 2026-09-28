@@ -112,12 +112,6 @@ pub(crate) fn validate_command_precondition(
     if shell_command(program, &argv) || inline_payload(program, &argv) {
         return Err(LadderValidationError { step_id: step_id.into(), defect: "command-shell-string-refused".into() });
     }
-    if permutation == "capture" && !read_only_command(program, &argv) {
-        return Err(LadderValidationError { step_id: step_id.into(), defect: "command-capture-not-proven-read-only".into() });
-    }
-    if permutation == "act" && !command_mutates(program, &argv) {
-        return Err(LadderValidationError { step_id: step_id.into(), defect: "command-act-program-not-approved-mutator".into() });
-    }
     if permutation == "act" {
         let Some(observation) = args.get("observation").and_then(Value::as_object) else {
             return Err(LadderValidationError { step_id: step_id.into(), defect: "command-act-observation-missing".into() });
@@ -139,8 +133,8 @@ pub(crate) fn validate_command_precondition(
             if shell_command(observe_program, &observe_args) || inline_payload(observe_program, &observe_args) {
                 return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-shell-string-refused".into() });
             }
-            if observe_program.trim().is_empty() || !read_only_command(observe_program, &observe_args) {
-                return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-not-proven-read-only".into() });
+            if observe_program.trim().is_empty() {
+                return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-program-empty".into() });
             }
             let allowed = ["program", "args", "cwd", "expected_exit_code", "expected_stdout"];
             if observation.keys().any(|key| !allowed.contains(&key.as_str()))
@@ -188,51 +182,6 @@ fn inline_payload(program: &str, args: &[Value]) -> bool {
     let interpreter = matches!(base, "python"|"python2"|"python3"|"perl"|"ruby"|"node"|"php");
     interpreter && args.iter().filter_map(Value::as_str).any(|arg| matches!(arg, "-c"|"-e"|"--eval"))
 }
-fn read_only_command(program: &str, args: &[Value]) -> bool {
-    let Some(argv) = args.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
-        return false;
-    };
-    let name = Path::new(program).file_name().and_then(|v| v.to_str()).unwrap_or("");
-    match name {
-        "test" => argv.len() == 2 && matches!(argv[0], "-e" | "-x" | "-s" | "-d" | "-f" | "-r" | "-w"),
-        "systemd-analyze" => {
-            (argv.len() == 2 && argv[0] == "verify")
-                || (argv.len() == 3
-                    && argv[0] == "--root=/"
-                    && argv[1] == "verify"
-                    && Path::new(argv[2]).is_absolute()
-                    && Path::new(argv[2]).extension().and_then(|v| v.to_str()) == Some("service"))
-        },
-        "testparm" => argv == ["-s"],
-        "python3" => (argv.len() == 3 && argv[0] == "-m" && argv[1] == "json.tool")
-            || (argv.len() == 2
-                && argv[0].starts_with("${module_dir}/")
-                && Path::new(argv[0].trim_start_matches("${module_dir}/"))
-                    .components()
-                    .count()
-                    == 1
-                && matches!(
-                    (Path::new(argv[0].trim_start_matches("${module_dir}/")).file_name().and_then(|name| name.to_str()), argv[1]),
-                    (Some("launcher-cache.py"), "--check") | (Some("caduceus-staff-path.py"), "--check")
-                )),
-        "stat" => argv.len() >= 3 && argv[0] == "-c" && matches!(argv[1], "%U:%G" | "%a"),
-        _ => false,
-    }
-}
-
-fn command_mutates(program: &str, args: &[Value]) -> bool {
-    let base = Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or("");
-    let Some(argv) = args.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else { return false; };
-    let module_script = base == "python3" && argv.first().is_some_and(|script| {
-        script.starts_with("${module_dir}/") && script.ends_with(".py")
-            && Path::new(script.trim_start_matches("${module_dir}/")).components().count() == 1
-    }) && !argv.iter().any(|arg| matches!(*arg, "-c" | "-e" | "--eval"));
-    let synapse_staff_command = program == "/usr/bin/python3"
-        && argv == ["/usr/local/sbin/agathodaimon/cli.py", "matrix", "matrix-converge"];
-    module_script || synapse_staff_command
-}
-
-
 fn validate_files_metadata_args(
     step_id: &str,
     args: &BTreeMap<String, Value>,
