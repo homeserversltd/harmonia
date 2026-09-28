@@ -17,7 +17,101 @@ pub(crate) fn run(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
+    #[cfg(feature = "test-facade")]
+    if env::var(RENEW_SELF_FIXTURE_ENV).as_deref() == Ok("ground-two-pass-v1") {
+        return run_ground_fixture_preflight(module_root, receipt_dir, apply, invocation);
+    }
     run_engine_preflight(module_root, receipt_dir, apply, invocation)
+}
+
+#[cfg(feature = "test-facade")]
+fn canonical_path_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("renew-self-fixture-path-not-absolute".into());
+    }
+    let mut existing = path;
+    let mut tail = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .ok_or_else(|| "renew-self-fixture-path-no-existing-ancestor".to_string())?;
+        tail.push(name.to_os_string());
+        existing = existing
+            .parent()
+            .ok_or_else(|| "renew-self-fixture-path-no-existing-ancestor".to_string())?;
+    }
+    let mut canonical = fs::canonicalize(existing)
+        .map_err(|error| format!("renew-self-fixture-path-canonicalize-failed: {error}"))?;
+    for part in tail.iter().rev() {
+        canonical.push(part);
+    }
+    Ok(canonical)
+}
+
+#[cfg(feature = "test-facade")]
+fn run_ground_fixture_preflight(
+    module_root: &Path,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<ModuleExecution, String> {
+    if !apply || invocation.is_none() {
+        return Err("renew-self-fixture-requires-apply-invocation".into());
+    }
+    let receipt = canonical_path_with_missing_tail(receipt_dir)?;
+    let fixture_root = receipt
+        .ancestors()
+        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("fixture-receipts"))
+        .ok_or_else(|| "renew-self-fixture-receipts-root-absent".to_string())?;
+    let fixture_root = fs::canonicalize(fixture_root)
+        .map_err(|error| format!("renew-self-fixture-root-canonicalize-failed: {error}"))?;
+    let ground = std::env::current_dir()
+        .and_then(|path| fs::canonicalize(path))
+        .map_err(|error| format!("renew-self-fixture-ground-canonicalize-failed: {error}"))?;
+    if fixture_root != ground.join("fixture-receipts") {
+        return Err("renew-self-fixture-root-not-current-ground".into());
+    }
+    let module = canonical_path_with_missing_tail(module_root)?;
+    let install_bin = canonical_path_with_missing_tail(&engine_install_bin())?;
+    let staged = canonical_path_with_missing_tail(&staged_bin())?;
+    let source_root = canonical_path_with_missing_tail(&engine_source_root())?;
+    for (label, path) in [
+        ("receipt", &receipt),
+        ("module", &module),
+        ("installed", &install_bin),
+        ("staged", &staged),
+        ("source", &source_root),
+    ] {
+        if !path.starts_with(&fixture_root) {
+            return Err(format!("renew-self-fixture-{label}-path-outside-ground"));
+        }
+    }
+    let staged_sha = sha256_file(&staged)
+        .map_err(|error| format!("renew-self-fixture-staged-digest-failed: {error}"))?;
+    let install_before = install_bin_fingerprint(&install_bin);
+    let preflight_dir = receipt_dir.join("engine-preflight");
+    crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
+    post_stage_preflight(
+        module_root,
+        &preflight_dir,
+        &install_bin,
+        &staged,
+        install_before,
+        crate::COMPILED_COMPONENT.to_string(),
+        None,
+        None,
+        true,
+        invocation,
+        Some("ground-fixture".into()),
+        None,
+        None,
+        1,
+        false,
+        "none".into(),
+        Some(staged_sha),
+        None,
+        |plan, invocation| crate::atoms::r#do::replace_process::replace(plan, invocation),
+    )
 }
 
 pub(crate) fn is_content_seat_failure(signal: &str) -> bool {
@@ -37,7 +131,7 @@ pub(crate) fn is_stale_staged_validation_failure(execution: &ModuleExecution) ->
 }
 
 use crate::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::env;
@@ -47,6 +141,9 @@ use std::os::unix::fs::PermissionsExt;
 
 pub(crate) const PREFLIGHT_SCHEMA: &str = "harmonia.engine.preflight.v1";
 const SELF_UPDATE_REEXEC_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC";
+const SELF_UPDATE_REEXEC_RECORD_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC_RECORD";
+#[cfg(feature = "test-facade")]
+const RENEW_SELF_FIXTURE_ENV: &str = "HARMONIA_RENEW_SELF_FIXTURE";
 const SELF_UPDATE_REEXEC_GENERATION: u64 = 1;
 const SELF_UPDATE_REEXEC_RUNNING_FINGERPRINT_MISSING: &str =
     "harmonia-self-update-reexec-running-fingerprint-missing";
@@ -94,6 +191,10 @@ pub(crate) fn install_engine_test_seam(
 }
 
 pub(crate) fn engine_source_root() -> PathBuf {
+    #[cfg(any(test, feature = "test-facade"))]
+    if let Some(path) = env::var_os("HARMONIA_TEST_ENGINE_SOURCE_ROOT") {
+        return PathBuf::from(path);
+    }
     #[cfg(test)]
     if let Some(path) = ENGINE_TEST_SEAM.with(|seam| {
         seam.borrow()
@@ -282,6 +383,13 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
+fn is_lower_hex_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 pub(crate) fn self_update_reexec_guard_active() -> bool {
     env::var(SELF_UPDATE_REEXEC_ENV).as_deref() == Ok("1")
 }
@@ -328,6 +436,253 @@ struct SelfUpdateReexec {
     generation: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct SelfUpdateReexecHandoff {
+    schema: String,
+    generation: u64,
+    from_sha: String,
+    to_sha: String,
+    proof_battery_passed: bool,
+    promotion_changed: bool,
+    old_engine_preserved: bool,
+    bootstrap_order: String,
+    pre_sync_source_build: String,
+    backup: SelfUpdateBackupEvidence,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SelfUpdateBackupEvidence {
+    backed_up: bool,
+    path: String,
+    promotion_stdout: String,
+}
+
+fn write_self_update_reexec_handoff(
+    preflight_dir: &Path,
+    from_sha: &str,
+    to_sha: &str,
+    proof_battery_passed: bool,
+    promote: &CmdResult,
+) -> Result<PathBuf, String> {
+    let run_path = preflight_dir.join("run.json");
+    let run: Value = serde_json::from_slice(
+        &fs::read(&run_path)
+            .map_err(|error| format!("engine-reexec-handoff-run-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-reexec-handoff-run-parse-failed: {error}"))?;
+    let old_engine_preserved = run
+        .get("old_engine_preserved")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "engine-reexec-handoff-old-engine-preserved-unobserved".to_string())?;
+    let bootstrap_order = run
+        .get("bootstrap_order")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "engine-reexec-handoff-bootstrap-order-unobserved".to_string())?;
+    let pre_sync_source_build = run
+        .get("pre_sync_source_build")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "engine-reexec-handoff-pre-sync-source-build-unobserved".to_string())?;
+    let promotion_stdout = promote.stdout.clone();
+    let backup_path = preflight_dir.join("backups/prior-binary");
+    let backed_up = promotion_stdout.contains("backed_up=true");
+    let handoff = SelfUpdateReexecHandoff {
+        schema: "harmonia.engine.self_update_reexec_handoff.v1".into(),
+        generation: SELF_UPDATE_REEXEC_GENERATION,
+        from_sha: from_sha.to_owned(),
+        to_sha: to_sha.to_owned(),
+        proof_battery_passed,
+        promotion_changed: promotion_stdout.contains("changed=true"),
+        old_engine_preserved,
+        bootstrap_order: bootstrap_order.to_owned(),
+        pre_sync_source_build: pre_sync_source_build.to_owned(),
+        backup: SelfUpdateBackupEvidence {
+            backed_up,
+            path: backup_path.display().to_string(),
+            promotion_stdout,
+        },
+    };
+    let record_path = preflight_dir.join("self-update-reexec.generation-1.json");
+    let record = serde_json::to_value(handoff)
+        .map_err(|error| format!("engine-reexec-handoff-serialize-failed: {error}"))?;
+    crate::atoms::attest::write_json_atomic(&record_path, &record)
+        .map_err(|error| format!("engine-reexec-handoff-write-failed: {error}"))?;
+
+    let mut proof_paths = Vec::new();
+    for entry in fs::read_dir(preflight_dir)
+        .map_err(|error| format!("engine-reexec-proof-list-failed: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("engine-reexec-proof-list-entry-failed: {error}"))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let proof_name = name.strip_suffix(".json").unwrap_or_default();
+        if proof_name == "proof-explain"
+            || proof_name == "proof-validate-ladder"
+            || proof_name.strip_prefix("proof-validate-ladder-")
+                .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
+            || proof_name == "proof-plan-run"
+        {
+            proof_paths.push(path);
+        }
+    }
+    proof_paths.sort();
+    let expected_proofs = ["proof-explain.json", "proof-validate-ladder.json", "proof-plan-run.json"];
+    if expected_proofs.iter().any(|name| !proof_paths.iter().any(|path| path.file_name().and_then(|name| name.to_str()) == Some(name))) {
+        return Err("engine-reexec-proof-receipts-absent-or-incomplete".into());
+    }
+    for source in proof_paths {
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "engine-reexec-proof-receipt-name-invalid".to_string())?;
+        let proof: Value = serde_json::from_slice(
+            &fs::read(&source).map_err(|error| format!("engine-reexec-proof-receipt-read-failed: {error}"))?,
+        ).map_err(|error| format!("engine-reexec-proof-receipt-parse-failed: {error}"))?;
+        if proof.get("schema").and_then(Value::as_str) != Some("harmonia.command_receipt.v1")
+            || proof.get("name").and_then(Value::as_str) != Some(name.trim_end_matches(".json"))
+            || proof.get("ok").and_then(Value::as_bool) != Some(true)
+            || proof.get("exit_code").and_then(Value::as_i64) != Some(0)
+        {
+            return Err(format!("engine-reexec-proof-receipt-unproven: {name}"));
+        }
+        let target = preflight_dir.join(format!("{name}.generation-1"));
+        let bytes = fs::read(&source)
+            .map_err(|error| format!("engine-reexec-proof-receipt-read-failed: {error}"))?;
+        crate::atoms::attest::write_receipt_bytes_atomic(&target, &bytes)
+            .map_err(|error| format!("engine-reexec-proof-receipt-preserve-failed: {error}"))?;
+    }
+    let promotion_source = preflight_dir.join("promote-successor.json");
+    let promotion: Value = serde_json::from_slice(
+        &fs::read(&promotion_source).map_err(|error| format!("engine-reexec-promotion-receipt-read-failed: {error}"))?,
+    ).map_err(|error| format!("engine-reexec-promotion-receipt-parse-failed: {error}"))?;
+    if promotion.get("ok").and_then(Value::as_bool) != Some(true)
+        || !promotion.get("stdout").and_then(Value::as_str).is_some_and(|stdout| stdout.contains("changed=true") && stdout.contains("atomic placement"))
+    {
+        return Err("engine-reexec-promotion-receipt-unproven".into());
+    }
+    let promotion_bytes = fs::read(&promotion_source)
+        .map_err(|error| format!("engine-reexec-promotion-receipt-read-failed: {error}"))?;
+    crate::atoms::attest::write_receipt_bytes_atomic(
+        &preflight_dir.join("promote-successor.generation-1.json"),
+        &promotion_bytes,
+    )
+    .map_err(|error| format!("engine-reexec-promotion-receipt-preserve-failed: {error}"))?;
+    fs::canonicalize(&record_path)
+        .map_err(|error| format!("engine-reexec-handoff-path-absolute-failed: {error}"))
+}
+
+fn read_self_update_reexec_handoff(
+    preflight_dir: &Path,
+) -> Result<Option<SelfUpdateReexecHandoff>, String> {
+    if !self_update_reexec_guard_active() {
+        return Ok(None);
+    }
+    let Some(raw_path) = env::var_os(SELF_UPDATE_REEXEC_RECORD_ENV) else {
+        return Ok(None);
+    };
+    let record_path = PathBuf::from(raw_path);
+    if !record_path.is_absolute()
+        || record_path.file_name().and_then(|name| name.to_str())
+            != Some("self-update-reexec.generation-1.json")
+    {
+        return Err("engine-reexec-handoff-path-foreign".into());
+    }
+    let canonical_record = fs::canonicalize(&record_path)
+        .map_err(|_| "engine-reexec-handoff-path-foreign".to_string())?;
+    let first_preflight_dir = canonical_record
+        .parent()
+        .ok_or_else(|| "engine-reexec-handoff-path-foreign".to_string())?;
+    if canonical_record.file_name().and_then(|name| name.to_str())
+        != Some("self-update-reexec.generation-1.json")
+    {
+        return Err("engine-reexec-handoff-path-foreign".into());
+    }
+    let current_preflight_dir = fs::canonicalize(preflight_dir)
+        .map_err(|error| format!("engine-reexec-current-receipt-path-canonicalize-failed: {error}"))?;
+    let same_directory = first_preflight_dir == current_preflight_dir;
+    let first_run_dir = first_preflight_dir.parent();
+    let current_run_dir = current_preflight_dir.parent();
+    let rolling_layout_compatible = first_preflight_dir.file_name().and_then(|name| name.to_str())
+        == Some("engine-preflight")
+        && current_preflight_dir.file_name().and_then(|name| name.to_str()) == Some("engine-preflight")
+        && first_run_dir.is_some()
+        && current_run_dir.is_some()
+        && first_run_dir != current_run_dir
+        && first_preflight_dir.parent().and_then(Path::parent)
+            == current_preflight_dir.parent().and_then(Path::parent);
+    if !same_directory && !rolling_layout_compatible {
+        return Err("engine-reexec-handoff-path-foreign".into());
+    }
+    let preflight_dir = first_preflight_dir;
+    let handoff: SelfUpdateReexecHandoff = serde_json::from_slice(
+        &fs::read(&record_path)
+            .map_err(|error| format!("engine-reexec-handoff-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-reexec-handoff-parse-failed: {error}"))?;
+    if handoff.schema != "harmonia.engine.self_update_reexec_handoff.v1"
+        || handoff.generation != SELF_UPDATE_REEXEC_GENERATION
+        || !is_lower_hex_sha256(&handoff.from_sha)
+        || !is_lower_hex_sha256(&handoff.to_sha)
+        || handoff.from_sha == handoff.to_sha
+        || !handoff.proof_battery_passed
+        || !handoff.promotion_changed
+        || (handoff.backup.backed_up && !handoff.old_engine_preserved)
+        || handoff.bootstrap_order.is_empty()
+        || handoff.pre_sync_source_build.is_empty()
+        || handoff.backup.path != preflight_dir.join("backups/prior-binary").display().to_string()
+        || !handoff.backup.promotion_stdout.contains("changed=true")
+        || handoff.backup.promotion_stdout.contains("backed_up=true") != handoff.backup.backed_up
+    {
+        return Err("engine-reexec-handoff-fields-invalid".into());
+    }
+    let promotion_path = preflight_dir.join("promote-successor.generation-1.json");
+    let promotion: Value = serde_json::from_slice(
+        &fs::read(&promotion_path)
+            .map_err(|error| format!("engine-reexec-first-promotion-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-reexec-first-promotion-parse-failed: {error}"))?;
+    let promotion_stdout = promotion.get("stdout").and_then(Value::as_str).unwrap_or("");
+    if promotion.get("schema").and_then(Value::as_str) != Some("harmonia.command_receipt.v1")
+        || promotion.get("name").and_then(Value::as_str) != Some("promote-successor")
+        || promotion.get("ok").and_then(Value::as_bool) != Some(true)
+        || !promotion_stdout.contains("changed=true")
+        || !promotion_stdout.contains("atomic placement")
+    {
+        return Err("engine-reexec-first-promotion-unproven".into());
+    }
+    let replace_path = preflight_dir.join("replace-process.json");
+    let replace: Value = serde_json::from_slice(
+        &fs::read(&replace_path)
+            .map_err(|error| format!("engine-reexec-replace-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-reexec-replace-receipt-parse-failed: {error}"))?;
+    let replace_path_abs = fs::canonicalize(&replace_path)
+        .map_err(|error| format!("engine-reexec-replace-path-canonicalize-failed: {error}"))?;
+    if replace.get("schema").and_then(Value::as_str) != Some("harmonia.replace-process.v1")
+        || replace.get("guard_name").and_then(Value::as_str) != Some(SELF_UPDATE_REEXEC_ENV)
+        || replace.get("guard_value").and_then(Value::as_str) != Some("1")
+        || replace.get("receipt_path").and_then(Value::as_str)
+            != Some(replace_path_abs.to_string_lossy().as_ref())
+        || replace.get("synced").and_then(Value::as_bool) != Some(true)
+        || replace.get("proof").and_then(Value::as_bool) != Some(false)
+        || replace.get("successor_canonical").and_then(Value::as_str)
+            != Some(fs::canonicalize(engine_install_bin())
+                .map_err(|error| format!("engine-reexec-installed-path-canonicalize-failed: {error}"))?
+                .to_string_lossy().as_ref())
+    {
+        return Err("engine-reexec-replace-receipt-unproven".into());
+    }
+    let installed = install_bin_fingerprint(&engine_install_bin());
+    let running = running_binary_fingerprint();
+    if installed.as_deref() != Some(handoff.to_sha.as_str())
+        || running.as_deref() != Some(handoff.to_sha.as_str())
+    {
+        return Err("engine-reexec-handoff-current-binary-mismatch".into());
+    }
+    Ok(Some(handoff))
+}
+
 fn self_update_reexec_receipt(
     promotion_changed: bool,
     running_sha: Option<String>,
@@ -360,6 +715,30 @@ fn mark_reexec_failure(preflight_dir: &Path, signal: &str) -> Result<(), String>
     if signal.contains("replace-process-rollback-failed") {
         receipt["old_engine_preserved"] = json!(false);
     }
+    write_json(&path, &receipt)
+}
+
+fn compose_self_update_reexec_receipt(
+    preflight_dir: &Path,
+    handoff: &SelfUpdateReexecHandoff,
+) -> Result<(), String> {
+    let path = preflight_dir.join("run.json");
+    let mut receipt: Value = serde_json::from_slice(
+        &fs::read(&path)
+            .map_err(|error| format!("engine-reexec-composed-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-reexec-composed-receipt-parse-failed: {error}"))?;
+    receipt["changed"] = json!(true);
+    receipt["reexec"] = json!({
+        "from_sha": handoff.from_sha,
+        "to_sha": handoff.to_sha,
+        "generation": SELF_UPDATE_REEXEC_GENERATION
+    });
+    receipt["successor_promoted_only_after"] = json!("explain+validate-ladder+plan-run");
+    receipt["presses_per_engine_change"] = json!(1);
+    receipt["old_engine_preserved"] = json!(handoff.old_engine_preserved);
+    receipt["bootstrap_order"] = json!(handoff.bootstrap_order);
+    receipt["pre_sync_source_build"] = json!(handoff.pre_sync_source_build);
     write_json(&path, &receipt)
 }
 
@@ -444,7 +823,7 @@ fn write_bearer_command_receipt(
 }
 
 pub(crate) fn engine_install_bin() -> PathBuf {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-facade"))]
     if let Some(path) = env::var_os("HARMONIA_TEST_ENGINE_INSTALL_BIN") {
         return PathBuf::from(path);
     }
@@ -469,7 +848,7 @@ fn rollback_process_plan(
 }
 
 pub(crate) fn staged_bin() -> PathBuf {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-facade"))]
     if let Some(path) = env::var_os("HARMONIA_TEST_ENGINE_STAGED_BIN") {
         return PathBuf::from(path);
     }
@@ -697,8 +1076,8 @@ fn emit_preflight_receipt(
             "source_authority": "appliance-config-sources",
             "compiled_component": component,
             "engine_component_ignored": engine_component_ignored,
-            "build_root": ENGINE_SOURCE_ROOT,
-            "install_bin": ENGINE_INSTALL_BIN,
+            "build_root": engine_source_root().display().to_string(),
+            "install_bin": engine_install_bin().display().to_string(),
             "source_head": source_head.unwrap_or("unknown"),
             "content_head_observed": if content_seat_is_fresh {
                 content_seat
@@ -1053,6 +1432,39 @@ pub(crate) fn run_engine_preflight(
     let (component, resolution) = match source_gate {
         Ok(resolved) => resolved,
         Err(signal) => {
+            let handoff_signal = match read_self_update_reexec_handoff(&preflight_dir) {
+                Ok(handoff) => handoff,
+                Err(error) => {
+                    let signal = format!("{signal}; engine-reexec-handoff-invalid: {error}");
+                    emit_preflight_receipt(
+                        module_root,
+                        &preflight_dir,
+                        &component_for_receipt,
+                        engine_component_ignored.as_deref(),
+                        None,
+                        None,
+                        install_bin_fingerprint(&engine_install_bin()).as_deref(),
+                        false,
+                        apply,
+                        false,
+                        &signal,
+                        0,
+                        None,
+                        false,
+                        None,
+                    )?;
+                    update_engine_preflight_contract(&preflight_dir, None, None, Some(&signal))?;
+                    forward_preflight_receipt(
+                        false,
+                        apply,
+                        false,
+                        &signal,
+                        &component_for_receipt,
+                        engine_component_ignored.as_deref(),
+                    );
+                    return Ok(failed_execution(&signal));
+                }
+            };
             emit_preflight_receipt(
                 module_root,
                 &preflight_dir,
@@ -1070,8 +1482,25 @@ pub(crate) fn run_engine_preflight(
                 false,
                 None,
             )?;
+            if let Some(handoff) = handoff_signal.as_ref() {
+                compose_self_update_reexec_receipt(&preflight_dir, handoff)?;
+            }
             update_engine_preflight_contract(&preflight_dir, None, None, Some(&signal))?;
-            return Ok(failed_execution(&signal));
+            forward_preflight_receipt(
+                false,
+                apply,
+                handoff_signal.is_some(),
+                &signal,
+                &component_for_receipt,
+                engine_component_ignored.as_deref(),
+            );
+            return Ok(ModuleExecution {
+                ok: false,
+                changed: handoff_signal.is_some(),
+                operation_count: 0,
+                first_missing_signal: Some(signal),
+                placements: Vec::new(),
+            });
         }
     };
     let source_plan =
@@ -1374,6 +1803,18 @@ fn post_stage_preflight(
         &crate::atoms::r#do::InvocationKey,
     ) -> Result<(), String>,
 ) -> Result<ModuleExecution, String> {
+    let mut first_missing_signal = first_missing_signal;
+    let handoff = if self_update_reexec_guard_active() {
+        match read_self_update_reexec_handoff(preflight_dir) {
+            Ok(handoff) => handoff,
+            Err(error) => {
+                first_missing_signal = error;
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut promote = CmdResult {
         ok: true,
         code: 0,
@@ -1553,38 +1994,63 @@ fn post_stage_preflight(
                                     );
                                     reexec = None;
                                 } else if let Some(invocation) = invocation {
-                                    let mut plan = rollback_process_plan(
-                                        &install_bin,
-                                        &preflight_dir.join("replace-process.json"),
-                                        rollback_bytes,
-                                        rollback_mode,
-                                    );
-                                    plan.argv = env::args().skip(1).collect();
-                                    match exec(&plan, invocation) {
-                                        Ok(()) => {
-                                            // A returning success means the successor owns the next
-                                            // run receipt; never finalize this pre-exec snapshot.
-                                            return Ok(ModuleExecution {
-                                                ok: true,
-                                                changed: true,
-                                                operation_count,
-                                                first_missing_signal: None,
-                                                placements: Vec::new(),
-                                            });
-                                        }
+                                    let handoff_path = match write_self_update_reexec_handoff(
+                                        &preflight_dir,
+                                        &from_sha,
+                                        &to_sha,
+                                        proof_battery_observed,
+                                        &promote,
+                                    ) {
+                                        Ok(path) => path,
                                         Err(error) => {
-                                            changed = false;
-                                            first_missing_signal =
-                                                format!("engine-reexec-failed: {error}");
-                                            if let Err(receipt_error) = mark_reexec_failure(
+                                            first_missing_signal = rollback_after_install(
+                                                &rollback_plan,
                                                 &preflight_dir,
-                                                &first_missing_signal,
-                                            ) {
-                                                first_missing_signal = format!(
-                                                    "{first_missing_signal}; engine-reexec-red-receipt-failed: {receipt_error}"
-                                                );
-                                            }
+                                                &format!("engine-reexec-handoff-failed: {error}"),
+                                            );
                                             reexec = None;
+                                            PathBuf::new()
+                                        }
+                                    };
+                                    if first_missing_signal == "none" {
+                                        let mut plan = rollback_process_plan(
+                                            &install_bin,
+                                            &preflight_dir.join("replace-process.json"),
+                                            rollback_bytes,
+                                            rollback_mode,
+                                        );
+                                        plan.argv = env::args().skip(1).collect();
+                                        env::set_var(
+                                            SELF_UPDATE_REEXEC_RECORD_ENV,
+                                            &handoff_path,
+                                        );
+                                        match exec(&plan, invocation) {
+                                            Ok(()) => {
+                                                // A returning success means the successor owns the next
+                                                // run receipt; never finalize this pre-exec snapshot.
+                                                return Ok(ModuleExecution {
+                                                    ok: true,
+                                                    changed: true,
+                                                    operation_count,
+                                                    first_missing_signal: None,
+                                                    placements: Vec::new(),
+                                                });
+                                            }
+                                            Err(error) => {
+                                                env::remove_var(SELF_UPDATE_REEXEC_RECORD_ENV);
+                                                changed = false;
+                                                first_missing_signal =
+                                                    format!("engine-reexec-failed: {error}");
+                                                if let Err(receipt_error) = mark_reexec_failure(
+                                                    &preflight_dir,
+                                                    &first_missing_signal,
+                                                ) {
+                                                    first_missing_signal = format!(
+                                                        "{first_missing_signal}; engine-reexec-red-receipt-failed: {receipt_error}"
+                                                    );
+                                                }
+                                                reexec = None;
+                                            }
                                         }
                                     }
                                 } else {
@@ -1604,7 +2070,19 @@ fn post_stage_preflight(
     }
     write_command_receipt(&preflight_dir, "promote-successor", &promote)?;
     let installed_after = install_bin_fingerprint(&install_bin);
+    if self_update_reexec_guard_active()
+        && handoff.is_none()
+        && promote.stdout.contains("changed=true")
+        && first_missing_signal == "none"
+    {
+        first_missing_signal = "engine-reexec-handoff-required-for-change".into();
+    }
     let ok = first_missing_signal == "none";
+    let whole_press_reexec = handoff.as_ref().filter(|record| {
+        apply
+            && installed_after.as_deref() == Some(record.to_sha.as_str())
+            && record.from_sha != record.to_sha
+    });
     emit_preflight_receipt(
         module_root,
         &preflight_dir,
@@ -1622,6 +2100,10 @@ fn post_stage_preflight(
         proof_battery_observed,
         reexec.as_ref(),
     )?;
+    let whole_press_changed = whole_press_reexec.is_some();
+    if let Some(record) = whole_press_reexec {
+        compose_self_update_reexec_receipt(&preflight_dir, record)?;
+    }
     update_engine_preflight_contract(
         &preflight_dir,
         lane.as_deref(),
@@ -1631,14 +2113,14 @@ fn post_stage_preflight(
     forward_preflight_receipt(
         ok,
         apply,
-        changed,
+        changed || whole_press_changed,
         &first_missing_signal,
         &component,
         engine_component_ignored.as_deref(),
     );
     Ok(ModuleExecution {
         ok,
-        changed: changed && ok,
+        changed: changed || whole_press_changed,
         operation_count,
         first_missing_signal: (!ok).then_some(first_missing_signal),
         placements: Vec::new(),
