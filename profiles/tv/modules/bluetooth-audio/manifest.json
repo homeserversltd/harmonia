@@ -3,7 +3,7 @@
   "id": "bluetooth-audio",
   "category": "interactable",
   "version": "1.0.0",
-  "description": "TV Bluetooth audio service declaration; this sidecar carries constants only.",
+  "description": "TV profile module declaration retaining bluetooth-audio identity and constants; the empty ladder declares no convergence steps.",
   "optional": false,
   "constants": {
     "services": [

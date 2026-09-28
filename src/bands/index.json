@@ -15,15 +15,15 @@
       "movement_status": "fronted"
     },
     {
-      "id": "pull-source",
+      "id": "stage-profile",
       "charter_order": 3,
-      "deed": "Acquire source through the owning pull-repo tool at the rolling-update boundary.",
+      "deed": "Materialize the profile and refresh its projection at the update prelude.",
       "movement_status": "fronted"
     },
     {
-      "id": "stage-profile",
+      "id": "pull-source",
       "charter_order": 4,
-      "deed": "Materialize the profile and refresh its projection at the update prelude.",
+      "deed": "Execute routine source children through their owning tools; rolling-update source acquisition occurs in the prelude.",
       "movement_status": "fronted"
     },
     {
@@ -45,15 +45,15 @@
       "movement_status": "fronted"
     },
     {
-      "id": "restart-services",
+      "id": "backfill-files",
       "charter_order": 8,
-      "deed": "Execute service transitions through the owning service and health tools.",
+      "deed": "Execute managed-file work through the owning file and symlink tools.",
       "movement_status": "fronted"
     },
     {
-      "id": "backfill-files",
+      "id": "restart-services",
       "charter_order": 9,
-      "deed": "Execute managed-file work through the owning file and symlink tools.",
+      "deed": "Execute service transitions through the owning service and health tools.",
       "movement_status": "fronted"
     },
     {
@@ -72,18 +72,28 @@
   "effective_order": {
     "rolling_update": [
       "renew-self engine preflight",
-      "pull-source acquisition and stage-profile materialization",
       "migrations hotfix selection",
+      "stage-profile materialization",
+      "pull-source routine band (rolling-update source acquisition occurs in a prelude outside the band walk)",
       "compare profile shape and module-group selection",
-      "install-packages package and virtual-environment tools, followed by owning binary, service, file, and proposal tools",
-      "ratchet-binaries, restart-services, backfill-files, and propose-edits tools in their declared module order",
+      "install-packages package and virtual-environment tools",
+      "ratchet-binaries build and promotion tools",
+      "backfill-files managed-file and symlink tools",
+      "restart-services service and health tools",
+      "propose-edits file and proposal-projection tools",
       "report-home receipt and stdout reporting"
     ],
     "direct_profile_run": [
-      "renew-self face: engine preflight then migrations hotfix",
+      "renew-self engine preflight",
+      "migrations hotfix selection",
+      "stage-profile materialization",
+      "pull-source routine band",
       "compare profile shape and module-group selection",
-      "install-packages package and virtual-environment tools, followed by owning binary, service, file, and proposal tools",
-      "ratchet-binaries, restart-services, backfill-files, and propose-edits tools in their declared module order",
+      "install-packages package and virtual-environment tools",
+      "ratchet-binaries build and promotion tools",
+      "backfill-files managed-file and symlink tools",
+      "restart-services service and health tools",
+      "propose-edits file and proposal-projection tools",
       "report-home receipt and stdout reporting"
     ]
   }

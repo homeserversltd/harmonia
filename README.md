@@ -12,13 +12,15 @@ Harmonia is a Rust appliance update engine. Each invocation follows one bounded 
 
 Profiles provide ordered module declarations and constants. Receipts are written for the run and its module and tool work.
 
+The eleven bands execute in this order: `renew-self` → `migrations` → `stage-profile` → `pull-source` → `compare` → `install-packages` → `ratchet-binaries` → `backfill-files` → `restart-services` → `propose-edits` → `report-home`. Rolling-update source acquisition is a prelude outside this band walk; within the walk, profile staging precedes source routines and managed-file backfill precedes service activation.
+
 `profile.json` and `config.json` are declarations; `/etc/appliance/ruyi.json` is engine-maintained observed state, not declaration or source authority.
 
 ## Repository map
 
 ```text
 src/atoms/       primitive operations and the ask/do/attest surfaces
-src/bands/       ten charter-ordered execution faces
+src/bands/       eleven charter-ordered execution faces
 src/tools/       composition tools and re-export seats
 profiles/        selected profile and module declarations
 installer/       Harmonia build, status, and systemd unit control
