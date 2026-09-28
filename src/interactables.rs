@@ -815,9 +815,9 @@ pub(crate) fn reconcile_ruyi(
         .into_iter()
         .flat_map(|flags| flags.iter())
         .filter_map(|(component, flag)| {
-            let source_sha = flag.get("source_sha")?.as_str()?;
-            // Release flags are nested in the mint's member_flags projection;
-            // never infer the watermark from a peer's or member's worn build.
+            // Both provenance and version belong to the nested release flag;
+            // never infer either from the enclosing member's worn build.
+            let source_sha = flag.pointer("/release_flag/source_sha")?.as_str()?;
             let version = flag.pointer("/release_flag/rustc_version")?.as_str()?;
             let parsed = parse_toolchain_version(version)?;
             Some((
@@ -1035,6 +1035,54 @@ fn run_ruyi_bump(
     Ok(())
 }
 
+fn persist_toolchain_preflight_refusal(
+    path: &Path,
+    item: &Interactable,
+    reason: String,
+    observed: Value,
+) -> Result<(), String> {
+    let receipt_observed = observed.clone();
+    let before = item.evidence.get("installed").cloned().unwrap_or(Value::Null);
+    let readback = observed.pointer("/readback").cloned().unwrap_or(Value::Null);
+    let observed_release = observed.pointer("/readback/release").cloned().unwrap_or(Value::Null);
+    let receipt = serde_json::json!({
+        "schema": "harmonia.config_state.receipt.v1",
+        "config_state": "interactable",
+        "id": item.id,
+        "target": null,
+        "reference_id": null,
+        "score": null,
+        "kind": "toolchain-ratchet",
+        "before": before,
+        "after": observed_release,
+        "watermark": item.evidence.get("watermark").cloned().unwrap_or(Value::Null),
+        "witness": item.evidence.get("witness").cloned().unwrap_or(Value::Null),
+        "lane": item.evidence.get("lane").cloned().unwrap_or(Value::Null),
+        "readback": readback,
+        "observed": receipt_observed,
+        "actuator": {
+            "has_run": true,
+            "changed": false,
+            "kind": "toolchain-ratchet",
+            "observed": observed,
+            "could-change": "install the declared Rust release with the rustup-owned module shims",
+            "attempt": [],
+            "final-state": {"release": observed_release, "converged": false}
+        },
+        "commands": [],
+        "apply": Value::Null,
+        "ok": false,
+        "first_missing_signal": reason
+    });
+    crate::bands::propose_edits::persist_feed_with_intent(
+        path,
+        crate::bands::propose_edits::FeedPersistenceIntent::AppendReceipts(vec![receipt.clone()]),
+    )
+    .map_err(|error| format!("toolchain-ratchet-refusal-receipt-persistence-failed: {error}"))?;
+    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
+    Err(format!("{}; item-retained", receipt["first_missing_signal"].as_str().unwrap_or("toolchain-ratchet-preflight-refused")))
+}
+
 fn run_toolchain_ratchet(
     path: &Path,
     _feed: &mut InteractablesFeed,
@@ -1042,73 +1090,75 @@ fn run_toolchain_ratchet(
     item: &Interactable,
     invocation: Option<&crate::Invocation>,
 ) -> Result<(), String> {
-    let key = invocation
-        .and_then(crate::Invocation::key)
-        .ok_or_else(|| "toolchain-ratchet-invocation-key-missing".to_string())?;
+    let mut observed = serde_json::json!({});
+    let key = match invocation.and_then(crate::Invocation::key) {
+        Some(key) => key,
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-invocation-key-missing".into(), observed),
+    };
     let evidence = &item.evidence;
-    let installed_before = evidence
-        .get("installed")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "toolchain-ratchet-installed-version-absent".to_string())?;
-    // This is the lane-independent comparator: pacman bodies need not have
-    // /usr/local/bin/rustc. A failed observation is a hard no-mutation stop.
+    observed["evidence"] = evidence.clone();
+    let installed_before = match evidence.get("installed").and_then(Value::as_str) {
+        Some(version) => version,
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-installed-version-absent".into(), observed),
+    };
+    observed["installed"] = serde_json::json!(installed_before);
+    // This lane-independent comparator permits pacman bodies without a shim.
     let comparator = crate::atoms::command::capture("rustc", &["-Vv"]);
+    observed["comparator"] = serde_json::json!({"ok": comparator.ok, "stdout": comparator.stdout});
     if !comparator.ok {
-        return Err("toolchain-ratchet-installed-comparator-failed".to_string());
+        return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-installed-comparator-failed".into(), observed);
     }
     let installed_verbose = comparator.stdout;
-    let installed_now = installed_verbose
-        .lines()
-        .find_map(|line| line.strip_prefix("release:").map(str::trim))
-        .ok_or_else(|| "toolchain-ratchet-installed-readback-absent".to_string())?;
-    let current_readback = serde_json::json!({
-        "path": "rustc",
-        "release": installed_now,
-        "verbose": installed_verbose,
-    });
+    let installed_now = match installed_verbose.lines().find_map(|line| line.strip_prefix("release:").map(str::trim)) {
+        Some(version) => version.to_owned(),
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-installed-readback-absent".into(), observed),
+    };
+    let current_readback = serde_json::json!({"path":"rustc", "release":installed_now, "verbose":installed_verbose});
+    observed["readback"] = current_readback.clone();
     if installed_now != installed_before {
-        return Err(format!("toolchain-ratchet-feed-stale expected={installed_before} actual={installed_now}"));
+        return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-feed-stale expected={installed_before} actual={installed_now}"), observed);
     }
-    let watermark = evidence
-        .get("watermark")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "toolchain-ratchet-watermark-absent".to_string())?;
-    let installed_parsed = parse_toolchain_version(installed_now)
-        .ok_or_else(|| "toolchain-ratchet-installed-version-invalid".to_string())?;
-    let watermark_parsed = parse_toolchain_version(watermark)
-        .ok_or_else(|| "toolchain-ratchet-watermark-invalid".to_string())?;
+    let watermark = match evidence.get("watermark").and_then(Value::as_str) {
+        Some(version) => version,
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-watermark-absent".into(), observed),
+    };
+    observed["watermark"] = serde_json::json!(watermark);
+    let installed_parsed = match parse_toolchain_version(&installed_now) {
+        Some(version) => version,
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-installed-version-invalid".into(), observed),
+    };
+    let watermark_parsed = match parse_toolchain_version(&watermark) {
+        Some(version) => version,
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-watermark-invalid".into(), observed),
+    };
     if installed_parsed >= watermark_parsed {
-        return Err(format!("toolchain-ratchet-watermark-stale installed={installed_now} watermark={watermark}"));
+        return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-watermark-stale installed={installed_now} watermark={watermark}"), observed);
     }
     if evidence.pointer("/witness/component").and_then(Value::as_str).is_none()
         || evidence.pointer("/witness/source_sha").and_then(Value::as_str).is_none()
     {
-        return Err("toolchain-ratchet-witness-provenance-absent".to_string());
+        return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-witness-provenance-absent".into(), observed);
     }
-    let lane = evidence
-        .get("lane")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "toolchain-ratchet-lane-absent".to_string())?;
+    let lane = match evidence.get("lane").and_then(Value::as_str) {
+        Some(lane) => lane,
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-lane-absent".into(), observed),
+    };
     let witness = evidence.get("witness").cloned().unwrap_or(Value::Null);
-    let (profile, profile_path) = crate::resolve_certificate_profile()?;
-    let actual_lane = if profile
-        .package_authority
-        .as_ref()
-        .is_some_and(|authority| authority.package_manager == "pacman")
-    {
+    observed["witness"] = witness.clone();
+    observed["lane"] = serde_json::json!(lane);
+    let (profile, profile_path) = match crate::resolve_certificate_profile() {
+        Ok(profile) => profile,
+        Err(reason) => return persist_toolchain_preflight_refusal(path, item, reason, observed),
+    };
+    let actual_lane = if profile.package_authority.as_ref().is_some_and(|authority| authority.package_manager == "pacman") {
         "pacman"
-    } else if profile
-        .modules
-        .iter()
-        .any(|module| module == "rust-build-toolchain")
-        && Path::new("/opt/rustup").is_dir()
-    {
+    } else if profile.modules.iter().any(|module| module == "rust-build-toolchain") && Path::new("/opt/rustup").is_dir() {
         "rustup"
     } else {
         "none"
     };
     if actual_lane != lane {
-        return Err(format!("toolchain-ratchet-lane-stale expected={actual_lane} actual={lane}"));
+        return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-lane-stale expected={actual_lane} actual={lane}"), observed);
     }
     if lane == "pacman" {
         let receipt = serde_json::json!({
@@ -1149,37 +1199,41 @@ fn run_toolchain_ratchet(
     }
     let module_id = match lane {
         "rustup" => "rust-build-toolchain",
-        "pacman" => return Err("pacman-toolchain-evidence-recorded-item-retained".into()),
-        _ => return Err(format!("toolchain-ratchet-lane-invalid {lane}")),
+        _ => return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-lane-invalid {lane}"), observed),
     };
     if !profile.modules.iter().any(|module| module == module_id) {
-        return Err(format!("toolchain-ratchet-module-not-declared {module_id}"));
+        return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-module-not-declared {module_id}"), observed);
     }
     let module_root = crate::default_module_root(&profile_path);
-    let module_dir = crate::bands::stage_profile::resolve_module_dir(&module_root, module_id)?;
+    let module_dir = match crate::bands::stage_profile::resolve_module_dir(&module_root, module_id) {
+        Ok(path) => path,
+        Err(reason) => return persist_toolchain_preflight_refusal(path, item, reason, observed),
+    };
     let manifest_path = module_dir.join("manifest.json");
-    let manifest = crate::load_ladder_manifest(&manifest_path)?;
+    let manifest = match crate::load_ladder_manifest(&manifest_path) {
+        Ok(manifest) => manifest,
+        Err(reason) => return persist_toolchain_preflight_refusal(path, item, reason, observed),
+    };
     if manifest.id != module_id {
-        return Err(format!("toolchain-ratchet-module-id-mismatch {module_id} {}", manifest.id));
+        return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-module-id-mismatch {module_id} {}", manifest.id), observed);
     }
-    let files_root_rel = manifest.files_root.as_deref()
-        .ok_or_else(|| "toolchain-ratchet-files-root-undeclared".to_string())?;
+    let files_root_rel = match manifest.files_root.as_deref() {
+        Some(root) => root,
+        None => return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-files-root-undeclared".into(), observed),
+    };
     let files_root_path = Path::new(files_root_rel);
     if files_root_path.is_absolute() || files_root_path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
-        return Err("toolchain-ratchet-files-root-invalid".into());
+        return persist_toolchain_preflight_refusal(path, item, "toolchain-ratchet-files-root-invalid".into(), observed);
     }
     let files_root = module_dir.join(files_root_path);
     if !files_root.is_dir() {
-        return Err(format!("toolchain-ratchet-files-root-missing {}", files_root.display()));
+        return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-files-root-missing {}", files_root.display()), observed);
     }
     for name in ["rustc", "cargo", "rustup"] {
         let source = files_root.join("usr/local/bin").join(name);
         if !source.is_file() {
-            return Err(format!("toolchain-ratchet-shim-source-missing {}", source.display()));
+            return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-shim-source-missing {}", source.display()), observed);
         }
-    }
-    if parse_toolchain_version(watermark).is_none() {
-        return Err("toolchain-ratchet-watermark-invalid".into());
     }
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos()).unwrap_or(0);
@@ -1435,7 +1489,9 @@ fn run_toolchain_ratchet(
                 &mut receipt,
             );
             if let Err(rollback_failure) = rollback {
+                receipt["first_missing_signal"] = serde_json::json!(rollback_failure);
                 receipt["rollback_failure"] = serde_json::json!(rollback_failure);
+                return Err(format!("toolchain-ratchet-rollback-failed: {rollback_failure}"));
             }
             return Err("toolchain-ratchet-apply-failed".into());
         }
