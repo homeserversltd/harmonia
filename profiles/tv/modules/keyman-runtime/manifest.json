@@ -1,0 +1,19 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "keyman-runtime",
+  "category": "known-good",
+  "version": "3.6.1",
+  "description": "TV Keyman source ladder: synchronize Keyman into /opt/keyman/source.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "keyman-source-repository",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "component": "keyman",
+        "path": "/opt/keyman/source"
+      }
+    }
+  ]
+}
