@@ -15,11 +15,11 @@
       "tool": "command",
       "permutation": "act",
       "args": {
-        "program": "/var/lib/caduceus/venv/bin/python3",
-        "args": ["${module_dir}/caduceus-staff-path.py", "--apply"],
+        "program": "/usr/bin/python3",
+        "args": ["/usr/local/sbin/agathodaimon/cli.py", "python", "staff-path", "--apply"],
         "observation": {
-          "program": "/var/lib/caduceus/venv/bin/python3",
-          "args": ["${module_dir}/caduceus-staff-path.py", "--check"],
+          "program": "/usr/bin/python3",
+          "args": ["/usr/local/sbin/agathodaimon/cli.py", "python", "staff-path", "--check"],
           "expected_exit_code": 0,
           "expected_stdout": "/usr/local/sbin"
         }

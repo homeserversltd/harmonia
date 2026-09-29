@@ -61,6 +61,7 @@
     "household-time",
     "dot-files",
     "desktop-config-payload",
+    "sbin",
     "caduceus",
     "sudoers",
     "forgejo",
@@ -80,7 +81,6 @@
     "synapse",
     "element",
     "homeserver-update-runtime",
-    "sbin",
     "linker",
     "xenia",
     "grub-branding"

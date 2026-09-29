@@ -19,6 +19,7 @@
     "kitty",
     "kate",
     "gtk-theme",
+    "sbin",
     "launcher-bin",
     "desktop-config-payload",
     "xdg-user-settings",
@@ -29,7 +30,6 @@
     "tv-update-runtime",
     "household-time",
     "install-caduceus",
-    "sbin",
     "sudoers",
     "grub-branding"
   ],

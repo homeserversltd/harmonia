@@ -64,10 +64,10 @@
       "permutation": "act",
       "args": {
         "program": "/usr/bin/python3",
-        "args": ["${module_dir}/launcher-cache.py", "--refresh"],
+        "args": ["/usr/local/sbin/agathodaimon/cli.py", "gui", "launcher-cache", "--apply"],
         "observation": {
           "program": "/usr/bin/python3",
-          "args": ["${module_dir}/launcher-cache.py", "--check"],
+          "args": ["/usr/local/sbin/agathodaimon/cli.py", "gui", "launcher-cache", "--check"],
           "expected_exit_code": 0,
           "expected_stdout": "Empty"
         },
