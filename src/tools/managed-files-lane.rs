@@ -544,7 +544,9 @@ struct ManagedFileDisposition {
     ignored: Vec<crate::ManagedFileManifest>,
 }
 
-fn partition_managed_files(files: Vec<crate::ManagedFileManifest>) -> ManagedFileDisposition {
+fn partition_managed_files(
+    files: Vec<crate::ManagedFileManifest>,
+) -> Result<ManagedFileDisposition, String> {
     let mut disposition = ManagedFileDisposition {
         known_good: Vec::new(),
         proposals: Vec::new(),
@@ -554,7 +556,19 @@ fn partition_managed_files(files: Vec<crate::ManagedFileManifest>) -> ManagedFil
         // Validation treats an omitted category as known-good; keep this
         // execution seam aligned for directly-resolved managed-file entries.
         match file.category.as_deref().unwrap_or("known-good") {
-            "interactable" => disposition.proposals.push(file),
+            "interactable" => {
+                let path = Path::new(&file.path);
+                if !matches!(
+                    crate::atoms::files::classify_target(path),
+                    crate::atoms::files::TargetClass::Config
+                ) {
+                    return Err(format!(
+                        "managed-file-interactable-off-config-plane:{}",
+                        file.path
+                    ));
+                }
+                disposition.proposals.push(file);
+            }
             "known-good" => {
                 let path = Path::new(&file.path);
                 if matches!(
@@ -570,7 +584,7 @@ fn partition_managed_files(files: Vec<crate::ManagedFileManifest>) -> ManagedFil
             _ => disposition.ignored.push(file),
         }
     }
-    disposition
+    Ok(disposition)
 }
 
 fn config_plane_witness(
@@ -734,7 +748,7 @@ pub(crate) fn managed_files_step_with_authorization(
     };
     let mut files = files;
     files.extend(materialize_profile_sources(step)?);
-    let disposition = partition_managed_files(files);
+    let disposition = partition_managed_files(files)?;
     let hold = disposition.known_good;
     let proposals = disposition.proposals;
     let mut truthful_changed = false;
@@ -883,8 +897,10 @@ pub(crate) fn managed_files_step_with_authorization(
                 observed.changed,
                 observed.ownership_changed,
             )
-        } else {
+        } else if !target_exists {
             missing_signal.clone()
+        } else {
+            return Err(format!("config-plane-witness-missing:{}", target.display()));
         };
         let receipt = crate::atoms::Receipt {
             atom: "managed-files".into(),
@@ -2019,7 +2035,7 @@ mod managed_file_disposition_tests {
             manifest.category.as_deref(),
         )
         .unwrap();
-        let disposition = partition_managed_files(files);
+        let disposition = partition_managed_files(files).expect("managed-file partition succeeds");
         assert!(disposition.known_good.is_empty());
         assert_eq!(disposition.proposals.len(), 1);
         assert_eq!(disposition.proposals[0].path, "/settings.conf");
@@ -2055,7 +2071,7 @@ mod managed_file_disposition_tests {
                 legacy_transition_note: None,
             },
         ];
-        let disposition = partition_managed_files(files);
+        let disposition = partition_managed_files(files).expect("managed-file partition succeeds");
         assert_eq!(
             disposition
                 .known_good

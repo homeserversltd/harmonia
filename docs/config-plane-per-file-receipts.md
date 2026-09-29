@@ -18,8 +18,11 @@ The closed disposition vocabulary is:
 - `interactable-exempt`: the declared suppression policy exempted the surface.
 
 An absent managed target fails with the named
-`managed-file-target-absent:<path>` signal in its central attestation message.
-It has no ConfigPlane disposition and is not `refused-unrecognized`. An
+`managed-file-target-absent:<path>` signal in its central attestation message,
+and only when the target is actually absent. It has no ConfigPlane disposition
+and is not `refused-unrecognized`. If the target exists but no typed witness can
+be produced, execution fails with
+`config-plane-witness-missing:<path>` before writing an attestation. An
 unreadable observation likewise fails at the observation boundary and does not
 receive an invented typed disposition.
 An omitted managed-file category resolves to `known-good`, matching validation's
@@ -51,11 +54,17 @@ symlink directories, and read/remove only exact regular-file witness logs.
 Identical typed witnesses are emitted once per run while raw witness fields,
 including unknown additions, are preserved.
 
-An `interactable` managed-file declaration must resolve to a ConfigPlane target.
-Ladder validation refuses an off-ConfigPlane path before convergence with
-`managed-file-interactable-off-config-plane:<path>`. A `known-good` declaration
-on a SoftwarePlane path remains the ordinary held software file. This contract
-still does not infer a category or create witnesses for other file/converge
-permutations, compiled fragments, or arbitrary ConfigPlane paths lacking that
-managed-file category declaration; those surfaces require a separate contract
-rather than a manifest grammar expansion here.
+Ladder validation resolves explicit interactable managed-file declarations and
+refuses an off-ConfigPlane path before convergence with
+`managed-file-interactable-off-config-plane:<path>`. Runtime repeats that check
+for every materialized `interactable` entry before either the held-file or
+proposal loop observes targets or writes proposal sources. This covers explicit
+`args.files`, runtime-resolved from-reference arguments, `files_root` entries,
+and appended `profile_sources` entries; any off-ConfigPlane path returns the
+same named error. A `known-good` declaration on a SoftwarePlane path remains the
+ordinary held software file, and an omitted category still defaults to
+`known-good`. This contract still does not infer a category or create witnesses
+for other file/converge permutations, compiled fragments, or arbitrary
+ConfigPlane paths lacking that managed-file category declaration; those
+surfaces require a separate contract rather than a manifest grammar expansion
+here.
