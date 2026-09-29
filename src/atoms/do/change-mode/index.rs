@@ -33,7 +33,6 @@ pub(crate) fn change(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Re
 
 /// One declared metadata target in the public files manifest grammar.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct MetadataFileSpec {
     pub path: String,
     pub owner: String,
@@ -63,6 +62,20 @@ fn metadata_state(observation: &crate::atoms::ask::change_mode::Observation) -> 
         "exists":observation.preimage.present,
         "kind":format!("{:?}", observation.preimage.kind),
         "mode":observation.prior_mode,
+        "identity":identity,
+    })
+}
+
+fn metadata_owner_state(observation: &crate::atoms::ask::change_mode::Observation) -> Value {
+    let identity = observation
+        .path_inode
+        .map(|identity| json!({"device":identity.device,"inode":identity.inode}));
+    json!({
+        "path":observation.path,
+        "exists":observation.preimage.present,
+        "kind":format!("{:?}", observation.preimage.kind),
+        "uid":observation.preimage.uid,
+        "gid":observation.preimage.gid,
         "identity":identity,
     })
 }
@@ -262,6 +275,95 @@ pub(crate) fn converge_metadata(
         return Err("files-metadata-files-empty".into());
     }
     let receipt_log = receipt_dir.join("atoms.jsonl");
+    let mut preflight = Vec::with_capacity(specs.len());
+    let mut preflight_blockers = Vec::new();
+    let mut invalid_paths = Vec::new();
+    for spec in specs {
+        let path = PathBuf::from(&spec.path);
+        let mut target_blockers = Vec::new();
+        if !path.is_absolute() {
+            invalid_paths.push(format!(
+                "files-metadata-path-must-be-absolute {}",
+                path.display()
+            ));
+        }
+        let observation = match crate::atoms::ask::change_mode::probe(&path, spec.mode) {
+            Ok(observation) => {
+                if let Err(blocker) = valid_metadata_preimage(&observation.preimage) {
+                    target_blockers.push(blocker);
+                }
+                Some(observation)
+            }
+            Err(error) => {
+                target_blockers.push(format!(
+                    "files-metadata-observation-blocked {}: {error}",
+                    path.display()
+                ));
+                None
+            }
+        };
+        preflight_blockers.extend(target_blockers);
+        preflight.push(observation);
+    }
+    if !preflight_blockers.is_empty() {
+        let blocker = format!(
+            "files-metadata-preflight-blocked: {}",
+            preflight_blockers.join("; ")
+        );
+        let observed_state = specs
+            .iter()
+            .zip(&preflight)
+            .map(|(spec, observation)| {
+                json!({
+                    "path":spec.path,
+                    "owner":observation.as_ref().map(metadata_owner_state),
+                    "mode":observation.as_ref().map(metadata_state),
+                })
+            })
+            .collect::<Vec<_>>();
+        let diff = preflight
+            .iter()
+            .map(|_| json!({"owner":null,"mode":null}))
+            .collect::<Vec<_>>();
+        let final_state = preflight
+            .iter()
+            .map(|_| json!({"owner":null,"mode":null}))
+            .collect::<Vec<_>>();
+        let projection = json!({
+            "schema":"harmonia.files.metadata.v1", "ok":false, "changed":false,
+            "observed_state":observed_state,
+            "desired_state":specs,
+            "diff_decision":"blocked", "diff":diff,
+            "movement":"none", "final_state":final_state,
+            "proof":"metadata-observation-blocked", "blocker":blocker,
+        });
+        let receipt = Receipt {
+            atom: format!("files-metadata-preflight:{receipt_name}"),
+            ok: false,
+            drift: Drift::Current,
+            message: format!(
+                "step={receipt_name} diff=blocked movement=none changed=false blocker={blocker}"
+            ),
+        };
+        crate::atoms::attest::attest(&receipt_log, &receipt, &[])?;
+        crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+        let file_name = if receipt_name.ends_with(".json") {
+            receipt_name.to_string()
+        } else {
+            format!("{receipt_name}.json")
+        };
+        crate::atoms::attest::write_json_atomic(&receipt_dir.join(file_name), &projection)?;
+        return Ok(crate::OperationOutcome {
+            ok: false,
+            changed: false,
+            skipped: !apply,
+            message: format!("files metadata preflight blocked: {blocker}"),
+            command: None,
+        });
+    }
+    if let Some(blocker) = invalid_paths.first() {
+        return Err(blocker.clone());
+    }
     let mut observed = Vec::new();
     let mut changed = false;
     let mut changed_unknown = false;
