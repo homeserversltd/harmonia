@@ -216,7 +216,7 @@ pub(crate) fn load_profile_projection(
             step.tool == "files" && step.permutation == "validated-sudoers-converge"
         }) {
             if step.args.contains_key("files") {
-                return Err("validated-sudoers-contract-refused".into());
+                continue;
             }
             let files_root = manifest
                 .files_root
