@@ -600,6 +600,11 @@
               "required": true
             },
             {
+              "name": "mode",
+              "kind": "integer",
+              "required": false
+            },
+            {
               "name": "backup_existing",
               "kind": "bool",
               "required": false
@@ -701,6 +706,11 @@
             {
               "name": "files",
               "kind": "string_array",
+              "required": false
+            },
+            {
+              "name": "mode",
+              "kind": "integer",
               "required": false
             },
             {

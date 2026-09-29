@@ -1261,6 +1261,16 @@ pub(crate) fn files_converge_step(
     let source_root = resolve_ladder_path(manifest, string_arg(&step.args, "source_root"));
     let target_root = PathBuf::from(string_arg(&step.args, "target_root"));
     let apply = software_authorization.is_some();
+    let mode = step
+        .args
+        .get("mode")
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|mode| u32::try_from(mode).ok())
+                .ok_or_else(|| "files-mode-invalid".to_string())
+        })
+        .transpose()?;
     if step.permutation == "directory-sync"
         && source_root == target_root
         && !step.args.contains_key("owner")
@@ -1331,11 +1341,7 @@ pub(crate) fn files_converge_step(
     let files = rels
         .into_iter()
         .map(|rel| crate::atoms::files::FileSpec {
-            mode: if rel.starts_with("bin/") || rel.starts_with("usr/local/bin/") {
-                Some(0o755)
-            } else {
-                Some(0o644)
-            },
+            mode,
             relative_path: PathBuf::from(rel),
         })
         .collect();
