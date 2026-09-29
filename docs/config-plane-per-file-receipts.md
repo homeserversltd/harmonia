@@ -18,9 +18,10 @@ The closed disposition vocabulary is:
 - `interactable-exempt`: the declared suppression policy exempted the surface.
 
 An absent managed target fails with the named
-`managed-file-target-absent:<path>` signal. It has no ConfigPlane disposition
-and is not `refused-unrecognized`. An unreadable observation likewise fails
-at the observation boundary and does not receive an invented typed disposition.
+`managed-file-target-absent:<path>` signal in its central attestation message.
+It has no ConfigPlane disposition and is not `refused-unrecognized`. An
+unreadable observation likewise fails at the observation boundary and does not
+receive an invented typed disposition.
 An omitted managed-file category resolves to `known-good`, matching validation's
 default.
 
@@ -38,18 +39,23 @@ preserved, and both standalone and typed projections use deterministic ordering.
 
 For emitted typed witnesses, the central `managed-files.attest.jsonl` line and
 best-effort Hyalos `attributes_redacted` object carry `schema`, `path`,
-`module_id`, `category`, and `disposition` as structural fields. An absent-target
-failure carries its named signal without a typed disposition. A per-module
-`config-plane-witnesses.jsonl` supplies the typed records to the root receipt
-collector; collection and run-start cleanup walk at most eight directory levels
-below each direct `modules/<module_id>` directory, skip symlink directories,
-and read/remove only exact regular-file witness logs. Identical typed witnesses
-are emitted once per run while raw witness fields, including unknown additions,
-are preserved.
+`module_id`, `category`, and `disposition` as structural fields. Its message
+uses the same witness values in the shape
+`state=<disposition> category=<category> path=...`; best-effort Hyalos forwarding
+keeps that message aligned with the typed attributes. An absent-target failure
+carries `managed-file-target-absent:<path>` without a typed disposition. A
+per-module `config-plane-witnesses.jsonl` supplies the typed records to the root
+receipt collector; collection and run-start cleanup walk at most eight
+directory levels below each direct `modules/<module_id>` directory, skip
+symlink directories, and read/remove only exact regular-file witness logs.
+Identical typed witnesses are emitted once per run while raw witness fields,
+including unknown additions, are preserved.
 
-This contract is deliberately limited to `managed-files` entries with a
-resolved ConfigPlane target and a recognized declared category. It does not
-infer a category or create witnesses for other file/converge permutations,
-compiled fragments, or arbitrary ConfigPlane paths lacking that managed-file
-category declaration. Those surfaces require a separate contract rather than a
-manifest grammar expansion here.
+An `interactable` managed-file declaration must resolve to a ConfigPlane target.
+Ladder validation refuses an off-ConfigPlane path before convergence with
+`managed-file-interactable-off-config-plane:<path>`. A `known-good` declaration
+on a SoftwarePlane path remains the ordinary held software file. This contract
+still does not infer a category or create witnesses for other file/converge
+permutations, compiled fragments, or arbitrary ConfigPlane paths lacking that
+managed-file category declaration; those surfaces require a separate contract
+rather than a manifest grammar expansion here.

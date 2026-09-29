@@ -177,9 +177,19 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
         .get("category")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let constants = raw
+        .get("constants")
+        .and_then(Value::as_object)
+        .map(|values| {
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     raw.as_object_mut()
         .and_then(|object| object.remove("category"));
-    normalize_managed_file_categories(&mut raw, module_category.as_deref())?;
+    normalize_managed_file_categories(&mut raw, module_category.as_deref(), &constants)?;
     validate_raw_managed_file_categories(&raw, categories_required)?;
     serde_json::from_value::<LadderManifest>(raw)
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
@@ -238,6 +248,7 @@ pub(crate) fn managed_file_category(
 fn normalize_managed_file_categories(
     value: &mut Value,
     module_category: Option<&str>,
+    constants: &BTreeMap<String, Value>,
 ) -> Result<(), String> {
     if let Some(object) = value.as_object_mut() {
         let target = (object.get("tool").and_then(Value::as_str) == Some("files")
@@ -264,17 +275,35 @@ fn normalize_managed_file_categories(
                             if file.contains_key("on_drift") {
                                 return Err("managed-file-on-drift-retired".into());
                             }
+                            if category == "interactable" {
+                                if let Some(path_value) = file.get("path") {
+                                    let mut path_args = BTreeMap::new();
+                                    path_args.insert("path".into(), path_value.clone());
+                                    let resolved = resolve_args(&path_args, constants)?;
+                                    if let Some(path) = resolved.get("path").and_then(Value::as_str)
+                                    {
+                                        if !matches!(
+                                            crate::atoms::files::classify_target(Path::new(path)),
+                                            crate::atoms::files::TargetClass::Config
+                                        ) {
+                                            return Err(format!(
+                                                "managed-file-interactable-off-config-plane:{path}"
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         for child in object.values_mut() {
-            normalize_managed_file_categories(child, module_category)?;
+            normalize_managed_file_categories(child, module_category, constants)?;
         }
     } else if let Some(items) = value.as_array_mut() {
         for item in items {
-            normalize_managed_file_categories(item, module_category)?;
+            normalize_managed_file_categories(item, module_category, constants)?;
         }
     }
     Ok(())

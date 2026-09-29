@@ -850,24 +850,32 @@ pub(crate) fn managed_files_step_with_authorization(
             false,
             observed.config_state,
         );
-        let config_state = if interactable_exempt {
-            "interactable-exempt"
-        } else if recognitions
-            .iter()
-            .any(|recognition| recognition.config_state == "refused-unrecognized")
-        {
-            "refused-unrecognized"
-        } else {
-            "interactable"
-        };
         if interactable_exempt {
             result.message = "managed-files-interactable-exempt".into();
         }
-        let attestation_message = if target_exists {
+        let witness = config_plane_witness(
+            &file,
+            &manifest.id,
+            &observed,
+            &recognitions,
+            interactable_exempt,
+        )?;
+        let attestation_message = if let Some(witness) = witness.as_ref() {
+            let serialized = serde_json::to_value(witness)
+                .map_err(|error| format!("config-plane-witness-serialization-failed: {error}"))?;
+            let disposition = serialized
+                .get("disposition")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "config-plane-witness-disposition-missing".to_string())?;
+            let category = serialized
+                .get("category")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "config-plane-witness-category-missing".to_string())?;
             format!(
-                "state={} path={} proposal_count={} target_write=false changed={} ownership_changed={}",
-                config_state,
-                target.display(),
+                "state={} category={} path={} proposal_count={} target_write=false changed={} ownership_changed={}",
+                disposition,
+                category,
+                witness.path,
                 recognitions
                     .iter()
                     .filter(|recognition| recognition.config_state == "interactable")
@@ -884,13 +892,7 @@ pub(crate) fn managed_files_step_with_authorization(
             drift: crate::atoms::Drift::Current,
             message: attestation_message,
         };
-        if let Some(witness) = config_plane_witness(
-            &file,
-            &manifest.id,
-            &observed,
-            &recognitions,
-            interactable_exempt,
-        )? {
+        if let Some(witness) = witness {
             atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness)?;
         } else {
             atoms::attest::attest(&attest_log, &receipt, &[])?;
