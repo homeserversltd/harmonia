@@ -126,20 +126,247 @@ pub(crate) fn clear_config_state_receipts(receipt_dir: &Path) -> Result<(), Stri
             fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
         }
     }
+    clear_config_plane_witness_receipts(receipt_dir)?;
     Ok(())
 }
 
+const CONFIG_PLANE_WITNESS_MAX_DEPTH: usize = 8;
+const CONFIG_PLANE_WITNESS_LOG: &str = "config-plane-witnesses.jsonl";
+
+fn sorted_directory_entries(directory: &Path) -> io::Result<Vec<fs::DirEntry>> {
+    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    Ok(entries)
+}
+
+fn is_direct_directory(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_dir()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn clear_config_plane_witnesses_under(directory: &Path, depth: usize) -> Result<(), String> {
+    if !is_direct_directory(directory)? {
+        return Ok(());
+    }
+    let entries = match sorted_directory_entries(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
+        let path = entry.path();
+        if entry.file_name().to_str() == Some(CONFIG_PLANE_WITNESS_LOG) {
+            // symlink_metadata and file_type do not follow a log symlink.
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_file() => {
+                    fs::remove_file(path).map_err(|error| error.to_string())?;
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        } else if depth < CONFIG_PLANE_WITNESS_MAX_DEPTH
+            && entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+        {
+            clear_config_plane_witnesses_under(&path, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
+fn clear_config_plane_witness_receipts(receipt_dir: &Path) -> Result<(), String> {
+    if !is_direct_directory(receipt_dir)? {
+        return Ok(());
+    }
+    let modules_dir = receipt_dir.join("modules");
+    if !is_direct_directory(&modules_dir)? {
+        return Ok(());
+    }
+    for module in sorted_directory_entries(&modules_dir).map_err(|error| error.to_string())? {
+        if module
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            clear_config_plane_witnesses_under(&module.path(), 0)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_config_plane_witnesses_under(
+    directory: &Path,
+    depth: usize,
+    seen: &mut std::collections::BTreeSet<(String, String, String, String)>,
+    typed: &mut Vec<(String, String, String, String, serde_json::Value)>,
+) {
+    if !is_direct_directory(directory).is_ok_and(|is_directory| is_directory) {
+        return;
+    }
+    let witness_log = directory.join(CONFIG_PLANE_WITNESS_LOG);
+    if fs::symlink_metadata(&witness_log)
+        .is_ok_and(|metadata| metadata.file_type().is_file())
+    {
+        if let Ok(contents) = fs::read_to_string(witness_log) {
+            for line in contents.lines() {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if value.get("schema").and_then(serde_json::Value::as_str)
+                    != Some(crate::atoms::attest::CONFIG_PLANE_WITNESS_SCHEMA)
+                    || serde_json::from_value::<crate::atoms::attest::ConfigPlaneWitness>(
+                        value.clone(),
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                let Some(module_id) = value.get("module_id").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let Some(path) = value.get("path").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(category) = value.get("category").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let Some(disposition) = value
+                    .get("disposition")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let key = (
+                    module_id.to_string(),
+                    path.to_string(),
+                    category.to_string(),
+                    disposition.to_string(),
+                );
+                if seen.insert(key.clone()) {
+                    typed.push((key.0, key.1, key.2, key.3, value));
+                }
+            }
+        }
+    }
+
+    if depth >= CONFIG_PLANE_WITNESS_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = sorted_directory_entries(directory) else {
+        return;
+    };
+    for entry in entries {
+        if entry
+            .file_type()
+            .is_ok_and(|file_type| file_type.is_dir())
+        {
+            collect_config_plane_witnesses_under(&entry.path(), depth + 1, seen, typed);
+        }
+    }
+}
+
 fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
-    let mut records = fs::read_dir(receipt_dir).ok().into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok)).filter_map(|entry| {
-            let name = entry.file_name(); let name = name.to_str()?;
-            if !name.starts_with("config-state-") || !name.ends_with(".json") || !entry.file_type().ok()?.is_file() { return None; }
-            let value = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(entry.path()).ok()?).ok()?;
-            if value.get("schema").and_then(serde_json::Value::as_str) != Some("harmonia.config_state.v1") { return None; }
-            serde_json::from_value::<ConfigSurfaceReceipt>(value).ok()
-        }).collect::<Vec<_>>();
-    records.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.target.cmp(&b.target)));
-    records.into_iter().map(|record| serde_json::to_value(record).expect("serializable")).collect()
+    let mut legacy = fs::read_dir(receipt_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            if !name.starts_with("config-state-")
+                || !name.ends_with(".json")
+                || !entry.file_type().ok()?.is_file()
+            {
+                return None;
+            }
+            let value = serde_json::from_str::<serde_json::Value>(
+                &fs::read_to_string(entry.path()).ok()?,
+            )
+            .ok()?;
+            if value.get("schema").and_then(serde_json::Value::as_str)
+                != Some("harmonia.config_state.v1")
+            {
+                return None;
+            }
+            let record = serde_json::from_value::<ConfigSurfaceReceipt>(value.clone()).ok()?;
+            // Keep legacy fields and any additive sidecar fields verbatim.
+            Some((record.id, record.target, value))
+        })
+        .collect::<Vec<_>>();
+    legacy.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.to_string().cmp(&b.2.to_string()))
+    });
+
+    let mut typed = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let modules_dir = receipt_dir.join("modules");
+    if is_direct_directory(receipt_dir).is_ok_and(|is_directory| is_directory)
+        && is_direct_directory(&modules_dir).is_ok_and(|is_directory| is_directory)
+    {
+        if let Ok(modules) = sorted_directory_entries(&modules_dir) {
+            for module in modules {
+                if module
+                    .file_type()
+                    .is_ok_and(|file_type| file_type.is_dir())
+                {
+                    collect_config_plane_witnesses_under(
+                        &module.path(),
+                        0,
+                        &mut seen,
+                        &mut typed,
+                    );
+                }
+            }
+        }
+    }
+    typed.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
+    });
+
+    let typed_targets = typed
+        .iter()
+        .map(|(_, path, _, _, _)| path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut sidecars_by_target =
+        std::collections::BTreeMap::<String, Vec<serde_json::Value>>::new();
+    let mut standalone_legacy = Vec::new();
+    for (_, target, value) in legacy {
+        if typed_targets.contains(&target) {
+            sidecars_by_target.entry(target).or_default().push(value);
+        } else {
+            standalone_legacy.push(value);
+        }
+    }
+
+    let mut attached_targets = std::collections::BTreeSet::new();
+    let typed_records = typed.into_iter().map(|(_, path, _, _, mut value)| {
+        if attached_targets.insert(path.clone()) {
+            if let Some(sidecars) = sidecars_by_target.remove(&path) {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "legacy_config_state_evidence".to_string(),
+                        serde_json::Value::Array(sidecars),
+                    );
+                }
+            }
+        }
+        value
+    });
+
+    standalone_legacy.into_iter().chain(typed_records).collect()
 }
 
 pub(crate) fn write_engine_run_receipt_with_duration(

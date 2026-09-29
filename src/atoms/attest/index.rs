@@ -12,12 +12,17 @@ pub(crate) mod build_venv;
 pub(crate) mod check_health;
 #[path = "copy_file.rs"]
 pub(crate) mod copy_file;
+#[path = "config_plane.rs"]
+pub(crate) mod config_plane;
 #[path = "convergence-receipts.rs"]
 pub(crate) mod convergence_receipts;
 #[path = "pull_repo.rs"]
 pub(crate) mod pull_repo;
 #[path = "hyalos.rs"]
 pub(crate) mod hyalos;
+pub(crate) use config_plane::{
+    ConfigPlaneCategory, ConfigPlaneDisposition, ConfigPlaneWitness, CONFIG_PLANE_WITNESS_SCHEMA,
+};
 #[path = "install_package.rs"]
 pub(crate) mod install_package;
 #[path = "make_dir.rs"]
@@ -1187,5 +1192,55 @@ pub(crate) fn attest(
         Some(redacted.ok),
             None,
 );
+    Ok(())
+}
+
+/// Attest a managed ConfigPlane file with typed, structural category and
+/// disposition fields. The shared four-field Receipt remains unchanged.
+pub(crate) fn attest_config_plane(
+    log: &Path,
+    receipt: &Receipt,
+    declared_secrets: &[String],
+    witness: &ConfigPlaneWitness,
+) -> Result<(), String> {
+    let witness_log = log
+        .parent()
+        .ok_or_else(|| "config-plane-witness-parent-missing".to_string())?
+        .join("config-plane-witnesses.jsonl");
+    let redacted = redact_receipt(receipt, declared_secrets);
+    let mut redacted_witness = witness.clone();
+    redacted_witness.path = redact_secrets(&redacted_witness.path, declared_secrets);
+    redacted_witness.module_id = redact_secrets(&redacted_witness.module_id, declared_secrets);
+    let witness_value = serde_json::to_value(&redacted_witness)
+        .map_err(|error| format!("config-plane-witness-serialize: {error}"))?;
+    let mut line =
+        serde_json::to_value(&redacted).map_err(|error| format!("attest-serialize: {error}"))?;
+    let line_fields = line
+        .as_object_mut()
+        .ok_or_else(|| "config-plane-attest-line-not-object".to_string())?;
+    let witness_fields = witness_value
+        .as_object()
+        .ok_or_else(|| "config-plane-witness-not-object".to_string())?;
+    line_fields.extend(witness_fields.clone());
+
+    append_jsonl(log, &line)?;
+    append_jsonl(&witness_log, &witness_value)?;
+
+    let mut attributes = serde_json::json!({
+        "atom": redacted.atom,
+        "drift": redacted.drift,
+    });
+    if let (Some(attributes), Some(witness_fields)) =
+        (attributes.as_object_mut(), witness_value.as_object())
+    {
+        attributes.extend(witness_fields.clone());
+    }
+    hyalos::forward_receipt(
+        "harmonia.atom",
+        &redacted.message,
+        Some(attributes),
+        Some(redacted.ok),
+        None,
+    );
     Ok(())
 }

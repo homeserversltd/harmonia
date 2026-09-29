@@ -551,24 +551,92 @@ fn partition_managed_files(files: Vec<crate::ManagedFileManifest>) -> ManagedFil
         ignored: Vec::new(),
     };
     for file in files {
-        match file.category.as_deref() {
-            Some("interactable") => disposition.proposals.push(file),
-            None | Some("known-good") => {
+        // Validation treats an omitted category as known-good; keep this
+        // execution seam aligned for directly-resolved managed-file entries.
+        match file.category.as_deref().unwrap_or("known-good") {
+            "interactable" => disposition.proposals.push(file),
+            "known-good" => {
                 let path = Path::new(&file.path);
                 if matches!(
                     crate::atoms::files::classify_target(path),
                     crate::atoms::files::TargetClass::Config
-                ) && !path.starts_with("/home/owner")
+                )
                 {
                     disposition.proposals.push(file);
                 } else {
                     disposition.known_good.push(file);
                 }
             }
-            Some(_) => disposition.ignored.push(file),
+            _ => disposition.ignored.push(file),
         }
     }
     disposition
+}
+
+fn config_plane_witness(
+    file: &crate::ManagedFileManifest,
+    module_id: &str,
+    observed: &crate::atoms::files::FileConvergenceOutcome,
+    recognitions: &[crate::bands::propose_edits::ConfigRecognition],
+    interactable_exempt: bool,
+) -> Result<Option<crate::atoms::attest::ConfigPlaneWitness>, String> {
+    let target = Path::new(&file.path);
+    if !matches!(
+        crate::atoms::files::classify_target(target),
+        crate::atoms::files::TargetClass::Config
+    ) {
+        return Ok(None);
+    }
+    let category = match file.category.as_deref().unwrap_or("known-good") {
+        "known-good" => crate::atoms::attest::ConfigPlaneCategory::KnownGood,
+        "interactable" => crate::atoms::attest::ConfigPlaneCategory::Interactable,
+        _ => return Ok(None),
+    };
+    let entry = observed
+        .entries
+        .iter()
+        .find(|entry| entry.target.as_path() == target)
+        .ok_or_else(|| "config-plane-target-observation-missing".to_string())?;
+    if !entry.target_exists_after {
+        // A missing managed target is a named step failure, not one of the
+        // ConfigPlane disposition values.
+        return Ok(None);
+    }
+    let recognition = recognitions
+        .iter()
+        .find(|record| record.target.as_path() == target);
+    let disposition = if interactable_exempt {
+        crate::atoms::attest::ConfigPlaneDisposition::InteractableExempt
+    } else if recognition.is_some_and(|record| record.config_state == "refused-unrecognized") {
+        crate::atoms::attest::ConfigPlaneDisposition::RefusedUnrecognized
+    } else if recognition.is_some_and(|record| record.config_state == "interactable") {
+        crate::atoms::attest::ConfigPlaneDisposition::InteractableOffered
+    } else {
+        let converged = entry.source_exists
+            && entry.content_equal_after
+            && entry.mode_equal_after
+            && !entry.ownership_changed;
+        if converged {
+            match category {
+                crate::atoms::attest::ConfigPlaneCategory::KnownGood => {
+                    crate::atoms::attest::ConfigPlaneDisposition::Converged
+                }
+                crate::atoms::attest::ConfigPlaneCategory::Interactable => {
+                    crate::atoms::attest::ConfigPlaneDisposition::InteractableConverged
+                }
+            }
+        } else {
+            // Recognition refusal is reserved for an explicit low-score
+            // receipt. Any other unclassified drift has no truthful disposition.
+            return Err("config-plane-disposition-unresolved".into());
+        }
+    };
+    Ok(Some(crate::atoms::attest::ConfigPlaneWitness::new(
+        target.to_string_lossy().into_owned(),
+        module_id.to_string(),
+        category,
+        disposition,
+    )))
 }
 
 pub(crate) fn managed_files_step(
@@ -795,31 +863,38 @@ pub(crate) fn managed_files_step_with_authorization(
         if interactable_exempt {
             result.message = "managed-files-interactable-exempt".into();
         }
-        atoms::attest::attest(
-            &attest_log,
-            &crate::atoms::Receipt {
-                atom: "managed-files".into(),
-                ok: file_ok,
-                drift: crate::atoms::Drift::Current,
-                message: format!(
-                    "state={} path={} proposal_count={} target_write=false changed={} ownership_changed={}{}",
-                    config_state,
-                    target.display(),
-                    recognitions
-                        .iter()
-                        .filter(|recognition| recognition.config_state == "interactable")
-                        .count(),
-                    observed.changed,
-                    observed.ownership_changed,
-                    if target_exists {
-                        String::new()
-                    } else {
-                        format!(" first_missing_signal={missing_signal}")
-                    },
-                ),
-            },
-            &[],
-        )?;
+        let attestation_message = if target_exists {
+            format!(
+                "state={} path={} proposal_count={} target_write=false changed={} ownership_changed={}",
+                config_state,
+                target.display(),
+                recognitions
+                    .iter()
+                    .filter(|recognition| recognition.config_state == "interactable")
+                    .count(),
+                observed.changed,
+                observed.ownership_changed,
+            )
+        } else {
+            missing_signal.clone()
+        };
+        let receipt = crate::atoms::Receipt {
+            atom: "managed-files".into(),
+            ok: file_ok,
+            drift: crate::atoms::Drift::Current,
+            message: attestation_message,
+        };
+        if let Some(witness) = config_plane_witness(
+            &file,
+            &manifest.id,
+            &observed,
+            &recognitions,
+            interactable_exempt,
+        )? {
+            atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness)?;
+        } else {
+            atoms::attest::attest(&attest_log, &receipt, &[])?;
+        }
     }
     if let Some(signal) = first_missing_signal {
         result.message = signal;
