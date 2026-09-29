@@ -137,8 +137,19 @@ use crate::tools::routine::ValidatedStep;
 use crate::OperationOutcome;
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "linux")]
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::DirBuilderExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1345,18 +1356,1096 @@ where
             invocation,
             declared_target_root,
         )?;
-    Ok(OperationOutcome {
+    let mut outcome = OperationOutcome {
         ok: outcome.ok,
         changed: outcome.changed,
-        skipped: !authorization.is_some(),
+        skipped: authorization.is_none(),
         message: format!(
             "validated-sudoers-fragments={} {}",
             files.join(","),
             outcome.message
         ),
         command: None,
+    };
+    let selected_message = outcome.message.clone();
+    if authorization.is_some() && !outcome.ok {
+        outcome.message = format!(
+            "{}; prune=not-attempted-selected-fragments-not-converged",
+            selected_message
+        );
+        return Ok(outcome);
+    }
+    match prune_unselected_sudoers(
+        &request.target_root,
+        &files,
+        module_dir,
+        &step.step_id,
+        validator_program,
+        authorization.is_some(),
+        &mut validator,
+    ) {
+        Ok(prune) => {
+            outcome.ok &= prune.ok;
+            outcome.changed |= prune.changed;
+            outcome.message = format!("{}; {}", selected_message, prune.message);
+        }
+        Err(error) => {
+            outcome.ok = false;
+            outcome.message = format!("{}; prune-refused={error}", selected_message);
+        }
+    }
+    Ok(outcome)
+}
+
+#[derive(Clone, Debug)]
+struct SudoersPruneResult {
+    ok: bool,
+    changed: bool,
+    message: String,
+}
+
+#[cfg(target_os = "linux")]
+struct SudoersPruneCandidate {
+    name: OsString,
+    display_name: String,
+    device: u64,
+    inode: u64,
+    size: i64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+    bytes: Vec<u8>,
+    sha256: String,
+    backup_file: String,
+    final_state: String,
+    final_detail: Option<String>,
+    opened: Option<fs::File>,
+}
+
+#[cfg(target_os = "linux")]
+struct SudoersRestoreOutcome {
+    index: usize,
+    name: String,
+    restored: bool,
+    detail: String,
+}
+
+#[cfg(target_os = "linux")]
+fn prune_unselected_sudoers<F>(
+    target_root: &Path,
+    selected_names: &[String],
+    module_dir: &Path,
+    step_id: &str,
+    validator_program: &str,
+    apply: bool,
+    validator: &mut F,
+) -> Result<SudoersPruneResult, String>
+where
+    F: FnMut(&str, &[&str], u64) -> crate::CmdResult,
+{
+    if apply && unsafe { libc::geteuid() } != 0 {
+        return Err("validated-sudoers-prune-root-required".into());
+    }
+    if module_dir.starts_with(target_root) {
+        return Err("validated-sudoers-prune-receipt-inside-target-refused".into());
+    }
+    let target_dir = open_sudoers_directory(target_root)?;
+    let selected = selected_names
+        .iter()
+        .map(|name| name.as_bytes().to_vec())
+        .collect::<BTreeSet<_>>();
+    let mut candidates = scan_sudoers_prune_candidates(&target_dir, target_root, &selected, apply)?;
+    let planned = candidates
+        .iter()
+        .map(|candidate| candidate.display_name.clone())
+        .collect::<Vec<_>>();
+    if !apply {
+        if !planned.is_empty() {
+            let receipt_path = module_dir.join(format!("{step_id}-sudoers-prune-report.json"));
+            crate::atoms::attest::write_json_atomic(
+                &receipt_path,
+                &serde_json::json!({
+                    "step_id": step_id,
+                    "mode": "report-only",
+                    "planned_prunes": planned,
+                    "planned_prune_name_bytes_hex": candidates
+                        .iter()
+                        .map(|candidate| bytes_hex(candidate.name.as_bytes()))
+                        .collect::<Vec<_>>(),
+                    "target_root": target_root.display().to_string(),
+                    "target_unchanged": true,
+                }),
+            )
+            .map_err(|error| {
+                format!(
+                    "validated-sudoers-prune-report-receipt-write-failed path={} {error}",
+                    receipt_path.display()
+                )
+            })?;
+        }
+        return Ok(SudoersPruneResult {
+            ok: true,
+            changed: false,
+            message: format!(
+                "report-only planned-prunes={}; target-unchanged",
+                if planned.is_empty() {
+                    "none".to_string()
+                } else {
+                    planned.join(",")
+                }
+            ),
+        });
+    }
+    if candidates.is_empty() {
+        return Ok(SudoersPruneResult {
+            ok: true,
+            changed: false,
+            message: "applied planned-prunes=none; no-unlink; visudo-not-needed".into(),
+        });
+    }
+
+    let (receipt_path, receipt_dir) = create_sudoers_prune_receipt_dir(module_dir, target_root)?;
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        candidate.backup_file = format!("pruned-{index:04}.bin");
+        write_private_receipt_file(&receipt_dir, &candidate.backup_file, &candidate.bytes, true)
+            .map_err(|error| {
+                format!(
+                    "validated-sudoers-prune-backup-write-failed path={} receipt={} {error}",
+                    target_root.join(&candidate.name).display(),
+                    receipt_path.display()
+                )
+            })?;
+        verify_private_backup(&receipt_dir, candidate).map_err(|error| {
+            format!(
+                "validated-sudoers-prune-backup-verify-failed path={} receipt={} {error}",
+                target_root.join(&candidate.name).display(),
+                receipt_path.display()
+            )
+        })?;
+    }
+    write_sudoers_prune_manifest(
+        &receipt_dir,
+        &receipt_path,
+        target_root,
+        &candidates,
+        "prepared",
+        None,
+        &[],
+    )
+    .map_err(|error| {
+        format!(
+            "validated-sudoers-prune-receipt-write-failed receipt={} {error}",
+            receipt_path.display()
+        )
+    })?;
+    sync_directory(&receipt_dir).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-receipt-sync-failed receipt={} {error}",
+            receipt_path.display()
+        )
+    })?;
+
+    let mut removed = Vec::new();
+    for index in 0..candidates.len() {
+        let unlink_result = {
+            let candidate = &candidates[index];
+            verify_sudoers_candidate_unchanged(&target_dir, candidate)
+                .and_then(|name| unlink_sudoers_name(&target_dir, &name))
+        };
+        if let Err(error) = unlink_result {
+            let failed_path = target_root
+                .join(&candidates[index].name)
+                .display()
+                .to_string();
+            let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+            apply_sudoers_restoration_states(&mut candidates, &restorations);
+            let receipt_error = write_sudoers_prune_manifest(
+                &receipt_dir,
+                &receipt_path,
+                target_root,
+                &candidates,
+                "unlink-failed-restored",
+                None,
+                &restorations,
+            )
+            .err();
+            return Ok(SudoersPruneResult {
+                ok: false,
+                changed: restorations.iter().any(|restore| !restore.restored),
+                message: format!(
+                    "prune-refused path={failed_path} reason={error}; {}; backup-receipt={}; receipt-finalize={}",
+                    format_sudoers_restorations(&restorations),
+                    receipt_path.display(),
+                    receipt_error.as_deref().unwrap_or("written")
+                ),
+            });
+        }
+        removed.push(index);
+        candidates[index].final_state = "removed".into();
+        candidates[index].final_detail = None;
+    }
+    if let Err(error) = sync_directory(&target_dir) {
+        let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+        apply_sudoers_restoration_states(&mut candidates, &restorations);
+        let receipt_error = write_sudoers_prune_manifest(
+            &receipt_dir,
+            &receipt_path,
+            target_root,
+            &candidates,
+            "target-sync-failed-restored",
+            None,
+            &restorations,
+        )
+        .err();
+        return Ok(SudoersPruneResult {
+            ok: false,
+            changed: restorations.iter().any(|restore| !restore.restored),
+            message: format!(
+                "prune-refused after-unlink-directory-sync-failed={error}; {}; backup-receipt={}; receipt-finalize={}",
+                format_sudoers_restorations(&restorations),
+                receipt_path.display(),
+                receipt_error.as_deref().unwrap_or("written")
+            ),
+        });
+    }
+
+    let validation = validator(validator_program, &["-c"], 30);
+    let validation_receipt = crate::write_command_receipt(
+        module_dir,
+        &format!("{step_id}-unselected-prune-validation"),
+        &validation,
+    );
+    let validation_accepted = validation.ok && validation.stderr.is_empty();
+    let validation_diagnostic = if validation_receipt.is_err() {
+        Some("whole-tree validation command receipt could not be written".to_string())
+    } else if !validation.ok && !validation.stderr.is_empty() {
+        Some(format!(
+            "visudo -c rejected exit_code={} and emitted stderr diagnostics",
+            validation.code
+        ))
+    } else if !validation.ok {
+        Some(format!("visudo -c rejected exit_code={}", validation.code))
+    } else if !validation.stderr.is_empty() {
+        Some(format!(
+            "visudo -c emitted stderr diagnostics despite exit_code={} (stderr must be empty)",
+            validation.code
+        ))
+    } else {
+        None
+    };
+    let validation_value = serde_json::json!({
+        "attempted": true,
+        "program": validator_program,
+        "args": ["-c"],
+        "ok": validation.ok,
+        "exit_code": validation.code,
+        "stderr": validation.stderr.as_str(),
+        "stderr_diagnostics_present": !validation.stderr.is_empty(),
+        "accepted": validation_accepted && validation_receipt.is_ok(),
+        "diagnostic": validation_diagnostic.as_deref(),
+        "command_receipt_written": validation_receipt.is_ok(),
+        "command_receipt_error": validation_receipt.as_ref().err(),
+    });
+    if !validation.ok || !validation.stderr.is_empty() || validation_receipt.is_err() {
+        let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+        apply_sudoers_restoration_states(&mut candidates, &restorations);
+        let status = if validation_receipt.is_err() {
+            "validation-receipt-write-failed-restored"
+        } else if validation.ok && !validation.stderr.is_empty() {
+            "visudo-diagnostics-rejected-restored"
+        } else {
+            "visudo-rejected-restored"
+        };
+        let manifest_error = write_sudoers_prune_manifest(
+            &receipt_dir,
+            &receipt_path,
+            target_root,
+            &candidates,
+            status,
+            Some(&validation_value),
+            &restorations,
+        )
+        .err();
+        let validation_reason =
+            validation_diagnostic.unwrap_or_else(|| "whole-tree validation rejected".to_string());
+        return Ok(SudoersPruneResult {
+            ok: false,
+            changed: restorations.iter().any(|restore| !restore.restored),
+            message: format!(
+                "prune-refused names={}; {validation_reason}; {}; backup-receipt={}; receipt-finalize={}",
+                planned.join(","),
+                format_sudoers_restorations(&restorations),
+                receipt_path.display(),
+                manifest_error.as_deref().unwrap_or("written")
+            ),
+        });
+    }
+
+    if let Err(error) = write_sudoers_prune_manifest(
+        &receipt_dir,
+        &receipt_path,
+        target_root,
+        &candidates,
+        "visudo-passed-prunes-retained",
+        Some(&validation_value),
+        &[],
+    ) {
+        let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+        apply_sudoers_restoration_states(&mut candidates, &restorations);
+        let recovery_receipt = write_sudoers_prune_manifest(
+            &receipt_dir,
+            &receipt_path,
+            target_root,
+            &candidates,
+            "receipt-finalization-failed-restored",
+            Some(&validation_value),
+            &restorations,
+        )
+        .err();
+        return Ok(SudoersPruneResult {
+            ok: false,
+            changed: restorations.iter().any(|restore| !restore.restored),
+            message: format!(
+                "prune-refused receipt-finalization-failed={error}; {}; backup-receipt={}; recovery-receipt={}",
+                format_sudoers_restorations(&restorations),
+                receipt_path.display(),
+                recovery_receipt.as_deref().unwrap_or("written")
+            ),
+        });
+    }
+
+    Ok(SudoersPruneResult {
+        ok: true,
+        changed: true,
+        message: format!(
+            "pruned={}; visudo -c passed; backup-receipt={}",
+            planned.join(","),
+            receipt_path.display()
+        ),
     })
 }
+
+#[cfg(target_os = "linux")]
+fn open_sudoers_directory(path: &Path) -> Result<fs::File, String> {
+    let path_c = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("validated-sudoers-directory-invalid {}", path.display()))?;
+    let fd = unsafe {
+        libc::open(
+            path_c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(format!(
+            "validated-sudoers-directory-open-failed {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let directory = unsafe { fs::File::from_raw_fd(fd) };
+    let metadata = fstat_fd(directory.as_raw_fd()).map_err(|error| {
+        format!(
+            "validated-sudoers-directory-stat-failed {}: {error}",
+            path.display()
+        )
+    })?;
+    if !is_regular_directory(&metadata) {
+        return Err(format!(
+            "validated-sudoers-directory-refused {}",
+            path.display()
+        ));
+    }
+    Ok(directory)
+}
+
+#[cfg(target_os = "linux")]
+fn is_regular_directory(stat: &libc::stat) -> bool {
+    stat.st_mode & libc::S_IFMT == libc::S_IFDIR
+}
+
+#[cfg(target_os = "linux")]
+fn read_sudoers_directory_names(
+    directory: &fs::File,
+    path: &Path,
+) -> Result<Vec<OsString>, String> {
+    let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
+    if duplicate < 0 {
+        return Err(format!(
+            "validated-sudoers-directory-dup-failed {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let stream = unsafe { libc::fdopendir(duplicate) };
+    if stream.is_null() {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(duplicate) };
+        return Err(format!(
+            "validated-sudoers-directory-read-open-failed {}: {error}",
+            path.display()
+        ));
+    }
+    let mut names = Vec::new();
+    loop {
+        unsafe { *libc::__errno_location() = 0 };
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            let error = unsafe { *libc::__errno_location() };
+            if error != 0 {
+                unsafe { libc::closedir(stream) };
+                return Err(format!(
+                    "validated-sudoers-directory-read-failed {}: {}",
+                    path.display(),
+                    std::io::Error::from_raw_os_error(error)
+                ));
+            }
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    unsafe { libc::closedir(stream) };
+    names.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn fstat_fd(fd: i32) -> std::io::Result<libc::stat> {
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(stat)
+}
+
+#[cfg(target_os = "linux")]
+fn fstatat_nofollow(directory: &fs::File, name: &OsStr) -> std::io::Result<libc::stat> {
+    let name_c = CString::new(name.as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in filename"))?;
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name_c.as_ptr(),
+            &mut stat,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(stat)
+}
+
+#[cfg(target_os = "linux")]
+fn same_stat_version(left: &libc::stat, right: &libc::stat) -> bool {
+    left.st_dev == right.st_dev
+        && left.st_ino == right.st_ino
+        && left.st_mode == right.st_mode
+        && left.st_uid == right.st_uid
+        && left.st_gid == right.st_gid
+        && left.st_size == right.st_size
+        && left.st_mtime == right.st_mtime
+        && left.st_mtime_nsec == right.st_mtime_nsec
+        && left.st_ctime == right.st_ctime
+        && left.st_ctime_nsec == right.st_ctime_nsec
+}
+
+#[cfg(target_os = "linux")]
+fn scan_sudoers_prune_candidates(
+    directory: &fs::File,
+    target_root: &Path,
+    selected: &BTreeSet<Vec<u8>>,
+    capture_bytes: bool,
+) -> Result<Vec<SudoersPruneCandidate>, String> {
+    let mut candidates = Vec::new();
+    for name in read_sudoers_directory_names(directory, target_root)? {
+        if !name.as_bytes().starts_with(b"caduceus-") {
+            continue;
+        }
+        let full_path = target_root.join(&name);
+        let path_display = full_path.display().to_string();
+        let initial = fstatat_nofollow(directory, &name).map_err(|error| {
+            format!("validated-sudoers-prune-observe-failed {path_display}: {error}")
+        })?;
+        if initial.st_mode & libc::S_IFMT != libc::S_IFREG {
+            return Err(format!(
+                "validated-sudoers-prune-nonregular-refused {path_display}; no-unlinks-attempted"
+            ));
+        }
+        if selected.contains(name.as_bytes()) {
+            continue;
+        }
+        let (bytes, sha256, opened) = if capture_bytes {
+            let name_c = CString::new(name.as_bytes()).map_err(|_| {
+                format!("validated-sudoers-prune-invalid-name-refused {path_display}")
+            })?;
+            let fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name_c.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                )
+            };
+            if fd < 0 {
+                return Err(format!(
+                    "validated-sudoers-prune-open-nofollow-failed {path_display}: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let mut file = unsafe { fs::File::from_raw_fd(fd) };
+            let opened_stat = fstat_fd(file.as_raw_fd()).map_err(|error| {
+                format!("validated-sudoers-prune-file-stat-failed {path_display}: {error}")
+            })?;
+            if opened_stat.st_mode & libc::S_IFMT != libc::S_IFREG
+                || !same_stat_version(&initial, &opened_stat)
+            {
+                return Err(format!(
+                    "validated-sudoers-prune-file-changed-before-backup {path_display}; no-unlinks-attempted"
+                ));
+            }
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|error| {
+                format!("validated-sudoers-prune-file-read-failed {path_display}: {error}")
+            })?;
+            let after_read = fstat_fd(file.as_raw_fd()).map_err(|error| {
+                format!("validated-sudoers-prune-file-stat-failed {path_display}: {error}")
+            })?;
+            if !same_stat_version(&opened_stat, &after_read) {
+                return Err(format!(
+                    "validated-sudoers-prune-file-changed-during-backup {path_display}; no-unlinks-attempted"
+                ));
+            }
+            let sha256 = sha256_hex(&bytes);
+            (bytes, sha256, Some(file))
+        } else {
+            (Vec::new(), String::new(), None)
+        };
+        candidates.push(SudoersPruneCandidate {
+            name: name.clone(),
+            display_name: name.to_string_lossy().into_owned(),
+            device: initial.st_dev as u64,
+            inode: initial.st_ino as u64,
+            size: initial.st_size,
+            mode: (initial.st_mode as u32) & 0o7777,
+            uid: initial.st_uid as u32,
+            gid: initial.st_gid as u32,
+            mtime: initial.st_mtime,
+            mtime_nsec: initial.st_mtime_nsec,
+            ctime: initial.st_ctime,
+            ctime_nsec: initial.st_ctime_nsec,
+            bytes,
+            sha256,
+            backup_file: String::new(),
+            final_state: "untouched".into(),
+            final_detail: None,
+            opened,
+        });
+    }
+    Ok(candidates)
+}
+
+#[cfg(target_os = "linux")]
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn create_sudoers_prune_receipt_dir(
+    module_dir: &Path,
+    target_root: &Path,
+) -> Result<(PathBuf, fs::File), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("validated-sudoers-prune-receipt-clock-failed: {error}"))?
+        .as_nanos();
+    let receipt_path = module_dir.join(format!(".sudoers-prune-{}-{nonce}", std::process::id()));
+    if receipt_path.starts_with(target_root) || target_root.starts_with(&receipt_path) {
+        return Err("validated-sudoers-prune-receipt-outside-target-refused".into());
+    }
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder.create(&receipt_path).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-receipt-dir-create-failed {}: {error}",
+            receipt_path.display()
+        )
+    })?;
+    let directory = open_sudoers_directory(&receipt_path)?;
+    if unsafe { libc::fchown(directory.as_raw_fd(), 0, 0) } != 0
+        || unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0
+    {
+        return Err(format!(
+            "validated-sudoers-prune-receipt-dir-protect-failed {}: {}",
+            receipt_path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let stat = fstat_fd(directory.as_raw_fd()).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-receipt-dir-stat-failed {}: {error}",
+            receipt_path.display()
+        )
+    })?;
+    if stat.st_uid != 0 || stat.st_gid != 0 || (stat.st_mode as u32) & 0o7777 != 0o700 {
+        return Err(format!(
+            "validated-sudoers-prune-receipt-dir-not-root-only {}",
+            receipt_path.display()
+        ));
+    }
+    Ok((receipt_path, directory))
+}
+
+#[cfg(target_os = "linux")]
+fn write_private_receipt_file(
+    directory: &fs::File,
+    name: &str,
+    bytes: &[u8],
+    create_new: bool,
+) -> Result<(), String> {
+    let name_c = CString::new(name)
+        .map_err(|_| "validated-sudoers-prune-receipt-name-invalid".to_string())?;
+    let flags = libc::O_WRONLY
+        | libc::O_CLOEXEC
+        | libc::O_NOFOLLOW
+        | if create_new {
+            libc::O_CREAT | libc::O_EXCL
+        } else {
+            libc::O_TRUNC
+        };
+    let fd = unsafe { libc::openat(directory.as_raw_fd(), name_c.as_ptr(), flags, 0o600) };
+    if fd < 0 {
+        return Err(format!(
+            "openat {name}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut file = unsafe { fs::File::from_raw_fd(fd) };
+    file.write_all(bytes)
+        .map_err(|error| format!("write {name}: {error}"))?;
+    if unsafe { libc::fchown(file.as_raw_fd(), 0, 0) } != 0
+        || unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0
+    {
+        return Err(format!(
+            "protect {name}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    file.sync_all()
+        .map_err(|error| format!("sync {name}: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn verify_private_backup(
+    directory: &fs::File,
+    candidate: &SudoersPruneCandidate,
+) -> Result<(), String> {
+    let name_c = CString::new(candidate.backup_file.as_str())
+        .map_err(|_| "validated-sudoers-prune-backup-name-invalid".to_string())?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name_c.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let mut backup = unsafe { fs::File::from_raw_fd(fd) };
+    let stat = fstat_fd(backup.as_raw_fd()).map_err(|error| error.to_string())?;
+    if stat.st_uid != 0
+        || stat.st_gid != 0
+        || (stat.st_mode as u32) & 0o7777 != 0o600
+        || stat.st_mode & libc::S_IFMT != libc::S_IFREG
+    {
+        return Err("backup-not-root-only-regular-file".into());
+    }
+    let mut bytes = Vec::new();
+    backup
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes != candidate.bytes || sha256_hex(&bytes) != candidate.sha256 {
+        return Err("backup-bytes-or-sha256-mismatch".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sudoers_prune_manifest_value(
+    receipt_path: &Path,
+    target_root: &Path,
+    candidates: &[SudoersPruneCandidate],
+    status: &str,
+    validation: Option<&serde_json::Value>,
+    restorations: &[SudoersRestoreOutcome],
+) -> serde_json::Value {
+    let entries = candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "name": candidate.display_name,
+                "name_bytes_hex": bytes_hex(candidate.name.as_bytes()),
+                "backup_file": candidate.backup_file,
+                "record_path": receipt_path.join(&candidate.backup_file).display().to_string(),
+                "bytes": candidate.bytes.len(),
+                "mode": candidate.mode,
+                "uid": candidate.uid,
+                "gid": candidate.gid,
+                "sha256": candidate.sha256,
+                "final_state": candidate.final_state,
+                "final_detail": candidate.final_detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    let restore_values = restorations
+        .iter()
+        .map(|restore| {
+            serde_json::json!({
+                "name": restore.name,
+                "restored": restore.restored,
+                "outcome": restore.detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "target_root": target_root.display().to_string(),
+        "status": status,
+        "entries": entries,
+        "validation": validation,
+        "restoration": restore_values,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn write_sudoers_prune_manifest(
+    directory: &fs::File,
+    receipt_path: &Path,
+    target_root: &Path,
+    candidates: &[SudoersPruneCandidate],
+    status: &str,
+    validation: Option<&serde_json::Value>,
+    restorations: &[SudoersRestoreOutcome],
+) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec_pretty(&sudoers_prune_manifest_value(
+        receipt_path,
+        target_root,
+        candidates,
+        status,
+        validation,
+        restorations,
+    ))
+    .map_err(|error| format!("manifest-serialize: {error}"))?;
+    bytes.push(b'\n');
+    write_private_receipt_file(directory, "run.json", &bytes, status == "prepared")?;
+    sync_directory(directory)
+}
+
+#[cfg(target_os = "linux")]
+fn bytes_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn sync_directory(directory: &fs::File) -> Result<(), String> {
+    if unsafe { libc::fsync(directory.as_raw_fd()) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn verify_sudoers_candidate_unchanged(
+    directory: &fs::File,
+    candidate: &SudoersPruneCandidate,
+) -> Result<CString, String> {
+    let current = fstatat_nofollow(directory, &candidate.name).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-recheck-failed {}: {error}",
+            candidate.display_name
+        )
+    })?;
+    let opened = candidate.opened.as_ref().ok_or_else(|| {
+        format!(
+            "validated-sudoers-prune-open-handle-missing {}",
+            candidate.display_name
+        )
+    })?;
+    let descriptor = fstat_fd(opened.as_raw_fd()).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-descriptor-recheck-failed {}: {error}",
+            candidate.display_name
+        )
+    })?;
+    if current.st_mode & libc::S_IFMT != libc::S_IFREG
+        || !same_candidate_stat(&current, candidate)
+        || !same_candidate_stat(&descriptor, candidate)
+    {
+        return Err(format!(
+            "validated-sudoers-prune-path-changed-before-unlink {}",
+            candidate.display_name
+        ));
+    }
+    let mut verify = opened.try_clone().map_err(|error| {
+        format!(
+            "validated-sudoers-prune-handle-clone-failed {}: {error}",
+            candidate.display_name
+        )
+    })?;
+    verify.seek(SeekFrom::Start(0)).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-rewind-failed {}: {error}",
+            candidate.display_name
+        )
+    })?;
+    let mut bytes = Vec::new();
+    verify.read_to_end(&mut bytes).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-recheck-read-failed {}: {error}",
+            candidate.display_name
+        )
+    })?;
+    let after_read = fstat_fd(opened.as_raw_fd()).map_err(|error| {
+        format!(
+            "validated-sudoers-prune-descriptor-recheck-failed {}: {error}",
+            candidate.display_name
+        )
+    })?;
+    if bytes != candidate.bytes
+        || sha256_hex(&bytes) != candidate.sha256
+        || !same_candidate_stat(&after_read, candidate)
+    {
+        return Err(format!(
+            "validated-sudoers-prune-bytes-changed-before-unlink {}",
+            candidate.display_name
+        ));
+    }
+    CString::new(candidate.name.as_bytes()).map_err(|_| {
+        format!(
+            "validated-sudoers-prune-invalid-name-refused {}",
+            candidate.display_name
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn same_candidate_stat(stat: &libc::stat, candidate: &SudoersPruneCandidate) -> bool {
+    stat.st_dev as u64 == candidate.device
+        && stat.st_ino as u64 == candidate.inode
+        && stat.st_size == candidate.size
+        && (stat.st_mode as u32) & 0o7777 == candidate.mode
+        && stat.st_uid as u32 == candidate.uid
+        && stat.st_gid as u32 == candidate.gid
+        && stat.st_mtime == candidate.mtime
+        && stat.st_mtime_nsec == candidate.mtime_nsec
+        && stat.st_ctime == candidate.ctime
+        && stat.st_ctime_nsec == candidate.ctime_nsec
+}
+
+#[cfg(target_os = "linux")]
+fn unlink_sudoers_name(directory: &fs::File, name: &CString) -> Result<(), String> {
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn restore_sudoers_candidates(
+    directory: &fs::File,
+    candidates: &[SudoersPruneCandidate],
+    removed: &[usize],
+) -> Vec<SudoersRestoreOutcome> {
+    let mut outcomes = removed
+        .iter()
+        .rev()
+        .map(|index| restore_sudoers_candidate(directory, &candidates[*index], *index))
+        .collect::<Vec<_>>();
+    if let Err(error) = sync_directory(directory) {
+        for outcome in &mut outcomes {
+            outcome.restored = false;
+            outcome
+                .detail
+                .push_str(&format!("; directory-sync-failed={error}"));
+        }
+    }
+    outcomes
+}
+
+#[cfg(target_os = "linux")]
+fn restore_sudoers_candidate(
+    directory: &fs::File,
+    candidate: &SudoersPruneCandidate,
+    index: usize,
+) -> SudoersRestoreOutcome {
+    let name_c = match CString::new(candidate.name.as_bytes()) {
+        Ok(name) => name,
+        Err(error) => {
+            return SudoersRestoreOutcome {
+                index,
+                name: candidate.display_name.clone(),
+                restored: false,
+                detail: format!("restore-name-invalid={error}"),
+            }
+        }
+    };
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name_c.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return SudoersRestoreOutcome {
+            index,
+            name: candidate.display_name.clone(),
+            restored: false,
+            detail: format!("restore-open-failed={}", std::io::Error::last_os_error()),
+        };
+    }
+    let mut file = unsafe { fs::File::from_raw_fd(fd) };
+    let created = fstat_fd(file.as_raw_fd()).ok();
+    let attempt = (|| -> Result<(), String> {
+        file.write_all(&candidate.bytes)
+            .map_err(|error| format!("restore-write-failed={error}"))?;
+        if unsafe {
+            libc::fchown(
+                file.as_raw_fd(),
+                candidate.uid as libc::uid_t,
+                candidate.gid as libc::gid_t,
+            )
+        } != 0
+        {
+            return Err(format!(
+                "restore-owner-failed={}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { libc::fchmod(file.as_raw_fd(), candidate.mode as libc::mode_t) } != 0 {
+            return Err(format!(
+                "restore-mode-failed={}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        file.sync_all()
+            .map_err(|error| format!("restore-sync-failed={error}"))?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| format!("restore-rewind-failed={error}"))?;
+        let mut restored_bytes = Vec::new();
+        file.read_to_end(&mut restored_bytes)
+            .map_err(|error| format!("restore-readback-failed={error}"))?;
+        let stat =
+            fstat_fd(file.as_raw_fd()).map_err(|error| format!("restore-stat-failed={error}"))?;
+        if restored_bytes != candidate.bytes
+            || sha256_hex(&restored_bytes) != candidate.sha256
+            || (stat.st_mode as u32) & 0o7777 != candidate.mode
+            || stat.st_uid as u32 != candidate.uid
+            || stat.st_gid as u32 != candidate.gid
+        {
+            return Err("restore-readback-bytes-mode-or-owner-mismatch".into());
+        }
+        Ok(())
+    })();
+    match attempt {
+        Ok(()) => SudoersRestoreOutcome {
+            index,
+            name: candidate.display_name.clone(),
+            restored: true,
+            detail: format!(
+                "restored-exact-bytes-mode-owner sha256={}",
+                candidate.sha256
+            ),
+        },
+        Err(error) => {
+            let cleanup = created
+                .and_then(|created| {
+                    let current = fstatat_nofollow(directory, &candidate.name).ok()?;
+                    (current.st_dev == created.st_dev && current.st_ino == created.st_ino)
+                        .then_some(())
+                })
+                .and_then(|()| {
+                    (unsafe { libc::unlinkat(directory.as_raw_fd(), name_c.as_ptr(), 0) } == 0)
+                        .then_some("partial-restore-removed")
+                })
+                .unwrap_or("partial-restore-cleanup-not-proven");
+            SudoersRestoreOutcome {
+                index,
+                name: candidate.display_name.clone(),
+                restored: false,
+                detail: format!("{error}; cleanup={cleanup}"),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_sudoers_restoration_states(
+    candidates: &mut [SudoersPruneCandidate],
+    restorations: &[SudoersRestoreOutcome],
+) {
+    for restoration in restorations {
+        if let Some(candidate) = candidates.get_mut(restoration.index) {
+            candidate.final_state = if restoration.restored {
+                "restored"
+            } else {
+                "failed"
+            }
+            .into();
+            candidate.final_detail = Some(restoration.detail.clone());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn format_sudoers_restorations(restorations: &[SudoersRestoreOutcome]) -> String {
+    if restorations.is_empty() {
+        return "restore=not-needed".into();
+    }
+    restorations
+        .iter()
+        .map(|restore| {
+            format!(
+                "{}:{} ({})",
+                restore.name,
+                if restore.restored {
+                    "restored"
+                } else {
+                    "restore-failed"
+                },
+                restore.detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prune_unselected_sudoers<F>(
+    _target_root: &Path,
+    _selected_names: &[String],
+    _module_dir: &Path,
+    _step_id: &str,
+    _validator_program: &str,
+    _apply: bool,
+    _validator: &mut F,
+) -> Result<SudoersPruneResult, String>
+where
+    F: FnMut(&str, &[&str], u64) -> crate::CmdResult,
+{
+    Err("validated-sudoers-prune-requires-unix-dirfd".into())
+}
+
 pub(crate) fn files_converge_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
