@@ -56,15 +56,21 @@ including unknown additions, are preserved.
 
 Ladder validation resolves explicit interactable managed-file declarations and
 refuses an off-ConfigPlane path before convergence with
-`managed-file-interactable-off-config-plane:<path>`. Runtime repeats that check
-for every materialized `interactable` entry before either the held-file or
-proposal loop observes targets or writes proposal sources. This covers explicit
-`args.files`, runtime-resolved from-reference arguments, `files_root` entries,
-and appended `profile_sources` entries; any off-ConfigPlane path returns the
-same named error. A `known-good` declaration on a SoftwarePlane path remains the
-ordinary held software file, and an omitted category still defaults to
-`known-good`. This contract still does not infer a category or create witnesses
-for other file/converge permutations, compiled fragments, or arbitrary
-ConfigPlane paths lacking that managed-file category declaration; those
-surfaces require a separate contract rather than a manifest grammar expansion
-here.
+`managed-file-interactable-off-config-plane:<path>`. For entries materialized
+from `files_root`, the module-level category reaches only paths that
+`classify_target` classifies as ConfigPlane. A SoftwarePlane path under
+`files_root` is always materialized as `known-good`, regardless of the module
+category, and remains on the held-file path. A path classified as Refused
+continues to fail closed.
+
+This does not relax the runtime wall for explicit inputs. Runtime repeats the
+interactable/off-ConfigPlane check for every materialized `interactable` entry
+before either the held-file or proposal loop observes targets or writes proposal
+sources. An explicit `interactable` SoftwarePlane entry in `args.files` or
+`profile_sources` still returns the same named error. A `known-good` declaration
+on a SoftwarePlane path remains the ordinary held software file, and an omitted
+category still defaults to `known-good`. This contract still does not infer a
+category or create witnesses for other file/converge permutations, compiled
+fragments, or arbitrary ConfigPlane paths lacking that managed-file category
+declaration; those surfaces require a separate contract rather than a manifest
+grammar expansion here.

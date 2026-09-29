@@ -970,15 +970,20 @@ fn managed_files_from_files_root(
                 };
                 #[cfg(not(unix))]
                 let mode = Some(0o644);
+                let target_path = PathBuf::from(format!("/{}", rel.to_string_lossy()));
+                let category = match crate::atoms::files::classify_target(&target_path) {
+                    crate::atoms::files::TargetClass::Config => {
+                        crate::tools::ladder::managed_file_category(module_category)?
+                            .ok_or_else(|| "managed-file-category-missing".to_string())?
+                    }
+                    crate::atoms::files::TargetClass::Software => "known-good",
+                    crate::atoms::files::TargetClass::Refused(reason) => return Err(reason),
+                };
                 out.push(crate::ManagedFileManifest {
                     path: format!("/{}", rel.to_string_lossy()),
                     content,
                     mode,
-                    category: Some(
-                        crate::tools::ladder::managed_file_category(module_category)?
-                            .ok_or_else(|| "managed-file-category-missing".to_string())?
-                            .into(),
-                    ),
+                    category: Some(category.into()),
                     legacy_transition_note: None,
                 });
             }
