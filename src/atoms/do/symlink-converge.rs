@@ -8,6 +8,7 @@ use crate::atoms::files::{
 };
 use crate::atoms::r#do::InvocationKey;
 use serde_json::json;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs;
@@ -208,6 +209,106 @@ fn promote_staged_symlink(
     })
 }
 
+fn receipt_identity<T: serde::Serialize>(identity: Option<&T>) -> String {
+    identity
+        .map(|identity| serde_json::to_string(identity).unwrap_or_else(|_| "unavailable".into()))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn write_blocked_receipt(
+    request: &SymlinkConvergeRequest,
+    receipt_dir: &Path,
+    apply: bool,
+    desired_uid: Option<u32>,
+    desired_gid: Option<u32>,
+    blocker: &str,
+    before: Option<&SymlinkPathIdentity>,
+    source_before: Option<&SymlinkSourceIdentity>,
+    action_entered: bool,
+    movement_attempted: bool,
+) -> Result<(), String> {
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir).map_err(|error| {
+        format!(
+            "symlink-converge-receipt-dir-failed {}: {error}",
+            receipt_dir.display()
+        )
+    })?;
+    let movement = if movement_attempted {
+        "attempted"
+    } else if action_entered && !apply {
+        "report-only"
+    } else {
+        "none"
+    };
+    let diff = if action_entered {
+        "different"
+    } else {
+        "blocked"
+    };
+    let changed = if movement_attempted {
+        serde_json::Value::Null
+    } else {
+        json!(false)
+    };
+    let would_change = if action_entered {
+        json!(true)
+    } else {
+        serde_json::Value::Null
+    };
+    let typed_receipt = crate::atoms::Receipt {
+        atom: "symlink-converge".into(),
+        ok: false,
+        drift: crate::atoms::Drift::Current,
+        message: format!(
+            "BLOCKED source={} target={} diff={} movement={} changed={} blocker={} before={} after=unknown source_before={} source_after=unknown",
+            request.source.display(),
+            request.target.display(),
+            diff,
+            movement,
+            if movement_attempted {
+                "unknown"
+            } else {
+                "false"
+            },
+            blocker,
+            receipt_identity(before),
+            receipt_identity(source_before)
+        ),
+    };
+    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &typed_receipt, &[])?;
+    let receipt = json!({
+        "schema": "harmonia.files.symlink_converge.v1",
+        "ok": false,
+        "apply": apply,
+        "changed": changed.clone(),
+        "would_change": would_change,
+        "source": request.source,
+        "target": request.target,
+        "required_source_kind": request.required_source_kind,
+        "conflict_policy": request.conflict_policy,
+        "owner": request.owner,
+        "group": request.group,
+        "desired_uid": desired_uid,
+        "desired_gid": desired_gid,
+        "source_before": source_before,
+        "source_after": null,
+        "source_identity_stable": false,
+        "before": before,
+        "after": null,
+        "final_readlink": null,
+        "first_missing_signal": blocker,
+        "observed_state": before,
+        "desired_state": {"kind":"symlink","link_target":request.source,"uid":desired_uid,"gid":desired_gid},
+        "diff_decision": diff,
+        "movement": movement,
+        "truthful_changed": changed,
+    });
+    crate::atoms::attest::make_link::write_existing(
+        &receipt_dir.join(format!("{}.json", request.receipt_name)),
+        &receipt,
+    )
+}
+
 pub(crate) fn symlink_converge(
     request: &SymlinkConvergeRequest,
     receipt_dir: &Path,
@@ -227,25 +328,67 @@ pub(crate) fn symlink_converge(
         .map(resolve_gid)
         .transpose()
         .map_err(|error| format!("symlink-converge-group-resolution-failed: {error}"))?;
-    let observation = crate::atoms::comparison::execute(
+    let mut action_entered = false;
+    let movement_attempted = Cell::new(false);
+    let mut observed_before = None;
+    let mut observed_source_before = None;
+    let mut captured_first_observation = false;
+    let central_attested = Cell::new(false);
+    let observation_result = crate::atoms::comparison::execute(
         "files",
         || {
+            let before = crate::atoms::files::observe_symlink_path(&request.target)?;
+            let source = crate::atoms::files::read_symlink_source(
+                &request.source,
+                request.required_source_kind,
+            );
+            if !captured_first_observation {
+                observed_before = Some(before.clone());
+                observed_source_before = source.as_ref().ok().cloned();
+                captured_first_observation = true;
+            }
             Ok::<_, String>(SymlinkComparisonObservation {
-                before: crate::atoms::files::observe_symlink_path(&request.target)?,
-                source: crate::atoms::files::read_symlink_source(
-                    &request.source,
-                    request.required_source_kind,
-                ),
+                before,
+                source,
                 desired_uid,
                 desired_gid,
             })
         },
         |observation| symlink_diff_decision(observation, request),
         |authorization, _| {
+            action_entered = true;
             let authorization = &authorization;
-            symlink_converge_action(authorization, invocation, request, receipt_dir, apply)
+            symlink_converge_action(
+                authorization,
+                invocation,
+                request,
+                receipt_dir,
+                apply,
+                &central_attested,
+                &movement_attempted,
+            )
         },
-    )?;
+    );
+    let observation = match observation_result {
+        Ok(observation) => observation,
+        Err(error) => {
+            if !central_attested.get() {
+                write_blocked_receipt(
+                    request,
+                    receipt_dir,
+                    apply,
+                    desired_uid,
+                    desired_gid,
+                    &error,
+                    observed_before.as_ref(),
+                    observed_source_before.as_ref(),
+                    action_entered,
+                    movement_attempted.get(),
+                )?;
+            }
+            return Err(error);
+        }
+    };
     let decision = match observation.decision() {
         crate::atoms::comparison::DiffDecision::Empty => "empty",
         crate::atoms::comparison::DiffDecision::Different => "different",
@@ -253,6 +396,12 @@ pub(crate) fn symlink_converge(
     let movement = match &observation {
         crate::atoms::comparison::ComparisonRun::Current { .. } => None,
         crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => Some(movement),
+    };
+    let movement_kind = match movement {
+        Some(movement) if movement.changed => "attempted",
+        Some(_) if !apply => "report-only",
+        Some(_) => "none",
+        None => "none",
     };
     let outcome = match &observation {
         crate::atoms::comparison::ComparisonRun::Current { .. } => crate::OperationOutcome {
@@ -264,8 +413,47 @@ pub(crate) fn symlink_converge(
         },
         crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement.clone(),
     };
-    let path = receipt_dir.join(format!("{}.json", request.receipt_name));
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+    if !central_attested.get() {
+        let observed = observation.observation();
+        let before = receipt_identity(Some(&observed.before));
+        let after = if decision == "empty" {
+            before.clone()
+        } else {
+            "unknown".into()
+        };
+        let source_before = receipt_identity(observed.source.as_ref().ok());
+        let source_after = if decision == "empty" {
+            source_before.clone()
+        } else {
+            "unknown".into()
+        };
+        let typed_receipt = crate::atoms::Receipt {
+            atom: "symlink-converge".into(),
+            ok: outcome.ok,
+            drift: crate::atoms::Drift::Current,
+            message: format!(
+                "source={} target={} diff={} movement={} changed={} blocker={} before={} after={} source_before={} source_after={}",
+                request.source.display(),
+                request.target.display(),
+                decision,
+                movement_kind,
+                outcome.changed,
+                if outcome.ok {
+                    "none"
+                } else {
+                    outcome.message.as_str()
+                },
+                before,
+                after,
+                source_before,
+                source_after
+            ),
+        };
+        crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &typed_receipt, &[])?;
+        central_attested.set(true);
+    }
+    let path = receipt_dir.join(format!("{}.json", request.receipt_name));
     let mut receipt = if path.exists() {
         serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?
@@ -286,9 +474,12 @@ pub(crate) fn symlink_converge(
     let object = receipt
         .as_object_mut()
         .ok_or_else(|| "symlink-converge-receipt-not-object".to_string())?;
+    let observed_preimage = observed_before
+        .as_ref()
+        .ok_or_else(|| "symlink-converge-pre-action-observation-missing".to_string())?;
     object.insert(
         "observed_state".into(),
-        serde_json::to_value(&observation.observation().before).map_err(|e| e.to_string())?,
+        serde_json::to_value(observed_preimage).map_err(|e| e.to_string())?,
     );
     object.insert(
         "desired_state".into(),
@@ -312,6 +503,8 @@ fn symlink_converge_action(
     request: &SymlinkConvergeRequest,
     receipt_dir: &Path,
     apply: bool,
+    central_attested: &Cell<bool>,
+    movement_attempted: &Cell<bool>,
 ) -> Result<crate::OperationOutcome, String> {
     validate_receipt_name(&request.receipt_name)?;
     let mut declared_args = BTreeMap::new();
@@ -354,7 +547,7 @@ fn symlink_converge_action(
                   changed: bool,
                   would_change: bool,
                   blocker: &str,
-                  after: &SymlinkPathIdentity,
+                  after: Option<&SymlinkPathIdentity>,
                   source_after: Option<&SymlinkSourceIdentity>|
      -> Result<crate::OperationOutcome, String> {
         crate::atoms::attest::prepare_receipt_parent(receipt_dir).map_err(|error| {
@@ -363,6 +556,31 @@ fn symlink_converge_action(
                 receipt_dir.display()
             )
         })?;
+        let typed_receipt = crate::atoms::Receipt {
+            atom: "symlink-converge".into(),
+            ok,
+            drift: crate::atoms::Drift::Current,
+            message: format!(
+                "source={} target={} diff=different movement={} changed={} blocker={} before={} after={} source_before={} source_after={}",
+                request.source.display(),
+                request.target.display(),
+                if !apply {
+                    "report-only"
+                } else if movement_attempted.get() {
+                    "attempted"
+                } else {
+                    "none"
+                },
+                changed,
+                if ok { "none" } else { blocker },
+                receipt_identity(Some(&before)),
+                receipt_identity(after),
+                receipt_identity(source_before_receipt.as_ref()),
+                receipt_identity(source_after)
+            ),
+        };
+        crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &typed_receipt, &[])?;
+        central_attested.set(true);
         crate::atoms::attest::make_link::write_existing(
             &receipt_dir.join(format!("{}.json", request.receipt_name)),
             &json!({
@@ -384,7 +602,7 @@ fn symlink_converge_action(
                 "source_identity_stable": source_before_receipt.as_ref().zip(source_after).map(|(a, b)| a == b).unwrap_or(false),
                 "before": before,
                 "after": after,
-                "final_readlink": after.link_target,
+                "final_readlink": after.and_then(|identity| identity.link_target.as_ref()),
                 "first_missing_signal": blocker,
             }),
         )?;
@@ -400,14 +618,32 @@ fn symlink_converge_action(
             command: None,
         })
     };
+    let finish_after_observation = |ok: bool,
+                                    changed: bool,
+                                    would_change: bool,
+                                    blocker: &str,
+                                    source_after: Option<&SymlinkSourceIdentity>|
+     -> Result<crate::OperationOutcome, String> {
+        match crate::atoms::files::observe_symlink_path(&request.target) {
+            Ok(after) => finish(
+                ok,
+                changed,
+                would_change,
+                blocker,
+                Some(&after),
+                source_after,
+            ),
+            Err(error) => {
+                let blocker =
+                    format!("{blocker}; symlink-converge-target-observation-failed: {error}");
+                finish(false, changed, would_change, &blocker, None, source_after)
+            }
+        }
+    };
 
     let source_before = match source_before {
         Ok(identity) => identity,
-        Err(blocker) => {
-            let after = crate::atoms::files::observe_symlink_path(&request.target)
-                .unwrap_or_else(|_| before.clone());
-            return finish(false, false, false, &blocker, &after, None);
-        }
+        Err(blocker) => return finish_after_observation(false, false, false, &blocker, None),
     };
     let ownership_current = desired_uid.map_or(true, |uid| before.uid == Some(uid))
         && desired_gid.map_or(true, |gid| before.gid == Some(gid));
@@ -421,13 +657,15 @@ fn symlink_converge_action(
         ) {
             Ok(identity) => identity,
             Err(blocker) => {
-                let after = crate::atoms::files::observe_symlink_path(&request.target)
-                    .unwrap_or_else(|_| before.clone());
-                return finish(false, false, false, &blocker, &after, None);
+                return finish_after_observation(false, false, false, &blocker, None);
             }
         };
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
+        let after = match crate::atoms::files::observe_symlink_path(&request.target) {
+            Ok(after) => after,
+            Err(blocker) => {
+                return finish(false, false, false, &blocker, None, Some(&source_after))
+            }
+        };
         let target_stable = after.kind == "symlink"
             && after.link_target.as_deref() == Some(request.source.as_path())
             && desired_uid.map_or(true, |uid| after.uid == Some(uid))
@@ -445,7 +683,7 @@ fn symlink_converge_action(
             } else {
                 "symlink-converge-target-changed-during-readback"
             },
-            &after,
+            Some(&after),
             Some(&source_after),
         );
     }
@@ -461,12 +699,10 @@ fn symlink_converge_action(
         _ => None,
     };
     if let Some(blocker) = conflict_blocker {
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
         let source_after =
             crate::atoms::files::read_symlink_source(&request.source, request.required_source_kind)
                 .ok();
-        return finish(false, false, true, blocker, &after, source_after.as_ref());
+        return finish_after_observation(false, false, true, blocker, source_after.as_ref());
     }
     if before.kind == "directory"
         && fs::read_dir(&request.target)
@@ -479,27 +715,29 @@ fn symlink_converge_action(
             .next()
             .is_some()
     {
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
         let source_after =
             crate::atoms::files::read_symlink_source(&request.source, request.required_source_kind)
                 .ok();
-        return finish(
+        return finish_after_observation(
             false,
             false,
             true,
             "symlink-converge-target-directory-not-empty-refused",
-            &after,
             source_after.as_ref(),
         );
     }
     if !apply {
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
-        let source_after = crate::atoms::files::read_symlink_source(
+        let after = match crate::atoms::files::observe_symlink_path(&request.target) {
+            Ok(after) => after,
+            Err(blocker) => return finish(false, false, true, &blocker, None, None),
+        };
+        let source_after = match crate::atoms::files::read_symlink_source(
             &request.source,
             request.required_source_kind,
-        )?;
+        ) {
+            Ok(source_after) => source_after,
+            Err(blocker) => return finish(false, false, true, &blocker, Some(&after), None),
+        };
         let stable = source_before == source_after;
         return finish(
             stable,
@@ -510,7 +748,7 @@ fn symlink_converge_action(
             } else {
                 "symlink-converge-source-changed-during-readback"
             },
-            &after,
+            Some(&after),
             Some(&source_after),
         );
     }
@@ -524,12 +762,11 @@ fn symlink_converge_action(
         )
     })?;
     if !parent.is_dir() {
-        return finish(
+        return finish_after_observation(
             false,
             false,
             true,
             "symlink-converge-target-parent-missing",
-            &before,
             Some(&source_before),
         );
     }
@@ -539,23 +776,19 @@ fn symlink_converge_action(
     ) {
         Ok(identity) => identity,
         Err(blocker) => {
-            let after = crate::atoms::files::observe_symlink_path(&request.target)
-                .unwrap_or_else(|_| before.clone());
-            return finish(false, false, true, &blocker, &after, None);
+            return finish_after_observation(false, false, true, &blocker, None);
         }
     };
     if source_pre_stage != source_before {
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
-        return finish(
+        return finish_after_observation(
             false,
             false,
             true,
             "symlink-converge-source-changed-before-stage",
-            &after,
             Some(&source_pre_stage),
         );
     }
+    movement_attempted.set(true);
     let candidate = match stage(
         authorization,
         invocation,
@@ -565,7 +798,9 @@ fn symlink_converge_action(
         desired_gid,
     ) {
         Ok(candidate) => candidate,
-        Err(blocker) => return finish(false, false, true, &blocker, &before, Some(&source_before)),
+        Err(blocker) => {
+            return finish_after_observation(false, false, true, &blocker, Some(&source_before))
+        }
     };
     let source_pre_promote = match crate::atoms::files::read_symlink_source(
         &request.source,
@@ -578,9 +813,7 @@ fn symlink_converge_action(
                 invocation,
                 &candidate,
             );
-            let after = crate::atoms::files::observe_symlink_path(&request.target)
-                .unwrap_or_else(|_| before.clone());
-            return finish(false, false, true, &blocker, &after, None);
+            return finish_after_observation(false, false, true, &blocker, None);
         }
     };
     if source_pre_promote != source_before {
@@ -589,14 +822,11 @@ fn symlink_converge_action(
             invocation,
             &candidate,
         );
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
-        return finish(
+        return finish_after_observation(
             false,
             false,
             true,
             "symlink-converge-source-changed-before-promote",
-            &after,
             Some(&source_pre_promote),
         );
     }
@@ -607,41 +837,54 @@ fn symlink_converge_action(
         &request.target,
         &before,
     ) {
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
-        return finish(
-            false,
-            after != before,
-            true,
-            &blocker,
-            &after,
-            Some(&source_before),
-        );
+        match crate::atoms::files::observe_symlink_path(&request.target) {
+            Ok(after) => {
+                return finish(
+                    false,
+                    after != before,
+                    true,
+                    &blocker,
+                    Some(&after),
+                    Some(&source_before),
+                )
+            }
+            Err(observation_error) => {
+                let blocker = format!(
+                    "{blocker}; symlink-converge-target-observation-failed: {observation_error}"
+                );
+                write_blocked_receipt(
+                    request,
+                    receipt_dir,
+                    apply,
+                    desired_uid,
+                    desired_gid,
+                    &blocker,
+                    Some(&before),
+                    Some(&source_before),
+                    true,
+                    true,
+                )?;
+                central_attested.set(true);
+                return Err(blocker);
+            }
+        }
     }
     if let Err(error) =
         crate::atoms::r#do::symlink_converge::sync_parent(authorization, invocation, parent)
     {
-        let after = crate::atoms::files::observe_symlink_path(&request.target)
-            .unwrap_or_else(|_| before.clone());
-        return finish(
-            false,
-            true,
-            true,
-            &format!("symlink-converge-parent-sync-failed: {error}"),
-            &after,
-            Some(&source_before),
-        );
+        let blocker = format!("symlink-converge-parent-sync-failed: {error}");
+        return finish_after_observation(false, true, true, &blocker, Some(&source_before));
     }
     let after = match crate::atoms::files::observe_symlink_path(&request.target) {
         Ok(identity) => identity,
-        Err(blocker) => return finish(false, true, true, &blocker, &before, Some(&source_before)),
+        Err(blocker) => return finish(false, true, true, &blocker, None, Some(&source_before)),
     };
     let source_after = match crate::atoms::files::read_symlink_source(
         &request.source,
         request.required_source_kind,
     ) {
         Ok(identity) => identity,
-        Err(blocker) => return finish(false, true, true, &blocker, &after, None),
+        Err(blocker) => return finish(false, true, true, &blocker, Some(&after), None),
     };
     let final_ok = after.kind == "symlink"
         && after.link_target.as_deref() == Some(request.source.as_path())
@@ -657,7 +900,7 @@ fn symlink_converge_action(
         } else {
             "symlink-converge-final-readback-failed"
         },
-        &after,
+        Some(&after),
         Some(&source_after),
     )
 }

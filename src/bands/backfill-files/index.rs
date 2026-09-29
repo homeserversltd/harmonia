@@ -895,6 +895,7 @@ pub(crate) fn execute_routine_child(
             } else {
                 crate::place_file::execute(request)?
             };
+            crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &placed.receipt, &[])?;
             let changed = apply && placed.movement.changed();
 
             let mut receipt = serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up},"prior_installed_sha256":prior_installed_sha,"new_installed_sha256":crate::atoms::file_sha256(&bytes)});

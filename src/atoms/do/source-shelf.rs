@@ -1336,12 +1336,85 @@ fn readback_rollback_entries(
     Ok(entries)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SweepReceiptEvidence {
+    observed_current: Option<bool>,
+    compared_different: Option<bool>,
+    movement: &'static str,
+}
+
+impl SweepReceiptEvidence {
+    fn captured(
+        observed_current: Option<bool>,
+        compared_different: Option<bool>,
+        apply: bool,
+        action_attempted: bool,
+    ) -> Self {
+        let movement = if action_attempted {
+            "attempted"
+        } else if !apply && compared_different == Some(true) {
+            "report-only"
+        } else {
+            "none"
+        };
+        Self {
+            observed_current,
+            compared_different,
+            movement,
+        }
+    }
+
+    const fn unavailable() -> Self {
+        Self {
+            observed_current: None,
+            compared_different: None,
+            movement: "none",
+        }
+    }
+
+    fn observed_current_label(self) -> &'static str {
+        match self.observed_current {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unavailable",
+        }
+    }
+
+    fn diff_label(self) -> &'static str {
+        match self.compared_different {
+            Some(true) => "Different",
+            Some(false) => "Empty",
+            None => "not-compared",
+        }
+    }
+}
+
 fn write_sweep_receipts(
     receipt_dir: &Path,
     request: &SourceShelfSweepRequest,
     outcome: &SourceShelfSweepOutcome,
     apply: bool,
+    evidence: SweepReceiptEvidence,
 ) -> Result<(), String> {
+    let receipt = Receipt {
+        atom: "source-shelf-sweep".into(),
+        ok: outcome.ok,
+        drift: Drift::Current,
+        message: format!(
+            "current={} changed={} promoted={} removed={} transaction_state={} rollback_state={} first_blocker={} observed_current={} diff={} movement={}",
+            outcome.current,
+            outcome.changed,
+            outcome.promoted_count,
+            outcome.removed_count,
+            outcome.transaction_state,
+            outcome.rollback_state,
+            outcome.first_blocker,
+            evidence.observed_current_label(),
+            evidence.diff_label(),
+            evidence.movement
+        ),
+    };
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia-atoms.log"), &receipt, &[])?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let base = request.receipt_name.trim_end_matches(".json");
     for (index, entry) in outcome.entries.iter().enumerate() {
@@ -1390,7 +1463,7 @@ fn write_sweep_receipts(
             "ok": outcome.ok,
             "apply": apply,
             "changed": outcome.changed,
-            "observed_state": {"source_inventory_count": outcome.source_inventory_count, "target_inventory_count_before": outcome.target_inventory_count_before, "current": outcome.current},
+            "observed_state": {"source_inventory_count": outcome.source_inventory_count, "target_inventory_count_before": outcome.target_inventory_count_before, "current": evidence.observed_current},
             "desired_state": {"shelf_source": request.shelf_source, "target_shelf": request.target_shelf, "prune": request.prune},
             "diff_decision": if outcome.current && !outcome.changed { "empty" } else { "different" },
             "movement": if outcome.changed { "shelf-promote-or-bounded-removal" } else if outcome.current { "none" } else { "report-only" },
@@ -1512,7 +1585,13 @@ pub(crate) fn source_shelf_sweep_at(
             message: "owned recursive source shelf and flat launchers observed".into(),
         };
         outcome.entries.extend(launcher_outcome.entries);
-        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        write_sweep_receipts(
+            receipt_dir,
+            request,
+            &outcome,
+            apply,
+            SweepReceiptEvidence::unavailable(),
+        )?;
         let launcher_pass_prefix = format!(
             "{}-launcher-pass",
             request.receipt_name.trim_end_matches(".json")
@@ -1575,9 +1654,13 @@ pub(crate) fn source_shelf_sweep_at(
                         entries: Vec::new(),
                         message: blocker.clone(),
                     };
-                    if let Err(receipt_error) =
-                        write_sweep_receipts(receipt_dir, request, &outcome, apply)
-                    {
+                    if let Err(receipt_error) = write_sweep_receipts(
+                        receipt_dir,
+                        request,
+                        &outcome,
+                        apply,
+                        SweepReceiptEvidence::unavailable(),
+                    ) {
                         return Err(format!("{blocker}; receipt-write-failed: {receipt_error}"));
                     }
                 }
@@ -1704,7 +1787,13 @@ fn source_shelf_owned_recursive_sweep(
                 entries: Vec::new(),
                 message: blocker.clone(),
             };
-            write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+            write_sweep_receipts(
+                receipt_dir,
+                request,
+                &outcome,
+                apply,
+                SweepReceiptEvidence::unavailable(),
+            )?;
             return Err(blocker);
         }
     }
@@ -1838,6 +1927,16 @@ fn source_shelf_owned_recursive_sweep(
             },
         });
     }
+    let compared_different = std::cell::Cell::new(if apply { None } else { Some(drift) });
+    let action_attempted = std::cell::Cell::new(false);
+    let receipt_evidence = || {
+        SweepReceiptEvidence::captured(
+            Some(!drift),
+            compared_different.get(),
+            apply,
+            action_attempted.get(),
+        )
+    };
     if !apply {
         let outcome = SourceShelfSweepOutcome {
             ok: !drift,
@@ -1858,7 +1957,7 @@ fn source_shelf_owned_recursive_sweep(
             entries,
             message: "owned recursive source shelf sweep planned".into(),
         };
-        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
         return Ok(outcome);
     }
     let quarantine = request
@@ -1869,15 +1968,19 @@ fn source_shelf_owned_recursive_sweep(
     let mut cleanup_error = None;
     let movement = crate::atoms::comparison::execute_once(
         "source-shelf-owned-recursive",
-        || Ok::<_, String>(true),
-        |_| {
-            if drift {
+        || Ok::<_, String>(drift),
+        |different| {
+            if compared_different.get().is_none() {
+                compared_different.set(Some(*different));
+            }
+            if *different {
                 crate::atoms::comparison::DiffDecision::Different
             } else {
                 crate::atoms::comparison::DiffDecision::Empty
             }
         },
         |authorization, _| {
+            action_attempted.set(true);
             let authorization = &authorization;
             (|| -> Result<(), String> {
                 let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
@@ -2129,7 +2232,7 @@ fn source_shelf_owned_recursive_sweep(
             entries,
             message: blocker.clone(),
         };
-        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
         return Err(blocker);
     }
     if let Some(blocker) = cleanup_error {
@@ -2152,7 +2255,7 @@ fn source_shelf_owned_recursive_sweep(
             entries,
             message: format!("owned recursive source shelf converged; cleanup debt: {blocker}"),
         };
-        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
         return Err(outcome.message);
     }
     for entry in &mut entries {
@@ -2199,7 +2302,7 @@ fn source_shelf_owned_recursive_sweep(
         entries,
         message: "owned recursive source shelf converged".into(),
     };
-    write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+    write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
     Ok(outcome)
 }
 
@@ -2349,6 +2452,16 @@ fn source_shelf_sweep_with_fault(
         .unwrap_or_default();
     let drift =
         !shelf_current || !launcher_drift.is_empty() || (request.prune && !stale.is_empty());
+    let compared_different = std::cell::Cell::new(if apply { None } else { Some(drift) });
+    let action_attempted = std::cell::Cell::new(false);
+    let receipt_evidence = || {
+        SweepReceiptEvidence::captured(
+            Some(!drift),
+            compared_different.get(),
+            apply,
+            action_attempted.get(),
+        )
+    };
     let planned_entries = build_sweep_entries(
         request,
         &shelf_source,
@@ -2383,7 +2496,7 @@ fn source_shelf_sweep_with_fault(
                 "source shelf and launchers current".into()
             },
         };
-        write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+        write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
         return Ok(outcome);
     }
 
@@ -2432,6 +2545,9 @@ fn source_shelf_sweep_with_fault(
             )
         },
         |different| {
+            if compared_different.get().is_none() {
+                compared_different.set(Some(*different));
+            }
             if *different {
                 crate::atoms::comparison::DiffDecision::Different
             } else {
@@ -2439,6 +2555,7 @@ fn source_shelf_sweep_with_fault(
             }
         },
         |authorization, _| {
+            action_attempted.set(true);
             let authorization = &authorization;
             let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
             let shelf_parent = request.target_shelf.parent().ok_or_else(|| {
@@ -2547,7 +2664,7 @@ fn source_shelf_sweep_with_fault(
                         )
                     },
                 };
-                write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+                write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
                 return Err(outcome.message);
             }
 
@@ -3000,7 +3117,7 @@ fn source_shelf_sweep_with_fault(
                         format!("{blocker}; rollback errors: {}", rollback_errors.join("; "))
                     },
                 };
-                write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+                write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
                 return Err(outcome.message);
             }
 
@@ -3053,11 +3170,10 @@ fn source_shelf_sweep_with_fault(
                 outcome.first_blocker = blocker.clone();
                 outcome.message =
                     format!("source shelf and launchers converged; cleanup debt: {blocker}");
-                write_sweep_receipts(receipt_dir, request, &outcome, apply).map_err(
-                    |receipt_error| {
+                write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())
+                    .map_err(|receipt_error| {
                         format!("{}; receipt-write-failed: {receipt_error}", outcome.message)
-                    },
-                )?;
+                    })?;
                 return Err(outcome.message);
             }
             if let Some(path) = request.provenance_state.as_ref() {
@@ -3081,7 +3197,7 @@ fn source_shelf_sweep_with_fault(
                 }
                 write_sweep_provenance(path, &provenance)?;
             }
-            write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+            write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
             Ok(outcome)
         },
     )?;
@@ -3103,7 +3219,7 @@ fn source_shelf_sweep_with_fault(
                 entries: planned_entries,
                 message: "source shelf and launchers current".into(),
             };
-            write_sweep_receipts(receipt_dir, request, &outcome, apply)?;
+            write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
             Ok(outcome)
         }
     }

@@ -17,7 +17,7 @@ pub(crate) fn execute_validated_step(
         .map(|execution| execution.outcome),
         "metadata" => files_metadata_step(step, module_dir, software_authorization, invocation),
         "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
-        "symlink-converge" => symlink_converge_step(step, module_dir, false, invocation),
+        "symlink-converge" => symlink_converge_step(step, module_dir, apply, invocation),
         "validated-file-symlink" => {
             validated_file_symlink_step(step, manifest, module_dir, false, invocation)
         }
@@ -36,7 +36,10 @@ pub(crate) fn execute_validated_step(
         "compile-fragments" => {
             compile_fragments_step(step, manifest, module_dir, apply, invocation)
         }
-        "hotfix-file-backfill" | "converge" | "directory-sync" => files_converge_step(
+        "hotfix-file-backfill" => {
+            hotfix_file_backfill_step(step, module_dir, software_authorization, invocation)
+        }
+        "converge" | "directory-sync" => files_converge_step(
             step,
             manifest,
             module_dir,
@@ -356,9 +359,10 @@ pub(crate) fn compile_fragments_step(
     }
     let bytes = compile_fragments(&source_root, platform, behavioral_pool)?;
     if bytes.is_empty() {
-        crate::write_json(
-            &module_dir.join("compile-fragments.json"),
-            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":true,"changed":false,"skipped":true,"artifact":"no-claim","target":target,"selected_appliance":appliance,"bytes":0}),
+        crate::place_file::write_compile_fragments_no_claim_projection(
+            module_dir,
+            &target,
+            &appliance,
         )?;
         return Ok(OperationOutcome {
             ok: true,
@@ -372,9 +376,6 @@ pub(crate) fn compile_fragments_step(
     if let crate::atoms::files::TargetClass::Refused(reason) = &target_class {
         return Err(reason.clone());
     }
-    let changed = fs::read(&target)
-        .map(|current| current != bytes)
-        .unwrap_or(true);
     if matches!(target_class, crate::atoms::files::TargetClass::Config) {
         let artifact_root = module_dir.join("compiled-fragments");
         crate::atoms::attest::prepare_receipt_parent(&artifact_root)?;
@@ -437,54 +438,66 @@ pub(crate) fn compile_fragments_step(
             "converged"
         };
         let skipped = config_state != "interactable";
-        crate::write_json(
-            &module_dir.join("compile-fragments.json"),
-            &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":outcome.ok,"changed":outcome.changed,"ownership_changed":outcome.ownership_changed,"skipped":skipped,"config_state":config_state,"recognition_ok":outcome.ok,"target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
+        let message = format!("compile-fragments-config-{config_state}");
+        crate::place_file::write_compile_fragments_config_projection(
+            module_dir,
+            &target,
+            &appliance,
+            bytes.len(),
+            &outcome,
+            config_state,
+            skipped,
         )?;
         return Ok(OperationOutcome {
             ok: outcome.ok,
             changed: outcome.changed,
             skipped,
-            message: format!("compile-fragments-config-{config_state}"),
+            message,
             command: None,
         });
     }
-    if apply && changed {
-        let backup_path = module_dir.join("backups/compile-fragments");
-        let request = crate::place_file::PlaceFileRequest {
-            path: &target,
-            declared_bytes: &bytes,
-            mode: step
+    let backup_path = module_dir.join("backups/compile-fragments");
+    let request = crate::place_file::PlaceFileRequest {
+        path: &target,
+        declared_bytes: &bytes,
+        mode: step
+            .args
+            .get("mode")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32),
+        ownership: crate::place_file::DeclaredOwnership {
+            uid: step
                 .args
-                .get("mode")
+                .get("uid")
                 .and_then(Value::as_u64)
                 .map(|v| v as u32),
-            ownership: crate::place_file::DeclaredOwnership {
-                uid: step
-                    .args
-                    .get("uid")
-                    .and_then(Value::as_u64)
-                    .map(|v| v as u32),
-                gid: step
-                    .args
-                    .get("gid")
-                    .and_then(Value::as_u64)
-                    .map(|v| v as u32),
-            },
-            backup: crate::place_file::BackupPolicy::To(&backup_path),
-            invocation,
-        };
-        crate::place_file::execute(request)?;
-    }
-    crate::write_json(
-        &module_dir.join("compile-fragments.json"),
-        &serde_json::json!({"schema":"harmonia.compile-fragments.receipt.v1","ok":true,"changed":apply && changed,"skipped":!apply,"target":target,"selected_appliance":appliance,"bytes":bytes.len()}),
+            gid: step
+                .args
+                .get("gid")
+                .and_then(Value::as_u64)
+                .map(|v| v as u32),
+        },
+        backup: crate::place_file::BackupPolicy::To(&backup_path),
+        invocation,
+    };
+    let placed = crate::place_file::execute(request)?;
+    let changed = placed.movement.changed();
+    let ok = placed.receipt.ok;
+    let skipped = !apply;
+    let message = placed.receipt.message.clone();
+    crate::place_file::write_compile_fragments_place_file_projection(
+        module_dir,
+        &target,
+        &appliance,
+        bytes.len(),
+        &placed,
+        skipped,
     )?;
     Ok(OperationOutcome {
-        ok: true,
-        changed: apply && changed,
-        skipped: !apply,
-        message: "compile-fragments".into(),
+        ok,
+        changed,
+        skipped,
+        message,
         command: None,
     })
 }
@@ -1271,66 +1284,22 @@ pub(crate) fn files_converge_step(
                 .ok_or_else(|| "files-mode-invalid".to_string())
         })
         .transpose()?;
-    if step.permutation == "directory-sync"
-        && source_root == target_root
+    let same_root_allowed = step.permutation == "directory-sync"
         && !step.args.contains_key("owner")
         && !step.args.contains_key("group")
         && step
             .args
             .get("allow_same_root")
             .and_then(Value::as_bool)
-            .unwrap_or(false)
-    {
-        let run = crate::atoms::comparison::execute(
-            "ladder",
-            || Ok::<_, String>((source_root.clone(), target_root.clone())),
-            |_| crate::atoms::comparison::DiffDecision::Empty,
-            |_, _| Ok::<_, String>(()),
-        )?;
-        let (observed_source_root, observed_target_root) = match run {
-            crate::atoms::comparison::ComparisonRun::Current { observation, .. } => observation,
-            crate::atoms::comparison::ComparisonRun::Moved { .. } => {
-                return Err("directory-sync-same-root-unexpected-movement".into());
-            }
-        };
-        let outcome = OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: !apply,
-            message: format!(
-                "directory-sync same-root verified {}",
-                observed_source_root.display()
-            ),
-            command: None,
-        };
-        crate::write_tool_receipt(
-            module_dir,
-            &step.step_id,
-            "files",
-            "directory-sync",
-            &outcome,
-        )?;
-        let receipt_path = module_dir.join(format!("{}.json", step.step_id));
-        let mut receipt: serde_json::Value = serde_json::from_slice(
-            &fs::read(&receipt_path)
-                .map_err(|error| format!("directory-sync-receipt-read-failed: {error}"))?,
-        )
-        .map_err(|error| format!("directory-sync-receipt-parse-failed: {error}"))?;
-        let object = receipt
-            .as_object_mut()
-            .ok_or_else(|| "directory-sync-receipt-not-object".to_string())?;
-        object.insert(
-            "observed_state".into(),
-            serde_json::json!({"source_root": observed_source_root, "target_root": observed_target_root, "same_root": true}),
-        );
-        object.insert(
-            "desired_state".into(),
-            serde_json::json!({"directory_sync": "verified"}),
-        );
-        object.insert("diff_decision".into(), serde_json::json!("empty"));
-        object.insert("movement".into(), serde_json::json!("none"));
-        object.insert("truthful_changed".into(), serde_json::json!(false));
-        crate::atoms::attest::write_json_atomic(&receipt_path, &receipt)?;
+            .unwrap_or(false);
+    if let Some(outcome) = crate::atoms::r#do::place_file::same_root_directory_sync(
+        &source_root,
+        &target_root,
+        module_dir,
+        &step.step_id,
+        apply,
+        same_root_allowed,
+    )? {
         return Ok(outcome);
     }
     let rels = if step.permutation == "directory-sync" && !step.args.contains_key("files") {
@@ -1499,36 +1468,55 @@ pub(crate) fn files_converge_step(
         } else {
             "converged"
         };
-        let mut summary_value = serde_json::json!({
-            "schema": schema, "ok": outcome_ok, "apply": effective_apply,
-            "config_state": aggregate_state,
-            "config_surfaces": config_recognitions.clone(),
-            "module": manifest.id,
-            "source_dir": request.source_root,
-            "target_dir": request.target_root,
-            "checked_file_count": outcome_checked,
-            "written_file_count": outcome_written,
-            "backed_up_file_count": outcome_backed_up,
-            "changed": outcome_changed,
-            "ownership_changed": outcome_ownership_changed,
-            "missing": outcome_missing,
-            "authority": summary.get("authority").and_then(Value::as_str).unwrap_or(""),
-            "waybar_contract": summary.get("waybar_contract").cloned().unwrap_or(Value::Null),
-            "first_missing_signal": if outcome_ok { "none" } else { summary.get("first_missing_signal").and_then(Value::as_str).unwrap_or("files-convergence-incomplete") },
-        });
-        if config_recognitions.len() == 1 {
-            if let Some(record) = config_recognitions.first() {
-                let object = summary_value.as_object_mut().expect("summary object");
-                object.insert("score".into(), serde_json::json!(record.score));
-                object.insert(
-                    "reference_id".into(),
-                    serde_json::json!(record.reference_id),
-                );
-            }
-        }
-        crate::atoms::attest::write_json_atomic(
-            &module_dir.join(format!("{name}.json")),
-            &summary_value,
+        let (score, reference_id) = if config_recognitions.len() == 1 {
+            config_recognitions.first().map_or((None, None), |record| {
+                (
+                    Some(serde_json::json!(record.score)),
+                    Some(serde_json::json!(record.reference_id)),
+                )
+            })
+        } else {
+            (None, None)
+        };
+        crate::place_file::write_files_summary_compatibility_projection(
+            module_dir,
+            crate::place_file::FilesSummaryProjection {
+                name: name.to_string(),
+                schema: schema.to_string(),
+                ok: outcome_ok,
+                apply: effective_apply,
+                config_state: aggregate_state.to_string(),
+                config_surfaces: serde_json::json!(config_recognitions.clone()),
+                module: manifest.id.clone(),
+                source_dir: request.source_root.clone(),
+                target_dir: request.target_root.clone(),
+                checked_file_count: outcome_checked,
+                written_file_count: outcome_written,
+                backed_up_file_count: outcome_backed_up,
+                changed: outcome_changed,
+                ownership_changed: outcome_ownership_changed,
+                missing: outcome_missing,
+                authority: summary
+                    .get("authority")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                waybar_contract: summary
+                    .get("waybar_contract")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                first_missing_signal: if outcome_ok {
+                    "none".to_string()
+                } else {
+                    summary
+                        .get("first_missing_signal")
+                        .and_then(Value::as_str)
+                        .unwrap_or("files-convergence-incomplete")
+                        .to_string()
+                },
+                score,
+                reference_id,
+            },
         )?;
     }
     Ok(OperationOutcome {
@@ -1538,6 +1526,72 @@ pub(crate) fn files_converge_step(
         message: outcome_message,
         command: None,
     })
+}
+
+fn hotfix_file_backfill_step(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    let declared_bytes = step
+        .args
+        .get("file_bytes")
+        .and_then(Value::as_array)
+        .ok_or("hotfix-payload-file-bytes-missing")?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|byte| *byte <= u8::MAX as u64)
+                .map(|byte| byte as u8)
+                .ok_or_else(|| "hotfix-payload-file-bytes-invalid".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let target = step
+        .args
+        .get("target_path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .ok_or("hotfix-payload-target-path-missing")?;
+    let mode = step
+        .args
+        .get("mode")
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|mode| *mode <= 0o777)
+                .map(|mode| mode as u32)
+                .ok_or_else(|| "hotfix-payload-mode-invalid".to_string())
+        })
+        .transpose()?;
+    let owner = step
+        .args
+        .get("owner")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|owner| !owner.trim().is_empty())
+                .map(ToString::to_string)
+                .ok_or_else(|| "hotfix-payload-owner-invalid".to_string())
+        })
+        .transpose()?;
+    let uid = owner
+        .as_deref()
+        .map(crate::atoms::files::resolve_uid)
+        .transpose()?;
+    crate::atoms::r#do::place_file::hotfix_file_backfill(
+        &target,
+        &declared_bytes,
+        mode,
+        crate::place_file::DeclaredOwnership { uid, gid: None },
+        owner.as_deref(),
+        software_authorization.is_some(),
+        invocation,
+        module_dir,
+        &step.step_id,
+    )
 }
 
 fn files_under_root(root: &Path) -> Result<Vec<String>, String> {
@@ -1574,230 +1628,29 @@ pub(crate) fn resolve_ladder_path(manifest: &LadderManifest, path: &str) -> Path
     }
 }
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-struct MetadataStateSpec {
-    path: String,
-    owner: String,
-    group: String,
-    mode: u32,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct MetadataState {
-    path: String,
-    exists: bool,
-    kind: Option<&'static str>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-    mode: Option<u32>,
-    desired_owner: String,
-    desired_group: String,
-    desired_uid: u32,
-    desired_gid: u32,
-    desired_mode: u32,
-    owner_diff: bool,
-    group_diff: bool,
-    mode_diff: bool,
-}
-
-fn observe_metadata_state(spec: &MetadataStateSpec) -> Result<MetadataState, String> {
-    use std::os::unix::fs::MetadataExt;
-    let path = PathBuf::from(&spec.path);
-    if !path.is_absolute() {
-        return Err(format!("files-metadata-path-must-be-absolute {}", path.display()));
-    }
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("files-metadata-target-absent {}", path.display()));
-        }
-        Err(error) => return Err(format!("files-metadata-observation-failed {}: {error}", path.display())),
-    };
-    let desired_uid = crate::tools::files::resolve_uid(&spec.owner)?;
-    let desired_gid = crate::tools::files::resolve_gid(&spec.group)?;
-    let kind = metadata.file_type();
-    if kind.is_symlink() {
-        return Err(format!("files-metadata-symlink-refused {}", path.display()));
-    }
-    if !kind.is_file() && !kind.is_dir() {
-        return Err(format!("files-metadata-target-kind-refused {}", path.display()));
-    }
-    let uid = metadata.uid();
-    let gid = metadata.gid();
-    let mode = metadata.mode() & 0o7777;
-    Ok(MetadataState {
-        path: spec.path.clone(), exists: true,
-        kind: Some(if kind.is_dir() { "directory" } else { "file" }),
-        uid: Some(uid), gid: Some(gid), mode: Some(mode),
-        desired_owner: spec.owner.clone(), desired_group: spec.group.clone(),
-        desired_uid, desired_gid, desired_mode: spec.mode,
-        owner_diff: uid != desired_uid, group_diff: gid != desired_gid,
-        mode_diff: mode != spec.mode,
-    })
-}
-
 fn files_metadata_step(
     step: &ValidatedStep,
     module_dir: &Path,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    use std::os::unix::fs::MetadataExt;
-    let apply = software_authorization.is_some();
-    let attest_step = |ok: bool, message: String| {
-        crate::atoms::attest::attest(
-            &module_dir.join("atoms.jsonl"),
-            &crate::atoms::Receipt {
-                atom:"files-metadata".into(), ok, drift:crate::atoms::Drift::Current, message,
-            }, &[],
-        )
-    };
-    let specs = step.args.get("files").and_then(Value::as_array)
+    let specs = step
+        .args
+        .get("files")
+        .and_then(Value::as_array)
         .ok_or("files-metadata-files-missing")?
         .iter()
         .cloned()
-        .map(serde_json::from_value::<MetadataStateSpec>)
+        .map(serde_json::from_value::<crate::atoms::r#do::change_mode::MetadataFileSpec>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("files-metadata-spec-invalid: {error}"))?;
-    if specs.is_empty() { return Err("files-metadata-files-empty".into()); }
-
-    let observed = specs.iter().map(observe_metadata_state).collect::<Result<Vec<_>, _>>();
-    let observed = match observed {
-        Ok(observed) => observed,
-        Err(blocker) => {
-            crate::write_json(&module_dir.join(format!("{}.json", step.step_id)), &serde_json::json!({
-                "schema":"harmonia.files.metadata.v1", "ok":false, "changed":false,
-                "observed_state":specs.iter().map(|spec| {
-                    let path = Path::new(&spec.path);
-                    match fs::symlink_metadata(path) {
-                        Ok(metadata) => serde_json::json!({"path":spec.path,"exists":true,"uid":metadata.uid(),"gid":metadata.gid(),"mode":metadata.mode() & 0o7777}),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({"path":spec.path,"exists":false}),
-                        Err(error) => serde_json::json!({"path":spec.path,"exists":null,"observation_error":error.to_string()}),
-                    }
-                }).collect::<Vec<_>>(),
-                "desired_state":specs,
-                "diff_decision":"blocked", "diff":null, "movement":"none",
-                "proof":"target-observation-failed", "blocker":blocker,
-            }))?;
-            attest_step(
-                false,
-                format!("targets={} changed=false blocker={} state=blocked-observation", specs.len(), blocker),
-            )?;
-            return Ok(OperationOutcome { ok:false, changed:false, skipped:true, message:blocker, command:None });
-        }
-    };
-    let different = observed.iter().any(|state| state.owner_diff || state.group_diff || state.mode_diff);
-    let desired = observed.iter().map(|state| serde_json::json!({
-        "path":state.path, "owner":state.desired_owner, "group":state.desired_group,
-        "uid":state.desired_uid, "gid":state.desired_gid, "mode":state.desired_mode,
-    })).collect::<Vec<_>>();
-    let mut movement = "none";
-    let mut blocker = "none".to_string();
-    let mut final_state = observed.clone();
-    let mut changed = false;
-    let mut ok = true;
-
-    if apply && different {
-        let key = invocation.ok_or("files-metadata-invocation-key-missing")?;
-        let run = crate::atoms::comparison::execute_once(
-            "files-metadata",
-            || Ok::<_, String>(observed.clone()),
-            |states| if states.iter().any(|state| state.owner_diff || state.group_diff || state.mode_diff) {
-                crate::atoms::comparison::DiffDecision::Different
-            } else { crate::atoms::comparison::DiffDecision::Empty },
-            |authorization, states| {
-                movement = "attempted";
-                let mut action = (|| -> Result<(), String> {
-                    for state in states {
-                        let path = Path::new(&state.path);
-                        if state.owner_diff || state.group_diff {
-                            crate::tools::files::change_owner(&authorization, key, &crate::tools::files::ChangeOwnerPlan {
-                                path: path.to_path_buf(), uid: Some(state.desired_uid), gid: Some(state.desired_gid), no_follow: true,
-                            })?;
-                        }
-                        if state.mode_diff {
-                            crate::tools::files::change_mode(&authorization, key, &crate::tools::files::ChangeModePlan {
-                                path: path.to_path_buf(), mode: Some(state.desired_mode), no_follow: true,
-                            })?;
-                        }
-                    }
-                    Ok(())
-                })();
-                let after = states.iter().map(|state| observe_metadata_state(&MetadataStateSpec {
-                    path: state.path.clone(), owner: state.desired_owner.clone(), group: state.desired_group.clone(), mode: state.desired_mode,
-                })).collect::<Result<Vec<_>, _>>();
-                match after {
-                    Ok(after) => {
-                        changed = after.iter().zip(states).any(|(after, before)| {
-                            after.uid != before.uid || after.gid != before.gid || after.mode != before.mode
-                        });
-                        let remains_different = after.iter().any(|state| {
-                            state.owner_diff || state.group_diff || state.mode_diff
-                        });
-                        final_state = after;
-                        if action.is_ok() && remains_different {
-                            action = Err("files-metadata-act-did-not-converge".into());
-                        }
-                    }
-                    Err(error) => action = Err(error),
-                }
-                blocker = action.as_ref().err().cloned().unwrap_or_else(|| "none".into());
-                attest_step(
-                    action.is_ok(),
-                    format!("targets={} changed={} blocker={}", states.len(), changed, blocker),
-                )?;
-                Ok(action)
-            },
-        );
-        match run {
-            Ok(run) => match run {
-                crate::atoms::comparison::ComparisonRun::Current { .. } => {
-                    movement = "none";
-                    attest_step(
-                        ok,
-                        format!(
-                            "targets={} changed={} blocker={} state=current",
-                            observed.len(),
-                            changed,
-                            blocker
-                        ),
-                    )?;
-                }
-                crate::atoms::comparison::ComparisonRun::Moved { movement: action, .. } => {
-                    movement = "attempted";
-                    if let Err(error) = action { ok = false; blocker = error; }
-                }
-            },
-            Err(error) => {
-                movement = "attempted";
-                ok = false;
-                blocker = error;
-            }
-        }
-    }
-    if !(apply && different) {
-        let state = if different { "held-report-only" } else { "held-current" };
-        attest_step(
-            ok,
-            format!(
-                "targets={} changed={} blocker={} state={state}",
-                observed.len(),
-                changed,
-                blocker
-            ),
-        )?;
-    }
-    let diff_decision = if different { "Different" } else { "Empty" };
-    if different && !apply { movement = "none"; }
-    let proof = if !ok { "metadata-action-failed" } else if different && !apply { "report-only" } else if different { "metadata-readback" } else { "current" };
-    crate::write_json(&module_dir.join(format!("{}.json", step.step_id)), &serde_json::json!({
-        "schema":"harmonia.files.metadata.v1", "ok":ok, "changed":changed,
-        "observed_state":observed, "desired_state":desired, "diff_decision":diff_decision,
-        "diff":observed.iter().map(|state| serde_json::json!({"path":state.path,"owner":state.owner_diff,"group":state.group_diff,"mode":state.mode_diff})).collect::<Vec<_>>(),
-        "movement":movement, "final_state":final_state, "proof":proof, "blocker":blocker,
-    }))?;
-    Ok(OperationOutcome { ok, changed, skipped:!apply || !different, message:format!("files metadata diff={diff_decision} movement={movement}"), command:None })
+    crate::atoms::r#do::change_mode::converge_metadata(
+        &specs,
+        module_dir,
+        &step.step_id,
+        software_authorization.is_some(),
+        invocation,
+    )
 }
 
 fn string_arg<'a>(

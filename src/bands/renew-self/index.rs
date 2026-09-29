@@ -917,6 +917,7 @@ pub(crate) fn promote_staged_binary(
         backup: crate::place_file::BackupPolicy::To(&receipt_dir.join("backups/prior-binary")),
         invocation,
     })?;
+    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &placed.receipt, &[])?;
     Ok(CmdResult {
         ok: placed.receipt.ok,
         code: if placed.receipt.ok { 0 } else { -1 },
@@ -1617,6 +1618,11 @@ pub(crate) fn run_engine_preflight(
                                     });
                                 match placed {
                                     Ok(placed) => {
+                                        crate::atoms::attest::attest(
+                                            &preflight_dir.join("atoms.jsonl"),
+                                            &placed.receipt,
+                                            &[],
+                                        )?;
                                         build = CmdResult {
                                             ok: placed.receipt.ok,
                                             code: if placed.receipt.ok { 0 } else { -1 },

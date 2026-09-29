@@ -1,8 +1,8 @@
-#[path = "managed-files-lane.rs"]
-mod managed_files_lane;
+#[path = "files-lane-helpers.rs"]
+mod files_lane_helpers;
 #[path = "symlink-lane.rs"]
 mod symlink_lane;
-pub(crate) use managed_files_lane::*;
+pub(crate) use files_lane_helpers::*;
 pub(crate) use symlink_lane::*;
 
 pub(crate) fn ensure_resolved_containment(

@@ -754,6 +754,16 @@ fn executable_present_in_paths(
             format!("{first_blocker} {}", request.executable)
         },
     };
+    let receipt = crate::atoms::Receipt {
+        atom: "executable-present".into(),
+        ok: outcome.ok,
+        drift: crate::atoms::Drift::Current,
+        message: format!(
+            "executable={} resolved_path={:?} changed=false evidence_only=true first_missing_signal={}",
+            outcome.executable, outcome.resolved_path, outcome.first_blocker
+        ),
+    };
+    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt_name = if request.receipt_name.ends_with(".json") {
         request.receipt_name.clone()
@@ -927,32 +937,6 @@ pub(crate) fn same_file_bytes(source: &Path, target: &Path) -> Result<bool, Stri
     Ok(source_bytes == target_bytes)
 }
 
-pub(crate) fn write_partial_failure_receipt(
-    receipt_dir: &Path,
-    request: &FileConvergenceRequest,
-    apply: bool,
-    checked: usize,
-    written: usize,
-    backed_up: usize,
-    missing: &[String],
-    entries: &[FileConvergenceEntry],
-    signal: &str,
-) -> Result<(), String> {
-    let outcome = FileConvergenceOutcome {
-        ok: false,
-        changed: entries.iter().any(|entry| entry.changed) || written > 0 || backed_up > 0,
-        ownership_changed: entries.iter().any(|entry| entry.ownership_changed),
-        config_state: None,
-        checked,
-        written,
-        backed_up,
-        missing: missing.to_vec(),
-        entries: entries.to_vec(),
-        message: signal.to_string(),
-    };
-    write_convergence_receipt(receipt_dir, request, &outcome, apply, None)
-}
-
 pub(crate) fn convergence_entry_truthful_changed(
     entry: &FileConvergenceEntry,
     apply: bool,
@@ -1048,14 +1032,13 @@ fn convergence_entry_receipt(
     receipt
 }
 
-pub(crate) fn write_convergence_receipt(
-    receipt_dir: &Path,
+pub(crate) fn convergence_receipt_projection(
     request: &FileConvergenceRequest,
     outcome: &FileConvergenceOutcome,
     apply: bool,
     config_state: Option<ConfigConvergenceState>,
-) -> Result<(), String> {
-    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
+    atom_receipts: &[crate::atoms::Receipt],
+) -> serde_json::Value {
     let entries = outcome
         .entries
         .iter()
@@ -1067,7 +1050,7 @@ pub(crate) fn write_convergence_receipt(
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
     });
-    let receipt = json!({
+    json!({
         "schema": "harmonia.files.converge.v1",
         "ok": outcome.ok,
         "apply": apply,
@@ -1086,8 +1069,17 @@ pub(crate) fn write_convergence_receipt(
         "state": if config_state == Some(ConfigConvergenceState::InteractableExempt) { "interactable-exempt" } else if config_state == Some(ConfigConvergenceState::ProposalEligible) { "proposal-eligible" } else if outcome.ok { "converged" } else { "incomplete" },
         "truthful_changed": truthful_changed,
         "entries": entries,
+        "atom_receipts": atom_receipts,
         "first_missing_signal": if outcome.ok { "none" } else if let Some(path) = outcome.missing.first() { path.as_str() } else { outcome.message.as_str() },
-    });
+    })
+}
+
+pub(crate) fn write_convergence_projection(
+    receipt_dir: &Path,
+    request: &FileConvergenceRequest,
+    projection: &serde_json::Value,
+) -> Result<(), String> {
+    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let mut receipt_name = request.receipt_name.clone();
     if receipt_name.is_empty() {
         receipt_name = "files-converge".to_string();
@@ -1096,7 +1088,7 @@ pub(crate) fn write_convergence_receipt(
         receipt_name.push_str(".json");
     }
     let path = receipt_dir.join(receipt_name);
-    crate::atoms::attest::write_json_atomic(&path, &receipt)
+    crate::atoms::attest::write_json_atomic(&path, projection)
         .map_err(|e| format!("files-receipt-write-failed {}: {e}", path.display()))
 }
 

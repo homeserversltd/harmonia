@@ -2,7 +2,7 @@
 use crate::atoms::files::{
     classify_request, observed_ownership, reject_ssh_path, resolve_gid, resolve_uid,
     same_file_bytes, source_mode, target_mode, unified_file_diff, validate_receipt_name,
-    validate_specs, write_convergence_receipt, write_partial_failure_receipt,
+    validate_specs, convergence_receipt_projection, write_convergence_projection,
     write_unified_diff_receipt, FileConvergenceEntry, FileConvergenceOutcome,
     FileConvergenceRequest, TargetClass, UnifiedFileDiff,
 };
@@ -73,6 +73,8 @@ impl PlaceFileMovement {
 
 #[derive(Debug)]
 pub(crate) struct PlaceFileOutcome {
+    pub before_observation: PlaceFileObservation,
+    pub diff_decision: crate::atoms::comparison::DiffDecision,
     pub observation: PlaceFileObservation,
     pub movement: PlaceFileMovement,
     pub receipt: Receipt,
@@ -175,15 +177,20 @@ fn execute_with_authority(
             ));
         }
     }
+    let mut before_observation = None;
     let run = crate::atoms::comparison::execute_mode(
         "place-file",
         || {
-            probe::file(
+            let observation = probe::file(
                 request.path,
                 request.declared_bytes,
                 request.mode,
                 request.ownership,
-            )
+            )?;
+            if before_observation.is_none() {
+                before_observation = Some(observation.clone());
+            }
+            Ok(observation)
         },
         |observation| {
             if observation.current() {
@@ -210,6 +217,9 @@ fn execute_with_authority(
         },
         request.invocation.is_some(),
     )?;
+    let before_observation =
+        before_observation.ok_or_else(|| "place-file-initial-observation-missing".to_string())?;
+    let diff_decision = run.decision();
     let observation = run.observation().clone();
     let movement = match run {
         crate::atoms::comparison::ComparisonRun::Current { .. } => PlaceFileMovement::default(),
@@ -227,8 +237,20 @@ fn execute_with_authority(
                 .map(|bytes| atoms::file_sha256(&bytes)),
         }
     };
-    let receipt = receipt::receipt(request.path, drift, &movement);
+    let receipt = receipt::receipt(
+        request.path,
+        drift,
+        &before_observation,
+        &observation,
+        diff_decision,
+        request.declared_bytes,
+        request.mode,
+        request.ownership,
+        &movement,
+    );
     Ok(PlaceFileOutcome {
+        before_observation,
+        diff_decision,
         observation,
         movement,
         receipt,
@@ -586,14 +608,47 @@ mod mutation {
 mod receipt {
     use super::*;
 
-    pub(super) fn receipt(path: &Path, drift: Drift, movement: &PlaceFileMovement) -> Receipt {
+    fn observation_fields(prefix: &str, observation: &PlaceFileObservation) -> String {
+        format!(
+            "{prefix}_exists={} {prefix}_regular={} {prefix}_bytes_equal={} {prefix}_mode={:?} {prefix}_mode_equal={} {prefix}_uid={:?} {prefix}_gid={:?} {prefix}_owner_equal={} {prefix}_group_equal={}",
+            observation.existed,
+            observation.regular,
+            observation.bytes_equal,
+            observation.mode,
+            observation.mode_equal,
+            observation.uid,
+            observation.gid,
+            observation.owner_equal,
+            observation.group_equal,
+        )
+    }
+
+    pub(super) fn receipt(
+        path: &Path,
+        drift: Drift,
+        before: &PlaceFileObservation,
+        after: &PlaceFileObservation,
+        diff_decision: crate::atoms::comparison::DiffDecision,
+        declared_bytes: &[u8],
+        declared_mode: Option<u32>,
+        ownership: DeclaredOwnership,
+        movement: &PlaceFileMovement,
+    ) -> Receipt {
         Receipt {
             atom: "place-file".into(),
             ok: true,
             drift,
             message: format!(
-                "path={}; bytes={}; mode={}; owner={}; created={}; backed_up={}",
+                "path={}; diff_decision={:?}; {}; {}; desired_bytes_sha256={}; desired_bytes_len={}; desired_mode={:?}; desired_uid={:?}; desired_gid={:?}; movement_bytes={}; movement_mode={}; movement_owner={}; movement_created={}; backed_up={}",
                 path.display(),
+                diff_decision,
+                observation_fields("before", before),
+                observation_fields("after", after),
+                atoms::file_sha256(declared_bytes),
+                declared_bytes.len(),
+                declared_mode,
+                ownership.uid,
+                ownership.gid,
                 movement.bytes,
                 movement.mode,
                 movement.owner,
@@ -647,6 +702,561 @@ mod authority_tests {
 }
 
 // Managed-file convergence ownership lives with the place-file do seat.
+pub(crate) fn write_compatibility_projection(
+    path: &Path,
+    projection: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        crate::atoms::attest::prepare_receipt_parent(parent)?;
+    }
+    crate::atoms::attest::write_json_atomic(path, projection)
+}
+
+fn observation_projection(observation: &PlaceFileObservation) -> serde_json::Value {
+    json!({
+        "exists":observation.existed,
+        "regular":observation.regular,
+        "bytes_equal":observation.bytes_equal,
+        "mode":observation.mode,
+        "mode_equal":observation.mode_equal,
+        "uid":observation.uid,
+        "gid":observation.gid,
+        "owner_equal":observation.owner_equal,
+        "group_equal":observation.group_equal,
+    })
+}
+
+fn movement_projection(movement: &PlaceFileMovement) -> serde_json::Value {
+    json!({
+        "bytes":movement.bytes,
+        "mode":movement.mode,
+        "owner":movement.owner,
+        "created":movement.created,
+        "backed_up":movement.backed_up,
+    })
+}
+
+pub(crate) fn write_compatibility_projection_after_attest(
+    receipt_dir: &Path,
+    path: &Path,
+    receipt: &Receipt,
+    projection: &serde_json::Value,
+) -> Result<(), String> {
+    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), receipt, &[])?;
+    write_compatibility_projection(path, projection)
+}
+
+/// Convert typed placement evidence into the stable compatibility fields only
+/// after its central atom receipt has been written.
+pub(crate) fn write_place_file_compatibility_projection(
+    receipt_dir: &Path,
+    path: &Path,
+    outcome: &PlaceFileOutcome,
+    projection: &serde_json::Value,
+) -> Result<(), String> {
+    let mut projection = projection.clone();
+    let object = projection
+        .as_object_mut()
+        .ok_or_else(|| "place-file-compatibility-projection-not-object".to_string())?;
+    object.insert(
+        "observed_state".into(),
+        observation_projection(&outcome.before_observation),
+    );
+    object.insert(
+        "final_state".into(),
+        observation_projection(&outcome.observation),
+    );
+    let diff_decision = match outcome.diff_decision {
+        crate::atoms::comparison::DiffDecision::Empty => "Empty",
+        crate::atoms::comparison::DiffDecision::Different => "Different",
+    };
+    object.insert("diff_decision".into(), json!(diff_decision));
+    let movement_key = if object.contains_key("movement") {
+        "movement_details"
+    } else {
+        "movement"
+    };
+    object.insert(movement_key.into(), movement_projection(&outcome.movement));
+    object.insert("receipt".into(), json!(outcome.receipt));
+    write_compatibility_projection_after_attest(
+        receipt_dir,
+        path,
+        &outcome.receipt,
+        &projection,
+    )
+}
+
+pub(crate) fn write_compile_fragments_no_claim_projection(
+    receipt_dir: &Path,
+    target: &Path,
+    selected_appliance: &str,
+) -> Result<(), String> {
+    let receipt = Receipt {
+        atom: "place-file".into(),
+        ok: true,
+        drift: Drift::Current,
+        message: "compile-fragments-no-claim".into(),
+    };
+    let projection = json!({
+        "schema":"harmonia.compile-fragments.receipt.v1",
+        "ok":true,
+        "changed":false,
+        "skipped":true,
+        "artifact":"no-claim",
+        "target":target,
+        "selected_appliance":selected_appliance,
+        "bytes":0,
+    });
+    write_compatibility_projection_after_attest(
+        receipt_dir,
+        &receipt_dir.join("compile-fragments.json"),
+        &receipt,
+        &projection,
+    )
+}
+
+pub(crate) fn write_compile_fragments_config_projection(
+    receipt_dir: &Path,
+    target: &Path,
+    selected_appliance: &str,
+    bytes: usize,
+    outcome: &FileConvergenceOutcome,
+    config_state: &str,
+    skipped: bool,
+) -> Result<(), String> {
+    let message = format!("compile-fragments-config-{config_state}");
+    let receipt = Receipt {
+        atom: "place-file".into(),
+        ok: outcome.ok,
+        drift: Drift::Current,
+        message,
+    };
+    let projection = json!({
+        "schema":"harmonia.compile-fragments.receipt.v1",
+        "ok":outcome.ok,
+        "changed":outcome.changed,
+        "ownership_changed":outcome.ownership_changed,
+        "skipped":skipped,
+        "config_state":config_state,
+        "recognition_ok":outcome.ok,
+        "target":target,
+        "selected_appliance":selected_appliance,
+        "bytes":bytes,
+    });
+    write_compatibility_projection_after_attest(
+        receipt_dir,
+        &receipt_dir.join("compile-fragments.json"),
+        &receipt,
+        &projection,
+    )
+}
+
+pub(crate) fn write_compile_fragments_place_file_projection(
+    receipt_dir: &Path,
+    target: &Path,
+    selected_appliance: &str,
+    bytes: usize,
+    outcome: &PlaceFileOutcome,
+    skipped: bool,
+) -> Result<(), String> {
+    let projection = json!({
+        "schema":"harmonia.compile-fragments.receipt.v1",
+        "ok":outcome.receipt.ok,
+        "changed":outcome.movement.changed(),
+        "skipped":skipped,
+        "target":target,
+        "selected_appliance":selected_appliance,
+        "bytes":bytes,
+    });
+    write_place_file_compatibility_projection(
+        receipt_dir,
+        &receipt_dir.join("compile-fragments.json"),
+        outcome,
+        &projection,
+    )
+}
+
+pub(crate) struct FilesSummaryProjection {
+    pub name: String,
+    pub schema: String,
+    pub ok: bool,
+    pub apply: bool,
+    pub config_state: String,
+    pub config_surfaces: serde_json::Value,
+    pub module: String,
+    pub source_dir: PathBuf,
+    pub target_dir: PathBuf,
+    pub checked_file_count: usize,
+    pub written_file_count: usize,
+    pub backed_up_file_count: usize,
+    pub changed: bool,
+    pub ownership_changed: bool,
+    pub missing: Vec<String>,
+    pub authority: String,
+    pub waybar_contract: serde_json::Value,
+    pub first_missing_signal: String,
+    pub score: Option<serde_json::Value>,
+    pub reference_id: Option<serde_json::Value>,
+}
+
+/// Write the managed-files summary as an atom-owned compatibility projection.
+/// The aggregate typed receipt is centrally attested before the JSON view lands.
+pub(crate) fn write_files_summary_compatibility_projection(
+    receipt_dir: &Path,
+    summary: FilesSummaryProjection,
+) -> Result<(), String> {
+    let receipt = Receipt {
+        atom: "place-file".into(),
+        ok: summary.ok,
+        drift: Drift::Current,
+        message: format!(
+            "files-summary checked={} written={} backed_up={} changed={} ownership_changed={} config_state={}",
+            summary.checked_file_count,
+            summary.written_file_count,
+            summary.backed_up_file_count,
+            summary.changed,
+            summary.ownership_changed,
+            summary.config_state,
+        ),
+    };
+    let mut projection = json!({
+        "schema":summary.schema,
+        "ok":summary.ok,
+        "apply":summary.apply,
+        "config_state":summary.config_state,
+        "config_surfaces":summary.config_surfaces,
+        "module":summary.module,
+        "source_dir":summary.source_dir,
+        "target_dir":summary.target_dir,
+        "checked_file_count":summary.checked_file_count,
+        "written_file_count":summary.written_file_count,
+        "backed_up_file_count":summary.backed_up_file_count,
+        "changed":summary.changed,
+        "ownership_changed":summary.ownership_changed,
+        "missing":summary.missing,
+        "authority":summary.authority,
+        "waybar_contract":summary.waybar_contract,
+        "first_missing_signal":summary.first_missing_signal,
+    });
+    let object = projection
+        .as_object_mut()
+        .ok_or_else(|| "files-summary-compatibility-projection-not-object".to_string())?;
+    if let Some(score) = summary.score {
+        object.insert("score".into(), score);
+    }
+    if let Some(reference_id) = summary.reference_id {
+        object.insert("reference_id".into(), reference_id);
+    }
+    write_compatibility_projection_after_attest(
+        receipt_dir,
+        &receipt_dir.join(format!("{}.json", summary.name)),
+        &receipt,
+        &projection,
+    )
+}
+
+/// Run the declared hotfix file step through the typed place-file atom and
+/// return the established files-tool receipt as an attested projection.
+pub(crate) fn hotfix_file_backfill(
+    path: &Path,
+    declared_bytes: &[u8],
+    mode: Option<u32>,
+    ownership: DeclaredOwnership,
+    owner: Option<&str>,
+    apply: bool,
+    invocation: Option<&atoms::r#do::InvocationKey>,
+    receipt_dir: &Path,
+    step_id: &str,
+) -> Result<crate::OperationOutcome, String> {
+    let compatibility_path = receipt_dir.join(format!("{step_id}.json"));
+    let expected_sha256 = atoms::file_sha256(declared_bytes);
+    let mut execute_started = false;
+    let result = (|| {
+        crate::atoms::ask::backfill_file::validate_target(path)?;
+        match crate::atoms::files::classify_target(path) {
+            crate::atoms::files::TargetClass::Refused(reason) => return Err(reason),
+            crate::atoms::files::TargetClass::Config => {
+                return Err(format!(
+                    "configuration-actuator-authority-refused {}",
+                    path.display()
+                ));
+            }
+            crate::atoms::files::TargetClass::Software => {}
+        }
+        if apply && invocation.is_none() {
+            return Err("hotfix-file-backfill-invocation-key-missing".into());
+        }
+        let actuator_invocation = apply.then_some(invocation).flatten();
+        execute_started = true;
+        execute(PlaceFileRequest {
+            path,
+            declared_bytes,
+            mode,
+            ownership,
+            backup: BackupPolicy::None,
+            invocation: actuator_invocation,
+        })
+    })();
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let actual_sha256 = fs::symlink_metadata(path)
+                .ok()
+                .filter(|metadata| metadata.file_type().is_file())
+                .and_then(|_| fs::read(path).ok())
+                .map(|bytes| atoms::file_sha256(&bytes));
+            let refused = !execute_started;
+            let movement = if !apply {
+                "none"
+            } else if refused {
+                "refused"
+            } else {
+                "attempted"
+            };
+            let receipt = Receipt {
+                atom: "place-file".into(),
+                ok: false,
+                drift: Drift::File {
+                    expected_sha256: expected_sha256.clone(),
+                    actual_sha256,
+                },
+                message: format!("path={} blocker={error}", path.display()),
+            };
+            let projection = json!({
+                "schema":"harmonia.tool_receipt.v1",
+                "operation_id":step_id,
+                "tool":"files",
+                "action":"hotfix-file-backfill",
+                "ok":false,
+                "changed":null,
+                "skipped":!apply || refused,
+                "message":error.clone(),
+                "command":null,
+                "first_missing_signal":error.clone(),
+                "observed_state":null,
+                "desired_state":{
+                    "path":path,
+                    "bytes_sha256":expected_sha256,
+                    "bytes":declared_bytes.len(),
+                    "mode":mode,
+                    "owner":owner,
+                    "uid":ownership.uid,
+                    "gid":ownership.gid,
+                },
+                "diff_decision":"blocked",
+                "movement":movement,
+                "final_state":null,
+                "truthful_changed":null,
+                "proof":"place-file-action-failed",
+                "blocker":error.clone(),
+                "receipt":receipt,
+            });
+            write_compatibility_projection_after_attest(
+                receipt_dir,
+                &compatibility_path,
+                &receipt,
+                &projection,
+            )?;
+            return Err(error);
+        }
+    };
+    let changed = outcome.movement.changed();
+    let different = if apply {
+        changed
+    } else {
+        !outcome.observation.current()
+    };
+    let diff_decision = if different { "Different" } else { "Empty" };
+    let movement = if !apply || !different {
+        if different { "report-only" } else { "none" }
+    } else {
+        "attempted"
+    };
+    let proof = if !outcome.receipt.ok {
+        "place-file-action-failed"
+    } else if different && !apply {
+        "report-only"
+    } else if different {
+        "place-file-readback"
+    } else {
+        "current"
+    };
+    let projection = json!({
+        "schema":"harmonia.tool_receipt.v1",
+        "operation_id":step_id,
+        "tool":"files",
+        "action":"hotfix-file-backfill",
+        "ok":outcome.receipt.ok,
+        "changed":changed,
+        "skipped":!apply || !different,
+        "message":outcome.receipt.message,
+        "command":null,
+        "first_missing_signal":"none",
+        "movement":movement,
+        "desired_state":{
+            "path":path,
+            "bytes_sha256":expected_sha256,
+            "bytes":declared_bytes.len(),
+            "mode":mode,
+            "owner":owner,
+            "uid":ownership.uid,
+            "gid":ownership.gid,
+        },
+        "diff_decision":diff_decision,
+        "final_state":observation_projection(&outcome.observation),
+        "truthful_changed":changed,
+        "proof":proof,
+        "blocker":"none",
+    });
+    write_place_file_compatibility_projection(
+        receipt_dir,
+        &compatibility_path,
+        &outcome,
+        &projection,
+    )?;
+    Ok(crate::OperationOutcome {
+        ok: outcome.receipt.ok,
+        changed,
+        skipped: !apply || !different,
+        message: outcome.receipt.message,
+        command: None,
+    })
+}
+
+pub(crate) fn same_root_directory_sync(
+    source_root: &Path,
+    target_root: &Path,
+    receipt_dir: &Path,
+    step_id: &str,
+    apply: bool,
+    allowed: bool,
+) -> Result<Option<crate::OperationOutcome>, String> {
+    if !allowed || source_root != target_root {
+        return Ok(None);
+    }
+    let observed = crate::atoms::comparison::execute(
+        "directory-sync",
+        || {
+            let source = source_root.canonicalize().map_err(|error| {
+                format!("directory-sync-source-root-observation-failed: {error}")
+            })?;
+            let target = target_root.canonicalize().map_err(|error| {
+                format!("directory-sync-target-root-observation-failed: {error}")
+            })?;
+            if !source.is_dir() || !target.is_dir() {
+                return Err("directory-sync-same-root-not-directory".to_string());
+            }
+            Ok::<_, String>((source, target))
+        },
+        |(source, target)| {
+            if source == target {
+                crate::atoms::comparison::DiffDecision::Empty
+            } else {
+                crate::atoms::comparison::DiffDecision::Different
+            }
+        },
+        |_, _| Err::<(), String>("directory-sync-same-root-drift".into()),
+    );
+    let (observed_state, diff_decision, ok, blocker): (serde_json::Value, &str, bool, String) = match observed {
+        Ok(crate::atoms::comparison::ComparisonRun::Current { observation, decision }) => (
+            json!({"source_root":observation.0,"target_root":observation.1,"same_root":true}),
+            if decision == crate::atoms::comparison::DiffDecision::Empty { "empty" } else { "different" },
+            decision == crate::atoms::comparison::DiffDecision::Empty,
+            if decision == crate::atoms::comparison::DiffDecision::Empty { "none" } else { "directory-sync-same-root-drift" }.to_string(),
+        ),
+        Ok(crate::atoms::comparison::ComparisonRun::Moved { .. }) => (
+            json!({"source_root":source_root,"target_root":target_root,"same_root":false}),
+            "different", false, "directory-sync-same-root-unexpected-movement".to_string(),
+        ),
+        Err(error) => (
+            json!({"source_root":source_root,"target_root":target_root,"same_root":false}),
+            "blocked", false, error,
+        ),
+    };
+    let outcome = crate::OperationOutcome {
+        ok,
+        changed: false,
+        skipped: !apply,
+        message: if ok {
+            format!("directory-sync same-root verified {}", source_root.display())
+        } else {
+            blocker.to_string()
+        },
+        command: None,
+    };
+    let receipt = Receipt {
+        atom: "place-file".into(),
+        ok,
+        drift: Drift::Current,
+        message: format!("directory-sync diff={diff_decision} movement=none changed=false blocker={blocker}"),
+    };
+    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
+    write_compatibility_projection(
+        &receipt_dir.join(format!("{step_id}.json")),
+        &json!({
+            "schema":"harmonia.tool_receipt.v1", "operation_id":step_id,
+            "tool":"files", "action":"directory-sync", "ok":ok,
+            "changed":false, "skipped":!apply, "message":outcome.message,
+            "command":null, "first_missing_signal":blocker,
+            "observed_state":observed_state,
+            "desired_state":{"directory_sync":"verified"},
+            "diff_decision":diff_decision, "movement":"none", "truthful_changed":false,
+        }),
+    )?;
+    Ok(Some(outcome))
+}
+
+fn partial_convergence_outcome(
+    checked: usize,
+    written: usize,
+    backed_up: usize,
+    missing: &[String],
+    entries: &[FileConvergenceEntry],
+    signal: &str,
+) -> FileConvergenceOutcome {
+    FileConvergenceOutcome {
+        ok: false,
+        changed: entries.iter().any(|entry| entry.changed) || written > 0 || backed_up > 0,
+        ownership_changed: entries.iter().any(|entry| entry.ownership_changed),
+        config_state: None,
+        checked,
+        written,
+        backed_up,
+        missing: missing.to_vec(),
+        entries: entries.to_vec(),
+        message: signal.to_string(),
+    }
+}
+
+fn attest_place_file_failure(receipt_dir: &Path, signal: &str) -> Result<Receipt, String> {
+    let receipt = Receipt {
+        atom: "place-file".into(),
+        ok: false,
+        drift: Drift::Current,
+        message: signal.to_string(),
+    };
+    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
+    Ok(receipt)
+}
+
+fn write_convergence_projection_after_attest(
+    receipt_dir: &Path,
+    request: &FileConvergenceRequest,
+    outcome: &FileConvergenceOutcome,
+    apply: bool,
+    config_state: Option<crate::atoms::files::ConfigConvergenceState>,
+    typed_receipts: &[Receipt],
+) -> Result<(), String> {
+    let projection = convergence_receipt_projection(
+        request,
+        outcome,
+        apply,
+        config_state,
+        typed_receipts,
+    );
+    write_convergence_projection(receipt_dir, request, &projection)
+}
+
 pub(crate) fn converge_files_authorized(
     request: &FileConvergenceRequest,
     receipt_dir: &Path,
@@ -792,6 +1402,7 @@ fn converge_files_authorized_with_policy(
 
     let mut entries = Vec::new();
     let mut missing = Vec::new();
+    let mut typed_receipts = Vec::new();
     let mut written = 0usize;
     let mut backed_up = 0usize;
 
@@ -878,16 +1489,23 @@ fn converge_files_authorized_with_policy(
             match same_file_bytes(&source, &target) {
                 Ok(equal) => equal,
                 Err(signal) => {
-                    write_partial_failure_receipt(
-                        receipt_dir,
-                        request,
-                        apply,
+                    let receipt = attest_place_file_failure(receipt_dir, &signal)?;
+                    typed_receipts.push(receipt);
+                    let outcome = partial_convergence_outcome(
                         request.files.len(),
                         written,
                         backed_up,
                         &missing,
                         &entries,
                         &signal,
+                    );
+                    write_convergence_projection_after_attest(
+                        receipt_dir,
+                        request,
+                        &outcome,
+                        apply,
+                        config_state,
+                        &typed_receipts,
                     )?;
                     return Err(signal);
                 }
@@ -974,7 +1592,13 @@ fn converge_files_authorized_with_policy(
         };
         let (backed_up_to, wrote_content, truthful_changed) = match place {
             Ok(outcome) => {
-                let _typed_receipt = outcome.receipt;
+                let receipt = outcome.receipt;
+                crate::atoms::attest::attest(
+                    &receipt_dir.join("atoms.jsonl"),
+                    &receipt,
+                    &[],
+                )?;
+                typed_receipts.push(receipt);
                 let changed = outcome.movement.changed();
                 (
                     outcome.movement.backed_up,
@@ -983,16 +1607,23 @@ fn converge_files_authorized_with_policy(
                 )
             }
             Err(signal) => {
-                write_partial_failure_receipt(
-                    receipt_dir,
-                    request,
-                    apply,
+                let receipt = attest_place_file_failure(receipt_dir, &signal)?;
+                typed_receipts.push(receipt);
+                let outcome = partial_convergence_outcome(
                     request.files.len(),
                     written,
                     backed_up,
                     &missing,
                     &entries,
                     &signal,
+                );
+                write_convergence_projection_after_attest(
+                    receipt_dir,
+                    request,
+                    &outcome,
+                    apply,
+                    config_state,
+                    &typed_receipts,
                 )?;
                 return Err(signal);
             }
@@ -1058,16 +1689,21 @@ fn converge_files_authorized_with_policy(
                 diff: file_diff.text.clone(),
                 diff_omitted: file_diff.omitted.clone(),
             });
-            write_partial_failure_receipt(
-                receipt_dir,
-                request,
-                apply,
+            let outcome = partial_convergence_outcome(
                 request.files.len(),
                 written,
                 backed_up,
                 &missing,
                 &failure_entries,
                 &signal,
+            );
+            write_convergence_projection_after_attest(
+                receipt_dir,
+                request,
+                &outcome,
+                apply,
+                config_state,
+                &typed_receipts,
             )?;
             return Err(signal);
         }
@@ -1124,7 +1760,14 @@ fn converge_files_authorized_with_policy(
             "files convergence incomplete".to_string()
         },
     };
-    write_convergence_receipt(receipt_dir, request, &outcome, apply, config_state)?;
+    write_convergence_projection_after_attest(
+        receipt_dir,
+        request,
+        &outcome,
+        apply,
+        config_state,
+        &typed_receipts,
+    )?;
     Ok(outcome)
 }
 
