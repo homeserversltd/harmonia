@@ -229,6 +229,324 @@ fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String>
         }))
 }
 
+struct SnapshotVerification {
+    errors: Vec<String>,
+    verified_roots: BTreeSet<PathBuf>,
+}
+
+fn capture_tree_for_verify(p: &Path, nodes: &mut Vec<Node>, errors: &mut Vec<String>) {
+    let m = match fs::symlink_metadata(p) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            nodes.push(Node {
+                path: p.into(),
+                kind: Kind::Missing,
+                mode: 0,
+                uid: 0,
+                gid: 0,
+            });
+            return;
+        }
+        Err(error) => {
+            errors.push(format!(
+                "rollback-capture-failed {}: {error}",
+                p.display()
+            ));
+            return;
+        }
+    };
+    let kind = if m.file_type().is_symlink() {
+        match fs::read_link(p) {
+            Ok(target) => Kind::Symlink(target),
+            Err(error) => {
+                errors.push(format!(
+                    "rollback-capture-failed {}: {error}",
+                    p.display()
+                ));
+                return;
+            }
+        }
+    } else if m.is_dir() {
+        Kind::Dir
+    } else {
+        match fs::read(p) {
+            Ok(bytes) => Kind::File(bytes),
+            Err(error) => {
+                errors.push(format!(
+                    "rollback-capture-failed {}: {error}",
+                    p.display()
+                ));
+                return;
+            }
+        }
+    };
+    let is_dir = matches!(kind, Kind::Dir);
+    nodes.push(Node {
+        path: p.into(),
+        kind,
+        mode: m.mode(),
+        uid: m.uid(),
+        gid: m.gid(),
+    });
+    if is_dir {
+        let entries = match fs::read_dir(p) {
+            Ok(entries) => entries,
+            Err(error) => {
+                errors.push(format!(
+                    "rollback-capture-failed {}: {error}",
+                    p.display()
+                ));
+                return;
+            }
+        };
+        for entry in entries {
+            match entry {
+                Ok(entry) => capture_tree_for_verify(&entry.path(), nodes, errors),
+                Err(error) => errors.push(format!(
+                    "rollback-capture-failed {} (directory entry): {error}",
+                    p.display()
+                )),
+            }
+        }
+    }
+}
+
+fn kind_name(kind: &Kind) -> &'static str {
+    match kind {
+        Kind::Missing => "missing",
+        Kind::File(_) => "file",
+        Kind::Symlink(_) => "symlink",
+        Kind::Dir => "directory",
+    }
+}
+
+fn verify(s: &Snapshot) -> SnapshotVerification {
+    let mut actual = Vec::new();
+    let mut errors = Vec::new();
+    let mut verified_roots = s
+        .roots
+        .iter()
+        .map(|root| root.path.clone())
+        .collect::<BTreeSet<_>>();
+    for (root_index, root) in s.roots.iter().enumerate() {
+        let mut root_nodes = Vec::new();
+        let mut capture_errors = Vec::new();
+        capture_tree_for_verify(&root.path, &mut root_nodes, &mut capture_errors);
+        for error in capture_errors {
+            errors.push(format!("{error} (root {})", root.path.display()));
+            verified_roots.remove(&root.path);
+        }
+        actual.extend(root_nodes.into_iter().map(|node| (root_index, node)));
+    }
+
+    // Preserve flattened snapshot order for overlapping roots and appended sudoers preimages.
+    actual.sort_by(|(_, left), (_, right)| left.path.cmp(&right.path));
+    let mut expected = s.nodes.clone();
+    expected.sort_by(|left, right| left.path.cmp(&right.path));
+    if actual.len() != expected.len() {
+        errors.push(format!(
+            "rollback-snapshot-count-mismatch expected={} actual={}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+
+    let roots_for_path = |path: &Path| {
+        s.roots
+            .iter()
+            .filter(|root| path == root.path.as_path() || path.starts_with(root.path.as_path()))
+            .collect::<Vec<_>>()
+    };
+    let (mut expected_index, mut actual_index) = (0, 0);
+    while expected_index < expected.len() || actual_index < actual.len() {
+        match (expected.get(expected_index), actual.get(actual_index)) {
+            (Some(sealed), Some((root_index, observed))) if sealed.path == observed.path => {
+                let root = &s.roots[*root_index];
+                let mut metadata_differences = Vec::new();
+                if observed.mode != sealed.mode {
+                    metadata_differences.push(format!(
+                        "mode expected={:#o} actual={:#o}",
+                        sealed.mode, observed.mode
+                    ));
+                }
+                if observed.uid != sealed.uid {
+                    metadata_differences.push(format!(
+                        "uid expected={} actual={}",
+                        sealed.uid, observed.uid
+                    ));
+                }
+                if observed.gid != sealed.gid {
+                    metadata_differences.push(format!(
+                        "gid expected={} actual={}",
+                        sealed.gid, observed.gid
+                    ));
+                }
+                if !metadata_differences.is_empty() {
+                    errors.push(format!(
+                        "rollback-metadata-mismatch {} (root {}): {}",
+                        observed.path.display(),
+                        root.path.display(),
+                        metadata_differences.join(", ")
+                    ));
+                    verified_roots.remove(&root.path);
+                }
+                match (&observed.kind, &sealed.kind) {
+                    (Kind::File(actual_bytes), Kind::File(expected_bytes))
+                        if actual_bytes != expected_bytes =>
+                    {
+                        errors.push(format!(
+                            "rollback-bytes-mismatch {} (root {})",
+                            observed.path.display(),
+                            root.path.display()
+                        ));
+                        verified_roots.remove(&root.path);
+                    }
+                    (Kind::Symlink(actual_target), Kind::Symlink(expected_target))
+                        if actual_target != expected_target =>
+                    {
+                        errors.push(format!(
+                            "rollback-symlink-target-mismatch {} (root {}): expected {}, actual {}",
+                            observed.path.display(),
+                            root.path.display(),
+                            expected_target.display(),
+                            actual_target.display()
+                        ));
+                        verified_roots.remove(&root.path);
+                    }
+                    _ if std::mem::discriminant(&observed.kind)
+                        != std::mem::discriminant(&sealed.kind) =>
+                    {
+                        errors.push(format!(
+                            "rollback-kind-mismatch {} (root {}): expected {}, actual {}",
+                            observed.path.display(),
+                            root.path.display(),
+                            kind_name(&sealed.kind),
+                            kind_name(&observed.kind)
+                        ));
+                        verified_roots.remove(&root.path);
+                    }
+                    _ => {}
+                }
+                expected_index += 1;
+                actual_index += 1;
+            }
+            (Some(sealed), Some((_, observed))) if sealed.path < observed.path => {
+                let affected_roots = roots_for_path(&sealed.path);
+                if affected_roots.is_empty() {
+                    errors.push(format!(
+                        "rollback-snapshot-path-unassigned {}",
+                        sealed.path.display()
+                    ));
+                    verified_roots.clear();
+                } else {
+                    for root in affected_roots {
+                        errors.push(format!(
+                            "rollback-path-missing {} (root {})",
+                            sealed.path.display(),
+                            root.path.display()
+                        ));
+                        verified_roots.remove(&root.path);
+                    }
+                }
+                expected_index += 1;
+            }
+            (Some(_), Some((root_index, observed))) => {
+                let root = &s.roots[*root_index];
+                errors.push(format!(
+                    "rollback-path-unexpected {} (root {})",
+                    observed.path.display(),
+                    root.path.display()
+                ));
+                verified_roots.remove(&root.path);
+                actual_index += 1;
+            }
+            (Some(sealed), None) => {
+                let affected_roots = roots_for_path(&sealed.path);
+                if affected_roots.is_empty() {
+                    errors.push(format!(
+                        "rollback-snapshot-path-unassigned {}",
+                        sealed.path.display()
+                    ));
+                    verified_roots.clear();
+                } else {
+                    for root in affected_roots {
+                        errors.push(format!(
+                            "rollback-path-missing {} (root {})",
+                            sealed.path.display(),
+                            root.path.display()
+                        ));
+                        verified_roots.remove(&root.path);
+                    }
+                }
+                expected_index += 1;
+            }
+            (None, Some((root_index, observed))) => {
+                let root = &s.roots[*root_index];
+                errors.push(format!(
+                    "rollback-path-unexpected {} (root {})",
+                    observed.path.display(),
+                    root.path.display()
+                ));
+                verified_roots.remove(&root.path);
+                actual_index += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    SnapshotVerification {
+        errors,
+        verified_roots,
+    }
+}
+
+#[cfg(feature = "test-facade")]
+fn mutate_rollback_verification_root(s: &Snapshot) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let Some(requested) = std::env::var_os("HARMONIA_TEST_ROLLBACK_VERIFY_MUTATE_ROOT") else {
+        return Ok(());
+    };
+    let requested = PathBuf::from(requested);
+    let Some(root) = s.roots.iter().find(|root| root.path == requested) else {
+        return Err(format!(
+            "rollback-test-mutation-root-not-sealed {}",
+            requested.display()
+        ));
+    };
+    if root.member == "sudoers" {
+        return Err(format!(
+            "rollback-test-mutation-root-is-sudoers {}",
+            requested.display()
+        ));
+    }
+    let Some(sealed) = s.nodes.iter().find(|node| node.path == requested) else {
+        return Err(format!(
+            "rollback-test-mutation-root-snapshot-missing {}",
+            requested.display()
+        ));
+    };
+    if !matches!(&sealed.kind, Kind::File(_)) {
+        return Err(format!(
+            "rollback-test-mutation-root-not-file {}",
+            requested.display()
+        ));
+    }
+    let metadata = fs::symlink_metadata(&requested).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "rollback-test-mutation-root-not-regular-file {}",
+            requested.display()
+        ));
+    }
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&requested)
+        .map_err(|error| error.to_string())?;
+    file.write_all(b"\nHARMONIA_TEST_ROLLBACK_VERIFY_MUTATION\n")
+        .map_err(|error| error.to_string())
+}
+
 fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key: &InvocationKey) -> Result<(), String> {
     let desired = bytes.to_vec();
     let path = path.to_path_buf();
@@ -247,6 +565,7 @@ pub(crate) fn restore(
 ) -> Result<(), String> {
     let mut changed = Vec::new();
     let mut errors = Vec::new();
+    let mut restored_roots = BTreeSet::new();
     for root in &s.roots {
         if let Err(error) = validate_member_scoped_target(&root.path, &root.member) {
             errors.push(format!(
@@ -317,16 +636,31 @@ pub(crate) fn restore(
             }
         }
         if !root_failed {
-            match root_matches_snapshot(root, &s.nodes) {
-                Ok(true) => restored_paths.push(root.display().to_string()),
-                Ok(false) => errors.push(format!(
-                    "rollback-verify-failed {}: snapshot-mismatch",
-                    root.display()
-                )),
-                Err(error) => errors.push(format!(
-                    "rollback-verify-failed {}: {error}",
-                    root.display()
-                )),
+            restored_roots.insert(root.clone());
+        }
+    }
+    #[cfg(feature = "test-facade")]
+    if let Err(error) = mutate_rollback_verification_root(s) {
+        errors.push(format!("rollback-test-mutation-failed: {error}"));
+    }
+    let verification = verify(s);
+    errors.extend(
+        verification
+            .errors
+            .into_iter()
+            .map(|error| format!("rollback-final-verify-failed: {error}")),
+    );
+    restored_paths.retain(|restored_path| {
+        verification
+            .verified_roots
+            .iter()
+            .any(|root| root.display().to_string() == *restored_path)
+    });
+    for root in restored_roots {
+        if verification.verified_roots.contains(&root) {
+            let restored_path = root.display().to_string();
+            if !restored_paths.contains(&restored_path) {
+                restored_paths.push(restored_path);
             }
         }
     }
@@ -604,12 +938,7 @@ fn receipt_for(t: &ProjectionTransaction) -> TransactionReceipt {
         syzygy_signal: "none".into(),
         member_modules: t.sealed.member_modules.clone(),
         children: t.sealed.children.clone(),
-        target_count: t
-            .sealed
-            .children
-            .iter()
-            .map(|child| child.target_indices.len())
-            .sum(),
+        target_count: t.sealed.snapshot.roots.len(),
         service_count: t.sealed.services.len(),
         caduceus_count: t.sealed.caduceus_count,
     }

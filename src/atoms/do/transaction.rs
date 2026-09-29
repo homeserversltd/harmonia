@@ -149,6 +149,31 @@ fn content_seat_apply_failure(preflight: &ModuleExecution, apply: bool) -> Optio
         .filter(|signal| crate::bands::renew_self::is_content_seat_failure(signal))
 }
 
+#[cfg(feature = "test-facade")]
+fn prepare_rollback_receipt_failure(receipt_dir: &Path) -> Result<(), String> {
+    if std::env::var_os("HARMONIA_TEST_ROLLBACK_RECEIPT_UNWRITABLE").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Ok(());
+    }
+    let path = receipt_dir.join("update-set.json");
+    match fs::symlink_metadata(&path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => match fs::create_dir(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(format!(
+                "rollback-test-receipt-collision-create-failed {}: {error}",
+                path.display()
+            )),
+        },
+        Err(error) => Err(format!(
+            "rollback-test-receipt-collision-observe-failed {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 pub(crate) fn rolling_update_run(
     profile: &Profile,
     module_root: &Path,
@@ -292,19 +317,32 @@ pub(crate) fn rolling_update_run(
                     .as_ref()
                     .map(|rollback_error| format!("{error}; {rollback_error}"))
                     .unwrap_or_else(|| error.clone());
-                crate::atoms::attest::write_transaction_rollback_receipt(
-                    &effective_receipt_dir,
-                    &receipt,
-                    &mint,
-                    Some(&failed_step),
-                    &txn.restored_paths,
-                    &txn.rollback_errors,
-                )?;
                 if let Some(rollback_error) = rollback_error {
-                    return_error = format!("{error}; {rollback_error}");
+                    return_error = format!("{return_error}; {rollback_error}");
+                }
+                let receipt_write = || {
+                    #[cfg(feature = "test-facade")]
+                    prepare_rollback_receipt_failure(&effective_receipt_dir)?;
+                    crate::atoms::attest::write_transaction_rollback_receipt(
+                        &effective_receipt_dir,
+                        &receipt,
+                        &mint,
+                        Some(&failed_step),
+                        &txn.restored_paths,
+                        &txn.rollback_errors,
+                    )
+                };
+                if let Err(write_error) = receipt_write() {
+                    return_error = format!(
+                        "{return_error}; rollback-incomplete: rollback-receipt-write-failed: {write_error}"
+                    );
                 }
             }
-            failure_receipt?;
+            if let Err(write_error) = failure_receipt {
+                return_error = format!(
+                    "{return_error}; transaction-failure-receipt-write-failed: {write_error}"
+                );
+            }
             return Err(return_error);
         }
         let Some(mut txn) = transaction_guard else {
@@ -352,19 +390,33 @@ pub(crate) fn rolling_update_run(
                         .as_ref()
                         .map(|rollback_error| format!("{error}; {rollback_error}"))
                         .unwrap_or_else(|| error.clone());
-                    crate::atoms::attest::write_transaction_rollback_receipt(
-                        &effective_receipt_dir,
-                        &receipt,
-                        &mint,
-                        Some(&failed_step),
-                        &txn.restored_paths,
-                        &txn.rollback_errors,
-                    )?;
-                    failure_receipt?;
+                    let mut return_error = error.clone();
                     if let Some(rollback_error) = rollback_error {
-                        return Err(format!("{error}; {rollback_error}"));
+                        return_error = format!("{return_error}; {rollback_error}");
                     }
-                    return Err(error);
+                    let receipt_write = || {
+                        #[cfg(feature = "test-facade")]
+                        prepare_rollback_receipt_failure(&effective_receipt_dir)?;
+                        crate::atoms::attest::write_transaction_rollback_receipt(
+                            &effective_receipt_dir,
+                            &receipt,
+                            &mint,
+                            Some(&failed_step),
+                            &txn.restored_paths,
+                            &txn.rollback_errors,
+                        )
+                    };
+                    if let Err(write_error) = receipt_write() {
+                        return_error = format!(
+                            "{return_error}; rollback-incomplete: rollback-receipt-write-failed: {write_error}"
+                        );
+                    }
+                    if let Err(write_error) = failure_receipt {
+                        return_error = format!(
+                            "{return_error}; transaction-failure-receipt-write-failed: {write_error}"
+                        );
+                    }
+                    return Err(return_error);
                 }
             }
         } else {
