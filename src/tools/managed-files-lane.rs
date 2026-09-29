@@ -134,9 +134,10 @@ use crate::tools::routine::ValidatedStep;
 use crate::OperationOutcome;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn validate_fragment_path_component(component: &str, kind: &str) -> Result<(), String> {
     if component.is_empty()
@@ -147,6 +148,91 @@ fn validate_fragment_path_component(component: &str, kind: &str) -> Result<(), S
         return Err(format!("compile-fragments-{kind}-invalid"));
     }
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SudoersFragment {
+    pub(crate) name: String,
+    pub(crate) source_path: PathBuf,
+}
+
+/// Select `all/` plus exactly one appliance pool for sudoers. Both the
+/// actuator and member projection use this compiler.
+pub(crate) fn compile_sudoers_fragments(
+    source_root: &Path,
+    appliance: &str,
+) -> Result<Vec<SudoersFragment>, String> {
+    validate_fragment_path_component(appliance, "sudoers-appliance")?;
+    let mut selected = BTreeMap::<String, PathBuf>::new();
+    for pool in ["all", appliance] {
+        let directory = source_root.join(pool);
+        let metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "validated-sudoers-pool-read-failed {}: {error}",
+                    directory.display()
+                ));
+            }
+        };
+        if !metadata.file_type().is_dir() {
+            return Err(format!(
+                "validated-sudoers-declared-path-refused {}",
+                directory.display()
+            ));
+        }
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| {
+                format!(
+                    "validated-sudoers-pool-read-failed {}: {error}",
+                    directory.display()
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!(
+                    "validated-sudoers-pool-read-failed {}: {error}",
+                    directory.display()
+                )
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name().into_string().map_err(|_| {
+                format!(
+                    "validated-sudoers-declared-path-refused {}",
+                    path.display()
+                )
+            })?;
+            let relative = Path::new(&name);
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                format!(
+                    "validated-sudoers-declared-path-refused {}: {error}",
+                    path.display()
+                )
+            })?;
+            if relative.components().count() != 1
+                || !name.starts_with("caduceus-")
+                || !metadata.file_type().is_file()
+            {
+                return Err(format!(
+                    "validated-sudoers-declared-path-refused {}",
+                    path.display()
+                ));
+            }
+            if selected.insert(name.clone(), path).is_some() {
+                return Err(format!("validated-sudoers-pool-collision {name}"));
+            }
+        }
+    }
+    if selected.is_empty() {
+        return Err("validated-sudoers-files-empty".into());
+    }
+    Ok(selected
+        .into_iter()
+        .map(|(name, source_path)| SudoersFragment { name, source_path })
+        .collect())
 }
 
 fn profile_fragment_selectors<'a>(
@@ -1013,14 +1099,13 @@ where
     let owned_prefix = string_arg(&step.args, "owned_prefix");
     let validator_program = string_arg(&step.args, "validator_program");
     let validator_args = string_array_arg(&step.args, "validator_args");
-    let files: Vec<String> = string_array_arg(&step.args, "files");
+    let appliance = string_arg(&step.args, "appliance");
+    let selected_fragments = string_array_arg(&step.args, "selected_fragments");
 
     if target_root != declared_target_root {
         return Err("validated-sudoers-target-root-refused".into());
     }
-    if owned_prefix.is_empty()
-        || owned_prefix.contains('/')
-        || owned_prefix.contains('\\')
+    if owned_prefix != "caduceus-"
         || !matches!(validator_program, "/usr/bin/visudo" | "/usr/sbin/visudo")
         || validator_args.len() != 1
         || validator_args[0] != "-cf"
@@ -1029,45 +1114,113 @@ where
     {
         return Err("validated-sudoers-contract-refused".into());
     }
-    if files.is_empty() {
-        return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: false,
-            message: "sudoers-fragments-absent".into(),
-            command: None,
-        });
+    if step.args.contains_key("files") {
+        return Err("validated-sudoers-contract-refused".into());
     }
-
-    for name in &files {
+    let source_metadata = fs::symlink_metadata(&source_root).map_err(|error| {
+        format!(
+            "validated-sudoers-pool-read-failed {}: {error}",
+            source_root.display()
+        )
+    })?;
+    if !source_metadata.file_type().is_dir() {
+        return Err(format!(
+            "validated-sudoers-declared-path-refused {}",
+            source_root.display()
+        ));
+    }
+    let expected = compile_sudoers_fragments(&source_root, appliance)?;
+    let files = expected
+        .iter()
+        .map(|fragment| fragment.name.clone())
+        .collect::<Vec<_>>();
+    if selected_fragments != files {
+        return Err("validated-sudoers-pool-selection-drift".into());
+    }
+    let mut unique = BTreeSet::new();
+    for fragment in &expected {
+        let name = &fragment.name;
         let relative = Path::new(name.as_str());
         if relative.components().count() != 1
-            || relative.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
             || !name.starts_with(owned_prefix)
+            || !unique.insert(name)
         {
             return Err(format!("validated-sudoers-declared-path-refused {name}"));
         }
-        let candidate = source_root.join(relative);
+        let metadata = fs::symlink_metadata(&fragment.source_path).map_err(|error| {
+            format!(
+                "validated-sudoers-declared-path-refused {}: {error}",
+                fragment.source_path.display()
+            )
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "validated-sudoers-declared-path-refused {}",
+                fragment.source_path.display()
+            ));
+        }
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("validated-sudoers-staging-clock-failed: {error}"))?
+        .as_nanos();
+    let staged_root = module_dir.join(format!(".sudoers-staging-{}-{nonce}", std::process::id()));
+    fs::create_dir(&staged_root).map_err(|error| {
+        format!(
+            "validated-sudoers-staging-create-failed {}: {error}",
+            staged_root.display()
+        )
+    })?;
+    struct StagedSudoersSource(PathBuf);
+    impl Drop for StagedSudoersSource {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _staged_source = StagedSudoersSource(staged_root.clone());
+    for fragment in &expected {
+        let bytes = fs::read(&fragment.source_path).map_err(|error| {
+            format!(
+                "validated-sudoers-source-read-failed {}: {error}",
+                fragment.source_path.display()
+            )
+        })?;
+        fs::write(staged_root.join(&fragment.name), bytes).map_err(|error| {
+            format!(
+                "validated-sudoers-staging-write-failed {}: {error}",
+                fragment.name
+            )
+        })?;
+    }
+
+    // Validate the staged bytes that the actuator will promote; no target is
+    // promoted until every selected fragment has a successful visudo receipt.
+    for fragment in &expected {
+        let candidate = staged_root.join(&fragment.name);
         let candidate_text = candidate.to_string_lossy();
         let refs = ["-cf", candidate_text.as_ref()];
         let result = validator(validator_program, &refs, 30);
         crate::write_command_receipt(
             module_dir,
-            &format!("{}-{}-validation", step.step_id, name),
+            &format!("{}-{}-validation", step.step_id, fragment.name),
             &result,
         )?;
         if !result.ok {
-            return Err(format!("validated-sudoers-visudo-rejected {name}"));
+            return Err(format!(
+                "validated-sudoers-visudo-rejected {}",
+                fragment.name
+            ));
         }
     }
 
     let request = crate::atoms::files::FileConvergenceRequest {
-        source_root,
+        source_root: staged_root,
         target_root,
-        files: files
-            .into_iter()
-            .map(|relative_path| crate::atoms::files::FileSpec {
-                relative_path: PathBuf::from(relative_path),
+        files: expected
+            .iter()
+            .map(|fragment| crate::atoms::files::FileSpec {
+                relative_path: PathBuf::from(&fragment.name),
                 mode: Some(0o440),
             })
             .collect(),
@@ -1090,7 +1243,11 @@ where
         ok: outcome.ok,
         changed: outcome.changed,
         skipped: !authorization.is_some(),
-        message: outcome.message,
+        message: format!(
+            "validated-sudoers-fragments={} {}",
+            files.join(","),
+            outcome.message
+        ),
         command: None,
     })
 }

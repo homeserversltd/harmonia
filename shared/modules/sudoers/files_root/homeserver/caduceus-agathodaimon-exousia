@@ -1,0 +1,3 @@
+# Caduceus Exousia crossing: fixed root-owned cli.py noun/verb entries only.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py exousia bind
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py exousia verify

@@ -206,6 +206,42 @@ pub(crate) fn load_profile_projection(
             },
         );
     }
+    let sudoers_appliance = crate::bands::stage_profile::groups::profile_extends(module_root)?
+        .unwrap_or_else(|| profile.id.clone());
+    for projected in modules.values_mut() {
+        let LoadedModule::Ladder(manifest) = &projected.loaded else {
+            continue;
+        };
+        for step in projected.steps.iter_mut().filter(|step| {
+            step.tool == "files" && step.permutation == "validated-sudoers-converge"
+        }) {
+            if step.args.contains_key("files") {
+                return Err("validated-sudoers-contract-refused".into());
+            }
+            let files_root = manifest
+                .files_root
+                .as_deref()
+                .ok_or("validated-sudoers-files-root-missing")?;
+            let source_root = manifest.base_dir.join(files_root);
+            let fragments = crate::tools::files::compile_sudoers_fragments(
+                &source_root,
+                &sudoers_appliance,
+            )?;
+            step.args.insert(
+                "appliance".into(),
+                Value::String(sudoers_appliance.clone()),
+            );
+            step.args.insert(
+                "selected_fragments".into(),
+                Value::Array(
+                    fragments
+                        .into_iter()
+                        .map(|fragment| Value::String(fragment.name))
+                        .collect(),
+                ),
+            );
+        }
+    }
     let profile_pins = modules
         .get("pins")
         .and_then(|projected| match &projected.loaded {
@@ -393,7 +429,7 @@ fn projection_derive_plan_inner(
             step.tool == "files" && step.permutation == "validated-sudoers-converge"
         }) {
             record_module("sudoers", module_id);
-            let files = match step.args.get("files") {
+            let files = match step.args.get("selected_fragments") {
                 Some(Value::Array(files)) => files
                     .iter()
                     .enumerate()

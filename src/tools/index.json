@@ -746,9 +746,14 @@
               "required": true
             },
             {
-              "name": "files",
+              "name": "appliance",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "selected_fragments",
               "kind": "string_array",
-              "required": true
+              "required": false
             },
             {
               "name": "owned_prefix",

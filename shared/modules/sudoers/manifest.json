@@ -1,0 +1,28 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sudoers",
+  "category": "known-good",
+  "version": "2.0.0",
+  "description": "One shared sudoers module selects all/ plus exactly one appliance pool and forcibly converges only estate-owned caduceus-* sudoers.d fragments after visudo validation.",
+  "optional": false,
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "estate-sudoers-converge",
+      "tool": "files",
+      "permutation": "validated-sudoers-converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/etc/sudoers.d",
+        "owned_prefix": "caduceus-",
+        "validator_program": "/usr/sbin/visudo",
+        "validator_args": ["-cf"],
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "estate-sudoers-converge"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

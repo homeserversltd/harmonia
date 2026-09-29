@@ -1,0 +1,3 @@
+# Allow Caduceus to check and apply only the HOMESERVER Harmonia update profile.
+caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia homeserver-update /etc/harmonia/profiles/homeserver/index.json --receipt-dir *
+caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia homeserver-update /etc/harmonia/profiles/homeserver/index.json --apply --receipt-dir *

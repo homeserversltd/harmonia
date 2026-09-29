@@ -8,7 +8,7 @@
   "dotfile_pool": "tv",
   "identity": "homeconsole",
   "categories_required": true,
-  "description": "HomeConsole appliance profile. HomeConsole is the sole console identity.",
+  "description": "HomeConsole appliance profile. HomeConsole is the sole console identity; sudoers is provided by the shared module.",
   "module_spine_entered": "profiles/homeconsole/modules",
   "modules": [
     "system-packages",

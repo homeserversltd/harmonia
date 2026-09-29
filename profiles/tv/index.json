@@ -10,7 +10,7 @@
   "aliases": [
     "tv"
   ],
-  "description": "TV appliance profile: Harmonia-owned TV configuration and maintenance spine.",
+  "description": "TV appliance profile: Harmonia-owned TV configuration and maintenance spine; sudoers is provided by the shared module.",
   "modules": [
     "system-packages",
     "dot-files",

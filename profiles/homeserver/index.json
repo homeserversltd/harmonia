@@ -85,7 +85,7 @@
     "xenia",
     "grub-branding"
   ],
-  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Synapse and Element service modules, and the direct-owned sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
+  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Synapse and Element service modules, and the shared sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
     "dot-files",
