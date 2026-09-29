@@ -1138,7 +1138,12 @@ pub(crate) fn execute_routine(
             .and_then(Value::as_str);
         let selected_blessed_ref =
             crate::bands::pull_source::select_blessed_ref(blessed_ref, observed_fallback_blessed);
-        match crate::bands::pull_source::artifact_head_divergence_canary(
+        let bearer = pull_child
+            .args
+            .get("bearer")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::tools::service_runtime::DEFAULT_BEARER);
+        match crate::bands::pull_source::artifact_head_divergence_canary_with_bearer(
             &routine_dir,
             pull_child
                 .args
@@ -1151,6 +1156,7 @@ pub(crate) fn execute_routine(
             resolved_head,
             selected_blessed_ref.as_deref(),
             None,
+            bearer,
         ) {
             Ok(receipt) => Some(
                 serde_json::to_value(receipt)

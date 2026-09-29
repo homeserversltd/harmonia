@@ -27,7 +27,6 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const SOURCE_PLAN_SCHEMA: &str = "harmonia.engine.source_plan.v1";
@@ -93,7 +92,7 @@ fn component_state_key(component: &str) -> String {
 
 /// Report-only comparison of executed source and artifact identity.
 /// Computation and tracking never participate in routine success/gates.
-pub(crate) fn artifact_head_divergence_canary(
+pub(crate) fn artifact_head_divergence_canary_with_bearer(
     receipt_dir: &Path,
     component: &str,
     source_policy: &str,
@@ -102,6 +101,7 @@ pub(crate) fn artifact_head_divergence_canary(
     resolved_head: Option<&str>,
     blessed_ref: Option<&str>,
     _installed_binary: Option<&Path>,
+    bearer: &str,
 ) -> Result<ArtifactHeadDivergenceCanary, String> {
     let head_commit = pull_happened.then(|| valid_commit(resolved_head)).flatten();
     // This argument is supplied only from executed source/build receipts.  Do
@@ -114,25 +114,35 @@ pub(crate) fn artifact_head_divergence_canary(
         source_dir,
     ) {
         (Some(head), Some(blessed), Some(repo)) => {
+            let request = crate::atoms::git_artifact::Request::new(
+                None,
+                repo.to_path_buf(),
+                String::new(),
+                String::new(),
+            )
+            .with_bearer(bearer)
+            .with_safe_directory(repo);
+            let cwd = repo.to_str();
             let local = |commit: &str| {
-                Command::new("/usr/bin/git")
-                    .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
-                    .current_dir(repo)
-                    .status()
-                    .is_ok_and(|s| s.success())
+                let object = format!("{commit}^{{commit}}");
+                crate::atoms::ask::pull_repo::git_observe(
+                    &request,
+                    &["cat-file", "-e", &object],
+                    cwd,
+                )
+                .ok
             };
             if !local(head) || !local(blessed) {
                 reason = Some("commit-not-locally-present".into());
                 None
             } else {
-                match Command::new("/usr/bin/git")
-                    .args(["rev-list", &format!("{blessed}..{head}")])
-                    .current_dir(repo)
-                    .output()
-                {
-                    Ok(output) if output.status.success() => {
-                        Some(String::from_utf8_lossy(&output.stdout).lines().count() as u64)
-                    }
+                let range = format!("{blessed}..{head}");
+                match crate::atoms::ask::pull_repo::git_observe(
+                    &request,
+                    &["rev-list", &range],
+                    cwd,
+                ) {
+                    output if output.ok => Some(output.stdout.lines().count() as u64),
                     _ => {
                         reason = Some("commit-gap-unobservable".into());
                         None
@@ -236,6 +246,30 @@ pub(crate) fn artifact_head_divergence_canary(
         return Err(format!("canary-receipt-write: {error}"));
     }
     Ok(receipt)
+}
+
+#[cfg(test)]
+pub(crate) fn artifact_head_divergence_canary(
+    receipt_dir: &Path,
+    component: &str,
+    source_policy: &str,
+    pull_happened: bool,
+    source_dir: Option<&Path>,
+    resolved_head: Option<&str>,
+    blessed_ref: Option<&str>,
+    installed_binary: Option<&Path>,
+) -> Result<ArtifactHeadDivergenceCanary, String> {
+    artifact_head_divergence_canary_with_bearer(
+        receipt_dir,
+        component,
+        source_policy,
+        pull_happened,
+        source_dir,
+        resolved_head,
+        blessed_ref,
+        installed_binary,
+        crate::tools::service_runtime::DEFAULT_BEARER,
+    )
 }
 
 pub(crate) fn default_source_policy() -> String {
