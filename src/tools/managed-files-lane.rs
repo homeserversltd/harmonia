@@ -1858,6 +1858,104 @@ fn same_stat_version(left: &libc::stat, right: &libc::stat) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) struct SudoersSnapshotPreimage {
+    pub(crate) path: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) mode: u32,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+}
+
+/// Read only the unselected regular Caduceus fragments through the already
+/// opened sudoers directory. The prune actuator retains its own behavior.
+#[cfg(target_os = "linux")]
+pub(crate) fn snapshot_unselected_sudoers_preimages(
+    target_root: &Path,
+    selected_names: &[String],
+) -> Result<Vec<SudoersSnapshotPreimage>, String> {
+    let directory = open_sudoers_directory(target_root)?;
+    let selected = selected_names
+        .iter()
+        .map(|name| name.as_bytes().to_vec())
+        .collect::<BTreeSet<_>>();
+    let mut preimages = Vec::new();
+    for name in read_sudoers_directory_names(&directory, target_root)? {
+        if !name.as_bytes().starts_with(b"caduceus-") || selected.contains(name.as_bytes()) {
+            continue;
+        }
+        let path = target_root.join(&name);
+        let path_display = path.display().to_string();
+        let initial = fstatat_nofollow(&directory, &name).map_err(|error| {
+            format!("validated-sudoers-snapshot-observe-failed {path_display}: {error}")
+        })?;
+        if initial.st_mode & libc::S_IFMT != libc::S_IFREG {
+            continue;
+        }
+        let name_c = CString::new(name.as_bytes())
+            .map_err(|_| format!("validated-sudoers-snapshot-invalid-name {path_display}"))?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name_c.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(format!(
+                "validated-sudoers-snapshot-open-nofollow-failed {path_display}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let mut file = unsafe { fs::File::from_raw_fd(fd) };
+        let opened = fstat_fd(file.as_raw_fd()).map_err(|error| {
+            format!("validated-sudoers-snapshot-file-stat-failed {path_display}: {error}")
+        })?;
+        if opened.st_mode & libc::S_IFMT != libc::S_IFREG || !same_stat_version(&initial, &opened) {
+            return Err(format!(
+                "validated-sudoers-snapshot-file-changed-before-read {path_display}"
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|error| {
+            format!("validated-sudoers-snapshot-file-read-failed {path_display}: {error}")
+        })?;
+        let after_read = fstat_fd(file.as_raw_fd()).map_err(|error| {
+            format!("validated-sudoers-snapshot-file-stat-failed {path_display}: {error}")
+        })?;
+        if !same_stat_version(&opened, &after_read) {
+            return Err(format!(
+                "validated-sudoers-snapshot-file-changed-during-read {path_display}"
+            ));
+        }
+        preimages.push(SudoersSnapshotPreimage {
+            path,
+            bytes,
+            mode: initial.st_mode as u32,
+            uid: initial.st_uid as u32,
+            gid: initial.st_gid as u32,
+        });
+    }
+    Ok(preimages)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) struct SudoersSnapshotPreimage {
+    pub(crate) path: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) mode: u32,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn snapshot_unselected_sudoers_preimages(
+    _target_root: &Path,
+    _selected_names: &[String],
+) -> Result<Vec<SudoersSnapshotPreimage>, String> {
+    Err("validated-sudoers-snapshot-unsupported-platform".into())
+}
+
+#[cfg(target_os = "linux")]
 fn scan_sudoers_prune_candidates(
     directory: &fs::File,
     target_root: &Path,

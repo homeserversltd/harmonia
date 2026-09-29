@@ -434,6 +434,22 @@ pub(crate) fn write_transaction_receipt(
     write_json_atomic(&dir.join("update-set.json"), &value)
 }
 
+pub(crate) fn write_transaction_rollback_receipt(
+    dir: &Path,
+    receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+    evidence: &SyzygyEvidence,
+    failed_step: Option<&str>,
+    restored_paths: &[String],
+    rollback_errors: &[String],
+) -> Result<(), String> {
+    let mut value = transaction_value(receipt, evidence, failed_step);
+    value["transaction_state"] = serde_json::to_value(&receipt.state)
+        .map_err(|error| format!("transaction-state-serialize-failed: {error}"))?;
+    value["restored_paths"] = serde_json::json!(restored_paths);
+    value["rollback_errors"] = serde_json::json!(rollback_errors);
+    write_json_atomic(&dir.join("update-set.json"), &value)
+}
+
 #[cfg(test)]
 mod syzygy_mint_tests {
     use super::*;

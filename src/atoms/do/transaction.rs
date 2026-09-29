@@ -137,9 +137,9 @@ pub(crate) struct RunContext {
 // Compatibility/profile entrypoints remain here; the durable transaction owner lives in ritual.rs.
 pub(crate) use super::ritual::{
     apply_projection, commit_projection, compute_syzygy_sha, project_update_set_v1,
-    rollback_projection, seal_projection, snapshot, snapshot_services, validate_exact_root,
-    validate_exact_root_at, validate_member_scoped_target, ProjectionChild, ProjectionTransaction,
-    SealedProjection, Snapshot, TransactionReceipt, TransactionState,
+    rollback_projection, seal_projection, snapshot, snapshot_services, transaction_receipt,
+    validate_exact_root, validate_exact_root_at, validate_member_scoped_target, ProjectionChild,
+    ProjectionTransaction, SealedProjection, Snapshot, TransactionReceipt, TransactionState,
 };
 
 fn content_seat_apply_failure(preflight: &ModuleExecution, apply: bool) -> Option<&str> {
@@ -272,26 +272,40 @@ pub(crate) fn rolling_update_run(
                 changed,
                 operation_count,
             );
+            let mut return_error = error.clone();
             if let Some(key) = mode.invocation() {
-                if let Ok(receipt) =
-                    crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
-                {
-                    let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
-                        &effective_receipt_dir,
-                        &receipt,
-                        &txn.sealed.sudoers_fragments,
-                        &txn.sealed.snapshot.roots,
-                    );
-                    let _ = crate::atoms::attest::write_transaction_receipt(
-                        &effective_receipt_dir,
-                        &receipt,
-                        &mint,
-                        Some(&error),
-                    );
+                let rollback = crate::atoms::r#do::transaction::rollback_projection(&mut txn, key);
+                let (receipt, rollback_error) = match rollback {
+                    Ok(receipt) => (receipt, None),
+                    Err(rollback_error) => (
+                        crate::atoms::r#do::transaction::transaction_receipt(&txn),
+                        Some(rollback_error),
+                    ),
+                };
+                let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
+                    &effective_receipt_dir,
+                    &receipt,
+                    &txn.sealed.sudoers_fragments,
+                    &txn.sealed.snapshot.roots,
+                );
+                let failed_step = rollback_error
+                    .as_ref()
+                    .map(|rollback_error| format!("{error}; {rollback_error}"))
+                    .unwrap_or_else(|| error.clone());
+                crate::atoms::attest::write_transaction_rollback_receipt(
+                    &effective_receipt_dir,
+                    &receipt,
+                    &mint,
+                    Some(&failed_step),
+                    &txn.restored_paths,
+                    &txn.rollback_errors,
+                )?;
+                if let Some(rollback_error) = rollback_error {
+                    return_error = format!("{error}; {rollback_error}");
                 }
             }
             failure_receipt?;
-            return Err(error);
+            return Err(return_error);
         }
         let Some(mut txn) = transaction_guard else {
             write_transaction_failure_run_receipt(
@@ -319,23 +333,37 @@ pub(crate) fn rolling_update_run(
                         changed,
                         operation_count,
                     );
-                    if let Ok(receipt) =
-                        crate::atoms::r#do::transaction::rollback_projection(&mut txn, key)
-                    {
-                        let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
-                            &effective_receipt_dir,
-                            &receipt,
-                            &txn.sealed.sudoers_fragments,
-                            &txn.sealed.snapshot.roots,
-                        );
-                        let _ = crate::atoms::attest::write_transaction_receipt(
-                            &effective_receipt_dir,
-                            &receipt,
-                            &mint,
-                            Some(&error),
-                        );
-                    }
+                    let rollback =
+                        crate::atoms::r#do::transaction::rollback_projection(&mut txn, key);
+                    let (receipt, rollback_error) = match rollback {
+                        Ok(receipt) => (receipt, None),
+                        Err(rollback_error) => (
+                            crate::atoms::r#do::transaction::transaction_receipt(&txn),
+                            Some(rollback_error),
+                        ),
+                    };
+                    let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
+                        &effective_receipt_dir,
+                        &receipt,
+                        &txn.sealed.sudoers_fragments,
+                        &txn.sealed.snapshot.roots,
+                    );
+                    let failed_step = rollback_error
+                        .as_ref()
+                        .map(|rollback_error| format!("{error}; {rollback_error}"))
+                        .unwrap_or_else(|| error.clone());
+                    crate::atoms::attest::write_transaction_rollback_receipt(
+                        &effective_receipt_dir,
+                        &receipt,
+                        &mint,
+                        Some(&failed_step),
+                        &txn.restored_paths,
+                        &txn.rollback_errors,
+                    )?;
                     failure_receipt?;
+                    if let Some(rollback_error) = rollback_error {
+                        return Err(format!("{error}; {rollback_error}"));
+                    }
                     return Err(error);
                 }
             }

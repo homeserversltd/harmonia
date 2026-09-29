@@ -143,6 +143,34 @@ pub(crate) fn snapshot(ts: &[Target]) -> Result<Snapshot, String> {
         nodes,
     })
 }
+fn snapshot_with_sudoers_preimages(
+    targets: &[Target],
+    preimages: &[crate::tools::files::SudoersSnapshotPreimage],
+) -> Result<Snapshot, String> {
+    let mut snapshot = snapshot(targets)?;
+    for preimage in preimages {
+        let target = Target {
+            path: preimage.path.clone(),
+            member: "sudoers".into(),
+        };
+        validate_member_scoped_target(&target.path, &target.member)?;
+        if snapshot.roots.iter().any(|root| root.path == target.path) {
+            return Err(format!(
+                "update-set-target-duplicate {}",
+                target.path.display()
+            ));
+        }
+        snapshot.roots.push(target.clone());
+        snapshot.nodes.push(Node {
+            path: target.path,
+            kind: Kind::File(preimage.bytes.clone()),
+            mode: preimage.mode,
+            uid: preimage.uid,
+            gid: preimage.gid,
+        });
+    }
+    Ok(snapshot)
+}
 fn rm(p: &Path) -> Result<(), String> {
     match fs::symlink_metadata(p) {
         Ok(m) => {
@@ -212,12 +240,28 @@ fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key
     ).map(|_| ())
 }
 
-pub(crate) fn restore(s: &Snapshot, key: &InvocationKey) -> Result<(), String> {
+pub(crate) fn restore(
+    s: &Snapshot,
+    key: &InvocationKey,
+    restored_paths: &mut Vec<String>,
+) -> Result<(), String> {
     let mut changed = Vec::new();
+    let mut errors = Vec::new();
     for root in &s.roots {
-        validate_member_scoped_target(&root.path, &root.member)?;
-        if !root_matches_snapshot(&root.path, &s.nodes)? {
-            changed.push(root.path.clone());
+        if let Err(error) = validate_member_scoped_target(&root.path, &root.member) {
+            errors.push(format!(
+                "rollback-target-invalid {}: {error}",
+                root.path.display()
+            ));
+            continue;
+        }
+        match root_matches_snapshot(&root.path, &s.nodes) {
+            Ok(true) => {}
+            Ok(false) => changed.push(root.path.clone()),
+            Err(error) => errors.push(format!(
+                "rollback-observe-failed {}: {error}",
+                root.path.display()
+            )),
         }
     }
     let changed_roots = changed.clone();
@@ -227,72 +271,72 @@ pub(crate) fn restore(s: &Snapshot, key: &InvocationKey) -> Result<(), String> {
             .any(|parent| parent != root && root.starts_with(parent))
     });
     for root in changed.iter().rev() {
-        rm(root)?;
-    }
-    for n in &s.nodes {
-        if !changed
-            .iter()
-            .any(|root| n.path == *root || n.path.starts_with(root.join("")))
-        {
+        if let Err(error) = rm(root) {
+            errors.push(format!(
+                "rollback-remove-failed {}: {error}",
+                root.display()
+            ));
             continue;
         }
-        match &n.kind {
-            Kind::Missing => continue,
-            Kind::Dir => fs::create_dir_all(&n.path).map_err(|e| e.to_string())?,
-            Kind::File(b) => {
-                if let Some(p) = n.path.parent() {
-                    fs::create_dir_all(p).map_err(|e| e.to_string())?;
-                }
-                comparison_authorized_write(&n.path, b, Some(n.mode & 0o7777), key)?
+        let mut root_failed = false;
+        for n in &s.nodes {
+            if !(n.path == *root || n.path.starts_with(root.join(""))) {
+                continue;
             }
-            Kind::Symlink(t) => {
-                if let Some(p) = n.path.parent() {
-                    fs::create_dir_all(p).map_err(|e| e.to_string())?;
+            let result = (|| -> Result<(), String> {
+                match &n.kind {
+                    Kind::Missing => return Ok(()),
+                    Kind::Dir => fs::create_dir_all(&n.path).map_err(|e| e.to_string())?,
+                    Kind::File(b) => {
+                        if let Some(p) = n.path.parent() {
+                            fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                        }
+                        comparison_authorized_write(&n.path, b, Some(n.mode & 0o7777), key)?;
+                    }
+                    Kind::Symlink(t) => {
+                        if let Some(p) = n.path.parent() {
+                            fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                        }
+                        std::os::unix::fs::symlink(t, &n.path).map_err(|e| e.to_string())?;
+                    }
                 }
-                std::os::unix::fs::symlink(t, &n.path).map_err(|e| e.to_string())?
+                if !matches!(n.kind, Kind::Missing | Kind::Symlink(_)) {
+                    restore_owner(&n.path, n.uid, n.gid)?;
+                    fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777))
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                root_failed = true;
+                errors.push(format!(
+                    "rollback-restore-failed {}: {error}",
+                    n.path.display()
+                ));
+                break;
             }
         }
-        if !matches!(n.kind, Kind::Symlink(_)) {
-            restore_owner(&n.path, n.uid, n.gid)?;
-            fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777))
-                .map_err(|e| e.to_string())?;
+        if !root_failed {
+            match root_matches_snapshot(root, &s.nodes) {
+                Ok(true) => restored_paths.push(root.display().to_string()),
+                Ok(false) => errors.push(format!(
+                    "rollback-verify-failed {}: snapshot-mismatch",
+                    root.display()
+                )),
+                Err(error) => errors.push(format!(
+                    "rollback-verify-failed {}: {error}",
+                    root.display()
+                )),
+            }
         }
     }
-    verify(s)
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
-fn verify(s: &Snapshot) -> Result<(), String> {
-    let mut got = Vec::new();
-    for r in &s.roots {
-        capture_tree(&r.path, &mut got)?;
-    }
-    got.sort_by(|a, b| a.path.cmp(&b.path));
-    let mut expected = s.nodes.clone();
-    expected.sort_by(|a, b| a.path.cmp(&b.path));
-    if got.len() != expected.len() {
-        return Err("rollback-tree-mismatch".into());
-    }
-    for (a, b) in got.iter().zip(&expected) {
-        if a.path != b.path
-            || a.mode != b.mode
-            || a.uid != b.uid
-            || a.gid != b.gid
-            || std::mem::discriminant(&a.kind) != std::mem::discriminant(&b.kind)
-        {
-            return Err(format!("rollback-metadata-mismatch {}", a.path.display()));
-        }
-        match (&a.kind, &b.kind) {
-            (Kind::File(x), Kind::File(y)) if x != y => {
-                return Err("rollback-bytes-mismatch".into())
-            }
-            (Kind::Symlink(x), Kind::Symlink(y)) if x != y => {
-                return Err("rollback-symlink-target-mismatch".into())
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
 pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSnapshot>, String> {
     plan.services
         .iter()
@@ -352,6 +396,8 @@ pub(crate) struct ProjectionTransaction {
     pub sealed: SealedProjection,
     pub state: TransactionState,
     applied_children: BTreeSet<usize>,
+    pub restored_paths: Vec<String>,
+    pub rollback_errors: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TransactionReceipt {
@@ -398,7 +444,43 @@ pub(crate) fn seal_projection(
     for t in &plan.targets {
         validate_exact_root(&t.path, &t.member)?;
     }
-    let snapshot = snapshot(&plan.targets)?;
+    let sudoers_targets = plan
+        .targets
+        .iter()
+        .filter(|target| target.member == "sudoers")
+        .collect::<Vec<_>>();
+    let sudoers_step_will_run = plan.member_modules.contains_key("sudoers");
+    let snapshot = if sudoers_step_will_run || !sudoers_targets.is_empty() {
+        let selected_names = sudoers_targets
+            .iter()
+            .map(|target| {
+                if target.path.parent() != Some(Path::new("/etc/sudoers.d")) {
+                    return Err(format!(
+                        "update-set-sudoers-target-invalid {}",
+                        target.path.display()
+                    ));
+                }
+                target
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        format!(
+                            "update-set-sudoers-target-invalid {}",
+                            target.path.display()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let preimages = crate::tools::files::snapshot_unselected_sudoers_preimages(
+            Path::new("/etc/sudoers.d"),
+            &selected_names,
+        )?;
+        snapshot_with_sudoers_preimages(&plan.targets, &preimages)?
+    } else {
+        snapshot(&plan.targets)?
+    };
     let services = snapshot_services(plan)?;
     let members = if let Some(members) = &plan.pinned_members {
         members.clone()
@@ -466,6 +548,8 @@ pub(crate) fn seal_projection(
         },
         state: TransactionState::Open,
         applied_children: BTreeSet::new(),
+        restored_paths: Vec::new(),
+        rollback_errors: Vec::new(),
     })
 }
 impl ProjectionTransaction {
@@ -520,10 +604,18 @@ fn receipt_for(t: &ProjectionTransaction) -> TransactionReceipt {
         syzygy_signal: "none".into(),
         member_modules: t.sealed.member_modules.clone(),
         children: t.sealed.children.clone(),
-        target_count: t.sealed.snapshot.roots.len(),
+        target_count: t
+            .sealed
+            .children
+            .iter()
+            .map(|child| child.target_indices.len())
+            .sum(),
         service_count: t.sealed.services.len(),
         caduceus_count: t.sealed.caduceus_count,
     }
+}
+pub(crate) fn transaction_receipt(t: &ProjectionTransaction) -> TransactionReceipt {
+    receipt_for(t)
 }
 pub(crate) fn commit_projection(
     t: &mut ProjectionTransaction,
@@ -549,14 +641,24 @@ pub(crate) fn rollback_projection(
     if t.state == TransactionState::Committed {
         return Err("committed-transaction-not-rollbackable".into());
     }
-    let a = restore(&t.sealed.snapshot, key);
-    let b = restore_services(&t.sealed.services, key);
-    if a.is_ok() && b.is_ok() {
+    t.restored_paths.clear();
+    t.rollback_errors.clear();
+    if let Err(error) = restore(&t.sealed.snapshot, key, &mut t.restored_paths) {
+        t.rollback_errors.push(error);
+    }
+    if let Err(error) = restore_services(&t.sealed.services, key) {
+        t.rollback_errors
+            .push(format!("rollback-service-restore-failed: {error}"));
+    }
+    if t.rollback_errors.is_empty() {
         t.state = TransactionState::RolledBack;
         Ok(receipt_for(t))
     } else {
         t.state = TransactionState::RollbackIncomplete;
-        Err("rollback-incomplete".into())
+        Err(format!(
+            "rollback-incomplete: {}",
+            t.rollback_errors.join("; ")
+        ))
     }
 }
 pub(crate) fn compute_syzygy_sha(
@@ -593,7 +695,14 @@ pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
         TransactionState::RefusedForeignPostImage => "refused-foreign-post-image",
         _ => "failed",
     };
-    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"syzygy_signal":r.syzygy_signal,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":if r.state==TransactionState::Committed {"standing"} else {"rolled-back"}})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
+    let member_status = if r.state == TransactionState::Committed {
+        "standing"
+    } else if r.state == TransactionState::RollbackIncomplete {
+        "rollback-incomplete"
+    } else {
+        "rolled-back"
+    };
+    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"syzygy_signal":r.syzygy_signal,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":member_status})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
 }
 
 #[cfg(test)]
