@@ -1,0 +1,12 @@
+# HomeConsole HTTP crossings not shared by the HomeServer or TV source profile.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings display
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings appearance
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings sound
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings notifications
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings default-apps
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings datetime
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings/input
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py games/provider-keys
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py games/sync
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py console/restart
+caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^update-module /etc/harmonia/profiles/homeconsole/index\.json --module [A-Za-z0-9._-]+( --apply)?$

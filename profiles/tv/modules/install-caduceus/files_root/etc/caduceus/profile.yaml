@@ -27,18 +27,12 @@ harmonia_routes:
   update_now:
     bin: /usr/local/bin/harmonia
     args:
-    - run-profile
-    - /etc/harmonia/profiles/tv/index.json
+    - update
     - --apply
-    - --receipt-dir
-    - /var/lib/harmonia/receipts/tv-latest
   update_check:
     bin: /usr/local/bin/harmonia
     args:
-    - run-profile
-    - /etc/harmonia/profiles/tv/index.json
-    - --receipt-dir
-    - /var/lib/harmonia/receipts/tv-check-latest
+    - update
 operator_aliases:
   update: caduceus update now
   update-check: caduceus update check

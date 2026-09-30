@@ -1,0 +1,6 @@
+# HomeServer HTTP routes crossing profile-admitted staff bands.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py network/dns
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py network/firewall
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py network/identity
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py appliance/service
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^seat [a-z0-9][a-z0-9-]{0\,62}$

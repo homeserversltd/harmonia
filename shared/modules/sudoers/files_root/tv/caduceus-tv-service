@@ -1,0 +1,10 @@
+# Caduceus service crossings for the TV pool.
+# Six settings families cross as noun/family argv; read/mutate are route gates.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings display
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings appearance
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings sound
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings notifications
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings default-apps
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings datetime
+# Staff band is one argv token; the input door is compiled for TV.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py settings/input
