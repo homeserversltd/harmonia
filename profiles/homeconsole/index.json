@@ -22,6 +22,7 @@
     "install-caduceus",
     "sbin",
     "sudoers",
+    "pam-sudo",
     "sunshine",
     "retroarch-input",
     "grub-branding"

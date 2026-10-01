@@ -32,6 +32,7 @@
     "install-caduceus",
     "keyman-runtime",
     "sudoers",
+    "pam-sudo",
     "grub-branding"
   ],
   "identity": "tv",

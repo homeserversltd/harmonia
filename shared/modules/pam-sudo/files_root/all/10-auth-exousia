@@ -1,0 +1,3 @@
+auth  [success=done default=ignore]  pam_exec.so seteuid quiet                /usr/local/sbin/agathodaimon/cli.py exousia pam-gate
+auth  [success=done default=ignore]  pam_exec.so seteuid quiet expose_authtok /usr/local/sbin/agathodaimon/cli.py exousia pam-verify
+auth  required                       pam_deny.so

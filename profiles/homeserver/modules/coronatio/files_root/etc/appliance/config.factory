@@ -193,7 +193,8 @@
         "name": "dark"
       },
       "admin": {
-        "pin": ""
+        "pin": "",
+        "pin_required": true
       },
       "cors": {
         "allowed_origins": [

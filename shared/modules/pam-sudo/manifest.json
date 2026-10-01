@@ -1,0 +1,26 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "pam-sudo",
+  "category": "known-good",
+  "version": "1.0.0",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "estate-pam-sudo-converge",
+      "tool": "files",
+      "permutation": "validated-pam-sudo-converge",
+      "args": {
+        "source_root": "files_root",
+        "target_path": "/etc/pam.d/sudo",
+        "validator_program": "/usr/local/sbin/agathodaimon/cli.py",
+        "validator_args": ["exousia", "pam-gate", "--probe"],
+        "validator_env": {"PAM_USER": "owner"},
+        "owner": "root",
+        "group": "root",
+        "mode": 420,
+        "receipt_name": "estate-pam-sudo-converge"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

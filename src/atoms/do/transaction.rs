@@ -69,6 +69,18 @@ pub(crate) struct Target {
     pub path: PathBuf,
     pub member: String,
 }
+
+pub(crate) const PAM_SUDO_MEMBER: &str = "pam-sudo";
+pub(crate) const PAM_SUDO_TARGET: &str = "/etc/pam.d/sudo";
+
+impl Target {
+    pub(crate) fn pam_sudo() -> Self {
+        Self {
+            path: PathBuf::from(PAM_SUDO_TARGET),
+            member: PAM_SUDO_MEMBER.into(),
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceBinding {
     pub name: String,

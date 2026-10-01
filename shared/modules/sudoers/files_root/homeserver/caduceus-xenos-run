@@ -1,2 +1,0 @@
-# Xenia band runs are restricted to admitted ids and a safe band path.
-caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^[a-z0-9][a-z0-9-]{0\,62} band [A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$

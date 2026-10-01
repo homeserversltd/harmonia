@@ -97,6 +97,27 @@ pub(crate) fn execute_estate_owned_declared_sudoers_fragment(
     execute_estate_owned_declared_sudoers_fragment_at(request, Path::new("/etc/sudoers.d"))
 }
 
+pub(crate) fn execute_estate_owned_validated_pam_sudo(
+    request: PlaceFileRequest<'_>,
+    receipt_dir: &Path,
+) -> Result<PlaceFileOutcome, String> {
+    let target = Path::new("/etc/pam.d/sudo");
+    let backup = receipt_dir.join("backups/pam-sudo/sudo");
+    let backup_is_receipt_local = matches!(
+        request.backup,
+        BackupPolicy::To(path) if path == backup.as_path()
+    );
+    if request.path != target
+        || request.mode != Some(0o644)
+        || request.ownership.uid != Some(0)
+        || request.ownership.gid != Some(0)
+        || !backup_is_receipt_local
+    {
+        return Err("validated-pam-sudo-forced-clobber-contract-refused".into());
+    }
+    execute_with_authority(request, Authority::EstateOwnedValidatedPamSudo)
+}
+
 fn execute_estate_owned_declared_sudoers_fragment_at(
     request: PlaceFileRequest<'_>,
     target_root: &Path,
@@ -152,6 +173,7 @@ enum Authority {
     Machine,
     OperatorHand(crate::interactables::OperatorHand),
     EstateOwnedDeclaredSudoers,
+    EstateOwnedValidatedPamSudo,
     XeniaRenderedGuestUnit,
 }
 
@@ -159,10 +181,12 @@ fn execute_with_authority(
     request: PlaceFileRequest<'_>,
     authority: Authority,
 ) -> Result<PlaceFileOutcome, String> {
+    let force_atomic_replace_on_change =
+        matches!(&authority, Authority::EstateOwnedValidatedPamSudo);
     match crate::atoms::files::classify_target(request.path) {
         crate::atoms::files::TargetClass::Refused(reason) => return Err(reason),
         crate::atoms::files::TargetClass::Config
-            if request.invocation.is_some() && matches!(authority, Authority::Machine) =>
+            if request.invocation.is_some() && matches!(&authority, Authority::Machine) =>
         {
             return Err("configuration-actuator-authority-refused".into())
         }
@@ -213,6 +237,7 @@ fn execute_with_authority(
                 request.ownership,
                 request.backup,
                 observation,
+                force_atomic_replace_on_change,
             )
         },
         request.invocation.is_some(),
@@ -557,6 +582,7 @@ mod mutation {
         ownership: DeclaredOwnership,
         backup: BackupPolicy<'_>,
         observation: &PlaceFileObservation,
+        force_atomic_replace_on_change: bool,
     ) -> Result<PlaceFileMovement, String> {
         let created = !observation.existed;
         let bytes = !observation.bytes_equal;
@@ -566,26 +592,27 @@ mod mutation {
             BackupPolicy::To(path) if observation.existed && (bytes || mode || owner) => Some(path),
             BackupPolicy::None | BackupPolicy::To(_) => None,
         };
+        let write_bytes = bytes || (force_atomic_replace_on_change && (mode || owner));
         let result = atoms::r#do::write_file::file_write(
             authorization,
             invocation,
             path,
             declared_bytes,
             atoms::r#do::write_file::FileWriteOptions {
-                write_bytes: bytes,
-                mode: if bytes {
+                write_bytes,
+                mode: if write_bytes {
                     declared_mode.or(observation.mode)
                 } else {
                     mode.then_some(declared_mode).flatten()
                 },
-                uid: if bytes {
+                uid: if write_bytes {
                     ownership.uid
                 } else {
                     (!observation.owner_equal)
                         .then_some(ownership.uid)
                         .flatten()
                 },
-                gid: if bytes {
+                gid: if write_bytes {
                     ownership.gid
                 } else {
                     (!observation.group_equal)

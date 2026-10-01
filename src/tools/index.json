@@ -799,6 +799,22 @@
           "placement": "BackfillFiles"
         },
         {
+          "name": "validated-pam-sudo-converge",
+          "description": "validate the sudo PAM gate, then atomically converge the one estate-owned sudo file",
+          "args": [
+            {"name": "source_root", "kind": "string", "required": true},
+            {"name": "target_path", "kind": "string", "required": true},
+            {"name": "validator_program", "kind": "string", "required": true},
+            {"name": "validator_args", "kind": "string_array", "required": true},
+            {"name": "validator_env", "kind": "json", "required": true},
+            {"name": "owner", "kind": "string", "required": true},
+            {"name": "group", "kind": "string", "required": true},
+            {"name": "mode", "kind": "integer", "required": true},
+            {"name": "receipt_name", "kind": "string", "required": true}
+          ],
+          "placement": "BackfillFiles"
+        },
+        {
           "name": "source-shelf-sweep",
           "description": "converge one source shelf and, when declared, pattern-selected flat launchers with per-path atomic, all-or-restored semantics",
           "args": [

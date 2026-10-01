@@ -431,6 +431,20 @@
               "const": "files"
             },
             "permutation": {
+              "const": "validated-pam-sudo-converge"
+            }
+          },
+          "required": [
+            "tool",
+            "permutation"
+          ]
+        },
+        {
+          "properties": {
+            "tool": {
+              "const": "files"
+            },
+            "permutation": {
               "const": "validated-symlink"
             }
           },
@@ -1023,6 +1037,32 @@
             "properties": {
               "args": {
                 "$ref": "#/definitions/ladderArgs_files_validated_sudoers_converge"
+              }
+            },
+            "required": [
+              "args"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "files"
+              },
+              "permutation": {
+                "const": "validated-pam-sudo-converge"
+              }
+            },
+            "required": [
+              "tool",
+              "permutation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/definitions/ladderArgs_files_validated_pam_sudo_converge"
               }
             },
             "required": [
@@ -2484,6 +2524,66 @@
         "validator_args",
         "owner",
         "group"
+      ]
+    },
+    "ladderArgs_files_validated_pam_sudo_converge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_root": {
+          "const": "files_root"
+        },
+        "target_path": {
+          "const": "/etc/pam.d/sudo"
+        },
+        "validator_program": {
+          "const": "/usr/local/sbin/agathodaimon/cli.py"
+        },
+        "validator_args": {
+          "const": [
+            "exousia",
+            "pam-gate",
+            "--probe"
+          ]
+        },
+        "validator_env": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "PAM_USER": {
+              "const": "owner"
+            }
+          },
+          "required": [
+            "PAM_USER"
+          ],
+          "const": {
+            "PAM_USER": "owner"
+          }
+        },
+        "owner": {
+          "const": "root"
+        },
+        "group": {
+          "const": "root"
+        },
+        "mode": {
+          "const": 420
+        },
+        "receipt_name": {
+          "const": "estate-pam-sudo-converge"
+        }
+      },
+      "required": [
+        "source_root",
+        "target_path",
+        "validator_program",
+        "validator_args",
+        "validator_env",
+        "owner",
+        "group",
+        "mode",
+        "receipt_name"
       ]
     },
     "ladderArgs_files_validated_symlink": {

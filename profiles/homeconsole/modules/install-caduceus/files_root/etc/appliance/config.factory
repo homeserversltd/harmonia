@@ -2,5 +2,10 @@
   "caduceus": {
     "bind": "0.0.0.0:8787",
     "seat_port": 3014
+  },
+  "global": {
+    "admin": {
+      "pin_required": false
+    }
   }
 }

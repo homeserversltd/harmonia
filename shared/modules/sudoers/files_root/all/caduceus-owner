@@ -1,0 +1,6 @@
+# The terminal's whole grant. The PIN gate lives in /etc/pam.d/sudo, reading pin_required from /etc/appliance/config.json.
+Defaults:owner timestamp_timeout=15
+Defaults:owner passprompt="Household PIN: "
+Defaults:owner passprompt_override
+Defaults:owner env_keep += "WAYLAND_DISPLAY XDG_RUNTIME_DIR DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS"
+owner ALL=(ALL:ALL) ALL
