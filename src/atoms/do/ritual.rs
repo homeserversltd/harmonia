@@ -1037,9 +1037,11 @@ pub(crate) fn compute_syzygy_sha(
     caduceus: &str,
     sbin: &str,
     gui: Option<&str>,
+    keyman: Option<&str>,
 ) -> Result<String, String> {
     for (member, sha) in [("caduceus", caduceus), ("sbin", sbin)]
         .into_iter()
+        .chain(keyman.into_iter().map(|sha| ("keyman", sha)))
         .chain(gui.into_iter().map(|sha| ("gui", sha)))
     {
         if sha.len() != 40
@@ -1050,12 +1052,15 @@ pub(crate) fn compute_syzygy_sha(
             return Err(format!("syzygy-source-sha-invalid {member}"));
         }
     }
-    let mut bytes = String::with_capacity(120);
+    let mut bytes = String::with_capacity(160);
     if let Some(gui) = gui {
         bytes.push_str(gui);
     }
     bytes.push_str(caduceus);
     bytes.push_str(sbin);
+    if let Some(keyman) = keyman {
+        bytes.push_str(keyman);
+    }
     Ok(format!("{:x}", Sha256::digest(bytes.as_bytes())))
 }
 
@@ -1109,9 +1114,9 @@ mod syzygy_sha_tests {
     #[test]
     fn fixed_member_order_changes_digest() {
         let a =
-            compute_syzygy_sha(&"0".repeat(40), &"1".repeat(40), Some(&"2".repeat(40))).unwrap();
+            compute_syzygy_sha(&"0".repeat(40), &"1".repeat(40), Some(&"2".repeat(40)), None).unwrap();
         let b =
-            compute_syzygy_sha(&"1".repeat(40), &"0".repeat(40), Some(&"2".repeat(40))).unwrap();
+            compute_syzygy_sha(&"1".repeat(40), &"0".repeat(40), Some(&"2".repeat(40)), None).unwrap();
         assert_ne!(a, b);
     }
     #[test]
@@ -1120,6 +1125,7 @@ mod syzygy_sha_tests {
             compute_syzygy_sha(
                 "0000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000001",
+                None,
                 None
             )
             .unwrap(),
@@ -1128,8 +1134,8 @@ mod syzygy_sha_tests {
     }
     #[test]
     fn source_shas_require_lowercase_hex() {
-        assert!(compute_syzygy_sha(&"A".repeat(40), &"1".repeat(40), None).is_err());
-        let d = compute_syzygy_sha(&"a".repeat(40), &"f".repeat(40), None).unwrap();
+        assert!(compute_syzygy_sha(&"A".repeat(40), &"1".repeat(40), None, None).is_err());
+        let d = compute_syzygy_sha(&"a".repeat(40), &"f".repeat(40), None, None).unwrap();
         assert!(d
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
@@ -1140,7 +1146,8 @@ mod syzygy_sha_tests {
             compute_syzygy_sha(
                 "0123456789abcdef0123456789abcdef01234567",
                 &"a".repeat(40),
-                Some(&"f".repeat(40))
+                Some(&"f".repeat(40)),
+                None
             )
             .unwrap(),
             "9061b13dce037de65c9940e0c7777b923bc4444c0ecbf765c6d19c1d8308972d"
@@ -1198,6 +1205,7 @@ mod update_set_receipt_tests {
             mint: crate::atoms::attest::SyzygyMint {
                 caduceus_sha: caduceus_sha.clone(),
                 partner_sha: String::new(),
+                keyman_sha: None,
                 gui_sha: None,
                 syzygy_sha: None,
                 env_sha: "e".repeat(64),

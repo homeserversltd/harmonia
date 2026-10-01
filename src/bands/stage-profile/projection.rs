@@ -470,6 +470,12 @@ fn projection_derive_plan_inner(
         };
         let module_id = module_key.as_str();
         let steps = &projected.steps;
+        if steps.iter().any(|step| {
+            step.tool == "git-artifact"
+                && step.args.get("component").and_then(Value::as_str) == Some("keyman")
+        }) {
+            record_module("keyman", module_id);
+        }
         // Census declarations independently of module placement: a sudoers
         // fragment is owned by the sudoers member, not by its declaring module.
         for step in steps.iter().filter(|step| {
@@ -677,6 +683,15 @@ fn projection_derive_plan_inner(
     if pam_sudo_count > 1 {
         return Err(format!(
             "pam-sudo-selection-ambiguous count={pam_sudo_count}"
+        ));
+    }
+    if let Some(modules) = member_modules
+        .get("keyman")
+        .filter(|modules| modules.len() > 1)
+    {
+        return Err(format!(
+            "keyman-selection-ambiguous count={}",
+            modules.len()
         ));
     }
     targets.sort_by(|a, b| a.path.cmp(&b.path));

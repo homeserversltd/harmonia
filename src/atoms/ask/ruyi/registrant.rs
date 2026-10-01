@@ -971,6 +971,7 @@ fn accumulate(
                 .map(str::to_ascii_lowercase);
             lineage.push(json!({"syzygy_sha": peer.get("syzygy_sha"),
                 "release_flags": {"caduceus": peer.get("caduceus_sha"), "sbin": source("sbin"),
+                    "keyman": source("keyman"),
                     "gui": gui.as_deref().map(source).unwrap_or(Value::Null)},
                 "seen_at": now()?}));
         }

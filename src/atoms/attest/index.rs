@@ -102,6 +102,7 @@ pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 pub(crate) struct SyzygyMint {
     pub(crate) caduceus_sha: String,
     pub(crate) partner_sha: String,
+    pub(crate) keyman_sha: Option<String>,
     pub(crate) gui_sha: Option<String>,
     pub(crate) syzygy_sha: Option<String>,
     pub(crate) env_sha: String,
@@ -113,6 +114,7 @@ impl SyzygyMint {
         Self {
             caduceus_sha: String::new(),
             partner_sha: String::new(),
+            keyman_sha: None,
             gui_sha: None,
             syzygy_sha: None,
             env_sha: String::new(),
@@ -319,6 +321,42 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
             }
         }
     }
+    if members.contains("keyman") {
+        match &seats.release_flag {
+            Ok(seat) => {
+                let observed = crate::atoms::ask::member_flag::resolve_component("keyman", seat);
+                evidence.observations["keyman"] = observed.evidence();
+                if observed.signal == "none" {
+                    if let Some(flag) = &observed.selected {
+                        evidence.mint.keyman_sha = Some(
+                            flag.get("source_sha")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                        );
+                        evidence.member_flags["keyman"] = json!({
+                            "source_sha": evidence.mint.keyman_sha,
+                            "flagged_at": flag.get("flagged_at"),
+                            "malformed_flags": observed.malformed_flags,
+                            "release_flag": flag
+                        });
+                    } else {
+                        let signal = "syzygy-flag-absent keyman";
+                        evidence.member_flags["keyman"] = json!(signal);
+                        signals.push(signal.into());
+                    }
+                } else {
+                    evidence.member_flags["keyman"] = json!(observed.signal);
+                    signals.push(observed.signal);
+                }
+            }
+            Err(seat_signal) => {
+                let signal = format!("syzygy-flag-unresolvable keyman ({seat_signal})");
+                evidence.member_flags["keyman"] = json!(signal);
+                signals.push(signal);
+            }
+        }
+    }
     if members.contains("sudoers") {
         let mut fragments = declared_fragments
             .values()
@@ -375,6 +413,7 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
             &evidence.mint.caduceus_sha,
             &evidence.mint.partner_sha,
             evidence.mint.gui_sha.as_deref(),
+            evidence.mint.keyman_sha.as_deref(),
         ) {
             Ok(sha) => evidence.mint.syzygy_sha = Some(sha),
             Err(signal) => signals.push(signal),

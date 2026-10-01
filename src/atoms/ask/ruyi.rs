@@ -321,6 +321,13 @@ fn mint_error(mint: &crate::atoms::attest::SyzygyMint) -> Option<String> {
         return Some("ruyi-syzygy-mint-gui-invalid".into());
     }
     if mint
+        .keyman_sha
+        .as_deref()
+        .is_some_and(|sha| !valid_hex(sha, 40))
+    {
+        return Some("ruyi-syzygy-mint-keyman-invalid".into());
+    }
+    if mint
         .syzygy_sha
         .as_deref()
         .is_some_and(|sha| !valid_hex(sha, 64))
@@ -570,6 +577,7 @@ mod tests {
         crate::atoms::attest::SyzygyMint {
             caduceus_sha: "a".repeat(40),
             partner_sha: "b".repeat(40),
+            keyman_sha: None,
             gui_sha: None,
             syzygy_sha: Some("c".repeat(64)),
             env_sha: "d".repeat(64),

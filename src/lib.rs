@@ -851,6 +851,8 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                         "sbin"
                     } else if module_is_member("sudoers", module_id) {
                         "sudoers"
+                    } else if module_is_member("keyman", module_id) {
+                        "keyman"
                     } else if plan
                         .gui_member
                         .as_deref()

@@ -634,6 +634,8 @@ pub(crate) fn reconcile_ruyi(
     let declaration = profile.syzygy_declaration.as_ref();
     let compare_sbin = declaration
         .is_some_and(|declaration| declaration.members.iter().any(|member| member == "sbin"));
+    let compare_keyman = declaration
+        .is_some_and(|declaration| declaration.members.iter().any(|member| member == "keyman"));
     let face_name = declaration
         .and_then(|declaration| {
             let face = declaration.gui_face.as_deref()?;
@@ -650,6 +652,9 @@ pub(crate) fn reconcile_ruyi(
             .get("caduceus_sha")
             .and_then(serde_json::Value::as_str),
         member_source(self_row, "sbin"),
+        compare_keyman
+            .then(|| member_source(self_row, "keyman"))
+            .flatten(),
         face_name
             .as_deref()
             .and_then(|member| face_source(self_row, member)),
@@ -669,6 +674,8 @@ pub(crate) fn reconcile_ruyi(
         let peer_caduceus = peer.get("caduceus_sha").and_then(serde_json::Value::as_str);
         let compare_peer_sbin =
             compare_sbin && peer_view.is_some_and(|row| has_member_flag(row, "sbin"));
+        let compare_peer_keyman =
+            compare_keyman && peer_view.is_some_and(|row| has_member_flag(row, "keyman"));
         let peer_face_name = peer_view
             .and_then(|row| row.get("gui_face"))
             .and_then(serde_json::Value::as_str);
@@ -682,6 +689,9 @@ pub(crate) fn reconcile_ruyi(
             peer_caduceus,
             compare_peer_sbin
                 .then(|| peer_view.and_then(|row| member_source(row, "sbin")))
+                .flatten(),
+            compare_peer_keyman
+                .then(|| peer_view.and_then(|row| member_source(row, "keyman")))
                 .flatten(),
             compare_peer_face
                 .then(|| {
@@ -700,8 +710,13 @@ pub(crate) fn reconcile_ruyi(
             } else {
                 "not-compared"
             },
-            if compare_peer_face {
+            if compare_peer_keyman {
                 term_state(newest[2], wears[2])
+            } else {
+                "not-compared"
+            },
+            if compare_peer_face {
+                term_state(newest[3], wears[3])
             } else {
                 "not-compared"
             },
@@ -726,16 +741,19 @@ pub(crate) fn reconcile_ruyi(
             .map(|age| format!("{age}s"))
             .unwrap_or_else(|| "unknown".to_string());
         let description = format!(
-            "For {hostname} {mac}, the worn terms are (caduceus={}, sbin={}, face={}), the newest terms are (caduceus={}, sbin={}, face={}), the compared-term states are (caduceus={}, sbin={}, face={}), and the last-event age is {last_event_age}.",
+            "For {hostname} {mac}, the worn terms are (caduceus={}, sbin={}, keyman={}, face={}), the newest terms are (caduceus={}, sbin={}, keyman={}, face={}), the compared-term states are (caduceus={}, sbin={}, keyman={}, face={}), and the last-event age is {last_event_age}.",
             wears[0].unwrap_or("unknown"),
             wears[1].unwrap_or("not-compared"),
-            wears[2].unwrap_or("not-compared"),
+            if compare_peer_keyman { wears[2].unwrap_or("unknown") } else { "not-compared" },
+            wears[3].unwrap_or("not-compared"),
             newest[0].unwrap_or("unknown"),
             if compare_peer_sbin { newest[1].unwrap_or("unknown") } else { "not-compared" },
-            if compare_peer_face { newest[2].unwrap_or("unknown") } else { "not-compared" },
+            if compare_peer_keyman { newest[2].unwrap_or("unknown") } else { "not-compared" },
+            if compare_peer_face { newest[3].unwrap_or("unknown") } else { "not-compared" },
             terms[0],
             terms[1],
             terms[2],
+            terms[3],
         );
         let id = format!("ruyi-bump-{}", mac.replace(':', ""));
         held_back_by.push(mac.to_string());
@@ -773,9 +791,9 @@ pub(crate) fn reconcile_ruyi(
             completion_check: String::new(),
             evidence: serde_json::json!({
                 "mac": mac, "hostname": hostname, "canonical_name": canonical_name,
-                "wears": {"caduceus": wears[0], "sbin": wears[1], "face": wears[2]},
-                "newest": {"caduceus": newest[0], "sbin": newest[1], "face": newest[2]},
-                "terms": {"caduceus": terms[0], "sbin": terms[1], "face": terms[2]},
+                "wears": {"caduceus": wears[0], "sbin": wears[1], "keyman": wears[2], "face": wears[3]},
+                "newest": {"caduceus": newest[0], "sbin": newest[1], "keyman": newest[2], "face": newest[3]},
+                "terms": {"caduceus": terms[0], "sbin": terms[1], "keyman": terms[2], "face": terms[3]},
                 "last_checked_in_at": last_checked,
                 "last_event_age_s": last_event_age_s
             }),
