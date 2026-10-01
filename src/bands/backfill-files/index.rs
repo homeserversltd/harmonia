@@ -435,7 +435,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 ) {
                     child.args.insert(
                         "managed_files_changed".into(),
-                        serde_json::json!({"from":"managed-files.changed"}),
+                        serde_json::json!({"from":"managed-files.truthful_changed"}),
                     );
                 }
             }
@@ -477,7 +477,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 child.args.insert(
                     "managed_files_changed".into(),
                     if same_band_managed_file_producer {
-                        serde_json::json!({"from":"managed-files.changed"})
+                        serde_json::json!({"from":"managed-files.truthful_changed"})
                     } else {
                         Value::Bool(false)
                     },
