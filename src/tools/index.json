@@ -1707,6 +1707,24 @@
       ]
     },
     {
+      "name": "release-binary",
+      "description": "Install one exact release binary into an existing software destination.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "install",
+          "description": "compare, fetch and atomically install one SHA-bound release binary",
+          "args": [
+            {"name": "component", "kind": "string", "required": true},
+            {"name": "asset", "kind": "string", "required": true},
+            {"name": "path", "kind": "string", "required": true},
+            {"name": "mode", "kind": "integer", "required": true}
+          ],
+          "placement": "RatchetBinaries"
+        }
+      ]
+    },
+    {
       "name": "xenia",
       "description": "Declaration-only Xenia guest-register steps; lowering owns execution.",
       "routine_summonable": false,

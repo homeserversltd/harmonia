@@ -485,6 +485,28 @@ fn execute_routine_tool(
             apply,
             invocation,
         ),
+        "release-binary" => {
+            let authorized_apply = apply && software_authorization.is_some();
+            let outcome = crate::tools::release_binary::execute(
+                args,
+                receipt_dir,
+                authorized_apply,
+                invocation.filter(|_| authorized_apply),
+            )?;
+            let receipt: Value = serde_json::from_slice(
+                &std::fs::read(receipt_dir.join("release-binary.json"))
+                    .map_err(|error| format!("release-binary-receipt-read-failed: {error}"))?,
+            )
+            .map_err(|error| format!("release-binary-receipt-parse-failed: {error}"))?;
+            let outputs = BTreeMap::from([
+                ("installed_path".into(), receipt["path"].clone()),
+                ("sha256".into(), receipt["installed_sha256"].clone()),
+                ("flag_sha256".into(), receipt["flag_sha256"].clone()),
+                ("selected_tag".into(), receipt["selected_tag"].clone()),
+                ("changed".into(), Value::Bool(outcome.changed)),
+            ]);
+            Ok((outcome, outputs))
+        }
         "build-crate" => crate::bands::ratchet_binaries::execute_routine_child(
             "build-crate",
             requested_permutation,
@@ -573,6 +595,7 @@ pub(crate) fn execute_validated_step_with_source(
                 | ("aur", "build-pinned")
                 | ("command", "capture")
                 | ("command", "act")
+                | ("release-binary", "install")
                 | ("xenia-runtime", "refusal")
                 | ("xenia-runtime", "retire")
         );
@@ -637,6 +660,12 @@ pub(crate) fn execute_validated_step_with_source(
             module_dir,
             software_apply,
             invocation,
+        ),
+        ("release-binary", "install") => crate::tools::release_binary::execute(
+            &step.args,
+            module_dir,
+            software_apply,
+            invocation.filter(|_| software_apply),
         ),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",

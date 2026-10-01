@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "keyman-runtime",
   "category": "known-good",
-  "version": "3.6.1",
+  "version": "3.6.2",
   "description": "TV Keyman source ladder: synchronize Keyman into /opt/keyman/source.",
   "constants": {},
   "ladder": [
@@ -13,6 +13,17 @@
       "args": {
         "component": "keyman",
         "path": "/opt/keyman/source"
+      }
+    },
+    {
+      "step_id": "keyman-rust-release",
+      "tool": "release-binary",
+      "permutation": "install",
+      "args": {
+        "component": "keyman",
+        "asset": "keyman-x86_64",
+        "path": "/vault/keyman/keyman",
+        "mode": 493
       }
     }
   ]

@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "keyman",
   "category": "known-good",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "HOMESERVER Keyman canonical source synchronization; secret-free access-artifact verification remains outside Harmonia.",
   "constants": {},
   "ladder": [
@@ -14,6 +14,17 @@
         "component": "keyman",
         "bearer": "owner",
         "path": "/opt/keyman/source"
+      }
+    },
+    {
+      "step_id": "keyman-rust-release",
+      "tool": "release-binary",
+      "permutation": "install",
+      "args": {
+        "component": "keyman",
+        "asset": "keyman-x86_64",
+        "path": "/vault/keyman/keyman",
+        "mode": 493
       }
     }
   ]

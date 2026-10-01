@@ -1,0 +1,6 @@
+{
+  "schema": "harmonia.recursive-rust-band.v1",
+  "name": "release-binary",
+  "children": ["observe", "act", "report-home"],
+  "args": ["component", "asset", "path", "mode"]
+}

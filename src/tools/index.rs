@@ -31,6 +31,7 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("make-symlink", include_str!("make-symlink/index.json")),
     ("place-file", include_str!("place-file/index.json")),
     ("pull-repo", include_str!("pull-repo/index.json")),
+    ("release-binary", include_str!("release-binary/index.json")),
     (
         "ratchet-aur-package",
         include_str!("ratchet-aur-package/index.json"),
@@ -260,6 +261,8 @@ pub(crate) mod make_symlink;
 pub use crate::atoms::package;
 pub(crate) mod ladder;
 pub(crate) mod routine;
+#[path = "release-binary/index.rs"]
+pub(crate) mod release_binary;
 #[path = "service-runtime/index.rs"]
 pub(crate) mod service_runtime;
 #[path = "fetch-artifact/index.rs"]
