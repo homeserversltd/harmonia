@@ -2,12 +2,27 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub(crate) struct FetchArtifactExecution {
+    pub outcome: crate::OperationOutcome,
+    pub source_sha: String,
+    pub artifact_path: std::path::PathBuf,
+}
+
 pub(crate) fn execute(
     args: &BTreeMap<String, Value>,
     receipt_dir: &Path,
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
+    execute_with_provenance(args, receipt_dir, apply, invocation).map(|result| result.outcome)
+}
+
+pub(crate) fn execute_with_provenance(
+    args: &BTreeMap<String, Value>,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<FetchArtifactExecution, String> {
     let required = |name: &str| {
         args.get(name)
             .and_then(Value::as_str)
@@ -37,7 +52,17 @@ pub(crate) fn execute(
         .get("source_policy")
         .and_then(Value::as_str)
         .unwrap_or("artifact");
-    let source_sha = required("source_build_sha")?;
+    if !matches!(source_policy, "artifact" | "developer" | "source") {
+        return Err(format!("fetch-artifact-source-policy-invalid policy={source_policy}"));
+    }
+    let source_sha = args
+        .get("source_build_sha")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("");
+    if source_policy != "artifact" && source_sha.is_empty() {
+        return Err("fetch-artifact-missing-source_build_sha".into());
+    }
     let beam_refetch = args
         .get("beam_refetch")
         .and_then(Value::as_bool)
@@ -48,7 +73,7 @@ pub(crate) fn execute(
         .unwrap_or(component);
     let destination = Path::new(required("destination")?);
     let installed_binary = Path::new(required("installed_binary")?);
-    if !crate::atoms::ask::fetch_artifact::validate_source_sha(source_sha) {
+    if source_policy != "artifact" && !crate::atoms::ask::fetch_artifact::validate_source_sha(source_sha) {
         return Err("fetch-artifact-source-sha-invalid".into());
     }
 
@@ -101,42 +126,127 @@ pub(crate) fn execute(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(Path::new);
+    if source_policy == "developer" {
+        let source_reference = args
+            .get("source_reference")
+            .and_then(Value::as_str)
+            .ok_or("fetch-artifact-developer-source-reference-missing")?;
+        if !matches!(source_reference, "main" | "refs/heads/main") {
+            return Err("fetch-artifact-developer-source-not-main".into());
+        }
+    }
     let native_release = !release_repo.trim().is_empty();
-    let mut release_fallback: Option<(String, String)> = None;
+    let mut release_fallback: Option<(String, String)> = (source_policy == "developer")
+        .then(|| ("developer-main".into(), "source://main".into()));
     let mut credential_state = "absent";
     let mut release_digest = None;
-    let effective_source_sha = source_sha.to_owned();
-    if native_release {
-        let tag = args.get("release_tag").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| source_sha.to_owned());
-        let api_root = args.get("api_root").and_then(Value::as_str).unwrap_or("https://git.home.arpa/api/v1");
+    let mut native_download = None;
+    let mut effective_source_sha = source_sha.to_owned();
+    if source_policy == "artifact" {
+        if !native_release {
+            return Err("fetch-artifact-artifact-release-repo-missing".into());
+        }
+        let api_root = args
+            .get("api_root")
+            .and_then(Value::as_str)
+            .unwrap_or("https://git.home.arpa/api/v1");
+        credential_state =
+            crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
+        let asset_name = release_asset_name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{artifact_name}-x86_64"));
+        let sidecar_name = release_sidecar_name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{asset_name}.sha256"));
+        native_download = crate::atoms::ask::fetch_artifact::download_latest_release(
+            component,
+            release_repo,
+            api_root,
+            &asset_name,
+            &sidecar_name,
+            identity,
+            None,
+        )?;
+        let Some(download) = native_download.as_ref() else {
+            return Err(format!(
+                "fetch-artifact-artifact-unavailable component={component} repo={release_repo}"
+            ));
+        };
+        if !crate::atoms::ask::fetch_artifact::validate_source_sha(
+            &download.manifest.source_sha,
+        ) {
+            return Err("fetch-artifact-release-source-sha-invalid".into());
+        }
+        effective_source_sha = download.manifest.source_sha.clone();
+        release_digest = Some(download.manifest.sha256.clone());
+    } else if source_policy == "source" && native_release {
+        let tag = args
+            .get("release_tag")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| source_sha.to_owned());
+        let api_root = args
+            .get("api_root")
+            .and_then(Value::as_str)
+            .unwrap_or("https://git.home.arpa/api/v1");
         credential_state = crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
         match crate::atoms::ask::fetch_artifact::probe_release_digest(
-            artifact_name, release_repo, &tag, api_root, release_asset_name.as_deref(),
-            release_sidecar_name.as_deref(), source_sha,
+            artifact_name,
+            release_repo,
+            &tag,
+            api_root,
+            release_asset_name.as_deref(),
+            release_sidecar_name.as_deref(),
+            source_sha,
         ) {
             Ok(digest) => release_digest = digest,
             Err(error) if crate::atoms::ask::fetch_artifact::is_http_status(&error, "404") => {
-                release_fallback = Some(("release-miss".into(), crate::atoms::ask::fetch_artifact::release_metadata_url(api_root, release_repo, &tag)));
+                release_fallback = Some((
+                    "release-miss".into(),
+                    crate::atoms::ask::fetch_artifact::release_metadata_url(
+                        api_root,
+                        release_repo,
+                        &tag,
+                    ),
+                ));
             }
-            Err(error) if crate::atoms::ask::fetch_artifact::auth_required_url(&error, &crate::atoms::ask::fetch_artifact::release_metadata_url(api_root, release_repo, &tag)).is_some() => {
-                let url = crate::atoms::ask::fetch_artifact::release_metadata_url(api_root, release_repo, &tag);
-                release_fallback = Some(("auth-required".into(), crate::atoms::ask::fetch_artifact::auth_required_url(&error, &url).unwrap_or(url)));
+            Err(error)
+                if crate::atoms::ask::fetch_artifact::auth_required_url(
+                    &error,
+                    &crate::atoms::ask::fetch_artifact::release_metadata_url(
+                        api_root,
+                        release_repo,
+                        &tag,
+                    ),
+                )
+                .is_some() =>
+            {
+                let url = crate::atoms::ask::fetch_artifact::release_metadata_url(
+                    api_root,
+                    release_repo,
+                    &tag,
+                );
+                release_fallback = Some((
+                    "auth-required".into(),
+                    crate::atoms::ask::fetch_artifact::auth_required_url(&error, &url)
+                        .unwrap_or(url),
+                ));
             }
             Err(error) => return Err(error),
         }
     }
     let release_known = release_digest.is_some();
-    let road = if source_policy == "source" {
-        "clone"
-    } else {
+    let road = if source_policy == "artifact" {
         "artifact"
+    } else {
+        "clone"
     };
     let current = if let Some(expected_digest) = release_digest.as_deref() {
         crate::known_good_ledger::sha256_file(installed_binary)
             .is_ok_and(|installed_digest| installed_digest == expected_digest)
     } else {
-        // Without a release digest, the embedded marker remains the only
-        // available fast-path identity observation.
         crate::atoms::ask::fetch_artifact::identity_matches(
             installed_binary,
             &effective_source_sha,
@@ -145,13 +255,20 @@ pub(crate) fn execute(
         )
     };
     let observed_identity = if release_digest.is_some() {
-        crate::known_good_ledger::sha256_file(installed_binary).ok().unwrap_or_else(|| "unreadable-or-absent".into())
-    } else if crate::atoms::ask::fetch_artifact::identity_matches(installed_binary, &effective_source_sha, identity, component) {
+        crate::known_good_ledger::sha256_file(installed_binary)
+            .ok()
+            .unwrap_or_else(|| "unreadable-or-absent".into())
+    } else if crate::atoms::ask::fetch_artifact::identity_matches(
+        installed_binary,
+        &effective_source_sha,
+        identity,
+        component,
+    ) {
         effective_source_sha.clone()
     } else {
         "marker-mismatch-or-absent".into()
     };
-    if current && !beam_refetch {
+    if current && !beam_refetch && source_policy != "developer" {
         let supplier = if release_digest.is_some() {
             "release"
         } else {
@@ -167,12 +284,16 @@ pub(crate) fn execute(
                 release_digest.as_deref().unwrap_or(&effective_source_sha)
             ),
         )?;
-        return Ok(crate::OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: "fetch-artifact-current".into(),
-            command: None,
+        return Ok(FetchArtifactExecution {
+            outcome: crate::OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: "fetch-artifact-current".into(),
+                command: None,
+            },
+            source_sha: effective_source_sha,
+            artifact_path: installed_binary.to_path_buf(),
         });
     }
     if current && beam_refetch && apply {
@@ -186,13 +307,24 @@ pub(crate) fn execute(
     if !apply {
         let desired_identity = release_digest.as_deref().unwrap_or(&effective_source_sha);
         crate::atoms::attest::fetch_artifact::attest(
-            &receipt_dir.join("harmonia-atoms.log"), true, false,
+            &receipt_dir.join("harmonia-atoms.log"),
+            true,
+            false,
             &format!("state=Drift; care=release digest/marker comparison only; after=Drift (planned); observed={observed_identity}; desired={desired_identity}; diff=nonempty; movement=none{profile_receipt_fields}"),
         )?;
-        return Ok(crate::OperationOutcome { ok: true, changed: false, skipped: true, message: "fetch-artifact-planned".into(), command: None });
+        return Ok(FetchArtifactExecution {
+            outcome: crate::OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: "fetch-artifact-planned".into(),
+                command: None,
+            },
+            source_sha: effective_source_sha,
+            artifact_path: installed_binary.to_path_buf(),
+        });
     }
-    let mut native_download = None;
-    if native_release && release_fallback.is_none() {
+    if source_policy == "source" && native_release && release_fallback.is_none() {
         let tag = args.get("release_tag").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| source_sha.to_owned());
         let api_root = args.get("api_root").and_then(Value::as_str).unwrap_or("https://git.home.arpa/api/v1");
         native_download = crate::atoms::ask::fetch_artifact::download_release(
@@ -229,6 +361,9 @@ pub(crate) fn execute(
                 if let Some(artifact_url) =
                     crate::atoms::ask::fetch_artifact::auth_required_url(&error, &manifest_url)
                 {
+                    if source_policy == "artifact" {
+                        return Err(error);
+                    }
                     release_fallback = Some(("auth-required".into(), artifact_url));
                     None
                 } else {
@@ -288,12 +423,16 @@ pub(crate) fn execute(
                 false,
                 &format!("state=Drift; care=release miss requires source build; after=Drift (planned){profile_receipt_fields}"),
             )?;
-            return Ok(crate::OperationOutcome {
-                ok: true,
-                changed: false,
-                skipped: true,
-                message: "fetch-artifact-planned".into(),
-                command: None,
+            return Ok(FetchArtifactExecution {
+                outcome: crate::OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: "fetch-artifact-planned".into(),
+                    command: None,
+                },
+                source_sha: effective_source_sha,
+                artifact_path: installed_binary.to_path_buf(),
             });
         }
         let build = crate::build_crate::run_build_with_mode_for_component(
@@ -349,12 +488,16 @@ pub(crate) fn execute(
             false,
             &format!("state=Drift; care=manifest and digest verified; after=Drift (planned){profile_receipt_fields}"),
         )?;
-        return Ok(crate::OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: "fetch-artifact-planned".into(),
-            command: None,
+        return Ok(FetchArtifactExecution {
+            outcome: crate::OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: "fetch-artifact-planned".into(),
+                command: None,
+            },
+            source_sha: effective_source_sha,
+            artifact_path: installed_binary.to_path_buf(),
         });
     }
     let invocation = invocation.ok_or("fetch-artifact-invocation-key-missing")?;
@@ -409,18 +552,22 @@ pub(crate) fn execute(
                 false,
                 &format!("state=Current; care=verified embedded source SHA; after=Current{profile_receipt_fields}"),
             )?;
-            Ok(crate::OperationOutcome {
-                ok: true,
-                changed: false,
-                skipped: true,
-                message: "fetch-artifact-current".into(),
-                command: None,
+            Ok(FetchArtifactExecution {
+                outcome: crate::OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: "fetch-artifact-current".into(),
+                    command: None,
+                },
+                source_sha: effective_source_sha,
+                artifact_path: destination.to_path_buf(),
             })
         }
         crate::atoms::comparison::ComparisonRun::Moved { movement: (), .. } => {
             let supplier = if release_known {
                 "release"
-            } else if source_policy == "source" {
+            } else if matches!(source_policy, "source" | "developer") {
                 "build"
             } else {
                 "artifact"
@@ -437,12 +584,16 @@ pub(crate) fn execute(
                 true,
                 &detail,
             )?;
-            Ok(crate::OperationOutcome {
-                ok: true,
-                changed: true,
-                skipped: false,
-                message: "fetch-artifact-installed".into(),
-                command: None,
+            Ok(FetchArtifactExecution {
+                outcome: crate::OperationOutcome {
+                    ok: true,
+                    changed: true,
+                    skipped: false,
+                    message: "fetch-artifact-installed".into(),
+                    command: None,
+                },
+                source_sha: effective_source_sha,
+                artifact_path: destination.to_path_buf(),
             })
         }
     }

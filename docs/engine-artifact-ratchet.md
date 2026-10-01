@@ -1,9 +1,9 @@
 # Engine Artifact Ratchet
 
-The local ratchet lock is Harmonia’s trust authority for engine artifacts.
-Source declarations come from the appliance configuration; release and source
-acquisition use those declarations and the forge. There is no private engine
-configuration sidecar or transport table.
+The local ratchet lock records Harmonia's local engine state. Source declarations
+come from the appliance configuration; artifact and source acquisition use those
+declarations and the forge. There is no private engine configuration sidecar or
+transport table.
 
 ## Lock
 
@@ -24,33 +24,45 @@ The ratchet lock, when present, lives under Harmonia’s owned state root at
 }
 ```
 
-A body converges only to the local blessed lock. Newer observed releases are
-receipt evidence, not local authority. A body does not self-advance this lock.
+The local lock records the last converged engine identity. It does not select an
+artifact: artifact mode selects the newest eligible engine Release from the
+configured repository, while developer mode builds the remote `main` head.
 
 ## Compiled engine defaults
 
 The engine uses compiled local defaults rather than an engine configuration
-file. It installs at `/usr/local/bin/harmonia`, acquires and builds source
-under `/var/lib/harmonia/engine-source`, stages the release below that source
-root, and derives the profile index from the owned module root. Unit activation
+file. It installs at `/usr/local/bin/harmonia` and acquires source under
+`/var/lib/harmonia/engine-source`; developer mode builds there and artifact mode
+uses the same tree as its content seat. It stages artifacts below that source
+root and derives the profile index from the owned module root. Unit activation
 is the enablement state; there is no separate `enabled` setting.
 
-The local ratchet lock's `source_head_sha` binds the engine release to the exact
-admitted source head. Every Apply press first resolves that head, then seats the
-Harmonia content tree at the same commit before any engine promotion or
-StageProfile molt. This is true when the binary arrives from the artifact lane
-as well as when the source-build fallback provides it. The artifact lane stages
-and verifies the binary but does not compile it; the source tree is acquired
-only as the paired content seat.
+Artifact mode selects the newest published engine Release in the configured
+repository that carries the engine assets and `release.flag`, ordered by
+`created_at` and then release `id`. It validates and stages that artifact without
+compiling. When HEAD has no Release, it uses the newest eligible Release that
+exists. If no eligible Release can be retrieved, preflight records a named
+failure and preserves the installed engine; it never builds from source.
 
-The `engine-preflight/content-seat.json` receipt records the expected head, the
-observed content head, whether they match, whether source mutation was possible,
-and the final paired/mismatch state. `engine-preflight/run.json` repeats the
-observed head and match/failure fields. A failed source move or head mismatch is
-a red engine-preflight stage: the staged binary is not promoted and the Apply
-transaction stops before profile molt or downstream convergence, preserving the
-previous binary and profile projection. Report-only records the observed source
-head and drift without mutating the source seat.
+Developer mode bypasses Release selection even when a Release exists. It resolves
+the remote `main` head, acquires the source pinned to that SHA, and builds it.
+
+For either policy, the selected artifact/source SHA is also the expected content
+seat. Renew-self seats the Harmonia source tree at that exact commit before any
+engine promotion or StageProfile molt. The preflight and post-stage receipts keep
+that selected SHA; artifact mode does not report repository HEAD as the installed
+engine's identity. A failed source move or head mismatch is a red engine-preflight
+stage: the staged binary is not promoted and the Apply transaction stops before
+profile molt or downstream convergence, preserving the previous binary and
+profile projection. Report-only records the selected identity and drift without
+mutating the source seat.
+
+The `engine-preflight/content-seat.json` receipt records the selected SHA as
+`expected_head`, the observed content head, whether they match, whether source
+mutation was possible, and the final paired/mismatch state. `engine-preflight/run.json`
+repeats that selected SHA as `source_head`, plus the observed head and
+match/failure fields. Report-only records the selected identity and observed
+drift without mutating the source seat.
 
 An already-current binary does not waive the content-seat check: Apply still
 pairs the content tree to the resolved SHA, then runs the usual profile molt and
@@ -87,11 +99,12 @@ observed state.
 
 ## Artifact trust
 
-Versioned engine artifacts are subordinate to the local ratchet lock. The lock
-is the only artifact trust authority; a release or forge can supply an
-observation, but cannot change the admitted version or checksum. A missing or
-unusable artifact is receipted as a refusal, and an integrity mismatch stops
-the walk rather than changing authority.
+Artifact mode trusts a release only after the repository's published Release is
+selected and its engine asset, checksum sidecar, and `release.flag` are verified.
+Release order is publish time (`created_at`), then release `id`; neither the tag
+string nor version ordering substitutes for publish order. A missing or
+unretrievable eligible Release is receipted as a refusal, and the installed
+engine remains untouched. Source compilation is not a fallback.
 
 ## Observed appliance state
 
@@ -105,5 +118,6 @@ authorize an engine change.
 
 Deployables owns installation and uninstallation. Harmonia owns runtime
 convergence and control of `harmonia.service` and `harmonia.timer`. Chrysalis’
-release-publish tool owns publication and mirroring. These boundaries do not
-change the lock’s role as the sole artifact trust authority.
+release-publish tool owns publication and mirroring. The local ratchet lock
+records the last converged engine identity; verified published Releases provide
+the artifact selection authority in artifact mode.

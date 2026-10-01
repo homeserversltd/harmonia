@@ -1334,17 +1334,15 @@ fn download_engine_release_for_preflight(
     component: &str,
     release_repo: &str,
     api_root: &str,
-    source_sha: &str,
 ) -> Result<Option<crate::atoms::ask::fetch_artifact::Download>, String> {
     #[cfg(test)]
     if let Some(injected) = injected_engine_release() {
         return Ok(injected);
     }
-    crate::atoms::ask::fetch_artifact::download_engine_release(
+    crate::atoms::ask::fetch_artifact::download_latest_engine_release(
         component,
         release_repo,
         api_root,
-        source_sha,
         None,
     )
 }
@@ -1356,7 +1354,11 @@ fn observe_or_acquire_content_seat(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     preflight_dir: &Path,
 ) -> Result<ContentSeatObservation, String> {
-    let plan = source_fallback_plan(resolution, expected_head);
+    let plan = crate::bands::pull_source::bridge_acquisition_plan(
+        resolution,
+        engine_source_root(),
+        Some(expected_head.to_owned()),
+    );
     let outcome = crate::bands::pull_source::execute_source(&plan, apply, invocation);
     write_content_seat_observation(&plan, expected_head, apply, &outcome, preflight_dir)
 }
@@ -1519,10 +1521,8 @@ pub(crate) fn run_engine_preflight(
             });
         }
     };
-    let source_plan =
-        crate::bands::pull_source::bridge_acquisition_plan(&resolution, engine_source_root(), None);
-    let remote_probe = crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
-    let source_head = remote_probe.remote_sha.clone();
+    let mut source_head: Option<String> = None;
+    let mut resolved_sha: Option<String> = None;
     let mut lane: Option<String> = None;
     let mut blocked_target: Option<String> = None;
     let mut operation_count = 1usize;
@@ -1540,187 +1540,257 @@ pub(crate) fn run_engine_preflight(
         stderr: "engine build skipped before source acquisition".to_string(),
     };
     let mut staged_from_artifact = false;
-    let resolved_sha = source_head
-        .as_deref()
-        .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha));
-    if resolved_sha.is_none() {
-        blocked_target = Some(format!(
-            "{}@{}",
-            remote_probe
-                .locator
-                .as_deref()
-                .unwrap_or("configured-source"),
-            resolution.requested_ref
-        ));
-        first_missing_signal = format!(
-            "engine-source-head-unresolved target={}",
-            blocked_target.as_deref().unwrap_or("configured-source")
-        );
-    } else if let Some(candidate) = remote_probe.locator.as_deref() {
-        let target = format!("{candidate}@{}", resolved_sha.unwrap_or_default());
-        match release_identity_for_preflight(candidate) {
-            Err(error) => {
-                blocked_target = Some(target.clone());
-                first_missing_signal = format!("engine-artifact-refused target={target}: {error}");
-            }
-            Ok((api_root, release_repo)) => {
-                match download_engine_release_for_preflight(
-                    &component,
-                    &release_repo,
-                    &api_root,
-                    resolved_sha.unwrap_or_default(),
-                ) {
-                    Ok(Some(download)) => {
-                        lane = Some("artifact".into());
-                        let content_seat = observe_or_acquire_content_seat(
-                            &resolution,
-                            resolved_sha.unwrap_or_default(),
-                            apply,
-                            invocation,
-                            &preflight_dir,
-                        )?;
-                        operation_count += 1;
-                        if !content_seat.move_ok {
-                            first_missing_signal = "engine-content-seat-move-failed".into();
-                        } else if !content_seat.matches {
-                            first_missing_signal = "engine-content-seat-head-mismatch".into();
-                        }
-                        if apply {
-                            if first_missing_signal != "none" {
-                                build = CmdResult {
-                                    ok: false,
-                                    code: -1,
-                                    stdout: String::new(),
-                                    stderr: format!("engine-artifact-stage-skipped: {first_missing_signal}"),
-                                };
-                            } else {
-                                let invocation = invocation.ok_or_else(|| {
-                                    "engine-artifact-stage-invocation-missing".to_string()
-                                })?;
-                                if let Some(parent) = staged.parent() {
-                                    fs::create_dir_all(parent).map_err(|error| {
-                                        format!("engine-artifact-stage-parent-failed: {error}")
-                                    })?;
-                                }
-                                let placed =
-                                    crate::place_file::execute(crate::place_file::PlaceFileRequest {
-                                        path: &staged,
-                                        declared_bytes: &download.bytes,
-                                        mode: Some(0o755),
-                                        ownership: crate::place_file::DeclaredOwnership {
-                                            uid: None,
-                                            gid: None,
-                                        },
-                                        backup: crate::place_file::BackupPolicy::To(
-                                            &preflight_dir.join("backups/prior-staged-binary"),
-                                        ),
-                                        invocation: Some(invocation),
-                                    });
-                                match placed {
-                                    Ok(placed) => {
-                                        crate::atoms::attest::attest(
-                                            &preflight_dir.join("atoms.jsonl"),
-                                            &placed.receipt,
-                                            &[],
-                                        )?;
-                                        build = CmdResult {
-                                            ok: placed.receipt.ok,
-                                            code: if placed.receipt.ok { 0 } else { -1 },
-                                            stdout: format!(
-                                                "artifact placement {} bytes={} mode=0755 changed={} backed_up={}",
-                                                staged.display(),
-                                                download.bytes.len(),
-                                                placed.movement.changed(),
-                                                placed.movement.backed_up.is_some()
-                                            ),
-                                            stderr: String::new(),
-                                        };
-                                        staged_from_artifact = placed.receipt.ok;
-                                        changed = placed.movement.changed();
-                                    }
-                                    Err(error) => {
-                                        build = CmdResult {
-                                            ok: false,
-                                            code: -1,
-                                            stdout: String::new(),
-                                            stderr: format!(
-                                                "engine-artifact-stage-failed target={target}: {error}"
-                                            ),
-                                        };
-                                        first_missing_signal = "engine-artifact-stage-failed".into();
-                                    }
-                                }
-                            }
-                        } else {
-                            build = CmdResult {
-                                ok: true,
-                                code: 0,
-                                stdout: format!(
-                                    "planned artifact placement {} bytes={} mode=0755",
-                                    staged.display(),
-                                    download.bytes.len()
-                                ),
-                                stderr: String::new(),
-                            };
-                        }
-                        write_command_receipt(&preflight_dir, "staged-build", &build)?;
-                    }
-                    Ok(None) => {
-                        let pinned_plan =
-                            source_fallback_plan(&resolution, resolved_sha.unwrap_or_default());
-                        let source = crate::bands::pull_source::execute_source(
-                            &pinned_plan,
-                            apply,
-                            invocation,
-                        );
-                        let source_command = CmdResult {
-                            ok: source.ok,
-                            code: if source.ok { 0 } else { -1 },
-                            stdout: source.receipt.promotion.clone(),
-                            stderr: if source.ok {
-                                String::new()
-                            } else {
-                                source.receipt.promotion.clone()
-                            },
-                        };
-                        let content_seat = write_content_seat_observation(
-                            &pinned_plan,
-                            resolved_sha.unwrap_or_default(),
-                            apply,
-                            &source,
-                            &preflight_dir,
-                        )?;
-                        if let Some(candidate) = pinned_plan.candidates.first() {
-                            write_source_possession_receipt(
-                                &preflight_dir,
-                                &source_command,
-                                &pinned_plan.destination,
-                                candidate,
-                                apply,
-                            )?;
-                        }
-                        lane = Some("source".into());
-                        operation_count += 1;
-                        if !source.ok {
-                            first_missing_signal = "engine-content-seat-move-failed".into();
-                        } else if !content_seat.matches {
-                            first_missing_signal = if content_seat.observed_head.is_none() {
-                                "engine-content-seat-move-failed".into()
-                            } else {
-                                "engine-content-seat-head-mismatch".into()
-                            };
-                        } else {
-                            changed = source.changed;
-                        }
-                    }
+    let mut artifact_download = None;
+
+    match resolution.source_policy.as_str() {
+        "artifact" => {
+            lane = Some("artifact".into());
+            let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
+                &resolution,
+                engine_source_root(),
+                None,
+            );
+            let candidate = source_plan
+                .candidates
+                .first()
+                .map(|candidate| candidate.locator.as_str());
+            if let Some(candidate) = candidate {
+                let target = format!("{candidate}@newest-engine-release");
+                match release_identity_for_preflight(candidate) {
                     Err(error) => {
                         blocked_target = Some(target.clone());
                         first_missing_signal =
                             format!("engine-artifact-refused target={target}: {error}");
                     }
+                    Ok((api_root, release_repo)) => {
+                        match download_engine_release_for_preflight(
+                            &component,
+                            &release_repo,
+                            &api_root,
+                        ) {
+                            Ok(Some(download)) => {
+                                let selected_sha = download.manifest.source_sha.clone();
+                                if !crate::atoms::git_artifact::is_lower_hex_sha(&selected_sha) {
+                                    blocked_target = Some(target.clone());
+                                    first_missing_signal = format!(
+                                        "engine-artifact-source-sha-invalid target={target}"
+                                    );
+                                } else {
+                                    source_head = Some(selected_sha.clone());
+                                    resolved_sha = Some(selected_sha.clone());
+                                    let content_seat = observe_or_acquire_content_seat(
+                                        &resolution,
+                                        &selected_sha,
+                                        apply,
+                                        invocation,
+                                        &preflight_dir,
+                                    )?;
+                                    operation_count += 1;
+                                    if !content_seat.move_ok {
+                                        first_missing_signal =
+                                            "engine-content-seat-move-failed".into();
+                                    } else if !content_seat.matches {
+                                        first_missing_signal =
+                                            "engine-content-seat-head-mismatch".into();
+                                    }
+                                    artifact_download = Some(download);
+                                }
+                            }
+                            Ok(None) => {
+                                blocked_target = Some(target.clone());
+                                first_missing_signal =
+                                    format!("engine-artifact-unavailable target={target}");
+                                build.stderr = first_missing_signal.clone();
+                            }
+                            Err(error) => {
+                                blocked_target = Some(target.clone());
+                                first_missing_signal =
+                                    format!("engine-artifact-refused target={target}: {error}");
+                                build.stderr = first_missing_signal.clone();
+                            }
+                        }
+                    }
                 }
+            } else {
+                blocked_target = Some("configured-source@newest-engine-release".into());
+                first_missing_signal =
+                    "engine-artifact-refused target=configured-source@newest-engine-release: source-candidates-absent"
+                        .into();
+                build.stderr = first_missing_signal.clone();
             }
         }
+        "developer" => {
+            lane = Some("source".into());
+            let mut developer_resolution = resolution.clone();
+            developer_resolution.requested_ref = "main".into();
+            let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
+                &developer_resolution,
+                engine_source_root(),
+                None,
+            );
+            let remote_probe =
+                crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
+            let target = format!(
+                "{}@main",
+                remote_probe
+                    .locator
+                    .as_deref()
+                    .or_else(|| {
+                        source_plan
+                            .candidates
+                            .first()
+                            .map(|candidate| candidate.locator.as_str())
+                    })
+                    .unwrap_or("configured-source")
+            );
+            let main_sha = remote_probe
+                .remote_sha
+                .as_deref()
+                .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha))
+                .map(str::to_owned);
+            if let Some(main_sha) = main_sha {
+                source_head = Some(main_sha.clone());
+                resolved_sha = Some(main_sha.clone());
+                let pinned_plan = source_fallback_plan(&developer_resolution, &main_sha);
+                let source =
+                    crate::bands::pull_source::execute_source(&pinned_plan, apply, invocation);
+                let source_command = CmdResult {
+                    ok: source.ok,
+                    code: if source.ok { 0 } else { -1 },
+                    stdout: source.receipt.promotion.clone(),
+                    stderr: if source.ok {
+                        String::new()
+                    } else {
+                        source.receipt.promotion.clone()
+                    },
+                };
+                let content_seat = write_content_seat_observation(
+                    &pinned_plan,
+                    &main_sha,
+                    apply,
+                    &source,
+                    &preflight_dir,
+                )?;
+                if let Some(candidate) = pinned_plan.candidates.first() {
+                    write_source_possession_receipt(
+                        &preflight_dir,
+                        &source_command,
+                        &pinned_plan.destination,
+                        candidate,
+                        apply,
+                    )?;
+                }
+                operation_count += 1;
+                if !source.ok {
+                    first_missing_signal = "engine-content-seat-move-failed".into();
+                } else if !content_seat.matches {
+                    first_missing_signal = if content_seat.observed_head.is_none() {
+                        "engine-content-seat-move-failed".into()
+                    } else {
+                        "engine-content-seat-head-mismatch".into()
+                    };
+                } else {
+                    changed = source.changed;
+                }
+            } else {
+                blocked_target = Some(target.clone());
+                first_missing_signal = format!("engine-source-head-unresolved target={target}");
+                build.stderr = first_missing_signal.clone();
+            }
+        }
+        policy => {
+            first_missing_signal = format!("engine-source-policy-invalid policy={policy}");
+            build.stderr = first_missing_signal.clone();
+        }
+    }
+
+    if lane.as_deref() == Some("artifact")
+        && artifact_download.is_none()
+        && first_missing_signal != "none"
+    {
+        build.stderr = first_missing_signal.clone();
+    }
+    if let Some(download) = artifact_download.as_ref() {
+        if apply {
+            if first_missing_signal != "none" {
+                build = CmdResult {
+                    ok: false,
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: format!("engine-artifact-stage-skipped: {first_missing_signal}"),
+                };
+            } else {
+                let invocation = invocation
+                    .ok_or_else(|| "engine-artifact-stage-invocation-missing".to_string())?;
+                if let Some(parent) = staged.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| format!("engine-artifact-stage-parent-failed: {error}"))?;
+                }
+                let target = format!(
+                    "selected-engine-release@{}",
+                    resolved_sha.as_deref().unwrap_or("unknown")
+                );
+                let placed = crate::place_file::execute(crate::place_file::PlaceFileRequest {
+                    path: &staged,
+                    declared_bytes: &download.bytes,
+                    mode: Some(0o755),
+                    ownership: crate::place_file::DeclaredOwnership {
+                        uid: None,
+                        gid: None,
+                    },
+                    backup: crate::place_file::BackupPolicy::To(
+                        &preflight_dir.join("backups/prior-staged-binary"),
+                    ),
+                    invocation: Some(invocation),
+                });
+                match placed {
+                    Ok(placed) => {
+                        crate::atoms::attest::attest(
+                            &preflight_dir.join("atoms.jsonl"),
+                            &placed.receipt,
+                            &[],
+                        )?;
+                        build = CmdResult {
+                            ok: placed.receipt.ok,
+                            code: if placed.receipt.ok { 0 } else { -1 },
+                            stdout: format!(
+                                "artifact placement {} bytes={} mode=0755 changed={} backed_up={}",
+                                staged.display(),
+                                download.bytes.len(),
+                                placed.movement.changed(),
+                                placed.movement.backed_up.is_some()
+                            ),
+                            stderr: String::new(),
+                        };
+                        staged_from_artifact = placed.receipt.ok;
+                        changed = placed.movement.changed();
+                    }
+                    Err(error) => {
+                        build = CmdResult {
+                            ok: false,
+                            code: -1,
+                            stdout: String::new(),
+                            stderr: format!(
+                                "engine-artifact-stage-failed target={target}: {error}"
+                            ),
+                        };
+                        first_missing_signal = "engine-artifact-stage-failed".into();
+                    }
+                }
+            }
+        } else if first_missing_signal == "none" {
+            build = CmdResult {
+                ok: true,
+                code: 0,
+                stdout: format!(
+                    "planned artifact placement {} bytes={} mode=0755",
+                    staged.display(),
+                    download.bytes.len()
+                ),
+                stderr: String::new(),
+            };
+        }
+        write_command_receipt(&preflight_dir, "staged-build", &build)?;
     }
     if lane.as_deref() == Some("source") && first_missing_signal == "none" {
         let Some(source_head) = source_head.as_deref() else {
@@ -1789,7 +1859,7 @@ pub(crate) fn run_engine_preflight(
         apply,
         invocation,
         lane,
-        resolved_sha,
+        resolved_sha.as_deref(),
         blocked_target,
         operation_count,
         changed,

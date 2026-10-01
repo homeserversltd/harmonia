@@ -1284,6 +1284,355 @@ pub(crate) fn download_release(
         other => other,
     }
 }
+pub(crate) fn download_latest_release(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    identity: &str,
+    release_schema_base: Option<&str>,
+) -> Result<Option<Download>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    validate_segment(component, "component")?;
+    validate_segment(asset_name, "asset-name")?;
+    validate_segment(sidecar_name, "sidecar-name")?;
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let credential_scope_found = credential.is_some();
+    let request = ReleaseRequest {
+        kind: "forgejo-release".into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential,
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found,
+        cache_dir: std::env::temp_dir().join(format!(
+            "harmonia-latest-release-{}",
+            unique_temp_suffix()
+        )),
+    };
+    let result = (|| {
+        let mut releases = lookup_published_releases(&request)?;
+        releases.sort_by(|left, right| {
+            right
+                .created_at_order
+                .cmp(&left.created_at_order)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        for candidate in releases {
+            if candidate.draft
+                || !candidate.has_asset(asset_name)
+                || !candidate.has_asset(sidecar_name)
+                || !candidate.has_asset("release.flag")
+            {
+                continue;
+            }
+            let Some(tagged_source_sha) = source_sha_from_release_tag(&candidate.tag_name) else {
+                continue;
+            };
+            let release = match fetch_release_assets_for_inspection(
+                &request,
+                &candidate.tag_name,
+                asset_name,
+                sidecar_name,
+            ) {
+                Ok(Some(release)) => release,
+                Ok(None) => continue,
+                Err(error) if ineligible_release_error(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            if release.target_commitish != tagged_source_sha {
+                continue;
+            }
+            let Some(flag_bytes) = release.release_flag.as_deref() else {
+                continue;
+            };
+            let (source_sha, _version) =
+                match release_source_revision(&release, repo, release_schema_base) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+            if source_sha != tagged_source_sha {
+                continue;
+            }
+            let digest = crate::atoms::file_sha256(&release.artifact);
+            let Ok(sidecar_text) = String::from_utf8(release.sidecar) else {
+                continue;
+            };
+            if sidecar_text.trim_end_matches(['\r', '\n']) != format!("{digest}  {asset_name}") {
+                continue;
+            }
+            let flag: Value = match serde_json::from_slice(flag_bytes) {
+                Ok(flag) => flag,
+                Err(_) => continue,
+            };
+            if !flag
+                .get("sha256")
+                .and_then(Value::as_str)
+                .is_some_and(|value| is_hex(value, 64))
+                || !flag
+                    .get("env_sha")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| is_hex(value, 64))
+                || !flag
+                    .get("pipeline_url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            {
+                continue;
+            }
+            return Ok(Some(Download {
+                manifest: Manifest {
+                    schema: MANIFEST_SCHEMA.into(),
+                    component: component.into(),
+                    source_sha,
+                    target: BUILD_TARGET.into(),
+                    sha256: digest,
+                    built_at: candidate.created_at,
+                    pipeline_url: release.metadata_url,
+                    env_sha: flag
+                        .get("env_sha")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    rustc_version: flag
+                        .get("rustc_version")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                },
+                bytes: release.artifact,
+                identity: identity.into(),
+            }));
+        }
+        Ok(None)
+    })();
+    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    match result {
+        Err(error) if !credential_scope_found => {
+            let metadata_url = format!(
+                "{}/repos/{release_repo}/releases",
+                release_api_root(api_root)
+            );
+            Err(normalize_auth_required_error(&error, &metadata_url).unwrap_or(error))
+        }
+        other => other,
+    }
+}
+
+pub(crate) fn download_latest_engine_release(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    release_schema_base: Option<&str>,
+) -> Result<Option<Download>, String> {
+    download_latest_release(
+        component,
+        release_repo,
+        api_root,
+        "harmonia-x86_64",
+        "harmonia-x86_64.sha256",
+        "engine-release",
+        release_schema_base,
+    )
+}
+
+#[derive(Debug)]
+struct PublishedRelease {
+    id: u64,
+    created_at: String,
+    created_at_order: i128,
+    tag_name: String,
+    draft: bool,
+    assets: Value,
+}
+
+impl PublishedRelease {
+    fn has_asset(&self, name: &str) -> bool {
+        self.assets.as_array().is_some_and(|assets| {
+            assets.iter().any(|asset| {
+                asset.get("name").and_then(Value::as_str) == Some(name)
+                    && asset
+                        .get("browser_download_url")
+                        .or_else(|| asset.get("url"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|url| !url.trim().is_empty())
+            })
+        })
+    }
+}
+
+const RELEASE_LIST_PAGE_SIZE: usize = 50;
+const RELEASE_LIST_MAX_PAGES: usize = 100;
+
+fn lookup_published_releases(request: &ReleaseRequest) -> Result<Vec<PublishedRelease>, String> {
+    let api = release_api(request);
+    let url = format!(
+        "{api}/repos/{}/{}/releases",
+        request.owner, request.repo
+    );
+    fs::create_dir_all(&request.cache_dir)
+        .map_err(|error| format!("release-cache-create-failed: {error}"))?;
+    let mut releases = Vec::new();
+    for page in 1..=RELEASE_LIST_MAX_PAGES {
+        let page_url = format!("{url}?limit={RELEASE_LIST_PAGE_SIZE}&page={page}");
+        let path = request
+            .cache_dir
+            .join(format!(".release-list-{}", unique_temp_suffix()));
+        let args = inspection_curl_args(&page_url, &path.to_string_lossy());
+        let mut args = args;
+        args.extend(["-w".into(), "%{http_code}".into()]);
+        let response = run_curl(&args, request.credential_for_url(&page_url))?;
+        if response.code == 63 {
+            let _ = fs::remove_file(&path);
+            return Err(INSPECTION_OVERSIZE_BLOCKER.into());
+        }
+        if !response.ok {
+            let _ = fs::remove_file(&path);
+            let error = format!(
+                "release-list-fetch-failed: {} http_status={}",
+                response.stderr,
+                response.stdout.trim()
+            );
+            return Err(if request.credential_for_url(&page_url).is_none() {
+                normalize_auth_required_error(&error, &page_url).unwrap_or(error)
+            } else {
+                error
+            });
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("release-list-read-failed: {error}"))?;
+        let _ = fs::remove_file(&path);
+        let page_releases: Vec<Value> = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("release-list-malformed: {error}"))?;
+        if page_releases.len() > RELEASE_LIST_PAGE_SIZE {
+            return Err("release-list-page-over-limit".into());
+        }
+        for release in &page_releases {
+            let id = release
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or("release-list-id-missing-or-invalid")?;
+            let created_at = release
+                .get("created_at")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("release-list-created-at-missing")?;
+            let created_at_order = rfc3339_order_key(created_at)
+                .ok_or("release-list-created-at-invalid")?;
+            let tag_name = release
+                .get("tag_name")
+                .and_then(Value::as_str)
+                .filter(|value| safe_release_segment(value))
+                .ok_or("release-list-tag-invalid")?;
+            let assets = release
+                .get("assets")
+                .cloned()
+                .filter(Value::is_array)
+                .ok_or("release-list-assets-missing")?;
+            releases.push(PublishedRelease {
+                id,
+                created_at: created_at.to_owned(),
+                created_at_order,
+                tag_name: tag_name.to_owned(),
+                draft: release.get("draft").and_then(Value::as_bool).unwrap_or(false),
+                assets,
+            });
+        }
+        if page_releases.len() < RELEASE_LIST_PAGE_SIZE {
+            return Ok(releases);
+        }
+    }
+    Err("release-list-page-limit-exceeded".into())
+}
+
+fn rfc3339_order_key(value: &str) -> Option<i128> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || bytes.get(10) != Some(&b'T')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+    {
+        return None;
+    }
+    let parse = |start: usize, end: usize| -> Option<i64> {
+        value.get(start..end)?.parse::<i64>().ok()
+    };
+    let year = parse(0, 4)?;
+    let month = parse(5, 7)?;
+    let day = parse(8, 10)?;
+    let hour = parse(11, 13)?;
+    let minute = parse(14, 16)?;
+    let second = parse(17, 19)?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let mut index = 19;
+    let mut nanos = 0_i64;
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == fraction_start {
+            return None;
+        }
+        let fraction = value.get(fraction_start..index)?;
+        let first_nine = &fraction[..fraction.len().min(9)];
+        nanos = first_nine.parse::<i64>().ok()?;
+        for _ in first_nine.len()..9 {
+            nanos *= 10;
+        }
+    }
+    let offset_seconds = match bytes.get(index).copied()? {
+        b'Z' if index + 1 == bytes.len() => 0_i64,
+        sign @ (b'+' | b'-') if index + 6 == bytes.len() && bytes.get(index + 3) == Some(&b':') => {
+            let hours = value.get(index + 1..index + 3)?.parse::<i64>().ok()?;
+            let minutes = value.get(index + 4..index + 6)?.parse::<i64>().ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let offset = hours * 3600 + minutes * 60;
+            if sign == b'+' { offset } else { -offset }
+        }
+        _ => return None,
+    };
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let adjusted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * adjusted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds;
+    Some(i128::from(seconds) * 1_000_000_000 + i128::from(nanos))
+}
+
+fn ineligible_release_error(error: &str) -> bool {
+    [
+        "fetch-artifact-release-commit-mismatch",
+        "release-asset-missing",
+        "release-assets-missing",
+        "release-metadata-malformed",
+        "fetch-artifact-release-flag-",
+        "fetch-artifact-release-sidecar-",
+    ]
+    .iter()
+    .any(|prefix| error.starts_with(prefix))
+}
+
 pub(crate) fn destination_identity(destination: &Path, source_sha: &str) -> bool {
     identity_matches(destination, source_sha, "liveness-marker", "caduceus")
 }

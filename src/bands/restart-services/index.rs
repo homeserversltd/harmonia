@@ -232,6 +232,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                             "source_policy".into(),
                             serde_json::json!({"from":"pull-repo.source_policy","default":"artifact"}),
                         );
+                        child.insert(
+                            "source_reference".into(),
+                            serde_json::json!({"from":"pull-repo.source_reference"}),
+                        );
                         child
                     }
                     "build" => {
@@ -340,7 +344,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                         };
                         for (k, r) in [
                             ("source_dir", "pull-repo.path"),
-                            ("source_sha", "pull-repo.resolved_commit"),
+                            ("source_sha", "build.source_build_sha"),
                             ("source_reference", "pull-repo.source_reference"),
                             ("source_remote", "pull-repo.source_remote"),
                             ("source_changed", "pull-repo.changed"),
@@ -371,7 +375,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                         );
                         c.insert(
                             "declared_bytes".into(),
-                            serde_json::json!({"from":"pull-repo.resolved_commit"}),
+                            serde_json::json!({"from":"build.source_build_sha"}),
                         );
                         c.insert("mode".into(), Value::from(420_u64));
                         c.insert("no_follow".into(), Value::Bool(true));
@@ -400,7 +404,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                         } else {
                             c.insert(
                                 "expected_contains".into(),
-                                serde_json::json!({"from":"pull-repo.resolved_commit"}),
+                                serde_json::json!({"from":"build.source_build_sha"}),
                             );
                         }
                         c

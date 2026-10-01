@@ -235,6 +235,12 @@ pub(crate) fn execute_manifest_band(
         } else {
             result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RatchetBinaries","status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
         }
+        if !outcome.ok {
+            result.ok = false;
+            result.first_missing_signal.get_or_insert_with(|| {
+                format!("step_id={} defect={}", step.step_id, outcome.message)
+            });
+        }
         // Promote only after the successful producer and binary-install receipts.
         if step.tool == "routine" && mode_apply {
             let routine = routine_states
@@ -439,40 +445,22 @@ pub(crate) fn execute_routine_child(
     let name = tool.to_string();
     match tool {
         "fetch-artifact" => {
-            let developer_mode = args
-                .get("source_policy")
-                .and_then(Value::as_str)
-                .is_some_and(|policy| policy == "developer");
-            if developer_mode {
-                let artifact = args.get("installed_binary").cloned().unwrap_or(Value::Null);
-                let outcome = crate::OperationOutcome {
-                    ok: true,
-                    changed: false,
-                    skipped: true,
-                    message: "fetch-artifact skipped source_policy=developer".into(),
-                    command: None,
-                };
-                return Ok((
-                    outcome,
-                    [
-                        ("artifact".into(), artifact),
-                        ("changed".into(), Value::Bool(false)),
-                        ("source_policy".into(), Value::String("developer".into())),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ));
-            }
             let installed_binary = args
                 .get("installed_binary")
                 .and_then(Value::as_str)
                 .map(Path::new);
             let prior_installed_sha = installed_binary
                 .and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
-            let outcome =
-                crate::tools::fetch_artifact::execute(args, receipt_dir, apply, invocation)?;
+            let execution = crate::tools::fetch_artifact::execute_with_provenance(
+                args,
+                receipt_dir,
+                apply,
+                invocation,
+            )?;
+            let outcome = execution.outcome;
+            let source_build_sha = execution.source_sha;
             let changed = outcome.changed;
-            let artifact = select_fetch_artifact_output(&outcome, args);
+            let artifact = Value::String(execution.artifact_path.to_string_lossy().into_owned());
             let path = artifact.as_str().map(Path::new);
             let sha = path.and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
             if let Some(expected) = args.get("expected_digest").and_then(Value::as_str) {
@@ -484,27 +472,34 @@ pub(crate) fn execute_routine_child(
                 .get("source_policy")
                 .and_then(Value::as_str)
                 .unwrap_or("artifact");
-            let road = if source_policy == "source" {
+            let road = if source_policy == "artifact" {
+                "artifact"
+            } else {
                 "clone"
-            } else {
-                "artifact"
             };
-            let digest_supplier = if receipt_dir.join("fallback.json").is_file() {
-                "build"
-            } else if args.get("expected_digest").and_then(Value::as_str).is_some()
-                || (source_policy == "source" && !outcome.skipped)
-            {
-                "release"
-            } else if source_policy == "source" {
-                "marker-fallback"
-            } else {
-                "artifact"
-            };
+            let digest_supplier =
+                if source_policy == "developer" || receipt_dir.join("fallback.json").is_file() {
+                    "build"
+                } else if source_policy == "source" && !outcome.skipped {
+                    "release"
+                } else if source_policy == "source" {
+                    "marker-fallback"
+                } else if source_policy == "artifact"
+                    && args
+                        .get("release_repo")
+                        .and_then(Value::as_str)
+                        .is_some_and(|repo| !repo.trim().is_empty())
+                {
+                    "release"
+                } else {
+                    "artifact"
+                };
             Ok((
                 outcome,
                 [
                     ("artifact".into(), artifact.clone()),
                     ("installed_path".into(), artifact),
+                    ("source_build_sha".into(), Value::String(source_build_sha)),
                     ("sha256".into(), serde_json::json!(sha)),
                     ("changed".into(), serde_json::json!(changed)),
                     ("road".into(), serde_json::json!(road)),
