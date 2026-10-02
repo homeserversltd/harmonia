@@ -479,12 +479,14 @@ pub(crate) fn write_transaction_rollback_receipt(
     evidence: &SyzygyEvidence,
     failed_step: Option<&str>,
     restored_paths: &[String],
+    pointer_restores: &[crate::known_good_ledger::KnownGoodPointerRestore],
     rollback_errors: &[String],
 ) -> Result<(), String> {
     let mut value = transaction_value(receipt, evidence, failed_step);
     value["transaction_state"] = serde_json::to_value(&receipt.state)
         .map_err(|error| format!("transaction-state-serialize-failed: {error}"))?;
     value["restored_paths"] = serde_json::json!(restored_paths);
+    value["known_good_pointer_restores"] = serde_json::json!(pointer_restores);
     value["rollback_errors"] = serde_json::json!(rollback_errors);
     write_json_atomic(&dir.join("update-set.json"), &value)
 }

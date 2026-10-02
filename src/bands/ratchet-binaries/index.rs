@@ -19,11 +19,12 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
 /// Selection, preconditions, authority gating, failure policy, and accumulation
 /// intentionally live here rather than in the ladder compatibility executor.
 #[allow(clippy::too_many_arguments)]
-fn band_boundary_ledger_gate(
+fn band_boundary_ledger_gate_inner(
     manifest_id: &str,
     receipt_dir: &Path,
     routine: &crate::ModuleWalkState,
     projected_children: &[ProjectedRoutineChild],
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
 ) -> Result<Value, String> {
     let producer = routine.children.iter().find(|r| {
         r.get("ok").and_then(Value::as_bool) == Some(true)
@@ -65,6 +66,9 @@ fn band_boundary_ledger_gate(
         "binary-install".to_string(),
         "installed-sha256-readback".to_string(),
     ];
+    let ledger_root = crate::known_good_ledger::integration_root(receipt_dir);
+    let mut pointer_from = None;
+    let mut movement_surface = None;
     let result = match (producer, install, path, producer_sha, install_sha) {
         (Some(_), Some(_), Some(_), Some(producer_sha), Some(install_sha))
             if producer_sha != install_sha =>
@@ -82,10 +86,34 @@ fn band_boundary_ledger_gate(
                 receipt_dir,
             )
             .and_then(|p| {
-                crate::known_good_ledger::append_and_move(
-                    &crate::known_good_ledger::integration_root(receipt_dir),
-                    p,
-                )
+                let ledger_surface = surface.as_deref().unwrap();
+                let from = crate::known_good_ledger::read_current(&ledger_root, ledger_surface)?
+                    .map(|rung| rung.identity);
+                let receipt = crate::known_good_ledger::append_and_move(&ledger_root, p)?;
+                if receipt.pointer_moved {
+                    let to = receipt
+                        .rung_identity
+                        .as_deref()
+                        .ok_or("known-good-pointer-movement-target-missing")?
+                        .to_owned();
+                    if let Some(carrier) = carrier {
+                        let mut run = carrier.borrow_mut();
+                        run.rung_promoted.push(to.clone());
+                        let movement = run
+                            .known_good_pointer_moves
+                            .entry(ledger_surface.to_owned())
+                            .or_insert_with(|| {
+                                crate::known_good_ledger::KnownGoodPointerMovement {
+                                    from: from.clone(),
+                                    to: to.clone(),
+                                }
+                            });
+                        movement.to = to;
+                    }
+                    pointer_from = Some(from);
+                    movement_surface = Some(ledger_surface.to_owned());
+                }
+                Ok(receipt)
             })
         }
         _ => Err(if producer.is_none() {
@@ -100,7 +128,20 @@ fn band_boundary_ledger_gate(
         .to_string()),
     };
     match result {
-        Ok(r) => serde_json::to_value(r).map_err(|e| e.to_string()),
+        Ok(r) => {
+            let mut value = serde_json::to_value(&r).map_err(|e| e.to_string())?;
+            if r.pointer_moved {
+                value["surface"] = serde_json::json!(movement_surface
+                    .ok_or("known-good-pointer-movement-surface-missing")?);
+                value["pointer_from"] = serde_json::to_value(pointer_from.flatten())
+                    .map_err(|error| error.to_string())?;
+                value["pointer_to"] = serde_json::json!(r
+                    .rung_identity
+                    .as_deref()
+                    .ok_or("known-good-pointer-movement-target-missing")?);
+            }
+            Ok(value)
+        }
         Err(error) => serde_json::to_value(crate::known_good_ledger::refusal_receipt(
             &crate::known_good_ledger::integration_root(receipt_dir),
             surface.as_deref().unwrap_or(manifest_id),
@@ -115,6 +156,16 @@ fn band_boundary_ledger_gate(
     }
 }
 
+#[cfg(test)]
+fn band_boundary_ledger_gate(
+    manifest_id: &str,
+    receipt_dir: &Path,
+    routine: &crate::ModuleWalkState,
+    projected_children: &[ProjectedRoutineChild],
+) -> Result<Value, String> {
+    band_boundary_ledger_gate_inner(manifest_id, receipt_dir, routine, projected_children, None)
+}
+
 pub(crate) fn execute_manifest_band(
     manifest: &LadderManifest,
     module_dir: &Path,
@@ -126,6 +177,7 @@ pub(crate) fn execute_manifest_band(
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
     halted_steps: &mut crate::bands::HaltedSteps,
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
 ) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
@@ -246,7 +298,7 @@ pub(crate) fn execute_manifest_band(
             let routine = routine_states
                 .get(&step.step_id)
                 .ok_or_else(|| "routine-state-missing".to_string())?;
-            let known_good = band_boundary_ledger_gate(
+            let known_good = band_boundary_ledger_gate_inner(
                 &manifest.id,
                 &module_dir.join(&step.step_id),
                 routine,
@@ -254,6 +306,7 @@ pub(crate) fn execute_manifest_band(
                     .get(&step.step_id)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
+                carrier,
             )?;
             if known_good.get("converged").and_then(Value::as_bool) != Some(true) {
                 result.ok = false;
@@ -346,6 +399,7 @@ pub(crate) fn execute_manifest_modules(
                 &projected.steps,
                 &projected.routines,
                 halted_steps,
+                carrier,
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };
@@ -358,19 +412,6 @@ pub(crate) fn execute_manifest_modules(
         });
         match result {
             Ok(part) => {
-                if let Some(carrier) = carrier {
-                    for placement in &part.placements {
-                        if let Some(rung) = placement.get("known_good") {
-                            if rung.get("pointer_moved").and_then(Value::as_bool) == Some(true) {
-                                if let Some(identity) =
-                                    rung.get("rung_identity").and_then(Value::as_str)
-                                {
-                                    carrier.borrow_mut().rung_promoted.push(identity.to_owned());
-                                }
-                            }
-                        }
-                    }
-                }
                 state.operation_count += part.operation_count;
                 state.changed |= part.changed;
                 state.placements.extend(part.placements);

@@ -42,6 +42,26 @@ pub(crate) struct KnownGoodReceipt {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct KnownGoodPointerMovement {
+    /// The pointer identity observed before this run's first move.
+    pub from: Option<String>,
+    /// The last rung identity moved to by this run.
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct KnownGoodPointerRestore {
+    pub surface: String,
+    /// Pointer identity observed immediately before the rollback attempt.
+    pub from: Option<String>,
+    /// Run-start identity; null means the pointer was absent at run start.
+    pub to: Option<String>,
+    pub from_observation: String,
+    pub restored: bool,
+    pub blocker: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct InstalledStateProof {
     surface: String,
     installed_path: String,
@@ -232,7 +252,13 @@ pub(crate) fn prove_installed_state(
 pub(crate) fn integration_root(receipt_dir: &Path) -> PathBuf {
     receipt_dir.join("known-good")
 }
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "test-facade"))]
+pub(crate) fn integration_root(_receipt_dir: &Path) -> PathBuf {
+    std::env::var_os("HARMONIA_TEST_KNOWN_GOOD_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_root)
+}
+#[cfg(all(not(test), not(feature = "test-facade")))]
 pub(crate) fn integration_root(_receipt_dir: &Path) -> PathBuf {
     default_root()
 }
@@ -413,21 +439,55 @@ pub(crate) fn append_and_move(
     let dir = surface_dir(root, &proof.surface)?;
     fs::create_dir_all(dir.join("rungs")).map_err(|e| e.to_string())?;
     let current = read_current_inner(root, &proof.surface)?;
-    let prior = current.as_ref().map(|r| r.identity.clone());
     let history = read_history(root, &proof.surface)?;
-    // The rung can survive an interrupted pointer rename. Retry only the exact
-    // same proof; a different proof must not create a branch.
-    if let Some(tail) = history.last() {
-        if current.as_ref().map(|r| r.identity.as_str()) != Some(tail.identity.as_str()) {
-            let same = tail.installed_sha == proof.installed_sha
-                && tail.syzygy_sha == proof.syzygy_sha
-                && tail.syzygy_signal == proof.syzygy_signal
-                && tail.installed_version == proof.installed_version
-                && tail.proof_battery == proof.proof_battery
-                && tail.aggregate_receipt_ref == proof.aggregate_receipt_ref;
-            if !same {
-                return Err("known-good-unpromoted-tail-conflict".into());
-            }
+    let tail = history.last();
+    let tail_is_current = tail.is_some_and(|tail| {
+        current.as_ref().map(|rung| rung.identity.as_str()) == Some(tail.identity.as_str())
+    });
+    if let Some(tail) = tail.filter(|_| !tail_is_current) {
+        // A restored pointer may precede the immutable history tail by several
+        // rungs after one run moved this surface more than once. read_history
+        // has already established a single contiguous prior-rung chain, so a
+        // current rung before the tail or an absent pointer is a valid rollback
+        // gap, not a branch. The artifact match below still rejects divergence.
+        let current_identity = current.as_ref().map(|rung| rung.identity.as_str());
+        let tail_follows_current = match current_identity {
+            Some(identity) => history
+                .iter()
+                .position(|rung| rung.identity.as_str() == identity)
+                .is_some_and(|index| index + 1 < history.len()),
+            None => true,
+        };
+        if !tail_follows_current {
+            return Err("known-good-unpromoted-tail-conflict".into());
+        }
+        if current.as_ref().is_some_and(|rung| {
+            rung.installed_sha == proof.installed_sha
+                && rung.installed_version == proof.installed_version
+        }) {
+            return Ok(KnownGoodReceipt {
+                schema: RECEIPT_SCHEMA.into(),
+                rung_identity: current.as_ref().map(|rung| rung.identity.clone()),
+                prior_rung_identity: current
+                    .as_ref()
+                    .and_then(|rung| rung.prior_rung_identity.clone()),
+                pointer_moved: false,
+                pointer_state: "already-current".into(),
+                proof_battery: proof.proof_battery,
+                blocker: None,
+                converged: true,
+                installed_sha: Some(proof.installed_sha),
+                installed_version: proof.installed_version,
+                aggregate_receipt_ref: proof.aggregate_receipt_ref,
+            });
+        }
+        let same_proof = tail.installed_sha == proof.installed_sha
+            && tail.syzygy_sha == proof.syzygy_sha
+            && tail.syzygy_signal == proof.syzygy_signal
+            && tail.installed_version == proof.installed_version
+            && tail.proof_battery == proof.proof_battery
+            && tail.aggregate_receipt_ref == proof.aggregate_receipt_ref;
+        if same_proof {
             let temp_path = dir.join(format!(".current-retry.{}.tmp", tail.sequence));
             let mut temp = OpenOptions::new()
                 .write(true)
@@ -443,8 +503,15 @@ pub(crate) fn append_and_move(
             }
             return move_pointer(&dir, tail, proof.proof_battery, proof.aggregate_receipt_ref);
         }
-    }
-    if let Some(current) = current.as_ref() {
+        // A fresh proof may re-promote the same installed artifact, but it
+        // appends a new rung after the preserved tail so the proof remains
+        // immutable and the history remains one strict chain.
+        if tail.installed_sha != proof.installed_sha
+            || tail.installed_version != proof.installed_version
+        {
+            return Err("known-good-unpromoted-tail-conflict".into());
+        }
+    } else if let Some(current) = current.as_ref() {
         if current.installed_sha == proof.installed_sha
             && current.installed_version == proof.installed_version
         {
@@ -463,6 +530,7 @@ pub(crate) fn append_and_move(
             });
         }
     }
+    let prior = history.last().map(|rung| rung.identity.clone());
     let sequence = history.last().map_or(1, |r| r.sequence + 1);
     let identity = format!("rung-{sequence}-{}", proof.installed_sha);
     let rung = KnownGoodRung {
@@ -511,6 +579,115 @@ pub(crate) fn append_and_move(
         proof.proof_battery,
         proof.aggregate_receipt_ref,
     )
+}
+
+/// The caller supplies the last rung this run moved to and the run-start
+/// identity (or `None` when no pointer existed); a changed pointer is never
+/// overwritten speculatively.
+pub(crate) fn restore_run_pointer(
+    root: &Path,
+    surface: &str,
+    expected_current: &str,
+    restore_to: Option<&str>,
+) -> KnownGoodPointerRestore {
+    let mut restore = KnownGoodPointerRestore {
+        surface: surface.to_owned(),
+        from: None,
+        to: restore_to.map(str::to_owned),
+        from_observation: "failed".into(),
+        restored: false,
+        blocker: None,
+    };
+    let dir = match surface_dir(root, surface) {
+        Ok(dir) => dir,
+        Err(error) => {
+            restore.blocker = Some(format!("known-good-pointer-rollback-surface-invalid: {error}"));
+            return restore;
+        }
+    };
+    match read_current_inner(root, surface) {
+        Ok(Some(rung)) => {
+            restore.from = Some(rung.identity);
+            restore.from_observation = "present".into();
+        }
+        Ok(None) => restore.from_observation = "absent".into(),
+        Err(error) => {
+            restore.blocker = Some(format!("known-good-pointer-rollback-current-read-failed: {error}"));
+            return restore;
+        }
+    }
+    if restore.from.as_deref() != Some(expected_current) {
+        restore.blocker = Some(format!(
+            "known-good-pointer-rollback-from-mismatch expected={expected_current} observed={}",
+            restore.from.as_deref().unwrap_or("absent")
+        ));
+        return restore;
+    }
+    if let Some(identity) = restore_to {
+        match read_rung(&dir, identity) {
+            Ok(rung) if rung.surface == surface => {}
+            Ok(_) => {
+                restore.blocker = Some("known-good-pointer-rollback-target-surface-mismatch".into());
+                return restore;
+            }
+            Err(error) => {
+                restore.blocker = Some(format!("known-good-pointer-rollback-target-read-failed: {error}"));
+                return restore;
+            }
+        }
+    }
+
+    let pointer = current_path(&dir);
+    let mut blockers = Vec::new();
+    let mutation = if let Some(identity) = restore_to {
+        let temp_path = dir.join(format!(
+            ".current-rollback.{}.{}.tmp",
+            std::process::id(),
+            now_ms()
+        ));
+        (|| -> Result<(), String> {
+            let mut temp = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)
+                .map_err(|error| format!("known-good-pointer-rollback-temp-create-failed: {error}"))?;
+            temp.write_all(format!("{identity}\n").as_bytes())
+                .map_err(|error| format!("known-good-pointer-rollback-write-failed: {error}"))?;
+            temp.sync_all()
+                .map_err(|error| format!("known-good-pointer-rollback-file-fsync-failed: {error}"))?;
+            drop(temp);
+            fs::rename(&temp_path, &pointer)
+                .map_err(|error| format!("known-good-pointer-rollback-rename-failed: {error}"))
+        })()
+    } else {
+        fs::remove_file(&pointer)
+            .map_err(|error| format!("known-good-pointer-rollback-remove-failed: {error}"))
+    };
+    if let Err(error) = mutation {
+        blockers.push(error);
+    }
+    if let Err(error) = File::open(&dir).and_then(|directory| directory.sync_all()) {
+        blockers.push(format!("known-good-pointer-rollback-fsync-failed: {error}"));
+    }
+    match read_current_inner(root, surface) {
+        Ok(Some(rung)) if restore_to == Some(rung.identity.as_str()) => {}
+        Ok(None) if restore_to.is_none() => {}
+        Ok(Some(rung)) => blockers.push(format!(
+            "known-good-pointer-rollback-readback-mismatch expected={} observed={}",
+            restore_to.unwrap_or("absent"),
+            rung.identity
+        )),
+        Ok(None) => blockers.push(format!(
+            "known-good-pointer-rollback-readback-mismatch expected={} observed=absent",
+            restore_to.unwrap_or("absent")
+        )),
+        Err(error) => blockers.push(format!("known-good-pointer-rollback-readback-failed: {error}")),
+    }
+    if !blockers.is_empty() {
+        restore.blocker = Some(blockers.join("; "));
+    }
+    restore.restored = restore.blocker.is_none();
+    restore
 }
 
 fn move_pointer(

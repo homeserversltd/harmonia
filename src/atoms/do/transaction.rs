@@ -114,6 +114,9 @@ pub(crate) fn derive_plan(
 pub(crate) struct RunCarrier {
     /// This run only: populated by actual pointer movement, never quiet success.
     pub rung_promoted: Vec<String>,
+    /// Per-surface pointer preimages and the last rung moved to by this run.
+    pub known_good_pointer_moves:
+        BTreeMap<String, crate::known_good_ledger::KnownGoodPointerMovement>,
     pub projection: Option<crate::bands::stage_profile::ProfileProjection>,
     pub update_plan: Option<UpdatePlan>,
     pub refreshed_profile: Option<RefreshedProfileIdentity>,
@@ -135,6 +138,114 @@ pub(crate) struct RunContext {
     pub face: String,
     pub(crate) carrier: RunCarrierRef,
 }
+
+fn restore_known_good_pointer_movements(
+    carrier: &RunCarrierRef,
+    receipt_dir: &Path,
+) -> Vec<crate::known_good_ledger::KnownGoodPointerRestore> {
+    let movements = carrier
+        .borrow()
+        .known_good_pointer_moves
+        .iter()
+        .map(|(surface, movement)| (surface.clone(), movement.clone()))
+        .collect::<Vec<_>>();
+    let root = crate::known_good_ledger::integration_root(receipt_dir);
+    let restores = movements
+        .iter()
+        .map(|(surface, movement)| {
+            crate::known_good_ledger::restore_run_pointer(
+                &root,
+                surface,
+                &movement.to,
+                movement.from.as_deref(),
+            )
+        })
+        .collect();
+    carrier.borrow_mut().known_good_pointer_moves.clear();
+    restores
+}
+
+fn pointer_restore_errors(
+    restores: &[crate::known_good_ledger::KnownGoodPointerRestore],
+) -> Vec<String> {
+    restores
+        .iter()
+        .filter_map(|restore| {
+            restore.blocker.as_ref().map(|blocker| {
+                format!(
+                    "known-good-pointer-restore-failed surface={} from={} to={}: {blocker}",
+                    restore.surface,
+                    restore.from.as_deref().unwrap_or("absent-or-unreadable"),
+                    restore.to.as_deref().unwrap_or("absent")
+                )
+            })
+        })
+        .collect()
+}
+
+fn attach_pointer_rollback_to_run_receipt(
+    receipt_dir: &Path,
+    transaction_error: &str,
+    restores: &[crate::known_good_ledger::KnownGoodPointerRestore],
+    rollback_errors: &[String],
+) -> Result<(), String> {
+    if restores.is_empty() {
+        return Ok(());
+    }
+    let run_path = receipt_dir.join("run.json");
+    let mut run = serde_json::from_reader::<_, serde_json::Value>(
+        fs::File::open(&run_path)
+            .map_err(|error| format!("known-good-pointer-run-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("known-good-pointer-run-receipt-invalid: {error}"))?;
+    if run.get("schema").and_then(serde_json::Value::as_str) != Some("harmonia.run_profile.v1") {
+        return Err("known-good-pointer-run-receipt-schema-mismatch".into());
+    }
+    run["error"] = serde_json::json!(transaction_error);
+    run["known_good_pointer_restores"] = serde_json::json!(restores);
+    run["rollback_errors"] = serde_json::json!(rollback_errors);
+    crate::atoms::attest::write_json_atomic(&run_path, &run)
+}
+
+fn write_transaction_rollback_receipt(
+    receipt_dir: &Path,
+    txn: &ProjectionTransaction,
+    mut receipt: TransactionReceipt,
+    failed_step: &str,
+    pointer_restores: &[crate::known_good_ledger::KnownGoodPointerRestore],
+) -> Result<(), String> {
+    let pointer_errors = pointer_restore_errors(pointer_restores);
+    let mut rollback_errors = txn.rollback_errors.clone();
+    rollback_errors.extend(pointer_errors.iter().cloned());
+    if !pointer_errors.is_empty() {
+        receipt.state = TransactionState::RollbackIncomplete;
+    }
+    let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
+        receipt_dir,
+        &receipt,
+        &txn.sealed.sudoers_fragments,
+        &txn.sealed.snapshot.roots,
+    );
+    #[cfg(feature = "test-facade")]
+    prepare_rollback_receipt_failure(receipt_dir)?;
+    crate::atoms::attest::write_transaction_rollback_receipt(
+        receipt_dir,
+        &receipt,
+        &mint,
+        Some(failed_step),
+        &txn.restored_paths,
+        pointer_restores,
+        &rollback_errors,
+    )
+}
+
+fn append_errors(target: &mut String, errors: &[String]) {
+    for error in errors {
+        target.push_str("; ");
+        target.push_str(error);
+    }
+}
+
 // Compatibility/profile entrypoints remain here; the durable transaction owner lives in ritual.rs.
 pub(crate) use super::ritual::{
     apply_projection, commit_projection, compute_syzygy_sha, project_update_set_v1,
@@ -207,6 +318,7 @@ pub(crate) fn rolling_update_run(
                 ))
             });
         carrier.borrow_mut().rung_promoted.clear();
+        carrier.borrow_mut().known_good_pointer_moves.clear();
         let preflight = crate::bands::renew_self::run(
             module_root,
             &effective_receipt_dir,
@@ -278,7 +390,7 @@ pub(crate) fn rolling_update_run(
         let transaction_guard = carrier.borrow_mut().sealed_projection.take();
         if let Err(error) = transaction {
             let Some(mut txn) = transaction_guard else {
-                write_transaction_failure_run_receipt(
+                let failure_receipt = write_transaction_failure_run_receipt(
                     &effective_receipt_dir,
                     profile,
                     module_root,
@@ -286,8 +398,23 @@ pub(crate) fn rolling_update_run(
                     Some(&error),
                     changed,
                     operation_count,
-                )?;
-                return Err(error);
+                );
+                let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
+                let restore_errors = pointer_restore_errors(&restores);
+                let mut return_error = error.clone();
+                append_errors(&mut return_error, &restore_errors);
+                if let Err(write_error) = attach_pointer_rollback_to_run_receipt(
+                    &effective_receipt_dir,
+                    &error,
+                    &restores,
+                    &restore_errors,
+                ) {
+                    return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
+                }
+                if let Err(write_error) = failure_receipt {
+                    return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
+                }
+                return Err(return_error);
             };
             let failure_receipt = write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
@@ -299,45 +426,40 @@ pub(crate) fn rolling_update_run(
                 operation_count,
             );
             let mut return_error = error.clone();
-            if let Some(key) = mode.invocation() {
+            let (receipt, rollback_error) = if let Some(key) = mode.invocation() {
                 let rollback = crate::atoms::r#do::transaction::rollback_projection(&mut txn, key);
-                let (receipt, rollback_error) = match rollback {
+                match rollback {
                     Ok(receipt) => (receipt, None),
                     Err(rollback_error) => (
                         crate::atoms::r#do::transaction::transaction_receipt(&txn),
                         Some(rollback_error),
                     ),
-                };
-                let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
-                    &effective_receipt_dir,
-                    &receipt,
-                    &txn.sealed.sudoers_fragments,
-                    &txn.sealed.snapshot.roots,
-                );
-                let failed_step = rollback_error
-                    .as_ref()
-                    .map(|rollback_error| format!("{error}; {rollback_error}"))
-                    .unwrap_or_else(|| error.clone());
-                if let Some(rollback_error) = rollback_error {
-                    return_error = format!("{return_error}; {rollback_error}");
                 }
-                let receipt_write = || {
-                    #[cfg(feature = "test-facade")]
-                    prepare_rollback_receipt_failure(&effective_receipt_dir)?;
-                    crate::atoms::attest::write_transaction_rollback_receipt(
-                        &effective_receipt_dir,
-                        &receipt,
-                        &mint,
-                        Some(&failed_step),
-                        &txn.restored_paths,
-                        &txn.rollback_errors,
-                    )
-                };
-                if let Err(write_error) = receipt_write() {
-                    return_error = format!(
-                        "{return_error}; rollback-incomplete: rollback-receipt-write-failed: {write_error}"
-                    );
-                }
+            } else {
+                (
+                    crate::atoms::r#do::transaction::transaction_receipt(&txn),
+                    Some("rollback-invocation-missing".to_owned()),
+                )
+            };
+            let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
+            if let Some(rollback_error) = rollback_error.as_ref() {
+                return_error.push_str(&format!("; {rollback_error}"));
+            }
+            let pointer_errors = pointer_restore_errors(&restores);
+            append_errors(&mut return_error, &pointer_errors);
+            let failed_step = std::iter::once(error.as_str())
+                .chain(rollback_error.as_deref())
+                .chain(pointer_errors.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join("; ");
+            if let Err(write_error) = write_transaction_rollback_receipt(
+                &effective_receipt_dir,
+                &txn,
+                receipt,
+                &failed_step,
+                &restores,
+            ) {
+                return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
             }
             if let Err(write_error) = failure_receipt {
                 return_error = format!(
@@ -347,7 +469,7 @@ pub(crate) fn rolling_update_run(
             return Err(return_error);
         }
         let Some(mut txn) = transaction_guard else {
-            write_transaction_failure_run_receipt(
+            let failure_receipt = write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
                 profile,
                 module_root,
@@ -355,8 +477,23 @@ pub(crate) fn rolling_update_run(
                 None,
                 changed,
                 operation_count,
-            )?;
-            return Err("stage-profile-transaction-missing".to_string());
+            );
+            let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
+            let restore_errors = pointer_restore_errors(&restores);
+            let mut return_error = "stage-profile-transaction-missing".to_string();
+            append_errors(&mut return_error, &restore_errors);
+            if let Err(write_error) = attach_pointer_rollback_to_run_receipt(
+                &effective_receipt_dir,
+                &return_error,
+                &restores,
+                &restore_errors,
+            ) {
+                return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
+            }
+            if let Err(write_error) = failure_receipt {
+                return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
+            }
+            return Err(return_error);
         };
         if let Some(key) = mode.invocation() {
             for child in 0..txn.sealed.children.len() {
@@ -381,36 +518,27 @@ pub(crate) fn rolling_update_run(
                             Some(rollback_error),
                         ),
                     };
-                    let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
-                        &effective_receipt_dir,
-                        &receipt,
-                        &txn.sealed.sudoers_fragments,
-                        &txn.sealed.snapshot.roots,
-                    );
-                    let failed_step = rollback_error
-                        .as_ref()
-                        .map(|rollback_error| format!("{error}; {rollback_error}"))
-                        .unwrap_or_else(|| error.clone());
+                    let restores =
+                        restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
                     let mut return_error = error.clone();
-                    if let Some(rollback_error) = rollback_error {
-                        return_error = format!("{return_error}; {rollback_error}");
+                    if let Some(rollback_error) = rollback_error.as_ref() {
+                        return_error.push_str(&format!("; {rollback_error}"));
                     }
-                    let receipt_write = || {
-                        #[cfg(feature = "test-facade")]
-                        prepare_rollback_receipt_failure(&effective_receipt_dir)?;
-                        crate::atoms::attest::write_transaction_rollback_receipt(
-                            &effective_receipt_dir,
-                            &receipt,
-                            &mint,
-                            Some(&failed_step),
-                            &txn.restored_paths,
-                            &txn.rollback_errors,
-                        )
-                    };
-                    if let Err(write_error) = receipt_write() {
-                        return_error = format!(
-                            "{return_error}; rollback-incomplete: rollback-receipt-write-failed: {write_error}"
-                        );
+                    let pointer_errors = pointer_restore_errors(&restores);
+                    append_errors(&mut return_error, &pointer_errors);
+                    let failed_step = std::iter::once(error.as_str())
+                        .chain(rollback_error.as_deref())
+                        .chain(pointer_errors.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    if let Err(write_error) = write_transaction_rollback_receipt(
+                        &effective_receipt_dir,
+                        &txn,
+                        receipt,
+                        &failed_step,
+                        &restores,
+                    ) {
+                        return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
                     }
                     if let Err(write_error) = failure_receipt {
                         return_error = format!(
@@ -421,7 +549,7 @@ pub(crate) fn rolling_update_run(
                 }
             }
         } else {
-            write_transaction_failure_run_receipt(
+            let failure_receipt = write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
                 profile,
                 module_root,
@@ -429,13 +557,31 @@ pub(crate) fn rolling_update_run(
                 None,
                 changed,
                 operation_count,
-            )?;
-            return Err("stage-profile-invocation-missing".to_string());
+            );
+            let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
+            let restore_errors = pointer_restore_errors(&restores);
+            let mut return_error = "stage-profile-invocation-missing".to_string();
+            append_errors(&mut return_error, &restore_errors);
+            let transaction_receipt =
+                crate::atoms::r#do::transaction::transaction_receipt(&txn);
+            if let Err(write_error) = write_transaction_rollback_receipt(
+                &effective_receipt_dir,
+                &txn,
+                transaction_receipt,
+                &return_error,
+                &restores,
+            ) {
+                return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
+            }
+            if let Err(write_error) = failure_receipt {
+                return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
+            }
+            return Err(return_error);
         }
         let receipt = match crate::atoms::r#do::transaction::commit_projection(&mut txn) {
             Ok(receipt) => receipt,
             Err(error) => {
-                write_transaction_failure_run_receipt(
+                let failure_receipt = write_transaction_failure_run_receipt(
                     &effective_receipt_dir,
                     profile,
                     module_root,
@@ -443,8 +589,46 @@ pub(crate) fn rolling_update_run(
                     Some(&error),
                     changed,
                     operation_count,
-                )?;
-                return Err(error);
+                );
+                let (receipt, rollback_error) = if let Some(key) = mode.invocation() {
+                    match crate::atoms::r#do::transaction::rollback_projection(&mut txn, key) {
+                        Ok(receipt) => (receipt, None),
+                        Err(rollback_error) => (
+                            crate::atoms::r#do::transaction::transaction_receipt(&txn),
+                            Some(rollback_error),
+                        ),
+                    }
+                } else {
+                    (
+                        crate::atoms::r#do::transaction::transaction_receipt(&txn),
+                        Some("rollback-invocation-missing".to_owned()),
+                    )
+                };
+                let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
+                let pointer_errors = pointer_restore_errors(&restores);
+                let mut return_error = error.clone();
+                if let Some(rollback_error) = rollback_error.as_ref() {
+                    return_error.push_str(&format!("; {rollback_error}"));
+                }
+                append_errors(&mut return_error, &pointer_errors);
+                let failed_step = std::iter::once(error.as_str())
+                    .chain(rollback_error.as_deref())
+                    .chain(pointer_errors.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if let Err(write_error) = write_transaction_rollback_receipt(
+                    &effective_receipt_dir,
+                    &txn,
+                    receipt,
+                    &failed_step,
+                    &restores,
+                ) {
+                    return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
+                }
+                if let Err(write_error) = failure_receipt {
+                    return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
+                }
+                return Err(return_error);
             }
         };
         let mint = crate::atoms::attest::committed_syzygy_mint_with_sudoers(
