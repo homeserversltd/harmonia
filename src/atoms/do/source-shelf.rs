@@ -915,6 +915,176 @@ fn sweep_path_state(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetiredPythonCacheEntry {
+    relative_path: PathBuf,
+    is_dir: bool,
+}
+
+fn compare_sweep_paths_deepest_first(left: &Path, right: &Path) -> std::cmp::Ordering {
+    right
+        .components()
+        .count()
+        .cmp(&left.components().count())
+        .then_with(|| left.cmp(right))
+}
+
+fn retired_directory_python_cache_debris(
+    retired_directory: &Path,
+) -> Result<Vec<RetiredPythonCacheEntry>, String> {
+    let not_empty = || {
+        format!(
+            "source-shelf-sweep-owned-directory-not-empty {}",
+            retired_directory.display()
+        )
+    };
+    let metadata = fs::symlink_metadata(retired_directory).map_err(|error| {
+        format!(
+            "source-shelf-sweep-owned-stale-metadata-failed {}: {error}",
+            retired_directory.display()
+        )
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(not_empty());
+    }
+
+    fn sorted_children(path: &Path) -> Result<Vec<fs::DirEntry>, String> {
+        let mut children = fs::read_dir(path)
+            .map_err(|error| {
+                format!(
+                    "source-shelf-sweep-owned-directory-read-failed {}: {error}",
+                    path.display()
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!(
+                    "source-shelf-sweep-owned-directory-read-failed {}: {error}",
+                    path.display()
+                )
+            })?;
+        children.sort_by_key(|entry| entry.file_name());
+        Ok(children)
+    }
+
+    fn walk_cache(
+        retired_directory: &Path,
+        path: &Path,
+        debris: &mut Vec<RetiredPythonCacheEntry>,
+    ) -> Result<(), String> {
+        for child in sorted_children(path)? {
+            let child_path = child.path();
+            let relative_path = child_path
+                .strip_prefix(retired_directory)
+                .map_err(|error| error.to_string())?
+                .to_path_buf();
+            let metadata = fs::symlink_metadata(&child_path).map_err(|error| {
+                format!(
+                    "source-shelf-sweep-owned-stale-metadata-failed {}: {error}",
+                    child_path.display()
+                )
+            })?;
+            let file_type = metadata.file_type();
+            if file_type.is_file() && child.file_name().to_string_lossy().ends_with(".pyc") {
+                debris.push(RetiredPythonCacheEntry {
+                    relative_path,
+                    is_dir: false,
+                });
+            } else {
+                return Err(format!(
+                    "source-shelf-sweep-owned-directory-not-empty {}",
+                    retired_directory.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let children = sorted_children(retired_directory)?;
+    if children.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut debris = Vec::new();
+    for child in children {
+        if child.file_name().as_os_str() != std::ffi::OsStr::new("__pycache__") {
+            return Err(not_empty());
+        }
+        let cache_root = child.path();
+        let metadata = fs::symlink_metadata(&cache_root).map_err(|error| {
+            format!(
+                "source-shelf-sweep-owned-stale-metadata-failed {}: {error}",
+                cache_root.display()
+            )
+        })?;
+        if !metadata.file_type().is_dir() {
+            return Err(not_empty());
+        }
+        let relative_path = cache_root
+            .strip_prefix(retired_directory)
+            .map_err(|error| error.to_string())?
+            .to_path_buf();
+        debris.push(RetiredPythonCacheEntry {
+            relative_path,
+            is_dir: true,
+        });
+        walk_cache(retired_directory, &cache_root, &mut debris)?;
+    }
+    debris.sort_by(|left, right| {
+        compare_sweep_paths_deepest_first(&left.relative_path, &right.relative_path)
+    });
+    Ok(debris)
+}
+
+fn retired_python_cache_receipt_entry(
+    relative_path: &Path,
+    target: &Path,
+    is_dir: bool,
+    request: &SourceShelfSweepRequest,
+    uid: u32,
+    gid: u32,
+) -> Result<SourceShelfSweepEntry, String> {
+    let (before_digest, before_mode, before_uid, before_gid) = sweep_path_state(target, is_dir)?;
+    if before_mode.is_none() {
+        return Err(format!(
+            "source-shelf-sweep-owned-stale-metadata-failed {}",
+            target.display()
+        ));
+    }
+    Ok(SourceShelfSweepEntry {
+        kind: if is_dir {
+            "python-bytecode-cache-directory"
+        } else {
+            "python-bytecode-cache-file"
+        }
+        .into(),
+        relative_path: relative_path.display().to_string(),
+        source: None,
+        target: target.to_path_buf(),
+        source_digest: None,
+        before_digest,
+        after_digest: None,
+        desired_mode: if is_dir {
+            request.shelf_directory_mode
+        } else {
+            request.shelf_file_mode
+        },
+        before_mode,
+        after_mode: None,
+        desired_uid: uid,
+        desired_gid: gid,
+        before_uid,
+        before_gid,
+        after_uid: None,
+        after_gid: None,
+        action: "planned".into(),
+        changed: true,
+        readback_ok: false,
+        rollback_action: "quarantine-preserved".into(),
+        rollback_readback_ok: None,
+        orphan_removal: None,
+    })
+}
+
 fn shelf_is_current(
     source: &Path,
     target: &Path,
@@ -1813,8 +1983,32 @@ fn source_shelf_owned_recursive_sweep(
                 })
         })
         .collect();
+    let mut retired_owned_directories = BTreeSet::new();
+    for relative in &stale {
+        let target = request.target_shelf.join(relative);
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                retired_owned_directories.insert(relative.clone());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "source-shelf-sweep-owned-stale-metadata-failed {}: {error}",
+                    target.display()
+                ));
+            }
+        }
+    }
+    // A prune-mode orphan below a retiring, ledger-owned directory belongs to
+    // that directory's strict debris check, not the broad orphan-prune lane.
+    orphan_stale.retain(|orphan| {
+        !retired_owned_directories
+            .iter()
+            .any(|directory| orphan.starts_with(directory))
+    });
     stale.extend(orphan_stale.iter().cloned());
-    stale.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    stale.sort_by(|left, right| compare_sweep_paths_deepest_first(left, right));
     stale.dedup();
     let mut entries = Vec::new();
     let mut drift = !stale.is_empty();
@@ -2134,20 +2328,6 @@ fn source_shelf_owned_recursive_sweep(
                         provenance.paths.remove(&target.display().to_string());
                         continue;
                     }
-                    if fs::symlink_metadata(&target)
-                        .map_err(|error| error.to_string())?
-                        .file_type()
-                        .is_dir()
-                        && fs::read_dir(&target)
-                            .map_err(|error| error.to_string())?
-                            .next()
-                            .is_some()
-                    {
-                        return Err(format!(
-                            "source-shelf-sweep-owned-directory-not-empty {}",
-                            target.display()
-                        ));
-                    }
                     let target_metadata = fs::symlink_metadata(&target)
                         .map_err(|error| {
                             format!(
@@ -2155,6 +2335,142 @@ fn source_shelf_owned_recursive_sweep(
                                 target.display()
                             )
                         })?;
+                    if target_metadata.file_type().is_dir() {
+                        let debris = if retired_owned_directories.contains(relative) {
+                            retired_directory_python_cache_debris(&target)?
+                        } else {
+                            Vec::new()
+                        };
+                        if !debris.is_empty() {
+                            let parent_entry_index = entries
+                                .iter()
+                                .position(|entry| {
+                                    entry.target.as_path() == target.as_path()
+                                        && entry.kind == "stale-owned-recursive-path"
+                                })
+                                .ok_or_else(|| {
+                                    format!(
+                                        "source-shelf-sweep-owned-stale-entry-missing {}",
+                                        target.display()
+                                    )
+                                })?;
+                            let (before_digest, before_mode, before_uid, before_gid) =
+                                sweep_path_state(&target, true)?;
+                            {
+                                let entry = &mut entries[parent_entry_index];
+                                entry.kind = "retired-owned-directory".into();
+                                entry.desired_mode = request.shelf_directory_mode;
+                                entry.before_digest = before_digest;
+                                entry.before_mode = before_mode;
+                                entry.before_uid = before_uid;
+                                entry.before_gid = before_gid;
+                                entry.rollback_action = "quarantine-preserved".into();
+                            }
+                            let mut debris_receipt_indices = Vec::new();
+                            for debris_entry in &debris {
+                                let debris_target = target.join(&debris_entry.relative_path);
+                                let debris_metadata = fs::symlink_metadata(&debris_target)
+                                    .map_err(|error| {
+                                        format!(
+                                            "source-shelf-sweep-owned-stale-metadata-failed {}: {error}",
+                                            debris_target.display()
+                                        )
+                                    })?;
+                                let debris_type = debris_metadata.file_type();
+                                if (debris_entry.is_dir && !debris_type.is_dir())
+                                    || (!debris_entry.is_dir && !debris_type.is_file())
+                                {
+                                    return Err(format!(
+                                        "source-shelf-sweep-owned-directory-not-empty {}",
+                                        target.display()
+                                    ));
+                                }
+                                let shelf_relative = relative.join(&debris_entry.relative_path);
+                                let receipt_entry = retired_python_cache_receipt_entry(
+                                    &shelf_relative,
+                                    &debris_target,
+                                    debris_entry.is_dir,
+                                    request,
+                                    uid,
+                                    gid,
+                                )?;
+                                let receipt_index = entries.len();
+                                entries.push(receipt_entry);
+                                debris_receipt_indices.push(receipt_index);
+                            }
+                            let cache_backup = quarantine.join(relative).join("__pycache__");
+                            if let Some(parent) = cache_backup.parent() {
+                                crate::atoms::r#do::source_shelf::mkdir_all(
+                                    authorization,
+                                    invocation,
+                                    parent,
+                                )?;
+                            }
+                            crate::atoms::r#do::source_shelf::rename(
+                                authorization,
+                                invocation,
+                                &target.join("__pycache__"),
+                                &cache_backup,
+                            )
+                            .map_err(|error| {
+                                format!(
+                                    "source-shelf-sweep-owned-quarantine-failed {}: {error}",
+                                    target.join("__pycache__").display()
+                                )
+                            })?;
+                            for receipt_index in debris_receipt_indices {
+                                entries[receipt_index].action = "debris-quarantined".into();
+                            }
+                            removed_count += debris.len();
+                            if fs::read_dir(&target)
+                                .map_err(|error| {
+                                    format!(
+                                        "source-shelf-sweep-owned-directory-read-failed {}: {error}",
+                                        target.display()
+                                    )
+                                })?
+                                .next()
+                                .is_some()
+                            {
+                                return Err(format!(
+                                    "source-shelf-sweep-owned-directory-not-empty {}",
+                                    target.display()
+                                ));
+                            }
+                            fs::remove_dir(&target).map_err(|error| {
+                                format!(
+                                    "source-shelf-sweep-owned-empty-directory-remove-failed {}: {error}",
+                                    target.display()
+                                )
+                            })?;
+                            if !matches!(
+                                fs::symlink_metadata(&target),
+                                Err(ref error)
+                                    if error.kind() == std::io::ErrorKind::NotFound
+                            ) {
+                                return Err(format!(
+                                    "source-shelf-sweep-owned-directory-remove-readback-failed {}",
+                                    target.display()
+                                ));
+                            }
+                            let parent_entry = &mut entries[parent_entry_index];
+                            parent_entry.action = "debris-quarantined".into();
+                            parent_entry.readback_ok = false;
+                            provenance.paths.remove(&target.display().to_string());
+                            removed_count += 1;
+                            continue;
+                        }
+                        if fs::read_dir(&target)
+                            .map_err(|error| error.to_string())?
+                            .next()
+                            .is_some()
+                        {
+                            return Err(format!(
+                                "source-shelf-sweep-owned-directory-not-empty {}",
+                                target.display()
+                            ));
+                        }
+                    }
                     let backup = quarantine.join(relative);
                     if target_metadata.file_type().is_dir()
                         && fs::read_dir(&target)
@@ -2210,6 +2526,26 @@ fn source_shelf_owned_recursive_sweep(
                         "source-shelf-sweep-quarantine-remove-failed {}: {error}",
                         quarantine.display()
                     ));
+                } else {
+                    for entry in entries
+                        .iter_mut()
+                        .filter(|entry| entry.action == "debris-quarantined")
+                    {
+                        entry.readback_ok = matches!(
+                            fs::symlink_metadata(&entry.target),
+                            Err(ref error)
+                                if error.kind() == std::io::ErrorKind::NotFound
+                        );
+                        if entry.readback_ok {
+                            entry.action = "debris_removed".into();
+                        } else {
+                            cleanup_error = Some(format!(
+                                "source-shelf-sweep-owned-debris-readback-failed {}",
+                                entry.target.display()
+                            ));
+                            break;
+                        }
+                    }
                 }
                 Ok(())
             })()
@@ -2259,8 +2595,11 @@ fn source_shelf_owned_recursive_sweep(
         return Err(outcome.message);
     }
     for entry in &mut entries {
-        entry.readback_ok = if entry.action == "quarantined" {
-            !entry.target.exists()
+        entry.readback_ok = if matches!(entry.action.as_str(), "quarantined" | "debris_removed") {
+            matches!(
+                fs::symlink_metadata(&entry.target),
+                Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+            )
         } else if let Ok((digest, mode, observed_uid, observed_gid)) =
             sweep_path_state(&entry.target, entry.kind.contains("directory"))
         {
@@ -2279,6 +2618,8 @@ fn source_shelf_owned_recursive_sweep(
             "unchanged".into()
         } else if entry.action == "quarantined" {
             "quarantined".into()
+        } else if entry.action == "debris_removed" {
+            "debris_removed".into()
         } else {
             "promoted".into()
         };
