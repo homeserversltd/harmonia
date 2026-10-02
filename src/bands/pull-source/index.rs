@@ -1975,6 +1975,16 @@ pub(crate) fn execute_routine_child(
                         "path".into(),
                         json!(args.get("path").and_then(Value::as_str)),
                     ),
+                    (
+                        "source_reference".into(),
+                        json!(entry.pointer("/source/ref").and_then(Value::as_str)),
+                    ),
+                    (
+                        "source_remote".into(),
+                        json!(entry
+                            .pointer("/source/release_repo")
+                            .and_then(Value::as_str)),
+                    ),
                     ("resolved_commit".into(), json!(resolved)),
                     (
                         "resolved_revision".into(),
