@@ -194,7 +194,8 @@
       },
       "admin": {
         "pin": "",
-        "pin_required": true
+        "pin_required": true,
+        "passwordless_sudo": false
       },
       "cors": {
         "allowed_origins": [

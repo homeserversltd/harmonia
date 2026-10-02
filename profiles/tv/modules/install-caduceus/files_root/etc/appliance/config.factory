@@ -5,7 +5,8 @@
   },
   "global": {
     "admin": {
-      "pin_required": false
+      "pin_required": false,
+      "passwordless_sudo": false
     }
   }
 }

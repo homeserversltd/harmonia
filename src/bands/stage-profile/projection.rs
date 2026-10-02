@@ -1,16 +1,9 @@
-use crate::atoms::r#do::transaction::{
-    ServiceBinding, Target, UpdatePlan, PAM_SUDO_MEMBER, PAM_SUDO_TARGET,
-};
+use crate::atoms::r#do::transaction::{ServiceBinding, Target, UpdatePlan};
 use crate::*;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::{self};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
-
-const PAM_SUDO_PERMUTATION: &str = "validated-pam-sudo-converge";
-const PAM_SUDO_OS_FAMILY_ARG: &str = "__profile_os_family";
 
 #[derive(Clone, Debug)]
 pub(crate) enum LoadedModule {
@@ -164,12 +157,6 @@ pub(crate) fn load_profile_projection(
                         continue;
                     }
                 };
-                if m.ladder
-                    .iter()
-                    .any(|step| step.args.contains_key(PAM_SUDO_OS_FAMILY_ARG))
-                {
-                    return Err("pam-sudo-profile-os-family-source-forbidden".into());
-                }
                 let group_probe = match m
                     .group
                     .as_ref()
@@ -253,40 +240,6 @@ pub(crate) fn load_profile_projection(
             );
         }
     }
-    let pam_sudo_os_family = profile
-        .package_authority
-        .as_ref()
-        .map(|authority| authority.os_family.as_str());
-    let has_pam_sudo_step = modules.values().any(|projected| {
-        projected
-            .steps
-            .iter()
-            .any(|step| step.tool == "files" && step.permutation == PAM_SUDO_PERMUTATION)
-    });
-    if has_pam_sudo_step {
-        let os_family = pam_sudo_os_family
-            .filter(|family| !family.is_empty())
-            .ok_or("pam-sudo-profile-package-authority-missing")?;
-        if os_family.contains('/') || os_family.contains('\\') || matches!(os_family, "." | "..") {
-            return Err("pam-sudo-profile-os-family-invalid".into());
-        }
-        // This value comes from the selected profile, never the shared module
-        // manifest, and is added only after validate_ladder has accepted it.
-        for projected in modules.values_mut() {
-            for step in projected
-                .steps
-                .iter_mut()
-                .filter(|step| step.tool == "files" && step.permutation == PAM_SUDO_PERMUTATION)
-            {
-                step.args.insert(
-                    PAM_SUDO_OS_FAMILY_ARG.into(),
-                    Value::String(os_family.to_owned()),
-                );
-            }
-        }
-    }
-    // The executor records the compiled-byte SHA-256 in the PAM step receipt;
-    // Target carries only the exact filesystem member/path transaction identity.
     let profile_pins = modules
         .get("pins")
         .and_then(|projected| match &projected.loaded {
@@ -342,12 +295,11 @@ fn projection_gui_member(face: &str) -> String {
 }
 fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> Result<(), String> {
     // The validated sudoers lane is the sole sudoers.d configuration
-    // exception. PAM-Sudo is separate and admits only its one exact target.
+    // exception.
     let sudoers_fragment = member == "sudoers"
         && path.parent() == Some(Path::new("/etc/sudoers.d"))
         && path.file_name().is_some_and(|name| !name.is_empty());
-    let pam_sudo_target = member == PAM_SUDO_MEMBER && path.to_str() == Some(PAM_SUDO_TARGET);
-    if !sudoers_fragment && !pam_sudo_target {
+    if !sudoers_fragment {
         match crate::tools::files::classify_target(&path) {
             crate::tools::files::TargetClass::Software => {}
             crate::tools::files::TargetClass::Config => {
@@ -455,7 +407,6 @@ fn projection_derive_plan_inner(
     let mut targets = Vec::new();
     let mut services = Vec::new();
     let mut caduceus_count = 0;
-    let mut pam_sudo_count = 0;
     let mut member_modules: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut record_module = |member: &str, module_id: &str| {
         let modules = member_modules.entry(member.to_owned()).or_default();
@@ -499,16 +450,6 @@ fn projection_derive_plan_inner(
                 let path = Path::new("/etc/sudoers.d").join(name);
                 projection_add_target(&mut targets, path, "sudoers")?;
             }
-        }
-        let selected_pam_sudo_steps = steps
-            .iter()
-            .filter(|step| step.tool == "files" && step.permutation == PAM_SUDO_PERMUTATION)
-            .count();
-        pam_sudo_count += selected_pam_sudo_steps;
-        if selected_pam_sudo_steps > 0 {
-            record_module(PAM_SUDO_MEMBER, module_id);
-            let target = Target::pam_sudo();
-            projection_add_target(&mut targets, target.path, &target.member)?;
         }
         let is_gui = face
             .as_deref()
@@ -678,11 +619,6 @@ fn projection_derive_plan_inner(
     if caduceus_count > 1 {
         return Err(format!(
             "caduceus-selection-ambiguous count={caduceus_count}"
-        ));
-    }
-    if pam_sudo_count > 1 {
-        return Err(format!(
-            "pam-sudo-selection-ambiguous count={pam_sudo_count}"
         ));
     }
     if let Some(modules) = member_modules

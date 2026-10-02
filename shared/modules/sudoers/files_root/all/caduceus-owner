@@ -1,6 +1,3 @@
-# The terminal's whole grant. The PIN gate lives in /etc/pam.d/sudo, reading pin_required from /etc/appliance/config.json.
-Defaults:owner timestamp_timeout=15
-Defaults:owner passprompt="Household PIN: "
-Defaults:owner passprompt_override
+# The terminal's whole grant. sudo is answered by the OS's own PAM; the household toggle is /etc/sudoers.d/owner-nopasswd, not Harmonia's.
 Defaults:owner env_keep += "WAYLAND_DISPLAY XDG_RUNTIME_DIR DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS"
 owner ALL=(ALL:ALL) ALL

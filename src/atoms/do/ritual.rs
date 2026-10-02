@@ -1,5 +1,5 @@
 //! One-owner durable transactional ritual: observe, compare, act, attest, seal, recover.
-use super::transaction::{Target, UpdatePlan, PAM_SUDO_MEMBER, PAM_SUDO_TARGET};
+use super::transaction::{Target, UpdatePlan};
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::ask::change_unit::ServiceStateSnapshot;
 use crate::*;
@@ -60,15 +60,6 @@ pub(crate) fn validate_member_scoped_target(path: &Path, member: &str) -> Result
             return Err(format!("update-set-sudoers-target-invalid {}", path.display()));
         }
         return crate::atoms::files::ensure_resolved_containment(Path::new("/etc/sudoers.d"), path);
-    }
-    if member == PAM_SUDO_MEMBER {
-        if path.to_str() != Some(PAM_SUDO_TARGET) {
-            return Err(format!(
-                "update-set-pam-sudo-target-invalid {}",
-                path.display()
-            ));
-        }
-        return crate::atoms::files::ensure_resolved_containment(Path::new("/etc/pam.d"), path);
     }
     if member == "sbin" && path == Path::new("/usr/local/sbin") {
         return Ok(());
@@ -767,24 +758,9 @@ pub(crate) fn validate_exact_root(path: &Path, member: &str) -> Result<(), Strin
     validate_exact_root_at(path, member, Path::new("/"))
 }
 pub(crate) fn validate_exact_root_at(path: &Path, member: &str, root: &Path) -> Result<(), String> {
-    if member == PAM_SUDO_MEMBER && root != Path::new("/") {
-        let expected = root.join(PAM_SUDO_TARGET.trim_start_matches('/'));
-        if path != expected {
-            return Err(format!(
-                "update-set-pam-sudo-target-invalid {}",
-                path.display()
-            ));
-        }
-        // Validate the exact logical target under the supplied test/alternate
-        // root; do not resolve the host's live /etc/pam.d while proving a
-        // scratch-root transaction.
-        return crate::atoms::files::ensure_resolved_containment(root, path);
-    }
     validate_member_scoped_target(path, member)?;
     let containment_root = if member == "sudoers" {
         Path::new("/etc/sudoers.d")
-    } else if member == PAM_SUDO_MEMBER {
-        Path::new("/etc/pam.d")
     } else {
         root
     };
@@ -799,19 +775,6 @@ pub(crate) fn seal_projection(
     if plan.gui_member.is_none() && plan.gui_face.is_some() {
         return Err("sealed-projection-gui-missing".into());
     }
-    let pam_sudo_targets = plan
-        .targets
-        .iter()
-        .filter(|target| target.member == PAM_SUDO_MEMBER)
-        .collect::<Vec<_>>();
-    if (plan.member_modules.contains_key(PAM_SUDO_MEMBER) || !pam_sudo_targets.is_empty())
-        && pam_sudo_targets.len() != 1
-    {
-        return Err(format!(
-            "update-set-pam-sudo-target-cardinality-{}",
-            pam_sudo_targets.len()
-        ));
-    }
     for t in &plan.targets {
         validate_exact_root(&t.path, &t.member)?;
     }
@@ -821,9 +784,8 @@ pub(crate) fn seal_projection(
         .filter(|target| target.member == "sudoers")
         .collect::<Vec<_>>();
     let sudoers_step_will_run = plan.member_modules.contains_key("sudoers");
-    // Both the PAM-Sudo target and sudoers fragment targets enter this one
-    // filesystem snapshot; supplemental sudoers preimages extend it, so the
-    // transaction's common rollback restores every member together.
+    // Sudoers fragment targets enter this one filesystem snapshot;
+    // supplemental sudoers preimages extend it for common rollback.
     let snapshot = if sudoers_step_will_run || !sudoers_targets.is_empty() {
         let selected_names = sudoers_targets
             .iter()
@@ -856,7 +818,7 @@ pub(crate) fn seal_projection(
         snapshot(&plan.targets)?
     };
     let services = snapshot_services(plan)?;
-    let mut members = if let Some(members) = &plan.pinned_members {
+    let members = if let Some(members) = &plan.pinned_members {
         members.clone()
     } else {
         let mut members = Vec::new();
@@ -878,9 +840,6 @@ pub(crate) fn seal_projection(
         }
         members
     };
-    if pam_sudo_targets.len() == 1 && !members.iter().any(|member| member == PAM_SUDO_MEMBER) {
-        members.push(PAM_SUDO_MEMBER.to_owned());
-    }
     let children = members
         .into_iter()
         .enumerate()

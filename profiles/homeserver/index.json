@@ -43,7 +43,6 @@
       "searx",
       "rust-build-toolchain",
       "sudoers",
-      "pam-sudo",
       "synapse",
       "element",
       "xenia"
@@ -65,7 +64,6 @@
     "sbin",
     "caduceus",
     "sudoers",
-    "pam-sudo",
     "forgejo",
     "calibreweb",
     "filebrowser",
@@ -113,7 +111,6 @@
     "searx",
     "rust-build-toolchain",
     "sudoers",
-    "pam-sudo",
     "synapse",
     "element",
     "xenia"
