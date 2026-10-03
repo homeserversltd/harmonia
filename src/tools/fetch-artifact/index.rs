@@ -76,6 +76,19 @@ pub(crate) fn execute_with_provenance(
     if source_policy != "artifact" && !crate::atoms::ask::fetch_artifact::validate_source_sha(source_sha) {
         return Err("fetch-artifact-source-sha-invalid".into());
     }
+    let pinned_release_sha = if source_policy == "artifact" {
+        match args.get("pinned_release_sha") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value))
+                if crate::atoms::ask::fetch_artifact::validate_source_sha(value) =>
+            {
+                Some(value.to_ascii_lowercase())
+            }
+            Some(_) => return Err("fetch-artifact-pinned-release-sha-invalid".into()),
+        }
+    } else {
+        None
+    };
 
     let profile_axis = crate::atoms::ask::fetch_artifact::profile_axis_declared(args)?;
     let profile = if profile_axis {
@@ -160,15 +173,28 @@ pub(crate) fn execute_with_provenance(
             .as_deref()
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{asset_name}.sha256"));
-        native_download = crate::atoms::ask::fetch_artifact::download_latest_release(
-            component,
-            release_repo,
-            api_root,
-            &asset_name,
-            &sidecar_name,
-            identity,
-            None,
-        )?;
+        native_download = if let Some(pinned_release_sha) = pinned_release_sha.as_deref() {
+            Some(crate::atoms::ask::fetch_artifact::download_pinned_release(
+                component,
+                release_repo,
+                api_root,
+                &asset_name,
+                &sidecar_name,
+                identity,
+                pinned_release_sha,
+                None,
+            )?)
+        } else {
+            crate::atoms::ask::fetch_artifact::download_latest_release(
+                component,
+                release_repo,
+                api_root,
+                &asset_name,
+                &sidecar_name,
+                identity,
+                None,
+            )?
+        };
         let Some(download) = native_download.as_ref() else {
             return Err(format!(
                 "fetch-artifact-artifact-unavailable component={component} repo={release_repo}"
@@ -178,6 +204,12 @@ pub(crate) fn execute_with_provenance(
             &download.manifest.source_sha,
         ) {
             return Err("fetch-artifact-release-source-sha-invalid".into());
+        }
+        if pinned_release_sha
+            .as_deref()
+            .is_some_and(|pinned| download.manifest.source_sha != pinned)
+        {
+            return Err("fetch-artifact-pinned-release-mismatch".into());
         }
         effective_source_sha = download.manifest.source_sha.clone();
         release_digest = Some(download.manifest.sha256.clone());

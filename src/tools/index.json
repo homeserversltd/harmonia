@@ -1684,6 +1684,11 @@
               "name": "artifact_name",
               "kind": "string",
               "required": true
+            },
+            {
+              "name": "pinned_release_sha",
+              "kind": "string",
+              "required": false
             }
           ],
           "placement": "RatchetBinaries"

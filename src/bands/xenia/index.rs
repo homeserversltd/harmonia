@@ -475,6 +475,15 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 }
                 child.args.insert("road".into(), json!(if clone { "clone" } else { "artifact" }));
             }
+            if child.name == "build" && !clone {
+                if let Some(pinned_release_sha) =
+                    entry.pointer("/source/ref").and_then(Value::as_str)
+                {
+                    child
+                        .args
+                        .insert("pinned_release_sha".into(), json!(pinned_release_sha));
+                }
+            }
             if child.name == "binary-install" {
                 child.args.insert("owner".into(), json!(owner));
                 child

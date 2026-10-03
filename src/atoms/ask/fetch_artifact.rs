@@ -177,7 +177,7 @@ pub(crate) fn fetch_release_assets(
     asset_name: &str,
     sidecar_name: &str,
 ) -> Result<Option<ReleaseAssets>, String> {
-    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, false, true)
+    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, false, true, false)
 }
 pub(crate) fn fetch_release_assets_for_inspection(
     r: &ReleaseRequest,
@@ -185,7 +185,15 @@ pub(crate) fn fetch_release_assets_for_inspection(
     asset_name: &str,
     sidecar_name: &str,
 ) -> Result<Option<ReleaseAssets>, String> {
-    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, true, false)
+    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, true, false, false)
+}
+fn fetch_release_assets_for_pinned_inspection(
+    r: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+) -> Result<Option<ReleaseAssets>, String> {
+    fetch_release_assets_inner(r, tag, asset_name, sidecar_name, true, false, true)
 }
 fn fetch_release_assets_inner(
     r: &ReleaseRequest,
@@ -194,6 +202,7 @@ fn fetch_release_assets_inner(
     sidecar_name: &str,
     inspect_release_flag: bool,
     require_tag_commitish_match: bool,
+    pin_to_target_commitish: bool,
 ) -> Result<Option<ReleaseAssets>, String> {
     if r.kind != "forgejo-release"
         || !safe_release_segment(tag)
@@ -204,14 +213,21 @@ fn fetch_release_assets_inner(
     {
         return Err("release-declaration-incomplete".into());
     }
-    let Some(m) = lookup_release_metadata_inner(r, tag, inspect_release_flag)? else {
+    // Pinned discovery uses the listed tag only as an exact metadata locator.
+    let metadata = if pin_to_target_commitish {
+        lookup_release_metadata_single(r, tag, inspect_release_flag)?
+    } else {
+        lookup_release_metadata_inner(r, tag, inspect_release_flag)?
+    };
+    let Some(m) = metadata else {
         return Ok(None);
     };
     let expected_commit = source_sha_from_release_tag(tag);
-    if expected_commit.is_some_and(|source_sha| m.target_commitish != source_sha)
-        || (require_tag_commitish_match
-            && expected_commit.is_none()
-            && m.target_commitish != tag)
+    if !pin_to_target_commitish
+        && (expected_commit.is_some_and(|source_sha| m.target_commitish != source_sha)
+            || (require_tag_commitish_match
+                && expected_commit.is_none()
+                && m.target_commitish != tag))
     {
         return Err("fetch-artifact-release-commit-mismatch".into());
     }
@@ -1293,6 +1309,55 @@ pub(crate) fn download_latest_release(
     identity: &str,
     release_schema_base: Option<&str>,
 ) -> Result<Option<Download>, String> {
+    download_release_with_pin(
+        component,
+        release_repo,
+        api_root,
+        asset_name,
+        sidecar_name,
+        identity,
+        release_schema_base,
+        None,
+    )
+}
+
+pub(crate) fn download_pinned_release(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    identity: &str,
+    pinned_release_sha: &str,
+    release_schema_base: Option<&str>,
+) -> Result<Download, String> {
+    if !validate_source_sha(pinned_release_sha) {
+        return Err("fetch-artifact-pinned-release-sha-invalid".into());
+    }
+    let pinned_release_sha = pinned_release_sha.to_ascii_lowercase();
+    download_release_with_pin(
+        component,
+        release_repo,
+        api_root,
+        asset_name,
+        sidecar_name,
+        identity,
+        release_schema_base,
+        Some(&pinned_release_sha),
+    )?
+    .ok_or_else(|| "fetch-artifact-pinned-release-missing".into())
+}
+
+fn download_release_with_pin(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    identity: &str,
+    release_schema_base: Option<&str>,
+    pinned_release_sha: Option<&str>,
+) -> Result<Option<Download>, String> {
     let (owner, repo) = release_repo
         .split_once('/')
         .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
@@ -1325,7 +1390,14 @@ pub(crate) fn download_latest_release(
                 .cmp(&left.created_at_order)
                 .then_with(|| right.id.cmp(&left.id))
         });
+        let mut saw_pinned_target = false;
         for candidate in releases {
+            if let Some(pinned_release_sha) = pinned_release_sha {
+                if candidate.target_commitish.as_deref() != Some(pinned_release_sha) {
+                    continue;
+                }
+                saw_pinned_target = true;
+            }
             if candidate.draft
                 || !candidate.has_asset(asset_name)
                 || !candidate.has_asset(sidecar_name)
@@ -1333,21 +1405,37 @@ pub(crate) fn download_latest_release(
             {
                 continue;
             }
-            let Some(tagged_source_sha) = source_sha_from_release_tag(&candidate.tag_name) else {
-                continue;
+            let expected_source_sha = if let Some(pinned_release_sha) = pinned_release_sha {
+                pinned_release_sha
+            } else {
+                let Some(tagged_source_sha) = source_sha_from_release_tag(&candidate.tag_name)
+                else {
+                    continue;
+                };
+                tagged_source_sha
             };
-            let release = match fetch_release_assets_for_inspection(
-                &request,
-                &candidate.tag_name,
-                asset_name,
-                sidecar_name,
-            ) {
+            let release_result = if pinned_release_sha.is_some() {
+                fetch_release_assets_for_pinned_inspection(
+                    &request,
+                    &candidate.tag_name,
+                    asset_name,
+                    sidecar_name,
+                )
+            } else {
+                fetch_release_assets_for_inspection(
+                    &request,
+                    &candidate.tag_name,
+                    asset_name,
+                    sidecar_name,
+                )
+            };
+            let release = match release_result {
                 Ok(Some(release)) => release,
                 Ok(None) => continue,
                 Err(error) if ineligible_release_error(&error) => continue,
                 Err(error) => return Err(error),
             };
-            if release.target_commitish != tagged_source_sha {
+            if release.target_commitish != expected_source_sha {
                 continue;
             }
             let Some(flag_bytes) = release.release_flag.as_deref() else {
@@ -1358,7 +1446,7 @@ pub(crate) fn download_latest_release(
                     Ok(value) => value,
                     Err(_) => continue,
                 };
-            if source_sha != tagged_source_sha {
+            if source_sha != expected_source_sha {
                 continue;
             }
             let digest = crate::atoms::file_sha256(&release.artifact);
@@ -1372,14 +1460,25 @@ pub(crate) fn download_latest_release(
                 Ok(flag) => flag,
                 Err(_) => continue,
             };
-            if !flag
-                .get("sha256")
-                .and_then(Value::as_str)
-                .is_some_and(|value| is_hex(value, 64))
-                || !flag
-                    .get("env_sha")
+            let flag_digest_matches = if pinned_release_sha.is_some() {
+                flag.get("sha256")
+                    .map_or(true, |value| value.as_str() == Some(digest.as_str()))
+            } else {
+                flag.get("sha256")
                     .and_then(Value::as_str)
                     .is_some_and(|value| is_hex(value, 64))
+            };
+            let flag_environment_is_valid = if pinned_release_sha.is_some() {
+                flag.get("env_sha").map_or(true, |value| {
+                    value.as_str().is_some_and(|value| is_hex(value, 64))
+                })
+            } else {
+                flag.get("env_sha")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| is_hex(value, 64))
+            };
+            if !flag_digest_matches
+                || !flag_environment_is_valid
                 || !flag
                     .get("pipeline_url")
                     .and_then(Value::as_str)
@@ -1408,6 +1507,12 @@ pub(crate) fn download_latest_release(
                 bytes: release.artifact,
                 identity: identity.into(),
             }));
+        }
+        if pinned_release_sha.is_some() && saw_pinned_target {
+            return Err("fetch-artifact-pinned-release-mismatch".into());
+        }
+        if pinned_release_sha.is_some() {
+            return Err("fetch-artifact-pinned-release-missing".into());
         }
         Ok(None)
     })();
@@ -1447,6 +1552,7 @@ struct PublishedRelease {
     created_at: String,
     created_at_order: i128,
     tag_name: String,
+    target_commitish: Option<String>,
     draft: bool,
     assets: Value,
 }
@@ -1534,11 +1640,16 @@ fn lookup_published_releases(request: &ReleaseRequest) -> Result<Vec<PublishedRe
                 .cloned()
                 .filter(Value::is_array)
                 .ok_or("release-list-assets-missing")?;
+            let target_commitish = release
+                .get("target_commitish")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             releases.push(PublishedRelease {
                 id,
                 created_at: created_at.to_owned(),
                 created_at_order,
                 tag_name: tag_name.to_owned(),
+                target_commitish,
                 draft: release.get("draft").and_then(Value::as_bool).unwrap_or(false),
                 assets,
             });
