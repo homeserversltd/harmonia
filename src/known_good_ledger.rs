@@ -449,7 +449,7 @@ pub(crate) fn append_and_move(
         // rungs after one run moved this surface more than once. read_history
         // has already established a single contiguous prior-rung chain, so a
         // current rung before the tail or an absent pointer is a valid rollback
-        // gap, not a branch. The artifact match below still rejects divergence.
+        // gap, not a branch. Any new rung below must still extend that tail.
         let current_identity = current.as_ref().map(|rung| rung.identity.as_str());
         let tail_follows_current = match current_identity {
             Some(identity) => history
@@ -502,14 +502,6 @@ pub(crate) fn append_and_move(
                 return Err(e.to_string());
             }
             return move_pointer(&dir, tail, proof.proof_battery, proof.aggregate_receipt_ref);
-        }
-        // A fresh proof may re-promote the same installed artifact, but it
-        // appends a new rung after the preserved tail so the proof remains
-        // immutable and the history remains one strict chain.
-        if tail.installed_sha != proof.installed_sha
-            || tail.installed_version != proof.installed_version
-        {
-            return Err("known-good-unpromoted-tail-conflict".into());
         }
     } else if let Some(current) = current.as_ref() {
         if current.installed_sha == proof.installed_sha
