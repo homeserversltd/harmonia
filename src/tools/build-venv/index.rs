@@ -8,7 +8,6 @@ pub(crate) struct Request<'a> {
     pub venv: &'a Path,
     pub source_root: &'a Path,
     pub source_patterns: &'a [String],
-    pub python: &'a Path,
     pub receipt_dir: &'a Path,
     pub receipt_name: &'a str,
     pub timeout_secs: u64,

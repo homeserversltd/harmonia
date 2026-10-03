@@ -802,6 +802,14 @@ fn transaction_failure_signal(error: Option<&str>, fallback: &str) -> String {
             return signal.to_string();
         }
     }
+    if let Some(signal) = error
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("defect="))
+    {
+        if stable_transaction_signal(signal) {
+            return signal.to_string();
+        }
+    }
     if let Some(signal) = error.split_whitespace().next() {
         let signal = signal.strip_suffix(':').unwrap_or(signal);
         if stable_transaction_signal(signal) {

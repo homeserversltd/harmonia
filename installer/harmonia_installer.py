@@ -180,7 +180,7 @@ def install_timer(args: argparse.Namespace) -> int:
     emit_plan("harmonia.installer.timer_plan.v1", apply, [
         f"install unit -> {service}",
         f"install unit -> {timer}",
-        *( ["daemon-reload", "enable --now harmonia.timer"] if host else [] ),
+        *( ["daemon-reload", "enable harmonia.timer"] if host else [] ),
     ])
     if not apply:
         return 0
@@ -197,7 +197,7 @@ def install_timer(args: argparse.Namespace) -> int:
         code = run_checked(["systemctl", "daemon-reload"], cwd=SOURCE_ROOT, allow_missing=True)
         if code != 0:
             return code
-        return run_checked(["systemctl", "enable", "--now", "harmonia.timer"], cwd=SOURCE_ROOT, allow_missing=True)
+        return run_checked(["systemctl", "enable", "harmonia.timer"], cwd=SOURCE_ROOT, allow_missing=True)
     return 0
 
 

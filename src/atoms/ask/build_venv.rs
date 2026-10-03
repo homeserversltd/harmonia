@@ -1,21 +1,32 @@
 // Owned ask atom for build-venv
 use crate::atoms;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub(crate) struct Observation {
     pub(crate) dependency_files: Vec<PathBuf>,
     pub(crate) dependency_sha256: Option<String>,
     pub(crate) previous_dependency_sha256: Option<String>,
-    pub(crate) venv_valid: bool,
+}
+pub(crate) fn validate_installed_venv(venv: &Path) -> Result<(), String> {
+    let invalid_venv = || format!("sbin-venv-absent-or-invalid {}", venv.display());
+    let root = std::fs::metadata(venv).map_err(|error| format!("{}: {error}", invalid_venv()))?;
+    let python = std::fs::metadata(venv.join("bin/python"))
+        .map_err(|error| format!("{}: {error}", invalid_venv()))?;
+    let config = std::fs::symlink_metadata(venv.join("pyvenv.cfg"))
+        .map_err(|error| format!("{}: {error}", invalid_venv()))?;
+    if !root.is_dir() || !python.is_file() || !config.file_type().is_file() {
+        return Err(invalid_venv());
+    }
+    Ok(())
 }
 impl Observation {
     pub(crate) fn different(&self) -> bool {
-        !self.venv_valid
-            || self.dependency_sha256.as_ref() != self.previous_dependency_sha256.as_ref()
+        self.dependency_sha256.as_ref() != self.previous_dependency_sha256.as_ref()
     }
 }
 pub(crate) fn venv(request: &crate::build_venv::Request<'_>) -> Result<Observation, String> {
+    validate_installed_venv(request.venv)?;
     let mut files = Vec::new();
     for path in atoms::ask::directory_entries(request.source_root)? {
         let name = path
@@ -64,14 +75,9 @@ pub(crate) fn venv(request: &crate::build_venv::Request<'_>) -> Result<Observati
                 .ok()
                 .map(|s| s.trim().to_string())
         });
-    let venv_valid = matches!(
-        atoms::ask::path_kind(&request.venv.join("bin/python"))?,
-        Some(atoms::ask::PathKind::RegularFile | atoms::ask::PathKind::Symlink)
-    );
     Ok(Observation {
         dependency_files: files,
         dependency_sha256,
         previous_dependency_sha256,
-        venv_valid,
     })
 }

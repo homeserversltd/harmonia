@@ -1,4 +1,4 @@
-//! Build-venv atom: owns venv creation, dependency installation, and state custody.
+//! Build-venv atom: owns dependency installation and state custody.
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::comparison::ActionAuthorization;
 use crate::OperationOutcome;
@@ -10,7 +10,6 @@ pub(crate) struct Plan {
     pub venv: PathBuf,
     pub source_root: PathBuf,
     pub source_patterns: Vec<String>,
-    pub python: PathBuf,
     pub receipt_dir: PathBuf,
     pub receipt_name: String,
     pub timeout_secs: u64,
@@ -23,21 +22,6 @@ pub(crate) fn converge(
     observation: &crate::atoms::ask::build_venv::Observation,
 ) -> Result<&'static str, String> {
     let mut movement = "none";
-    if !observation.venv_valid {
-        let result = crate::atoms::r#do::run_command::command_with_timeout(
-            authorization,
-            invocation,
-            request.python.to_str().ok_or("venv-python-path-utf8")?,
-            &[
-                "-m".into(),
-                "venv".into(),
-                request.venv.to_str().ok_or("venv-path-utf8")?.into(),
-            ],
-            Duration::from_secs(request.timeout_secs),
-        )?;
-        ensure_ok(&result, request.python.to_string_lossy().as_ref())?;
-        movement = "create-venv";
-    }
     if observation.dependency_sha256 != observation.previous_dependency_sha256 {
         if let Some(hash) = observation.dependency_sha256.as_deref() {
             let python = request.venv.join("bin/python");

@@ -1426,6 +1426,125 @@ fn optional_string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> Opt
     args.get(name).and_then(Value::as_str)
 }
 
+fn is_sbin_source_sync(step: &ValidatedStep, manifest: &LadderManifest) -> bool {
+    manifest.id == "sbin"
+        && step.step_id == "sbin-source-sync"
+        && string_arg(&step.args, "component") == "sbin"
+}
+
+fn path_is_git_checkout(destination_path: &Path, bearer: &str) -> bool {
+    let Ok(destination) = destination_path.canonicalize() else {
+        return false;
+    };
+    if !destination.is_dir() {
+        return false;
+    }
+    let Some(cwd) = destination_path.to_str() else {
+        return false;
+    };
+    let request = tools::git_artifact::Request::new(
+        None,
+        destination_path.to_path_buf(),
+        String::new(),
+        String::new(),
+    )
+    .with_bearer(bearer.to_string())
+    .with_safe_directory(destination_path.to_path_buf());
+    let top_level = crate::atoms::ask::pull_repo::git_observe(
+        &request,
+        &["rev-parse", "--show-toplevel"],
+        Some(cwd),
+    );
+    top_level.ok
+        && Path::new(top_level.stdout.trim())
+            .canonicalize()
+            .is_ok_and(|resolved| resolved == destination)
+}
+
+fn destination_is_git_checkout(plan: &tools::git_artifact::SourcePlan) -> bool {
+    path_is_git_checkout(&plan.destination, &plan.bearer)
+}
+
+fn sbin_prerequisite_refusals(
+    manifest: &LadderManifest,
+    projected_steps: &[ValidatedStep],
+) -> Vec<(String, String)> {
+    if manifest.id != "sbin" {
+        return Vec::new();
+    }
+    let source_step = projected_steps
+        .iter()
+        .find(|step| is_sbin_source_sync(step, manifest));
+    let mut refusals = Vec::new();
+
+    if let Some(source_step) = source_step {
+        let source_path = optional_string_arg(&source_step.args, "path")
+            .or_else(|| optional_string_arg(&source_step.args, "source_dir"))
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
+        match source_path {
+            Some(path) if path_is_git_checkout(&path, "owner") => {}
+            Some(path) => refusals.push((
+                source_step.step_id.clone(),
+                format!("sbin-source-checkout-required {}", path.display()),
+            )),
+            None => refusals.push((
+                source_step.step_id.clone(),
+                "sbin-source-checkout-required path-missing".into(),
+            )),
+        }
+    } else {
+        refusals.push((
+            "sbin-source-sync".into(),
+            "sbin-source-checkout-required step-missing".into(),
+        ));
+    }
+
+    let venv_step = projected_steps
+        .iter()
+        .find(|step| step.step_id == "caduceus-venv-converge" && step.tool == "venv");
+    let venv_path = venv_step
+        .and_then(|step| optional_string_arg(&step.args, "venv"))
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    match venv_path {
+        Some(path) => {
+            if let Err(refusal) = crate::atoms::ask::build_venv::validate_installed_venv(&path) {
+                refusals.push(("caduceus-venv-converge".into(), refusal));
+            }
+        }
+        None => refusals.push((
+            "caduceus-venv-converge".into(),
+            "sbin-venv-absent-or-invalid path-missing".into(),
+        )),
+    }
+
+    let shelf_step = projected_steps.iter().find(|step| {
+        step.step_id == "sbin-source-shelf-sweep"
+            && step.tool == "files"
+            && step.permutation == "source-shelf-sweep"
+    });
+    let shelf_path = shelf_step
+        .and_then(|step| optional_string_arg(&step.args, "target_shelf"))
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    match shelf_path {
+        Some(path) => {
+            if let Err(refusal) =
+                crate::atoms::r#do::source_shelf::validate_sbin_installed_target_shelf(&path)
+            {
+                refusals.push(("sbin-source-shelf-sweep".into(), refusal));
+            }
+        }
+        None => refusals.push((
+            "sbin-source-shelf-sweep".into(),
+            "sbin-source-shelf-birth-install-required path-missing".into(),
+        )),
+    }
+
+    refusals
+}
+
 pub(crate) fn execute_git_artifact_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -1434,20 +1553,32 @@ pub(crate) fn execute_git_artifact_step(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_plan = routine_source_plan(step, manifest)?;
-    let outcome = if apply {
-        crate::pull_repo::acquire_source(&source_plan, invocation)
-    } else {
-        tools::git_artifact::SourceOutcome {
-            ok: true,
-            changed: false,
-            receipt: tools::git_artifact::SourceReceipt {
-                attempts: Vec::new(),
-                served_index: None,
-                resolved_commit: None,
-                promotion: "planned source acquisition".to_string(),
-            },
-        }
-    };
+    let outcome =
+        if is_sbin_source_sync(step, manifest) && !destination_is_git_checkout(&source_plan) {
+            tools::git_artifact::SourceOutcome {
+                ok: false,
+                changed: false,
+                receipt: tools::git_artifact::SourceReceipt {
+                    attempts: Vec::new(),
+                    served_index: None,
+                    resolved_commit: None,
+                    promotion: "sbin-source-checkout-required".to_string(),
+                },
+            }
+        } else if apply {
+            crate::pull_repo::acquire_source(&source_plan, invocation)
+        } else {
+            tools::git_artifact::SourceOutcome {
+                ok: true,
+                changed: false,
+                receipt: tools::git_artifact::SourceReceipt {
+                    attempts: Vec::new(),
+                    served_index: None,
+                    resolved_commit: None,
+                    promotion: "planned source acquisition".to_string(),
+                },
+            }
+        };
     let command = source_outcome_command(&outcome);
     crate::write_tool_receipt(
         module_dir,
@@ -1590,6 +1721,38 @@ pub(crate) fn execute_manifest_band(
         first_missing_signal: None,
         placements: Vec::new(),
     };
+    if mode_apply {
+        let refusals = sbin_prerequisite_refusals(manifest, projected_steps);
+        if !refusals.is_empty() {
+            result.ok = false;
+            result.operation_count += 1;
+            for (step_id, message) in refusals {
+                result
+                    .first_missing_signal
+                    .get_or_insert_with(|| format!("step_id={step_id} defect={message}"));
+                result.placements.push(serde_json::json!({
+                    "step_id": format!("{step_id}#preflight"),
+                    "tool": "sbin-prerequisites",
+                    "permutation": "observe",
+                    "band": "PullSource",
+                    "status": "blocked",
+                    "ok": false,
+                    "changed": false,
+                    "message": message,
+                    "module": manifest.id,
+                    "precondition_for": step_id
+                }));
+            }
+            for step in projected_steps {
+                crate::bands::halt_step(
+                    halted_steps,
+                    &manifest.id,
+                    &step.step_id,
+                    crate::bands::Band::PullSource,
+                );
+            }
+        }
+    }
     for step in projected_steps {
         if step.tool == "routine" {
             let children = projected_routines

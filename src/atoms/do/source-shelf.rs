@@ -1840,6 +1840,94 @@ pub(crate) fn source_shelf_sweep_at(
     }
 }
 
+fn is_sbin_owned_recursive_sweep(request: &SourceShelfSweepRequest) -> bool {
+    request.owned_recursive
+        && request.source_root.as_path() == Path::new("/opt/sbin/source")
+        && request.shelf_source.as_path() == Path::new("agathodaimon")
+        && request.target_shelf.as_path() == Path::new("/usr/local/sbin/agathodaimon")
+}
+
+fn sbin_marker_has_regular_bytes(path: &Path) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "sbin-source-shelf-marker-observation-failed {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    let marker = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "sbin-source-shelf-marker-observation-failed {}: {error}",
+                path.display()
+            )
+        })?;
+    #[cfg(not(unix))]
+    let marker = File::open(path).map_err(|error| {
+        format!(
+            "sbin-source-shelf-marker-observation-failed {}: {error}",
+            path.display()
+        )
+    })?;
+    let opened = marker.metadata().map_err(|error| {
+        format!(
+            "sbin-source-shelf-marker-observation-failed {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(opened.file_type().is_file() && opened.len() > 0)
+}
+
+pub(crate) fn validate_sbin_installed_target_shelf(target_shelf: &Path) -> Result<(), String> {
+    let target_metadata = fs::symlink_metadata(target_shelf).map_err(|error| {
+        format!(
+            "sbin-source-shelf-birth-install-required {}: {error}",
+            target_shelf.display()
+        )
+    })?;
+    if !target_metadata.file_type().is_dir()
+        || !sbin_marker_has_regular_bytes(&target_shelf.join("cli.py"))?
+    {
+        return Err(format!(
+            "sbin-source-shelf-birth-install-required {}",
+            target_shelf.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sbin_shelf_installation(
+    source_root: &Path,
+    request: &SourceShelfSweepRequest,
+) -> Result<(), String> {
+    let source_shelf = source_root.join(&request.shelf_source);
+    let source_metadata = fs::symlink_metadata(&source_shelf).map_err(|error| {
+        format!(
+            "sbin-source-shelf-source-not-installed {}: {error}",
+            source_shelf.display()
+        )
+    })?;
+    if !source_metadata.file_type().is_dir()
+        || !sbin_marker_has_regular_bytes(&source_shelf.join("cli.py"))?
+    {
+        return Err(format!(
+            "sbin-source-shelf-source-not-installed {}",
+            source_shelf.display()
+        ));
+    }
+    validate_sbin_installed_target_shelf(&request.target_shelf)
+}
+
 fn source_shelf_owned_recursive_sweep(
     request: &SourceShelfSweepRequest,
     receipt_dir: &Path,
@@ -1865,18 +1953,44 @@ fn source_shelf_owned_recursive_sweep(
         sweep_target_root(target_root),
         &request.launcher_target_root,
     )?;
-    if !request.target_shelf.is_absolute() || !request.target_shelf.is_dir() {
+    let sbin_sweep = is_sbin_owned_recursive_sweep(request);
+    if !request.target_shelf.is_absolute() {
         return Err("source-shelf-sweep-owned-recursive-target-root-invalid".into());
     }
     validate_mode("shelf-directory", request.shelf_directory_mode)?;
     validate_mode("shelf-file", request.shelf_file_mode)?;
     reject_ssh_path(&request.target_shelf)?;
     let source_root = request.source_root.canonicalize().map_err(|error| {
-        format!(
-            "source-shelf-sweep-source-root-invalid {}: {error}",
-            request.source_root.display()
-        )
+        if sbin_sweep {
+            format!(
+                "sbin-source-shelf-source-not-installed {}: {error}",
+                request.source_root.display()
+            )
+        } else {
+            format!(
+                "source-shelf-sweep-source-root-invalid {}: {error}",
+                request.source_root.display()
+            )
+        }
     })?;
+    if !source_root.is_dir() {
+        return Err(if sbin_sweep {
+            format!(
+                "sbin-source-shelf-source-not-installed {}",
+                source_root.display()
+            )
+        } else {
+            format!(
+                "source-shelf-sweep-source-root-not-directory {}",
+                source_root.display()
+            )
+        });
+    }
+    if sbin_sweep {
+        validate_sbin_shelf_installation(&source_root, request)?;
+    } else if !request.target_shelf.is_dir() {
+        return Err("source-shelf-sweep-owned-recursive-target-root-invalid".into());
+    }
     let shelf_source = source_root
         .join(&request.shelf_source)
         .canonicalize()
@@ -1917,6 +2031,10 @@ fn source_shelf_owned_recursive_sweep(
             .ok()
             .is_none_or(|relative| !source_shelf_excluded(&sweep_exclude, relative))
     });
+    let provenance_adoption_needed = sbin_sweep
+        && desired_paths
+            .iter()
+            .any(|path| !provenance.paths.contains(path));
     let target_inventory = inventory_sweep_tree_if_present(&request.target_shelf, &sweep_exclude)?;
     let mut orphan_stale = BTreeSet::new();
     for target_entry in target_inventory
@@ -2162,7 +2280,7 @@ fn source_shelf_owned_recursive_sweep(
     let mut cleanup_error = None;
     let movement = crate::atoms::comparison::execute_once(
         "source-shelf-owned-recursive",
-        || Ok::<_, String>(drift),
+        || Ok::<_, String>(drift || provenance_adoption_needed),
         |different| {
             if compared_different.get().is_none() {
                 compared_different.set(Some(*different));
@@ -2178,6 +2296,11 @@ fn source_shelf_owned_recursive_sweep(
             let authorization = &authorization;
             (|| -> Result<(), String> {
                 let invocation = invocation.ok_or("source-shelf-sweep-invocation-key-missing")?;
+                if !drift {
+                    provenance.paths.extend(desired_paths.iter().cloned());
+                    write_sweep_provenance(provenance_path, &provenance)?;
+                    return Ok(());
+                }
                 crate::atoms::r#do::source_shelf::mkdir_all(
                     authorization,
                     invocation,
@@ -2637,11 +2760,19 @@ fn source_shelf_owned_recursive_sweep(
         .len(),
         promoted_count,
         removed_count,
-        transaction_state: "committed".into(),
+        transaction_state: if provenance_adoption_needed && !drift {
+            "provenance-adopted".into()
+        } else {
+            "committed".into()
+        },
         rollback_state: "not-needed".into(),
         first_blocker: "none".into(),
         entries,
-        message: "owned recursive source shelf converged".into(),
+        message: if provenance_adoption_needed && !drift {
+            "owned recursive source shelf current; provenance adopted".into()
+        } else {
+            "owned recursive source shelf converged".into()
+        },
     };
     write_sweep_receipts(receipt_dir, request, &outcome, apply, receipt_evidence())?;
     Ok(outcome)
