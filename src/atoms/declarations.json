@@ -186,11 +186,6 @@
                 "name": "source_patterns",
                 "kind": "string_array",
                 "required": true
-              },
-              {
-                "name": "python",
-                "kind": "string",
-                "required": false
               }
             ],
             "comparison": "command-status",

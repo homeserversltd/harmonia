@@ -32,11 +32,6 @@ pub(crate) fn validate_ladder_args(args: &BTreeMap<String, Value>) -> Result<(),
     {
         return Err("venv-source-patterns-rejected".into());
     }
-    if let Some(python) = args.get("python").and_then(Value::as_str) {
-        if !safe_absolute_path(python) {
-            return Err("venv-python-path-rejected".into());
-        }
-    }
     Ok(())
 }
 

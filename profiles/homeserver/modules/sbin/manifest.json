@@ -28,8 +28,7 @@
         "source_patterns": [
           "requirements*.txt",
           "pyproject.toml"
-        ],
-        "python": "/usr/bin/python3"
+        ]
       }
     },
     {

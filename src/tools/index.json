@@ -1619,7 +1619,7 @@
       "permutations": [
         {
           "name": "converge",
-          "description": "ensure a declared virtual environment and refresh declared dependencies only on content change",
+          "description": "require an existing virtual environment and refresh its declared dependencies only on content change",
           "args": [
             {
               "name": "venv",
@@ -1635,11 +1635,6 @@
               "name": "source_patterns",
               "kind": "string_array",
               "required": true
-            },
-            {
-              "name": "python",
-              "kind": "string",
-              "required": false
             }
           ],
           "placement": "InstallPackages"
