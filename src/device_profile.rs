@@ -294,14 +294,43 @@ pub(crate) fn update_from_certificate(
     invocation: crate::Invocation,
 ) -> Result<(), String> {
     let context = invocation.context();
-    let receipt_dir = receipt_dir_arg(args)
+    let requested_receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
+    let run_id = context
+        .map(|context| context.run_id.clone())
+        .unwrap_or_else(crate::run_id_from_stamp);
+    let write_early_refusal = |receipt: serde_json::Value,
+                               reason: &str,
+                               failure_label: &str,
+                               promote_latest: bool|
+     -> Result<(), String> {
+        let allocated = crate::atoms::attest::convergence_receipts::allocate_receipt_directory(
+            &requested_receipt_dir,
+            &run_id,
+            "update",
+        )
+        .map_err(|error| format!("{reason}; {failure_label}: {error}"))?;
+        write_json(&allocated.path.join("run.json"), &receipt)
+            .map_err(|error| format!("{reason}; {failure_label}: {error}"))?;
+        if promote_latest {
+            if let Some(latest_path) = allocated.latest.as_deref() {
+                crate::atoms::attest::convergence_receipts::promote_receipt_latest(
+                    latest_path,
+                    &allocated.path,
+                    &allocated.stem,
+                    &run_id,
+                    "update-refusal",
+                )
+                .map_err(|error| format!("{reason}; receipt-latest-promotion-failed: {error}"))?;
+            }
+        }
+        Ok(())
+    };
     let mode = match parse_update_mode(args, invocation.key()) {
         Ok(mode) => mode,
         Err(reason) => {
-            write_json(
-                &receipt_dir.join("run.json"),
-                &json!({
+            write_early_refusal(
+                json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
                     "mutation": false,
@@ -311,8 +340,10 @@ pub(crate) fn update_from_certificate(
                     "identity_source": "certificate",
                     "first_missing_signal": reason,
                 }),
-            )
-            .map_err(|err| format!("{reason}; update-refusal-receipt-failed: {err}"))?;
+                &reason,
+                "update-refusal-receipt-failed",
+                true,
+            )?;
             return Err(reason);
         }
     };
@@ -320,9 +351,8 @@ pub(crate) fn update_from_certificate(
         Ok(guard) => guard,
         Err(EngineRunLockFailure::Busy) => {
             let reason = "run-in-progress";
-            write_json(
-                &receipt_dir.join("run.json"),
-                &json!({
+            write_early_refusal(
+                json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
                     "mutation": mode.is_software_apply(),
@@ -333,14 +363,15 @@ pub(crate) fn update_from_certificate(
                     "lock_path": engine_run_lock_path(),
                     "first_missing_signal": reason,
                 }),
-            )
-            .map_err(|err| format!("{reason}; update-refusal-receipt-failed: {err}"))?;
+                reason,
+                "update-refusal-receipt-failed",
+                false,
+            )?;
             return Err(reason.to_string());
         }
         Err(EngineRunLockFailure::Unavailable(reason)) => {
-            write_json(
-                &receipt_dir.join("run.json"),
-                &json!({
+            write_early_refusal(
+                json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
                     "mutation": mode.is_software_apply(),
@@ -351,16 +382,17 @@ pub(crate) fn update_from_certificate(
                     "lock_path": engine_run_lock_path(),
                     "first_missing_signal": reason,
                 }),
-            )
-            .map_err(|err| format!("{reason}; update-lock-receipt-failed: {err}"))?;
+                &reason,
+                "update-lock-receipt-failed",
+                true,
+            )?;
             return Err(reason);
         }
     };
     let certificate_path = device_profile_certificate_path();
     if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
-        write_json(
-            &receipt_dir.join("run.json"),
-            &json!({
+        write_early_refusal(
+            json!({
                 "schema": "harmonia.run_profile.v1",
                 "ok": false,
                 "mutation": mode.is_software_apply(),
@@ -371,16 +403,17 @@ pub(crate) fn update_from_certificate(
                 "source_validation": "blocked-before-module-mutation",
                 "first_missing_signal": reason,
             }),
-        )
-        .map_err(|err| format!("{reason}; source-validation-refusal-receipt-failed: {err}"))?;
+            &reason,
+            "source-validation-refusal-receipt-failed",
+            true,
+        )?;
         return Err(reason);
     }
     let (profile, profile_path) = match resolve_certificate_profile() {
         Ok(resolved) => resolved,
         Err(reason) => {
-            write_json(
-                &receipt_dir.join("run.json"),
-                &json!({
+            write_early_refusal(
+                json!({
                     "schema": "harmonia.run_profile.v1",
                     "ok": false,
                     "mutation": mode.is_software_apply(),
@@ -390,8 +423,10 @@ pub(crate) fn update_from_certificate(
                     "identity_source": "certificate",
                     "first_missing_signal": reason,
                 }),
-            )
-            .map_err(|err| format!("{reason}; device-profile-refusal-receipt-failed: {err}"))?;
+                &reason,
+                "device-profile-refusal-receipt-failed",
+                true,
+            )?;
             return Err(reason);
         }
     };
