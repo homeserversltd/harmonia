@@ -131,6 +131,44 @@ steps:
         test -s /tmp/house-ca.pem
         export SSL_CERT_FILE=/tmp/house-ca.pem
         python3 ci/release_publish.py
+
+  - name: github-latest-harmonia
+    image: python:3.12-alpine
+    when:
+      - event: push
+        branch: main
+    failure: ignore
+    environment:
+      FORGEJO_TOKEN:
+        from_secret: FORGEJO_TOKEN
+      GITHUB_TOKEN:
+        from_secret: github_token
+    commands:
+      - |
+        set -eu
+        apk add --no-cache git
+        umask 077
+        if [ -z "$${FORGEJO_TOKEN:-}" ] || [ -z "$${GITHUB_TOKEN:-}" ]; then
+          echo "github-latest-harmonia: required secret is missing" >&2
+          exit 1
+        fi
+        python3 - <<'PY'
+        import urllib.request
+
+        request = urllib.request.Request(
+            "http://192.168.123.1:7100/v1/trust/ca-bundle", method="GET"
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            bundle = response.read()
+        if not bundle:
+            raise SystemExit("github-latest-harmonia: trust CA bundle is empty")
+        with open("/tmp/github-latest-house-ca.pem", "wb") as ca_file:
+            ca_file.write(bundle)
+        PY
+        test -s /tmp/github-latest-house-ca.pem
+        export SSL_CERT_FILE=/tmp/github-latest-house-ca.pem
+        python3 ci/github_latest.py
+
   - name: ci-outcome-harmonia
     image: python:3.12-alpine
     backend_options:
