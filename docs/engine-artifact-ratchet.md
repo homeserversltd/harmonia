@@ -33,9 +33,9 @@ configured repository, while developer mode builds the remote `main` head.
 The engine uses compiled local defaults rather than an engine configuration
 file. It installs at `/usr/local/bin/harmonia` and acquires source under
 `/var/lib/harmonia/engine-source`; developer mode builds there and artifact mode
-uses the same tree as its content seat. It stages artifacts below that source
-root and derives the profile index from the owned module root. Unit activation
-is the enablement state; there is no separate `enabled` setting.
+uses that tree as its content seat when it exists. It stages artifacts below
+that source root and derives the profile index from the owned module root. Unit
+activation is the enablement state; there is no separate `enabled` setting.
 
 Artifact mode selects the newest published engine Release in the configured
 repository that carries the engine assets and `release.flag`, ordered by
@@ -47,27 +47,47 @@ failure and preserves the installed engine; it never builds from source.
 Developer mode bypasses Release selection even when a Release exists. It resolves
 the remote `main` head, acquires the source pinned to that SHA, and builds it.
 
-For either policy, the selected artifact/source SHA is also the expected content
-seat. Renew-self seats the Harmonia source tree at that exact commit before any
-engine promotion or StageProfile molt. The preflight and post-stage receipts keep
-that selected SHA; artifact mode does not report repository HEAD as the installed
-engine's identity. A failed source move or head mismatch is a red engine-preflight
-stage: the staged binary is not promoted and the Apply transaction stops before
-profile molt or downstream convergence, preserving the previous binary and
-profile projection. Report-only records the selected identity and drift without
-mutating the source seat.
+When either lane resolves an artifact/source SHA, that SHA is also the expected
+content-seat identity. Renew-self seats the Harmonia source tree at that exact
+commit before engine promotion or StageProfile molt. The preflight and
+post-stage receipts keep that selected SHA; artifact mode does not report
+repository HEAD as the installed engine's identity. A failed source move or
+head mismatch is a red engine-preflight stage: the staged binary is not
+promoted and the Apply transaction stops before profile molt or downstream
+convergence, preserving the previous binary and profile projection.
+Report-only records the selected identity and drift without mutating the source
+seat.
 
 The `engine-preflight/content-seat.json` receipt records the selected SHA as
 `expected_head`, the observed content head, whether they match, whether source
-mutation was possible, and the final paired/mismatch state. `engine-preflight/run.json`
-repeats that selected SHA as `source_head`, plus the observed head and
-match/failure fields. Report-only records the selected identity and observed
-drift without mutating the source seat.
+mutation was possible, and the final paired/mismatch state.
+`engine-preflight/run.json` repeats that selected SHA as `source_head`, plus the
+observed head and match/failure fields. Report-only records the selected
+identity and observed drift without mutating the source seat.
 
 An already-current binary does not waive the content-seat check: Apply still
-pairs the content tree to the resolved SHA, then runs the usual profile molt and
-convergence. Quiet source acquisition may leave the tree unchanged, but its
-observed head is still receipted.
+pairs the content tree to the resolved SHA, then runs the usual profile molt
+and convergence. Quiet source acquisition may leave the tree unchanged, but
+its observed head is still receipted.
+
+### Validated artifact-candidate exhaustion
+
+When artifact mode exhausts its configured Release candidates, the validated
+`engine-preflight/run.json` debt remains red and the installed engine is
+preserved. If, and only if, that validated debt belongs to the current Apply
+preflight and `/var/lib/harmonia/engine-source` has no content seat, StageProfile
+uses the already-born `/etc/harmonia/profiles/<profile>` tree and its shared
+modules as the standing source. It stages/materializes that selected profile
+so its projection is sealed and downstream module bands can continue; it does
+not create or clone `engine-source`, build a source tree, or claim that the
+engine debt was repaired.
+
+The molt receipt names `source_kind=standing-profile` and the exact
+`source_profile_path`. A standing tree has no Git commit identity, so this path
+is not represented by a fabricated Git SHA. If the engine content seat exists,
+normal source-seat behavior is preserved; malformed or unrelated preflight
+failures still stop under their existing rules. This continuation is not
+available in report-only mode.
 
 ## Source authority
 

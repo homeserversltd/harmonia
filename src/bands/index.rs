@@ -129,6 +129,17 @@ pub(crate) fn engine_artifact_exhaustion_debt(
     })
 }
 
+fn engine_content_seat_absent(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!(
+            "engine-content-seat-observation-failed {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 pub(crate) fn halt_step(
     halted_steps: &mut HaltedSteps,
     module_id: &str,
@@ -299,6 +310,7 @@ pub(crate) fn run_profile_engine_with_projection(
     crate::receipts::clear_config_state_receipts(receipt_dir)?;
     let mut active_profile = profile.clone();
     let mut active_projection = projection.clone();
+    let mut standing_profile_debt_validated = false;
     let mut rerun_preflight_after_stage = false;
     let apply = mode.is_software_apply();
     let invocation = mode.invocation();
@@ -393,6 +405,7 @@ pub(crate) fn run_profile_engine_with_projection(
                                     &debt.first_missing_signal,
                                 )?;
                                 state.engine_debt = Some(debt);
+                                standing_profile_debt_validated = apply && materialize_on_stage;
                             } else {
                                 event(
                                     &mut events,
@@ -433,6 +446,7 @@ pub(crate) fn run_profile_engine_with_projection(
                                 &debt.first_missing_signal,
                             )?;
                             state.engine_debt = Some(debt);
+                            standing_profile_debt_validated = apply && materialize_on_stage;
                         } else {
                             event(
                                 &mut events,
@@ -486,17 +500,53 @@ pub(crate) fn run_profile_engine_with_projection(
             }
             crate::bands::Band::StageProfile => {
                 if apply && materialize_on_stage {
-                    let refreshed = crate::bands::stage_profile::materialize(
-                        &crate::bands::renew_self::engine_source_root(),
-                        &active_profile.id,
-                        module_root,
-                        receipt_dir,
-                        "owner",
-                        invocation.ok_or_else(|| "stage-profile-invocation-key-missing".to_string())?,
-                        context,
-                        carrier,
-                        active_profile.syzygy_declaration.clone(),
-                    )?;
+                    let engine_source_root = crate::bands::renew_self::engine_source_root();
+                    let standing_profile_root = module_root
+                        .parent()
+                        .ok_or_else(|| {
+                            "stage-profile-installed-module-root-parent-missing".to_string()
+                        })?;
+                    let use_standing_profile = standing_profile_debt_validated
+                        && engine_content_seat_absent(&engine_source_root)?;
+                    if use_standing_profile {
+                        event(
+                            &mut events,
+                            "stage-profile-standing-source-selected",
+                            true,
+                            &format!(
+                                "source_kind=standing-profile source_path={}",
+                                standing_profile_root.display()
+                            ),
+                        )?;
+                    }
+                    let refreshed = if use_standing_profile {
+                        crate::bands::stage_profile::materialize_standing_profile(
+                            &standing_profile_root,
+                            &active_profile.id,
+                            module_root,
+                            receipt_dir,
+                            invocation.ok_or_else(|| {
+                                "stage-profile-invocation-key-missing".to_string()
+                            })?,
+                            context,
+                            carrier,
+                            active_profile.syzygy_declaration.clone(),
+                        )?
+                    } else {
+                        crate::bands::stage_profile::materialize(
+                            &engine_source_root,
+                            &active_profile.id,
+                            module_root,
+                            receipt_dir,
+                            "owner",
+                            invocation.ok_or_else(|| {
+                                "stage-profile-invocation-key-missing".to_string()
+                            })?,
+                            context,
+                            carrier,
+                            active_profile.syzygy_declaration.clone(),
+                        )?
+                    };
                     active_profile = refreshed;
                     let target_carrier = carrier.or_else(|| context.map(|value| &value.carrier));
                     let Some(target_carrier) = target_carrier else {

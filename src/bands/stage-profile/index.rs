@@ -343,6 +343,21 @@ pub(crate) fn source_module_path(
     resolve_module_dir(&module_root, module_id)
 }
 
+#[derive(Clone, Copy)]
+enum MaterializationSource {
+    EngineSource,
+    StandingProfile,
+}
+
+impl MaterializationSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::EngineSource => "engine-source",
+            Self::StandingProfile => "standing-profile",
+        }
+    }
+}
+
 pub(crate) fn materialize(
     source_root: &Path,
     profile_id: &str,
@@ -354,6 +369,76 @@ pub(crate) fn materialize(
     carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
     syzygy_declaration: Option<crate::SyzygyDeclaration>,
 ) -> Result<Profile, String> {
+    materialize_from_source(
+        source_root,
+        profile_id,
+        installed_module_root,
+        receipt_dir,
+        Some(git_bearer),
+        key,
+        context,
+        carrier,
+        syzygy_declaration,
+        MaterializationSource::EngineSource,
+    )
+}
+
+pub(crate) fn materialize_standing_profile(
+    standing_profile_path: &Path,
+    profile_id: &str,
+    installed_module_root: &Path,
+    receipt_dir: &Path,
+    key: &crate::atoms::r#do::InvocationKey,
+    context: Option<&RunContext>,
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
+    syzygy_declaration: Option<crate::SyzygyDeclaration>,
+) -> Result<Profile, String> {
+    if standing_profile_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(profile_id)
+        || standing_profile_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some("profiles")
+    {
+        return Err(format!(
+            "standing-profile-path-invalid profile={profile_id} path={}",
+            standing_profile_path.display()
+        ));
+    }
+    let source_root = standing_profile_path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| format!("{profile_id}-standing-profile-root-missing"))?;
+    materialize_from_source(
+        source_root,
+        profile_id,
+        installed_module_root,
+        receipt_dir,
+        None,
+        key,
+        context,
+        carrier,
+        syzygy_declaration,
+        MaterializationSource::StandingProfile,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_from_source(
+    source_root: &Path,
+    profile_id: &str,
+    installed_module_root: &Path,
+    receipt_dir: &Path,
+    git_bearer: Option<&str>,
+    key: &crate::atoms::r#do::InvocationKey,
+    context: Option<&RunContext>,
+    carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
+    syzygy_declaration: Option<crate::SyzygyDeclaration>,
+    source_kind: MaterializationSource,
+) -> Result<Profile, String> {
     let installed_root = installed_module_root
         .parent()
         .ok_or_else(|| format!("{profile_id}-config-root-missing"))?;
@@ -362,26 +447,46 @@ pub(crate) fn materialize(
         .map_err(|e| format!("{profile_id}-profile-source-read-failed: {e}"))?;
     refreshed.syzygy_declaration = syzygy_declaration;
     let source_modules_root = source_root.join(format!("profiles/{}/modules", refreshed.id));
-    let head = tools::command::capture_with_cwd_as_bearer(
-        "git",
-        &["rev-parse", "HEAD"],
-        source_root.to_str(),
-        git_bearer,
-    );
-    if !head.ok {
-        return Err(format!("{profile_id}-source-head-failed {}", head.stderr));
+    let source_head = match source_kind {
+        MaterializationSource::EngineSource => {
+            let git_bearer =
+                git_bearer.ok_or_else(|| format!("{profile_id}-source-git-bearer-missing"))?;
+            let head = tools::command::capture_with_cwd_as_bearer(
+                "git",
+                &["rev-parse", "HEAD"],
+                source_root.to_str(),
+                git_bearer,
+            );
+            if !head.ok {
+                return Err(format!("{profile_id}-source-head-failed {}", head.stderr));
+            }
+            let source_head = head.stdout.trim().to_string();
+            if source_head.is_empty() {
+                return Err(format!("{profile_id}-source-head-empty"));
+            }
+            source_head
+        }
+        // Standing profiles have no Git identity. Keep the sealed transaction's
+        // source_head empty and receipt the source kind/path separately.
+        MaterializationSource::StandingProfile => String::new(),
+    };
+    match source_kind {
+        MaterializationSource::EngineSource => molt(
+            source_root,
+            profile_id,
+            installed_root,
+            receipt_dir,
+            MoltMode::Copy,
+        )?,
+        MaterializationSource::StandingProfile => molt::molt_standing_profile_at_subscription_path(
+            source_root,
+            profile_id,
+            installed_root,
+            receipt_dir,
+            &subscription_path(),
+            MoltMode::Copy,
+        )?,
     }
-    let source_head = head.stdout.trim().to_string();
-    if source_head.is_empty() {
-        return Err(format!("{profile_id}-source-head-empty"));
-    }
-    molt(
-        source_root,
-        profile_id,
-        installed_root,
-        receipt_dir,
-        MoltMode::Copy,
-    )?;
     // Re-read the freshly staged module tree. The pre-stage projection may describe
     // stale installed content; apply must reach molt before current validation runs.
     let projection = crate::bands::stage_profile::projection::load_profile_projection(
@@ -439,15 +544,28 @@ pub(crate) fn materialize(
     }
     if !divergent_modules.is_empty() {
         let forced_modules = divergent_modules.iter().cloned().collect();
-        molt_at_subscription_path_for_modules(
-            source_root,
-            profile_id,
-            installed_root,
-            receipt_dir,
-            &subscription_path(),
-            MoltMode::Copy,
-            &forced_modules,
-        )?;
+        match source_kind {
+            MaterializationSource::EngineSource => molt_at_subscription_path_for_modules(
+                source_root,
+                profile_id,
+                installed_root,
+                receipt_dir,
+                &subscription_path(),
+                MoltMode::Copy,
+                &forced_modules,
+            )?,
+            MaterializationSource::StandingProfile => {
+                molt::molt_standing_profile_at_subscription_path_for_modules(
+                    source_root,
+                    profile_id,
+                    installed_root,
+                    receipt_dir,
+                    &subscription_path(),
+                    MoltMode::Copy,
+                    &forced_modules,
+                )?
+            }
+        }
     }
     let mut source_module_hashes = BTreeMap::new();
     let mut installed_module_hashes = BTreeMap::new();
@@ -498,8 +616,18 @@ pub(crate) fn materialize(
         &subscription_path(),
         SubscriptionUpdate {
             lane: preserve_existing_lane_or_default(&subscription_path()),
-            source: source_root.display().to_string(),
-            ref_name: source_head,
+            source: match source_kind {
+                MaterializationSource::EngineSource => source_root.display().to_string(),
+                MaterializationSource::StandingProfile => source_root
+                    .join("profiles")
+                    .join(&refreshed.id)
+                    .display()
+                    .to_string(),
+            },
+            ref_name: match source_kind {
+                MaterializationSource::EngineSource => source_head,
+                MaterializationSource::StandingProfile => source_kind.as_str().to_string(),
+            },
             selected_profile: refreshed.id.clone(),
             engine_version_received: VERSION.to_string(),
             modules,

@@ -28,6 +28,39 @@ impl MoltMode {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum MoltSourceKind {
+    EngineSource,
+    StandingProfile,
+}
+
+impl MoltSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::EngineSource => "engine-source",
+            Self::StandingProfile => "standing-profile",
+        }
+    }
+
+    fn subscription_source(self, harmonia_root: &Path, profile_id: &str) -> String {
+        match self {
+            Self::EngineSource => format!("molt:{}", harmonia_root.display()),
+            Self::StandingProfile => harmonia_root
+                .join("profiles")
+                .join(profile_id)
+                .display()
+                .to_string(),
+        }
+    }
+
+    fn ref_name(self) -> &'static str {
+        match self {
+            Self::EngineSource => "molt",
+            Self::StandingProfile => "standing-profile",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct MoltArtifact {
     kind: &'static str,
@@ -49,6 +82,8 @@ struct MoltReceipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     union_module_count: Option<usize>,
     harmonia_root: String,
+    source_kind: &'static str,
+    source_profile_path: String,
     output_dir: String,
     mode: &'static str,
     artifacts: Vec<MoltArtifact>,
@@ -107,10 +142,77 @@ pub(crate) fn molt_at_subscription_path_for_modules(
     mode: MoltMode,
     forced_modules: &BTreeSet<String>,
 ) -> Result<(), String> {
+    molt_from_source_kind(
+        harmonia_root,
+        profile_id,
+        output_dir,
+        receipt_dir,
+        subscription_path,
+        mode,
+        forced_modules,
+        MoltSourceKind::EngineSource,
+    )
+}
+
+pub(crate) fn molt_standing_profile_at_subscription_path(
+    harmonia_root: &Path,
+    profile_id: &str,
+    output_dir: &Path,
+    receipt_dir: &Path,
+    subscription_path: &Path,
+    mode: MoltMode,
+) -> Result<(), String> {
+    molt_standing_profile_at_subscription_path_for_modules(
+        harmonia_root,
+        profile_id,
+        output_dir,
+        receipt_dir,
+        subscription_path,
+        mode,
+        &BTreeSet::new(),
+    )
+}
+
+pub(crate) fn molt_standing_profile_at_subscription_path_for_modules(
+    harmonia_root: &Path,
+    profile_id: &str,
+    output_dir: &Path,
+    receipt_dir: &Path,
+    subscription_path: &Path,
+    mode: MoltMode,
+    forced_modules: &BTreeSet<String>,
+) -> Result<(), String> {
+    molt_from_source_kind(
+        harmonia_root,
+        profile_id,
+        output_dir,
+        receipt_dir,
+        subscription_path,
+        mode,
+        forced_modules,
+        MoltSourceKind::StandingProfile,
+    )
+}
+
+fn molt_from_source_kind(
+    harmonia_root: &Path,
+    profile_id: &str,
+    output_dir: &Path,
+    receipt_dir: &Path,
+    subscription_path: &Path,
+    mode: MoltMode,
+    forced_modules: &BTreeSet<String>,
+    source_kind: MoltSourceKind,
+) -> Result<(), String> {
     let key = crate::invocation_face::mint(&["molt".into(), "--apply".into()])
         .0
         .ok_or_else(|| "molt-invocation-key-missing".to_string())?;
-    validate_harmonia_config_root(harmonia_root)?;
+    match source_kind {
+        MoltSourceKind::EngineSource => validate_harmonia_config_root(harmonia_root)?,
+        MoltSourceKind::StandingProfile => {
+            validate_standing_profile_root(harmonia_root, profile_id)?
+        }
+    }
     let profile_path = harmonia_root
         .join("profiles")
         .join(profile_id)
@@ -160,20 +262,23 @@ pub(crate) fn molt_at_subscription_path_for_modules(
     let mut refreshed_modules = Vec::new();
     let mut pruned_paths = Vec::new();
     let mut untouched_modules = Vec::new();
-    export_one(
-        &key,
-        &profile_path,
-        &output_dir.join("index.json"),
-        "profile-index",
-        mode,
-        &mut artifacts,
-    )?;
+    let same_standing_profile = matches!(source_kind, MoltSourceKind::StandingProfile)
+        && profile_path == output_dir.join("index.json");
+    if !same_standing_profile {
+        export_one(
+            &key,
+            &profile_path,
+            &output_dir.join("index.json"),
+            "profile-index",
+            mode,
+            &mut artifacts,
+        )?;
+    }
     if mode == MoltMode::Copy && extension.is_some() {
         let index_path = output_dir.join("index.json");
-        let mut materialized: serde_json::Value = serde_json::from_slice(
-            &fs::read(&index_path).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        let mut materialized: serde_json::Value =
+            serde_json::from_slice(&fs::read(&index_path).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
         materialized["modules"] = serde_json::json!(profile.modules);
         // Keep source lineage as inert metadata. Runtime profile selection uses
         // the flattened modules and must not resolve another installed profile.
@@ -185,14 +290,29 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         crate::tools::comparison::execute(
             "molt-materialize-profile-union-index",
             || Ok(fs::read(&index_path).ok().as_deref() == Some(bytes.as_slice())),
-            |same| if *same { crate::tools::comparison::DiffDecision::Empty } else { crate::tools::comparison::DiffDecision::Different },
-            |authorization, _| crate::tools::files::file_write(
-                &authorization,
-                &key,
-                &index_path,
-                &bytes,
-                crate::tools::files::FileWriteOptions { write_bytes: true, mode: None, uid: None, gid: None, backup_to: None },
-            ).map(|_| ()),
+            |same| {
+                if *same {
+                    crate::tools::comparison::DiffDecision::Empty
+                } else {
+                    crate::tools::comparison::DiffDecision::Different
+                }
+            },
+            |authorization, _| {
+                crate::tools::files::file_write(
+                    &authorization,
+                    &key,
+                    &index_path,
+                    &bytes,
+                    crate::tools::files::FileWriteOptions {
+                        write_bytes: true,
+                        mode: None,
+                        uid: None,
+                        gid: None,
+                        backup_to: None,
+                    },
+                )
+                .map(|_| ())
+            },
         )?;
     }
 
@@ -340,8 +460,8 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         &subscription_path,
         SubscriptionUpdate {
             lane,
-            source: format!("molt:{}", harmonia_root.display()),
-            ref_name: "molt".to_string(),
+            source: source_kind.subscription_source(harmonia_root, &profile.id),
+            ref_name: source_kind.ref_name().to_string(),
             selected_profile: profile.id.clone(),
             engine_version_received: VERSION.to_string(),
             modules: subscription_modules,
@@ -359,6 +479,12 @@ pub(crate) fn molt_at_subscription_path_for_modules(
         base_profile_id: extension.clone(),
         union_module_count: extension.as_ref().map(|_| profile.modules.len()),
         harmonia_root: harmonia_root.display().to_string(),
+        source_kind: source_kind.as_str(),
+        source_profile_path: profile_path
+            .parent()
+            .ok_or_else(|| "molt-profile-parent-missing".to_string())?
+            .display()
+            .to_string(),
         output_dir: output_dir.display().to_string(),
         mode: mode.as_str(),
         artifacts,
@@ -482,6 +608,24 @@ fn validate_harmonia_config_root(harmonia_root: &Path) -> Result<(), String> {
         return Err(format!(
             "molt-harmonia-root-rejected missing=profiles root={}",
             harmonia_root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_standing_profile_root(harmonia_root: &Path, profile_id: &str) -> Result<(), String> {
+    let profile_dir = harmonia_root.join("profiles").join(profile_id);
+    let profile_index = profile_dir.join("index.json");
+    if !profile_dir.is_dir() {
+        return Err(format!(
+            "molt-standing-profile-root-rejected missing=profile-directory path={}",
+            profile_dir.display()
+        ));
+    }
+    if !profile_index.is_file() {
+        return Err(format!(
+            "molt-standing-profile-root-rejected missing=profile-index path={}",
+            profile_index.display()
         ));
     }
     Ok(())
