@@ -25,7 +25,6 @@ A profile names one appliance identity and the modules that maintain it. Each fo
 - `element` defines the Element Web client and portal surface; it follows Synapse because its configuration targets and validates the Synapse endpoint.
 - `tailscale` defines private network access as a product capability.
 - `samba` defines LAN file sharing.
-- `systemd` owns HOMESERVER systemd unit and mount management. Every reusable unit template lives directly in `profiles/homeserver/modules/systemd/`; Harmonia treats those files as the desired unit set for `/etc/systemd/system/`.
 - `udev` owns HOMESERVER UDEV rule management. Every reusable HOMESERVER UDEV rule lives directly in `profiles/homeserver/modules/udev/`; Harmonia treats those files as the desired rule set for `/etc/udev/rules.d/`.
 - Application modules describe the public service concerns Harmonia will maintain as they graduate into executable modules.
 

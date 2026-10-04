@@ -1,5 +1,7 @@
 [Unit]
 Description=Start Transmission VPN and Services
+ConditionPathIsMountPoint=/vault
+ConditionPathIsMountPoint=/mnt/nas
 
 [Service]
 Type=simple

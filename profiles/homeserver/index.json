@@ -39,7 +39,6 @@
       "samba",
       "vaultwarden",
       "udev",
-      "systemd",
       "searx",
       "rust-build-toolchain",
       "sudoers",
@@ -76,7 +75,6 @@
     "samba",
     "vaultwarden",
     "udev",
-    "systemd",
     "system-packages",
     "synapse",
     "element",
@@ -107,7 +105,6 @@
     "samba",
     "vaultwarden",
     "udev",
-    "systemd",
     "searx",
     "rust-build-toolchain",
     "sudoers",
@@ -157,27 +154,6 @@
         "record per-rule receipt"
       ],
       "initial_rule": "99-rapl-permissions.rules.tmpl"
-    },
-    "systemd": {
-      "source_dir": "profiles/homeserver/modules/systemd",
-      "source_glob": "*.service.tmpl,*.mount.tmpl,*.timer.tmpl,*.socket.tmpl,*.path.tmpl,*.target.tmpl",
-      "target_dir": "/etc/systemd/system",
-      "target_name": "strip .tmpl suffix",
-      "update_steps": [
-        "render desired unit",
-        "read installed unit if present",
-        "compare desired bytes to installed bytes",
-        "write temporary target only on difference",
-        "promote into place",
-        "set declared mode and ownership",
-        "run systemctl daemon-reload when any unit changed",
-        "reconcile declared unit enablement or activity",
-        "record per-unit receipt"
-      ],
-      "initial_units": [
-        "transmissionPIA.service.tmpl",
-        "vault.mount.tmpl"
-      ]
     }
   },
   "module_currentness_contract": {

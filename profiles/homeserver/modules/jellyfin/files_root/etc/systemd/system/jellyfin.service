@@ -1,5 +1,6 @@
 [Unit]
 Description=Jellyfin Media Server
+ConditionPathIsMountPoint=/mnt/nas
 
 [Service]
 Type=simple

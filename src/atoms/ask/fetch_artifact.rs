@@ -24,6 +24,7 @@ pub(crate) fn unique_temp_suffix() -> String {
 struct ReleaseMetadata {
     url: String,
     target_commitish: String,
+    created_at: Option<String>,
     assets: serde_json::Value,
 }
 fn release_api(r: &ReleaseRequest) -> String {
@@ -111,6 +112,10 @@ fn lookup_release_metadata_single(
     Ok(Some(ReleaseMetadata {
         url,
         target_commitish,
+        created_at: value
+            .get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
         assets,
     }))
 }
@@ -204,7 +209,28 @@ fn fetch_release_assets_inner(
     require_tag_commitish_match: bool,
     pin_to_target_commitish: bool,
 ) -> Result<Option<ReleaseAssets>, String> {
-    if r.kind != "forgejo-release"
+    Ok(fetch_release_assets_inner_with_created_at(
+        r,
+        tag,
+        asset_name,
+        sidecar_name,
+        inspect_release_flag,
+        require_tag_commitish_match,
+        pin_to_target_commitish,
+    )?
+    .map(|(assets, _created_at)| assets))
+}
+
+fn fetch_release_assets_inner_with_created_at(
+    r: &ReleaseRequest,
+    tag: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    inspect_release_flag: bool,
+    require_tag_commitish_match: bool,
+    pin_to_target_commitish: bool,
+) -> Result<Option<(ReleaseAssets, Option<String>)>, String> {
+    if !matches!(r.kind.as_str(), "forgejo-release" | "github-release")
         || !safe_release_segment(tag)
         || !safe_release_segment(&r.owner)
         || !safe_release_segment(&r.repo)
@@ -222,6 +248,7 @@ fn fetch_release_assets_inner(
     let Some(m) = metadata else {
         return Ok(None);
     };
+    let created_at = m.created_at.clone();
     let expected_commit = source_sha_from_release_tag(tag);
     if !pin_to_target_commitish
         && (expected_commit.is_some_and(|source_sha| m.target_commitish != source_sha)
@@ -238,13 +265,16 @@ fn fetch_release_assets_inner(
         .flatten()
         .map(|url| download_release_asset(r, &url, "release.flag", inspect_release_flag))
         .transpose()?;
-    Ok(Some(ReleaseAssets {
-        artifact: download_release_asset(r, &au, asset_name, inspect_release_flag)?,
-        sidecar: download_release_asset(r, &su, sidecar_name, inspect_release_flag)?,
-        release_flag,
-        metadata_url: m.url,
-        target_commitish: m.target_commitish,
-    }))
+    Ok(Some((
+        ReleaseAssets {
+            artifact: download_release_asset(r, &au, asset_name, inspect_release_flag)?,
+            sidecar: download_release_asset(r, &su, sidecar_name, inspect_release_flag)?,
+            release_flag,
+            metadata_url: m.url,
+            target_commitish: m.target_commitish,
+        },
+        created_at,
+    )))
 }
 
 pub(crate) fn fetch_release_asset(
@@ -964,6 +994,18 @@ fn release_source_revision(
     let Some(flag_bytes) = release.release_flag.as_deref() else {
         return Ok((release.target_commitish.clone(), None));
     };
+    let (source_sha, version) = release_flag_source_revision(flag_bytes, component, schema_base)?;
+    if release.target_commitish != source_sha {
+        return Err("fetch-artifact-release-commit-mismatch".into());
+    }
+    Ok((source_sha, version))
+}
+
+fn release_flag_source_revision(
+    flag_bytes: &[u8],
+    component: &str,
+    schema_base: Option<&str>,
+) -> Result<(String, Option<Value>), String> {
     let flag: Value = serde_json::from_slice(flag_bytes)
         .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
     if let Some(base) = schema_base {
@@ -988,9 +1030,6 @@ fn release_source_revision(
         .ok_or("fetch-artifact-release-flag-source-sha-missing")?;
     if !validate_source_sha(source_sha) {
         return Err("fetch-artifact-release-flag-source-sha-invalid".into());
-    }
-    if release.target_commitish != source_sha {
-        return Err("fetch-artifact-release-commit-mismatch".into());
     }
     Ok((
         source_sha.to_owned(),
@@ -1544,6 +1583,104 @@ pub(crate) fn download_latest_engine_release(
         "engine-release",
         release_schema_base,
     )
+}
+
+/// Read the explicitly configured GitHub rolling release for the public
+/// courtesy mirror. Its fixed `latest` tag is resolved exactly, never by
+/// selecting an arbitrary newest release from the repository's history.
+pub(crate) fn download_github_latest_engine_release(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    release_schema_base: Option<&str>,
+) -> Result<Option<Download>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    validate_segment(component, "component")?;
+    validate_segment(owner, "release-owner")?;
+    validate_segment(repo, "release-repo")?;
+    let request = ReleaseRequest {
+        kind: "github-release".into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential: None,
+        credential_host: None,
+        credential_scope_found: false,
+        cache_dir: std::env::temp_dir().join(format!(
+            "harmonia-github-engine-release-{}",
+            unique_temp_suffix()
+        )),
+    };
+    let result = (|| {
+        let Some((release, created_at)) = fetch_release_assets_inner_with_created_at(
+            &request,
+            "latest",
+            "harmonia-x86_64",
+            "harmonia-x86_64.sha256",
+            true,
+            false,
+            false,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(flag_bytes) = release.release_flag.as_deref() else {
+            return Ok(None);
+        };
+        let created_at = created_at
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "fetch-artifact-github-release-created-at-missing".to_string())?;
+        let (source_sha, _) = release_source_revision(&release, component, release_schema_base)?;
+        if !validate_source_sha(&source_sha) {
+            return Err("fetch-artifact-github-engine-release-source-mismatch".into());
+        }
+        let digest = crate::atoms::file_sha256(&release.artifact);
+        let sidecar_text = String::from_utf8(release.sidecar)
+            .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
+        if sidecar_text != format!("{digest}  harmonia-x86_64\n") {
+            return Err("fetch-artifact-release-sidecar-mismatch".into());
+        }
+        let flag: Value = serde_json::from_slice(flag_bytes)
+            .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
+        if flag.get("sha256").and_then(Value::as_str) != Some(digest.as_str()) {
+            return Err("fetch-artifact-release-flag-digest-mismatch".into());
+        }
+        let env_sha = flag
+            .get("env_sha")
+            .and_then(Value::as_str)
+            .filter(|value| is_hex(value, 64))
+            .ok_or_else(|| "fetch-artifact-release-flag-env-sha-invalid".to_string())?;
+        let pipeline_url = flag
+            .get("pipeline_url")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "fetch-artifact-release-flag-pipeline-url-missing".to_string())?;
+        Ok(Some(Download {
+            manifest: Manifest {
+                schema: MANIFEST_SCHEMA.into(),
+                component: component.into(),
+                source_sha,
+                target: BUILD_TARGET.into(),
+                sha256: digest,
+                built_at: created_at,
+                pipeline_url: pipeline_url.into(),
+                env_sha: Some(env_sha.into()),
+                rustc_version: flag
+                    .get("rustc_version")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            },
+            bytes: release.artifact,
+            identity: "engine-release".into(),
+        }))
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result
 }
 
 #[derive(Debug)]

@@ -1136,6 +1136,7 @@ fn emit_preflight_receipt(
             "engine_lane": null,
             "resolved_tag": null,
             "blocked_target": null,
+            "engine_release_candidates": [],
             "nudge": if operation_count > 0 { "evidence" } else { "not-observed" },
             "bless": if apply { "the-apply-press" } else { "not-pressed" },
             "bootstrap_order": if ok && apply { "unproven" } else { "incomplete" },
@@ -1167,6 +1168,20 @@ fn update_engine_preflight_contract(
     receipt["engine_lane"] = lane.map_or(Value::Null, |value| json!(value));
     receipt["resolved_tag"] = resolved_tag.map_or(Value::Null, |value| json!(value));
     receipt["blocked_target"] = blocked_target.map_or(Value::Null, |value| json!(value));
+    write_json(&path, &receipt)
+}
+
+fn update_engine_release_candidate_receipts(
+    preflight_dir: &Path,
+    candidates: &[Value],
+) -> Result<(), String> {
+    let path = preflight_dir.join("run.json");
+    let mut receipt: Value = serde_json::from_str(
+        &fs::read_to_string(&path)
+            .map_err(|error| format!("engine-preflight-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("engine-preflight-receipt-parse-failed: {error}"))?;
+    receipt["engine_release_candidates"] = json!(candidates);
     write_json(&path, &receipt)
 }
 
@@ -1257,15 +1272,227 @@ fn release_identity_from_candidate(locator: &str) -> Result<(String, String), St
     ))
 }
 
-fn release_identity_for_preflight(locator: &str) -> Result<(String, String), String> {
-    #[cfg(test)]
-    if injected_engine_release().is_some() {
-        return Ok((
-            "https://fixture.invalid/api/v1".into(),
-            "fixture/engine".into(),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EngineReleaseProvider {
+    Forgejo,
+    GitHub,
+}
+
+impl EngineReleaseProvider {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Forgejo => "forgejo",
+            Self::GitHub => "github",
+        }
+    }
+
+    fn release_target(self, locator: &str) -> String {
+        match self {
+            Self::Forgejo => format!("{locator}@newest-sha-release"),
+            Self::GitHub => format!("{locator}@releases/tags/latest"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EngineReleaseSource {
+    provider: EngineReleaseProvider,
+    api_root: String,
+    repository: String,
+}
+
+fn github_release_repository_from_candidate(locator: &str) -> Result<String, String> {
+    let locator = locator.trim();
+    let path = if let Some(rest) = locator.strip_prefix("https://") {
+        let (authority, path) = rest
+            .split_once('/')
+            .ok_or_else(|| format!("engine-release-candidate-path-missing target={locator}"))?;
+        if !authority.eq_ignore_ascii_case("github.com") {
+            return Err(format!(
+                "engine-release-candidate-unsupported-github-host target={locator}"
+            ));
+        }
+        path
+    } else if let Some(rest) = locator.strip_prefix("ssh://git@") {
+        let (authority, path) = rest
+            .split_once('/')
+            .ok_or_else(|| format!("engine-release-candidate-path-missing target={locator}"))?;
+        if !authority.eq_ignore_ascii_case("github.com") {
+            return Err(format!(
+                "engine-release-candidate-unsupported-github-host target={locator}"
+            ));
+        }
+        path
+    } else if let Some(path) = locator.strip_prefix("git@github.com:") {
+        path
+    } else {
+        return Err(format!(
+            "engine-release-candidate-unsupported-provider target={locator}"
+        ));
+    };
+    if path.contains(['?', '#', '\r', '\n', '@']) {
+        return Err(format!(
+            "engine-release-candidate-path-invalid target={locator}"
         ));
     }
-    release_identity_from_candidate(locator)
+    let mut parts = path.trim_matches('/').split('/');
+    let owner = parts.next().unwrap_or_default();
+    let raw_repo = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || owner.is_empty()
+        || raw_repo.is_empty()
+        || !owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(format!(
+            "engine-release-candidate-repo-ambiguous target={locator}"
+        ));
+    }
+    let repo = raw_repo.strip_suffix(".git").unwrap_or(raw_repo);
+    if repo.is_empty()
+        || !repo
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        || repo == "."
+        || repo == ".."
+    {
+        return Err(format!(
+            "engine-release-candidate-repo-invalid target={locator}"
+        ));
+    }
+    Ok(format!("{owner}/{repo}"))
+}
+
+fn engine_release_api_root(
+    provider: EngineReleaseProvider,
+    production_root: &str,
+) -> Result<String, String> {
+    #[cfg(not(any(test, feature = "test-facade")))]
+    let _ = provider;
+    #[cfg(any(test, feature = "test-facade"))]
+    if let Some(root) = test_engine_release_api_root(provider)? {
+        return Ok(root);
+    }
+    Ok(production_root.to_owned())
+}
+
+#[cfg(any(test, feature = "test-facade"))]
+fn test_engine_release_api_root(provider: EngineReleaseProvider) -> Result<Option<String>, String> {
+    let variable = match provider {
+        EngineReleaseProvider::Forgejo => "HARMONIA_TEST_FORGEJO_RELEASE_API_BASE",
+        EngineReleaseProvider::GitHub => "HARMONIA_TEST_GITHUB_RELEASE_API_BASE",
+    };
+    let Some(value) = env::var_os(variable) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| {
+            format!(
+                "engine-release-test-api-base-invalid provider={}",
+                provider.name()
+            )
+        })?
+        .trim_end_matches('/');
+    let Some(rest) = value.strip_prefix("http://") else {
+        return Err(format!(
+            "engine-release-test-api-base-invalid provider={}",
+            provider.name()
+        ));
+    };
+    let (authority, path) = rest
+        .split_once('/')
+        .map_or((rest, ""), |(authority, path)| (authority, path));
+    let port = if let Some(port) = authority.strip_prefix("127.0.0.1:") {
+        port
+    } else if let Some(port) = authority.strip_prefix("[::1]:") {
+        port
+    } else {
+        return Err(format!(
+            "engine-release-test-api-base-invalid provider={}",
+            provider.name()
+        ));
+    };
+    if port.parse::<u16>().ok().filter(|port| *port != 0).is_none()
+        || path.contains(['?', '#', '\\', '\r', '\n'])
+        || match provider {
+            EngineReleaseProvider::Forgejo => !path.is_empty() && path != "api/v1",
+            EngineReleaseProvider::GitHub => !path.is_empty(),
+        }
+    {
+        return Err(format!(
+            "engine-release-test-api-base-invalid provider={}",
+            provider.name()
+        ));
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn engine_release_source_for_candidate(
+    candidate: &crate::atoms::git_artifact::SourceCandidate,
+) -> Result<EngineReleaseSource, String> {
+    if candidate.kind != crate::atoms::git_artifact::SourceCandidateKind::Git {
+        return Err(format!(
+            "engine-release-candidate-kind-unsupported kind={:?}",
+            candidate.kind
+        ));
+    }
+    if candidate.locator.starts_with("git@git.home.arpa:")
+        || candidate.locator.starts_with("ssh://git@git.home.arpa/")
+        || candidate.locator.starts_with("https://git.home.arpa/")
+    {
+        let (production_root, repository) = release_identity_from_candidate(&candidate.locator)?;
+        return Ok(EngineReleaseSource {
+            provider: EngineReleaseProvider::Forgejo,
+            api_root: engine_release_api_root(EngineReleaseProvider::Forgejo, &production_root)?,
+            repository,
+        });
+    }
+    let repository = github_release_repository_from_candidate(&candidate.locator)?;
+    Ok(EngineReleaseSource {
+        provider: EngineReleaseProvider::GitHub,
+        api_root: engine_release_api_root(EngineReleaseProvider::GitHub, "https://api.github.com")?,
+        repository,
+    })
+}
+
+fn engine_release_candidate_receipt(
+    index: usize,
+    candidate: &crate::atoms::git_artifact::SourceCandidate,
+    provider: Option<&str>,
+    target: Option<&str>,
+    attempt_state: &str,
+    disposition: &str,
+    source_sha: Option<&str>,
+    digest: Option<&str>,
+    blocker: Option<&str>,
+) -> Value {
+    json!({
+        "candidate_index": index,
+        "candidate_kind": match candidate.kind {
+            crate::atoms::git_artifact::SourceCandidateKind::Git => "git",
+            crate::atoms::git_artifact::SourceCandidateKind::LocalCheckout => "local-checkout",
+        },
+        "candidate_locator": candidate.locator,
+        "observed": {
+            "configured": true,
+            "provider": provider,
+            "target": target,
+        },
+        "could-change": false,
+        "attempt": {
+            "operation": "inspect-and-validate-engine-release",
+            "state": attempt_state,
+        },
+        "final-state": {
+            "disposition": disposition,
+            "selected": disposition == "selected",
+            "source_sha": source_sha,
+            "sha256": digest,
+            "blocker": blocker,
+        },
+    })
 }
 
 fn source_fallback_plan(
@@ -1332,19 +1559,30 @@ fn write_content_seat_observation(
 
 fn download_engine_release_for_preflight(
     component: &str,
-    release_repo: &str,
-    api_root: &str,
+    source: &EngineReleaseSource,
 ) -> Result<Option<crate::atoms::ask::fetch_artifact::Download>, String> {
     #[cfg(test)]
     if let Some(injected) = injected_engine_release() {
         return Ok(injected);
     }
-    crate::atoms::ask::fetch_artifact::download_latest_engine_release(
-        component,
-        release_repo,
-        api_root,
-        None,
-    )
+    match source.provider {
+        EngineReleaseProvider::Forgejo => {
+            crate::atoms::ask::fetch_artifact::download_latest_engine_release(
+                component,
+                &source.repository,
+                &source.api_root,
+                None,
+            )
+        }
+        EngineReleaseProvider::GitHub => {
+            crate::atoms::ask::fetch_artifact::download_github_latest_engine_release(
+                component,
+                &source.repository,
+                &source.api_root,
+                None,
+            )
+        }
+    }
 }
 
 fn observe_or_acquire_content_seat(
@@ -1541,6 +1779,7 @@ pub(crate) fn run_engine_preflight(
     };
     let mut staged_from_artifact = false;
     let mut artifact_download = None;
+    let mut release_candidate_receipts = Vec::new();
 
     match resolution.source_policy.as_str() {
         "artifact" => {
@@ -1550,72 +1789,143 @@ pub(crate) fn run_engine_preflight(
                 engine_source_root(),
                 None,
             );
-            let candidate = source_plan
-                .candidates
-                .first()
-                .map(|candidate| candidate.locator.as_str());
-            if let Some(candidate) = candidate {
-                let target = format!("{candidate}@newest-engine-release");
-                match release_identity_for_preflight(candidate) {
+            let mut selected_download = None;
+            for (index, candidate) in source_plan.candidates.iter().enumerate() {
+                let candidate_index = index + 1;
+                if selected_download.is_some() {
+                    release_candidate_receipts.push(engine_release_candidate_receipt(
+                        candidate_index,
+                        candidate,
+                        None,
+                        None,
+                        "not-attempted",
+                        "not-attempted",
+                        None,
+                        None,
+                        Some("higher-priority-candidate-selected"),
+                    ));
+                    continue;
+                }
+                let candidate_target = format!("{}@release-source", candidate.locator);
+                match engine_release_source_for_candidate(candidate) {
                     Err(error) => {
-                        blocked_target = Some(target.clone());
-                        first_missing_signal =
-                            format!("engine-artifact-refused target={target}: {error}");
+                        let disposition = if candidate.kind
+                            == crate::atoms::git_artifact::SourceCandidateKind::Git
+                        {
+                            "refused"
+                        } else {
+                            "not-release-candidate"
+                        };
+                        release_candidate_receipts.push(engine_release_candidate_receipt(
+                            candidate_index,
+                            candidate,
+                            None,
+                            Some(&candidate_target),
+                            "candidate-validation-completed",
+                            disposition,
+                            None,
+                            None,
+                            Some(&error),
+                        ));
                     }
-                    Ok((api_root, release_repo)) => {
-                        match download_engine_release_for_preflight(
-                            &component,
-                            &release_repo,
-                            &api_root,
-                        ) {
+                    Ok(source) => {
+                        let provider = source.provider.name();
+                        let target = source.provider.release_target(&candidate.locator);
+                        match download_engine_release_for_preflight(&component, &source) {
                             Ok(Some(download)) => {
                                 let selected_sha = download.manifest.source_sha.clone();
                                 if !crate::atoms::git_artifact::is_lower_hex_sha(&selected_sha) {
-                                    blocked_target = Some(target.clone());
-                                    first_missing_signal = format!(
-                                        "engine-artifact-source-sha-invalid target={target}"
+                                    let error = "engine-artifact-source-sha-invalid";
+                                    release_candidate_receipts.push(
+                                        engine_release_candidate_receipt(
+                                            candidate_index,
+                                            candidate,
+                                            Some(provider),
+                                            Some(&target),
+                                            "completed",
+                                            "refused",
+                                            Some(&selected_sha),
+                                            Some(&download.manifest.sha256),
+                                            Some(error),
+                                        ),
                                     );
                                 } else {
-                                    source_head = Some(selected_sha.clone());
-                                    resolved_sha = Some(selected_sha.clone());
-                                    let content_seat = observe_or_acquire_content_seat(
-                                        &resolution,
-                                        &selected_sha,
-                                        apply,
-                                        invocation,
-                                        &preflight_dir,
-                                    )?;
-                                    operation_count += 1;
-                                    if !content_seat.move_ok {
-                                        first_missing_signal =
-                                            "engine-content-seat-move-failed".into();
-                                    } else if !content_seat.matches {
-                                        first_missing_signal =
-                                            "engine-content-seat-head-mismatch".into();
-                                    }
-                                    artifact_download = Some(download);
+                                    release_candidate_receipts.push(
+                                        engine_release_candidate_receipt(
+                                            candidate_index,
+                                            candidate,
+                                            Some(provider),
+                                            Some(&target),
+                                            "completed",
+                                            "selected",
+                                            Some(&selected_sha),
+                                            Some(&download.manifest.sha256),
+                                            None,
+                                        ),
+                                    );
+                                    selected_download = Some(download);
                                 }
                             }
                             Ok(None) => {
-                                blocked_target = Some(target.clone());
-                                first_missing_signal =
-                                    format!("engine-artifact-unavailable target={target}");
-                                build.stderr = first_missing_signal.clone();
+                                release_candidate_receipts.push(engine_release_candidate_receipt(
+                                    candidate_index,
+                                    candidate,
+                                    Some(provider),
+                                    Some(&target),
+                                    "completed",
+                                    "unavailable",
+                                    None,
+                                    None,
+                                    Some("no-eligible-release-returned"),
+                                ));
                             }
                             Err(error) => {
-                                blocked_target = Some(target.clone());
-                                first_missing_signal =
-                                    format!("engine-artifact-refused target={target}: {error}");
-                                build.stderr = first_missing_signal.clone();
+                                release_candidate_receipts.push(engine_release_candidate_receipt(
+                                    candidate_index,
+                                    candidate,
+                                    Some(provider),
+                                    Some(&target),
+                                    "failed",
+                                    "failed",
+                                    None,
+                                    None,
+                                    Some(&error),
+                                ));
                             }
                         }
                     }
                 }
-            } else {
+            }
+            if let Some(download) = selected_download {
+                let selected_sha = download.manifest.source_sha.clone();
+                source_head = Some(selected_sha.clone());
+                resolved_sha = Some(selected_sha.clone());
+                let content_seat = observe_or_acquire_content_seat(
+                    &resolution,
+                    &selected_sha,
+                    apply,
+                    invocation,
+                    &preflight_dir,
+                )?;
+                operation_count += 1;
+                if !content_seat.move_ok {
+                    first_missing_signal = "engine-content-seat-move-failed".into();
+                } else if !content_seat.matches {
+                    first_missing_signal = "engine-content-seat-head-mismatch".into();
+                }
+                artifact_download = Some(download);
+            } else if source_plan.candidates.is_empty() {
                 blocked_target = Some("configured-source@newest-engine-release".into());
                 first_missing_signal =
                     "engine-artifact-refused target=configured-source@newest-engine-release: source-candidates-absent"
                         .into();
+                build.stderr = first_missing_signal.clone();
+            } else {
+                blocked_target = Some("configured-source@ordered-engine-release-candidates".into());
+                first_missing_signal = format!(
+                    "engine-artifact-candidates-exhausted count={}",
+                    source_plan.candidates.len()
+                );
                 build.stderr = first_missing_signal.clone();
             }
         }
@@ -1847,7 +2157,7 @@ pub(crate) fn run_engine_preflight(
         operation_count += 1;
     }
 
-    post_stage_preflight(
+    let execution = post_stage_preflight(
         module_root,
         &preflight_dir,
         &install_bin,
@@ -1867,7 +2177,9 @@ pub(crate) fn run_engine_preflight(
         staged_sha,
         staged_build_identity,
         |plan, invocation| crate::atoms::r#do::replace_process::replace(plan, invocation),
-    )
+    )?;
+    update_engine_release_candidate_receipts(&preflight_dir, &release_candidate_receipts)?;
+    Ok(execution)
 }
 
 fn post_stage_preflight(

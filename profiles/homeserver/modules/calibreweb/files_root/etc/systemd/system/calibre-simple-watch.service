@@ -1,5 +1,6 @@
 [Unit]
 Description=Calibre Simple Watch Directory Monitor
+ConditionPathIsMountPoint=/mnt/nas
 After=network.target calibre-web.service
 Wants=calibre-web.service
 

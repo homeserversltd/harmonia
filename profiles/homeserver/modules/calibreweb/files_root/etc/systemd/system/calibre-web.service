@@ -1,5 +1,6 @@
 [Unit]
 Description=Calibre-Web E-Book Server
+ConditionPathIsMountPoint=/mnt/nas
 
 
 [Service]

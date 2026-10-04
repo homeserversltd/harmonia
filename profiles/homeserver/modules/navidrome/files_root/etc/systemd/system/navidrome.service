@@ -1,7 +1,7 @@
 [Unit]
 Description=Navidrome Music Server
 After=network.target
-After=vault.mount
+ConditionPathIsMountPoint=/mnt/nas
 [Service]
 Type=simple
 User=navidrome
