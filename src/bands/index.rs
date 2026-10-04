@@ -40,6 +40,95 @@ pub(crate) enum Band {
 
 pub(crate) type HaltedSteps = BTreeMap<(String, String), String>;
 
+pub(crate) fn engine_artifact_exhaustion_debt(
+    receipt_dir: &Path,
+    apply: bool,
+    preflight: Option<&crate::module_dispatch::ModuleExecution>,
+) -> Option<crate::bands::report_home::EngineArtifactExhaustionDebt> {
+    if !apply {
+        return None;
+    }
+    let preflight_path = receipt_dir.join("engine-preflight/run.json");
+    let receipt = serde_json::from_slice::<serde_json::Value>(
+        &std::fs::read(&preflight_path).ok()?,
+    )
+    .ok()?;
+    let signal = receipt
+        .get("first_missing_signal")
+        .and_then(serde_json::Value::as_str)?;
+    if let Some(preflight) = preflight {
+        if preflight.ok
+            || preflight.changed
+            || preflight.first_missing_signal.as_deref() != Some(signal)
+        {
+            return None;
+        }
+    }
+    let count_text = signal.strip_prefix("engine-artifact-candidates-exhausted count=")?;
+    let candidate_count = count_text.parse::<usize>().ok()?;
+    if candidate_count == 0 || candidate_count.to_string() != count_text {
+        return None;
+    }
+    if receipt.get("schema").and_then(serde_json::Value::as_str)
+        != Some(crate::bands::renew_self::PREFLIGHT_SCHEMA)
+        || receipt.get("ok").and_then(serde_json::Value::as_bool) != Some(false)
+        || receipt.get("apply").and_then(serde_json::Value::as_bool) != Some(true)
+        || receipt.get("engine_lane").and_then(serde_json::Value::as_str) != Some("artifact")
+        || receipt.get("blocked_target").and_then(serde_json::Value::as_str)
+            != Some("configured-source@ordered-engine-release-candidates")
+        || receipt.get("changed").and_then(serde_json::Value::as_bool) != Some(false)
+        || receipt.get("old_engine_preserved").and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || !receipt
+            .get("installed_sha256")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|digest| !digest.is_empty())
+        || receipt.get("staged_sha256").is_none_or(|digest| !digest.is_null())
+        || receipt.get("reexec").is_none_or(|reexec| !reexec.is_null())
+        || receipt
+            .get("successor_promoted_only_after")
+            .and_then(serde_json::Value::as_str)
+            != Some("not-proven")
+    {
+        return None;
+    }
+    let candidates = receipt
+        .get("engine_release_candidates")
+        .and_then(serde_json::Value::as_array)?;
+    if candidates.len() != candidate_count
+        || candidates.iter().enumerate().any(|(index, candidate)| {
+            candidate
+                .get("candidate_index")
+                .and_then(serde_json::Value::as_u64)
+                != Some((index + 1) as u64)
+                || candidate
+                    .get("observed")
+                    .and_then(|observed| observed.get("configured"))
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+                || candidate
+                    .get("final-state")
+                    .and_then(|final_state| final_state.get("selected"))
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(false)
+                || !candidate
+                    .get("final-state")
+                    .and_then(|final_state| final_state.get("blocker"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|blocker| !blocker.is_empty())
+        })
+    {
+        return None;
+    }
+    Some(crate::bands::report_home::EngineArtifactExhaustionDebt {
+        ok: false,
+        first_missing_signal: signal.to_owned(),
+        candidate_count,
+        candidates: candidates.clone(),
+        preflight_receipt: "engine-preflight/run.json".to_owned(),
+    })
+}
+
 pub(crate) fn halt_step(
     halted_steps: &mut HaltedSteps,
     module_id: &str,
@@ -229,6 +318,7 @@ pub(crate) fn run_profile_engine_with_projection(
         suite_ok: true,
         changed: false,
         first_missing_signal: "none".to_string(),
+        engine_debt: None,
         module_count: active_profile.modules.len(),
         operation_count: 0,
         module_states: BTreeMap::new(),
@@ -289,6 +379,20 @@ pub(crate) fn run_profile_engine_with_projection(
                                     false,
                                     &preflight_signal,
                                 )?;
+                            } else if let Some(debt) =
+                                crate::bands::engine_artifact_exhaustion_debt(
+                                    receipt_dir,
+                                    apply,
+                                    Some(&preflight),
+                                )
+                            {
+                                event(
+                                    &mut events,
+                                    "engine-artifact-exhaustion-debt",
+                                    false,
+                                    &debt.first_missing_signal,
+                                )?;
+                                state.engine_debt = Some(debt);
                             } else {
                                 event(
                                     &mut events,
@@ -315,18 +419,33 @@ pub(crate) fn run_profile_engine_with_projection(
                     if !preflight.ok {
                         let preflight_signal = preflight
                             .first_missing_signal
+                            .clone()
                             .unwrap_or_else(|| "harmonia-engine-preflight-failed".to_string());
-                        event(
-                            &mut events,
-                            "engine-preflight-honest-staleness",
-                            false,
-                            &preflight_signal,
-                        )?;
-                        // An observation failure is a named blocker in both
-                        // report-only and apply modes; never report convergence
-                        // from an unavailable probe.
-                        state.ok = false;
-                        state.first_missing_signal = preflight_signal;
+                        if let Some(debt) = crate::bands::engine_artifact_exhaustion_debt(
+                            receipt_dir,
+                            apply,
+                            Some(&preflight),
+                        ) {
+                            event(
+                                &mut events,
+                                "engine-artifact-exhaustion-debt",
+                                false,
+                                &debt.first_missing_signal,
+                            )?;
+                            state.engine_debt = Some(debt);
+                        } else {
+                            event(
+                                &mut events,
+                                "engine-preflight-honest-staleness",
+                                false,
+                                &preflight_signal,
+                            )?;
+                            // An observation failure is a named blocker in both
+                            // report-only and apply modes; never report convergence
+                            // from an unavailable probe.
+                            state.ok = false;
+                            state.first_missing_signal = preflight_signal;
+                        }
                     }
                 }
 
@@ -408,17 +527,32 @@ pub(crate) fn run_profile_engine_with_projection(
                         if !fresh.ok {
                             let signal = fresh
                                 .first_missing_signal
+                                .clone()
                                 .unwrap_or_else(|| "harmonia-engine-preflight-failed".into());
-                            state.ok = false;
-                            if state.first_missing_signal == "none" {
-                                state.first_missing_signal = signal.clone();
+                            if let Some(debt) = crate::bands::engine_artifact_exhaustion_debt(
+                                receipt_dir,
+                                apply,
+                                Some(&fresh),
+                            ) {
+                                event(
+                                    &mut events,
+                                    "engine-artifact-exhaustion-debt",
+                                    false,
+                                    &debt.first_missing_signal,
+                                )?;
+                                state.engine_debt = Some(debt);
+                            } else {
+                                state.ok = false;
+                                if state.first_missing_signal == "none" {
+                                    state.first_missing_signal = signal.clone();
+                                }
+                                event(
+                                    &mut events,
+                                    "engine-preflight-fresh-root-failed",
+                                    false,
+                                    &signal,
+                                )?;
                             }
-                            event(
-                                &mut events,
-                                "engine-preflight-fresh-root-failed",
-                                false,
-                                &signal,
-                            )?;
                         } else {
                             event(
                                 &mut events,
@@ -607,6 +741,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         suite_ok: false,
                         changed: false,
                         first_missing_signal: String::new(),
+                        engine_debt: None,
                         module_count: 0,
                         operation_count: 0,
                         module_states: BTreeMap::new(),

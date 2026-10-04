@@ -1585,9 +1585,9 @@ pub(crate) fn download_latest_engine_release(
     )
 }
 
-/// Read the explicitly configured GitHub rolling release for the public
-/// courtesy mirror. Its fixed `latest` tag is resolved exactly, never by
-/// selecting an arbitrary newest release from the repository's history.
+/// Read the explicitly configured GitHub rolling release as a public fallback.
+/// Its fixed `latest` tag is resolved exactly, never by selecting an arbitrary
+/// newest release from the repository's history.
 pub(crate) fn download_github_latest_engine_release(
     component: &str,
     release_repo: &str,
@@ -1630,7 +1630,7 @@ pub(crate) fn download_github_latest_engine_release(
             return Ok(None);
         };
         let Some(flag_bytes) = release.release_flag.as_deref() else {
-            return Ok(None);
+            return Err("fetch-artifact-release-flag-missing".into());
         };
         let created_at = created_at
             .filter(|value| !value.trim().is_empty())

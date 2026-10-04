@@ -739,7 +739,11 @@ fn write_transaction_failure_run_receipt(
     operation_count: usize,
 ) -> Result<(), String> {
     let signal = transaction_failure_signal(error, fallback_signal);
-    write_engine_run_receipt_with_duration(
+    let engine_debt = crate::bands::engine_artifact_exhaustion_debt(receipt_dir, true, None)
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| format!("transaction-engine-debt-serialize-failed: {error}"))?;
+    crate::receipts::write_engine_run_receipt_with_duration_and_steps_and_debt(
         receipt_dir,
         profile,
         true,
@@ -751,6 +755,8 @@ fn write_transaction_failure_run_receipt(
         module_root,
         false,
         0,
+        None,
+        engine_debt.as_ref(),
     )?;
     let mut run = serde_json::from_reader::<_, serde_json::Value>(
         fs::File::open(receipt_dir.join("run.json")).map_err(|e| e.to_string())?,
@@ -773,14 +779,32 @@ fn write_transaction_failure_run_receipt(
         }),
     )?;
     println!("schema=harmonia.run_profile.v1");
+    let mut forwarded = serde_json::json!({"schema":"harmonia.run_profile.v1","ok":false});
+    if let Some(debt) = engine_debt.as_ref() {
+        forwarded["engine_debt"] = debt.clone();
+        forwarded["degraded"] = serde_json::json!(true);
+        forwarded["overall_ok"] = serde_json::json!(false);
+    }
     crate::hyalos::forward_receipt(
         "schema=harmonia.run_profile.v1",
-        "schema=harmonia.run_profile.v1 ok=false",
-        Some(serde_json::json!({"schema":"harmonia.run_profile.v1","ok":false})),
+        &if engine_debt.is_some() {
+            "schema=harmonia.run_profile.v1 ok=false degraded=true overall_ok=false"
+        } else {
+            "schema=harmonia.run_profile.v1 ok=false"
+        },
+        Some(forwarded),
         Some(false),
-            None,
-);
+        None,
+    );
     println!("ok=false");
+    if let Some(debt) = engine_debt.as_ref() {
+        println!("degraded=true");
+        println!("overall_ok=false");
+        println!(
+            "engine_debt_first_missing_signal={}",
+            debt["first_missing_signal"].as_str().unwrap_or("unknown")
+        );
+    }
     println!("changed={}", changed);
     println!("profile_id={}", profile.id);
     println!("module_count={}", profile.modules.len());
