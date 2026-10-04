@@ -33,6 +33,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MIRROR_TIMEOUT_SECONDS = 180
 MIRROR_POLL_SECONDS = 3
 REQUEST_TIMEOUT_SECONDS = 90
+RELEASE_READBACK_TIMEOUT_SECONDS = 60
+RELEASE_READBACK_BACKOFF_SECONDS = (1, 2, 3, 5)
 
 
 class PublishError(RuntimeError):
@@ -423,7 +425,48 @@ class Publisher:
             raise PublishError("GitHub latest release response has an invalid tag identity")
         return release
 
-    def download_github_asset(self, asset, name):
+    @staticmethod
+    def github_release_id(release):
+        release_id = release.get("id")
+        if not isinstance(release_id, int) or isinstance(release_id, bool) or release_id <= 0:
+            raise PublishError("GitHub latest release has an invalid numeric id")
+        return release_id
+
+    def wait_for_github_release(self, expected_id, ready, context):
+        deadline = time.monotonic() + RELEASE_READBACK_TIMEOUT_SECONDS
+        attempt = 0
+        last_observed_id = None
+        while True:
+            release = self.get_github_release()
+            if release is not None:
+                observed_id = self.github_release_id(release)
+                last_observed_id = observed_id
+                if expected_id is None or observed_id == expected_id:
+                    if ready(release):
+                        return release
+            else:
+                last_observed_id = None
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if (expected_id is not None and last_observed_id is not None
+                        and last_observed_id != expected_id):
+                    raise PublishError(
+                        f"GitHub latest release identity conflict during {context}: "
+                        f"expected id {expected_id}, observed id {last_observed_id} "
+                        f"through the {RELEASE_READBACK_TIMEOUT_SECONDS}s readback bound"
+                    )
+                raise PublishError(
+                    f"GitHub latest release {context} readback did not converge "
+                    f"within {RELEASE_READBACK_TIMEOUT_SECONDS}s"
+                )
+            delay = RELEASE_READBACK_BACKOFF_SECONDS[
+                min(attempt, len(RELEASE_READBACK_BACKOFF_SECONDS) - 1)
+            ]
+            time.sleep(min(delay, remaining))
+            attempt += 1
+
+    def download_github_asset(self, asset, name, allow_not_found=False):
         asset_id = asset.get("id")
         if not isinstance(asset_id, int) or isinstance(asset_id, bool) or asset_id <= 0:
             raise PublishError(f"GitHub asset {name} has an invalid numeric id")
@@ -433,16 +476,24 @@ class Publisher:
             "github", "GET", url, accept="application/octet-stream",
             allowed_hosts={"api.github.com"},
         )
+        if allow_not_found and status == 404:
+            return None
         if status != 200:
             raise PublishError(f"GitHub asset {name} download returned HTTP {status}")
         return raw
 
-    def github_asset_contents(self, release):
+    def github_asset_contents(self, release, allow_not_found=False):
         assets = self.asset_map(release, "GitHub")
         if set(assets) != set(EXPECTED_ASSETS):
             return assets, None
-        contents = {name: self.download_github_asset(assets[name], name)
-                    for name in EXPECTED_ASSETS}
+        contents = {}
+        for name in EXPECTED_ASSETS:
+            content = self.download_github_asset(
+                assets[name], name, allow_not_found=allow_not_found
+            )
+            if content is None:
+                return assets, None
+            contents[name] = content
         return assets, contents
 
     def create_github_release(self, sha):
@@ -469,11 +520,20 @@ class Publisher:
             release = self.decode_json(raw, "GitHub release creation")
             if not isinstance(release, dict) or release.get("tag_name") != LATEST_TAG:
                 raise PublishError("created GitHub release has an invalid tag identity")
-            return release
+            release_id = self.github_release_id(release)
+            return self.wait_for_github_release(
+                release_id,
+                lambda current: (
+                    current.get("target_commitish") == sha
+                    and current.get("draft") is False
+                    and current.get("prerelease") is False
+                ),
+                "creation",
+            )
         if status in (409, 422):
-            release = self.get_github_release()
-            if release is not None:
-                return release
+            return self.wait_for_github_release(
+                None, lambda current: True, f"creation conflict after HTTP {status}"
+            )
         raise PublishError(f"GitHub release creation returned HTTP {status}")
 
     def github_upload_url(self, release):
@@ -500,31 +560,41 @@ class Publisher:
             )
 
     def patch_release_publication_state(self, release, sha):
-        if release.get("draft") is False and release.get("prerelease") is False:
+        if (release.get("draft") is False
+                and release.get("prerelease") is False
+                and release.get("target_commitish") == sha):
             return release, False
-        release_id = release.get("id")
-        if not isinstance(release_id, int) or isinstance(release_id, bool) or release_id <= 0:
-            raise PublishError("GitHub latest release has an invalid numeric id")
+        release_id = self.github_release_id(release)
         self.ensure_current_main(sha, "GitHub release state update")
         url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{REPOSITORY}/releases/{release_id}"
-        status, _raw = self.request(
+        status, raw = self.request(
             "github", "PATCH", url,
-            body={"draft": False, "prerelease": False},
+            body={"draft": False, "prerelease": False, "target_commitish": sha},
             allowed_hosts={"api.github.com"},
         )
         if status not in (200, 201):
             raise PublishError(f"GitHub release state update returned HTTP {status}")
-        reread = self.get_github_release()
-        if reread is None or reread.get("id") != release_id:
+        updated = self.decode_json(raw, "GitHub release state update")
+        if not isinstance(updated, dict) or updated.get("tag_name") != LATEST_TAG:
+            raise PublishError("GitHub release state update returned an invalid release")
+        returned_id = self.github_release_id(updated)
+        if returned_id != release_id:
             raise PublishError("GitHub latest release identity changed during state update")
-        if reread.get("draft") is not False or reread.get("prerelease") is not False:
-            raise PublishError("GitHub latest release is not published after state update")
+        reread = self.wait_for_github_release(
+            returned_id,
+            lambda current: (
+                current.get("draft") is False
+                and current.get("prerelease") is False
+                and current.get("target_commitish") == sha
+            ),
+            "publication-state update",
+        )
         return reread, True
 
-    def delete_github_assets(self, release, assets, sha):
-        release_id = release.get("id")
-        if not isinstance(release_id, int) or isinstance(release_id, bool) or release_id <= 0:
-            raise PublishError("GitHub latest release has an invalid numeric id")
+    def delete_github_assets(self, release, assets, sha, expected_release_id):
+        release_id = self.github_release_id(release)
+        if release_id != expected_release_id:
+            raise PublishError("GitHub latest release identity changed before asset deletion")
         for name, asset in assets.items():
             asset_id = asset.get("id")
             if not isinstance(asset_id, int) or isinstance(asset_id, bool) or asset_id <= 0:
@@ -537,18 +607,21 @@ class Publisher:
             )
             if status not in (200, 204):
                 raise PublishError(f"GitHub asset {name} deletion returned HTTP {status}")
-        reread = self.get_github_release()
-        if reread is None or reread.get("id") != release_id:
-            raise PublishError("GitHub latest release identity changed after old asset deletion")
-        if self.asset_map(reread, "GitHub"):
-            raise PublishError("GitHub latest release still has assets after deletion")
+        return self.wait_for_github_release(
+            expected_release_id,
+            lambda current: not self.asset_map(current, "GitHub"),
+            "old asset deletion",
+        )
 
-    def upload_github_assets(self, release, contents, sha):
+    def upload_github_assets(self, release, contents, sha, expected_release_id):
+        if self.github_release_id(release) != expected_release_id:
+            raise PublishError("GitHub latest release identity changed before asset upload")
         upload_url = self.github_upload_url(release)
+        uploaded_ids = {}
         for name in EXPECTED_ASSETS:
             self.ensure_current_main(sha, f"upload of GitHub asset {name}")
             url = upload_url + "?" + urllib.parse.urlencode({"name": name})
-            status, _raw = self.request(
+            status, raw = self.request(
                 "github", "POST", url, body=contents[name],
                 content_type=("application/octet-stream" if name == "harmonia-x86_64"
                               else "text/plain; charset=utf-8" if name.endswith(".sha256")
@@ -557,6 +630,24 @@ class Publisher:
             )
             if status not in (200, 201):
                 raise PublishError(f"GitHub asset {name} upload returned HTTP {status}")
+            uploaded = self.decode_json(raw, f"GitHub asset {name} upload")
+            if not isinstance(uploaded, dict) or uploaded.get("name") != name:
+                raise PublishError(f"GitHub asset {name} upload returned an invalid asset identity")
+            asset_id = uploaded.get("id")
+            if not isinstance(asset_id, int) or isinstance(asset_id, bool) or asset_id <= 0:
+                raise PublishError(f"GitHub asset {name} upload returned an invalid numeric id")
+            uploaded_ids[name] = asset_id
+
+            def asset_visible(current):
+                observed = self.asset_map(current, "GitHub").get(name)
+                return observed is not None and observed.get("id") == asset_id
+
+            self.wait_for_github_release(
+                expected_release_id,
+                asset_visible,
+                f"upload of asset {name}",
+            )
+        return uploaded_ids
 
     def compare_and_publish(self, sha, source_contents):
         self.ensure_current_main(sha, "GitHub release inspection")
@@ -566,6 +657,7 @@ class Publisher:
             release = self.create_github_release(sha)
             created = True
 
+        expected_release_id = self.github_release_id(release)
         release, release_state_changed = self.patch_release_publication_state(release, sha)
         old_assets, old_contents = self.github_asset_contents(release)
         exact_names = set(old_assets) == set(EXPECTED_ASSETS)
@@ -589,23 +681,42 @@ class Publisher:
 
         # A mismatch replaces the complete asset set, including unexpected old names.
         if old_assets:
-            self.delete_github_assets(release, old_assets, sha)
-            release = self.get_github_release()
-            if release is None:
-                raise PublishError("GitHub latest release disappeared before asset upload")
-        self.upload_github_assets(release, source_contents, sha)
+            release = self.delete_github_assets(
+                release, old_assets, sha, expected_release_id
+            )
+        uploaded_ids = self.upload_github_assets(
+            release, source_contents, sha, expected_release_id
+        )
+        verified_contents = None
 
-        verified = self.get_github_release()
-        if verified is None or verified.get("id") != release.get("id"):
-            raise PublishError("GitHub latest release identity changed during upload")
-        verified_assets, verified_contents = self.github_asset_contents(verified)
-        if set(verified_assets) != set(EXPECTED_ASSETS) or verified_contents is None:
-            raise PublishError("GitHub latest asset names do not exactly match Forgejo")
-        if verified_contents != source_contents or any(
-            self.sha256(verified_contents[name]) != self.sha256(source_contents[name])
-            for name in EXPECTED_ASSETS
-        ):
-            raise PublishError("GitHub latest asset readback bytes or digests differ from Forgejo")
+        def final_assets_visible(current):
+            nonlocal verified_contents
+            assets = self.asset_map(current, "GitHub")
+            if set(assets) != set(EXPECTED_ASSETS):
+                return False
+            for name in EXPECTED_ASSETS:
+                observed_id = assets[name].get("id")
+                if (not isinstance(observed_id, int) or isinstance(observed_id, bool)
+                        or observed_id <= 0):
+                    raise PublishError(f"GitHub asset {name} has an invalid numeric id")
+                if observed_id != uploaded_ids.get(name):
+                    return False
+            _assets, contents = self.github_asset_contents(
+                current, allow_not_found=True
+            )
+            if contents is None:
+                return False
+            if contents != source_contents or any(
+                self.sha256(contents[name]) != self.sha256(source_contents[name])
+                for name in EXPECTED_ASSETS
+            ):
+                return False
+            verified_contents = contents
+            return True
+
+        verified = self.wait_for_github_release(
+            expected_release_id, final_assets_visible, "final asset verification"
+        )
         self.facts["github_assets"] = self.describe_assets(verified_contents)
         github_tag_sha = self.get_tag_sha("github")
         self.facts["github_latest_tag_sha"] = github_tag_sha
@@ -636,12 +747,17 @@ class Publisher:
             old_names = sorted(old_assets)
             if set(old_assets) == set(EXPECTED_ASSETS) and old_contents is not None:
                 self.facts["github_assets"] = self.describe_assets(old_contents)
+                release_id = release.get("id")
                 exact_bytes = (
                     old_contents == source_contents
                     and all(self.sha256(old_contents[name]) == self.sha256(source_contents[name])
                             for name in EXPECTED_ASSETS)
                     and release.get("draft") is False
                     and release.get("prerelease") is False
+                    and release.get("target_commitish") == sha
+                    and isinstance(release_id, int)
+                    and not isinstance(release_id, bool)
+                    and release_id > 0
                 )
         current = self.forgejo_main_sha()
         self.facts["forgejo_main_sha"] = current
@@ -663,7 +779,7 @@ class Publisher:
             self.facts.update(
                 status="plan",
                 action="verified-noop",
-                notice="No mutation proposed; current tag and every asset already match",
+                notice="No mutation proposed; release identity, current tag, and every asset match",
             )
             return
         self.facts.update(
