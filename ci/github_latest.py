@@ -19,6 +19,9 @@ FORGEJO_OWNER = "HOMESERVERSLTD"
 REPOSITORY = "harmonia"
 GITHUB_API = "https://api.github.com"
 GITHUB_OWNER = "homeserversltd"
+FORGEJO_PUSH_MIRRORS_SYNC_URL = (
+    f"{FORGEJO_API}/repos/{FORGEJO_OWNER}/{REPOSITORY}/push_mirrors-sync"
+)
 LATEST_TAG = "latest"
 EXPECTED_ASSETS = (
     "harmonia-x86_64",
@@ -44,6 +47,11 @@ class SafeHTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Keep TLS on and never forward credentials across an HTTPS origin change."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if (req.get_method() == "POST"
+                and req.full_url == FORGEJO_PUSH_MIRRORS_SYNC_URL):
+            raise urllib.error.HTTPError(
+                newurl, code, "refusing Forgejo push mirror sync redirect", headers, fp
+            )
         source = urllib.parse.urlsplit(req.full_url)
         target = urllib.parse.urlsplit(newurl)
         if target.scheme != "https" or not target.hostname:
@@ -78,6 +86,14 @@ class Publisher:
             "github_assets": [],
             "action": None,
             "notice": None,
+            "plan_request_policy": "GET-only; never mutates" if plan else None,
+            "push_mirror_sync": {
+                "method": "POST",
+                "endpoint": FORGEJO_PUSH_MIRRORS_SYNC_URL,
+                "required": False,
+                "attempted": False,
+                "http_status": None,
+            },
         }
 
     def request(self, provider, method, url, body=None, content_type=None,
@@ -363,6 +379,17 @@ class Publisher:
             raise PublishError("Forgejo latest tag readback does not resolve to CI_COMMIT_SHA")
         return True
 
+    def sync_forgejo_push_mirror(self):
+        sync = self.facts["push_mirror_sync"]
+        sync["attempted"] = True
+        status, _raw = self.request(
+            "forgejo", "POST", sync["endpoint"],
+            allowed_hosts={"git.home.arpa"},
+        )
+        sync["http_status"] = status
+        if not 200 <= status < 300:
+            raise PublishError(f"Forgejo push mirror sync returned HTTP {status}")
+
     def wait_for_github_tag(self, sha):
         deadline = time.monotonic() + MIRROR_TIMEOUT_SECONDS
         last = None
@@ -599,6 +626,8 @@ class Publisher:
         self.facts["assets"] = self.describe_assets(source_contents)
         github_tag_sha = self.get_tag_sha("github")
         self.facts["github_latest_tag_sha"] = github_tag_sha
+        mirror_sync = self.facts["push_mirror_sync"]
+        mirror_sync["required"] = forgejo_tag_sha != sha or github_tag_sha != sha
         release = self.get_github_release()
         old_names = []
         exact_bytes = False
@@ -622,6 +651,7 @@ class Publisher:
             "required": forgejo_tag_sha != sha,
         }
         if current != sha:
+            mirror_sync["required"] = False
             self.facts.update(
                 status="superseded",
                 action="no-mutation",
@@ -677,9 +707,19 @@ class Publisher:
             self.plan_output(sha, source_contents, forgejo_tag_sha)
             return
 
+        mirror_sync = self.facts["push_mirror_sync"]
         moved = self.set_forgejo_latest_tag(sha, forgejo_tag_sha)
         self.facts["forgejo_latest_tag_sha"] = sha
         self.facts["tag_move"]["changed"] = moved
+        if moved:
+            mirror_sync["required"] = True
+            self.sync_forgejo_push_mirror()
+        else:
+            github_tag_sha = self.get_tag_sha("github")
+            self.facts["github_latest_tag_sha"] = github_tag_sha
+            mirror_sync["required"] = github_tag_sha != sha
+            if mirror_sync["required"]:
+                self.sync_forgejo_push_mirror()
         self.wait_for_github_tag(sha)
         self.compare_and_publish(sha, source_contents)
 
