@@ -265,10 +265,17 @@ pub(crate) fn execute_manifest_band(
                 step, manifest, module_dir, auth, pa, false, key, None,
             )?
         };
+        let mut module_artifact_debt = false;
         if step.tool == "routine" {
             let routine = routine_states
                 .get(&step.step_id)
                 .ok_or_else(|| "routine-state-missing".to_string())?;
+            module_artifact_debt = routine.children.iter().any(|child| {
+                child
+                    .get("module_artifact_exhaustion_debt")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            });
             for child in projected_routines
                 .get(&step.step_id)
                 .map(Vec::as_slice)
@@ -298,17 +305,35 @@ pub(crate) fn execute_manifest_band(
             let routine = routine_states
                 .get(&step.step_id)
                 .ok_or_else(|| "routine-state-missing".to_string())?;
-            let known_good = band_boundary_ledger_gate_inner(
-                &manifest.id,
-                &module_dir.join(&step.step_id),
-                routine,
-                projected_routines
-                    .get(&step.step_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
-                carrier,
-            )?;
-            if known_good.get("converged").and_then(Value::as_bool) != Some(true) {
+            let exhaustion_debt = routine.children.iter().find(|child| {
+                child
+                    .get("module_artifact_exhaustion_debt")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            });
+            let known_good = if let Some(debt) = exhaustion_debt {
+                serde_json::json!({
+                    "ok": false,
+                    "converged": false,
+                    "skipped": true,
+                    "reason": "module-artifact-release-exhaustion",
+                    "module_artifact_debt": debt.get("debt"),
+                })
+            } else {
+                band_boundary_ledger_gate_inner(
+                    &manifest.id,
+                    &module_dir.join(&step.step_id),
+                    routine,
+                    projected_routines
+                        .get(&step.step_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                    carrier,
+                )?
+            };
+            if known_good.get("converged").and_then(Value::as_bool) != Some(true)
+                && exhaustion_debt.is_none()
+            {
                 result.ok = false;
                 result
                     .first_missing_signal
@@ -330,6 +355,9 @@ pub(crate) fn execute_manifest_band(
             {
                 break;
             }
+        }
+        if module_artifact_debt {
+            break;
         }
     }
     Ok(result)
@@ -403,6 +431,26 @@ pub(crate) fn execute_manifest_modules(
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };
+        let module_artifact_debt_signal = routines.get(module_id).and_then(|routine_states| {
+            routine_states
+                .values()
+                .flat_map(|routine| routine.children.iter())
+                .find(|child| {
+                    child
+                        .get("module_artifact_exhaustion_debt")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                })
+                .and_then(|child| {
+                    child
+                        .pointer("/debt/first_missing_signal")
+                        .and_then(Value::as_str)
+                })
+                .map(str::to_owned)
+        });
+        if module_artifact_debt_signal.is_some() {
+            halted.insert(module_id.clone());
+        }
         let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
             ok: true,
             changed: false,
@@ -410,6 +458,12 @@ pub(crate) fn execute_manifest_modules(
             first_missing_signal: None,
             placements: Vec::new(),
         });
+        if let Some(signal) = module_artifact_debt_signal {
+            state.first_missing_signal.get_or_insert(signal.clone());
+            if *first_missing_signal == "none" {
+                *first_missing_signal = signal;
+            }
+        }
         match result {
             Ok(part) => {
                 state.operation_count += part.operation_count;
@@ -492,20 +546,25 @@ pub(crate) fn execute_routine_child(
                 .map(Path::new);
             let prior_installed_sha = installed_binary
                 .and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
-            let execution = crate::tools::fetch_artifact::execute_with_provenance(
+            let execution = crate::tools::fetch_artifact::execute_with_provenance_for_module(
                 args,
                 receipt_dir,
                 apply,
                 invocation,
+                &manifest.id,
             )?;
             let outcome = execution.outcome;
+            let module_release_debt = outcome
+                .message
+                .starts_with("module-artifact-candidates-exhausted")
+                && receipt_dir.join("module-artifact-exhaustion.json").is_file();
             let source_build_sha = execution.source_sha;
             let changed = outcome.changed;
             let artifact = Value::String(execution.artifact_path.to_string_lossy().into_owned());
             let path = artifact.as_str().map(Path::new);
             let sha = path.and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
             if let Some(expected) = args.get("expected_digest").and_then(Value::as_str) {
-                if sha.as_deref() != Some(expected) {
+                if !module_release_debt && sha.as_deref() != Some(expected) {
                     return Err("xenia-digest-drift".into());
                 }
             }
@@ -526,10 +585,11 @@ pub(crate) fn execute_routine_child(
                 } else if source_policy == "source" {
                     "marker-fallback"
                 } else if source_policy == "artifact"
-                    && args
-                        .get("release_repo")
-                        .and_then(Value::as_str)
-                        .is_some_and(|repo| !repo.trim().is_empty())
+                    && (receipt_dir.join("module-release-candidates.json").is_file()
+                        || args
+                            .get("release_repo")
+                            .and_then(Value::as_str)
+                            .is_some_and(|repo| !repo.trim().is_empty()))
                 {
                     "release"
                 } else {

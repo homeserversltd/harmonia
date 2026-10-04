@@ -80,6 +80,7 @@ pub(crate) struct DeferredRunSummary {
     pub changed: bool,
     pub first_missing_signal: String,
     pub engine_debt: Option<EngineArtifactExhaustionDebt>,
+    pub module_artifact_debt: Vec<serde_json::Value>,
     pub module_count: usize,
     pub operation_count: usize,
     pub duration_ms: u128,
@@ -228,6 +229,8 @@ pub(crate) fn settle(
         .transaction_state
         .as_object()
         .ok_or_else(|| "report-transaction-state-missing".to_string())?;
+    let module_artifact_debt =
+        crate::bands::module_artifact_debt::collect_exhaustion_receipts(receipt_dir)?;
     for module_id in &profile.modules {
         if let Some(s) = state.module_states.get(module_id) {
             let loaded = projection.modules.get(module_id).map(|p| &p.loaded);
@@ -276,6 +279,7 @@ pub(crate) fn settle(
             changed: state.changed,
             first_missing_signal: state.first_missing_signal.clone(),
             engine_debt: state.engine_debt.clone(),
+            module_artifact_debt: module_artifact_debt.clone(),
             module_count: state.module_count,
             operation_count: state.operation_count,
             duration_ms: state.run_started.elapsed().as_millis(),
@@ -301,39 +305,55 @@ pub(crate) fn settle(
         state.run_started.elapsed().as_millis(),
         Some(&module_steps),
         engine_debt.as_ref(),
+        Some(&module_artifact_debt),
     )?;
     println!("schema=harmonia.run_profile.v1");
     let run_ok = state.ok && state.module_states.values().all(|step| step.ok);
-    let overall_ok = run_ok && engine_debt.is_none();
-    let mut forwarded = json!({"schema":"harmonia.run_profile.v1","ok":run_ok});
+    let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
+    let overall_ok = run_ok && !degraded;
+    let mut forwarded = json!({
+        "schema":"harmonia.run_profile.v1",
+        "ok":run_ok,
+        "module_artifact_debt":module_artifact_debt.clone(),
+    });
     if let Some(debt) = engine_debt.as_ref() {
         forwarded["engine_debt"] = debt.clone();
+    }
+    if degraded {
         forwarded["degraded"] = json!(true);
         forwarded["overall_ok"] = json!(false);
+    } else {
+        forwarded["overall_ok"] = json!(overall_ok);
     }
     crate::hyalos::forward_receipt(
         "schema=harmonia.run_profile.v1",
-        &if engine_debt.is_some() {
+        &if degraded {
             format!("schema=harmonia.run_profile.v1 ok={run_ok} degraded=true overall_ok=false")
         } else {
-            format!("schema=harmonia.run_profile.v1 ok={}", state.ok)
+            format!("schema=harmonia.run_profile.v1 ok={run_ok}")
         },
         Some(forwarded),
-        Some(if engine_debt.is_some() {
-            false
-        } else {
-            state.ok
-        }),
+        Some(overall_ok),
         None,
     );
     println!("ok={}", state.ok);
-    if let Some(debt) = state.engine_debt.as_ref() {
+    if degraded {
         println!("degraded=true");
         println!("overall_ok={overall_ok}");
+    }
+    if let Some(debt) = state.engine_debt.as_ref() {
         println!(
             "engine_debt_first_missing_signal={}",
             debt.first_missing_signal
         );
+    }
+    if let Some(debt) = module_artifact_debt.first() {
+        if let Some(signal) = debt
+            .get("first_missing_signal")
+            .and_then(serde_json::Value::as_str)
+        {
+            println!("module_artifact_debt_first_missing_signal={signal}");
+        }
     }
     println!("changed={}", state.changed);
     println!("profile_id={}", profile.id);
@@ -373,18 +393,28 @@ pub(crate) fn finalize_deferred_terminal(
         summary.duration_ms,
         Some(&summary.module_steps),
         engine_debt.as_ref(),
+        Some(&summary.module_artifact_debt),
     )?;
     println!("schema=harmonia.run_profile.v1");
-    let overall_ok = summary.ok && engine_debt.is_none();
-    let mut forwarded = json!({"schema":"harmonia.run_profile.v1","ok":summary.ok});
+    let degraded = engine_debt.is_some() || !summary.module_artifact_debt.is_empty();
+    let overall_ok = summary.ok && !degraded;
+    let mut forwarded = json!({
+        "schema":"harmonia.run_profile.v1",
+        "ok":summary.ok,
+        "module_artifact_debt":summary.module_artifact_debt.clone(),
+    });
     if let Some(debt) = engine_debt.as_ref() {
         forwarded["engine_debt"] = debt.clone();
+    }
+    if degraded {
         forwarded["degraded"] = json!(true);
         forwarded["overall_ok"] = json!(false);
+    } else {
+        forwarded["overall_ok"] = json!(overall_ok);
     }
     crate::hyalos::forward_receipt(
         "schema=harmonia.run_profile.v1",
-        &if engine_debt.is_some() {
+        &if degraded {
             format!(
                 "schema=harmonia.run_profile.v1 ok={} degraded=true overall_ok=false",
                 summary.ok
@@ -393,21 +423,27 @@ pub(crate) fn finalize_deferred_terminal(
             format!("schema=harmonia.run_profile.v1 ok={}", summary.ok)
         },
         Some(forwarded),
-        Some(if engine_debt.is_some() {
-            false
-        } else {
-            summary.ok
-        }),
+        Some(overall_ok),
         None,
     );
     println!("ok={}", summary.ok);
-    if let Some(debt) = summary.engine_debt.as_ref() {
+    if degraded {
         println!("degraded=true");
         println!("overall_ok={overall_ok}");
+    }
+    if let Some(debt) = summary.engine_debt.as_ref() {
         println!(
             "engine_debt_first_missing_signal={}",
             debt.first_missing_signal
         );
+    }
+    if let Some(debt) = summary.module_artifact_debt.first() {
+        if let Some(signal) = debt
+            .get("first_missing_signal")
+            .and_then(serde_json::Value::as_str)
+        {
+            println!("module_artifact_debt_first_missing_signal={signal}");
+        }
     }
     println!("changed={}", summary.changed);
     println!("profile_id={}", summary.profile_id);

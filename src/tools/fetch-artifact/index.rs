@@ -23,6 +23,26 @@ pub(crate) fn execute_with_provenance(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FetchArtifactExecution, String> {
+    execute_with_module_provenance(args, receipt_dir, apply, invocation, None)
+}
+
+pub(crate) fn execute_with_provenance_for_module(
+    args: &BTreeMap<String, Value>,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    module_id: &str,
+) -> Result<FetchArtifactExecution, String> {
+    execute_with_module_provenance(args, receipt_dir, apply, invocation, Some(module_id))
+}
+
+fn execute_with_module_provenance(
+    args: &BTreeMap<String, Value>,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    module_id: Option<&str>,
+) -> Result<FetchArtifactExecution, String> {
     let required = |name: &str| {
         args.get(name)
             .and_then(Value::as_str)
@@ -155,16 +175,45 @@ pub(crate) fn execute_with_provenance(
     let mut release_digest = None;
     let mut native_download = None;
     let mut effective_source_sha = source_sha.to_owned();
+    let mut module_release_candidates: Option<Vec<Value>> = None;
     if source_policy == "artifact" {
-        if !native_release {
-            return Err("fetch-artifact-artifact-release-repo-missing".into());
+        let config_path = crate::bands::pull_source::appliance_config_path();
+        let certificate_path = crate::device_profile::device_profile_certificate_path();
+        let source_receipt = crate::bands::pull_source::resolve_source(
+            crate::bands::pull_source::SourceAuthority::ApplianceConfig {
+                config_path: &config_path,
+                profile_path: &certificate_path,
+            },
+            component,
+            module_id.unwrap_or(component),
+            "module-release-artifact",
+            None,
+            None,
+        );
+        if !source_receipt.ok {
+            return Err(format!(
+                "fetch-artifact-source-resolution-refused component={component} blocker={}",
+                source_receipt
+                    .blocker
+                    .as_deref()
+                    .unwrap_or("source-resolution-not-ok")
+            ));
         }
-        let api_root = args
-            .get("api_root")
-            .and_then(Value::as_str)
-            .unwrap_or("https://git.home.arpa/api/v1");
-        credential_state =
-            crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
+        let resolution = source_receipt
+            .resolution
+            .as_ref()
+            .ok_or("fetch-artifact-source-resolution-missing")?;
+        if resolution.source_policy != "artifact" {
+            return Err(format!(
+                "fetch-artifact-source-policy-mismatch component={component} configured={}",
+                resolution.source_policy
+            ));
+        }
+        if resolution.candidates.is_empty() {
+            return Err(format!(
+                "fetch-artifact-source-candidates-empty component={component}"
+            ));
+        }
         let asset_name = release_asset_name
             .as_deref()
             .map(str::to_owned)
@@ -173,46 +222,120 @@ pub(crate) fn execute_with_provenance(
             .as_deref()
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{asset_name}.sha256"));
-        native_download = if let Some(pinned_release_sha) = pinned_release_sha.as_deref() {
-            Some(crate::atoms::ask::fetch_artifact::download_pinned_release(
+        credential_state = "managed-by-configured-release-provider";
+        let (download, candidate_receipts) =
+            crate::bands::renew_self::download_module_release_candidates(
                 component,
-                release_repo,
-                api_root,
+                resolution,
                 &asset_name,
                 &sidecar_name,
-                identity,
-                pinned_release_sha,
+                resolved_profile_segment.as_deref(),
+                pinned_release_sha.as_deref(),
                 None,
-            )?)
+            );
+        std::fs::create_dir_all(receipt_dir)
+            .map_err(|error| format!("fetch-artifact-receipt-dir-create: {error}"))?;
+        crate::write_json(
+            &receipt_dir.join("module-release-candidates.json"),
+            &serde_json::json!({
+                "schema": "harmonia.module_release_candidates.v1",
+                "module_id": module_id.unwrap_or(component),
+                "component": component,
+                "candidate_count": candidate_receipts.len(),
+                "candidates": candidate_receipts,
+            }),
+        )
+        .map_err(|error| format!("fetch-artifact-candidate-receipt-write: {error}"))?;
+        module_release_candidates = Some(candidate_receipts);
+        if let Some(mut download) = download {
+            if !crate::atoms::ask::fetch_artifact::validate_source_sha(
+                &download.manifest.source_sha,
+            ) {
+                return Err("fetch-artifact-release-source-sha-invalid".into());
+            }
+            if pinned_release_sha
+                .as_deref()
+                .is_some_and(|pinned| download.manifest.source_sha != pinned)
+            {
+                return Err("fetch-artifact-pinned-release-mismatch".into());
+            }
+            effective_source_sha = download.manifest.source_sha.clone();
+            release_digest = Some(download.manifest.sha256.clone());
+            download.identity = identity.to_owned();
+            native_download = Some(download);
         } else {
-            crate::atoms::ask::fetch_artifact::download_latest_release(
-                component,
-                release_repo,
-                api_root,
-                &asset_name,
-                &sidecar_name,
-                identity,
-                None,
-            )?
-        };
-        let Some(download) = native_download.as_ref() else {
-            return Err(format!(
-                "fetch-artifact-artifact-unavailable component={component} repo={release_repo}"
-            ));
-        };
-        if !crate::atoms::ask::fetch_artifact::validate_source_sha(
-            &download.manifest.source_sha,
-        ) {
-            return Err("fetch-artifact-release-source-sha-invalid".into());
+            let candidate_count = module_release_candidates
+                .as_ref()
+                .map_or(0, Vec::len);
+            let exhaustion_signal = format!(
+                "module-artifact-candidates-exhausted module={} component={} candidate_count={candidate_count}",
+                module_id.unwrap_or(component),
+                component
+            );
+            if candidate_count == 0 {
+                return Err(format!(
+                    "module-artifact-release-candidates-absent module={} component={}",
+                    module_id.unwrap_or(component),
+                    component
+                ));
+            }
+            if !apply {
+                return Err(exhaustion_signal);
+            }
+            let before = read_standing_artifact_snapshot(installed_binary)?;
+            let after = read_standing_artifact_snapshot(installed_binary)?;
+            if before != after {
+                return Err(format!(
+                    "fetch-artifact-standing-artifact-changed-during-observation path={}",
+                    installed_binary.display()
+                ));
+            }
+            let mut witness = after;
+            witness["unchanged"] = Value::Bool(true);
+            let routine_id = receipt_dir
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|value| value.to_str())
+                .unwrap_or("unknown-routine");
+            let debt = serde_json::json!({
+                "schema": "harmonia.module_artifact_exhaustion.v1",
+                "ok": false,
+                "module_id": module_id.unwrap_or(component),
+                "component": component,
+                "routine_id": routine_id,
+                "step_id": "fetch-artifact",
+                "first_missing_signal": exhaustion_signal,
+                "candidate_count": candidate_count,
+                "candidates": module_release_candidates.as_ref().unwrap(),
+                "standing_artifact": witness,
+                "changed": false,
+                "installed_artifact_preserved": true,
+            });
+            crate::write_json(
+                &receipt_dir.join("module-artifact-exhaustion.json"),
+                &debt,
+            )
+            .map_err(|error| format!("fetch-artifact-exhaustion-receipt-write: {error}"))?;
+            crate::atoms::attest::fetch_artifact::attest(
+                &receipt_dir.join("harmonia-atoms.log"),
+                true,
+                false,
+                &format!(
+                    "state=Drift; care=all configured Release candidates refused; after=Drift; reason={exhaustion_signal}; installed_artifact_preserved=true"
+                ),
+            )?;
+            return Ok(FetchArtifactExecution {
+                outcome: crate::OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: exhaustion_signal,
+                    command: None,
+                },
+                source_sha: String::new(),
+                artifact_path: installed_binary.to_path_buf(),
+            });
         }
-        if pinned_release_sha
-            .as_deref()
-            .is_some_and(|pinned| download.manifest.source_sha != pinned)
-        {
-            return Err("fetch-artifact-pinned-release-mismatch".into());
-        }
-        effective_source_sha = download.manifest.source_sha.clone();
-        release_digest = Some(download.manifest.sha256.clone());
     } else if source_policy == "source" && native_release {
         let tag = args
             .get("release_tag")
@@ -634,6 +757,65 @@ pub(crate) fn execute_with_provenance(
 pub(crate) fn declaration(
 ) -> Result<Option<&'static crate::tools::declaration::Declaration>, String> {
     crate::tools::declaration::get("fetch-artifact")
+}
+
+fn read_standing_artifact_snapshot(path: &Path) -> Result<Value, String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "fetch-artifact-standing-artifact-unobservable path={} error={error}",
+            path.display()
+        )
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(format!(
+            "fetch-artifact-standing-artifact-not-regular path={}",
+            path.display()
+        ));
+    }
+    let mode = metadata.permissions().mode();
+    if mode & 0o111 == 0 {
+        return Err(format!(
+            "fetch-artifact-standing-artifact-not-executable path={}",
+            path.display()
+        ));
+    }
+    if metadata.len() == 0 {
+        return Err(format!(
+            "fetch-artifact-standing-artifact-empty path={}",
+            path.display()
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|error| {
+        format!(
+            "fetch-artifact-standing-artifact-unreadable path={} error={error}",
+            path.display()
+        )
+    })?;
+    if bytes.is_empty() || bytes.len() as u64 != metadata.len() {
+        return Err(format!(
+            "fetch-artifact-standing-artifact-read-mismatch path={}",
+            path.display()
+        ));
+    }
+    Ok(serde_json::json!({
+        "path": path,
+        "observed": true,
+        "regular": true,
+        "executable": true,
+        "readable": true,
+        "nonempty": true,
+        "size": bytes.len(),
+        "sha256": crate::atoms::file_sha256(&bytes),
+        "device": metadata.dev(),
+        "inode": metadata.ino(),
+        "mode": mode,
+        "mtime_seconds": metadata.mtime(),
+        "mtime_nanoseconds": metadata.mtime_nsec(),
+        "ctime_seconds": metadata.ctime(),
+        "ctime_nanoseconds": metadata.ctime_nsec(),
+    }))
 }
 
 #[cfg(test)]

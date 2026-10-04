@@ -743,6 +743,8 @@ fn write_transaction_failure_run_receipt(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|error| format!("transaction-engine-debt-serialize-failed: {error}"))?;
+    let module_artifact_debt =
+        crate::bands::module_artifact_debt::collect_exhaustion_receipts(receipt_dir)?;
     crate::receipts::write_engine_run_receipt_with_duration_and_steps_and_debt(
         receipt_dir,
         profile,
@@ -757,6 +759,7 @@ fn write_transaction_failure_run_receipt(
         0,
         None,
         engine_debt.as_ref(),
+        Some(&module_artifact_debt),
     )?;
     let mut run = serde_json::from_reader::<_, serde_json::Value>(
         fs::File::open(receipt_dir.join("run.json")).map_err(|e| e.to_string())?,
@@ -779,15 +782,23 @@ fn write_transaction_failure_run_receipt(
         }),
     )?;
     println!("schema=harmonia.run_profile.v1");
-    let mut forwarded = serde_json::json!({"schema":"harmonia.run_profile.v1","ok":false});
+    let mut forwarded = serde_json::json!({
+        "schema":"harmonia.run_profile.v1",
+        "ok":false,
+        "module_artifact_debt":module_artifact_debt.clone(),
+        "overall_ok":false,
+    });
     if let Some(debt) = engine_debt.as_ref() {
         forwarded["engine_debt"] = debt.clone();
+    }
+    let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
+    if degraded {
         forwarded["degraded"] = serde_json::json!(true);
         forwarded["overall_ok"] = serde_json::json!(false);
     }
     crate::hyalos::forward_receipt(
         "schema=harmonia.run_profile.v1",
-        &if engine_debt.is_some() {
+        &if degraded {
             "schema=harmonia.run_profile.v1 ok=false degraded=true overall_ok=false"
         } else {
             "schema=harmonia.run_profile.v1 ok=false"
@@ -797,13 +808,20 @@ fn write_transaction_failure_run_receipt(
         None,
     );
     println!("ok=false");
-    if let Some(debt) = engine_debt.as_ref() {
+    if degraded {
         println!("degraded=true");
         println!("overall_ok=false");
+    }
+    if let Some(debt) = engine_debt.as_ref() {
         println!(
             "engine_debt_first_missing_signal={}",
             debt["first_missing_signal"].as_str().unwrap_or("unknown")
         );
+    }
+    if let Some(debt) = module_artifact_debt.first() {
+        if let Some(signal) = debt.get("first_missing_signal").and_then(serde_json::Value::as_str) {
+            println!("module_artifact_debt_first_missing_signal={signal}");
+        }
     }
     println!("changed={}", changed);
     println!("profile_id={}", profile.id);

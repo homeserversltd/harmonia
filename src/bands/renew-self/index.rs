@@ -1557,6 +1557,266 @@ fn write_content_seat_observation(
     })
 }
 
+#[derive(Clone, Copy)]
+enum ReleaseCandidateReceiptMode {
+    Engine,
+    Module,
+}
+
+fn module_release_candidate_receipt(
+    index: usize,
+    candidate: &crate::atoms::git_artifact::SourceCandidate,
+    candidate_name: &str,
+    requested_assets: &[Value],
+    provider: Option<&str>,
+    target: Option<&str>,
+    attempt_state: &str,
+    disposition: &str,
+    source_sha: Option<&str>,
+    digest: Option<&str>,
+    blocker: Option<&str>,
+) -> Value {
+    json!({
+        "candidate_index": index,
+        "candidate_kind": match candidate.kind {
+            crate::atoms::git_artifact::SourceCandidateKind::Git => "git",
+            crate::atoms::git_artifact::SourceCandidateKind::LocalCheckout => "local-checkout",
+        },
+        "candidate_locator": candidate.locator,
+        "candidate_name": candidate_name,
+        "requested_assets": requested_assets,
+        "observed": {"configured": true, "provider": provider, "target": target},
+        "could-change": false,
+        "attempt": {"operation": "inspect-and-validate-module-release", "state": attempt_state},
+        "final-state": {"disposition": disposition, "selected": disposition == "selected", "source_sha": source_sha, "sha256": digest, "blocker": blocker},
+    })
+}
+
+fn probe_engine_release_candidates(
+    component: &str,
+    candidates: &[crate::atoms::git_artifact::SourceCandidate],
+    asset_name: &str,
+    sidecar_name: &str,
+    profile: Option<&str>,
+    pinned_release_sha: Option<&str>,
+    release_schema_base: Option<&str>,
+    mode: ReleaseCandidateReceiptMode,
+) -> (
+    Option<crate::atoms::ask::fetch_artifact::Download>,
+    Vec<Value>,
+) {
+    use crate::atoms::ask::fetch_artifact::{
+        download_github_latest_engine_release_for_assets,
+        download_latest_engine_release_for_assets, module_release_asset_set,
+    };
+
+    let requested_assets = module_release_asset_set(component, asset_name, sidecar_name, profile)
+        .into_iter()
+        .map(|(asset_name, sidecar_name)| json!({"asset_name":asset_name,"sidecar_name":sidecar_name}))
+        .collect::<Vec<_>>();
+    let mut receipts = Vec::with_capacity(candidates.len());
+    let mut selected = None;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let candidate_index = index + 1;
+        let candidate_name = candidate
+            .locator
+            .rsplit(['/', ':'])
+            .next()
+            .unwrap_or(candidate.locator.as_str())
+            .trim_end_matches(".git")
+            .to_owned();
+        if selected.is_some() {
+            match mode {
+                ReleaseCandidateReceiptMode::Engine => receipts.push(engine_release_candidate_receipt(
+                    candidate_index,
+                    candidate,
+                    None,
+                    None,
+                    "not-attempted",
+                    "not-attempted",
+                    None,
+                    None,
+                    Some("higher-priority-candidate-selected"),
+                )),
+                ReleaseCandidateReceiptMode::Module => receipts.push(module_release_candidate_receipt(
+                    candidate_index,
+                    candidate,
+                    &candidate_name,
+                    &requested_assets,
+                    None,
+                    None,
+                    "not-attempted",
+                    "not-attempted",
+                    None,
+                    None,
+                    Some("higher-priority-candidate-selected"),
+                )),
+            }
+            continue;
+        }
+
+        let mut provider_name = None;
+        let mut target = Some(format!("{}@release-source", candidate.locator));
+        let source = engine_release_source_for_candidate(candidate);
+        let (attempt_state, disposition, blocker, source_sha, digest) = match source {
+            Err(error) => {
+                let (attempt_state, disposition) = match mode {
+                    ReleaseCandidateReceiptMode::Engine
+                        if candidate.kind == crate::atoms::git_artifact::SourceCandidateKind::LocalCheckout =>
+                    {
+                        ("candidate-validation-completed", "not-release-candidate")
+                    }
+                    ReleaseCandidateReceiptMode::Engine => {
+                        ("candidate-validation-completed", "refused")
+                    }
+                    ReleaseCandidateReceiptMode::Module => ("candidate-refused", "refused"),
+                };
+                (attempt_state, disposition, Some(error), None, None)
+            }
+            Ok(source) => {
+                provider_name = Some(source.provider.name());
+                target = Some(source.provider.release_target(&candidate.locator));
+                let fetched = match mode {
+                    ReleaseCandidateReceiptMode::Engine => {
+                        download_engine_release_for_preflight(component, &source)
+                    }
+                    ReleaseCandidateReceiptMode::Module => match source.provider {
+                        EngineReleaseProvider::Forgejo => download_latest_engine_release_for_assets(
+                            component,
+                            &source.repository,
+                            &source.api_root,
+                            asset_name,
+                            sidecar_name,
+                            profile,
+                            pinned_release_sha,
+                            release_schema_base,
+                        ),
+                        EngineReleaseProvider::GitHub => download_github_latest_engine_release_for_assets(
+                            component,
+                            &source.repository,
+                            &source.api_root,
+                            asset_name,
+                            sidecar_name,
+                            profile,
+                            pinned_release_sha,
+                            release_schema_base,
+                        ),
+                    },
+                };
+                match fetched {
+                    Ok(Some(download)) => {
+                        let valid_sha = match mode {
+                            ReleaseCandidateReceiptMode::Engine => {
+                                crate::atoms::git_artifact::is_lower_hex_sha(
+                                    &download.manifest.source_sha,
+                                )
+                            }
+                            ReleaseCandidateReceiptMode::Module => {
+                                crate::atoms::ask::fetch_artifact::validate_source_sha(
+                                    &download.manifest.source_sha,
+                                )
+                            }
+                        };
+                        let source_sha = download.manifest.source_sha.clone();
+                        let digest = download.manifest.sha256.clone();
+                        if valid_sha {
+                            selected = Some(download);
+                            ("completed", "selected", None, Some(source_sha), Some(digest))
+                        } else {
+                            let signal = if matches!(mode, ReleaseCandidateReceiptMode::Engine) {
+                                "engine-artifact-source-sha-invalid"
+                            } else {
+                                "module-release-source-sha-invalid"
+                            };
+                            ("completed", "refused", Some(signal.to_owned()), Some(source_sha), Some(digest))
+                        }
+                    }
+                    Ok(None) => match mode {
+                        ReleaseCandidateReceiptMode::Engine => (
+                            "completed",
+                            "unavailable",
+                            Some("no-eligible-release-returned".to_owned()),
+                            None,
+                            None,
+                        ),
+                        ReleaseCandidateReceiptMode::Module => (
+                            "candidate-refused",
+                            "refused",
+                            Some("no-eligible-release-returned".to_owned()),
+                            None,
+                            None,
+                        ),
+                    },
+                    Err(error) => match mode {
+                        ReleaseCandidateReceiptMode::Engine => {
+                            ("failed", "failed", Some(error), None, None)
+                        }
+                        ReleaseCandidateReceiptMode::Module => {
+                            ("candidate-refused", "refused", Some(error), None, None)
+                        }
+                    },
+                }
+            }
+        };
+        match mode {
+            ReleaseCandidateReceiptMode::Engine => receipts.push(engine_release_candidate_receipt(
+                candidate_index,
+                candidate,
+                provider_name.as_deref(),
+                target.as_deref(),
+                attempt_state,
+                disposition,
+                source_sha.as_deref(),
+                digest.as_deref(),
+                blocker.as_deref(),
+            )),
+            ReleaseCandidateReceiptMode::Module => receipts.push(module_release_candidate_receipt(
+                candidate_index,
+                candidate,
+                &candidate_name,
+                &requested_assets,
+                provider_name.as_deref(),
+                target.as_deref(),
+                attempt_state,
+                disposition,
+                source_sha.as_deref(),
+                digest.as_deref(),
+                blocker.as_deref(),
+            )),
+        }
+    }
+    (selected, receipts)
+}
+
+pub(crate) fn download_module_release_candidates(
+    component: &str,
+    resolution: &crate::bands::pull_source::SourceResolution,
+    asset_name: &str,
+    sidecar_name: &str,
+    profile: Option<&str>,
+    pinned_release_sha: Option<&str>,
+    release_schema_base: Option<&str>,
+) -> (
+    Option<crate::atoms::ask::fetch_artifact::Download>,
+    Vec<Value>,
+) {
+    let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
+        resolution,
+        engine_source_root(),
+        None,
+    );
+    probe_engine_release_candidates(
+        component,
+        &source_plan.candidates,
+        asset_name,
+        sidecar_name,
+        profile,
+        pinned_release_sha,
+        release_schema_base,
+        ReleaseCandidateReceiptMode::Module,
+    )
+}
+
 fn download_engine_release_for_preflight(
     component: &str,
     source: &EngineReleaseSource,
@@ -1789,113 +2049,17 @@ pub(crate) fn run_engine_preflight(
                 engine_source_root(),
                 None,
             );
-            let mut selected_download = None;
-            for (index, candidate) in source_plan.candidates.iter().enumerate() {
-                let candidate_index = index + 1;
-                if selected_download.is_some() {
-                    release_candidate_receipts.push(engine_release_candidate_receipt(
-                        candidate_index,
-                        candidate,
-                        None,
-                        None,
-                        "not-attempted",
-                        "not-attempted",
-                        None,
-                        None,
-                        Some("higher-priority-candidate-selected"),
-                    ));
-                    continue;
-                }
-                let candidate_target = format!("{}@release-source", candidate.locator);
-                match engine_release_source_for_candidate(candidate) {
-                    Err(error) => {
-                        let disposition = if candidate.kind
-                            == crate::atoms::git_artifact::SourceCandidateKind::Git
-                        {
-                            "refused"
-                        } else {
-                            "not-release-candidate"
-                        };
-                        release_candidate_receipts.push(engine_release_candidate_receipt(
-                            candidate_index,
-                            candidate,
-                            None,
-                            Some(&candidate_target),
-                            "candidate-validation-completed",
-                            disposition,
-                            None,
-                            None,
-                            Some(&error),
-                        ));
-                    }
-                    Ok(source) => {
-                        let provider = source.provider.name();
-                        let target = source.provider.release_target(&candidate.locator);
-                        match download_engine_release_for_preflight(&component, &source) {
-                            Ok(Some(download)) => {
-                                let selected_sha = download.manifest.source_sha.clone();
-                                if !crate::atoms::git_artifact::is_lower_hex_sha(&selected_sha) {
-                                    let error = "engine-artifact-source-sha-invalid";
-                                    release_candidate_receipts.push(
-                                        engine_release_candidate_receipt(
-                                            candidate_index,
-                                            candidate,
-                                            Some(provider),
-                                            Some(&target),
-                                            "completed",
-                                            "refused",
-                                            Some(&selected_sha),
-                                            Some(&download.manifest.sha256),
-                                            Some(error),
-                                        ),
-                                    );
-                                } else {
-                                    release_candidate_receipts.push(
-                                        engine_release_candidate_receipt(
-                                            candidate_index,
-                                            candidate,
-                                            Some(provider),
-                                            Some(&target),
-                                            "completed",
-                                            "selected",
-                                            Some(&selected_sha),
-                                            Some(&download.manifest.sha256),
-                                            None,
-                                        ),
-                                    );
-                                    selected_download = Some(download);
-                                }
-                            }
-                            Ok(None) => {
-                                release_candidate_receipts.push(engine_release_candidate_receipt(
-                                    candidate_index,
-                                    candidate,
-                                    Some(provider),
-                                    Some(&target),
-                                    "completed",
-                                    "unavailable",
-                                    None,
-                                    None,
-                                    Some("no-eligible-release-returned"),
-                                ));
-                            }
-                            Err(error) => {
-                                release_candidate_receipts.push(engine_release_candidate_receipt(
-                                    candidate_index,
-                                    candidate,
-                                    Some(provider),
-                                    Some(&target),
-                                    "failed",
-                                    "failed",
-                                    None,
-                                    None,
-                                    Some(&error),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
+            let (selected_download, candidate_receipts) = probe_engine_release_candidates(
+                &component,
+                &source_plan.candidates,
+                "harmonia-x86_64",
+                "harmonia-x86_64.sha256",
+                None,
+                None,
+                None,
+                ReleaseCandidateReceiptMode::Engine,
+            );
+            release_candidate_receipts = candidate_receipts;
             if let Some(download) = selected_download {
                 let selected_sha = download.manifest.source_sha.clone();
                 source_head = Some(selected_sha.clone());

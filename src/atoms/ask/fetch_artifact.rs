@@ -192,6 +192,53 @@ pub(crate) fn fetch_release_assets_for_inspection(
 ) -> Result<Option<ReleaseAssets>, String> {
     fetch_release_assets_inner(r, tag, asset_name, sidecar_name, true, false, false)
 }
+
+/// Fetch one release's ordered artifact set from a single metadata observation.
+/// The profile-aware Caduceus flag covers every published profile, so callers
+/// must verify all binaries and sidecars before trusting its aggregate digest.
+pub(crate) fn fetch_release_asset_set_for_inspection(
+    request: &ReleaseRequest,
+    tag: &str,
+    asset_names: &[(&str, &str)],
+) -> Result<Option<(Vec<ReleaseAssets>, Option<String>)>, String> {
+    if asset_names.is_empty()
+        || !matches!(request.kind.as_str(), "forgejo-release" | "github-release")
+        || !safe_release_segment(tag)
+        || !safe_release_segment(&request.owner)
+        || !safe_release_segment(&request.repo)
+        || asset_names
+            .iter()
+            .any(|(asset, sidecar)| !safe_asset_name(asset) || !safe_asset_name(sidecar))
+    {
+        return Err("release-declaration-incomplete".into());
+    }
+    let Some(metadata) = lookup_release_metadata_inner(request, tag, true)? else {
+        return Ok(None);
+    };
+    if source_sha_from_release_tag(tag)
+        .is_some_and(|source_sha| metadata.target_commitish != source_sha)
+    {
+        return Err("fetch-artifact-release-commit-mismatch".into());
+    }
+    let created_at = metadata.created_at.clone();
+    let flag_url = optional_release_asset_url(&metadata, "release.flag")
+        .ok_or_else(|| "release-asset-missing tag=release.flag asset=release.flag".to_string())?;
+    let release_flag = download_release_asset(request, &flag_url, "release.flag", true)?;
+    let mut releases = Vec::with_capacity(asset_names.len());
+    for (asset_name, sidecar_name) in asset_names {
+        let artifact_url = release_asset_url(&metadata, tag, asset_name)?;
+        let sidecar_url = release_asset_url(&metadata, tag, sidecar_name)?;
+        releases.push(ReleaseAssets {
+            artifact: download_release_asset(request, &artifact_url, asset_name, true)?,
+            sidecar: download_release_asset(request, &sidecar_url, sidecar_name, true)?,
+            release_flag: Some(release_flag.clone()),
+            metadata_url: metadata.url.clone(),
+            target_commitish: metadata.target_commitish.clone(),
+        });
+    }
+    Ok(Some((releases, created_at)))
+}
+
 fn fetch_release_assets_for_pinned_inspection(
     r: &ReleaseRequest,
     tag: &str,
@@ -1348,16 +1395,20 @@ pub(crate) fn download_latest_release(
     identity: &str,
     release_schema_base: Option<&str>,
 ) -> Result<Option<Download>, String> {
-    download_release_with_pin(
+    let mut download = download_latest_engine_release_for_assets(
         component,
         release_repo,
         api_root,
         asset_name,
         sidecar_name,
-        identity,
-        release_schema_base,
         None,
-    )
+        None,
+        release_schema_base,
+    )?;
+    if let Some(download) = download.as_mut() {
+        download.identity = identity.to_owned();
+    }
+    Ok(download)
 }
 
 pub(crate) fn download_pinned_release(
@@ -1385,6 +1436,333 @@ pub(crate) fn download_pinned_release(
         Some(&pinned_release_sha),
     )?
     .ok_or_else(|| "fetch-artifact-pinned-release-missing".into())
+}
+
+const CADUCEUS_RELEASE_PROFILES: [&str; 4] = ["homeserver", "homeconsole", "tv", "probe"];
+
+/// Module Release path: same bounded release-list and exact-latest machinery as
+/// the engine, with asset names selected by the module/profile declaration.
+pub(crate) fn download_latest_engine_release_for_assets(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    profile: Option<&str>,
+    pinned_release_sha: Option<&str>,
+    release_schema_base: Option<&str>,
+) -> Result<Option<Download>, String> {
+    if let Some(source_sha) = pinned_release_sha {
+        if !validate_source_sha(source_sha) {
+            return Err("fetch-artifact-pinned-release-sha-invalid".into());
+        }
+    }
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    validate_segment(component, "component")?;
+    validate_segment(asset_name, "asset-name")?;
+    validate_segment(sidecar_name, "sidecar-name")?;
+    let asset_set = module_release_asset_set(component, asset_name, sidecar_name, profile);
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let credential_scope_found = credential.is_some();
+    let request = ReleaseRequest {
+        kind: "forgejo-release".into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential,
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found,
+        cache_dir: std::env::temp_dir().join(format!(
+            "harmonia-module-release-{}",
+            unique_temp_suffix()
+        )),
+    };
+    let result = (|| {
+        let mut releases = lookup_published_releases(&request)?;
+        releases.sort_by(|left, right| {
+            right
+                .created_at_order
+                .cmp(&left.created_at_order)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        let mut saw_pinned_target = false;
+        for candidate in releases {
+            if let Some(pinned) = pinned_release_sha {
+                if candidate.target_commitish.as_deref() != Some(pinned) {
+                    continue;
+                }
+                saw_pinned_target = true;
+            }
+            if candidate.draft
+                || !candidate.has_asset("release.flag")
+                || asset_set.iter().any(|(asset, sidecar)| {
+                    !candidate.has_asset(asset) || !candidate.has_asset(sidecar)
+                })
+            {
+                continue;
+            }
+            let expected_source_sha = if let Some(pinned) = pinned_release_sha {
+                pinned
+            } else {
+                let Some(tagged_source_sha) = source_sha_from_release_tag(&candidate.tag_name)
+                else {
+                    continue;
+                };
+                tagged_source_sha
+            };
+            let refs = asset_set
+                .iter()
+                .map(|(asset, sidecar)| (asset.as_str(), sidecar.as_str()))
+                .collect::<Vec<_>>();
+            let fetched = fetch_release_asset_set_for_inspection(
+                &request,
+                &candidate.tag_name,
+                &refs,
+            );
+            let (assets, _created_at) = match fetched {
+                Ok(Some(value)) => value,
+                Ok(None) => continue,
+                Err(error) if ineligible_release_error(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            if assets.iter().any(|asset| asset.target_commitish != expected_source_sha) {
+                continue;
+            }
+            match verify_module_release_assets(
+                component,
+                asset_name,
+                &asset_set,
+                &assets,
+                Some(expected_source_sha),
+                Some(candidate.created_at.as_str()),
+                profile,
+                release_schema_base,
+            ) {
+                Ok(download) => return Ok(Some(download)),
+                Err(error) if module_release_candidate_refusal(&error) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        if pinned_release_sha.is_some() && saw_pinned_target {
+            return Err("fetch-artifact-pinned-release-mismatch".into());
+        }
+        if pinned_release_sha.is_some() {
+            return Err("fetch-artifact-pinned-release-missing".into());
+        }
+        Ok(None)
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    match result {
+        Err(error) if !credential_scope_found => {
+            let metadata_url = format!(
+                "{}/repos/{release_repo}/releases",
+                release_api_root(api_root)
+            );
+            Err(normalize_auth_required_error(&error, &metadata_url).unwrap_or(error))
+        }
+        other => other,
+    }
+}
+
+/// GitHub Release source candidates are intentionally exact `latest` tags;
+/// this generic form keeps the same rule while accepting module/profile assets.
+pub(crate) fn download_github_latest_engine_release_for_assets(
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    profile: Option<&str>,
+    pinned_release_sha: Option<&str>,
+    release_schema_base: Option<&str>,
+) -> Result<Option<Download>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("fetch-artifact-release-repo-invalid".into());
+    }
+    validate_segment(component, "component")?;
+    validate_segment(owner, "release-owner")?;
+    validate_segment(repo, "release-repo")?;
+    validate_segment(asset_name, "asset-name")?;
+    validate_segment(sidecar_name, "sidecar-name")?;
+    if pinned_release_sha.is_some_and(|sha| !validate_source_sha(sha)) {
+        return Err("fetch-artifact-pinned-release-sha-invalid".into());
+    }
+    let asset_set = module_release_asset_set(component, asset_name, sidecar_name, profile);
+    let request = ReleaseRequest {
+        kind: "github-release".into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential: None,
+        credential_host: None,
+        credential_scope_found: false,
+        cache_dir: std::env::temp_dir().join(format!(
+            "harmonia-github-module-release-{}",
+            unique_temp_suffix()
+        )),
+    };
+    let result = (|| {
+        let refs = asset_set
+            .iter()
+            .map(|(asset, sidecar)| (asset.as_str(), sidecar.as_str()))
+            .collect::<Vec<_>>();
+        let Some((assets, created_at)) =
+            fetch_release_asset_set_for_inspection(&request, "latest", &refs)?
+        else {
+            return Ok(None);
+        };
+        let created_at = created_at
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "fetch-artifact-github-release-created-at-missing".to_string())?;
+        verify_module_release_assets(
+            component,
+            asset_name,
+            &asset_set,
+            &assets,
+            pinned_release_sha,
+            Some(&created_at),
+            profile,
+            release_schema_base,
+        )
+        .map(Some)
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result
+}
+
+pub(crate) fn module_release_asset_set(
+    component: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    profile: Option<&str>,
+) -> Vec<(String, String)> {
+    if component == "caduceus" && profile.is_some() {
+        CADUCEUS_RELEASE_PROFILES
+            .iter()
+            .map(|profile| {
+                let asset = format!("caduceus-{profile}-x86_64");
+                (asset.clone(), format!("{asset}.sha256"))
+            })
+            .collect()
+    } else {
+        vec![(asset_name.to_owned(), sidecar_name.to_owned())]
+    }
+}
+
+fn verify_module_release_assets(
+    component: &str,
+    selected_asset: &str,
+    asset_set: &[(String, String)],
+    releases: &[ReleaseAssets],
+    expected_source_sha: Option<&str>,
+    created_at: Option<&str>,
+    profile: Option<&str>,
+    release_schema_base: Option<&str>,
+) -> Result<Download, String> {
+    if releases.len() != asset_set.len() || releases.is_empty() {
+        return Err("fetch-artifact-release-assets-incomplete".into());
+    }
+    let selected_index = asset_set
+        .iter()
+        .position(|(asset, _)| asset == selected_asset)
+        .ok_or_else(|| "fetch-artifact-release-selected-asset-missing".to_string())?;
+    let selected = &releases[selected_index];
+    let flag_bytes = selected
+        .release_flag
+        .as_deref()
+        .ok_or_else(|| "fetch-artifact-release-flag-missing".to_string())?;
+    let (source_sha, _) = release_source_revision(selected, component, release_schema_base)?;
+    if expected_source_sha.is_some_and(|expected| expected != source_sha)
+        || releases.iter().any(|release| {
+            release.target_commitish != selected.target_commitish
+                || release.release_flag.as_deref() != Some(flag_bytes)
+        })
+    {
+        return Err("fetch-artifact-release-source-mismatch".into());
+    }
+    let mut digests = Vec::with_capacity(releases.len());
+    for (index, release) in releases.iter().enumerate() {
+        let digest = crate::atoms::file_sha256(&release.artifact);
+        let sidecar = String::from_utf8(release.sidecar.clone())
+            .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
+        let expected = format!("{digest}  {}\n", asset_set[index].0);
+        if !is_hex(&digest, 64) || sidecar != expected {
+            return Err("fetch-artifact-release-sidecar-mismatch".into());
+        }
+        digests.push(digest);
+    }
+    let selected_digest = digests[selected_index].clone();
+    let expected_flag_digest = if component == "caduceus" && profile.is_some() {
+        caduceus_profile_map_digest(asset_set, &digests)?
+    } else {
+        selected_digest.clone()
+    };
+    let flag: Value = serde_json::from_slice(flag_bytes)
+        .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
+    if let Some(value) = flag.get("sha256") {
+        if value.as_str() != Some(expected_flag_digest.as_str()) {
+            return Err("fetch-artifact-release-flag-digest-mismatch".into());
+        }
+    }
+    let env_sha = match flag.get("env_sha") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if is_hex(value, 64) => Some(value.clone()),
+        Some(_) => return Err("fetch-artifact-release-flag-env-sha-invalid".into()),
+    };
+    let pipeline_url = flag
+        .get("pipeline_url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "fetch-artifact-release-flag-pipeline-url-missing".to_string())?;
+    let _ = pipeline_url;
+    Ok(Download {
+        manifest: Manifest {
+            schema: MANIFEST_SCHEMA.into(),
+            component: component.into(),
+            source_sha,
+            target: BUILD_TARGET.into(),
+            sha256: selected_digest,
+            built_at: created_at.unwrap_or(&selected.target_commitish).to_owned(),
+            pipeline_url: pipeline_url.to_owned(),
+            env_sha,
+            rustc_version: flag
+                .get("rustc_version")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        },
+        bytes: selected.artifact.clone(),
+        identity: "engine-release".into(),
+    })
+}
+
+fn caduceus_profile_map_digest(
+    asset_set: &[(String, String)],
+    digests: &[String],
+) -> Result<String, String> {
+    if asset_set.len() != CADUCEUS_RELEASE_PROFILES.len() || digests.len() != asset_set.len() {
+        return Err("fetch-artifact-release-profile-digest-set-incomplete".into());
+    }
+    let entries = CADUCEUS_RELEASE_PROFILES
+        .iter()
+        .zip(digests)
+        .map(|(profile, digest)| format!("\"{profile}\":\"{digest}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(crate::atoms::file_sha256(format!("{{{entries}}}").as_bytes()))
+}
+
+fn module_release_candidate_refusal(error: &str) -> bool {
+    ineligible_release_error(error)
+        || error.starts_with("schema-")
+        || error.starts_with("fetch-artifact-release-")
 }
 
 fn download_release_with_pin(
@@ -1574,13 +1952,14 @@ pub(crate) fn download_latest_engine_release(
     api_root: &str,
     release_schema_base: Option<&str>,
 ) -> Result<Option<Download>, String> {
-    download_latest_release(
+    download_latest_engine_release_for_assets(
         component,
         release_repo,
         api_root,
         "harmonia-x86_64",
         "harmonia-x86_64.sha256",
-        "engine-release",
+        None,
+        None,
         release_schema_base,
     )
 }
@@ -1594,93 +1973,16 @@ pub(crate) fn download_github_latest_engine_release(
     api_root: &str,
     release_schema_base: Option<&str>,
 ) -> Result<Option<Download>, String> {
-    let (owner, repo) = release_repo
-        .split_once('/')
-        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
-    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
-        return Err("fetch-artifact-release-repo-invalid".into());
-    }
-    validate_segment(component, "component")?;
-    validate_segment(owner, "release-owner")?;
-    validate_segment(repo, "release-repo")?;
-    let request = ReleaseRequest {
-        kind: "github-release".into(),
-        base_url: api_root.into(),
-        owner: owner.into(),
-        repo: repo.into(),
-        credential: None,
-        credential_host: None,
-        credential_scope_found: false,
-        cache_dir: std::env::temp_dir().join(format!(
-            "harmonia-github-engine-release-{}",
-            unique_temp_suffix()
-        )),
-    };
-    let result = (|| {
-        let Some((release, created_at)) = fetch_release_assets_inner_with_created_at(
-            &request,
-            "latest",
-            "harmonia-x86_64",
-            "harmonia-x86_64.sha256",
-            true,
-            false,
-            false,
-        )?
-        else {
-            return Ok(None);
-        };
-        let Some(flag_bytes) = release.release_flag.as_deref() else {
-            return Err("fetch-artifact-release-flag-missing".into());
-        };
-        let created_at = created_at
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "fetch-artifact-github-release-created-at-missing".to_string())?;
-        let (source_sha, _) = release_source_revision(&release, component, release_schema_base)?;
-        if !validate_source_sha(&source_sha) {
-            return Err("fetch-artifact-github-engine-release-source-mismatch".into());
-        }
-        let digest = crate::atoms::file_sha256(&release.artifact);
-        let sidecar_text = String::from_utf8(release.sidecar)
-            .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
-        if sidecar_text != format!("{digest}  harmonia-x86_64\n") {
-            return Err("fetch-artifact-release-sidecar-mismatch".into());
-        }
-        let flag: Value = serde_json::from_slice(flag_bytes)
-            .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
-        if flag.get("sha256").and_then(Value::as_str) != Some(digest.as_str()) {
-            return Err("fetch-artifact-release-flag-digest-mismatch".into());
-        }
-        let env_sha = flag
-            .get("env_sha")
-            .and_then(Value::as_str)
-            .filter(|value| is_hex(value, 64))
-            .ok_or_else(|| "fetch-artifact-release-flag-env-sha-invalid".to_string())?;
-        let pipeline_url = flag
-            .get("pipeline_url")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "fetch-artifact-release-flag-pipeline-url-missing".to_string())?;
-        Ok(Some(Download {
-            manifest: Manifest {
-                schema: MANIFEST_SCHEMA.into(),
-                component: component.into(),
-                source_sha,
-                target: BUILD_TARGET.into(),
-                sha256: digest,
-                built_at: created_at,
-                pipeline_url: pipeline_url.into(),
-                env_sha: Some(env_sha.into()),
-                rustc_version: flag
-                    .get("rustc_version")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            },
-            bytes: release.artifact,
-            identity: "engine-release".into(),
-        }))
-    })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
-    result
+    download_github_latest_engine_release_for_assets(
+        component,
+        release_repo,
+        api_root,
+        "harmonia-x86_64",
+        "harmonia-x86_64.sha256",
+        None,
+        None,
+        release_schema_base,
+    )
 }
 
 #[derive(Debug)]

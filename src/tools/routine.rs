@@ -990,21 +990,71 @@ pub(crate) fn execute_routine(
                 )
             }) {
                 Ok((outcome, outputs)) => {
-                    if !outcome.ok {
+                    let advertised_exhaustion = child.tool == "fetch-artifact"
+                        && outcome
+                            .message
+                            .starts_with("module-artifact-candidates-exhausted");
+                    let exhaustion = if advertised_exhaustion {
+                        crate::bands::module_artifact_debt::read_exhaustion_receipt(&child_dir).ok()
+                    } else {
+                        None
+                    };
+                    if advertised_exhaustion && exhaustion.is_none() {
+                        let signal = routine_failure_signal(
+                            manifest,
+                            source,
+                            child,
+                            "module-artifact-exhaustion-receipt-invalid",
+                        );
                         state.ok = false;
-                        state.first_missing_signal.get_or_insert_with(|| {
-                            routine_failure_signal(manifest, source, child, &outcome.message)
-                        });
+                        state.first_missing_signal.get_or_insert(signal.clone());
                         state.blocked_by = Some(child.name.clone());
+                        (
+                            "failed",
+                            false,
+                            false,
+                            BTreeMap::new(),
+                            json!({"message":signal}),
+                        )
+                    } else if let Some(debt) = exhaustion {
+                        let signal = debt
+                            .get("first_missing_signal")
+                            .and_then(Value::as_str)
+                            .unwrap_or("module-artifact-candidates-exhausted")
+                            .to_owned();
+                        state.blocked_by = Some(child.name.clone());
+                        state.first_missing_signal.get_or_insert(signal.clone());
+                        state.changed |= outcome.changed;
+                        (
+                            "debt",
+                            false,
+                            false,
+                            outputs,
+                            json!({
+                                "skipped": outcome.skipped,
+                                "message": outcome.message,
+                                "module_artifact_exhaustion_debt": true,
+                                "first_missing_signal": signal,
+                                "debt": debt,
+                            }),
+                        )
+                    } else {
+                        if !outcome.ok {
+                            state.ok = false;
+                            state.first_missing_signal.get_or_insert_with(|| {
+                                routine_failure_signal(manifest, source, child, &outcome.message)
+                            });
+                            state.blocked_by = Some(child.name.clone());
+                        }
+                        state.changed |= outcome.changed;
+                        (
+                            if outcome.ok { "completed" } else { "failed" },
+                            outcome.ok,
+                            outcome.changed,
+                            outputs,
+                            json!({"skipped":outcome.skipped,"message":outcome.message}),
+                        )
                     }
-                    state.changed |= outcome.changed;
-                    (
-                        if outcome.ok { "completed" } else { "failed" },
-                        outcome.ok,
-                        outcome.changed,
-                        outputs,
-                        json!({"skipped":outcome.skipped,"message":outcome.message}),
-                    )
                 }
                 Err(error) => {
                     let signal = routine_failure_signal(manifest, source, child, &error);

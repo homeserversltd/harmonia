@@ -14,6 +14,7 @@ pub(crate) mod ratchet_binaries;
 pub(crate) mod renew_self;
 #[path = "migrations/index.rs"]
 pub(crate) mod migrations;
+pub(crate) mod module_artifact_debt;
 #[path = "report-home/index.rs"]
 pub(crate) mod report_home;
 #[path = "restart-services/index.rs"]

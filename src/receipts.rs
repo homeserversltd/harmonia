@@ -426,6 +426,7 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps(
         run_duration_ms,
         module_steps,
         None,
+        None,
     )
 }
 
@@ -443,6 +444,7 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
     run_duration_ms: u128,
     module_steps: Option<&[serde_json::Value]>,
     engine_debt: Option<&serde_json::Value>,
+    module_artifact_debt: Option<&[serde_json::Value]>,
 ) -> Result<(), String> {
     let mut receipt = json!({
             "schema": "harmonia.run_profile.v1",
@@ -463,11 +465,16 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
             "suite_ok": suite_ok,
             // Additive closing surface: older readers may ignore this field.
             "steps": module_steps.map_or_else(|| serde_json::Value::Null, |steps| json!(steps)),
+            "module_artifact_debt": module_artifact_debt.unwrap_or(&[]),
         });
     if let Some(engine_debt) = engine_debt {
         receipt["engine_debt"] = engine_debt.clone();
+    }
+    let degraded = engine_debt.is_some()
+        || module_artifact_debt.is_some_and(|debts| !debts.is_empty());
+    receipt["overall_ok"] = json!(ok && !degraded);
+    if degraded {
         receipt["degraded"] = json!(true);
-        receipt["overall_ok"] = json!(false);
     }
     receipt["config_surfaces"] = json!(collect_config_surfaces(receipt_dir));
     if let Some(base_id) = crate::bands::stage_profile::profile_extends(module_root)? {
