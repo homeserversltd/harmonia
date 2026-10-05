@@ -1,6 +1,8 @@
 //! Repository member release evidence, separate from compiled beam acceptance.
 use serde_json::{json, Value};
+#[cfg(test)]
 use std::io::Write;
+#[cfg(test)]
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone)]
@@ -10,13 +12,15 @@ pub(crate) struct Observation {
     pub(crate) malformed_flags: usize,
     pub(crate) credential: &'static str,
     pub(crate) refusals: Vec<Value>,
+    pub(crate) candidate_receipts: Vec<Value>,
+    pub(crate) download: Option<crate::atoms::ask::fetch_artifact::Download>,
 }
 
 impl Observation {
     pub(crate) fn evidence(&self) -> Value {
         json!({"selected": self.selected, "signal": self.signal,
             "malformed_flags": self.malformed_flags, "credential": self.credential,
-            "refusals": self.refusals})
+            "refusals": self.refusals, "release_candidates": self.candidate_receipts})
     }
 }
 
@@ -29,6 +33,7 @@ fn hex(value: &str, length: usize) -> bool {
 
 /// Keep body and transport outcome separate: malformed JSON is evidence to
 /// skip, while a truncated curl transfer is never a valid flag.
+#[cfg(test)]
 fn get(url: &str, token: Option<&str>) -> Result<(u16, Vec<u8>), ()> {
     let mut command = Command::new("/usr/bin/curl");
     command
@@ -85,23 +90,17 @@ fn get(url: &str, token: Option<&str>) -> Result<(u16, Vec<u8>), ()> {
     Ok((status, output.stdout[..split].to_vec()))
 }
 
-fn validate(
+pub(crate) fn validate(
     flag: &Value,
     tag: &str,
     component: &str,
     seat: &super::mint_seats::Seat,
 ) -> Result<(), String> {
     seat.validate(flag)?;
-    if flag
-        .get("component")
-        .is_some_and(|value| value.as_str() != Some(component))
-    {
+    if flag.get("component").and_then(Value::as_str) != Some(component) {
         return Err(format!("syzygy-flag-component-invalid {component}"));
     }
-    if flag
-        .get("source_sha")
-        .is_some_and(|value| value.as_str() != Some(tag))
-    {
+    if !hex(tag, 40) || flag.get("source_sha").and_then(Value::as_str) != Some(tag) {
         return Err(format!("syzygy-flag-source-sha-invalid {component}"));
     }
     for name in ["flagged_at", "pipeline_url"] {
@@ -113,9 +112,11 @@ fn validate(
         }
     }
     for name in ["env_sha", "sha256"] {
-        if flag
-            .get(name)
-            .is_some_and(|value| value.as_str().is_none_or(|s| !hex(s, 64)))
+        if !matches!(flag.get(name), None | Some(Value::Null))
+            && !flag
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(|value| hex(value, 64))
         {
             return Err(format!("syzygy-flag-{name}-invalid {component}"));
         }
@@ -128,35 +129,84 @@ pub(crate) fn resolve_sbin(seat: &super::mint_seats::Seat) -> Observation {
 }
 
 pub(crate) fn resolve_component(component: &str, seat: &super::mint_seats::Seat) -> Observation {
-    let releases_url =
-        format!("https://git.home.arpa/api/v1/repos/HOMESERVERSLTD/{component}/releases");
-    let mut observed = Observation {
-        selected: None,
-        signal: format!("syzygy-flag-absent {component}"),
-        malformed_flags: 0,
-        credential: "absent",
-        refusals: Vec::new(),
-    };
-    let credential = match crate::atoms::forge_credential::credential_for_url(&releases_url) {
-        Ok(value) => value,
-        Err(reason) => {
-            observed.signal = format!("syzygy-flag-unresolvable {component}");
-            observed.refusals.push(json!({"signal": reason}));
-            return observed;
-        }
-    };
-    let token = credential
-        .as_ref()
-        .map(|credential| credential.token.as_str());
-    resolve_component_with_get(
-        component,
-        seat,
-        token,
-        credential.is_some(),
-        |url, token| get(url, token),
-    )
+    resolve_configured_component(component, None, seat)
 }
 
+/// Resolve the member's configured release flag and, when requested, acquire
+/// its binary and checksum from that exact selected release.
+pub(crate) fn resolve_binary_component(
+    component: &str,
+    asset: &str,
+    seat: &super::mint_seats::Seat,
+) -> Observation {
+    resolve_configured_component(component, Some(asset), seat)
+}
+
+fn resolve_configured_component(
+    component: &str,
+    asset: Option<&str>,
+    seat: &super::mint_seats::Seat,
+) -> Observation {
+    let config_path = crate::bands::pull_source::appliance_config_path();
+    let profile_path = crate::device_profile::device_profile_certificate_path();
+    let resolution = crate::bands::pull_source::resolve_source(
+        crate::bands::pull_source::SourceAuthority::ApplianceConfig {
+            config_path: &config_path,
+            profile_path: &profile_path,
+        },
+        component,
+        "member-flag",
+        if asset.is_some() {
+            "release-binary-source"
+        } else {
+            "release-flag-observation"
+        },
+        None,
+        None,
+    );
+    let Some(source_resolution) = resolution.resolution else {
+        let blocker = resolution
+            .blocker
+            .unwrap_or_else(|| "source-resolution-unavailable".into());
+        return Observation {
+            selected: None,
+            signal: format!("syzygy-flag-unresolvable {component}"),
+            malformed_flags: 0,
+            credential: "absent",
+            refusals: vec![json!({
+                "candidate_locator": config_path.display().to_string(),
+                "provider": null,
+                "url": config_path.display().to_string(),
+                "signal": blocker,
+            })],
+            candidate_receipts: Vec::new(),
+            download: None,
+        };
+    };
+    let probe = crate::bands::renew_self::probe_member_release_candidates(
+        component,
+        &source_resolution,
+        asset,
+        seat,
+    );
+    Observation {
+        signal: if probe.selected.is_some() {
+            "none".into()
+        } else if probe.had_unresolvable_refusal {
+            format!("syzygy-flag-unresolvable {component}")
+        } else {
+            format!("syzygy-flag-absent {component}")
+        },
+        selected: probe.selected,
+        malformed_flags: probe.malformed_flags,
+        credential: probe.credential,
+        refusals: probe.refusals,
+        candidate_receipts: probe.receipts,
+        download: probe.download,
+    }
+}
+
+#[cfg(test)]
 fn resolve_component_with_get<F>(
     component: &str,
     seat: &super::mint_seats::Seat,
@@ -179,6 +229,8 @@ where
             "absent"
         },
         refusals: Vec::new(),
+        candidate_receipts: Vec::new(),
+        download: None,
     };
     let mut releases = Vec::new();
     // Same bounded listing observation as the beam: five pages, fifty rows.

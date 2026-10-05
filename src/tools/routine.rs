@@ -410,6 +410,7 @@ fn execute_routine_tool(
     apply: bool,
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    routine_id: Option<&str>,
 ) -> Result<
     (
         OperationOutcome,
@@ -492,6 +493,9 @@ fn execute_routine_tool(
                 receipt_dir,
                 authorized_apply,
                 invocation.filter(|_| authorized_apply),
+                &manifest.id,
+                routine_id,
+                step_id,
             )?;
             let receipt: Value = serde_json::from_slice(
                 &std::fs::read(receipt_dir.join("release-binary.json"))
@@ -666,6 +670,9 @@ pub(crate) fn execute_validated_step_with_source(
             module_dir,
             software_apply,
             invocation.filter(|_| software_apply),
+            &manifest.id,
+            None,
+            &step.step_id,
         ),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
@@ -984,13 +991,14 @@ pub(crate) fn execute_routine(
                             apply,
                             software_authorization,
                             invocation,
+                            Some(&source.step_id),
                         )
                     },
                     |error| Err(error),
                 )
             }) {
                 Ok((outcome, outputs)) => {
-                    let advertised_exhaustion = child.tool == "fetch-artifact"
+                    let advertised_exhaustion = matches!(child.tool.as_str(), "fetch-artifact" | "release-binary")
                         && outcome
                             .message
                             .starts_with("module-artifact-candidates-exhausted");

@@ -231,6 +231,16 @@ pub(crate) fn settle(
         .ok_or_else(|| "report-transaction-state-missing".to_string())?;
     let module_artifact_debt =
         crate::bands::module_artifact_debt::collect_exhaustion_receipts(receipt_dir)?;
+    let first_missing_signal = if state.first_missing_signal == "none" {
+        module_artifact_debt
+            .first()
+            .and_then(|debt| debt.get("first_missing_signal"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| state.first_missing_signal.clone())
+    } else {
+        state.first_missing_signal.clone()
+    };
     for module_id in &profile.modules {
         if let Some(s) = state.module_states.get(module_id) {
             let loaded = projection.modules.get(module_id).map(|p| &p.loaded);
@@ -277,7 +287,7 @@ pub(crate) fn settle(
             ok: state.ok && state.module_states.values().all(|step| step.ok),
             suite_ok: state.suite_ok,
             changed: state.changed,
-            first_missing_signal: state.first_missing_signal.clone(),
+            first_missing_signal: first_missing_signal.clone(),
             engine_debt: state.engine_debt.clone(),
             module_artifact_debt: module_artifact_debt.clone(),
             module_count: state.module_count,
@@ -299,7 +309,7 @@ pub(crate) fn settle(
         state.changed,
         state.module_count,
         state.operation_count,
-        &state.first_missing_signal,
+        &first_missing_signal,
         module_root,
         state.suite_ok,
         state.run_started.elapsed().as_millis(),
@@ -359,7 +369,7 @@ pub(crate) fn settle(
     println!("profile_id={}", profile.id);
     println!("module_count={}", state.module_count);
     println!("operation_count={}", state.operation_count);
-    println!("first_missing_signal={}", state.first_missing_signal);
+    println!("first_missing_signal={first_missing_signal}");
     println!("receipt_dir={}", receipt_dir.display());
     match settlement {
         SettlementOutcome::Success | SettlementOutcome::ReportOnlyFailure => Ok(()),

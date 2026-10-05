@@ -23,9 +23,19 @@ pub(crate) fn unique_temp_suffix() -> String {
 
 struct ReleaseMetadata {
     url: String,
+    tag_name: Option<String>,
     target_commitish: String,
     created_at: Option<String>,
     assets: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseFlagCandidate {
+    pub tag_name: String,
+    pub target_commitish: String,
+    pub metadata_url: String,
+    pub created_at: Option<String>,
+    pub flag: Result<Value, String>,
 }
 fn release_api(r: &ReleaseRequest) -> String {
     let b = r.base_url.trim_end_matches('/');
@@ -61,7 +71,12 @@ fn lookup_release_metadata_single(
     tag: &str,
     inspection_bounds: bool,
 ) -> Result<Option<ReleaseMetadata>, String> {
-    let url = release_metadata_url_for_request(&release_api(r), &r.owner, &r.repo, tag);
+    let api = release_api(r);
+    let url = if r.kind == "github-release" && tag == "latest" {
+        format!("{api}/repos/{}/{}/releases/latest", r.owner, r.repo)
+    } else {
+        release_metadata_url_for_request(&api, &r.owner, &r.repo, tag)
+    };
     fs::create_dir_all(&r.cache_dir).map_err(|e| format!("release-cache-create-failed: {e}"))?;
     let path = r
         .cache_dir
@@ -111,6 +126,7 @@ fn lookup_release_metadata_single(
         .ok_or_else(|| "release-assets-missing".to_string())?;
     Ok(Some(ReleaseMetadata {
         url,
+        tag_name: value.get("tag_name").and_then(Value::as_str).map(str::to_owned),
         target_commitish,
         created_at: value
             .get("created_at")
@@ -176,6 +192,200 @@ fn download_release_asset(
     let _ = fs::remove_file(&p);
     Ok(b)
 }
+
+fn release_flag_refusal(provider: &str, reason: &str) -> String {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("forgejo-credential-missing") || lower.contains("credential-missing") {
+        format!("release-flag-forgejo-credential-missing provider={provider}")
+    } else if ["tls", "ssl", "certificate"].iter().any(|word| lower.contains(word)) {
+        format!("release-flag-tls-refused provider={provider}")
+    } else if let Some(status) = reason
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("http_status="))
+    {
+        format!("release-flag-http-status-{status} provider={provider}")
+    } else {
+        format!("release-flag-release-refused provider={provider} reason={reason}")
+    }
+}
+
+fn decode_release_flag(bytes: Vec<u8>, provider: &str, tag: &str) -> Result<Value, String> {
+    serde_json::from_slice(&bytes)
+        .map_err(|_| format!("release-flag-json-malformed provider={provider} tag={tag}"))
+}
+
+/// Read only release.flag assets for one configured repository candidate.
+/// GitHub uses its exact anonymous `/releases/latest` resource; Forgejo is
+/// bounded to its SHA-tagged releases and retains the complete raw flag.
+pub(crate) fn read_member_release_flags(
+    provider: &str,
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+) -> Result<Vec<ReleaseFlagCandidate>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| format!("release-flag-repository-invalid provider={provider}"))?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err(format!("release-flag-repository-invalid provider={provider}"));
+    }
+    validate_segment(component, "component")?;
+    validate_segment(owner, "release-owner")?;
+    validate_segment(repo, "release-repo")?;
+    let kind = match provider {
+        "forgejo" => "forgejo-release",
+        "github" => "github-release",
+        _ => return Err(format!("release-flag-provider-unsupported provider={provider}")),
+    };
+    let credential = if provider == "forgejo" {
+        crate::atoms::forge_credential::credential_for_url(api_root)?
+    } else {
+        None
+    };
+    let credential_scope_found = credential.is_some();
+    let request = ReleaseRequest {
+        kind: kind.into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential,
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found,
+        cache_dir: std::env::temp_dir().join(format!(
+            "harmonia-member-release-flags-{}",
+            unique_temp_suffix()
+        )),
+    };
+    let result: Result<Vec<ReleaseFlagCandidate>, String> = (|| {
+        if provider == "github" {
+            let Some(metadata) = lookup_release_metadata_single(&request, "latest", true)? else {
+                let metadata_url = format!(
+                    "{}/repos/{}/{}/releases/latest",
+                    release_api(&request),
+                    request.owner,
+                    request.repo
+                );
+                return Ok(vec![ReleaseFlagCandidate {
+                    tag_name: "latest".into(),
+                    target_commitish: String::new(),
+                    metadata_url,
+                    created_at: None,
+                    flag: Err(format!(
+                        "release-flag-http-status-404 provider={provider}"
+                    )),
+                }]);
+            };
+            let tag = metadata.tag_name.clone().unwrap_or_else(|| "latest".into());
+            let metadata_url = metadata.url.clone();
+            let flag = match optional_release_asset_url(&metadata, "release.flag") {
+                Some(url) => download_release_asset(&request, &url, "release.flag", true)
+                    .and_then(|bytes| decode_release_flag(bytes, provider, &tag)),
+                None => Err(format!("release-flag-asset-missing provider={provider} tag={tag}")),
+            };
+            return Ok(vec![ReleaseFlagCandidate {
+                tag_name: tag,
+                target_commitish: metadata.target_commitish,
+                metadata_url,
+                created_at: metadata.created_at,
+                flag,
+            }]);
+        }
+
+        let mut releases = lookup_published_releases(&request)?;
+        releases.sort_by(|left, right| {
+            right
+                .created_at_order
+                .cmp(&left.created_at_order)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        let mut candidates = Vec::new();
+        for release in releases {
+            let Some(tag_sha) = release.tag_name.strip_prefix("sha-") else {
+                continue;
+            };
+            if candidates.len() == 20 {
+                break;
+            }
+            let expected_sha = tag_sha.to_owned();
+            let tag = release.tag_name.clone();
+            let created_at = Some(release.created_at.clone());
+            let metadata_url = release_metadata_url_for_request(
+                &release_api(&request),
+                &request.owner,
+                &request.repo,
+                &tag,
+            );
+            let candidate_flag = (|| {
+                if !validate_source_sha(&expected_sha) {
+                    return Err(format!(
+                        "release-flag-source-commit-invalid provider={provider} tag={tag}"
+                    ));
+                }
+                if release.target_commitish.as_deref() != Some(expected_sha.as_str()) {
+                    return Err(format!(
+                        "release-flag-target-commit-mismatch provider={provider} tag={tag}"
+                    ));
+                }
+                if release.draft {
+                    return Err(format!("release-flag-release-draft provider={provider} tag={tag}"));
+                }
+                if !release.has_asset("release.flag") {
+                    return Err(format!("release-flag-asset-missing provider={provider} tag={tag}"));
+                }
+                let Some(metadata) = lookup_release_metadata_single(&request, &tag, true)? else {
+                    return Err(format!("release-flag-release-absent provider={provider} tag={tag}"));
+                };
+                if metadata.target_commitish != expected_sha {
+                    return Err(format!(
+                        "release-flag-target-commit-mismatch provider={provider} tag={tag}"
+                    ));
+                }
+                let Some(url) = optional_release_asset_url(&metadata, "release.flag") else {
+                    return Err(format!("release-flag-asset-missing provider={provider} tag={tag}"));
+                };
+                download_release_asset(&request, &url, "release.flag", true)
+                    .and_then(|bytes| decode_release_flag(bytes, provider, &tag))
+            })()
+            .map_err(|reason| {
+                format!(
+                    "{} url={metadata_url}",
+                    release_flag_refusal(provider, &reason)
+                )
+            });
+            candidates.push(ReleaseFlagCandidate {
+                tag_name: tag,
+                target_commitish: release.target_commitish.unwrap_or_default(),
+                metadata_url,
+                created_at,
+                flag: candidate_flag,
+            });
+        }
+        Ok(candidates)
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    let target_url = if provider == "github" {
+        format!(
+            "{}/repos/{}/{}/releases/latest",
+            release_api(&request),
+            request.owner,
+            request.repo
+        )
+    } else {
+        format!(
+            "{}/repos/{}/{}/releases",
+            release_api(&request),
+            request.owner,
+            request.repo
+        )
+    };
+    result.map_err(|error| {
+        format!(
+            "{} url={target_url}",
+            release_flag_refusal(provider, &error)
+        )
+    })
+}
+
 pub(crate) fn fetch_release_assets(
     r: &ReleaseRequest,
     tag: &str,
@@ -215,6 +425,15 @@ pub(crate) fn fetch_release_asset_set_for_inspection(
     let Some(metadata) = lookup_release_metadata_inner(request, tag, true)? else {
         return Ok(None);
     };
+    fetch_release_asset_set_from_metadata(request, tag, &metadata, asset_names).map(Some)
+}
+
+fn fetch_release_asset_set_from_metadata(
+    request: &ReleaseRequest,
+    tag: &str,
+    metadata: &ReleaseMetadata,
+    asset_names: &[(&str, &str)],
+) -> Result<(Vec<ReleaseAssets>, Option<String>), String> {
     if source_sha_from_release_tag(tag)
         .is_some_and(|source_sha| metadata.target_commitish != source_sha)
     {
@@ -236,7 +455,7 @@ pub(crate) fn fetch_release_asset_set_for_inspection(
             target_commitish: metadata.target_commitish.clone(),
         });
     }
-    Ok(Some((releases, created_at)))
+    Ok((releases, created_at))
 }
 
 fn fetch_release_assets_for_pinned_inspection(
@@ -1740,6 +1959,158 @@ fn verify_module_release_assets(
         },
         bytes: selected.artifact.clone(),
         identity: "engine-release".into(),
+    })
+}
+
+fn verify_module_release_assets_with_flag(
+    component: &str,
+    selected_asset: &str,
+    asset_set: &[(String, String)],
+    releases: &[ReleaseAssets],
+    expected_source_sha: &str,
+    created_at: Option<&str>,
+) -> Result<(Download, Value), String> {
+    let download = verify_module_release_assets(
+        component,
+        selected_asset,
+        asset_set,
+        releases,
+        Some(expected_source_sha),
+        created_at,
+        None,
+        None,
+    )?;
+    let selected_index = asset_set
+        .iter()
+        .position(|(asset, _)| asset == selected_asset)
+        .ok_or_else(|| "fetch-artifact-release-selected-asset-missing".to_string())?;
+    let flag_bytes = releases
+        .get(selected_index)
+        .and_then(|release| release.release_flag.as_deref())
+        .ok_or_else(|| "fetch-artifact-release-flag-missing".to_string())?;
+    let flag: Value = serde_json::from_slice(flag_bytes)
+        .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
+    if flag.get("sha256").and_then(Value::as_str) != Some(download.manifest.sha256.as_str()) {
+        return Err("fetch-artifact-release-flag-digest-required-or-mismatched".into());
+    }
+    Ok((download, flag))
+}
+
+/// Acquire an asset and its release.flag from the same exact metadata response.
+/// GitHub's metadata locator is `/releases/latest`; Forgejo uses the selected
+/// SHA-tagged release. The flag digest is mandatory for this binary lane.
+pub(crate) fn download_member_release_binary(
+    provider: &str,
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    release_tag: &str,
+    expected_tag: &str,
+    expected_flag: &Value,
+    asset_name: &str,
+) -> Result<Option<Download>, String> {
+    let (owner, repo) = release_repo
+        .split_once('/')
+        .ok_or_else(|| "release-flag-repository-invalid".to_string())?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err("release-flag-repository-invalid".into());
+    }
+    validate_segment(component, "component")?;
+    validate_segment(owner, "release-owner")?;
+    validate_segment(repo, "release-repo")?;
+    validate_segment(asset_name, "asset-name")?;
+    let kind = match provider {
+        "forgejo" => "forgejo-release",
+        "github" => "github-release",
+        _ => return Err(format!("release-flag-provider-unsupported provider={provider}")),
+    };
+    let credential = if provider == "forgejo" {
+        crate::atoms::forge_credential::credential_for_url(api_root)?
+    } else {
+        None
+    };
+    let credential_scope_found = credential.is_some();
+    let request = ReleaseRequest {
+        kind: kind.into(),
+        base_url: api_root.into(),
+        owner: owner.into(),
+        repo: repo.into(),
+        credential,
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found,
+        cache_dir: std::env::temp_dir().join(format!(
+            "harmonia-member-release-binary-{}",
+            unique_temp_suffix()
+        )),
+    };
+    let result = (|| {
+        let metadata_tag = if provider == "github" {
+            "latest"
+        } else {
+            release_tag
+        };
+        let Some(metadata) = lookup_release_metadata_single(&request, metadata_tag, true)? else {
+            return Ok(None);
+        };
+        if metadata.tag_name.as_deref() != Some(expected_tag) {
+            return Err(format!(
+                "release-flag-selected-release-changed provider={provider} expected_tag={expected_tag} observed_tag={} url={}",
+                metadata.tag_name.as_deref().unwrap_or("unknown"),
+                metadata.url
+            ));
+        }
+        let source_sha = expected_flag
+            .get("source_sha")
+            .and_then(Value::as_str)
+            .filter(|source_sha| validate_source_sha(source_sha))
+            .ok_or_else(|| "release-flag-source-sha-invalid".to_string())?;
+        if metadata.target_commitish != source_sha {
+            return Err(format!(
+                "release-flag-target-commit-mismatch provider={provider} tag={expected_tag} url={}",
+                metadata.url
+            ));
+        }
+        let sidecar = format!("{asset_name}.sha256");
+        let asset_set = vec![(asset_name.to_owned(), sidecar.clone())];
+        let refs = [(asset_name, sidecar.as_str())];
+        let (assets, created_at) =
+            fetch_release_asset_set_from_metadata(&request, metadata_tag, &metadata, &refs)?;
+        let (download, fetched_flag) = verify_module_release_assets_with_flag(
+            component,
+            asset_name,
+            &asset_set,
+            &assets,
+            source_sha,
+            created_at.as_deref(),
+        )?;
+        if &fetched_flag != expected_flag {
+            return Err(format!(
+                "release-flag-selected-release-changed provider={provider} tag={expected_tag} url={}",
+                metadata.url
+            ));
+        }
+        Ok(Some(download))
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result.map_err(|error| {
+        let target_url = if provider == "github" {
+            format!(
+                "{}/repos/{owner}/{repo}/releases/latest",
+                release_api(&request)
+            )
+        } else {
+            release_metadata_url_for_request(
+                &release_api(&request),
+                &request.owner,
+                &request.repo,
+                release_tag,
+            )
+        };
+        if error.contains(" url=") {
+            error
+        } else {
+            format!("{error} url={target_url}")
+        }
     })
 }
 

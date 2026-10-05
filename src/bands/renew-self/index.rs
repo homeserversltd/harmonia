@@ -1467,6 +1467,8 @@ fn engine_release_candidate_receipt(
     source_sha: Option<&str>,
     digest: Option<&str>,
     blocker: Option<&str>,
+    operation: &str,
+    release_refusals: &[Value],
 ) -> Value {
     json!({
         "candidate_index": index,
@@ -1482,7 +1484,7 @@ fn engine_release_candidate_receipt(
         },
         "could-change": false,
         "attempt": {
-            "operation": "inspect-and-validate-engine-release",
+            "operation": operation,
             "state": attempt_state,
         },
         "final-state": {
@@ -1492,6 +1494,7 @@ fn engine_release_candidate_receipt(
             "sha256": digest,
             "blocker": blocker,
         },
+        "release_candidate_refusals": release_refusals,
     })
 }
 
@@ -1561,6 +1564,362 @@ fn write_content_seat_observation(
 enum ReleaseCandidateReceiptMode {
     Engine,
     Module,
+    MemberFlag,
+    MemberFlagBinary,
+}
+
+struct ReleaseCandidateProbe {
+    download: Option<crate::atoms::ask::fetch_artifact::Download>,
+    selected_flag: Option<Value>,
+    receipts: Vec<Value>,
+    refusals: Vec<Value>,
+    malformed_flags: usize,
+    credential: &'static str,
+    had_unresolvable_refusal: bool,
+}
+
+struct MemberReleaseCandidateAttempt {
+    selected_flag: Option<Value>,
+    download: Option<crate::atoms::ask::fetch_artifact::Download>,
+    source_sha: Option<String>,
+    digest: Option<String>,
+    attempt_state: &'static str,
+    disposition: &'static str,
+    blocker: Option<String>,
+    refusals: Vec<Value>,
+    malformed_flags: usize,
+    credential: &'static str,
+    had_unresolvable_refusal: bool,
+}
+
+fn member_release_candidate_target(source: &EngineReleaseSource) -> String {
+    let root = source.api_root.trim_end_matches('/');
+    match source.provider {
+        EngineReleaseProvider::GitHub => {
+            format!("{root}/repos/{}/releases/latest", source.repository)
+        }
+        EngineReleaseProvider::Forgejo => {
+            format!("{root}/repos/{}/releases", source.repository)
+        }
+    }
+}
+
+fn member_release_refusal(
+    candidate_locator: &str,
+    provider: &str,
+    tag: Option<&str>,
+    url: &str,
+    signal: &str,
+    flag: Option<&Value>,
+    credential: &str,
+) -> Value {
+    json!({
+        "candidate_locator": candidate_locator,
+        "provider": provider,
+        "tag": tag,
+        "url": url,
+        "signal": signal,
+        "flag": flag,
+        "credential": credential,
+    })
+}
+
+fn member_release_unresolvable(signal: &str) -> bool {
+    let lower = signal.to_ascii_lowercase();
+    [
+        "credential-missing",
+        "auth-required",
+        "tls",
+        "ssl",
+        "certificate",
+        "http-status-",
+        "fetch-failed",
+        "unreachable",
+        "curl-start-failed",
+        "timeout",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn attempt_member_release_candidate(
+    component: &str,
+    candidate_locator: &str,
+    source: &EngineReleaseSource,
+    asset: Option<&str>,
+    seat: &crate::atoms::ask::mint_seats::Seat,
+) -> MemberReleaseCandidateAttempt {
+    use crate::atoms::ask::fetch_artifact::{
+        download_member_release_binary, read_member_release_flags, validate_source_sha,
+    };
+
+    let provider = source.provider.name();
+    let target_url = member_release_candidate_target(source);
+    let credential = if source.provider == EngineReleaseProvider::Forgejo {
+        match crate::atoms::ask::fetch_artifact::credential_state_for_url(&source.api_root) {
+            Ok(state) => state,
+            Err(error) => {
+                let refusal = member_release_refusal(
+                    candidate_locator,
+                    provider,
+                    None,
+                    &target_url,
+                    &error,
+                    None,
+                    "error",
+                );
+                return MemberReleaseCandidateAttempt {
+                    selected_flag: None,
+                    download: None,
+                    source_sha: None,
+                    digest: None,
+                    attempt_state: "candidate-refused",
+                    disposition: "refused",
+                    blocker: Some(error),
+                    refusals: vec![refusal],
+                    malformed_flags: 0,
+                    credential: "error",
+                    had_unresolvable_refusal: true,
+                };
+            }
+        }
+    } else {
+        "absent"
+    };
+    let candidates = match read_member_release_flags(
+        provider,
+        component,
+        &source.repository,
+        &source.api_root,
+    ) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            let refusal = member_release_refusal(
+                candidate_locator,
+                provider,
+                None,
+                &target_url,
+                &error,
+                None,
+                credential,
+            );
+            return MemberReleaseCandidateAttempt {
+                selected_flag: None,
+                download: None,
+                source_sha: None,
+                digest: None,
+                attempt_state: "candidate-refused",
+                disposition: "refused",
+                blocker: Some(error.clone()),
+                refusals: vec![refusal],
+                malformed_flags: 0,
+                credential,
+                had_unresolvable_refusal: member_release_unresolvable(&error),
+            };
+        }
+    };
+    if candidates.is_empty() {
+        let blocker = format!("release-flag-no-published-candidates provider={provider} url={target_url}");
+        return MemberReleaseCandidateAttempt {
+            selected_flag: None,
+            download: None,
+            source_sha: None,
+            digest: None,
+            attempt_state: "completed",
+            disposition: "unavailable",
+            blocker: Some(blocker),
+            refusals: Vec::new(),
+            malformed_flags: 0,
+            credential,
+            had_unresolvable_refusal: false,
+        };
+    }
+
+    let mut refusals = Vec::new();
+    let mut malformed_flags = 0;
+    let mut valid_flags = Vec::new();
+    let mut last_blocker = None;
+    let mut had_unresolvable_refusal = false;
+    for release in candidates {
+        let flag = match release.flag.clone() {
+            Ok(flag) => flag,
+            Err(signal) => {
+                if signal.contains("json-malformed") {
+                    malformed_flags += 1;
+                }
+                had_unresolvable_refusal |= member_release_unresolvable(&signal);
+                last_blocker = Some(signal.clone());
+                refusals.push(member_release_refusal(
+                    candidate_locator,
+                    provider,
+                    Some(&release.tag_name),
+                    &release.metadata_url,
+                    &signal,
+                    None,
+                    credential,
+                ));
+                continue;
+            }
+        };
+        let target_sha = release.target_commitish.as_str();
+        let tag_binding_valid = if source.provider == EngineReleaseProvider::Forgejo {
+            release
+                .tag_name
+                .strip_prefix("sha-")
+                .is_some_and(|tag_sha| tag_sha == target_sha && validate_source_sha(tag_sha))
+        } else {
+            validate_source_sha(target_sha)
+        };
+        let validation = if !tag_binding_valid {
+            Err(format!(
+                "release-flag-target-commit-mismatch provider={provider} tag={} url={}",
+                release.tag_name, release.metadata_url
+            ))
+        } else {
+            crate::atoms::ask::member_flag::validate(&flag, target_sha, component, seat)
+        };
+        if let Err(signal) = validation {
+            malformed_flags += 1;
+            last_blocker = Some(signal.clone());
+            refusals.push(member_release_refusal(
+                candidate_locator,
+                provider,
+                Some(&release.tag_name),
+                &release.metadata_url,
+                &signal,
+                Some(&flag),
+                credential,
+            ));
+            continue;
+        }
+        valid_flags.push((release, flag));
+    }
+    valid_flags.sort_by(|(left_release, left_flag), (right_release, right_flag)| {
+        right_flag
+            .get("flagged_at")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(
+                left_flag
+                    .get("flagged_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            )
+            .then_with(|| right_release.tag_name.cmp(&left_release.tag_name))
+    });
+
+    for (release, flag) in valid_flags {
+        let source_sha = flag
+            .get("source_sha")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let flag_digest = flag
+            .get("sha256")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if let Some(asset) = asset {
+            let release_tag = if source.provider == EngineReleaseProvider::GitHub {
+                "latest"
+            } else {
+                &release.tag_name
+            };
+            match download_member_release_binary(
+                provider,
+                component,
+                &source.repository,
+                &source.api_root,
+                release_tag,
+                &release.tag_name,
+                &flag,
+                asset,
+            ) {
+                Ok(Some(download)) => {
+                    let digest = download.manifest.sha256.clone();
+                    return MemberReleaseCandidateAttempt {
+                        selected_flag: Some(flag),
+                        download: Some(download),
+                        source_sha,
+                        digest: Some(digest),
+                        attempt_state: "completed",
+                        disposition: "selected",
+                        blocker: None,
+                        refusals,
+                        malformed_flags,
+                        credential,
+                        had_unresolvable_refusal,
+                    };
+                }
+                Ok(None) => {
+                    let signal = format!(
+                        "release-binary-release-absent provider={provider} tag={} url={}",
+                        release.tag_name, release.metadata_url
+                    );
+                    last_blocker = Some(signal.clone());
+                    had_unresolvable_refusal = true;
+                    refusals.push(member_release_refusal(
+                        candidate_locator,
+                        provider,
+                        Some(&release.tag_name),
+                        &release.metadata_url,
+                        &signal,
+                        Some(&flag),
+                        credential,
+                    ));
+                }
+                Err(signal) => {
+                    last_blocker = Some(signal.clone());
+                    had_unresolvable_refusal |= member_release_unresolvable(&signal)
+                        || signal.contains("release-binary")
+                        || signal.contains("digest");
+                    refusals.push(member_release_refusal(
+                        candidate_locator,
+                        provider,
+                        Some(&release.tag_name),
+                        &release.metadata_url,
+                        &signal,
+                        Some(&flag),
+                        credential,
+                    ));
+                }
+            }
+        } else {
+            return MemberReleaseCandidateAttempt {
+                selected_flag: Some(flag),
+                download: None,
+                source_sha,
+                digest: flag_digest,
+                attempt_state: "completed",
+                disposition: "selected",
+                blocker: None,
+                refusals,
+                malformed_flags,
+                credential,
+                had_unresolvable_refusal,
+            };
+        }
+    }
+    let disposition = if last_blocker.is_some() {
+        "refused"
+    } else {
+        "unavailable"
+    };
+    MemberReleaseCandidateAttempt {
+        selected_flag: None,
+        download: None,
+        source_sha: None,
+        digest: None,
+        attempt_state: if disposition == "refused" {
+            "candidate-refused"
+        } else {
+            "completed"
+        },
+        disposition,
+        blocker: last_blocker.or_else(|| Some(format!("release-flag-no-eligible-candidate provider={provider} url={target_url}"))),
+        refusals,
+        malformed_flags,
+        credential,
+        had_unresolvable_refusal,
+    }
 }
 
 fn module_release_candidate_receipt(
@@ -1601,21 +1960,39 @@ fn probe_engine_release_candidates(
     pinned_release_sha: Option<&str>,
     release_schema_base: Option<&str>,
     mode: ReleaseCandidateReceiptMode,
-) -> (
-    Option<crate::atoms::ask::fetch_artifact::Download>,
-    Vec<Value>,
-) {
+    member_flag_seat: Option<&crate::atoms::ask::mint_seats::Seat>,
+) -> ReleaseCandidateProbe {
     use crate::atoms::ask::fetch_artifact::{
         download_github_latest_engine_release_for_assets,
         download_latest_engine_release_for_assets, module_release_asset_set,
     };
 
-    let requested_assets = module_release_asset_set(component, asset_name, sidecar_name, profile)
-        .into_iter()
-        .map(|(asset_name, sidecar_name)| json!({"asset_name":asset_name,"sidecar_name":sidecar_name}))
-        .collect::<Vec<_>>();
+    let member_flag_mode = matches!(
+        mode,
+        ReleaseCandidateReceiptMode::MemberFlag | ReleaseCandidateReceiptMode::MemberFlagBinary
+    );
+    let requested_assets = if member_flag_mode {
+        let mut requested = vec![json!({"asset_name":"release.flag"})];
+        if matches!(mode, ReleaseCandidateReceiptMode::MemberFlagBinary) {
+            requested.push(json!({"asset_name":asset_name,"sidecar_name":sidecar_name}));
+        }
+        requested
+    } else {
+        module_release_asset_set(component, asset_name, sidecar_name, profile)
+            .into_iter()
+            .map(|(asset_name, sidecar_name)| {
+                json!({"asset_name":asset_name,"sidecar_name":sidecar_name})
+            })
+            .collect::<Vec<_>>()
+    };
     let mut receipts = Vec::with_capacity(candidates.len());
-    let mut selected = None;
+    let mut selected_download = None;
+    let mut selected_flag = None;
+    let mut refusals = Vec::new();
+    let mut malformed_flags = 0;
+    let mut credential = "absent";
+    let mut had_unresolvable_refusal = false;
+
     for (index, candidate) in candidates.iter().enumerate() {
         let candidate_index = index + 1;
         let candidate_name = candidate
@@ -1625,167 +2002,387 @@ fn probe_engine_release_candidates(
             .unwrap_or(candidate.locator.as_str())
             .trim_end_matches(".git")
             .to_owned();
-        if selected.is_some() {
+        if selected_download.is_some() || selected_flag.is_some() {
             match mode {
-                ReleaseCandidateReceiptMode::Engine => receipts.push(engine_release_candidate_receipt(
-                    candidate_index,
-                    candidate,
-                    None,
-                    None,
-                    "not-attempted",
-                    "not-attempted",
-                    None,
-                    None,
-                    Some("higher-priority-candidate-selected"),
-                )),
-                ReleaseCandidateReceiptMode::Module => receipts.push(module_release_candidate_receipt(
-                    candidate_index,
-                    candidate,
-                    &candidate_name,
-                    &requested_assets,
-                    None,
-                    None,
-                    "not-attempted",
-                    "not-attempted",
-                    None,
-                    None,
-                    Some("higher-priority-candidate-selected"),
-                )),
+                ReleaseCandidateReceiptMode::Engine => {
+                    receipts.push(engine_release_candidate_receipt(
+                        candidate_index,
+                        candidate,
+                        None,
+                        None,
+                        "not-attempted",
+                        "not-attempted",
+                        None,
+                        None,
+                        Some("higher-priority-candidate-selected"),
+                        "inspect-and-validate-engine-release",
+                        &[],
+                    ));
+                }
+                ReleaseCandidateReceiptMode::MemberFlag
+                | ReleaseCandidateReceiptMode::MemberFlagBinary => {
+                    receipts.push(engine_release_candidate_receipt(
+                        candidate_index,
+                        candidate,
+                        None,
+                        None,
+                        "not-attempted",
+                        "not-attempted",
+                        None,
+                        None,
+                        Some("higher-priority-candidate-selected"),
+                        if matches!(mode, ReleaseCandidateReceiptMode::MemberFlagBinary) {
+                            "inspect-flag-and-digest-verified-binary"
+                        } else {
+                            "inspect-and-validate-member-release-flag"
+                        },
+                        &[],
+                    ));
+                }
+                ReleaseCandidateReceiptMode::Module => {
+                    receipts.push(module_release_candidate_receipt(
+                        candidate_index,
+                        candidate,
+                        &candidate_name,
+                        &requested_assets,
+                        None,
+                        None,
+                        "not-attempted",
+                        "not-attempted",
+                        None,
+                        None,
+                        Some("higher-priority-candidate-selected"),
+                    ));
+                }
             }
             continue;
         }
 
         let mut provider_name = None;
         let mut target = Some(format!("{}@release-source", candidate.locator));
-        let source = engine_release_source_for_candidate(candidate);
-        let (attempt_state, disposition, blocker, source_sha, digest) = match source {
-            Err(error) => {
-                let (attempt_state, disposition) = match mode {
-                    ReleaseCandidateReceiptMode::Engine
-                        if candidate.kind == crate::atoms::git_artifact::SourceCandidateKind::LocalCheckout =>
-                    {
-                        ("candidate-validation-completed", "not-release-candidate")
+        let mut release_refusals = Vec::new();
+        let (attempt_state, disposition, blocker, source_sha, digest) =
+            match engine_release_source_for_candidate(candidate) {
+                Err(error) => {
+                    let (attempt_state, disposition) = match mode {
+                        ReleaseCandidateReceiptMode::Engine
+                            if candidate.kind
+                                == crate::atoms::git_artifact::SourceCandidateKind::LocalCheckout =>
+                        {
+                            ("candidate-validation-completed", "not-release-candidate")
+                        }
+                        ReleaseCandidateReceiptMode::Engine => {
+                            ("candidate-validation-completed", "refused")
+                        }
+                        ReleaseCandidateReceiptMode::Module
+                        | ReleaseCandidateReceiptMode::MemberFlag
+                        | ReleaseCandidateReceiptMode::MemberFlagBinary => {
+                            ("candidate-refused", "refused")
+                        }
+                    };
+                    if member_flag_mode {
+                        let provider = match candidate.kind {
+                            crate::atoms::git_artifact::SourceCandidateKind::LocalCheckout => {
+                                "local-checkout"
+                            }
+                            crate::atoms::git_artifact::SourceCandidateKind::Git
+                                if candidate.locator.contains("github.com") => "github",
+                            crate::atoms::git_artifact::SourceCandidateKind::Git
+                                if candidate.locator.contains("git.home.arpa") => "forgejo",
+                            crate::atoms::git_artifact::SourceCandidateKind::Git => "unsupported",
+                        };
+                        provider_name = Some(provider);
+                        target = Some(candidate.locator.clone());
+                        release_refusals.push(member_release_refusal(
+                            &candidate.locator,
+                            provider,
+                            None,
+                            &candidate.locator,
+                            &error,
+                            None,
+                            "absent",
+                        ));
+                        had_unresolvable_refusal = true;
                     }
-                    ReleaseCandidateReceiptMode::Engine => {
-                        ("candidate-validation-completed", "refused")
-                    }
-                    ReleaseCandidateReceiptMode::Module => ("candidate-refused", "refused"),
-                };
-                (attempt_state, disposition, Some(error), None, None)
-            }
-            Ok(source) => {
-                provider_name = Some(source.provider.name());
-                target = Some(source.provider.release_target(&candidate.locator));
-                let fetched = match mode {
-                    ReleaseCandidateReceiptMode::Engine => {
-                        download_engine_release_for_preflight(component, &source)
-                    }
-                    ReleaseCandidateReceiptMode::Module => match source.provider {
-                        EngineReleaseProvider::Forgejo => download_latest_engine_release_for_assets(
-                            component,
-                            &source.repository,
-                            &source.api_root,
-                            asset_name,
-                            sidecar_name,
-                            profile,
-                            pinned_release_sha,
-                            release_schema_base,
-                        ),
-                        EngineReleaseProvider::GitHub => download_github_latest_engine_release_for_assets(
-                            component,
-                            &source.repository,
-                            &source.api_root,
-                            asset_name,
-                            sidecar_name,
-                            profile,
-                            pinned_release_sha,
-                            release_schema_base,
-                        ),
-                    },
-                };
-                match fetched {
-                    Ok(Some(download)) => {
-                        let valid_sha = match mode {
-                            ReleaseCandidateReceiptMode::Engine => {
-                                crate::atoms::git_artifact::is_lower_hex_sha(
-                                    &download.manifest.source_sha,
+                    (attempt_state, disposition, Some(error), None, None)
+                }
+                Ok(source) => {
+                    provider_name = Some(source.provider.name());
+                    if member_flag_mode {
+                        target = Some(member_release_candidate_target(&source));
+                        match member_flag_seat {
+                            Some(seat) => {
+                                let attempt = attempt_member_release_candidate(
+                                    component,
+                                    &candidate.locator,
+                                    &source,
+                                    if matches!(mode, ReleaseCandidateReceiptMode::MemberFlagBinary) {
+                                        Some(asset_name)
+                                    } else {
+                                        None
+                                    },
+                                    seat,
+                                );
+                                malformed_flags += attempt.malformed_flags;
+                                had_unresolvable_refusal |= attempt.had_unresolvable_refusal;
+                                if attempt.credential != "absent" {
+                                    credential = attempt.credential;
+                                }
+                                refusals.extend(attempt.refusals.iter().cloned());
+                                release_refusals = attempt.refusals;
+                                selected_flag = attempt.selected_flag;
+                                selected_download = attempt.download;
+                                (
+                                    attempt.attempt_state,
+                                    attempt.disposition,
+                                    attempt.blocker,
+                                    attempt.source_sha,
+                                    attempt.digest,
                                 )
                             }
-                            ReleaseCandidateReceiptMode::Module => {
-                                crate::atoms::ask::fetch_artifact::validate_source_sha(
-                                    &download.manifest.source_sha,
-                                )
+                            None => {
+                                let signal = "member-release-flag-seat-unavailable".to_string();
+                                had_unresolvable_refusal = true;
+                                let target_url = target
+                                    .as_deref()
+                                    .unwrap_or(candidate.locator.as_str());
+                                release_refusals.push(member_release_refusal(
+                                    &candidate.locator,
+                                    source.provider.name(),
+                                    None,
+                                    target_url,
+                                    &signal,
+                                    None,
+                                    "not-observed",
+                                ));
+                                ("candidate-refused", "refused", Some(signal), None, None)
+                            }
+                        }
+                    } else {
+                        target = Some(source.provider.release_target(&candidate.locator));
+                        let fetched = match mode {
+                            ReleaseCandidateReceiptMode::Engine => {
+                                download_engine_release_for_preflight(component, &source)
+                            }
+                            ReleaseCandidateReceiptMode::Module => match source.provider {
+                                EngineReleaseProvider::Forgejo => {
+                                    download_latest_engine_release_for_assets(
+                                        component,
+                                        &source.repository,
+                                        &source.api_root,
+                                        asset_name,
+                                        sidecar_name,
+                                        profile,
+                                        pinned_release_sha,
+                                        release_schema_base,
+                                    )
+                                }
+                                EngineReleaseProvider::GitHub => {
+                                    download_github_latest_engine_release_for_assets(
+                                        component,
+                                        &source.repository,
+                                        &source.api_root,
+                                        asset_name,
+                                        sidecar_name,
+                                        profile,
+                                        pinned_release_sha,
+                                        release_schema_base,
+                                    )
+                                }
+                                _ => unreachable!("release provider enum is exhaustive"),
+                            },
+                            ReleaseCandidateReceiptMode::MemberFlag
+                            | ReleaseCandidateReceiptMode::MemberFlagBinary => {
+                                unreachable!("member-flag modes handled above")
                             }
                         };
-                        let source_sha = download.manifest.source_sha.clone();
-                        let digest = download.manifest.sha256.clone();
-                        if valid_sha {
-                            selected = Some(download);
-                            ("completed", "selected", None, Some(source_sha), Some(digest))
-                        } else {
-                            let signal = if matches!(mode, ReleaseCandidateReceiptMode::Engine) {
-                                "engine-artifact-source-sha-invalid"
-                            } else {
-                                "module-release-source-sha-invalid"
-                            };
-                            ("completed", "refused", Some(signal.to_owned()), Some(source_sha), Some(digest))
+                        match fetched {
+                            Ok(Some(download)) => {
+                                let valid_sha = match mode {
+                                    ReleaseCandidateReceiptMode::Engine => {
+                                        crate::atoms::git_artifact::is_lower_hex_sha(
+                                            &download.manifest.source_sha,
+                                        )
+                                    }
+                                    ReleaseCandidateReceiptMode::Module => {
+                                        crate::atoms::ask::fetch_artifact::validate_source_sha(
+                                            &download.manifest.source_sha,
+                                        )
+                                    }
+                                    ReleaseCandidateReceiptMode::MemberFlag
+                                    | ReleaseCandidateReceiptMode::MemberFlagBinary => false,
+                                };
+                                let source_sha = download.manifest.source_sha.clone();
+                                let digest = download.manifest.sha256.clone();
+                                if valid_sha {
+                                    selected_download = Some(download);
+                                    (
+                                        "completed",
+                                        "selected",
+                                        None,
+                                        Some(source_sha),
+                                        Some(digest),
+                                    )
+                                } else {
+                                    let signal = if matches!(mode, ReleaseCandidateReceiptMode::Engine) {
+                                        "engine-artifact-source-sha-invalid"
+                                    } else {
+                                        "module-release-source-sha-invalid"
+                                    };
+                                    (
+                                        "completed",
+                                        "refused",
+                                        Some(signal.to_owned()),
+                                        Some(source_sha),
+                                        Some(digest),
+                                    )
+                                }
+                            }
+                            Ok(None) => match mode {
+                                ReleaseCandidateReceiptMode::Engine => (
+                                    "completed",
+                                    "unavailable",
+                                    Some("no-eligible-release-returned".to_owned()),
+                                    None,
+                                    None,
+                                ),
+                                ReleaseCandidateReceiptMode::Module => (
+                                    "candidate-refused",
+                                    "refused",
+                                    Some("no-eligible-release-returned".to_owned()),
+                                    None,
+                                    None,
+                                ),
+                                ReleaseCandidateReceiptMode::MemberFlag
+                                | ReleaseCandidateReceiptMode::MemberFlagBinary => unreachable!(),
+                            },
+                            Err(error) => match mode {
+                                ReleaseCandidateReceiptMode::Engine => {
+                                    ("failed", "failed", Some(error), None, None)
+                                }
+                                ReleaseCandidateReceiptMode::Module => {
+                                    ("candidate-refused", "refused", Some(error), None, None)
+                                }
+                                ReleaseCandidateReceiptMode::MemberFlag
+                                | ReleaseCandidateReceiptMode::MemberFlagBinary => unreachable!(),
+                            },
                         }
                     }
-                    Ok(None) => match mode {
-                        ReleaseCandidateReceiptMode::Engine => (
-                            "completed",
-                            "unavailable",
-                            Some("no-eligible-release-returned".to_owned()),
-                            None,
-                            None,
-                        ),
-                        ReleaseCandidateReceiptMode::Module => (
-                            "candidate-refused",
-                            "refused",
-                            Some("no-eligible-release-returned".to_owned()),
-                            None,
-                            None,
-                        ),
-                    },
-                    Err(error) => match mode {
-                        ReleaseCandidateReceiptMode::Engine => {
-                            ("failed", "failed", Some(error), None, None)
-                        }
-                        ReleaseCandidateReceiptMode::Module => {
-                            ("candidate-refused", "refused", Some(error), None, None)
-                        }
-                    },
                 }
-            }
-        };
+            };
         match mode {
-            ReleaseCandidateReceiptMode::Engine => receipts.push(engine_release_candidate_receipt(
-                candidate_index,
-                candidate,
-                provider_name.as_deref(),
-                target.as_deref(),
-                attempt_state,
-                disposition,
-                source_sha.as_deref(),
-                digest.as_deref(),
-                blocker.as_deref(),
-            )),
-            ReleaseCandidateReceiptMode::Module => receipts.push(module_release_candidate_receipt(
-                candidate_index,
-                candidate,
-                &candidate_name,
-                &requested_assets,
-                provider_name.as_deref(),
-                target.as_deref(),
-                attempt_state,
-                disposition,
-                source_sha.as_deref(),
-                digest.as_deref(),
-                blocker.as_deref(),
-            )),
+            ReleaseCandidateReceiptMode::Engine => {
+                receipts.push(engine_release_candidate_receipt(
+                    candidate_index,
+                    candidate,
+                    provider_name.as_deref(),
+                    target.as_deref(),
+                    attempt_state,
+                    disposition,
+                    source_sha.as_deref(),
+                    digest.as_deref(),
+                    blocker.as_deref(),
+                    "inspect-and-validate-engine-release",
+                    &[],
+                ));
+            }
+            ReleaseCandidateReceiptMode::MemberFlag
+            | ReleaseCandidateReceiptMode::MemberFlagBinary => {
+                receipts.push(engine_release_candidate_receipt(
+                    candidate_index,
+                    candidate,
+                    provider_name.as_deref(),
+                    target.as_deref(),
+                    attempt_state,
+                    disposition,
+                    source_sha.as_deref(),
+                    digest.as_deref(),
+                    blocker.as_deref(),
+                    if matches!(mode, ReleaseCandidateReceiptMode::MemberFlagBinary) {
+                        "inspect-flag-and-digest-verified-binary"
+                    } else {
+                        "inspect-and-validate-member-release-flag"
+                    },
+                    &release_refusals,
+                ));
+            }
+            ReleaseCandidateReceiptMode::Module => {
+                receipts.push(module_release_candidate_receipt(
+                    candidate_index,
+                    candidate,
+                    &candidate_name,
+                    &requested_assets,
+                    provider_name.as_deref(),
+                    target.as_deref(),
+                    attempt_state,
+                    disposition,
+                    source_sha.as_deref(),
+                    digest.as_deref(),
+                    blocker.as_deref(),
+                ));
+            }
         }
     }
-    (selected, receipts)
+    ReleaseCandidateProbe {
+        download: selected_download,
+        selected_flag,
+        receipts,
+        refusals,
+        malformed_flags,
+        credential,
+        had_unresolvable_refusal,
+    }
+}
+
+pub(crate) struct MemberReleaseProbe {
+    pub(crate) selected: Option<Value>,
+    pub(crate) download: Option<crate::atoms::ask::fetch_artifact::Download>,
+    pub(crate) receipts: Vec<Value>,
+    pub(crate) refusals: Vec<Value>,
+    pub(crate) malformed_flags: usize,
+    pub(crate) credential: &'static str,
+    pub(crate) had_unresolvable_refusal: bool,
+}
+
+pub(crate) fn probe_member_release_candidates(
+    component: &str,
+    resolution: &crate::bands::pull_source::SourceResolution,
+    asset: Option<&str>,
+    seat: &crate::atoms::ask::mint_seats::Seat,
+) -> MemberReleaseProbe {
+    let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
+        resolution,
+        engine_source_root(),
+        None,
+    );
+    let asset_name = asset.unwrap_or("release.flag");
+    let sidecar_name = asset
+        .map(|asset| format!("{asset}.sha256"))
+        .unwrap_or_else(|| "release.flag.sha256".into());
+    let probe = probe_engine_release_candidates(
+        component,
+        &source_plan.candidates,
+        asset_name,
+        &sidecar_name,
+        None,
+        None,
+        None,
+        if asset.is_some() {
+            ReleaseCandidateReceiptMode::MemberFlagBinary
+        } else {
+            ReleaseCandidateReceiptMode::MemberFlag
+        },
+        Some(seat),
+    );
+    MemberReleaseProbe {
+        selected: probe.selected_flag,
+        download: probe.download,
+        receipts: probe.receipts,
+        refusals: probe.refusals,
+        malformed_flags: probe.malformed_flags,
+        credential: probe.credential,
+        had_unresolvable_refusal: probe.had_unresolvable_refusal,
+    }
 }
 
 pub(crate) fn download_module_release_candidates(
@@ -1805,7 +2402,7 @@ pub(crate) fn download_module_release_candidates(
         engine_source_root(),
         None,
     );
-    probe_engine_release_candidates(
+    let probe = probe_engine_release_candidates(
         component,
         &source_plan.candidates,
         asset_name,
@@ -1814,7 +2411,9 @@ pub(crate) fn download_module_release_candidates(
         pinned_release_sha,
         release_schema_base,
         ReleaseCandidateReceiptMode::Module,
-    )
+        None,
+    );
+    (probe.download, probe.receipts)
 }
 
 fn download_engine_release_for_preflight(
@@ -2049,7 +2648,7 @@ pub(crate) fn run_engine_preflight(
                 engine_source_root(),
                 None,
             );
-            let (selected_download, candidate_receipts) = probe_engine_release_candidates(
+            let probe = probe_engine_release_candidates(
                 &component,
                 &source_plan.candidates,
                 "harmonia-x86_64",
@@ -2058,9 +2657,10 @@ pub(crate) fn run_engine_preflight(
                 None,
                 None,
                 ReleaseCandidateReceiptMode::Engine,
+                None,
             );
-            release_candidate_receipts = candidate_receipts;
-            if let Some(download) = selected_download {
+            release_candidate_receipts = probe.receipts;
+            if let Some(download) = probe.download {
                 let selected_sha = download.manifest.source_sha.clone();
                 source_head = Some(selected_sha.clone());
                 resolved_sha = Some(selected_sha.clone());

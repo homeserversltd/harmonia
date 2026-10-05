@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "keyman",
   "category": "known-good",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "HOMESERVER Keyman canonical source synchronization; secret-free access-artifact verification remains outside Harmonia.",
   "constants": {},
   "ladder": [
