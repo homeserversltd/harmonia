@@ -47,7 +47,7 @@
             "path": "/var/lib/caduceus/state.json",
             "operation": "place",
             "mode": 420,
-            "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"enabled\": true,\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n",
+            "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n",
             "xattrs": {},
             "no_follow": true,
             "collision_policy": "refuse",
