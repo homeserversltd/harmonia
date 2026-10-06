@@ -2,6 +2,7 @@ use super::comparison::{self, DiffDecision};
 use crate::atoms::ask::change_unit;
 use crate::atoms::attest::change_unit as attest_change_unit;
 use crate::{CmdResult, OperationOutcome};
+use serde_json::json;
 use std::cell::Cell;
 use std::path::Path;
 
@@ -86,6 +87,36 @@ fn decide_action(
     } else {
         DiffDecision::Empty
     }
+}
+
+pub(crate) fn condition_skip_evidence(
+    observation: &change_unit::Observation,
+) -> Option<serde_json::Value> {
+    let probe = observation.probe.as_ref()?;
+    let snapshot = observation.condition_snapshot.as_ref()?;
+    let status = snapshot.status.as_ref()?;
+    if probe.ok
+        || probe.code != 3
+        || probe.stdout.trim() != "inactive"
+        || snapshot.load_state != "loaded"
+        || snapshot.active_state != "inactive"
+        || snapshot.condition_result != "no"
+        || status.code != 3
+        || snapshot.failed_conditions.is_empty()
+    {
+        return None;
+    }
+    Some(json!({
+        "load_state": snapshot.load_state,
+        "active_state": snapshot.active_state,
+        "condition_result": snapshot.condition_result,
+        "conditions": snapshot.conditions,
+        "failed_conditions": snapshot.failed_conditions,
+        "systemctl_show": observation.condition_show,
+        "systemctl_status": status,
+        "systemctl_is_active": probe,
+        "condition_probe_error": observation.condition_probe_error,
+    }))
 }
 
 pub(crate) fn validate_candidate_units(
@@ -785,6 +816,9 @@ fn run_action_with_material_gate(
     };
     let observation = run.observation().clone();
     let decision = run.decision();
+    let condition_skip_evidence = (action == "is-active-probe")
+        .then(|| condition_skip_evidence(&observation))
+        .flatten();
     let (outcome, before, after, movement) = match run {
         comparison::ComparisonRun::Current { .. } => {
             let probe = observation.probe.clone().map(|result| {
@@ -794,12 +828,15 @@ fn run_action_with_material_gate(
                     result
                 }
             });
+            let condition_skip = condition_skip_evidence.is_some();
             (
                 OperationOutcome {
-                    ok: probe.as_ref().is_none_or(|result| result.ok),
+                    ok: condition_skip || probe.as_ref().is_none_or(|result| result.ok),
                     changed: false,
                     skipped: true,
-                    message: if matches!(action, "unit-present" | "is-active-probe") {
+                    message: if condition_skip {
+                        "systemd-unit-condition-unmet".to_string()
+                    } else if matches!(action, "unit-present" | "is-active-probe") {
                         format!(
                             "systemd{} {action} {service}",
                             if user { " --user" } else { "" }
@@ -851,6 +888,9 @@ fn run_action_with_material_gate(
         service_material_changed,
         apply && movement.is_some(),
     )?;
+    if let Some(evidence) = condition_skip_evidence.as_ref() {
+        attest_change_unit::augment_condition_skip_receipt(receipt_dir, name, evidence)?;
+    }
     attest_change_unit::augment_comparison_receipt(
         receipt_dir,
         name,

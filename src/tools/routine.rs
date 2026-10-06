@@ -805,6 +805,27 @@ fn routine_failure_signal(
     }
 }
 
+fn condition_skip_receipt_evidence(child_dir: &Path) -> Result<Value, String> {
+    let path = child_dir.join("systemd.json");
+    let receipt: Value = serde_json::from_slice(
+        &fs::read(&path).map_err(|error| format!("condition-skip-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("condition-skip-receipt-parse-failed: {error}"))?;
+    if receipt.get("reason").and_then(Value::as_str) != Some("systemd-unit-condition-unmet")
+        || receipt.get("ok").and_then(Value::as_bool) != Some(true)
+        || receipt.get("skipped").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("condition-skip-receipt-invalid".into());
+    }
+    Ok(json!({
+        "condition_result": receipt.get("condition_result"),
+        "failed_conditions": receipt.get("failed_conditions"),
+        "condition_evidence": receipt.get("condition_evidence"),
+        "raw_is_active_probe": receipt.get("raw_is_active_probe"),
+        "raw_systemd_evidence": receipt.get("raw_systemd_evidence"),
+    }))
+}
+
 pub(crate) fn execute_routine(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -1046,6 +1067,24 @@ pub(crate) fn execute_routine(
                                 "module_artifact_exhaustion_debt": true,
                                 "first_missing_signal": signal,
                                 "debt": debt,
+                            }),
+                        )
+                    } else if outcome.ok
+                        && !outcome.changed
+                        && outcome.skipped
+                        && outcome.message == "systemd-unit-condition-unmet"
+                    {
+                        let evidence = condition_skip_receipt_evidence(&child_dir)?;
+                        (
+                            "skipped",
+                            true,
+                            false,
+                            outputs,
+                            json!({
+                                "skipped": true,
+                                "message": outcome.message,
+                                "reason": "systemd-unit-condition-unmet",
+                                "evidence": evidence,
                             }),
                         )
                     } else {

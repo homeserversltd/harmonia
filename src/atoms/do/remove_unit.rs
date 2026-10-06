@@ -64,6 +64,9 @@ mod probe {
             unit_file_exists: path
                 .is_some_and(|p| crate::atoms::ask::path_kind(p).ok().flatten().is_some()),
             probe: None,
+            condition_probe_error: None,
+            condition_show: None,
+            condition_snapshot: None,
         }
     }
 }

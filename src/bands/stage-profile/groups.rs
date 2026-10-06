@@ -473,17 +473,24 @@ pub(crate) fn resolve_group_selections(
             let outcome = crate::bands::compare::execute_group_live_probe_validated(
                 manifest, probe, &probe_dir,
             )?;
-            let signal = if outcome.ok {
+            let condition_skip = outcome.ok
+                && !outcome.changed
+                && outcome.skipped
+                && outcome.message == "systemd-unit-condition-unmet";
+            let live = outcome.ok && !condition_skip;
+            let signal = if condition_skip {
+                "systemd-unit-condition-unmet".to_string()
+            } else if live {
                 "probe-live".to_string()
             } else {
                 outcome.message.clone()
             };
-            if outcome.ok {
+            if live {
                 live_winners.push(module_id.clone());
             }
             observations.push(GroupProbeObservation {
                 module_id: module_id.clone(),
-                ok: outcome.ok,
+                ok: live,
                 tool: group.live_probe.tool.clone(),
                 permutation: group.live_probe.permutation.clone(),
                 signal,

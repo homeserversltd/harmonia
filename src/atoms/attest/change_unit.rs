@@ -40,6 +40,62 @@ pub(crate) fn augment_comparison_receipt(
     receipt.extend(fields.clone());
     write_json(&path, &Value::Object(receipt.clone()))
 }
+
+pub(crate) fn augment_condition_skip_receipt(
+    receipt_dir: &Path,
+    name: &str,
+    evidence: &Value,
+) -> Result<(), String> {
+    let path = receipt_dir.join(format!("{name}.json"));
+    let mut receipt: Value =
+        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let receipt = receipt
+        .as_object_mut()
+        .ok_or_else(|| "systemd-receipt-object-invalid".to_string())?;
+    receipt.insert("ok".into(), Value::Bool(true));
+    receipt.insert("changed".into(), Value::Bool(false));
+    receipt.insert("skipped".into(), Value::Bool(true));
+    receipt.insert(
+        "reason".into(),
+        Value::String("systemd-unit-condition-unmet".into()),
+    );
+    receipt.insert(
+        "condition_result".into(),
+        evidence
+            .get("condition_result")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    receipt.insert(
+        "conditions".into(),
+        evidence.get("conditions").cloned().unwrap_or(Value::Null),
+    );
+    receipt.insert(
+        "failed_conditions".into(),
+        evidence
+            .get("failed_conditions")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    receipt.insert("condition_evidence".into(), evidence.clone());
+    receipt.insert(
+        "raw_is_active_probe".into(),
+        evidence
+            .get("systemctl_is_active")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    receipt.insert(
+        "raw_systemd_evidence".into(),
+        json!({
+            "show": evidence.get("systemctl_show"),
+            "status": evidence.get("systemctl_status"),
+        }),
+    );
+    write_json(&path, &Value::Object(receipt.clone()))
+}
+
 pub(crate) fn desired_state(action: &str, service_material_changed: bool) -> Value {
     match action {
         "daemon-reload" => json!({"manager_reload_required": service_material_changed}),

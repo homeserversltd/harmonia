@@ -46,6 +46,28 @@ pub(crate) fn binary_content_matches(built: &Path, installed: &Path) -> Result<b
     Ok(crate::atoms::file_sha256(&built_bytes) == crate::atoms::file_sha256(&installed_bytes))
 }
 
+fn condition_skip_placement_evidence(module_dir: &Path, step_id: &str) -> Result<Value, String> {
+    let path = module_dir.join(format!("{step_id}.json"));
+    let receipt: Value = serde_json::from_slice(
+        &std::fs::read(&path)
+            .map_err(|error| format!("condition-skip-receipt-read-failed: {error}"))?,
+    )
+    .map_err(|error| format!("condition-skip-receipt-parse-failed: {error}"))?;
+    if receipt.get("reason").and_then(Value::as_str) != Some("systemd-unit-condition-unmet")
+        || receipt.get("ok").and_then(Value::as_bool) != Some(true)
+        || receipt.get("skipped").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("condition-skip-receipt-invalid".into());
+    }
+    Ok(serde_json::json!({
+        "condition_result": receipt.get("condition_result"),
+        "failed_conditions": receipt.get("failed_conditions"),
+        "condition_evidence": receipt.get("condition_evidence"),
+        "raw_is_active_probe": receipt.get("raw_is_active_probe"),
+        "raw_systemd_evidence": receipt.get("raw_systemd_evidence"),
+    }))
+}
+
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::RestartServices)
 }
@@ -600,10 +622,32 @@ pub(crate) fn execute_manifest_band(
                     .iter()
                     .find(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str()))
                     .ok_or_else(|| format!("routine-child-receipt-missing-{}", child.name))?;
-                result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":"RestartServices","status":receipt.get("state").and_then(Value::as_str).unwrap_or("failed"),"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
+                let mut placement = serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":"RestartServices","status":receipt.get("state").and_then(Value::as_str).unwrap_or("failed"),"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id});
+                if receipt.get("state").and_then(Value::as_str) == Some("skipped")
+                    && receipt.get("reason").and_then(Value::as_str)
+                        == Some("systemd-unit-condition-unmet")
+                {
+                    placement["reason"] = receipt["reason"].clone();
+                    placement["evidence"] = receipt["evidence"].clone();
+                    placement["skipped"] = Value::Bool(true);
+                }
+                result.placements.push(placement);
             }
         } else {
-            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RestartServices","status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
+            let condition_skip = outcome.ok
+                && !outcome.changed
+                && outcome.skipped
+                && outcome.message == "systemd-unit-condition-unmet";
+            let mut placement = serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RestartServices","status":if condition_skip {"skipped"} else if outcome.ok {"completed"} else {"failed"},"module":manifest.id});
+            if condition_skip {
+                placement["ok"] = Value::Bool(true);
+                placement["changed"] = Value::Bool(false);
+                placement["skipped"] = Value::Bool(true);
+                placement["reason"] = serde_json::json!("systemd-unit-condition-unmet");
+                placement["evidence"] =
+                    condition_skip_placement_evidence(module_dir, &step.step_id)?;
+            }
+            result.placements.push(placement);
         }
         result.changed |= outcome.changed;
         if !outcome.ok {
