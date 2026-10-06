@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "keyman-runtime",
   "category": "known-good",
-  "version": "3.6.3",
+  "version": "3.7.0",
   "description": "HomeConsole Keyman source ladder: synchronize Keyman into /opt/keyman/source.",
   "constants": {},
   "ladder": [
@@ -24,6 +24,26 @@
         "asset": "keyman-x86_64",
         "path": "/vault/keyman/keyman",
         "mode": 493
+      }
+    },
+    {
+      "step_id": "keyman-runtime-install",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "python3",
+        "args": [
+          "-I",
+          "/opt/keyman/source/index.py",
+          "install",
+          "--profile",
+          "vault-only",
+          "--source-dir",
+          "/opt/keyman/source"
+        ],
+        "observation": {
+          "kind": "module_changed_before_step"
+        }
       }
     }
   ]
