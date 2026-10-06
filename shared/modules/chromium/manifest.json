@@ -2,8 +2,8 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "chromium",
   "category": "known-good",
-  "version": "2.0.0",
-  "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; profiles without the chromium module remain non-tenants; it does not install browsers.",
+  "version": "2.1.0",
+  "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; profiles without the chromium module remain non-tenants; it does not install browsers; after a package upgrade replaces Chromium under a running desktop browser, it restarts that browser with its session restored.",
   "optional": false,
   "constants": {
     "retired_mandatory_policy_paths": [
@@ -55,6 +55,29 @@
         "target_root": "/",
         "paths": "$constants.retired_mandatory_policy_paths"
       }
+    },
+    {
+      "step_id": "restart-stale-browser",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": [
+          "${module_dir}/chromium-running-current.py",
+          "restart"
+        ],
+        "timeout_secs": 90,
+        "observation": {
+          "program": "/usr/bin/python3",
+          "args": [
+            "${module_dir}/chromium-running-current.py",
+            "check"
+          ],
+          "expected_exit_code": 0,
+          "expected_stdout": "current"
+        }
+      },
+      "on_failure": "stop"
     }
   ]
 }
