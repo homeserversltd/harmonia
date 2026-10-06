@@ -677,6 +677,11 @@ pub(crate) fn acquire_source(
         ));
         let _guard = SourceStagingGuard(stage.clone());
         let request = scoped_request(plan, candidate, stage.clone());
+        let clone_command = format!(
+            "/usr/bin/git clone --no-checkout {:?} {:?}",
+            candidate.locator,
+            stage.to_string_lossy()
+        );
         let clone = capture_git(
             &request,
             &[
@@ -695,10 +700,14 @@ pub(crate) fn acquire_source(
                 "unavailable",
                 None,
                 false,
-                source_acquisition_detail(&precondition, &clone.stderr),
+                source_acquisition_detail(
+                    &precondition,
+                    &format!("command={clone_command}; stderr={}", clone.stderr),
+                ),
             ));
             continue;
         }
+        let fetch_command = format!("/usr/bin/git fetch --no-tags origin {:?}", plan.reference);
         let fetch = capture_git(
             &request,
             &["fetch", "--no-tags", "origin", &plan.reference],
@@ -712,20 +721,28 @@ pub(crate) fn acquire_source(
                 "unavailable",
                 None,
                 false,
-                source_acquisition_detail(&precondition, &fetch.stderr),
+                source_acquisition_detail(
+                    &precondition,
+                    &format!("command={fetch_command}; stderr={}", fetch.stderr),
+                ),
             ));
             continue;
         }
-        let checkout = if git_artifact::is_lower_hex_sha(&plan.reference) {
-            capture_git(&request, &["checkout", "--detach", "FETCH_HEAD"], stage.to_str())
+        let (head, checkout_command) = if git_artifact::is_lower_hex_sha(&plan.reference) {
+            (
+                capture_git(&request, &["checkout", "--detach", "FETCH_HEAD"], stage.to_str()),
+                "/usr/bin/git checkout --detach FETCH_HEAD".to_string(),
+            )
         } else {
-            capture_git(
-                &request,
-                &["checkout", "-B", &plan.reference, "FETCH_HEAD"],
-                stage.to_str(),
+            (
+                capture_git(
+                    &request,
+                    &["checkout", "-B", &plan.reference, "FETCH_HEAD"],
+                    stage.to_str(),
+                ),
+                format!("/usr/bin/git checkout -B {:?} FETCH_HEAD", plan.reference),
             )
         };
-        let head = checkout;
         if !head.ok {
             attempts.push(source_attempt(
                 index,
@@ -733,7 +750,10 @@ pub(crate) fn acquire_source(
                 "hard-red-identity",
                 None,
                 false,
-                source_acquisition_detail(&precondition, &head.stderr),
+                source_acquisition_detail(
+                    &precondition,
+                    &format!("command={checkout_command}; stderr={}", head.stderr),
+                ),
             ));
             return source_hard_red(attempts, precondition_changed);
         }
@@ -1266,6 +1286,7 @@ pub(crate) fn acquire_source(
     };
     let staged = RefCell::new(None::<(usize, PathBuf)>);
     let before = RefCell::new(None::<Vec<crate::atoms::ask::pull_repo::SourceObservation>>);
+    let preserved_attempts = RefCell::new(Vec::<git_artifact::SourceAttemptReceipt>::new());
     let run = crate::atoms::comparison::execute_mode(
         "pull-repo",
         || {
@@ -1294,6 +1315,9 @@ pub(crate) fn acquire_source(
                 &authorization, invocation,
                 |authorization, invocation| crate::atoms::r#do::pull_repo::acquire_source(authorization, invocation, plan, observations),
             );
+            preserved_attempts
+                .borrow_mut()
+                .extend(outcome.receipt.attempts.iter().cloned());
             if let Some((index, path)) = parse_staged_marker(&outcome.receipt.promotion) {
                 *staged.borrow_mut() = Some((index, path));
             }
@@ -1408,7 +1432,7 @@ pub(crate) fn acquire_source(
         }
         Err(error) => {
             if let Some((_, stage)) = staged.into_inner() { crate::atoms::r#do::pull_repo::discard_staged_source(&stage); }
-            SourceOutcome { ok: false, changed: false, receipt: git_artifact::SourceReceipt { attempts: Vec::new(), served_index: None, resolved_commit: None, promotion: error } }
+            SourceOutcome { ok: false, changed: false, receipt: git_artifact::SourceReceipt { attempts: preserved_attempts.into_inner(), served_index: None, resolved_commit: None, promotion: error } }
         }
     }
 }

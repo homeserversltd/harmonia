@@ -1550,11 +1550,14 @@ fn write_content_seat_observation(
         &json!({
             "schema": "harmonia.engine.content_seat.v1",
             "expected_head": expected_head,
+            "requested_ref": plan.reference,
+            "expected_commit": plan.expected_commit,
             "observed_head": observed_head,
             "matches": matches,
             "observed": true,
             "could_change": apply,
             "attempt": if apply { "acquire-exact-source-head" } else { "observe-only" },
+            "attempts": outcome.receipt.attempts,
             "final": if matches { "paired" } else { "mismatch" },
             "first_missing_signal": signal,
             "promotion_allowed": signal.is_none(),
@@ -2517,11 +2520,7 @@ fn observe_or_acquire_content_seat(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     preflight_dir: &Path,
 ) -> Result<ContentSeatObservation, String> {
-    let plan = crate::bands::pull_source::bridge_acquisition_plan(
-        resolution,
-        engine_source_root(),
-        Some(expected_head.to_owned()),
-    );
+    let plan = exact_source_fallback_plan(resolution, expected_head);
     let outcome = crate::bands::pull_source::execute_source(&plan, apply, invocation);
     write_content_seat_observation(&plan, expected_head, apply, &outcome, preflight_dir)
 }

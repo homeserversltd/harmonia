@@ -47,20 +47,30 @@ failure and preserves the installed engine; it never builds from source.
 Developer mode bypasses Release selection even when a Release exists. It resolves
 the remote `main` head, acquires the source pinned to that SHA, and builds it.
 
-When either lane resolves an artifact/source SHA, that SHA is also the expected
-content-seat identity. Renew-self seats the Harmonia source tree at that exact
-commit before engine promotion or StageProfile molt. The preflight and
-post-stage receipts keep that selected SHA; artifact mode does not report
-repository HEAD as the installed engine's identity. A failed source move or
-head mismatch is a red engine-preflight stage: the staged binary is not
-promoted and the Apply transaction stops before profile molt or downstream
-convergence, preserving the previous binary and profile projection.
-Report-only records the selected identity and drift without mutating the source
-seat.
+Both lanes use their resolved 40-hex artifact/source SHA as the content-seat
+`expected_head`. Artifact mode sets the Git `requested_ref` and `expected_commit`
+to the selected artifact's source SHA, acquires that exact commit, and checks it
+out detached; it never substitutes the candidate repository's `main` tip.
+Developer mode resolves remote `main` and builds its resolved SHA: `expected_head`
+is that SHA, while the Git request may retain `requested_ref=main` and pins
+`expected_commit` to the resolved SHA. Thus `requested_ref` is not universally
+the selected SHA. This seats the Harmonia source tree before engine promotion or
+StageProfile molt. The preflight and post-stage receipts keep the selected
+identity; artifact mode does not report repository HEAD as the installed
+engine's identity. A failed source move or head mismatch is a red
+engine-preflight stage: the staged binary is not promoted and the Apply
+transaction stops before profile molt or downstream convergence, preserving
+the previous binary and profile projection. Report-only records the selected
+identity and drift without mutating the source seat.
 
-The `engine-preflight/content-seat.json` receipt records the selected SHA as
-`expected_head`, the observed content head, whether they match, whether source
-mutation was possible, and the final paired/mismatch state.
+The `engine-preflight/content-seat.json` receipt records the resolved SHA as
+`expected_head` and `expected_commit`; `requested_ref` records the Git request
+used to acquire it (the resolved SHA in artifact mode, and potentially `main`
+in developer mode). It also records the observed content head, whether they
+match, whether source mutation was possible, and the final paired/mismatch
+state. Its `attempts` retain the source actuator's candidate index, kind,
+locator, disposition, and detail, including the Git command and stderr for
+failed clone, fetch, or checkout operations.
 `engine-preflight/run.json` repeats that selected SHA as `source_head`, plus the
 observed head and match/failure fields. Report-only records the selected
 identity and observed drift without mutating the source seat.
