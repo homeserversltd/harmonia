@@ -14,7 +14,10 @@ pub(crate) fn execute_validated_step(
             software_authorization,
             invocation,
         )
-        .map(|execution| execution.outcome),
+        .map(|mut execution| {
+            execution.outcome.changed = execution.truthful_changed;
+            execution.outcome
+        }),
         "metadata" => files_metadata_step(step, module_dir, software_authorization, invocation),
         "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, apply, invocation),
@@ -2806,7 +2809,10 @@ pub(crate) fn files_converge_step(
     }
     Ok(OperationOutcome {
         ok: outcome_ok,
-        changed: outcome_changed,
+        changed: software_outcome.changed
+            || (config_outcome.config_state
+                == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt)
+                && config_outcome.changed),
         skipped: !effective_apply,
         message: outcome_message,
         command: None,

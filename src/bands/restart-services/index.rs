@@ -467,6 +467,7 @@ pub(crate) fn execute_manifest_band(
     key: Option<&crate::tools::files::InvocationKey>,
     mode_apply: bool,
     beam_finalization: Option<&crate::atoms::ask::beam::PendingBeamFinalization>,
+    module_changed_before_band: bool,
     routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
@@ -555,7 +556,14 @@ pub(crate) fn execute_manifest_band(
             )?
         } else {
             crate::tools::routine::execute_validated_step(
-                step, manifest, module_dir, auth, pa, false, key, None,
+                step,
+                manifest,
+                module_dir,
+                auth,
+                pa,
+                module_changed_before_band,
+                key,
+                None,
             )?
         };
         if step.tool == "routine"
@@ -667,6 +675,7 @@ pub(crate) fn execute_manifest_modules(
             LoadedModule::Ladder(manifest) if manifest.isolation.as_deref() == Some("per-step")
         );
         *module_count = profile.modules.len();
+        let module_changed_before_band = states.get(module_id).is_some_and(|state| state.changed);
         let result = match &projected.loaded {
             LoadedModule::Ladder(manifest) => execute_manifest_band(
                 manifest,
@@ -676,6 +685,7 @@ pub(crate) fn execute_manifest_modules(
                 mode.invocation(),
                 mode_apply,
                 projection.beam_finalization.as_ref(),
+                module_changed_before_band,
                 routines.entry(module_id.clone()).or_default(),
                 &projected.steps,
                 &projected.routines,

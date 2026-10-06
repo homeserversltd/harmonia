@@ -439,7 +439,7 @@ fn execute_routine_tool(
                 return Ok((
                     crate::OperationOutcome {
                         ok: true,
-                        changed: true,
+                        changed: false,
                         skipped: true,
                         message: "files-proposal-observed".to_string(),
                         command: None,
@@ -449,11 +449,13 @@ fn execute_routine_tool(
             }
             Err(error) => return Err(error),
         };
+        let mut outcome = execution.outcome;
+        outcome.changed = execution.truthful_changed;
         let outputs = BTreeMap::from([(
             "truthful_changed".to_string(),
             Value::Bool(execution.truthful_changed),
         )]);
-        return Ok((execution.outcome, outputs));
+        return Ok((outcome, outputs));
     }
     if tool == "files" && requested_permutation == Some("compile-fragments") {
         let step = ValidatedStep {

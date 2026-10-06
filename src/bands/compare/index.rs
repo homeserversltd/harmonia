@@ -1352,7 +1352,7 @@ mod beam_tests {
         let child = crate::tools::routine::ProjectedRoutineChild { name: "health-proof".into(), tool: "check-health".into(), permutation: "probe".into(), args: [("component".into(), json!("caduceus")), ("url".into(), json!(format!("{registry}/health")))].into_iter().collect(), on_failure: crate::tools::ladder::OnFailure::Stop, band: crate::bands::Band::RestartServices };
         let mut states = BTreeMap::new();
         let mut halted_steps = crate::bands::HaltedSteps::new();
-        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, None, &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect(), &mut halted_steps).unwrap();
+        crate::bands::restart_services::execute_manifest_band(&manifest, &receipt_dir, None, None, Some(&invocation), true, None, false, &mut states, &[step], &[("health-proof-routine".into(), vec![child])].into_iter().collect(), &mut halted_steps).unwrap();
         server.join().unwrap();
     }
 

@@ -681,7 +681,7 @@ pub(crate) fn execute_routine_child(
                 Ok(out) => out,
                 Err(error) if error == "files-act-did-not-converge" => crate::OperationOutcome {
                     ok: true,
-                    changed: true,
+                    changed: false,
                     skipped: true,
                     message: "files-proposal-observed".to_string(),
                     command: None,
@@ -783,6 +783,7 @@ pub(crate) fn execute_routine_child(
                 let config_state = proposal.config_state;
                 let exempt = config_state
                     == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt);
+                let truthful_changed = exempt && proposal.changed;
                 crate::bands::propose_edits::refresh_interactables_for_convergence(
                     manifest, &request, &proposal,
                 )?;
@@ -794,6 +795,7 @@ pub(crate) fn execute_routine_child(
                         "config_state":config_state,
                         "ok":proposal.ok,
                         "changed":proposal.changed,
+                        "truthful_changed":truthful_changed,
                         "ownership_changed":proposal.ownership_changed,
                         "skipped":exempt,
                         "message":if exempt { "managed-place-config-interactable-exempt" } else { "managed-place-config-proposal" },
@@ -803,7 +805,7 @@ pub(crate) fn execute_routine_child(
                 return Ok((
                     OperationOutcome {
                         ok: proposal.ok,
-                        changed: proposal.changed,
+                        changed: truthful_changed,
                         skipped: exempt,
                         message: if exempt {
                             "managed-place-config-interactable-exempt".into()
@@ -814,7 +816,11 @@ pub(crate) fn execute_routine_child(
                     },
                     [
                         ("path".into(), serde_json::json!(path)),
-                        ("changed".into(), serde_json::json!(proposal.changed)),
+                        ("changed".into(), serde_json::json!(truthful_changed)),
+                        (
+                            "truthful_changed".into(),
+                            serde_json::json!(truthful_changed),
+                        ),
                     ]
                     .into_iter()
                     .collect(),
