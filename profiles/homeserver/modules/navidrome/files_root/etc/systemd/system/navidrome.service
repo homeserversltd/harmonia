@@ -2,6 +2,7 @@
 Description=Navidrome Music Server
 After=network.target
 ConditionPathIsMountPoint=/mnt/nas
+After=mnt-nas.mount
 [Service]
 Type=simple
 User=navidrome
@@ -15,3 +16,4 @@ IOWeight=10000
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=mnt-nas.mount

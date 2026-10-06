@@ -1,6 +1,7 @@
 [Unit]
 Description=Jellyfin Media Server
 ConditionPathIsMountPoint=/mnt/nas
+After=mnt-nas.mount
 
 [Service]
 Type=simple
@@ -18,3 +19,4 @@ IOWeight=10000
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=mnt-nas.mount

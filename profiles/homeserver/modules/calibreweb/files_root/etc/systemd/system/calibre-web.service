@@ -1,6 +1,7 @@
 [Unit]
 Description=Calibre-Web E-Book Server
 ConditionPathIsMountPoint=/mnt/nas
+After=mnt-nas.mount
 
 
 [Service]
@@ -19,3 +20,4 @@ StandardError=append:/var/log/calibre-web/calibre-web.log
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=mnt-nas.mount

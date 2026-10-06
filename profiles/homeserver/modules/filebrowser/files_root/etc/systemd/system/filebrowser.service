@@ -2,6 +2,7 @@
 Description=File Browser
 After=network.target
 ConditionPathIsMountPoint=/mnt/nas
+After=mnt-nas.mount
 
 [Service]
 Type=simple
@@ -16,3 +17,4 @@ StartLimitBurst=3
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=mnt-nas.mount

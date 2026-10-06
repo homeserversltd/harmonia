@@ -1,6 +1,7 @@
 [Unit]
 Description=Calibre Simple Watch Directory Monitor
 ConditionPathIsMountPoint=/mnt/nas
+After=mnt-nas.mount
 After=network.target calibre-web.service
 Wants=calibre-web.service
 
@@ -16,4 +17,5 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=mnt-nas.mount
 

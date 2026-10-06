@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "transmission",
   "category": "interactable",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER Transmission configuration: assert the birth-provided daemon and VPN launcher, preserve the secret-bearing settings seed, converge product-owned sysctl and namespace unit bytes with backups, validate the unit.",
   "files_root": "files_root",
   "ladder": [
