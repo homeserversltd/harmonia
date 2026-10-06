@@ -136,6 +136,21 @@ pub(crate) struct SyzygyEvidence {
     pub(crate) mint: SyzygyMint,
     pub(crate) member_flags: serde_json::Value,
     pub(crate) observations: serde_json::Value,
+    pub(crate) stamp_verdict: Option<String>,
+    pub(crate) stamp_sha: Option<String>,
+    pub(crate) stamp_signal: String,
+}
+
+impl SyzygyEvidence {
+    pub(crate) fn matched_stamp_sha(&self) -> Option<&str> {
+        if self.stamp_verdict.as_deref() == Some("VALID") && self.stamp_signal == "none" {
+            self.stamp_sha
+                .as_deref()
+                .filter(|sha| valid_lower_hex(sha, 64))
+        } else {
+            None
+        }
+    }
 }
 
 impl std::ops::Deref for SyzygyEvidence {
@@ -244,6 +259,9 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
         mint: SyzygyMint::failed("none".into()),
         member_flags: json!({}),
         observations: json!({}),
+        stamp_verdict: None,
+        stamp_sha: None,
+        stamp_signal: "wukong-staff-stamp-not-observed".into(),
     };
     for child in &receipt.children {
         evidence.member_flags[&child.member] = json!(format!("syzygy-flag-absent {}", child.member));
@@ -487,25 +505,21 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
     evidence.mint.signal = signals.first().cloned().unwrap_or_else(|| "none".into());
     evidence.observations["signals"] = json!(signals);
     let stamp = crate::atoms::ask::collective_stamp::current();
+    evidence.stamp_verdict = stamp.verdict.clone();
+    evidence.stamp_sha = if stamp.verdict.as_deref() == Some("VALID") {
+        stamp
+            .stamp_sha
+            .as_deref()
+            .filter(|sha| valid_lower_hex(sha, 64))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    evidence.stamp_signal = stamp.signal.clone();
     evidence.observations["wukong_staff_stamp"] = stamp.as_json();
-    let legacy_mint_ready = evidence.mint.syzygy_sha.is_some();
-    if stamp.verdict.as_deref() != Some("VALID")
-        && stamp.signal != "none"
-        && legacy_mint_ready
-    {
-        // The stamp is observational only: retain the already-minted legacy
-        // digest and surface its verdict without refusing the committed press.
-        evidence.mint.signal = stamp.signal.clone();
-    }
     if stamp.verdict.as_deref() == Some("VALID") {
         let mut actual_sources = serde_json::Map::new();
-        let mut actual_sources_complete = true;
-        let mut first_source_signal = None;
-        let selected_gui_member = receipt.gui_member.as_deref().or(match receipt.gui.as_deref() {
-            Some("Arcadia") => Some("arcadia"),
-            Some("Coronatio") => Some("coronatio"),
-            _ => None,
-        });
+        let mut first_stamp_signal = None;
         for member in &stamp.declared_members {
             let (actual_sha, provenance) = match member.as_str() {
                 // The committed beam is the worn Caduceus proof; the resolver's
@@ -542,9 +556,9 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                 ),
                 _ => (None, "unsupported-member"),
             };
-            let expected_sha = stamp.terms.get(member);
+            let expected_sha = stamp.target(member);
             let matches = actual_sha
-                .as_ref()
+                .as_deref()
                 .zip(expected_sha)
                 .map(|(actual, expected)| actual == expected);
             actual_sources.insert(
@@ -556,78 +570,21 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                     "provenance": provenance,
                 }),
             );
-
-            // member_flags describes the committed/worn identity. Keep the
-            // selected release flag nested as separate desired evidence.
-            let actual_value = actual_sha
-                .as_ref()
-                .map(|sha| json!(sha))
-                .unwrap_or(Value::Null);
-            match evidence.member_flags.get_mut(member) {
-                Some(Value::Object(fields)) => {
-                    fields.insert("source_sha".into(), actual_value);
-                }
-                slot => {
-                    let resolver_signal = slot
-                        .as_ref()
-                        .and_then(|value| value.as_str())
-                        .map(str::to_owned);
-                    evidence.member_flags[member] = if let Some(signal) = resolver_signal {
-                        json!({"source_sha": actual_value, "resolver_signal": signal})
-                    } else {
-                        json!({"source_sha": actual_value})
-                    };
-                }
-            }
-            if let Some(actual) = actual_sha.as_deref() {
-                if member == "sbin" {
-                    evidence.mint.partner_sha = actual.to_owned();
-                }
-                if selected_gui_member == Some(member.as_str()) {
-                    evidence.mint.gui_sha = Some(actual.to_owned());
-                }
-            }
-
-            match (actual_sha, expected_sha) {
-                (Some(actual), Some(expected)) if actual.as_str() == expected.as_str() => {}
-                (Some(_), Some(_)) | (Some(_), None) => {
-                    first_source_signal.get_or_insert_with(|| {
-                        format!("wukong-staff-unstamped {member}")
-                    });
+            match (actual_sha.as_deref(), expected_sha) {
+                (Some(actual), Some(expected)) if actual == expected => {}
+                (Some(_), _) => {
+                    first_stamp_signal
+                        .get_or_insert_with(|| format!("wukong-staff-unstamped {member}"));
                 }
                 (None, _) => {
-                    actual_sources_complete = false;
-                    first_source_signal.get_or_insert_with(|| {
+                    first_stamp_signal.get_or_insert_with(|| {
                         format!("wukong-staff-committed-source-unavailable {member}")
                     });
                 }
             }
         }
         evidence.observations["wukong_staff_member_sources"] = Value::Object(actual_sources);
-
-        if legacy_mint_ready {
-            if actual_sources_complete {
-                match crate::atoms::r#do::transaction::compute_syzygy_sha(
-                    &evidence.mint.caduceus_sha,
-                    &evidence.mint.partner_sha,
-                    evidence.mint.gui_sha.as_deref(),
-                    evidence.mint.keyman_sha.as_deref(),
-                ) {
-                    Ok(sha) => evidence.mint.syzygy_sha = Some(sha),
-                    Err(signal) => {
-                        evidence.mint.syzygy_sha = None;
-                        first_source_signal.get_or_insert(signal);
-                    }
-                }
-            } else {
-                // A missing committed input cannot inherit the legacy resolver
-                // digest; it does not identify a complete worn source set.
-                evidence.mint.syzygy_sha = None;
-            }
-            if let Some(signal) = first_source_signal {
-                evidence.mint.signal = signal;
-            }
-        }
+        evidence.stamp_signal = first_stamp_signal.unwrap_or_else(|| "none".into());
     }
     // Validate before any consumer can persist the mint. A desync refuses the
     // digest, never the already committed module transaction or its receipt.
@@ -656,16 +613,27 @@ fn transaction_value(
     value["held_back_by"] = json!([]);
     value["member_flags"] = evidence.member_flags.clone();
     value["member_flag_observations"] = evidence.observations.clone();
-    let stamp = evidence.observations.get("wukong_staff_stamp");
-    value["stamp_verdict"] = stamp
-        .and_then(|value| value.get("verdict"))
+    value["stamp_verdict"] = evidence
+        .stamp_verdict
+        .clone()
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+    value["stamp_sha"] = evidence
+        .stamp_sha
+        .clone()
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+    value["stamp_signal"] = json!(evidence.stamp_signal);
+    value["wukong_staff_stamp"] = evidence
+        .observations
+        .get("wukong_staff_stamp")
         .cloned()
         .unwrap_or(Value::Null);
-    value["stamp_sha"] = stamp
-        .and_then(|value| value.get("stamp_sha"))
+    value["wukong_staff_member_sources"] = evidence
+        .observations
+        .get("wukong_staff_member_sources")
         .cloned()
         .unwrap_or(Value::Null);
-    value["wukong_staff_stamp"] = stamp.cloned().unwrap_or(Value::Null);
     if let Some(members) = value.get_mut("members").and_then(Value::as_array_mut) {
         for member in members {
             let source = member.get("member").and_then(Value::as_str)
@@ -701,24 +669,41 @@ pub(crate) fn augment_run_json_with_stamp(
     let object = value
         .as_object_mut()
         .ok_or_else(|| format!("transaction-run-json-not-object {}", path.display()))?;
-    let stamp = evidence.observations.get("wukong_staff_stamp");
     object.insert(
         "stamp_verdict".into(),
-        stamp
-            .and_then(|value| value.get("verdict"))
-            .cloned()
+        evidence
+            .stamp_verdict
+            .clone()
+            .map(serde_json::Value::String)
             .unwrap_or(serde_json::Value::Null),
     );
     object.insert(
         "stamp_sha".into(),
-        stamp
-            .and_then(|value| value.get("stamp_sha"))
+        evidence
+            .stamp_sha
+            .clone()
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "stamp_signal".into(),
+        serde_json::Value::String(evidence.stamp_signal.clone()),
+    );
+    object.insert(
+        "wukong_staff_stamp".into(),
+        evidence
+            .observations
+            .get("wukong_staff_stamp")
             .cloned()
             .unwrap_or(serde_json::Value::Null),
     );
     object.insert(
-        "wukong_staff_stamp".into(),
-        stamp.cloned().unwrap_or(serde_json::Value::Null),
+        "wukong_staff_member_sources".into(),
+        evidence
+            .observations
+            .get("wukong_staff_member_sources")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
     );
     object.insert(
         "syzygy_sha".into(),

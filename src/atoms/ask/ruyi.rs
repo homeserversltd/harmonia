@@ -57,6 +57,8 @@ pub(crate) struct RuyiRow {
     pub rustc_installed: Option<String>,
     pub harmonia_sha: String,
     pub syzygy_sha: Option<String>,
+    #[serde(default)]
+    pub stamp_sha: Option<String>,
     pub last_seen: u64,
     pub last_update: LastUpdate,
 }
@@ -180,6 +182,13 @@ pub(crate) fn validate_row(row: &RuyiRow) -> Result<(), String> {
         .is_some_and(|sha| !valid_hex(sha, 64))
     {
         return Err("ruyi-syzygy-sha-invalid".into());
+    }
+    if row
+        .stamp_sha
+        .as_deref()
+        .is_some_and(|sha| !valid_hex(sha, 64))
+    {
+        return Err("ruyi-stamp-sha-invalid".into());
     }
     if !valid_run_id(&row.last_update.run_id) {
         return Err("ruyi-last-update-run-id-invalid".into());
@@ -465,6 +474,7 @@ pub(crate) fn write_committed_state(
         } else {
             None
         },
+        stamp_sha: None,
         last_seen,
         last_update: LastUpdate {
             run_id: run_id.into(),

@@ -19,6 +19,12 @@ pub(crate) struct KnownGoodRung {
     pub installed_sha: String,
     pub syzygy_sha: Option<String>,
     pub syzygy_signal: String,
+    #[serde(default)]
+    pub stamp_verdict: Option<String>,
+    #[serde(default)]
+    pub stamp_sha: Option<String>,
+    #[serde(default = "default_stamp_signal")]
+    pub stamp_signal: String,
     pub installed_version: Option<String>,
     pub proof_time_unix_ms: u128,
     pub proof_battery: Vec<String>,
@@ -68,6 +74,9 @@ pub(crate) struct InstalledStateProof {
     installed_sha: String,
     syzygy_sha: Option<String>,
     syzygy_signal: String,
+    stamp_verdict: Option<String>,
+    stamp_sha: Option<String>,
+    stamp_signal: String,
     installed_version: Option<String>,
     proof_time_unix_ms: u128,
     proof_battery: Vec<String>,
@@ -95,7 +104,19 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
-fn committed_transaction_syzygy(receipt_boundary: &Path) -> (Option<String>, String) {
+fn default_stamp_signal() -> String {
+    "none".into()
+}
+
+fn committed_transaction_evidence(
+    receipt_boundary: &Path,
+) -> (
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+) {
     let mut directory = Some(receipt_boundary);
     while let Some(dir) = directory {
         let path = dir.join("update-set.json");
@@ -107,12 +128,39 @@ fn committed_transaction_syzygy(receipt_boundary: &Path) -> (Option<String>, Str
                     .and_then(|v| v.as_str())
                     .unwrap_or(if sha.is_some() { "none" } else { "syzygy-sha-unresolved" })
                     .to_owned();
-                return (sha, signal);
+                let stamp_verdict = value
+                    .get("stamp_verdict")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned);
+                let stamp_sha = value
+                    .get("stamp_sha")
+                    .and_then(|value| value.as_str())
+                    .filter(|sha| valid_lower_hex(sha, 64))
+                    .map(str::to_owned);
+                let stamp_signal = value
+                    .get("stamp_signal")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+                    .unwrap_or_else(default_stamp_signal);
+                return (sha, signal, stamp_verdict, stamp_sha, stamp_signal);
             }
         }
         directory = dir.parent();
     }
-    (None, "syzygy-transaction-receipt-unresolved".into())
+    (
+        None,
+        "syzygy-transaction-receipt-unresolved".into(),
+        None,
+        None,
+        default_stamp_signal(),
+    )
+}
+
+fn valid_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn valid_surface(surface: &str) -> bool {
@@ -195,7 +243,8 @@ pub(crate) fn prove_installed_state(
     }
     fs::create_dir_all(receipt_boundary).map_err(|e| e.to_string())?;
     let proof_time_unix_ms = now_ms();
-    let (syzygy_sha, syzygy_signal) = committed_transaction_syzygy(receipt_boundary);
+    let (syzygy_sha, syzygy_signal, stamp_verdict, stamp_sha, stamp_signal) =
+        committed_transaction_evidence(receipt_boundary);
     let reference = installed_path.to_string_lossy().into_owned();
     let aggregate = AggregateProofReceipt {
         schema: "harmonia.known_good.aggregate_proof.v1".into(),
@@ -241,6 +290,9 @@ pub(crate) fn prove_installed_state(
         installed_sha: observed_sha,
         syzygy_sha,
         syzygy_signal,
+        stamp_verdict,
+        stamp_sha,
+        stamp_signal,
         installed_version: installed_version.map(str::to_owned),
         proof_time_unix_ms,
         proof_battery,
@@ -533,6 +585,9 @@ pub(crate) fn append_and_move(
         installed_sha: proof.installed_sha.clone(),
         syzygy_sha: proof.syzygy_sha.clone(),
         syzygy_signal: proof.syzygy_signal.clone(),
+        stamp_verdict: proof.stamp_verdict.clone(),
+        stamp_sha: proof.stamp_sha.clone(),
+        stamp_signal: proof.stamp_signal.clone(),
         installed_version: proof.installed_version.clone(),
         proof_time_unix_ms: proof.proof_time_unix_ms,
         proof_battery: proof.proof_battery.clone(),

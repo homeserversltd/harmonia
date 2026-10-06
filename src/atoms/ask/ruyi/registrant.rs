@@ -190,24 +190,26 @@ fn seed_perspective_for_with_harmonia_sha(
         .syzygy_declaration
         .as_ref()
         .and_then(|declaration| declaration.gui_face.clone());
-    let (gui_face_from_door, caduceus_sha, env_sha, rustc_version, syzygy_sha) = match beam_door {
-        Some(door) => (
-            door.gui_face,
-            if valid_hex(&door.caduceus_sha, 40) {
-                door.caduceus_sha
-            } else {
-                String::new()
-            },
-            if valid_hex(&door.env_sha, 64) {
-                door.env_sha
-            } else {
-                String::new()
-            },
-            door.rustc_version,
-            door.syzygy_sha.filter(|sha| valid_hex(sha, 64)),
-        ),
-        None => (None, String::new(), String::new(), None, None),
-    };
+    let (gui_face_from_door, caduceus_sha, env_sha, rustc_version, syzygy_sha, stamp_sha) =
+        match beam_door {
+            Some(door) => (
+                door.gui_face,
+                if valid_hex(&door.caduceus_sha, 40) {
+                    door.caduceus_sha
+                } else {
+                    String::new()
+                },
+                if valid_hex(&door.env_sha, 64) {
+                    door.env_sha
+                } else {
+                    String::new()
+                },
+                door.rustc_version,
+                door.syzygy_sha.filter(|sha| valid_hex(sha, 64)),
+                door.stamp_sha.filter(|sha| valid_hex(sha, 64)),
+            ),
+            None => (None, String::new(), String::new(), None, None, None),
+        };
     let caduceus_sha_present = valid_hex(&caduceus_sha, 40);
     let env_sha_present = valid_hex(&env_sha, 64);
     let row = RuyiRow {
@@ -226,6 +228,7 @@ fn seed_perspective_for_with_harmonia_sha(
         rustc_installed: installed_rustc_version(),
         harmonia_sha: harmonia_sha.unwrap_or_default().to_owned(),
         syzygy_sha,
+        stamp_sha,
         last_seen: now()?,
         last_update: LastUpdate {
             run_id: crate::run_id_from_stamp(),
@@ -336,6 +339,11 @@ fn refresh_self_row_from_beam_observation(
         };
         refreshed[field] = value.clone();
     }
+    refreshed["stamp_sha"] = observed
+        .get("stamp_sha")
+        .filter(|value| value.as_str().is_some_and(|sha| valid_hex(sha, 64)))
+        .cloned()
+        .unwrap_or(Value::Null);
     for field in ["harmonia_rustc_version", "rustc_installed"] {
         match observed.get(field).filter(|value| !value.is_null()) {
             Some(value) => refreshed[field] = value.clone(),
@@ -564,7 +572,15 @@ pub(crate) fn register_promoted(
             "harmonia_sha": HARMONIA_BUILD_SHA,
             "harmonia_rustc_version": compiled_rustc_version(),
             "rustc_installed": installed_rustc_version(),
-            "syzygy_sha": evidence.syzygy_sha, "syzygy_signal": evidence.signal,
+            "syzygy_sha": if evidence.mint.signal == "none" {
+                evidence.mint.syzygy_sha.clone()
+            } else {
+                None
+            },
+            "syzygy_signal": evidence.mint.signal,
+            "stamp_verdict": evidence.stamp_verdict,
+            "stamp_sha": evidence.matched_stamp_sha(),
+            "stamp_signal": evidence.stamp_signal,
             "member_flags": evidence.member_flags,
             "last_seen": now()?, "last_update": {"run_id": run_id, "converged": true}
         }),
@@ -941,9 +957,12 @@ fn accumulate(
             .get(peer_mac)
             .cloned()
             .unwrap_or_else(|| json!({}));
+        let peer_stamp_sha = peer.get("stamp_sha").cloned().unwrap_or(Value::Null);
+        let old_stamp_sha = old.get("stamp_sha").cloned().unwrap_or(Value::Null);
         let moved = old.get("syzygy_sha").unwrap_or(&Value::Null)
             != peer.get("syzygy_sha").unwrap_or(&Value::Null)
-            || old.get("beam_pair") != Some(&pair);
+            || old.get("beam_pair") != Some(&pair)
+            || old_stamp_sha != peer_stamp_sha;
         let mut entry = old.clone();
         if !entry.is_object() {
             return Err("ruyi-peer-entry-malformed".into());
@@ -970,6 +989,7 @@ fn accumulate(
                 .and_then(Value::as_str)
                 .map(str::to_ascii_lowercase);
             lineage.push(json!({"syzygy_sha": peer.get("syzygy_sha"),
+                "stamp_sha": peer_stamp_sha,
                 "release_flags": {"caduceus": peer.get("caduceus_sha"), "sbin": source("sbin"),
                     "keyman": source("keyman"),
                     "gui": gui.as_deref().map(source).unwrap_or(Value::Null)},
@@ -979,7 +999,8 @@ fn accumulate(
             &mut entry,
             json!({"mac": peer_mac, "hostname": peer.get("hostname"),
             "canonical_name": peer.get("canonical_name"), "beam_pair": pair,
-            "syzygy_sha": peer.get("syzygy_sha"), "lineage": lineage,
+            "syzygy_sha": peer.get("syzygy_sha"), "stamp_sha": peer_stamp_sha,
+            "lineage": lineage,
             "last_checked_in_at": peer.get("last_seen"), "seen_via": "gateway-roster"}),
         );
         perspective["seen"][peer_mac] = entry;
@@ -995,6 +1016,7 @@ fn accumulate(
                 merge_fields(
                     &mut perspective["their_view_of_me"][peer_mac],
                     json!({"syzygy_sha": reflection.get("syzygy_sha"),
+                        "stamp_sha": reflection.get("stamp_sha"),
                         "beam_pair": reflection.get("beam_pair"),
                         "at": reflection.get("last_checked_in_at")}),
                 );

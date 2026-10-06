@@ -88,6 +88,8 @@ pub(crate) struct BeamDoor {
     pub env_sha: String,
     #[serde(default)]
     pub rustc_version: Option<String>,
+    #[serde(default)]
+    pub stamp_sha: Option<String>,
     pub profile: String,
     pub gui_face: Option<String>,
     pub syzygy_sha: Option<String>,
@@ -270,7 +272,7 @@ pub(crate) fn validate_lock(lock: BeamLock) -> Result<BeamLock, String> {
         _ => Err("beam-lock-malformed".into()),
     }
 }
-pub(crate) fn validate_door(door: BeamDoor) -> Result<BeamDoor, String> {
+pub(crate) fn validate_door(mut door: BeamDoor) -> Result<BeamDoor, String> {
     if door.schema != DOOR_SCHEMA
         || !door.ok
         || door.service != "caduceus"
@@ -279,13 +281,25 @@ pub(crate) fn validate_door(door: BeamDoor) -> Result<BeamDoor, String> {
         || door.profile.is_empty()
         || door.syzygy_sha.as_deref().is_some_and(|s| !hex_len(s, 64))
     {
-        Err("beam-door-malformed".into())
-    } else {
-        Ok(door)
+        return Err("beam-door-malformed".into());
     }
+    if door
+        .stamp_sha
+        .as_deref()
+        .is_some_and(|sha| !lower_hex_len(sha, 64))
+    {
+        door.stamp_sha = None;
+    }
+    Ok(door)
 }
 fn hex_len(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+fn lower_hex_len(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn flag_request(
