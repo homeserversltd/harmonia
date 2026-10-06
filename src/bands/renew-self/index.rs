@@ -1509,6 +1509,15 @@ fn source_fallback_plan(
     )
 }
 
+fn exact_source_fallback_plan(
+    resolution: &crate::bands::pull_source::SourceResolution,
+    expected_commit: &str,
+) -> crate::tools::git_artifact::SourcePlan {
+    let mut pinned_resolution = resolution.clone();
+    pinned_resolution.requested_ref = expected_commit.to_owned();
+    source_fallback_plan(&pinned_resolution, expected_commit)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContentSeatObservation {
     observed_head: Option<String>,
@@ -1592,8 +1601,14 @@ struct MemberReleaseCandidateAttempt {
     had_unresolvable_refusal: bool,
 }
 
-fn member_release_candidate_target(source: &EngineReleaseSource) -> String {
+fn member_release_candidate_target(
+    source: &EngineReleaseSource,
+    pinned_release_sha: Option<&str>,
+) -> String {
     let root = source.api_root.trim_end_matches('/');
+    if let Some(sha) = pinned_release_sha {
+        return format!("{root}/repos/{}/releases/tags/sha-{sha}", source.repository);
+    }
     match source.provider {
         EngineReleaseProvider::GitHub => {
             format!("{root}/repos/{}/releases/latest", source.repository)
@@ -1647,14 +1662,16 @@ fn attempt_member_release_candidate(
     candidate_locator: &str,
     source: &EngineReleaseSource,
     asset: Option<&str>,
+    pinned_release_sha: Option<&str>,
     seat: &crate::atoms::ask::mint_seats::Seat,
 ) -> MemberReleaseCandidateAttempt {
     use crate::atoms::ask::fetch_artifact::{
-        download_member_release_binary, read_member_release_flags, validate_source_sha,
+        download_member_release_binary, read_member_release_flags,
+        read_pinned_member_release_flag, validate_source_sha,
     };
 
     let provider = source.provider.name();
-    let target_url = member_release_candidate_target(source);
+    let target_url = member_release_candidate_target(source, pinned_release_sha);
     let credential = if source.provider == EngineReleaseProvider::Forgejo {
         match crate::atoms::ask::fetch_artifact::credential_state_for_url(&source.api_root) {
             Ok(state) => state,
@@ -1686,12 +1703,23 @@ fn attempt_member_release_candidate(
     } else {
         "absent"
     };
-    let candidates = match read_member_release_flags(
-        provider,
-        component,
-        &source.repository,
-        &source.api_root,
-    ) {
+    let candidates_result = if let Some(pinned) = pinned_release_sha {
+        read_pinned_member_release_flag(
+            provider,
+            component,
+            &source.repository,
+            &source.api_root,
+            pinned,
+        )
+    } else {
+        read_member_release_flags(
+            provider,
+            component,
+            &source.repository,
+            &source.api_root,
+        )
+    };
+    let mut candidates = match candidates_result {
         Ok(candidates) => candidates,
         Err(error) => {
             let refusal = member_release_refusal(
@@ -1718,6 +1746,11 @@ fn attempt_member_release_candidate(
             };
         }
     };
+    if let Some(pinned) = pinned_release_sha {
+        candidates.retain(|candidate| {
+            candidate.tag_name == format!("sha-{pinned}")
+        });
+    }
     if candidates.is_empty() {
         let blocker = format!("release-flag-no-published-candidates provider={provider} url={target_url}");
         return MemberReleaseCandidateAttempt {
@@ -1761,8 +1794,12 @@ fn attempt_member_release_candidate(
                 continue;
             }
         };
-        let target_sha = release.target_commitish.as_str();
-        let tag_binding_valid = if source.provider == EngineReleaseProvider::Forgejo {
+        let target_sha = pinned_release_sha.unwrap_or(release.target_commitish.as_str());
+        let tag_binding_valid = if let Some(pinned) = pinned_release_sha {
+            release.tag_name == format!("sha-{pinned}")
+                && flag.get("source_sha").and_then(Value::as_str) == Some(pinned)
+                && validate_source_sha(pinned)
+        } else if source.provider == EngineReleaseProvider::Forgejo {
             release
                 .tag_name
                 .strip_prefix("sha-")
@@ -1818,7 +1855,9 @@ fn attempt_member_release_candidate(
             .and_then(Value::as_str)
             .map(str::to_owned);
         if let Some(asset) = asset {
-            let release_tag = if source.provider == EngineReleaseProvider::GitHub {
+            let release_tag = if source.provider == EngineReleaseProvider::GitHub
+                && pinned_release_sha.is_none()
+            {
                 "latest"
             } else {
                 &release.tag_name
@@ -1971,6 +2010,9 @@ fn probe_engine_release_candidates(
         mode,
         ReleaseCandidateReceiptMode::MemberFlag | ReleaseCandidateReceiptMode::MemberFlagBinary
     );
+    let stamp = crate::atoms::ask::collective_stamp::current();
+    let stamp_target = stamp.target(component).map(str::to_owned);
+    let effective_pinned_sha = stamp_target.as_deref().or(pinned_release_sha);
     let requested_assets = if member_flag_mode {
         let mut requested = vec![json!({"asset_name":"release.flag"})];
         if matches!(mode, ReleaseCandidateReceiptMode::MemberFlagBinary) {
@@ -2109,7 +2151,10 @@ fn probe_engine_release_candidates(
                 Ok(source) => {
                     provider_name = Some(source.provider.name());
                     if member_flag_mode {
-                        target = Some(member_release_candidate_target(&source));
+                        target = Some(member_release_candidate_target(
+                            &source,
+                            effective_pinned_sha,
+                        ));
                         match member_flag_seat {
                             Some(seat) => {
                                 let attempt = attempt_member_release_candidate(
@@ -2121,6 +2166,7 @@ fn probe_engine_release_candidates(
                                     } else {
                                         None
                                     },
+                                    effective_pinned_sha,
                                     seat,
                                 );
                                 malformed_flags += attempt.malformed_flags;
@@ -2159,11 +2205,17 @@ fn probe_engine_release_candidates(
                             }
                         }
                     } else {
-                        target = Some(source.provider.release_target(&candidate.locator));
+                        target = Some(if let Some(pinned_release_sha) = effective_pinned_sha {
+                            member_release_candidate_target(&source, Some(pinned_release_sha))
+                        } else {
+                            source.provider.release_target(&candidate.locator)
+                        });
                         let fetched = match mode {
-                            ReleaseCandidateReceiptMode::Engine => {
-                                download_engine_release_for_preflight(component, &source)
-                            }
+                            ReleaseCandidateReceiptMode::Engine => download_engine_release_for_preflight(
+                                component,
+                                &source,
+                                effective_pinned_sha,
+                            ),
                             ReleaseCandidateReceiptMode::Module => match source.provider {
                                 EngineReleaseProvider::Forgejo => {
                                     download_latest_engine_release_for_assets(
@@ -2173,7 +2225,7 @@ fn probe_engine_release_candidates(
                                         asset_name,
                                         sidecar_name,
                                         profile,
-                                        pinned_release_sha,
+                                        effective_pinned_sha,
                                         release_schema_base,
                                     )
                                 }
@@ -2185,7 +2237,7 @@ fn probe_engine_release_candidates(
                                         asset_name,
                                         sidecar_name,
                                         profile,
-                                        pinned_release_sha,
+                                        effective_pinned_sha,
                                         release_schema_base,
                                     )
                                 }
@@ -2419,10 +2471,24 @@ pub(crate) fn download_module_release_candidates(
 fn download_engine_release_for_preflight(
     component: &str,
     source: &EngineReleaseSource,
+    pinned_release_sha: Option<&str>,
 ) -> Result<Option<crate::atoms::ask::fetch_artifact::Download>, String> {
     #[cfg(test)]
     if let Some(injected) = injected_engine_release() {
         return Ok(injected);
+    }
+    if let Some(source_sha) = pinned_release_sha {
+        let download = crate::atoms::ask::fetch_artifact::download_pinned_engine_release_for_provider(
+            source.provider.name(),
+            component,
+            &source.repository,
+            &source.api_root,
+            source_sha,
+            None,
+        )?;
+        return download
+            .map(Some)
+            .ok_or_else(|| "fetch-artifact-pinned-release-missing".into());
     }
     match source.provider {
         EngineReleaseProvider::Forgejo => {
@@ -2618,6 +2684,9 @@ pub(crate) fn run_engine_preflight(
             });
         }
     };
+    let stamp_target_sha = crate::atoms::ask::collective_stamp::current()
+        .target(&component)
+        .map(str::to_owned);
     let mut source_head: Option<String> = None;
     let mut resolved_sha: Option<String> = None;
     let mut lane: Option<String> = None;
@@ -2678,6 +2747,55 @@ pub(crate) fn run_engine_preflight(
                     first_missing_signal = "engine-content-seat-head-mismatch".into();
                 }
                 artifact_download = Some(download);
+            } else if let Some(target_sha) = stamp_target_sha.as_deref().filter(|_| {
+                !source_plan.candidates.is_empty()
+                    && release_candidate_receipts.len() == source_plan.candidates.len()
+                    && release_candidate_receipts.iter().all(|receipt| {
+                        receipt.pointer("/final-state/blocker").and_then(Value::as_str)
+                            == Some("fetch-artifact-pinned-release-missing")
+                    })
+            }) {
+                // Only an absent exact stamped Release selects source rebuild;
+                // refusals, unreachable providers, and invalid assets stay errors.
+                let pinned_plan = exact_source_fallback_plan(&resolution, target_sha);
+                lane = Some("source".into());
+                source_head = Some(target_sha.to_owned());
+                resolved_sha = Some(target_sha.to_owned());
+                let source = crate::bands::pull_source::execute_source(
+                    &pinned_plan,
+                    apply,
+                    invocation,
+                );
+                let content_seat = write_content_seat_observation(
+                    &pinned_plan,
+                    target_sha,
+                    apply,
+                    &source,
+                    &preflight_dir,
+                )?;
+                if let Some(candidate) = pinned_plan.candidates.first() {
+                    let source_command = CmdResult {
+                        ok: source.ok,
+                        code: if source.ok { 0 } else { -1 },
+                        stdout: source.receipt.promotion.clone(),
+                        stderr: if source.ok { String::new() } else { source.receipt.promotion.clone() },
+                    };
+                    write_source_possession_receipt(
+                        &preflight_dir,
+                        &source_command,
+                        &pinned_plan.destination,
+                        candidate,
+                        apply,
+                    )?;
+                }
+                operation_count += 1;
+                if !source.ok {
+                    first_missing_signal = "engine-content-seat-move-failed".into();
+                } else if !content_seat.matches {
+                    first_missing_signal = "engine-content-seat-head-mismatch".into();
+                } else {
+                    changed = source.changed;
+                }
             } else if source_plan.candidates.is_empty() {
                 blocked_target = Some("configured-source@newest-engine-release".into());
                 first_missing_signal =
@@ -2696,51 +2814,58 @@ pub(crate) fn run_engine_preflight(
         "developer" => {
             lane = Some("source".into());
             let mut developer_resolution = resolution.clone();
-            developer_resolution.requested_ref = "main".into();
-            let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
-                &developer_resolution,
-                engine_source_root(),
-                None,
-            );
-            let remote_probe =
-                crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
+            let pinned_target = stamp_target_sha.as_deref();
+            developer_resolution.requested_ref = pinned_target.unwrap_or("main").to_owned();
+            let source_plan = if let Some(target_sha) = pinned_target {
+                exact_source_fallback_plan(&developer_resolution, target_sha)
+            } else {
+                crate::bands::pull_source::bridge_acquisition_plan(
+                    &developer_resolution,
+                    engine_source_root(),
+                    None,
+                )
+            };
+            let remote_probe = pinned_target.is_none().then(|| {
+                crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan)
+            });
             let target = format!(
-                "{}@main",
+                "{}@{}",
                 remote_probe
-                    .locator
-                    .as_deref()
-                    .or_else(|| {
-                        source_plan
-                            .candidates
-                            .first()
-                            .map(|candidate| candidate.locator.as_str())
-                    })
-                    .unwrap_or("configured-source")
+                    .as_ref()
+                    .and_then(|probe| probe.locator.as_deref())
+                    .or_else(|| source_plan.candidates.first().map(|candidate| candidate.locator.as_str()))
+                    .unwrap_or("configured-source"),
+                pinned_target.map(|sha| format!("sha-{sha}")).unwrap_or_else(|| "main".into())
             );
-            let main_sha = remote_probe
-                .remote_sha
-                .as_deref()
-                .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha))
-                .map(str::to_owned);
-            if let Some(main_sha) = main_sha {
-                source_head = Some(main_sha.clone());
-                resolved_sha = Some(main_sha.clone());
-                let pinned_plan = source_fallback_plan(&developer_resolution, &main_sha);
-                let source =
-                    crate::bands::pull_source::execute_source(&pinned_plan, apply, invocation);
+            let source_sha = stamp_target_sha.clone().or_else(|| {
+                remote_probe
+                    .as_ref()
+                    .and_then(|probe| probe.remote_sha.as_deref())
+                    .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha))
+                    .map(str::to_owned)
+            });
+            if let Some(source_sha) = source_sha {
+                source_head = Some(source_sha.clone());
+                resolved_sha = Some(source_sha.clone());
+                let pinned_plan = if pinned_target.is_some() {
+                    source_plan
+                } else {
+                    source_fallback_plan(&developer_resolution, &source_sha)
+                };
+                let source = crate::bands::pull_source::execute_source(
+                    &pinned_plan,
+                    apply,
+                    invocation,
+                );
                 let source_command = CmdResult {
                     ok: source.ok,
                     code: if source.ok { 0 } else { -1 },
                     stdout: source.receipt.promotion.clone(),
-                    stderr: if source.ok {
-                        String::new()
-                    } else {
-                        source.receipt.promotion.clone()
-                    },
+                    stderr: if source.ok { String::new() } else { source.receipt.promotion.clone() },
                 };
                 let content_seat = write_content_seat_observation(
                     &pinned_plan,
-                    &main_sha,
+                    &source_sha,
                     apply,
                     &source,
                     &preflight_dir,

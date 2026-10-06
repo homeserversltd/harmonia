@@ -370,7 +370,10 @@ struct ForgejoAsset {
 }
 
 pub(crate) fn resolve_slot(slot: &BeamLock) -> Result<ResolvedBeamLock, SlotResolutionError> {
-    resolve_slot_with_credential_source(slot, |listing_url| {
+    let target = crate::atoms::ask::collective_stamp::current()
+        .target("caduceus")
+        .map(str::to_owned);
+    resolve_slot_with_credential_source_and_target(slot, target.as_deref(), |listing_url| {
         crate::atoms::forge_credential::credential_for_url(listing_url)
     })
 }
@@ -401,6 +404,19 @@ pub(crate) fn resolve_slot_with_credential_path(
 
 fn resolve_slot_with_credential_source(
     slot: &BeamLock,
+    resolve_credential: impl FnOnce(
+        &str,
+    ) -> Result<
+        Option<crate::atoms::forge_credential::Credential>,
+        String,
+    >,
+) -> Result<ResolvedBeamLock, SlotResolutionError> {
+    resolve_slot_with_credential_source_and_target(slot, None, resolve_credential)
+}
+
+fn resolve_slot_with_credential_source_and_target(
+    slot: &BeamLock,
+    pinned_release_sha: Option<&str>,
     resolve_credential: impl FnOnce(
         &str,
     ) -> Result<
@@ -445,38 +461,64 @@ fn resolve_slot_with_credential_source(
         .as_ref()
         .map(|credential| credential.token.as_str());
     let mut releases = Vec::new();
-    // Forgejo listing pagination is capped at five pages.
-    for page in 1..=5 {
-        let listing_url = format!("{api}?limit=50&page={page}");
-        let status = fetch_flag(&listing_url, &listing_path, token)
+    if let Some(source_sha) = pinned_release_sha {
+        let tag = format!("sha-{source_sha}");
+        let exact_url = format!("{api}/tags/{tag}");
+        let status = fetch_flag(&exact_url, &listing_path, token)
             .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
-        if !(200..300).contains(&status) {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(SlotResolutionError::new(
-                "beam-flag-unresolvable",
-                credential_state,
-            ));
-        }
-        let page_releases: Vec<ForgejoRelease> =
-            serde_json::from_slice(&std::fs::read(&listing_path).map_err(|_| {
+        if status != 404 {
+            if !(200..300).contains(&status) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(SlotResolutionError::new("beam-flag-unresolvable", credential_state));
+            }
+            let release: ForgejoRelease = serde_json::from_slice(&std::fs::read(&listing_path).map_err(|_| {
                 SlotResolutionError::new("beam-flag-unresolvable", credential_state)
             })?)
             .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
-        let page_len = page_releases.len();
-        for release in page_releases {
-            let Some(source_sha) = crate::tools::git_artifact::source_sha_from_release_tag(&release.tag_name) else {
-                continue;
-            };
-            if release.target_commitish.as_deref() != Some(source_sha) {
-                continue;
+            if release.tag_name == tag {
+                releases.push(release);
             }
-            releases.push(release);
         }
-        if page_len < 50 {
-            break;
+    } else {
+        // Preserve the unpinned bounded newest-release window.
+        for page in 1..=5 {
+            let listing_url = format!("{api}?limit=50&page={page}");
+            let status = fetch_flag(&listing_url, &listing_path, token)
+                .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
+            if !(200..300).contains(&status) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(SlotResolutionError::new(
+                    "beam-flag-unresolvable",
+                    credential_state,
+                ));
+            }
+            let page_releases: Vec<ForgejoRelease> =
+                serde_json::from_slice(&std::fs::read(&listing_path).map_err(|_| {
+                    SlotResolutionError::new("beam-flag-unresolvable", credential_state)
+                })?)
+                .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", credential_state))?;
+            let page_len = page_releases.len();
+            for release in page_releases {
+                let Some(source_sha) =
+                    crate::tools::git_artifact::source_sha_from_release_tag(&release.tag_name)
+                else {
+                    continue;
+                };
+                // Keep the historical unpinned filter ahead of fetching a
+                // release.flag; malformed flags on unrelated tags stay irrelevant.
+                if release.target_commitish.as_deref() == Some(source_sha) {
+                    releases.push(release);
+                }
+            }
+            if page_len < 50 {
+                break;
+            }
         }
     }
     releases.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    if let Some(source_sha) = pinned_release_sha {
+        releases.retain(|release| release.tag_name == format!("sha-{source_sha}"));
+    }
     let mut selected = None;
     let mut malformed_flags = 0;
     for release in releases.into_iter().take(20) {

@@ -605,7 +605,7 @@ struct Certificate {
 #[derive(Debug, Deserialize)]
 struct ApplianceConfig {
     #[serde(default)]
-    sources: BTreeMap<String, SourceDeclaration>,
+    sources: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1030,8 +1030,25 @@ fn resolve_appliance_config_source(
             format!("source-component-undeclared component={component}"),
         );
     };
-    let requested_ref = declaration.reference.trim();
-    if requested_ref.is_empty() {
+    let declaration: SourceDeclaration = match serde_json::from_value(declaration.clone()) {
+        Ok(declaration) => declaration,
+        Err(err) => {
+            return blocker_receipt(
+                authority,
+                schema,
+                source_policy.clone(),
+                component,
+                owning_module,
+                step_id,
+                format!(
+                    "appliance-config-parse-failed {}: {err}",
+                    config_path.display()
+                ),
+            );
+        }
+    };
+    let configured_ref = declaration.reference.trim();
+    if configured_ref.is_empty() {
         return blocker_receipt(
             authority,
             schema,
@@ -1050,7 +1067,7 @@ fn resolve_appliance_config_source(
             component,
             owning_module,
             step_id,
-            Some(requested_ref.to_string()),
+            Some(configured_ref.to_string()),
             Vec::new(),
             Vec::new(),
             Some(format!("source-candidates-empty component={component}")),
@@ -1058,6 +1075,10 @@ fn resolve_appliance_config_source(
         );
     }
 
+    // A VALID collective stamp replaces the configured branch/ref for this
+    // declared member. All other observations preserve the historical ref.
+    let requested_ref = crate::atoms::ask::collective_stamp::target_sha(component)
+        .unwrap_or_else(|| configured_ref.to_owned());
     let mut candidates = Vec::new();
     let mut identities = Vec::new();
     let mut selectors = Vec::new();
@@ -1079,7 +1100,7 @@ fn resolve_appliance_config_source(
                     component,
                     owning_module,
                     step_id,
-                    Some(requested_ref.to_string()),
+                    Some(requested_ref.clone()),
                     identities,
                     selectors,
                     Some(blocker),
@@ -1092,7 +1113,7 @@ fn resolve_appliance_config_source(
         schema: SOURCE_PLAN_SCHEMA,
         source_policy: source_policy.clone(),
         component: component.to_string(),
-        requested_ref: requested_ref.to_string(),
+        requested_ref: requested_ref.clone(),
         candidates,
     };
     receipt(
@@ -1102,7 +1123,7 @@ fn resolve_appliance_config_source(
         component,
         owning_module,
         step_id,
-        Some(requested_ref.to_string()),
+        Some(requested_ref),
         identities,
         selectors,
         None,
@@ -1221,6 +1242,8 @@ fn resolve_xenia_source(
                 "xenia-clone-source-incomplete".into(),
             );
         };
+        let requested_ref = crate::atoms::ask::collective_stamp::target_sha(component)
+            .unwrap_or_else(|| requested_ref.to_owned());
         return receipt(
             authority,
             Some(XENIA_SCHEMA.into()),
@@ -1267,6 +1290,9 @@ fn resolve_xenia_source(
             "xenia-release-source-incomplete".into(),
         );
     };
+    let requested_ref = crate::atoms::ask::collective_stamp::target_sha(component)
+        .map(|sha| format!("sha-{sha}"))
+        .unwrap_or_else(|| requested_ref.to_owned());
     let resolution = SourceResolution {
         schema: SOURCE_PLAN_SCHEMA,
         source_policy: "artifact".into(),
@@ -1322,7 +1348,7 @@ fn resolve_xenia_source(
     match crate::atoms::ask::fetch_artifact::inspect_release(
         component,
         release_repo,
-        requested_ref,
+        &requested_ref,
         forge_base,
         &asset,
         &sidecar,
@@ -1360,6 +1386,11 @@ pub(crate) fn validate_declared_sources(
     let components: Vec<String> = config.sources.keys().cloned().collect();
     let mut receipts = Vec::new();
     for component in components {
+        // The optional stamp locator is observational, not a normal Git source
+        // candidate or a gate on configured-source validation.
+        if component == "wukong-staff" {
+            continue;
+        }
         let resolution = resolve_source(
             SourceAuthority::ApplianceConfig {
                 config_path: &config_path,
@@ -1872,6 +1903,9 @@ pub(crate) fn execute_manifest_band(
 }
 
 fn expected_commit_for_resolution(resolution: &SourceResolution) -> Option<String> {
+    if let Some(source_sha) = crate::atoms::ask::collective_stamp::target_sha(&resolution.component) {
+        return Some(source_sha);
+    }
     if resolution.source_policy == "artifact" {
         crate::tools::git_artifact::source_sha_from_release_tag(&resolution.requested_ref)
             .map(str::to_owned)

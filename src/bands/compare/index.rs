@@ -222,8 +222,10 @@ pub(crate) fn execute_manifest_modules(
     } else {
         projection.beam_finalization = None;
     }
-    let beam_value = serde_json::to_value(&beam)
+    let mut beam_value = serde_json::to_value(&beam)
         .map_err(|error| format!("beam-receipt-serialize-failed: {error}"))?;
+    beam_value["wukong_staff_stamp"] =
+        crate::atoms::ask::collective_stamp::current().as_json();
     crate::write_json(&receipt_dir.join("beam.json"), &beam_value)?;
     if matches!(beam.first_missing_signal, "beam-lock-malformed" | "beam-door-malformed") {
         *ok = false;

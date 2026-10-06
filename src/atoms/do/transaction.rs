@@ -706,6 +706,24 @@ pub(crate) fn rolling_update_run(
             )?;
             return Err(error);
         }
+        if let Err(error) =
+            crate::atoms::attest::augment_run_json_with_stamp(&effective_receipt_dir, &mint)
+        {
+            if let Err(write_error) = write_transaction_failure_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                "transaction-stamp-run-receipt-failed",
+                Some(&error),
+                changed,
+                operation_count,
+            ) {
+                return Err(format!(
+                    "{error}; transaction-stamp-run-failure-receipt-failed: {write_error}"
+                ));
+            }
+            return Err(error);
+        }
         Ok(())
     };
     if apply {

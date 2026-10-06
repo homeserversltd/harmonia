@@ -1328,6 +1328,13 @@ pub(crate) fn toolbelt() -> Result<(), String> {
 
 pub(crate) fn explain() -> Result<(), String> {
     let cadence = bands::stage_profile::read_device_update_cadence()?;
+    let stamp = atoms::ask::collective_stamp::current();
+    let stamp_explanation = serde_json::json!({
+        "source": &stamp.stamp_source,
+        "key_id": &stamp.key_id,
+        "verdict": &stamp.verdict,
+        "signal": &stamp.signal,
+    });
     println!("schema=harmonia.explain.v1");
     hyalos::forward_receipt(
         "schema=harmonia.explain.v1",
@@ -1339,6 +1346,7 @@ pub(crate) fn explain() -> Result<(), String> {
             "compiled_component": COMPILED_COMPONENT,
             "update_interval": &cadence.calendar,
             "update_interval_source": cadence.source,
+            "wukong_staff_stamp": &stamp_explanation,
         })),
         Some(true),
         None,
@@ -1349,6 +1357,19 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("compiled_component={}", COMPILED_COMPONENT);
     println!("update_interval={}", cadence.calendar);
     println!("update_interval_source={}", cadence.source);
+    println!(
+        "wukong_staff_stamp_source={}",
+        stamp.stamp_source.as_deref().unwrap_or("none")
+    );
+    println!(
+        "wukong_staff_stamp_key_id={}",
+        stamp.key_id.as_deref().unwrap_or("none")
+    );
+    println!(
+        "wukong_staff_stamp_verdict={}",
+        stamp.verdict.as_deref().unwrap_or("UNAVAILABLE")
+    );
+    println!("wukong_staff_stamp_signal={}", stamp.signal);
     println!("covenant=Rust update manager and appliance-profile execution engine");
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");

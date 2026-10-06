@@ -96,7 +96,14 @@ fn execute_with_module_provenance(
     if source_policy != "artifact" && !crate::atoms::ask::fetch_artifact::validate_source_sha(source_sha) {
         return Err("fetch-artifact-source-sha-invalid".into());
     }
-    let pinned_release_sha = if source_policy == "artifact" {
+    let stamped_release_sha = if source_policy == "artifact" {
+        crate::atoms::ask::collective_stamp::target_sha(component)
+    } else {
+        None
+    };
+    let explicit_pinned_release_sha = if source_policy == "artifact"
+        && stamped_release_sha.is_none()
+    {
         match args.get("pinned_release_sha") {
             None | Some(Value::Null) => None,
             Some(Value::String(value))
@@ -109,6 +116,10 @@ fn execute_with_module_provenance(
     } else {
         None
     };
+    let pinned_release_sha = stamped_release_sha
+        .as_deref()
+        .or(explicit_pinned_release_sha.as_deref())
+        .map(str::to_owned);
 
     let profile_axis = crate::atoms::ask::fetch_artifact::profile_axis_declared(args)?;
     let profile = if profile_axis {
@@ -175,6 +186,7 @@ fn execute_with_module_provenance(
     let mut release_digest = None;
     let mut native_download = None;
     let mut effective_source_sha = source_sha.to_owned();
+    let mut stamped_source_plan: Option<crate::tools::git_artifact::SourcePlan> = None;
     let mut module_release_candidates: Option<Vec<Value>> = None;
     if source_policy == "artifact" {
         let config_path = crate::bands::pull_source::appliance_config_path();
@@ -279,62 +291,90 @@ fn execute_with_module_provenance(
                     component
                 ));
             }
-            if !apply {
-                return Err(exhaustion_signal);
-            }
-            let before = read_standing_artifact_snapshot(installed_binary)?;
-            let after = read_standing_artifact_snapshot(installed_binary)?;
-            if before != after {
-                return Err(format!(
-                    "fetch-artifact-standing-artifact-changed-during-observation path={}",
-                    installed_binary.display()
+            let stamped_pruned_target = stamped_release_sha.as_deref().filter(|_| {
+                candidate_count > 0
+                    && module_release_candidates.as_ref().is_some_and(|candidates| {
+                        candidates.len() == candidate_count
+                            && candidates.iter().all(|candidate| {
+                                candidate
+                                    .pointer("/final-state/blocker")
+                                    .and_then(Value::as_str)
+                                    == Some("fetch-artifact-pinned-release-missing")
+                            })
+                    })
+            });
+            if let Some(target_sha) = stamped_pruned_target {
+                let declared_source_dir = source_dir.ok_or("fetch-artifact-source-dir-missing")?;
+                let mut pinned_resolution = resolution.clone();
+                pinned_resolution.requested_ref = target_sha.to_owned();
+                stamped_source_plan = Some(crate::bands::pull_source::bridge_acquisition_plan(
+                    &pinned_resolution,
+                    declared_source_dir.to_path_buf(),
+                    Some(target_sha.to_owned()),
                 ));
+                effective_source_sha = target_sha.to_owned();
+                release_fallback = Some((
+                    "stamped-release-pruned".into(),
+                    format!("source://{target_sha}"),
+                ));
+            } else {
+                if !apply {
+                    return Err(exhaustion_signal);
+                }
+                let before = read_standing_artifact_snapshot(installed_binary)?;
+                let after = read_standing_artifact_snapshot(installed_binary)?;
+                if before != after {
+                    return Err(format!(
+                        "fetch-artifact-standing-artifact-changed-during-observation path={}",
+                        installed_binary.display()
+                    ));
+                }
+                let mut witness = after;
+                witness["unchanged"] = Value::Bool(true);
+                let routine_id = receipt_dir
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown-routine");
+                let debt = serde_json::json!({
+                    "schema": "harmonia.module_artifact_exhaustion.v1",
+                    "ok": false,
+                    "module_id": module_id.unwrap_or(component),
+                    "component": component,
+                    "routine_id": routine_id,
+                    "step_id": "fetch-artifact",
+                    "first_missing_signal": exhaustion_signal,
+                    "candidate_count": candidate_count,
+                    "candidates": module_release_candidates.as_ref().unwrap(),
+                    "standing_artifact": witness,
+                    "changed": false,
+                    "installed_artifact_preserved": true,
+                });
+                crate::write_json(
+                    &receipt_dir.join("module-artifact-exhaustion.json"),
+                    &debt,
+                )
+                .map_err(|error| format!("fetch-artifact-exhaustion-receipt-write: {error}"))?;
+                crate::atoms::attest::fetch_artifact::attest(
+                    &receipt_dir.join("harmonia-atoms.log"),
+                    true,
+                    false,
+                    &format!(
+                        "state=Drift; care=all configured Release candidates refused; after=Drift; reason={exhaustion_signal}; installed_artifact_preserved=true"
+                    ),
+                )?;
+                return Ok(FetchArtifactExecution {
+                    outcome: crate::OperationOutcome {
+                        ok: true,
+                        changed: false,
+                        skipped: true,
+                        message: exhaustion_signal,
+                        command: None,
+                    },
+                    source_sha: String::new(),
+                    artifact_path: installed_binary.to_path_buf(),
+                });
             }
-            let mut witness = after;
-            witness["unchanged"] = Value::Bool(true);
-            let routine_id = receipt_dir
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|value| value.to_str())
-                .unwrap_or("unknown-routine");
-            let debt = serde_json::json!({
-                "schema": "harmonia.module_artifact_exhaustion.v1",
-                "ok": false,
-                "module_id": module_id.unwrap_or(component),
-                "component": component,
-                "routine_id": routine_id,
-                "step_id": "fetch-artifact",
-                "first_missing_signal": exhaustion_signal,
-                "candidate_count": candidate_count,
-                "candidates": module_release_candidates.as_ref().unwrap(),
-                "standing_artifact": witness,
-                "changed": false,
-                "installed_artifact_preserved": true,
-            });
-            crate::write_json(
-                &receipt_dir.join("module-artifact-exhaustion.json"),
-                &debt,
-            )
-            .map_err(|error| format!("fetch-artifact-exhaustion-receipt-write: {error}"))?;
-            crate::atoms::attest::fetch_artifact::attest(
-                &receipt_dir.join("harmonia-atoms.log"),
-                true,
-                false,
-                &format!(
-                    "state=Drift; care=all configured Release candidates refused; after=Drift; reason={exhaustion_signal}; installed_artifact_preserved=true"
-                ),
-            )?;
-            return Ok(FetchArtifactExecution {
-                outcome: crate::OperationOutcome {
-                    ok: true,
-                    changed: false,
-                    skipped: true,
-                    message: exhaustion_signal,
-                    command: None,
-                },
-                source_sha: String::new(),
-                artifact_path: installed_binary.to_path_buf(),
-            });
         }
     } else if source_policy == "source" && native_release {
         let tag = args
@@ -543,18 +583,20 @@ fn execute_with_module_provenance(
         let source_dir = source_dir.ok_or("fetch-artifact-source-dir-missing")?;
         let source_dir_text = source_dir.display().to_string();
         let artifact = source_dir.join("target/release").join(artifact_name);
-        let (environment, build_environment_sha) =
-            crate::atoms::ask::fetch_artifact::build_environment(component, source_sha)?;
+        let (environment, build_environment_sha) = crate::atoms::ask::fetch_artifact::build_environment(
+            component,
+            &effective_source_sha,
+        )?;
         let mut environment = environment;
         if source_policy == "source" {
-            environment.push(("CARTRIDGE_SOURCE_SHA".into(), source_sha.into()));
+            environment.push(("CARTRIDGE_SOURCE_SHA".into(), effective_source_sha.clone()));
         }
         let mut fallback_receipt = serde_json::json!({
             "schema": "harmonia.fetch-artifact.fallback.v1",
             "fallback_reason": fallback_reason,
             "artifact_url": artifact_url,
             "credential": credential_state,
-            "source_build_sha": source_sha,
+            "source_build_sha": effective_source_sha,
             "source_dir": source_dir_text,
             "build_environment_sha": build_environment_sha,
         });
@@ -571,6 +613,46 @@ fn execute_with_module_provenance(
             );
         }
         crate::write_json(&receipt_dir.join("fallback.json"), &fallback_receipt)?;
+        if let Some(plan) = stamped_source_plan.as_ref() {
+            let acquisition = crate::bands::pull_source::execute_source(plan, apply, invocation);
+            let observed_source_head = if apply {
+                let head = crate::atoms::ask::pull_repo::source_head(source_dir, "owner");
+                head.ok.then(|| head.stdout.trim().to_owned())
+            } else {
+                None
+            };
+            let acquisition_record = serde_json::json!({
+                "requested_ref": plan.reference,
+                "expected_commit": plan.expected_commit,
+                "destination": plan.destination.display().to_string(),
+                "apply": apply,
+                "ok": acquisition.ok,
+                "changed": acquisition.changed,
+                "resolved_commit": acquisition.receipt.resolved_commit,
+                "owner_checkout_head": observed_source_head,
+                "source_receipt": acquisition.receipt,
+            });
+            crate::write_json(
+                &receipt_dir.join("fallback-acquisition.json"),
+                &acquisition_record,
+            )?;
+            if apply {
+                if !acquisition.ok {
+                    return Err(format!(
+                        "fetch-artifact-stamped-source-acquisition-failed: {}",
+                        acquisition.receipt.promotion
+                    ));
+                }
+                if acquisition.receipt.resolved_commit.as_deref()
+                    != Some(effective_source_sha.as_str())
+                {
+                    return Err("fetch-artifact-stamped-source-acquisition-commit-mismatch".into());
+                }
+                if observed_source_head.as_deref() != Some(effective_source_sha.as_str()) {
+                    return Err("fetch-artifact-stamped-source-checkout-head-mismatch".into());
+                }
+            }
+        }
         if !apply {
             crate::atoms::attest::fetch_artifact::attest(
                 &receipt_dir.join("harmonia-atoms.log"),
@@ -592,7 +674,7 @@ fn execute_with_module_provenance(
         }
         let build = crate::build_crate::run_build_with_mode_for_component(
             source_dir,
-            source_sha,
+            &effective_source_sha,
             None,
             installed_binary,
             &artifact,
@@ -620,7 +702,7 @@ fn execute_with_module_provenance(
         let manifest = crate::atoms::ask::fetch_artifact::Manifest {
             schema: crate::atoms::ask::fetch_artifact::MANIFEST_SCHEMA.into(),
             component: component.into(),
-            source_sha: source_sha.into(),
+            source_sha: effective_source_sha.clone(),
             target: crate::atoms::ask::fetch_artifact::BUILD_TARGET.into(),
             sha256: crate::atoms::file_sha256(&bytes),
             built_at: "fallback".into(),
