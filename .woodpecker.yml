@@ -109,47 +109,24 @@ steps:
         printf "%s\n" "$env_sha" > .release/env-sha
         HARMONIA_COMPONENT="$CI_REPO_NAME" HARMONIA_BUILD_SHA="$CI_COMMIT_SHA" HARMONIA_BUILD_ENV_SHA="$env_sha" cargo build --release --locked
 
-  - name: publish-harmonia-release
+  - name: pool-publish-harmonia
     image: python:3.12-alpine
     when:
       - event: push
         branch: main
-    environment:
-      FORGEJO_TOKEN:
-        from_secret: FORGEJO_TOKEN
-    commands:
-      - |
-        set -eu
-        python3 - <<'PY'
-        import urllib.request
-
-        with urllib.request.urlopen("http://192.168.123.1:7100/v1/trust/ca-bundle") as response:
-            ca_bundle = response.read()
-        with open("/tmp/house-ca.pem", "wb") as bundle_file:
-            bundle_file.write(ca_bundle)
-        PY
-        test -s /tmp/house-ca.pem
-        export SSL_CERT_FILE=/tmp/house-ca.pem
-        python3 ci/release_publish.py
-
-  - name: github-latest-harmonia
-    image: python:3.12-alpine
-    when:
-      - event: push
-        branch: main
-    failure: ignore
     environment:
       FORGEJO_TOKEN:
         from_secret: FORGEJO_TOKEN
       GITHUB_TOKEN:
         from_secret: github_token
+      WUKONG_STAFF_SHA: 58f29bee09ca30e5b61d5ccef08b28c1941d91c7
     commands:
       - |
         set -eu
         apk add --no-cache git
         umask 077
-        if [ -z "$${FORGEJO_TOKEN:-}" ] || [ -z "$${GITHUB_TOKEN:-}" ]; then
-          echo "github-latest-harmonia: required secret is missing" >&2
+        if [ -z "$${FORGEJO_TOKEN:-}" ]; then
+          echo "pool-publish-harmonia: required secret FORGEJO_TOKEN is missing" >&2
           exit 1
         fi
         python3 - <<'PY'
@@ -161,13 +138,22 @@ steps:
         with urllib.request.urlopen(request, timeout=30) as response:
             bundle = response.read()
         if not bundle:
-            raise SystemExit("github-latest-harmonia: trust CA bundle is empty")
-        with open("/tmp/github-latest-house-ca.pem", "wb") as ca_file:
+            raise SystemExit("pool-publish-harmonia: trust CA bundle is empty")
+        with open("/tmp/pool-publish-house-ca.pem", "wb") as ca_file:
             ca_file.write(bundle)
         PY
-        test -s /tmp/github-latest-house-ca.pem
-        export SSL_CERT_FILE=/tmp/github-latest-house-ca.pem
-        python3 ci/github_latest.py
+        test -s /tmp/pool-publish-house-ca.pem
+        export SSL_CERT_FILE=/tmp/pool-publish-house-ca.pem
+        export GIT_SSL_CAINFO=/tmp/pool-publish-house-ca.pem
+        export GIT_TERMINAL_PROMPT=0
+        export GIT_CONFIG_COUNT=1
+        export GIT_CONFIG_KEY_0=credential.https://git.home.arpa.helper
+        export GIT_CONFIG_VALUE_0='!f() { if [ "$${1}" = get ]; then printf "username=x-token\npassword=%s\n" "$${FORGEJO_TOKEN}"; fi; }; f'
+        git clone --depth 1 --no-checkout https://git.home.arpa/HOMESERVERSLTD/wukong-staff.git wukong-staff
+        git -C wukong-staff fetch --depth=1 origin "$${WUKONG_STAFF_SHA}"
+        git -C wukong-staff checkout --detach "$${WUKONG_STAFF_SHA}"
+        test "$(git -C wukong-staff rev-parse HEAD)" = "$${WUKONG_STAFF_SHA}"
+        exec sh wukong-staff/ci/harmonia/pipeline.sh
 
   - name: ci-outcome-harmonia
     image: python:3.12-alpine
