@@ -257,6 +257,12 @@ pub(crate) fn validate_tool_semantics(
                 }
             })
         }
+        ("files", "managed-files") => tools::files::parse_managed_file_modes(args)
+            .map(|_| ())
+            .map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            }),
         ("files", "metadata") => validate_files_metadata_args(step_id, args),
         ("files", "executable-present") => tools::files::validate_executable_present_args(args)
             .map_err(|defect| LadderValidationError {

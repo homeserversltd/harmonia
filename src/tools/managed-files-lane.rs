@@ -528,6 +528,9 @@ pub(crate) fn preflight_file_targets(
                 if let Some(blocker) = structural_file_blocker(step, manifest) {
                     return Err(blocker);
                 }
+                if step.tool == "files" && step.permutation == "managed-files" {
+                    validate_managed_file_mode_targets(step, manifest)?;
+                }
             }
             continue;
         }
@@ -546,6 +549,9 @@ pub(crate) fn preflight_file_targets(
                 };
                 if let Some(blocker) = structural_file_blocker(&child_step, manifest) {
                     return Err(blocker);
+                }
+                if child_step.tool == "files" && child_step.permutation == "managed-files" {
+                    validate_managed_file_mode_targets(&child_step, manifest)?;
                 }
             }
         }
@@ -736,6 +742,85 @@ fn materialize_profile_sources(
     Ok(files)
 }
 
+pub(crate) fn parse_managed_file_modes(
+    args: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, u32>, String> {
+    let Some(value) = args.get("file_modes") else {
+        return Ok(BTreeMap::new());
+    };
+    if value.is_null() {
+        return Ok(BTreeMap::new());
+    }
+    let Some(modes) = value.as_object() else {
+        return Err("managed-files-file-modes-not-object".into());
+    };
+    modes
+        .iter()
+        .map(|(target, value)| {
+            if !Path::new(target).is_absolute() {
+                return Err(format!(
+                    "managed-files-file-mode-target-not-absolute:{target}"
+                ));
+            }
+            let mode = value
+                .as_u64()
+                .filter(|mode| *mode <= 0o777)
+                .ok_or_else(|| format!("managed-files-file-mode-invalid:{target}"))?;
+            Ok((target.clone(), mode as u32))
+        })
+        .collect()
+}
+
+fn apply_managed_file_modes(
+    files: &mut [crate::ManagedFileManifest],
+    modes: &BTreeMap<String, u32>,
+) -> Result<(), String> {
+    for (target, mode) in modes {
+        let matches = files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, file)| (file.path.as_str() == target.as_str()).then_some(index))
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => return Err(format!("managed-files-file-mode-target-unmatched:{target}")),
+            [index] => files[*index].mode = Some(*mode),
+            _ => return Err(format!("managed-files-file-mode-target-ambiguous:{target}")),
+        }
+    }
+    Ok(())
+}
+
+fn materialize_managed_files(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+) -> Result<Vec<crate::ManagedFileManifest>, String> {
+    let mut files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
+        serde_json::from_value(files_value.clone())
+            .map_err(|e| format!("managed-files-args-invalid: {e}"))?
+    } else if let Some(files_root) = &manifest.files_root {
+        managed_files_from_files_root(
+            &manifest.base_dir.join(files_root),
+            manifest.category.as_deref(),
+        )?
+    } else {
+        Vec::new()
+    };
+    files.extend(materialize_profile_sources(step)?);
+    Ok(files)
+}
+
+fn validate_managed_file_mode_targets(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+) -> Result<(), String> {
+    let modes = parse_managed_file_modes(&step.args)?;
+    if modes.is_empty() {
+        return Ok(());
+    }
+    let mut files = materialize_managed_files(step, manifest)?;
+    apply_managed_file_modes(&mut files, &modes)
+}
+
 pub(crate) struct ManagedFilesExecution {
     pub(crate) outcome: OperationOutcome,
     pub(crate) truthful_changed: bool,
@@ -748,20 +833,10 @@ pub(crate) fn managed_files_step_with_authorization(
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<ManagedFilesExecution, String> {
+    let file_modes = parse_managed_file_modes(&step.args)?;
     let apply = software_authorization.is_some();
-    let files: Vec<crate::ManagedFileManifest> = if let Some(files_value) = step.args.get("files") {
-        serde_json::from_value(files_value.clone())
-            .map_err(|e| format!("managed-files-args-invalid: {e}"))?
-    } else if let Some(files_root) = &manifest.files_root {
-        managed_files_from_files_root(
-            &manifest.base_dir.join(files_root),
-            manifest.category.as_deref(),
-        )?
-    } else {
-        Vec::new()
-    };
-    let mut files = files;
-    files.extend(materialize_profile_sources(step)?);
+    let mut files = materialize_managed_files(step, manifest)?;
+    apply_managed_file_modes(&mut files, &file_modes)?;
     let disposition = partition_managed_files(files)?;
     let hold = disposition.known_good;
     let proposals = disposition.proposals;

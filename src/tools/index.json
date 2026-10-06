@@ -546,6 +546,11 @@
               "required": false
             },
             {
+              "name": "file_modes",
+              "kind": "json",
+              "required": false
+            },
+            {
               "name": "profile_sources",
               "kind": "json",
               "required": false
