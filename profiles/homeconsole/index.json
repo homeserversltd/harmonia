@@ -5,7 +5,7 @@
     "os_family": "arch",
     "package_manager": "pacman"
   },
-  "dotfile_pool": "tv",
+  "dotfile_pool": "homeconsole",
   "identity": "homeconsole",
   "categories_required": true,
   "description": "HomeConsole appliance profile. HomeConsole is the sole console identity; sudoers is provided by the shared module.",

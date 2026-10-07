@@ -1,0 +1,23 @@
+# Arch Gaming Console login banner
+# ASCII-only, deployable-owned. Sourced by .bash_profile for TTY/SSH login shells.
+case "$-" in
+  *i*) ;;
+  *) return 0 2>/dev/null || exit 0 ;;
+esac
+
+if [ -z "${ARCH_CONSOLE_BANNER_SHOWN:-}" ]; then
+  export ARCH_CONSOLE_BANNER_SHOWN=1
+  cat <<'EOF'
++--------------------------------------------------------------+
+|                        HomeConsole                          |
+|                 Arch Gaming Console appliance                |
++--------------------------------------------------------------+
+| Steam Big Picture is the couch shell.                        |
+| Drop games into the matching console folder, then run: sync                  |
+| Daily safe update: update       Inspect only: update-check   |
+| Last update receipt: update-status       Timer: timer        |
+| Folders: gba, genesis, snes, nes, ps1, n64, ps2, psp, wii   |
+| Show this guide again: help                                  |
++--------------------------------------------------------------+
+EOF
+fi

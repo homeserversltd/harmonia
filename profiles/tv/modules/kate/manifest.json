@@ -28,9 +28,7 @@
       ".config/kate/externaltools/git-cola.ini",
       ".config/kate/externaltools/gitk.ini",
       ".config/katepartrc",
-      ".config/katerc",
-      ".config/katevirc",
-      ".local/share/kate/anonymous.katesession"
+      ".config/katevirc"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.kate.v1",
@@ -66,9 +64,7 @@
           ".config/kate/externaltools/git-cola.ini",
           ".config/kate/externaltools/gitk.ini",
           ".config/katepartrc",
-          ".config/katerc",
-          ".config/katevirc",
-          ".local/share/kate/anonymous.katesession"
+          ".config/katevirc"
         ],
         "backup_existing": true,
         "owner": "owner",

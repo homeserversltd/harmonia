@@ -1,0 +1,45 @@
+# Arch Gaming Console local operator functions
+# Sourced by /home/owner/.bashrc on TTY/SSH login.
+
+arch_console_help() {
+  cat <<'EOF'
+Arch Gaming Console local commands
+
+Maintenance (Caduceus -> Harmonia):
+  update          caduceus update now
+  update-check    caduceus update status
+  update-status   caduceus receipts latest
+  health          caduceus health
+  timer           Show the daily arch-console-maintenance systemd timer.
+  maintenance-log Show recent maintenance service logs.
+  reboot          Reboot through systemd.
+  poweroff        Power off through systemd.
+
+Game sync (Caduceus -> Harmonia -> homeconsole-sync):
+  sync            caduceus sync now
+  sync-games      caduceus sync now
+  sync-no-restart caduceus sync now --no-restart
+
+Folders:
+  games           cd /home/owner/Games
+  roms            cd /home/owner/Games/roms
+  gba/genesis/snes/nes
+
+Receipts and inspection:
+  receipts        List latest maintenance receipts.
+  shares          Print configured game Samba shares.
+  ip-now          Show current local IP addresses.
+
+North Star:
+  Drop games into the SMB folders, run sync, launch from Steam Big Picture.
+  The update path skips mutation when a real game is running and preserves pinned artifacts.
+EOF
+}
+
+help() {
+  if [ "$#" -gt 0 ]; then
+    builtin help "$@"
+  else
+    arch_console_help
+  fi
+}

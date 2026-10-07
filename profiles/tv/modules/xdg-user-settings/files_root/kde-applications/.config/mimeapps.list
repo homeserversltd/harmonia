@@ -3,6 +3,7 @@ text/plain=org.kde.kate.desktop
 text/markdown=org.kde.kate.desktop
 text/x-markdown=org.kde.kate.desktop
 application/x-markdown=org.kde.kate.desktop
+x-scheme-handler/mailto=chromium.desktop
 image/avif=org.kde.gwenview.desktop
 image/bmp=org.kde.gwenview.desktop
 image/gif=org.kde.gwenview.desktop

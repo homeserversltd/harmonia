@@ -1,3 +1,3 @@
 # kate
 
-Owns the 23 TV Kate configuration and session files.
+Owns the 21 TV Kate configuration and external-tool files. Kate session state and `katerc` geometry are not managed.
