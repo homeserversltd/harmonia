@@ -929,8 +929,18 @@ fn compare_sweep_paths_deepest_first(left: &Path, right: &Path) -> std::cmp::Ord
         .then_with(|| left.cmp(right))
 }
 
+fn sort_retired_sweep_entries(entries: &mut [SourceShelfSweepEntry], source_entry_count: usize) {
+    entries[source_entry_count..].sort_by(|left, right| {
+        compare_sweep_paths_deepest_first(
+            Path::new(&left.relative_path),
+            Path::new(&right.relative_path),
+        )
+    });
+}
+
 fn retired_directory_python_cache_debris(
     retired_directory: &Path,
+    simulated_retirements: &BTreeSet<PathBuf>,
 ) -> Result<Vec<RetiredPythonCacheEntry>, String> {
     let not_empty = || {
         format!(
@@ -970,10 +980,14 @@ fn retired_directory_python_cache_debris(
     fn walk_cache(
         retired_directory: &Path,
         path: &Path,
+        simulated_retirements: &BTreeSet<PathBuf>,
         debris: &mut Vec<RetiredPythonCacheEntry>,
     ) -> Result<(), String> {
         for child in sorted_children(path)? {
             let child_path = child.path();
+            if simulated_retirements.contains(&child_path) {
+                continue;
+            }
             let relative_path = child_path
                 .strip_prefix(retired_directory)
                 .map_err(|error| error.to_string())?
@@ -990,6 +1004,19 @@ fn retired_directory_python_cache_debris(
                     relative_path,
                     is_dir: false,
                 });
+            } else if file_type.is_dir()
+                && child.file_name().as_os_str() == std::ffi::OsStr::new("__pycache__")
+            {
+                debris.push(RetiredPythonCacheEntry {
+                    relative_path,
+                    is_dir: true,
+                });
+                walk_cache(
+                    retired_directory,
+                    &child_path,
+                    simulated_retirements,
+                    debris,
+                )?;
             } else {
                 return Err(format!(
                     "source-shelf-sweep-owned-directory-not-empty {}",
@@ -1006,10 +1033,13 @@ fn retired_directory_python_cache_debris(
     }
     let mut debris = Vec::new();
     for child in children {
+        let cache_root = child.path();
+        if simulated_retirements.contains(&cache_root) {
+            continue;
+        }
         if child.file_name().as_os_str() != std::ffi::OsStr::new("__pycache__") {
             return Err(not_empty());
         }
-        let cache_root = child.path();
         let metadata = fs::symlink_metadata(&cache_root).map_err(|error| {
             format!(
                 "source-shelf-sweep-owned-stale-metadata-failed {}: {error}",
@@ -1027,7 +1057,12 @@ fn retired_directory_python_cache_debris(
             relative_path,
             is_dir: true,
         });
-        walk_cache(retired_directory, &cache_root, &mut debris)?;
+        walk_cache(
+            retired_directory,
+            &cache_root,
+            simulated_retirements,
+            &mut debris,
+        )?;
     }
     debris.sort_by(|left, right| {
         compare_sweep_paths_deepest_first(&left.relative_path, &right.relative_path)
@@ -1083,6 +1118,31 @@ fn retired_python_cache_receipt_entry(
         rollback_readback_ok: None,
         orphan_removal: None,
     })
+}
+
+fn retired_python_cache_receipt_entries(
+    relative: &Path,
+    target: &Path,
+    debris: &[RetiredPythonCacheEntry],
+    request: &SourceShelfSweepRequest,
+    uid: u32,
+    gid: u32,
+) -> Result<Vec<SourceShelfSweepEntry>, String> {
+    debris
+        .iter()
+        .map(|debris_entry| {
+            let shelf_relative = relative.join(&debris_entry.relative_path);
+            let debris_target = target.join(&debris_entry.relative_path);
+            retired_python_cache_receipt_entry(
+                &shelf_relative,
+                &debris_target,
+                debris_entry.is_dir,
+                request,
+                uid,
+                gid,
+            )
+        })
+        .collect()
 }
 
 fn shelf_is_current(
@@ -2224,10 +2284,18 @@ fn source_shelf_owned_recursive_sweep(
             before_gid: None,
             after_uid: None,
             after_gid: None,
-            action: "quarantined".into(),
+            action: if apply {
+                "quarantined".into()
+            } else {
+                "report-only".into()
+            },
             changed: true,
             readback_ok: false,
-            rollback_action: "quarantine-preserved".into(),
+            rollback_action: if apply {
+                "quarantine-preserved".into()
+            } else {
+                "not-needed".into()
+            },
             rollback_readback_ok: None,
             orphan_removal: if orphan_stale.contains(relative) {
                 Some(orphan_removal_state(
@@ -2250,13 +2318,76 @@ fn source_shelf_owned_recursive_sweep(
         )
     };
     if !apply {
+        let mut simulated_retirements = BTreeSet::new();
+        for relative in &stale {
+            let target = request.target_shelf.join(relative);
+            if retired_owned_directories.contains(relative) {
+                let parent_entry_index = entries
+                    .iter()
+                    .position(|entry| {
+                        entry.target.as_path() == target.as_path()
+                            && entry.kind == "stale-owned-recursive-path"
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "source-shelf-sweep-owned-stale-entry-missing {}",
+                            target.display()
+                        )
+                    })?;
+                let (before_digest, before_mode, before_uid, before_gid) =
+                    sweep_path_state(&target, true)?;
+                let (after_digest, after_mode, after_uid, after_gid) =
+                    sweep_path_state(&target, true)?;
+                {
+                    let entry = &mut entries[parent_entry_index];
+                    entry.kind = "retired-owned-directory".into();
+                    entry.desired_mode = request.shelf_directory_mode;
+                    entry.before_digest = before_digest.clone();
+                    entry.before_mode = before_mode;
+                    entry.before_uid = before_uid;
+                    entry.before_gid = before_gid;
+                    entry.after_digest = after_digest.clone();
+                    entry.after_mode = after_mode;
+                    entry.after_uid = after_uid;
+                    entry.after_gid = after_gid;
+                    entry.readback_ok = before_digest == after_digest
+                        && before_mode == after_mode
+                        && before_uid == after_uid
+                        && before_gid == after_gid;
+                    entry.rollback_action = "not-needed".into();
+                }
+                let debris =
+                    retired_directory_python_cache_debris(&target, &simulated_retirements)?;
+                let mut debris_receipts = retired_python_cache_receipt_entries(
+                    relative, &target, &debris, request, uid, gid,
+                )?;
+                for entry in &mut debris_receipts {
+                    let is_dir = entry.kind == "python-bytecode-cache-directory";
+                    let (after_digest, after_mode, after_uid, after_gid) =
+                        sweep_path_state(&entry.target, is_dir)?;
+                    entry.after_digest = after_digest.clone();
+                    entry.after_mode = after_mode;
+                    entry.after_uid = after_uid;
+                    entry.after_gid = after_gid;
+                    entry.action = "report-only".into();
+                    entry.readback_ok = entry.before_digest == after_digest
+                        && entry.before_mode == after_mode
+                        && entry.before_uid == after_uid
+                        && entry.before_gid == after_gid;
+                    entry.rollback_action = "not-needed".into();
+                }
+                entries.extend(debris_receipts);
+            }
+            simulated_retirements.insert(target);
+        }
+        sort_retired_sweep_entries(&mut entries, desired.len());
         let outcome = SourceShelfSweepOutcome {
             ok: !drift,
             changed: false,
             current: !drift,
             source_inventory_count: desired.len(),
-            target_inventory_count_before: 0,
-            target_inventory_count_after: 0,
+            target_inventory_count_before: target_inventory.len(),
+            target_inventory_count_after: target_inventory.len(),
             promoted_count: 0,
             removed_count: 0,
             transaction_state: if drift { "planned" } else { "unchanged" }.into(),
@@ -2460,7 +2591,7 @@ fn source_shelf_owned_recursive_sweep(
                         })?;
                     if target_metadata.file_type().is_dir() {
                         let debris = if retired_owned_directories.contains(relative) {
-                            retired_directory_python_cache_debris(&target)?
+                            retired_directory_python_cache_debris(&target, &BTreeSet::new())?
                         } else {
                             Vec::new()
                         };
@@ -2718,7 +2849,10 @@ fn source_shelf_owned_recursive_sweep(
         return Err(outcome.message);
     }
     for entry in &mut entries {
-        entry.readback_ok = if matches!(entry.action.as_str(), "quarantined" | "debris_removed") {
+        entry.readback_ok = if matches!(
+            entry.action.as_str(),
+            "quarantined" | "debris-quarantined" | "debris_removed"
+        ) {
             matches!(
                 fs::symlink_metadata(&entry.target),
                 Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
@@ -2741,12 +2875,20 @@ fn source_shelf_owned_recursive_sweep(
             "unchanged".into()
         } else if entry.action == "quarantined" {
             "quarantined".into()
-        } else if entry.action == "debris_removed" {
-            "debris_removed".into()
+        } else if matches!(
+            entry.action.as_str(),
+            "debris-quarantined" | "debris_removed"
+        ) {
+            if entry.readback_ok {
+                "debris_removed".into()
+            } else {
+                "debris-removal-readback-failed".into()
+            }
         } else {
             "promoted".into()
         };
     }
+    sort_retired_sweep_entries(&mut entries, desired.len());
     let outcome = SourceShelfSweepOutcome {
         ok: true,
         changed: promoted_count > 0 || removed_count > 0,
