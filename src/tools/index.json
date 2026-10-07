@@ -153,6 +153,16 @@
               "name": "gid",
               "kind": "integer",
               "required": false
+            },
+            {
+              "name": "owner",
+              "kind": "string",
+              "required": false
+            },
+            {
+              "name": "group",
+              "kind": "string",
+              "required": false
             }
           ],
           "placement": "BackfillFiles"

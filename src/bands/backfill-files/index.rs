@@ -275,7 +275,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                 args.insert("no_follow".into(), Value::Bool(true));
                 args.insert("collision_policy".into(), Value::String("refuse".into()));
                 args.insert("rollback_policy".into(), Value::String("exact".into()));
-                for key in ["mode", "uid", "gid"] {
+                for key in ["mode", "uid", "gid", "owner", "group"] {
                     if let Some(value) = object.get(key) {
                         args.insert(key.into(), value.clone());
                     }
@@ -876,13 +876,31 @@ pub(crate) fn execute_routine_child(
                 ));
             }
             let default_backup = receipt_dir.join("backups/prior-binary");
+            let desired_uid = if unit_render {
+                Some(0)
+            } else if let Some(owner) = args.get("owner") {
+                Some(crate::atoms::files::resolve_uid(
+                    owner.as_str().ok_or("place-file-owner-invalid")?,
+                )?)
+            } else {
+                args.get("uid").and_then(Value::as_u64).map(|x| x as u32)
+            };
+            let desired_gid = if unit_render {
+                Some(0)
+            } else if let Some(group) = args.get("group") {
+                Some(crate::atoms::files::resolve_gid(
+                    group.as_str().ok_or("place-file-group-invalid")?,
+                )?)
+            } else {
+                args.get("gid").and_then(Value::as_u64).map(|x| x as u32)
+            };
             let request = crate::place_file::PlaceFileRequest {
                 path,
                 declared_bytes: &bytes,
                 mode: if unit_render { Some(0o644) } else { args.get("mode").and_then(Value::as_u64).map(|x| x as u32) },
                 ownership: crate::place_file::DeclaredOwnership {
-                    uid: if unit_render { Some(0) } else { args.get("uid").and_then(Value::as_u64).map(|x| x as u32) },
-                    gid: if unit_render { Some(0) } else { args.get("gid").and_then(Value::as_u64).map(|x| x as u32) },
+                    uid: desired_uid,
+                    gid: desired_gid,
                 },
                 backup: args
                     .get("backup_path")
