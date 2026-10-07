@@ -103,6 +103,8 @@ pub(crate) fn condition_skip_evidence(
         || snapshot.condition_result != "no"
         || status.code != 3
         || snapshot.failed_conditions.is_empty()
+        || snapshot.condition_name.is_none()
+        || snapshot.condition_name_source.is_none()
     {
         return None;
     }
@@ -112,8 +114,13 @@ pub(crate) fn condition_skip_evidence(
         "condition_result": snapshot.condition_result,
         "conditions": snapshot.conditions,
         "failed_conditions": snapshot.failed_conditions,
+        "condition_name": snapshot.condition_name,
+        "condition_name_source": snapshot.condition_name_source,
+        "status_unmet_summary": snapshot.status_unmet_summary,
         "systemctl_show": observation.condition_show,
         "systemctl_status": status,
+        "systemctl_cat": snapshot.condition_cat,
+        "journal_condition_evidence": snapshot.condition_journal,
         "systemctl_is_active": probe,
         "condition_probe_error": observation.condition_probe_error,
     }))
